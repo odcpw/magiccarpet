@@ -170,31 +170,43 @@ restarting them.
 
 ## Work selection and completion
 
-- After every context compaction or session resume, reread this file and
-  `docs/agent-addressable-game-architecture.md`. For non-trivial continuing
-  work also reread these two skills before acting:
-  `/home/oliver/Projects/odcpw/semantic-architecture/SKILL.md` and
-  `/home/oliver/.codex/skills/just-say-no-to-process-porn-and-ceremony/SKILL.md`.
-  Recover the newest user goal, Git/dirty state, running command and output,
-  last committed capability, last exact green evidence and current unsupported
-  boundary. Resume there; compaction is not permission to restart discovery,
-  redesign or unchanged expensive gates.
-- Prefer parallel read-only package/source, Rust-ownership and adversarial-gate
-  subagents for a complete semantic domain. Keep one integration owner, or use
-  explicit disjoint reservations for writers. Subagents do not justify
-  micro-items: the deliverable remains the complete catalog -> package binding
-  -> runtime lifecycle -> downstream consumer chain defined by the architecture
-  document.
+- **Execution-first recovery after compaction.** Reread only this repository
+  file, recover the newest user goal, inspect Git/dirty state and the active
+  diff or running command, then resume the exact implementation where it
+  stopped. Do not reread skills, architecture documents, old reviews or prior
+  agent reports unless a concrete missing fact in the current code requires
+  one of them. Do not restart work selection, archaeology, design comparison,
+  threat modeling or review after compaction. The default next command is the
+  compiler, the focused owning test, or the edit needed to fix its failure.
+- **Ship and debug; do not review-loop.** Once an implementation direction is
+  consistent with the current user goal and repository architecture, carry it
+  through code, compilation and a real focused test before reconsidering the
+  design. A failing compiler/test/runtime observation is the normal debugging
+  loop, not a trigger for another architecture round. Reopen the design only
+  when current execution produces evidence that the chosen seam cannot satisfy
+  the goal or would create duplicate authority/data loss.
+- Do not dispatch review, archaeology, contract, gate or adversarial subagents
+  unless Oliver explicitly requests them. One implementation owner is the
+  default. Agent agreement is not a delivery requirement and repeated GO/NO-GO
+  rounds are prohibited when the relevant code or evidence has not changed.
+- Spend the large majority of a work block implementing and debugging working
+  capability. Planning, archaeology, documentation and review must answer a
+  concrete question that blocks the next code/test step; stop them immediately
+  once that question is answered. Do not produce readiness matrices, scoring
+  rounds or alternative-slice rankings while an aligned implementation can be
+  advanced.
 - Treat the owner package/campaign definition as the level capability census:
   test only behavior families actually reachable from that package, plus the
   shared invariants they exercise; never build absent-content matrices. The
-  qualified package and pinned remc2 outrank guides and reports. Before a row
-  is implemented, pin producer, visit, callback, epilogue, reclaim and first
-  consumer; use bounded archaeology for any missing link.
-- Every focused positive needs the nearest plausible wrong implementation as a
-  negative and an explicit No-Claim. Do not change source-correct engine
-  behavior to preserve a stale test; correct the test only with pinned source
-  and package evidence.
+  qualified package and pinned remc2 outrank guides and reports. Read enough to
+  locate the authoritative carrier and first real consumer, then implement and
+  learn from execution. Deepen source archaeology only when a concrete failed
+  observation cannot be explained from current code.
+- New capability needs one focused owning positive test. Add a nearest-negative
+  assertion when it cheaply discriminates a plausible partial implementation;
+  do not hold working code hostage to speculative gate design, broad matrices,
+  omnibus tests or repeated test-review rounds. State remaining scope plainly
+  in the handoff instead of engineering exhaustive No-Claim ceremony.
 - A yielded test process is still the same run: resume or inspect it instead of
   starting another, and never infer success because it disappeared. If its exit
   result is irretrievably lost, rerun that exact test once and say why.
@@ -211,6 +223,8 @@ restarting them.
   `mc-uptb.1`; do not overwrite their late evidence.
 - Do not initialize NTM, Agent Mail, worktrees or new process artifacts for solo
   work. For justified concurrent writers, follow the root coordination rules.
-- Before handoff, re-read the request, inspect status/diff, run proportionate
-  focused gates and UBS on changed source when applicable. State exact proof
-  layer and unverified surface. Commit/push only when requested.
+- Before handoff, inspect status/diff and run the focused owning test plus
+  proportionate compile/format checks. Run broader suites or scanners only
+  when the changed surface warrants them or Oliver asks; do not let noisy
+  legacy findings displace debugging the candidate. State what ran and what
+  remains unverified. Commit/push only when requested.
