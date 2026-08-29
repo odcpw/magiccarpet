@@ -11,6 +11,7 @@ members = [
     "crates/sim-render-camera",
     "crates/sim-renderable-map-chain",
     "crates/sim-session",
+    "crates/sim-ss2-tmap",
     "crates/sim-input",
     "crates/sim-terrain-raster",
     "crates/sim-voxel",

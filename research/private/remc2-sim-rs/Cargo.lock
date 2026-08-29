@@ -224,6 +224,7 @@ dependencies = [
  "sim-render-camera",
  "sim-renderable-map-chain",
  "sim-session",
+ "sim-ss2-tmap",
  "sim-terrain-raster",
  "sim-voxel",
 ]
@@ -271,6 +272,13 @@ version = "0.1.0"
 dependencies = [
  "serde",
  "sim-definition",
+]
+
+[[package]]
+name = "sim-ss2-tmap"
+version = "0.1.0"
+dependencies = [
+ "sha2",
 ]
 
 [[package]]

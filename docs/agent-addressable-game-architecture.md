@@ -625,7 +625,10 @@ partial real implementation, not a completion claim:
   existing `sim-core` owners. Checked Classic HD render profiles, frame buffers
   and writer primitives are now owned by the internal `sim-classic-hd` crate,
   while terrain/raster production and native session scheduling remain with
-  their existing owners. These are seven bounded physical
+  their existing owners. The source-compatible F1FA/type-7 mutable SS2 delta
+  decoder and hash/header checks are now owned by the internal `sim-ss2-tmap`
+  crate, while selector qualification, clocks and draw scheduling remain in
+  their existing family owners. These are eight bounded physical
   extractions, not a claim that the remaining `sim-core` monolith has been
   decomposed; and
 - the complete title/loading/save/transition flow and full Levels 1–3 domain
