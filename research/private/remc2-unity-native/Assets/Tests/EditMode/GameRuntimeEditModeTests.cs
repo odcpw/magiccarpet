@@ -964,6 +964,9 @@ namespace MagicCarpet.Native.Tests
                 Assert.That(beforeVitals.mana, Is.Positive);
                 Assert.That(beforeVitals.max_mana, Is.GreaterThanOrEqualTo(beforeVitals.mana));
                 Assert.That(
+                    runtime.GameRuntimeProductionVitalsBarWidths,
+                    Is.EqualTo(new Vector2Int(240, 240)));
+                Assert.That(
                     runtime.GameRuntimeProductionFlightHudText,
                     Does.Contain(
                         $"life {beforeVitals.life,6} / {beforeVitals.max_life,6}  " +
@@ -985,6 +988,11 @@ namespace MagicCarpet.Native.Tests
                 Assert.That(afterVitals.max_mana, Is.EqualTo(beforeVitals.max_mana));
                 Assert.That(afterVitals.mana, Is.EqualTo(beforeVitals.mana - 100));
                 Assert.That(
+                    runtime.GameRuntimeProductionVitalsBarWidths,
+                    Is.EqualTo(new Vector2Int(
+                        240,
+                        (int)((long)afterVitals.mana * 240 / afterVitals.max_mana))));
+                Assert.That(
                     runtime.GameRuntimeProductionFlightHudText,
                     Does.Contain(
                         $"life {afterVitals.life,6} / {afterVitals.max_life,6}  " +
@@ -1004,16 +1012,19 @@ namespace MagicCarpet.Native.Tests
                 Assert.That(reset.value.player_vitals.mana, Is.EqualTo(beforeVitals.mana));
                 Assert.That(reset.value.player_vitals.max_mana, Is.EqualTo(beforeVitals.max_mana));
                 Assert.That(
+                    runtime.GameRuntimeProductionVitalsBarWidths,
+                    Is.EqualTo(new Vector2Int(240, 240)));
+                Assert.That(
                     runtime.GameRuntimeProductionFlightHudText,
                     Does.Contain(
                         $"life {beforeVitals.life,6} / {beforeVitals.max_life,6}  " +
                         $"mana {beforeVitals.mana,6} / {beforeVitals.max_mana,6}"));
 
                 // No-Claim: this proves generic numeric local-player life/mana
-                // projection, one real Fireball charge, reset, and same-handle
-                // Unity consumption. It does not prove source-art HUD, damage or
-                // death presentation, spell inventory, objectives, L2/L3, audio,
-                // or completion transitions.
+                // projection, generic bars, one real Fireball charge, reset,
+                // and same-handle Unity consumption. It does not prove source-art
+                // HUD, damage or death presentation, spell inventory, objectives,
+                // L2/L3, audio, or completion transitions.
             }
             finally
             {

@@ -593,8 +593,10 @@ partial real implementation, not a completion claim:
   presentation consumer renders the live Level 1 Fireball described above.
   A generic flight telemetry strip now also renders actual and target speed,
   strafe speed, altitude, tick, runtime mode and numeric local-player life/mana
-  from that same returned Rust snapshot. One real Fireball charge changes that
-  projected mana and reset restores it without client-side resource arithmetic.
+  from that same returned Rust snapshot. Generic life and mana bars derive their
+  fill directly from those authoritative values on every draw. One real Fireball
+  charge changes the projected mana and bar width, and reset restores both
+  without client-side resource arithmetic.
   After each fixed step the same owner now drains the ordered,
   opaque-actor semantic event pages through the nested session guard and shows
   the latest retained event in that strip without replaying it on another poll.

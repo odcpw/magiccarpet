@@ -1010,6 +1010,9 @@ namespace MagicCarpet.Native
         internal string GameRuntimeProductionFlightHudText =>
             FormatGameRuntimeFlightHudText();
 
+        internal Vector2Int GameRuntimeProductionVitalsBarWidths =>
+            ComputeGameRuntimeVitalsBarWidths();
+
         internal string GameRuntimeProductionSemanticEventCursor =>
             gameRuntimeSemanticEventCursor;
 
@@ -11915,6 +11918,44 @@ namespace MagicCarpet.Native
                 new Rect(24, 18, Mathf.Min(900, Screen.width - 48), 110),
                 FormatGameRuntimeFlightHudText(),
                 hudStyle);
+            var widths = ComputeGameRuntimeVitalsBarWidths();
+            if (widths == Vector2Int.zero)
+            {
+                return;
+            }
+            const float barX = 76f;
+            const float barWidth = 240f;
+            const float barHeight = 12f;
+            var previousColor = GUI.color;
+            GUI.Label(new Rect(24, 128, 48, 18), "LIFE", hudStyle);
+            GUI.Label(new Rect(24, 148, 48, 18), "MANA", hudStyle);
+            GUI.color = new Color(0f, 0f, 0f, 0.7f);
+            GUI.DrawTexture(new Rect(barX, 131, barWidth, barHeight), Texture2D.whiteTexture);
+            GUI.DrawTexture(new Rect(barX, 151, barWidth, barHeight), Texture2D.whiteTexture);
+            GUI.color = new Color(0.86f, 0.18f, 0.14f, 1f);
+            GUI.DrawTexture(new Rect(barX, 131, widths.x, barHeight), Texture2D.whiteTexture);
+            GUI.color = new Color(0.16f, 0.42f, 0.92f, 1f);
+            GUI.DrawTexture(new Rect(barX, 151, widths.y, barHeight), Texture2D.whiteTexture);
+            GUI.color = previousColor;
+        }
+
+        private Vector2Int ComputeGameRuntimeVitalsBarWidths()
+        {
+            const int width = 240;
+            var vitals = gameRuntimeCampaignSnapshot?.value?.player_vitals;
+            if (vitals == null || vitals.max_life <= 0 || vitals.max_mana <= 0)
+            {
+                return Vector2Int.zero;
+            }
+            var lifeWidth = Mathf.Clamp(
+                (int)((long)vitals.life * width / vitals.max_life),
+                0,
+                width);
+            var manaWidth = Mathf.Clamp(
+                (int)((long)vitals.mana * width / vitals.max_mana),
+                0,
+                width);
+            return new Vector2Int(lifeWidth, manaWidth);
         }
 
         private void OnGUI()
