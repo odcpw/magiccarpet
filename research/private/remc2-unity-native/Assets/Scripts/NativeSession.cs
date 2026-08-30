@@ -248,6 +248,19 @@ namespace MagicCarpet.Native
                 "session does not own a game runtime");
         }
 
+        internal GameRuntimeTransport.CompletionTransitionReceipt
+            GameRuntimeAcceptCompletionTransition()
+        {
+            return gameRuntime?.AcceptCompletionTransition() ??
+                throw new InvalidOperationException("session does not own a game runtime");
+        }
+
+        internal GameRuntimeTransport.Identity GameRuntimeOpenLevel()
+        {
+            return gameRuntime?.OpenLevel() ?? throw new InvalidOperationException(
+                "session does not own a game runtime");
+        }
+
         internal GameRuntimeTransport.Identity GameRuntimeClose()
         {
             return gameRuntime?.Close() ?? throw new InvalidOperationException(

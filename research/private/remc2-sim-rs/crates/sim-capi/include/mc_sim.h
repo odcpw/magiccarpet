@@ -1316,8 +1316,8 @@ uint8_t mc_sim_last_resolution(void);
  * Rust-owned outer game runtime ABI. The same handle moves through Title,
  * Loading, Playing and a quiescent Paused boundary. Once Playing, the
  * mc_game_session_*_v1 functions below address the nested authoritative
- * GameSession through this handle. Paused frames are not yet part of this
- * contract.
+ * GameSession through this handle. Completion acceptance is guarded by both
+ * outer and nested identity and resolves its destination/package in Rust.
  */
 int32_t mc_game_runtime_contract_json_v1(
     uint8_t *buffer, uint32_t capacity, uint32_t *out_length);
@@ -1349,6 +1349,14 @@ int32_t mc_game_runtime_paused_frame_v1(
     uint64_t expected_tick);
 int32_t mc_game_runtime_resume_v1(
     uint64_t handle, uint64_t generation);
+int32_t mc_game_runtime_accept_transition_v1(
+    uint64_t handle,
+    uint64_t runtime_generation,
+    uint64_t session_generation,
+    uint64_t expected_tick);
+int32_t mc_game_runtime_completion_transition_receipt_json_v1(
+    uint64_t handle, uint8_t *buffer, uint32_t capacity,
+    uint32_t *out_length);
 int32_t mc_game_runtime_close_v1(
     uint64_t handle,
     uint64_t runtime_generation,

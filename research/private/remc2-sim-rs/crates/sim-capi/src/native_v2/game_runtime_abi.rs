@@ -13,13 +13,14 @@ use sim_core::{
         Mc2CampaignInputs, Mc2CampaignReplaySaveError, Mc2RuntimePackageResolver,
     },
     game_runtime::{
-        GameRuntime, OpenLevelError, PausedFrameError, RuntimeGuard, RuntimeGuardError,
-        RuntimeGuardErrorCode, RuntimeMode, RuntimeTransitionError,
+        COMPLETION_TRANSITION_RECEIPT, CompletionTransitionReceipt, GameRuntime, OpenLevelError,
+        PausedFrameError, RuntimeGuard, RuntimeGuardError, RuntimeGuardErrorCode, RuntimeMode,
+        RuntimeTransitionError,
     },
 };
 use sim_session::{GameSession, OpenSessionError, SessionGuard};
 
-const GAME_RUNTIME_TRANSPORT_CONTRACT: &str = "carpet-flight-native-game-runtime-json/v8";
+const GAME_RUNTIME_TRANSPORT_CONTRACT: &str = "carpet-flight-native-game-runtime-json/v9";
 const INSTALLED_PACKAGE_SET_CONTRACT: &str = "carpet-flight-installed-package-set-bootstrap/v1";
 const MAX_INSTALLED_PACKAGE_SET_JSON_BYTES: u32 = 64 * 1024;
 const MAX_INSTALLED_PACKAGE_COUNT: usize = 16;
@@ -41,6 +42,7 @@ struct InstalledPackageLocation {
 pub(super) struct RuntimeRecord {
     runtime: GameRuntime<Mc2CampaignBackend>,
     resolver: Option<Mc2RuntimePackageResolver>,
+    completion_transition_receipt: Option<CompletionTransitionReceipt>,
     closed: bool,
 }
 
@@ -50,6 +52,7 @@ impl RuntimeRecord {
         Ok(Self {
             runtime,
             resolver: None,
+            completion_transition_receipt: None,
             closed: false,
         })
     }
@@ -297,6 +300,48 @@ impl RuntimeRecord {
             })
             .map_err(map_transition_error)?;
         Ok(())
+    }
+
+    fn accept_transition(
+        &mut self,
+        handle: u64,
+        runtime_generation: u64,
+        session_generation: u64,
+        expected_tick: u64,
+    ) -> AbiResult<()> {
+        self.ensure_open()?;
+        let resolver = self.resolver.as_ref().ok_or_else(|| {
+            AbiError::new(
+                MC_STATUS_INVALID_ARGUMENT,
+                "MISSING_RUNTIME_RESOLVER: completion transition requires an installed package set",
+            )
+        })?;
+        let receipt = resolver
+            .accept_transition(
+                &mut self.runtime,
+                RuntimeGuard {
+                    runtime_id: handle,
+                    generation: runtime_generation,
+                },
+                SessionGuard {
+                    session_id: handle,
+                    generation: session_generation,
+                    expected_tick,
+                },
+            )
+            .map_err(map_transition_error)?;
+        self.completion_transition_receipt = Some(receipt);
+        Ok(())
+    }
+
+    fn completion_transition_receipt(&self) -> AbiResult<&CompletionTransitionReceipt> {
+        self.ensure_open()?;
+        self.completion_transition_receipt.as_ref().ok_or_else(|| {
+            AbiError::new(
+                MC_STATUS_INVALID_ARGUMENT,
+                "NO_COMPLETION_TRANSITION_RECEIPT: no completion transition has been accepted",
+            )
+        })
     }
 
     fn close(
@@ -639,11 +684,11 @@ pub extern "C" fn mc_game_runtime_contract_json_v1(
         let contract = serde_json::json!({
             "runtime_contract": sim_core::game_runtime::GAME_RUNTIME_CONTRACT,
             "transport_contract": GAME_RUNTIME_TRANSPORT_CONTRACT,
-            "transport_version": 8,
+            "transport_version": 9,
             "encoding": "utf-8-json",
             "u64_counter_encoding": "decimal-string",
             "modes": ["title", "loading", "playing", "paused"],
-            "transitions": ["bootstrap_package_set", "restart_new_game", "open_level", "load_replay_save", "pause", "paused_frame", "resume", "close"],
+            "transitions": ["bootstrap_package_set", "restart_new_game", "open_level", "load_replay_save", "pause", "paused_frame", "resume", "accept_completion_transition", "close"],
             "playing_session_transport": "mc_game_session_*_v1 on the same handle",
             "package_profile": "mc2-campaign",
             "installed_package_set": {
@@ -671,6 +716,14 @@ pub extern "C" fn mc_game_runtime_contract_json_v1(
                 "title": "absent",
                 "loading": "pending_definition.runtime_flow",
                 "playing_and_paused": "active_runtime_flow"
+            },
+            "completion_transition": {
+                "receipt_contract": COMPLETION_TRANSITION_RECEIPT,
+                "accept_transport": "mc_game_runtime_accept_transition_v1",
+                "receipt_transport": "mc_game_runtime_completion_transition_receipt_json_v1",
+                "destination_authority": "rust_owned_semantic_flow",
+                "package_authority": "installed_package_resolver",
+                "guards": ["runtime_generation", "session_generation", "expected_tick"]
             },
             "limits": {
                 "maximum_output_json_bytes": super::game_session_abi::MAX_OUTPUT_JSON_BYTES,
@@ -868,6 +921,44 @@ pub extern "C" fn mc_game_runtime_resume_v1(handle: u64, generation: u64) -> i32
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn mc_game_runtime_accept_transition_v1(
+    handle: u64,
+    runtime_generation: u64,
+    session_generation: u64,
+    expected_tick: u64,
+) -> i32 {
+    boundary(|| {
+        with_runtime_mut(handle, |runtime| {
+            runtime.accept_transition(
+                handle,
+                runtime_generation,
+                session_generation,
+                expected_tick,
+            )
+        })
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn mc_game_runtime_completion_transition_receipt_json_v1(
+    handle: u64,
+    buffer: *mut u8,
+    capacity: u32,
+    out_length: *mut u32,
+) -> i32 {
+    boundary(|| {
+        with_runtime(handle, |runtime| {
+            super::game_session_abi::write_json(
+                runtime.completion_transition_receipt()?,
+                buffer,
+                capacity,
+                out_length,
+            )
+        })
+    })
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn mc_game_runtime_close_v1(
     handle: u64,
     runtime_generation: u64,
@@ -1036,9 +1127,9 @@ mod tests {
         );
         assert_eq!(
             contract["transport_contract"],
-            "carpet-flight-native-game-runtime-json/v8"
+            "carpet-flight-native-game-runtime-json/v9"
         );
-        assert_eq!(contract["transport_version"], 8);
+        assert_eq!(contract["transport_version"], 9);
         assert_eq!(
             contract["modes"],
             serde_json::json!(["title", "loading", "playing", "paused"])
@@ -1053,6 +1144,7 @@ mod tests {
                 "pause",
                 "paused_frame",
                 "resume",
+                "accept_completion_transition",
                 "close"
             ])
         );
@@ -1087,6 +1179,17 @@ mod tests {
                 "load_transport": "mc_game_runtime_load_replay_json_v1",
                 "load_package_authority": "complete_unordered_resource_set",
                 "client_semantics": "opaque_utf8_json"
+            })
+        );
+        assert_eq!(
+            contract["completion_transition"],
+            serde_json::json!({
+                "receipt_contract": "carpet-flight-completion-transition-receipt/v1",
+                "accept_transport": "mc_game_runtime_accept_transition_v1",
+                "receipt_transport": "mc_game_runtime_completion_transition_receipt_json_v1",
+                "destination_authority": "rust_owned_semantic_flow",
+                "package_authority": "installed_package_resolver",
+                "guards": ["runtime_generation", "session_generation", "expected_tick"]
             })
         );
         assert_eq!(
@@ -1238,6 +1341,7 @@ mod tests {
         let mut returned_title = RuntimeRecord {
             runtime: GameRuntime::title(991).unwrap(),
             resolver: Some(installed_resolver),
+            completion_transition_receipt: None,
             closed: false,
         };
         let returned_title_before = returned_title.runtime.identity();
@@ -1620,6 +1724,96 @@ mod tests {
         // Title and resolver-derived reopening of its immutable entry. It does
         // not choose another package, accept completion, present a menu, or
         // persist the closed state.
+    }
+
+    #[test]
+    fn runtime_completion_transition_guards_reject_atomically_before_completion() {
+        let mut handle = 0_u64;
+        assert_eq!(mc_game_runtime_create_v1(&raw mut handle), MC_STATUS_OK);
+        assert_eq!(
+            bootstrap_package_set(
+                handle,
+                1,
+                &[
+                    level_three_package(),
+                    level_one_package(),
+                    level_two_package()
+                ],
+            ),
+            MC_STATUS_OK
+        );
+        assert_eq!(mc_game_runtime_open_level_v1(handle, 2), MC_STATUS_OK);
+        let before = identity(handle);
+        let runtime_generation = before["generation"].as_str().unwrap().parse().unwrap();
+        let session_generation = before["session"]["generation"]
+            .as_str()
+            .unwrap()
+            .parse()
+            .unwrap();
+        let tick = before["session"]["tick"].as_str().unwrap().parse().unwrap();
+
+        assert_eq!(
+            mc_game_runtime_completion_transition_receipt_json_v1(
+                handle,
+                std::ptr::null_mut(),
+                0,
+                std::ptr::null_mut(),
+            ),
+            MC_STATUS_INVALID_ARGUMENT
+        );
+        assert_eq!(
+            mc_game_runtime_accept_transition_v1(
+                handle,
+                runtime_generation,
+                session_generation,
+                tick,
+            ),
+            MC_STATUS_INVALID_ARGUMENT,
+            "an in-progress authoritative session cannot be completed by the client"
+        );
+        assert_eq!(identity(handle), before);
+
+        assert_eq!(
+            mc_game_runtime_accept_transition_v1(
+                handle,
+                runtime_generation - 1,
+                session_generation,
+                tick,
+            ),
+            MC_STATUS_GENERATION_MISMATCH
+        );
+        assert_eq!(identity(handle), before);
+        assert_eq!(
+            mc_game_runtime_accept_transition_v1(
+                handle,
+                runtime_generation,
+                session_generation + 1,
+                tick,
+            ),
+            MC_STATUS_GENERATION_MISMATCH
+        );
+        assert_eq!(identity(handle), before);
+        assert_eq!(
+            mc_game_runtime_accept_transition_v1(
+                handle,
+                runtime_generation,
+                session_generation,
+                tick + 1,
+            ),
+            MC_STATUS_INVALID_ARGUMENT
+        );
+        assert_eq!(identity(handle), before);
+        assert_eq!(
+            mc_game_runtime_completion_transition_receipt_json_v1(
+                handle,
+                std::ptr::null_mut(),
+                0,
+                std::ptr::null_mut(),
+            ),
+            MC_STATUS_INVALID_ARGUMENT,
+            "rejected transitions must not manufacture a receipt"
+        );
+        assert_eq!(mc_game_runtime_destroy_v1(handle), MC_STATUS_OK);
     }
 
     #[test]

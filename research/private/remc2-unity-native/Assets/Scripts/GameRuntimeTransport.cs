@@ -18,7 +18,9 @@ namespace MagicCarpet.Native
     {
         internal const string RuntimeContract = "carpet-flight-game-runtime/v9";
         internal const string TransportContract =
-            "carpet-flight-native-game-runtime-json/v8";
+            "carpet-flight-native-game-runtime-json/v9";
+        internal const string CompletionTransitionReceiptContract =
+            "carpet-flight-completion-transition-receipt/v1";
         internal const string InstalledPackageSetContract =
             "carpet-flight-installed-package-set-bootstrap/v1";
         internal const string ReplaySaveContract =
@@ -47,6 +49,7 @@ namespace MagicCarpet.Native
             public ReplaySaveTransport replay_save;
             public PausedFrameTransport paused_frame;
             public RuntimeFlowContract runtime_flow;
+            public CompletionTransitionTransport completion_transition;
             public Limits limits;
         }
 
@@ -78,6 +81,17 @@ namespace MagicCarpet.Native
             public string session_identity;
             public string deterministic_work;
             public string replay;
+        }
+
+        [Serializable]
+        internal sealed class CompletionTransitionTransport
+        {
+            public string receipt_contract;
+            public string accept_transport;
+            public string receipt_transport;
+            public string destination_authority;
+            public string package_authority;
+            public string[] guards;
         }
 
         [Serializable]
@@ -155,6 +169,25 @@ namespace MagicCarpet.Native
             public DefinitionIdentity pending_definition;
             public RuntimeFlowDefinition active_runtime_flow;
             public EngineSessionTransport.Identity session;
+        }
+
+        [Serializable]
+        internal sealed class GameCompletion
+        {
+            public string state_hash;
+        }
+
+        [Serializable]
+        internal sealed class CompletionTransitionReceipt
+        {
+            public string receipt_contract;
+            public Identity before;
+            public Identity after;
+            public EngineSessionTransport.Identity source_session;
+            public string completed_level_id;
+            public RuntimeFlowDestination completion_destination;
+            public GameCompletion completion;
+            public string receipt_sha256;
         }
 
         internal sealed class TransitionException : InvalidOperationException
@@ -398,6 +431,32 @@ namespace MagicCarpet.Native
                 "resume game runtime");
         }
 
+        internal CompletionTransitionReceipt AcceptCompletionTransition()
+        {
+            RequireSessionMode(allowPaused: false, "accept completion transition");
+            var before = Current;
+            var beforeRuntimeGeneration = ParseCounter(before.generation, "generation");
+            Check(
+                NativeSim.mc_game_runtime_accept_transition_v1(
+                    RequireHandle(),
+                    beforeRuntimeGeneration,
+                    ParseCounter(before.session.generation, "session_generation"),
+                    ParseCounter(before.session.tick, "tick")),
+                "accept completion transition");
+            var receipt = ReadJson<CompletionTransitionReceipt>(
+                (IntPtr buffer, uint capacity, out uint length) =>
+                    NativeSim.mc_game_runtime_completion_transition_receipt_json_v1(
+                        RequireHandle(), buffer, capacity, out length),
+                "read completion transition receipt");
+            var after = IdentitySnapshot();
+            ValidateCompletionTransitionReceipt(
+                receipt,
+                before,
+                after,
+                beforeRuntimeGeneration);
+            return receipt;
+        }
+
         internal EngineSessionTransport.CampaignSnapshotObservation CampaignPausedFrame()
         {
             RequireSessionMode(allowPaused: true, "campaign paused frame");
@@ -583,7 +642,7 @@ namespace MagicCarpet.Native
             if (contract == null ||
                 contract.runtime_contract != RuntimeContract ||
                 contract.transport_contract != TransportContract ||
-                contract.transport_version != 8 ||
+                contract.transport_version != 9 ||
                 contract.encoding != "utf-8-json" ||
                 contract.u64_counter_encoding != "decimal-string" ||
                 contract.playing_session_transport !=
@@ -619,6 +678,20 @@ namespace MagicCarpet.Native
                 contract.runtime_flow.title != "absent" ||
                 contract.runtime_flow.loading != "pending_definition.runtime_flow" ||
                 contract.runtime_flow.playing_and_paused != "active_runtime_flow" ||
+                contract.completion_transition == null ||
+                contract.completion_transition.receipt_contract !=
+                    CompletionTransitionReceiptContract ||
+                contract.completion_transition.accept_transport !=
+                    "mc_game_runtime_accept_transition_v1" ||
+                contract.completion_transition.receipt_transport !=
+                    "mc_game_runtime_completion_transition_receipt_json_v1" ||
+                contract.completion_transition.destination_authority !=
+                    "rust_owned_semantic_flow" ||
+                contract.completion_transition.package_authority !=
+                    "installed_package_resolver" ||
+                contract.completion_transition.guards == null ||
+                !new[] { "runtime_generation", "session_generation", "expected_tick" }
+                    .SequenceEqual(contract.completion_transition.guards) ||
                 contract.limits == null ||
                 contract.limits.maximum_output_json_bytes != 16 * 1024 * 1024 ||
                 contract.limits.maximum_installed_package_set_json_bytes != 64 * 1024 ||
@@ -631,7 +704,8 @@ namespace MagicCarpet.Native
                 contract.transitions == null ||
                 !new[] {
                     "bootstrap_package_set", "restart_new_game", "open_level",
-                    "load_replay_save", "pause", "paused_frame", "resume", "close"
+                    "load_replay_save", "pause", "paused_frame", "resume",
+                    "accept_completion_transition", "close"
                 }
                     .SequenceEqual(contract.transitions))
             {
@@ -733,6 +807,62 @@ namespace MagicCarpet.Native
                     operation + " did not preserve the bound gameplay session");
             }
             return identity;
+        }
+
+        private static void ValidateCompletionTransitionReceipt(
+            CompletionTransitionReceipt receipt,
+            Identity before,
+            Identity after,
+            ulong beforeRuntimeGeneration)
+        {
+            var sourceEntry = before?.active_runtime_flow?.entries?.FirstOrDefault(
+                entry => entry?.level_id == before.active_runtime_flow.bound_level_id);
+            if (receipt == null ||
+                receipt.receipt_contract != CompletionTransitionReceiptContract ||
+                !SameIdentity(receipt.before, before) ||
+                !SameIdentity(receipt.after, after) ||
+                !SameSessionIdentity(receipt.source_session, before?.session) ||
+                receipt.completed_level_id != before?.active_runtime_flow?.bound_level_id ||
+                !SameDestination(
+                    receipt.completion_destination,
+                    sourceEntry?.completion_destination) ||
+                receipt.completion == null ||
+                !IsLowerHex(receipt.completion.state_hash, 16) ||
+                !IsLowerHex(receipt.receipt_sha256, 64) ||
+                ParseCounter(after.generation, "generation") !=
+                    checked(beforeRuntimeGeneration + 1))
+            {
+                throw new InvalidOperationException(
+                    "completion transition receipt is not bound to the accepted Rust transition");
+            }
+            if (receipt.completion_destination.kind == "level")
+            {
+                if (after.mode != LoadingMode ||
+                    after.pending_definition?.runtime_flow?.bound_level_id !=
+                        receipt.completion_destination.level_id ||
+                    HasSessionIdentityData(after.session) ||
+                    HasRuntimeFlowData(after.active_runtime_flow))
+                {
+                    throw new InvalidOperationException(
+                        "level completion did not enter resolver-owned Loading");
+                }
+            }
+            else if (receipt.completion_destination.kind == "title")
+            {
+                if (after.mode != TitleMode ||
+                    HasDefinitionIdentityData(after.pending_definition) ||
+                    HasSessionIdentityData(after.session) ||
+                    HasRuntimeFlowData(after.active_runtime_flow))
+                {
+                    throw new InvalidOperationException(
+                        "terminal completion did not enter unbound Title");
+                }
+            }
+            else
+            {
+                throw new InvalidOperationException(
+                    "completion transition receipt has an unknown destination");
+            }
         }
 
         private void RequireSessionMode(bool allowPaused, string operation)
@@ -916,8 +1046,11 @@ namespace MagicCarpet.Native
             RuntimeFlowDefinition left,
             RuntimeFlowDefinition right)
         {
-            if (left == null || right == null ||
-                left.game_id != right.game_id ||
+            if (left == null || right == null)
+            {
+                return !HasRuntimeFlowData(left) && !HasRuntimeFlowData(right);
+            }
+            if (left.game_id != right.game_id ||
                 left.bound_level_id != right.bound_level_id ||
                 left.entry_level_id != right.entry_level_id ||
                 left.entries == null || right.entries == null ||
@@ -943,6 +1076,67 @@ namespace MagicCarpet.Native
                 }
             }
             return true;
+        }
+
+        private static bool SameIdentity(Identity left, Identity right)
+        {
+            return left != null && right != null &&
+                left.runtime_contract == right.runtime_contract &&
+                left.runtime_id == right.runtime_id &&
+                left.generation == right.generation &&
+                left.mode == right.mode &&
+                SameDefinitionIdentity(left.pending_definition, right.pending_definition) &&
+                SameRuntimeFlow(left.active_runtime_flow, right.active_runtime_flow) &&
+                SameSessionIdentity(left.session, right.session);
+        }
+
+        private static bool SameDefinitionIdentity(
+            DefinitionIdentity left,
+            DefinitionIdentity right)
+        {
+            if (left == null || right == null)
+            {
+                return !HasDefinitionIdentityData(left) && !HasDefinitionIdentityData(right);
+            }
+            return left.package_graph_hash == right.package_graph_hash &&
+                left.definition_hash == right.definition_hash &&
+                left.definition_revision == right.definition_revision &&
+                SameRuntimeFlow(left.runtime_flow, right.runtime_flow);
+        }
+
+        private static bool SameSessionIdentity(
+            EngineSessionTransport.Identity left,
+            EngineSessionTransport.Identity right)
+        {
+            if (left == null || right == null)
+            {
+                return !HasSessionIdentityData(left) && !HasSessionIdentityData(right);
+            }
+            return left.engine_contract == right.engine_contract &&
+                left.package_graph_hash == right.package_graph_hash &&
+                left.definition_hash == right.definition_hash &&
+                left.definition_revision == right.definition_revision &&
+                left.session_id == right.session_id &&
+                left.generation == right.generation &&
+                left.tick == right.tick;
+        }
+
+        private static bool SameDestination(
+            RuntimeFlowDestination left,
+            RuntimeFlowDestination right)
+        {
+            return left != null && right != null &&
+                left.kind == right.kind &&
+                left.level_id == right.level_id &&
+                left.node_id == right.node_id;
+        }
+
+        private static bool IsLowerHex(string value, int width)
+        {
+            return value != null && value.Length == width &&
+                value.All(character =>
+                    (character >= '0' && character <= '9') ||
+                    (character >= 'a' && character <= 'f'));
         }
 
         private byte[] EncodePackageSet(InstalledPackageResource[] packages)

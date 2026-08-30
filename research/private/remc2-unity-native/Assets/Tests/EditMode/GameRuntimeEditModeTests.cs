@@ -316,6 +316,62 @@ namespace MagicCarpet.Native.Tests
 
         [Test]
         [Timeout(180000)]
+        public void RuntimeCompletionTransitionRejectsInProgressAndStaleGuardsAtomically()
+        {
+            using (var runtime = new GameRuntimeTransport())
+            {
+                Assert.That(
+                    runtime.NegotiatedContract.completion_transition.receipt_contract,
+                    Is.EqualTo(GameRuntimeTransport.CompletionTransitionReceiptContract));
+                runtime.BootstrapPackageSet(ResolverPackages());
+                var before = runtime.OpenLevel();
+                var rejected = Assert.Throws<GameRuntimeTransport.TransitionException>(
+                    () => runtime.AcceptCompletionTransition());
+                Assert.That(rejected.Status, Is.EqualTo(NativeSim.InvalidArgument));
+                var after = runtime.IdentitySnapshot();
+                Assert.That(after.mode, Is.EqualTo(before.mode));
+                Assert.That(after.generation, Is.EqualTo(before.generation));
+                Assert.That(after.session.generation, Is.EqualTo(before.session.generation));
+                Assert.That(after.session.tick, Is.EqualTo(before.session.tick));
+
+                Assert.That(
+                    NativeSim.mc_game_runtime_accept_transition_v1(
+                        runtime.Handle,
+                        ulong.Parse(before.generation) - 1,
+                        ulong.Parse(before.session.generation),
+                        ulong.Parse(before.session.tick)),
+                    Is.EqualTo(NativeSim.GenerationMismatch));
+                Assert.That(
+                    NativeSim.mc_game_runtime_accept_transition_v1(
+                        runtime.Handle,
+                        ulong.Parse(before.generation),
+                        ulong.Parse(before.session.generation) + 1,
+                        ulong.Parse(before.session.tick)),
+                    Is.EqualTo(NativeSim.GenerationMismatch));
+                Assert.That(
+                    NativeSim.mc_game_runtime_accept_transition_v1(
+                        runtime.Handle,
+                        ulong.Parse(before.generation),
+                        ulong.Parse(before.session.generation),
+                        ulong.Parse(before.session.tick) + 1),
+                    Is.EqualTo(NativeSim.InvalidArgument));
+                Assert.That(
+                    NativeSim.mc_game_runtime_completion_transition_receipt_json_v1(
+                        runtime.Handle,
+                        IntPtr.Zero,
+                        0,
+                        out _),
+                    Is.EqualTo(NativeSim.InvalidArgument));
+                var final = runtime.IdentitySnapshot();
+                Assert.That(final.mode, Is.EqualTo(before.mode));
+                Assert.That(final.generation, Is.EqualTo(before.generation));
+                Assert.That(final.session.generation, Is.EqualTo(before.session.generation));
+                Assert.That(final.session.tick, Is.EqualTo(before.session.tick));
+            }
+        }
+
+        [Test]
+        [Timeout(180000)]
         public void RuntimeReplaySaveRestoresRealLevelOneIntoFreshManagedOwner()
         {
             using (var source = new GameRuntimeTransport())

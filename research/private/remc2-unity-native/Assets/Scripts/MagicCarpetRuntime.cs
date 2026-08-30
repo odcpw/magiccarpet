@@ -536,6 +536,8 @@ namespace MagicCarpet.Native
         private bool gameRuntimeMode;
         private bool gameRuntimeStartupReady;
         private EngineSessionTransport.CampaignSnapshotObservation gameRuntimeCampaignSnapshot;
+        private GameRuntimeTransport.CompletionTransitionReceipt
+            gameRuntimeLastCompletionTransitionReceipt;
         private string gameRuntimeSemanticEventCursor = "0";
         private readonly Queue<EngineSessionTransport.GameEvent>
             gameRuntimeRecentSemanticEvents = new();
@@ -1008,6 +1010,10 @@ namespace MagicCarpet.Native
 
         internal EngineSessionTransport.CampaignSnapshotObservation
             GameRuntimeProductionCampaignSnapshot => gameRuntimeCampaignSnapshot;
+
+        internal GameRuntimeTransport.CompletionTransitionReceipt
+            GameRuntimeProductionCompletionTransitionReceipt =>
+                gameRuntimeLastCompletionTransitionReceipt;
 
         internal string GameRuntimeProductionFlightHudText =>
             FormatGameRuntimeFlightHudText();
@@ -8725,6 +8731,7 @@ namespace MagicCarpet.Native
                 session.GameRuntimeClose();
                 DestroyGameRuntimeFireballPresentation();
                 gameRuntimeCampaignSnapshot = null;
+                gameRuntimeLastCompletionTransitionReceipt = null;
                 gameRuntimeSemanticEventCursor = "0";
                 gameRuntimeRecentSemanticEvents.Clear();
                 gameRuntimeStartupReady = false;
@@ -8870,6 +8877,62 @@ namespace MagicCarpet.Native
             selectedSpellRequested = true;
         }
 
+        private GameRuntimeTransport.CompletionTransitionReceipt
+            AcceptGameRuntimeProductionCompletion()
+        {
+            Require(
+                GameRuntimeProductionStartupReady &&
+                session.GameRuntimeIdentity().mode == GameRuntimeTransport.PlayingMode,
+                "game runtime completion acceptance requires a validated Playing owner");
+            CenterSteering();
+            gameRuntimeMovementFlags = 0;
+            fireRequested = false;
+            rightSpellRequested = false;
+            selectedSpellRequested = false;
+            gameRuntimeSpellSelectionRequested = null;
+            var receipt = session.GameRuntimeAcceptCompletionTransition();
+            gameRuntimeLastCompletionTransitionReceipt = receipt;
+            DestroyGameRuntimeFireballPresentation();
+            gameRuntimeCampaignSnapshot = null;
+            gameRuntimeSemanticEventCursor = "0";
+            gameRuntimeRecentSemanticEvents.Clear();
+            if (receipt.after.mode == GameRuntimeTransport.TitleMode)
+            {
+                gameRuntimeStartupReady = false;
+                return receipt;
+            }
+            Require(
+                receipt.after.mode == GameRuntimeTransport.LoadingMode &&
+                receipt.completion_destination.kind == "level",
+                "accepted nonterminal completion entered resolver-owned Loading");
+            var identity = session.GameRuntimeOpenLevel();
+            var observation = session.GameRuntimeCampaignSnapshot();
+            Require(
+                identity.mode == GameRuntimeTransport.PlayingMode &&
+                identity.runtime_id == receipt.after.runtime_id &&
+                identity.active_runtime_flow?.bound_level_id ==
+                    receipt.completion_destination.level_id &&
+                identity.session?.session_id == session.Handle.ToString() &&
+                observation.identity.session_id == identity.session.session_id &&
+                observation.identity.generation == identity.session.generation &&
+                observation.identity.tick == identity.session.tick,
+                "existing Rust runtime handle opened its resolver-selected destination");
+            gameRuntimeCampaignSnapshot = observation;
+            gameRuntimeSemanticEventCursor = observation.value.effect_head;
+            // The first package transition is now authoritative and observable.
+            // Its L2 presentation package is not yet composed through this
+            // Level-1 Fireball-only shell, so park fixed updates at the clean
+            // Rust Playing boundary instead of inventing a client fallback.
+            gameRuntimeStartupReady = false;
+            return receipt;
+        }
+
+        internal GameRuntimeTransport.CompletionTransitionReceipt
+            QualificationAcceptGameRuntimeProductionCompletion()
+        {
+            return AcceptGameRuntimeProductionCompletion();
+        }
+
         internal void QualificationCloseGameRuntimeProduction()
         {
             ApplyGameRuntimeProductionInput(false, true, false);
@@ -8910,6 +8973,7 @@ namespace MagicCarpet.Native
                 "restarted presentation is bound to the new nested session");
             ConfigureGameRuntimeFireballPresentation(fireballAsset, observation);
             gameRuntimeCampaignSnapshot = observation;
+            gameRuntimeLastCompletionTransitionReceipt = null;
             gameRuntimeSemanticEventCursor = observation.value.effect_head;
             gameRuntimeRecentSemanticEvents.Clear();
             gameRuntimeMovementFlags = 0;
@@ -12687,6 +12751,7 @@ namespace MagicCarpet.Native
                 ConfigureGameRuntimeFireballPresentation(fireballAsset, observation);
                 session = opened;
                 gameRuntimeCampaignSnapshot = observation;
+                gameRuntimeLastCompletionTransitionReceipt = null;
                 gameRuntimeSemanticEventCursor = observation.value.effect_head;
                 gameRuntimeRecentSemanticEvents.Clear();
                 gameRuntimeSpellSelectionRequested = null;
@@ -13450,6 +13515,7 @@ namespace MagicCarpet.Native
             gameRuntimeMode = false;
             gameRuntimeStartupReady = false;
             gameRuntimeCampaignSnapshot = null;
+            gameRuntimeLastCompletionTransitionReceipt = null;
             gameRuntimeSemanticEventCursor = "0";
             gameRuntimeRecentSemanticEvents.Clear();
             gameRuntimeMovementFlags = 0;

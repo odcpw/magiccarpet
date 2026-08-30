@@ -2603,6 +2603,20 @@ namespace MagicCarpet.Native
             ulong generation);
 
         [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+        internal static extern int mc_game_runtime_accept_transition_v1(
+            ulong handle,
+            ulong runtimeGeneration,
+            ulong sessionGeneration,
+            ulong expectedTick);
+
+        [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+        internal static extern int mc_game_runtime_completion_transition_receipt_json_v1(
+            ulong handle,
+            IntPtr buffer,
+            uint capacity,
+            out uint length);
+
+        [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
         internal static extern int mc_game_runtime_close_v1(
             ulong handle,
             ulong runtimeGeneration,
