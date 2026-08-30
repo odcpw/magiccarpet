@@ -5700,6 +5700,145 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn campaign_backend_real_level_two_entry_waypoints_advance_to_nyphur_without_staging() {
+        let root = descriptor_fixture_path();
+        let catalog = default_catalog().unwrap();
+        let definition = load_mc2_campaign(&root, &catalog).unwrap();
+        let mut session = GameSession::open(
+            &Mc2CampaignAdapter,
+            Arc::new(definition),
+            74,
+            Mc2CampaignInputs::new(&root),
+        )
+        .unwrap();
+
+        let progress_id = |session: &GameSession<Mc2CampaignBackend>| {
+            session
+                .snapshot()
+                .value
+                .objective_progress
+                .current_objective
+                .map(|id| id.as_str().to_owned())
+        };
+        let stage_position = |session: &GameSession<Mc2CampaignBackend>, stage_index: usize| {
+            let compatibility = session.backend().campaign.level2_compatibility();
+            let stage = &compatibility.runtime().stages[stage_index];
+            crate::Position {
+                x: stage.axis_x.cast_unsigned(),
+                y: stage.axis_y.cast_unsigned(),
+                z: compatibility.state.position.z,
+            }
+        };
+        let fly_until_stage_complete = |session: &mut GameSession<Mc2CampaignBackend>,
+                                        stage_index: usize| {
+            let target = stage_position(session, stage_index);
+            for _ in 0..640 {
+                if session
+                    .backend()
+                    .campaign
+                    .level2_compatibility()
+                    .runtime()
+                    .objectives[0]
+                    .stage_selectors[stage_index]
+                    == 2
+                {
+                    return;
+                }
+                let state = session.backend().campaign.level2_compatibility().state;
+                let desired = i16::try_from(crate::heading_for_positions(state.position, target))
+                    .expect("source heading is 11-bit");
+                let correction = crate::turn_toward(state.yaw, desired, 127);
+                session
+                    .step(
+                        guard(session),
+                        GameCommand {
+                            longitudinal: LongitudinalControl::Accelerate,
+                            roll_axis: correction.clamp(-24, 24) as i8,
+                            pitch_axis: -127,
+                            ..GameCommand::default()
+                        },
+                    )
+                    .unwrap();
+            }
+            let compatibility = session.backend().campaign.level2_compatibility();
+            panic!(
+                "ordinary flight did not complete Level 2 stage {stage_index}: state={:?}, target={target:?}, selectors={:?}",
+                compatibility.state,
+                &compatibility.runtime().objectives[0].stage_selectors[..5]
+            );
+        };
+
+        let compatibility = session.backend().campaign.level2_compatibility();
+        assert_eq!(
+            &compatibility.runtime().objectives[0].stage_selectors[..5],
+            &[1, 1, 1, 1, 1]
+        );
+        assert_eq!(compatibility.level2_selected_objective_stage_state(), 1);
+        assert_eq!(
+            (
+                compatibility.runtime().stages[3].axis_x,
+                compatibility.runtime().stages[3].axis_y,
+            ),
+            (-26_112, -6_912),
+            "stage 3 is the package waypoint at tile 154,229"
+        );
+        assert_eq!(
+            progress_id(&session).as_deref(),
+            Some("objective.reach.payahandra_ruins")
+        );
+
+        fly_until_stage_complete(&mut session, 3);
+        let compatibility = session.backend().campaign.level2_compatibility();
+        assert_eq!(
+            &compatibility.runtime().objectives[0].stage_selectors[..5],
+            &[1, 1, 1, 2, 1]
+        );
+        assert_eq!(
+            (
+                compatibility.runtime().stages[0].axis_x,
+                compatibility.runtime().stages[0].axis_y,
+            ),
+            (512, -26_624),
+            "stage 0 is the package waypoint at tile 2,152"
+        );
+        assert_eq!(
+            progress_id(&session).as_deref(),
+            Some("objective.reach.sight_beacon")
+        );
+        assert_eq!(
+            session.snapshot().value.objective_progress.completed_count,
+            1
+        );
+
+        fly_until_stage_complete(&mut session, 0);
+        let compatibility = session.backend().campaign.level2_compatibility();
+        assert_eq!(
+            &compatibility.runtime().objectives[0].stage_selectors[..5],
+            &[2, 1, 1, 2, 1]
+        );
+        assert_eq!(
+            progress_id(&session).as_deref(),
+            Some("objective.defeat.nyphur")
+        );
+        assert_eq!(
+            session.snapshot().value.objective_progress.completed_count,
+            2
+        );
+        assert!(
+            compatibility
+                .dispatch_events()
+                .iter()
+                .all(|event| !matches!(
+                    event,
+                    crate::native_world::Level2DispatchEvent::AuthoredGroupActivated {
+                        group: 8,
+                        ..
+                    }
+                ))
+        );
+    }
+
+    #[test]
     fn campaign_backend_level_one_fireball_cost_rejects_when_authored_above_player_mana() {
         let root = level_one_descriptor_fixture_path();
         let catalog = default_catalog().unwrap();
