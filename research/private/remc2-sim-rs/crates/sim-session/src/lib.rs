@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use sim_definition::{BoundPresentationAsset, DefinitionError, GameDefinition, SemanticId};
 use std::{error::Error, fmt, num::NonZeroU64, sync::Arc};
 
-pub const GAME_SESSION_CONTRACT: &str = "carpet-flight-game-session/v5";
+pub const GAME_SESSION_CONTRACT: &str = "carpet-flight-game-session/v6";
 
 fn serialize_u64_decimal<S>(value: &u64, serializer: S) -> Result<S::Ok, S::Error>
 where
@@ -162,7 +162,7 @@ pub enum LateralControl {
 /// Transport-neutral command subset exercised by the fixed Level 1 corpus.
 /// Menu/editor actions are separate semantic operations; no remc2 opcode or
 /// bitfield crosses this boundary.
-#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct GameCommand {
     pub longitudinal: LongitudinalControl,
@@ -172,6 +172,9 @@ pub struct GameCommand {
     pub cast_left: bool,
     pub cast_right: bool,
     pub cast_selected: bool,
+    /// Select one acquired spell through its package-neutral semantic ID
+    /// before this command's cast flags are consumed.
+    pub select_spell: Option<SemanticId>,
     pub look_yaw: i16,
     pub look_pitch: i16,
 }

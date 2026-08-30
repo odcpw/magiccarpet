@@ -23,9 +23,9 @@
             .expect("eligible contact target remains mutable")
             .owner_entity_index = source_id_entity_index;
         // `sub_108B0` starts at the rounded map cell while map linking uses
-        // the source position's high bytes.  Put the test flyer in the
-        // target's class-0 cell rather than relying on the now-forbidden
-        // class-1 backtrack for a low-byte edge position.
+        // the source position's high bytes. Keep this allocation-retry case
+        // in class 0; the separate search-order test discriminates the
+        // width-derived class-1 backtrack.
         let projectile_position = Position {
             x: target.position.x & 0xff00,
             y: target.position.y & 0xff00,
@@ -228,7 +228,7 @@
     }
 
     #[test]
-    fn level_two_mana_sphere_claim_compares_the_raw_player_relation() {
+    fn level_two_mana_sphere_claim_changes_only_the_owner_projection() {
         let mut session = level_two_possession_lifecycle_session();
         let player = session.state.entity_index;
         session.activate_level2_authored_switch_group(0, 23, 1);
@@ -256,7 +256,7 @@
                 .iter_mut()
                 .find(|sphere| sphere.source_entity_index == target_slot)
                 .expect("selected mana sphere remains mutable");
-            sphere.owner_entity_index = player;
+            sphere.owner_entity_index = 0;
             sphere.player_entity_index = 112;
             sphere.incoming_owner_entity_index = player;
             sphere.incoming_possession_payload = 0;
@@ -275,7 +275,7 @@
             .find(|sphere| sphere.source_entity_index == target_slot)
             .expect("airborne claimed sphere remains live");
         assert_eq!(sphere.owner_entity_index, player);
-        assert_eq!(sphere.player_entity_index, player);
+        assert_eq!(sphere.player_entity_index, 112);
         assert_eq!(sphere.incoming_owner_entity_index, 0);
         assert_eq!(session.economy().events().len(), baseline_events + 1);
         assert_eq!(
@@ -521,7 +521,7 @@
     }
 
     #[test]
-    fn level_two_possession_uses_only_class0_search_cells_before_first_target() {
+    fn level_two_possession_searches_class0_then_class1_cells_before_first_target() {
         let mut session = level_two_possession_lifecycle_session();
         let source_id_entity_index = session.state.entity_index;
         let projectile_position = Position {
@@ -567,7 +567,7 @@
         let class1_only = session
             .economy_mut()
             .allocate_authored_model39(0, 23, class1_only_position)
-            .expect("source arena admits class-1-only candidate");
+            .expect("source arena admits west-neighbour class-1 candidate");
         {
             let mut economy_view = session.economy_mut();
             let candidate = economy_view
@@ -577,7 +577,7 @@
                     sphere.source_entity_index == class1_only.source_entity_index
                         && sphere.position == class1_only_position
                 })
-                .expect("class-1-only candidate remains mutable");
+                .expect("west-neighbour class-1 candidate remains mutable");
             candidate.id = 0xfeed;
             candidate.player_entity_index = source_id_entity_index.wrapping_add(1);
         }
@@ -596,16 +596,16 @@
                 &LEVEL2_MANA_SPHERE_SEARCH_OFFSETS,
             )
             .contains(&class1_only.source_entity_index),
-            "the discriminating candidate is visible to the wider class-1 sphere walk"
+            "the discriminating candidate is visible to the class-1 sphere walk"
         );
         assert!(
-            !source_map_search_slots(
+            source_map_search_slots(
                 economy.map_chains(),
                 projectile_position,
                 &LEVEL2_POSSESSION_PROJECTILE_SEARCH_OFFSETS,
             )
             .contains(&class1_only.source_entity_index),
-            "the discriminating candidate is outside the class-0 possession envelope"
+            "sub_108B0's width-derived class-1 envelope includes the west neighbour"
         );
         assert_eq!(
             level2_first_possession_target_sphere_slot(
@@ -613,8 +613,8 @@
                 economy.spheres(),
                 projectile
             ),
-            None,
-            "a class-1-only model-39 must not become a Possession target"
+            Some(class1_only.source_entity_index),
+            "an eligible class-1 model-39 is a Possession target when class 0 is empty"
         );
 
         let class0_first = session
@@ -651,7 +651,7 @@
                 projectile
             ),
             Some(class0_first.source_entity_index),
-            "the first eligible class-0 model-39 is the sole target candidate"
+            "class-0 map cells retain source search priority over class-1 cells"
         );
     }
 

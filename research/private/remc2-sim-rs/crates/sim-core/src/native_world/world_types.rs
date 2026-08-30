@@ -1,5 +1,23 @@
 use super::*;
 
+/// Qualified owner bytes for MC2's stage-1 Castle BUILD record. The same
+/// 128-byte payload is validated from `castle-stage-1.cells.u8` by the Level 1
+/// owner-cache loader (SHA-256
+/// `f9fb9d8a5c6d2841849bba03479e6503966fa4ec14020508c343296602aa8ae3`).
+/// Descriptor campaign packages do not retain that presentation-cache file,
+/// so the private adapter binds the already-qualified bytes here rather than
+/// inventing an empty footprint or making gameplay depend on a client cache.
+const CAMPAIGN_CASTLE_STAGE_ONE_OWNER_CELLS: [u8; 128] = [
+    0xff, 0x00, 0xff, 0x00, 0xff, 0x00, 0xff, 0x00, 0xff, 0x00, 0xff, 0x00, 0xff, 0x00, 0xff, 0x00,
+    0xff, 0x00, 0xff, 0x00, 0xff, 0x00, 0xff, 0x00, 0xff, 0x00, 0xff, 0x00, 0xff, 0x00, 0xff, 0x00,
+    0xff, 0x00, 0xff, 0x00, 0x10, 0x00, 0x10, 0x00, 0x10, 0x00, 0x10, 0x00, 0xff, 0x00, 0xff, 0x00,
+    0xff, 0x00, 0xff, 0x00, 0x10, 0x00, 0x10, 0x28, 0x10, 0x28, 0x10, 0x28, 0xff, 0x00, 0xff, 0x00,
+    0xff, 0x00, 0xff, 0x00, 0x10, 0x00, 0x10, 0x28, 0x10, 0x30, 0x10, 0x28, 0xff, 0x00, 0xff, 0x00,
+    0xff, 0x00, 0xff, 0x00, 0x10, 0x00, 0x12, 0x28, 0x10, 0x28, 0x10, 0x28, 0xff, 0x00, 0xff, 0x00,
+    0xff, 0x00, 0xff, 0x00, 0xff, 0x00, 0xff, 0x00, 0xff, 0x00, 0xff, 0x00, 0xff, 0x00, 0xff, 0x00,
+    0xff, 0x00, 0xff, 0x00, 0xff, 0x00, 0xff, 0x00, 0xff, 0x00, 0xff, 0x00, 0xff, 0x00, 0xff, 0x00,
+];
+
 /// A fail-closed package or closure validation error.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct NativeWorldError(String);
@@ -1093,11 +1111,12 @@ pub(super) const LEVEL2_MANA_SPHERE_SEARCH_OFFSETS: [(i8, i8); 16] = [
     (2, 2),
 ];
 
-/// Pinned `sub_108B0` uses `AddE7EE0x_10080(0, ...)` for the tier-0
-/// Possession flyer.  That class-0 query is only the first four SEARCH.DAT
-/// cells; the remaining twelve cells belong to the wider class-1 sphere walk.
-pub(super) const LEVEL2_POSSESSION_PROJECTILE_SEARCH_OFFSETS: [(i8, i8); 4] =
-    [(0, 0), (1, 0), (0, 1), (1, 1)];
+/// Pinned `sub_108B0` derives its maximum SEARCH.DAT class from the
+/// Possession flyer's 180-unit horizontal half-width: `(180 + 255) >> 8`
+/// selects class 1, so the four class-0 cells precede all twelve class-1
+/// cells in the collision walk.
+pub(super) const LEVEL2_POSSESSION_PROJECTILE_SEARCH_OFFSETS: [(i8, i8); 16] =
+    LEVEL2_MANA_SPHERE_SEARCH_OFFSETS;
 
 pub(super) fn level2_first_colliding_mana_sphere_slot(
     map_chains: &RenderableMapChains,
@@ -3843,6 +3862,29 @@ impl NativeWorldInspection {
             .get(usize::from(local_player.entity_index))
             .filter(|row| row.active && row.class == 3)
             .ok_or_else(|| NativeWorldError::new("campaign local player entity is absent"))?;
+        let mut castle_stage_footprints = self.level2_castle_stage_footprints.clone();
+        if definition
+            .level_definition()
+            .spell_kinds()
+            .any(|kind| kind == SpellKind::Castle)
+            && !castle_stage_footprints.contains_key(&1)
+        {
+            if sha256_hex(&CAMPAIGN_CASTLE_STAGE_ONE_OWNER_CELLS)
+                != "f9fb9d8a5c6d2841849bba03479e6503966fa4ec14020508c343296602aa8ae3"
+            {
+                return Err(NativeWorldError::new(
+                    "qualified campaign Castle BUILD bytes changed",
+                ));
+            }
+            let stage_one = CastleBuildFootprint::from_owner_cells(
+                1,
+                8,
+                8,
+                &CAMPAIGN_CASTLE_STAGE_ONE_OWNER_CELLS,
+            )
+            .map_err(NativeWorldError::new)?;
+            castle_stage_footprints.insert(1, stage_one);
+        }
         let economy = Level2EconomyState::from_parts_with_castle_stage_footprints(
             SessionTerrain::from_inspection(self),
             &self.entities,
@@ -3851,7 +3893,7 @@ impl NativeWorldInspection {
             0,
             local_player.enabled_spell_holders[2],
             self.runtime.random_state,
-            self.level2_castle_stage_footprints.clone(),
+            castle_stage_footprints,
         )?;
         let shared_spells = Level2SharedSpellResetSession::from_campaign_parts(
             &self.entities,

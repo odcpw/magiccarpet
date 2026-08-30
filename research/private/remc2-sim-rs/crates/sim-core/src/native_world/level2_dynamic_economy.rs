@@ -2844,8 +2844,9 @@ impl Level2EconomyState {
         };
         // `TransformArcherToMana_35940` consumes the model-12 mailbox before
         // movement. A tier-0 pulse transfers only when the raw protected bit
-        // is clear; both owner projections are authoritative consumers in
-        // the Level 2 economy, so they must change together.
+        // is clear. The source callback changes only the semantic owner/id
+        // projection; `playerEntityIndex_0x94` is an independent raw relation
+        // consumed by Castle defenders and must remain unchanged.
         let claimed_owner = {
             let sphere = &mut self.spheres[sphere_index];
             let pending_owner = sphere.incoming_owner_entity_index;
@@ -2856,9 +2857,8 @@ impl Level2EconomyState {
                 sphere.incoming_owner_entity_index = 0;
                 sphere.incoming_possession_payload = 0;
                 let protected = sphere.control_flags & 0x0020_0000 != 0;
-                if sphere.player_entity_index != pending_owner && (payload != 0 || !protected) {
+                if sphere.owner_entity_index != pending_owner && (payload != 0 || !protected) {
                     sphere.owner_entity_index = pending_owner;
-                    sphere.player_entity_index = pending_owner;
                     sphere.control_flags &= !0x40;
                     if payload != 0 {
                         sphere.control_flags |= 0x0020_0000;
@@ -2919,6 +2919,77 @@ impl Level2EconomyState {
             sphere.attraction_source_entity_index = 0;
             sphere.attraction_step = 0;
             sphere.attraction_distance_high = 0;
+        }
+
+        // `TransformArcherToMana_35940` also consumes the class-3/model-3
+        // carrier relation written by `AddBallon_60AB0`. While linked, the
+        // sphere skips ordinary rolling physics, moves 16 source units toward
+        // the exact carrier inside the 1,024-unit attraction radius, then
+        // converges vertically in 32-unit steps once X/Y coincide. Without
+        // this callback the carrier can schedule a valid target forever but
+        // can never satisfy its strict 3D collection AABB at ground clearance.
+        let assigned_carrier_slot = self.spheres[sphere_index].assigned_carrier_id;
+        if assigned_carrier_slot != 0 {
+            let carrier = u16::try_from(assigned_carrier_slot).ok().and_then(|slot| {
+                self.carriers
+                    .iter()
+                    .find(|carrier| carrier.active && carrier.source_entity_index == slot)
+                    .copied()
+            });
+            if let Some(carrier) = carrier {
+                let sphere = &mut self.spheres[sphere_index];
+                sphere.vertical_velocity = 128;
+                sphere.yaw =
+                    i16::try_from(heading_for_positions(sphere.position, carrier.position))
+                        .expect("carrier-attracted mana-sphere heading fits");
+                let distance = level2_wrapping_target_distance(sphere.position, carrier.position);
+                if distance <= MANA_CARRIER_ATTRACTION_RADIUS {
+                    if distance >= 16 {
+                        crate::move_entity(
+                            &mut sphere.position,
+                            sphere.yaw,
+                            0,
+                            MANA_CARRIER_ATTRACTION_SPEED,
+                        );
+                    } else {
+                        sphere.position.x = carrier.position.x;
+                        sphere.position.y = carrier.position.y;
+                        if sphere.position.z >= carrier.position.z {
+                            if i32::from(sphere.position.z) > i32::from(carrier.position.z) + 512 {
+                                sphere.position.z = sphere
+                                    .position
+                                    .z
+                                    .wrapping_sub(MANA_CARRIER_ATTRACTION_VERTICAL_STEP);
+                            }
+                        } else {
+                            sphere.position.z = sphere
+                                .position
+                                .z
+                                .wrapping_add(MANA_CARRIER_ATTRACTION_VERTICAL_STEP);
+                        }
+                    }
+                    let ground = terrain.ground_height(sphere.position);
+                    if sphere.position.z < ground {
+                        sphere.position.z = ground;
+                    }
+                } else {
+                    sphere.assigned_carrier_id = 0;
+                }
+            } else {
+                self.spheres[sphere_index].assigned_carrier_id = 0;
+            }
+            self.spheres[sphere_index].phase = self.spheres[sphere_index].phase.wrapping_add(1);
+            let sphere = self.spheres[sphere_index];
+            self.map_chains
+                .sync_entity(RenderableMapSeed {
+                    entity_index: sphere_slot,
+                    active: true,
+                    x: sphere.position.x,
+                    y: sphere.position.y,
+                })
+                .expect("carrier-attracted mana-sphere source slot fits the map chain");
+            self.refresh_owner_mana_rows();
+            return true;
         }
 
         // `AddBallon_60AB0` marks a nearby model-39 row with byte-0 bit
@@ -3702,6 +3773,58 @@ impl Level2EconomyState {
             owner_entity_index,
         });
         Some(source_entity_index)
+    }
+
+    /// Service the source stage-one Castle carrier from the root's even-phase
+    /// action-4 callback. The first callback allocates the class-3/action-9
+    /// row after overflow processing; later callbacks select the nearest
+    /// same-owner live sphere in source-slot order, or send a loaded/full
+    /// carrier back to the authoritative Castle root.
+    fn service_stage_one_mana_carrier(&mut self, castle: Level2CastleState) {
+        if castle.level != 1 {
+            return;
+        }
+        let Some(carrier_index) = self.carriers.iter().position(|carrier| {
+            carrier.active && carrier.owner_entity_index == castle.owner_entity_index
+        }) else {
+            let _ = self.spawn_mana_carrier(castle.position, castle.owner_entity_index, 0);
+            return;
+        };
+        let carrier = self.carriers[carrier_index];
+        let must_return = self
+            .owner_mana_aggregate(castle.source_id_entity_index)
+            .saturating_add(castle.mana)
+            >= castle.mana_capacity
+            || carrier.carried_mana >= carrier.max_mana;
+        let target = (!must_return)
+            .then(|| {
+                self.spheres
+                    .iter()
+                    .filter(|sphere| {
+                        sphere.active
+                            && !sphere.pending_delete
+                            && sphere.control_flags & ENTITY_DRAW_DISABLED_BIT == 0
+                            && sphere.owner_entity_index == carrier.owner_entity_index
+                            && (sphere.assigned_carrier_id == 0
+                                || sphere.assigned_carrier_id == carrier.id)
+                    })
+                    .min_by_key(|sphere| {
+                        (
+                            level2_wrapping_source_distance_3d(carrier.position, sphere.position),
+                            sphere.source_entity_index,
+                        )
+                    })
+                    .map(|sphere| sphere.source_entity_index)
+            })
+            .flatten();
+        let carrier = &mut self.carriers[carrier_index];
+        if let Some(target_slot) = target {
+            carrier.target_sphere_id = u32::from(target_slot);
+            carrier.returning_to_castle = false;
+        } else {
+            carrier.target_sphere_id = u32::from(castle.source_entity_index);
+            carrier.returning_to_castle = true;
+        }
     }
 
     pub fn build_castle(
@@ -5818,6 +5941,9 @@ impl Level2EconomyState {
                     castle.position.z = terrain.ground_height(castle.position);
                 }
                 self.release_castle_excess_mana(castle_slot, terrain, reset_free_slots);
+                if let Some(castle) = self.castle {
+                    self.service_stage_one_mana_carrier(castle);
+                }
                 self.maintain_castle_defenders(castle_slot, terrain);
                 let Some(castle) = self.castle else {
                     self.advance_castle_phase(castle_slot);

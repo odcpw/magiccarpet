@@ -7756,6 +7756,22 @@ impl Level2OrdinaryTestView<'_> {
 }
 
 impl Level2ResetSession {
+    #[cfg(test)]
+    pub(crate) fn possession_guidance_target_top_for_test(
+        &self,
+        source_slot: u16,
+    ) -> Option<Position> {
+        self.session
+            .state
+            .live
+            .economy
+            .economy
+            .spheres()
+            .iter()
+            .find(|sphere| sphere.source_entity_index == source_slot)
+            .map(level2_possession_guidance_target_top)
+    }
+
     #[must_use]
     pub fn goats(&self) -> &[GoatState] {
         self.session.state.live.goats.goats()
@@ -13176,6 +13192,11 @@ impl Level2ResetSession {
                         .pickup(source_slot)
                         .map(|holder| (holder.model, holder.action));
                     match active_holder {
+                        Some((CASTLE_SPELL_FAMILY, action))
+                            if action == CASTLE_SPELL_FAMILY.saturating_mul(3) =>
+                        {
+                            self.step_dynamic_castle_holder(pass, source_slot)
+                        }
                         Some((3, 9)) => self.step_dynamic_speed_holder(pass, source_slot),
                         Some((4, 12)) => self.step_dynamic_morph_holder(pass, source_slot),
                         _ => self.step_level2_dynamic_spell_pickup(
@@ -15401,6 +15422,50 @@ impl Level2ResetSession {
         true
     }
 
+    fn step_dynamic_castle_holder(&mut self, pass: u8, source_slot: u16) -> bool {
+        self.step_level2_castle_holder_source_slot(source_slot);
+        if let Some(holder) = self
+            .session
+            .state
+            .live
+            .shared_spells
+            .pickup_mut(source_slot)
+        {
+            holder.phase = holder.phase.wrapping_add(1);
+            holder.record[66] = holder.phase;
+        }
+        let Some((action, position)) = self
+            .session
+            .state
+            .live
+            .shared_spells
+            .pickup(source_slot)
+            .map(|holder| (holder.action, holder.position))
+        else {
+            self.push_dispatch_effect(Level2DispatchEvent::Error {
+                pass,
+                source_slot,
+                message: "dynamic Castle holder lost its shared entity projection".to_owned(),
+            });
+            return false;
+        };
+        if !self
+            .session
+            .state
+            .live
+            .economy
+            .sync_spell_pickup_projection(source_slot, action, position)
+        {
+            self.push_dispatch_effect(Level2DispatchEvent::Error {
+                pass,
+                source_slot,
+                message: "dynamic Castle holder lost its source-arena projection".to_owned(),
+            });
+            return false;
+        }
+        true
+    }
+
     fn step_dynamic_speed_holder(&mut self, pass: u8, source_slot: u16) -> bool {
         if !self.step_speed_holder_source_slot(source_slot) {
             return false;
@@ -16080,8 +16145,39 @@ impl Level2ResetSession {
 
     /// Apply the shared `sub_10C80(a2 = 0)` damage pulse emitted by a
     /// class-10/model-0 impact. Imported rows retain their lossless mailbox;
-    /// typed Castle, Bee, Firefly, and Dragon rows receive the same additive
-    /// owner/payload write through their authoritative carriers.
+    /// typed Castle, Goat, Bee, Firefly, and Dragon rows receive the same
+    /// additive owner/payload write through their authoritative carriers.
+    fn level2_class10_model0_goat_overlap_slots(
+        &self,
+        step: level2_dynamic_economy::Level2Class10Model0Step,
+    ) -> Vec<u16> {
+        self.session
+            .state
+            .live
+            .goats
+            .goats()
+            .iter()
+            .filter(|goat| {
+                goat.active
+                    && goat.life >= 0
+                    && goat.control_flags & 8 != 0
+                    && goat.control_flags & ENTITY_DRAW_DISABLED_BIT == 0
+                    && goat.source_id != step.owner_entity_index
+                    && crate::level1_mission::source_entities_overlap(
+                        step.position,
+                        LEVEL2_FIREBALL_COLLISION_HALF_WIDTH,
+                        LEVEL2_FIREBALL_COLLISION_VERTICAL_OFFSET,
+                        LEVEL2_FIREBALL_COLLISION_HALF_HEIGHT,
+                        goat.position,
+                        goat.collision_half_width,
+                        goat.collision_vertical_offset,
+                        goat.collision_half_height,
+                    )
+            })
+            .map(|goat| goat.entity_index)
+            .collect()
+    }
+
     fn apply_level2_class10_model0_damage(
         &mut self,
         step: level2_dynamic_economy::Level2Class10Model0Step,
@@ -16268,6 +16364,15 @@ impl Level2ResetSession {
                 );
         }
 
+        let goat_slots = self.level2_class10_model0_goat_overlap_slots(step);
+        for target_slot in goat_slots {
+            let _ = self.session.state.live.goats.inject_damage(
+                target_slot,
+                i32::from(step.payload),
+                step.owner_entity_index.cast_signed(),
+            );
+        }
+
         let dragon_root_slots = self
             .session
             .state
@@ -16365,6 +16470,8 @@ impl Level2ResetSession {
                         && target.source_byte_38() & 1 != 0
                         && target.control_flags & 8 != 0
                         && (target.class != 3 || target.model != 2)
+                        && (target.class != crate::goat::GOAT_CLASS
+                            || target.model != crate::goat::GOAT_MODEL)
                         && overlaps_raw(target)
                 });
             if hit
@@ -16385,6 +16492,25 @@ impl Level2ResetSession {
     /// real overlap/mailbox adapter. The distinct class-9 -> class-10 numeric
     /// lifecycle is covered separately; this seam keeps the Level-1 package
     /// test focused on the Firefly target and death consumer.
+    #[cfg(test)]
+    pub(crate) fn fireball_impact_goat_overlap_slots_for_test(
+        &self,
+        position: Position,
+        owner_entity_index: u16,
+        payload: u16,
+    ) -> Vec<u16> {
+        self.level2_class10_model0_goat_overlap_slots(
+            level2_dynamic_economy::Level2Class10Model0Step {
+                live: true,
+                first_impact: true,
+                damage_pulse: true,
+                owner_entity_index,
+                payload,
+                position,
+            },
+        )
+    }
+
     #[cfg(test)]
     pub(crate) fn apply_fireball_impact_to_firefly_for_test(
         &mut self,

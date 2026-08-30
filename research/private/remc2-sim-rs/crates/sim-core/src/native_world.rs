@@ -50,7 +50,7 @@ use crate::{
     legacy_terrain::{
         LEGACY_MAP_CELLS, LegacyTerrain, interpolate_cave, interpolate_ground, material_mask,
     },
-    level_definition::CreatureKind,
+    level_definition::{CreatureKind, SpellKind},
     level1_mission::{
         ARCHER_BASE_TMAP, ARCHER_LOGICAL_HEIGHT, ARCHER_RENDER_INDEX, ARCHER_RENDER_MODE,
         AuthoredFeature, CASTLE_SPELL_FAMILY, CASTLE_STAGE_ONE_COLLISION_HALF_WIDTH,
@@ -70,6 +70,7 @@ use crate::{
         Level1MissionState, Level1MissionTemplate, Level1ResetRawSourceState,
         Level1ResetSourceSlot, Level1SourceCollisionTarget, Level1SourceEffect,
         Level1SourceEntityAuthority, Level1SourceEntityView, MANA_CARRIER_ATTRACTION_RADIUS,
+        MANA_CARRIER_ATTRACTION_SPEED, MANA_CARRIER_ATTRACTION_VERTICAL_STEP,
         MANA_CARRIER_BASE_TMAP, MANA_CARRIER_COLLISION_HALF_HEIGHT,
         MANA_CARRIER_COLLISION_HALF_WIDTH, MANA_CARRIER_COLLISION_VERTICAL_OFFSET,
         MANA_CARRIER_DESCENT, MANA_CARRIER_GROUND_CLEARANCE, MANA_CARRIER_LOGICAL_HEIGHT,

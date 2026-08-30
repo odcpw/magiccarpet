@@ -29,7 +29,7 @@ use sim_definition::runtime_flow::{
 };
 
 use crate::{
-    FlightEvent, PlayerCommand,
+    FlightEvent, PlayerCommand, SOURCE_SPELL_INDEX_MAP,
     campaign::{
         CampaignOpenError, CampaignSession,
         dispatch::CAMPAIGN_BEHAVIOR_REGISTRY,
@@ -51,6 +51,7 @@ use crate::{
         LateralControl, LongitudinalControl, ObjectiveProgress, PlayerMotion, PlayerPose,
         PlayerVitals, PresentationEntity, PresentationPose, RuntimeActorId, RuntimeParticipantId,
     },
+    level_definition::SpellKind,
     level1_mission::FIREBALL_LOGICAL_HEIGHT,
     native_world::{Level2DispatchEvent, Level2SharedSpellEvent},
 };
@@ -546,7 +547,7 @@ impl Mc2CampaignInputs {
     }
 }
 
-pub const MC2_CAMPAIGN_REPLAY_SAVE_CONTRACT: &str = "carpet-flight-mc2-campaign-replay-save/v3";
+pub const MC2_CAMPAIGN_REPLAY_SAVE_CONTRACT: &str = "carpet-flight-mc2-campaign-replay-save/v4";
 pub const MAX_MC2_CAMPAIGN_REPLAY_SAVE_BYTES: usize = 16 * 1024 * 1024;
 pub const MAX_MC2_CAMPAIGN_REPLAY_OPERATIONS: usize = 1_000_000;
 
@@ -1409,9 +1410,10 @@ impl GameSessionBackend for Mc2CampaignBackend {
     }
 
     fn step(&mut self, command: Self::Command) -> Result<(), Self::Error> {
+        let player_command = self.campaign_player_command(&command)?;
         let mut candidate = self.campaign.clone();
         let _evidence = candidate.step_with_tuning(
-            campaign_player_command(command),
+            player_command,
             CAMPAIGN_SPEED_INDEX,
             self.flight_binding.tuning(),
         );
@@ -1638,7 +1640,93 @@ impl Mc2CampaignBackend {
     }
 }
 
-fn campaign_player_command(command: GameCommand) -> PlayerCommand {
+impl Mc2CampaignBackend {
+    fn campaign_player_command(
+        &self,
+        command: &GameCommand,
+    ) -> Result<PlayerCommand, CampaignBackendError> {
+        let mut player_command = campaign_player_command(command);
+        let Some(selection) = command.select_spell.as_ref() else {
+            return Ok(player_command);
+        };
+        let Some(kind) = semantic_spell_kind(selection) else {
+            return Err(CampaignBackendError::StepRejected {
+                message: format!(
+                    "spell selection {} is not a closed semantic spell ID",
+                    selection.as_str()
+                ),
+            });
+        };
+        let compatibility = self.campaign.level2_compatibility();
+        let family = compatibility
+            .session
+            .definition
+            .spell_family(kind)
+            .or(match kind {
+                // MC2 reset installs these two base holders before any
+                // authored pickup row exists. Their source families are part
+                // of the qualified reset contract, while every later spell
+                // remains definition-bound and must fail closed when absent.
+                SpellKind::Fireball => Some(0),
+                SpellKind::Possession => Some(1),
+                _ => None,
+            })
+            .ok_or_else(|| CampaignBackendError::StepRejected {
+                message: format!(
+                    "spell selection {} has no bound private spell family",
+                    selection.as_str()
+                ),
+            })?;
+        let shared = compatibility.shared_spells();
+        let player = &shared.players()[0];
+        let holder_index = player.enabled_spell_holders[usize::from(family)];
+        if holder_index == 0
+            || !shared
+                .pickups()
+                .iter()
+                .chain(shared.holders())
+                .chain(shared.dynamic_pickups())
+                .find(|holder| holder.index == holder_index)
+                .is_some_and(|holder| {
+                    holder.active
+                        && holder.class == 15
+                        && holder.model == family
+                        && holder.source_spell_parent_entity_index() == player.entity_index
+                })
+        {
+            return Err(CampaignBackendError::StepRejected {
+                message: format!(
+                    "spell selection {} is not acquired by the local player",
+                    selection.as_str()
+                ),
+            });
+        }
+        let ui_index = SOURCE_SPELL_INDEX_MAP
+            .iter()
+            .position(|candidate| *candidate == family)
+            .expect("bound private spell family retains a source UI index");
+        player_command.opcode = 40;
+        player_command.argument_1 =
+            i8::try_from(ui_index).expect("source spell UI index fits the private input byte");
+        Ok(player_command)
+    }
+}
+
+fn semantic_spell_kind(id: &SemanticId) -> Option<SpellKind> {
+    match id.as_str() {
+        "spell.fireball" => Some(SpellKind::Fireball),
+        "spell.possession" => Some(SpellKind::Possession),
+        "spell.castle" => Some(SpellKind::Castle),
+        "spell.speed" => Some(SpellKind::Speed),
+        "spell.morph" => Some(SpellKind::Morph),
+        "spell.shield" => Some(SpellKind::Shield),
+        "spell.invisibility" => Some(SpellKind::Invisibility),
+        "spell.beyond_sight" => Some(SpellKind::BeyondSight),
+        _ => None,
+    }
+}
+
+fn campaign_player_command(command: &GameCommand) -> PlayerCommand {
     let mut flags = match command.longitudinal {
         LongitudinalControl::Coast => 0,
         LongitudinalControl::Accelerate => 0x01,
@@ -1669,6 +1757,7 @@ fn hex_digest(bytes: [u8; 32]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::FlightWorld;
     use crate::campaign::state::{ResetReceipt, ResetState, encode_reset_v1};
     use crate::game_definition::{
         ARCHER_MAX_LIFE_CAPABILITY_ID, Access, ArtifactId, BEE_MAX_LIFE_CAPABILITY_ID,
@@ -3421,8 +3510,8 @@ mod tests {
                 .events_after(guard(&neutral), 0, usize::MAX)
                 .unwrap();
         }
-        let first = neutral.step(guard(&neutral), command).unwrap();
-        let direct_evidence = direct.step(campaign_player_command(command), 0);
+        let first = neutral.step(guard(&neutral), command.clone()).unwrap();
+        let direct_evidence = direct.step(campaign_player_command(&command), 0);
         assert!(!direct_evidence.is_empty());
         assert_matches_direct(&neutral, &direct);
         assert_eq!(first.value.state_hash, direct.state_hash());
@@ -3459,8 +3548,8 @@ mod tests {
                 .events_after(guard(&neutral), 0, usize::MAX)
                 .unwrap();
         }
-        let second = neutral.step(guard(&neutral), command).unwrap();
-        let _ = direct.step(campaign_player_command(command), 0);
+        let second = neutral.step(guard(&neutral), command.clone()).unwrap();
+        let _ = direct.step(campaign_player_command(&command), 0);
         assert_matches_direct(&neutral, &direct);
         assert_eq!(second.value.state_hash, direct.state_hash());
         assert_ne!(second.value, first.value);
@@ -3471,8 +3560,8 @@ mod tests {
         assert_eq!(reset.identity.generation, 2);
         assert_eq!(reset.value, initial.value);
 
-        let replay = neutral.step(guard(&neutral), command).unwrap();
-        let replay_evidence = direct.step(campaign_player_command(command), 0);
+        let replay = neutral.step(guard(&neutral), command.clone()).unwrap();
+        let replay_evidence = direct.step(campaign_player_command(&command), 0);
         assert_eq!(replay_evidence, direct_evidence);
         assert_matches_direct(&neutral, &direct);
         assert_eq!(replay.value, first.value);
@@ -3500,8 +3589,8 @@ mod tests {
         assert_matches_direct(&neutral, &direct);
         let initial = neutral.snapshot();
         let command = GameCommand::default();
-        let stepped = neutral.step(guard(&neutral), command).unwrap();
-        let _ = direct.step(campaign_player_command(command), 0);
+        let stepped = neutral.step(guard(&neutral), command.clone()).unwrap();
+        let _ = direct.step(campaign_player_command(&command), 0);
         assert_matches_direct(&neutral, &direct);
         assert_ne!(stepped.value.state_hash, initial.value.state_hash);
         let reset = neutral.reset(guard(&neutral)).unwrap();
@@ -3556,7 +3645,7 @@ mod tests {
                 ..GameCommand::default()
             };
             for _ in 0..4 {
-                existing.step(guard(&existing), accelerate).unwrap();
+                existing.step(guard(&existing), accelerate.clone()).unwrap();
             }
             assert_eq!(existing.snapshot().value.player_motion.target_speed, 64);
 
@@ -3567,7 +3656,7 @@ mod tests {
             assert_eq!(reopened.identity.definition_revision, 2);
             assert_eq!(reopened.value, initial.value);
             for _ in 0..4 {
-                existing.step(guard(&existing), accelerate).unwrap();
+                existing.step(guard(&existing), accelerate.clone()).unwrap();
             }
             let capped_16 = existing.snapshot();
             assert_eq!(capped_16.value.player_motion.target_speed, 16);
@@ -3581,7 +3670,9 @@ mod tests {
             )
             .unwrap();
             for _ in 0..4 {
-                authored_48.step(guard(&authored_48), accelerate).unwrap();
+                authored_48
+                    .step(guard(&authored_48), accelerate.clone())
+                    .unwrap();
             }
             let capped_48 = authored_48.snapshot();
             assert_eq!(capped_48.value.player_motion.target_speed, 48);
@@ -3590,7 +3681,9 @@ mod tests {
 
             authored_48.reset(guard(&authored_48)).unwrap();
             for _ in 0..4 {
-                authored_48.step(guard(&authored_48), accelerate).unwrap();
+                authored_48
+                    .step(guard(&authored_48), accelerate.clone())
+                    .unwrap();
             }
             assert_eq!(authored_48.snapshot().value, capped_48.value);
 
@@ -5236,7 +5329,10 @@ mod tests {
             cast_left: true,
             ..GameCommand::default()
         };
-        let baseline_snapshot = baseline.step(guard(&baseline), command).unwrap().value;
+        let baseline_snapshot = baseline
+            .step(guard(&baseline), command.clone())
+            .unwrap()
+            .value;
         let variant_snapshot = variant.step(guard(&variant), command).unwrap().value;
         assert_eq!(baseline_snapshot.state_hash, variant_snapshot.state_hash);
         assert_eq!(
@@ -6472,7 +6568,18 @@ mod tests {
         );
         let authored_frame_zero = session.snapshot().value;
 
-        for _ in 0..4 {
+        for _ in 0..32 {
+            if session
+                .backend()
+                .campaign
+                .level2_compatibility()
+                .economy()
+                .authored_class5()
+                .iter()
+                .any(|source| source.authored_index == 101)
+            {
+                break;
+            }
             session
                 .step(guard(&session), GameCommand::default())
                 .unwrap();
@@ -10823,6 +10930,1465 @@ mod tests {
     }
 
     #[test]
+    fn campaign_backend_real_level_one_fireball_damage_reaches_typed_goat_death_sphere() {
+        const GOAT_SLOT: u16 = 105;
+        const FIREBALL_DAMAGE: u16 = 500;
+
+        let root = level_one_descriptor_fixture_path();
+        let definition = load_mc2_campaign(&root, &default_catalog().unwrap()).unwrap();
+        let mut session = GameSession::open(
+            &Mc2CampaignAdapter,
+            Arc::new(definition),
+            77,
+            Mc2CampaignInputs::new(&root),
+        )
+        .unwrap();
+        let player_entity = session
+            .backend()
+            .campaign
+            .level2_compatibility()
+            .state
+            .entity_index;
+        let goat = session
+            .backend()
+            .campaign
+            .level2_compatibility()
+            .goats()
+            .iter()
+            .find(|goat| goat.entity_index == GOAT_SLOT)
+            .cloned()
+            .expect("nearest package Goat is reset-live");
+        assert_eq!((goat.life, goat.mana), (600, 300));
+
+        for _ in 0..2 {
+            session
+                .backend_mut()
+                .campaign
+                .level2_compatibility_mut()
+                .apply_fireball_impact_to_firefly_for_test(
+                    goat.position,
+                    player_entity,
+                    FIREBALL_DAMAGE,
+                );
+        }
+        assert_eq!(
+            session
+                .backend()
+                .campaign
+                .level2_compatibility()
+                .goats()
+                .iter()
+                .find(|goat| goat.entity_index == GOAT_SLOT)
+                .map(|goat| (goat.pending_attacker, goat.pending_damage)),
+            Some((player_entity.cast_signed(), 1_000)),
+            "two ordinary Fireball impact pulses accumulate in the typed Goat mailbox"
+        );
+
+        let mut sphere_slot = None;
+        for _ in 0..32 {
+            session
+                .step(guard(&session), GameCommand::default())
+                .unwrap();
+            sphere_slot = session
+                .backend()
+                .campaign
+                .level2_compatibility()
+                .economy()
+                .events()
+                .iter()
+                .find_map(|event| match event {
+                    crate::native_world::Level2EconomyEvent::ManaSphereSpawned {
+                        sphere_id,
+                        source_entity_index: GOAT_SLOT,
+                        mana: 300,
+                        ..
+                    } => u16::try_from(*sphere_id).ok(),
+                    _ => None,
+                });
+            if sphere_slot.is_some() {
+                break;
+            }
+        }
+        assert!(
+            sphere_slot.is_some(),
+            "typed Goat death must feed its ordinary 300-mana model-39 producer"
+        );
+    }
+
+    #[test]
+    fn campaign_backend_real_level_one_possession_claim_feeds_stage_one_castle_carrier() {
+        let root = level_one_descriptor_fixture_path();
+        let definition = load_mc2_campaign(&root, &default_catalog().unwrap()).unwrap();
+        let possession_id = SemanticId::parse("spell.possession").unwrap();
+        let mut session = GameSession::open(
+            &Mc2CampaignAdapter,
+            Arc::new(definition),
+            77,
+            Mc2CampaignInputs::new(&root),
+        )
+        .unwrap();
+
+        let player_entity = session
+            .backend()
+            .campaign
+            .level2_compatibility()
+            .state
+            .entity_index;
+        // The full lifecycle test proves the real waypoint -> row-99 route.
+        // This bounded producer isolation starts at its separately-proven
+        // package group-3 output so failures localise to death-sphere,
+        // Possession, or carrier scheduling.
+        session
+            .backend_mut()
+            .campaign
+            .level2_compatibility_mut()
+            .activate_authored_group_prerequisite_for_test(3)
+            .expect("focused producer setup materializes the package Archer group");
+        assert_eq!(
+            session
+                .backend()
+                .campaign
+                .level2_compatibility()
+                .economy()
+                .owner_mana_global(),
+            19_577,
+            "package group-3 Archer materialization does not change the reset mana denominator"
+        );
+        let archer = session
+            .backend()
+            .campaign
+            .level2_compatibility()
+            .economy()
+            .authored_class5()
+            .iter()
+            .find(|source| source.authored_index == 101)
+            .copied()
+            .expect("package group-3 production constructs Archer row 101");
+        assert!(
+            session
+                .backend_mut()
+                .campaign
+                .level2_compatibility_mut()
+                .economy_mut()
+                .stage_archer_mailbox_damage_for_test(
+                    archer.source_entity_index,
+                    player_entity,
+                    archer.max_life.saturating_add(1),
+                )
+        );
+        let mut target_slot = None;
+        for _ in 0..16 {
+            session
+                .step(guard(&session), GameCommand::default())
+                .unwrap();
+            target_slot = session
+                .backend()
+                .campaign
+                .level2_compatibility()
+                .economy()
+                .events()
+                .iter()
+                .find_map(|event| match event {
+                    crate::native_world::Level2EconomyEvent::ManaSphereSpawned {
+                        sphere_id,
+                        source_entity_index,
+                        ..
+                    } if *source_entity_index == archer.source_entity_index => {
+                        u16::try_from(*sphere_id).ok()
+                    }
+                    _ => None,
+                });
+            if target_slot.is_some() {
+                break;
+            }
+        }
+        let target_slot = target_slot.expect("ordinary Archer kill must produce a mana sphere");
+        for _ in 0..128 {
+            let settled = session
+                .backend()
+                .campaign
+                .level2_compatibility()
+                .economy()
+                .spheres()
+                .iter()
+                .find(|sphere| sphere.source_entity_index == target_slot)
+                .is_some_and(|sphere| {
+                    sphere.velocity_x == 0
+                        && sphere.velocity_y == 0
+                        && sphere.vertical_velocity == 0
+                });
+            if settled {
+                break;
+            }
+            session
+                .step(guard(&session), GameCommand::default())
+                .unwrap();
+        }
+        let target_position = session
+            .backend()
+            .campaign
+            .level2_compatibility()
+            .economy()
+            .spheres()
+            .iter()
+            .find(|sphere| sphere.source_entity_index == target_slot)
+            .filter(|sphere| {
+                sphere.active
+                    && !sphere.pending_delete
+                    && sphere.owner_entity_index == 0
+                    && sphere.player_entity_index == 0
+            })
+            .expect("the real Archer death sphere starts neutral")
+            .position;
+        let settled_sphere = session
+            .backend()
+            .campaign
+            .level2_compatibility()
+            .economy()
+            .spheres()
+            .iter()
+            .find(|sphere| sphere.source_entity_index == target_slot)
+            .expect("death sphere remains installed after its bounded settle");
+        assert_eq!(
+            (
+                settled_sphere.velocity_x,
+                settled_sphere.velocity_y,
+                settled_sphere.vertical_velocity,
+            ),
+            (0, 0, 0),
+            "focused possession geometry starts from an ordinarily settled death sphere"
+        );
+        session
+            .backend_mut()
+            .campaign
+            .level2_compatibility_mut()
+            .set_level2_entity_position(player_entity, target_position)
+            .unwrap();
+        session
+            .step(
+                guard(&session),
+                GameCommand {
+                    select_spell: Some(possession_id),
+                    ..GameCommand::default()
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            session
+                .backend()
+                .campaign
+                .level2_compatibility()
+                .shared_spells()
+                .players()[0]
+                .selected_spell_ui_index,
+            1,
+            "semantic Possession selection must reach source UI family one"
+        );
+        let (sphere_position, target_top, player_yaw, player_fov) = {
+            let compatibility = session.backend().campaign.level2_compatibility();
+            (
+                compatibility
+                    .economy()
+                    .spheres()
+                    .iter()
+                    .find(|sphere| sphere.source_entity_index == target_slot)
+                    .expect("death sphere remains live after semantic selection")
+                    .position,
+                compatibility
+                    .possession_guidance_target_top_for_test(target_slot)
+                    .expect("death sphere has an exact source guidance top"),
+                compatibility.state.yaw,
+                compatibility.state.entity_fov,
+            )
+        };
+        let mut target_position = sphere_position;
+        crate::move_entity(
+            &mut target_position,
+            player_yaw.wrapping_add(1_024),
+            0,
+            crate::level1_mission::POSSESSION_PROJECTILE_SPEED,
+        );
+        let mut launch_position = target_position;
+        launch_position.z = launch_position.z.wrapping_add(player_fov);
+        let (launch_yaw, launch_pitch) =
+            crate::level1_mission::projectile_guidance_angles(launch_position, target_top);
+        let compatibility = session.backend_mut().campaign.level2_compatibility_mut();
+        compatibility
+            .set_level2_entity_position(player_entity, target_position)
+            .unwrap();
+        compatibility.set_level2_player_aim_for_test(launch_yaw, launch_pitch);
+        session
+            .step(
+                guard(&session),
+                GameCommand {
+                    cast_selected: true,
+                    ..GameCommand::default()
+                },
+            )
+            .unwrap();
+
+        let mut claimed_slot = None;
+        let mut saw_projectile = false;
+        let mut saw_effect = false;
+        let mut first_projectile = None;
+        let mut first_effect = None;
+        for _ in 0..32 {
+            let economy = session.backend().campaign.level2_compatibility().economy();
+            saw_projectile |= !economy.possession_projectiles().is_empty();
+            saw_effect |= !economy.possession_effects().is_empty();
+            first_projectile =
+                first_projectile.or_else(|| economy.possession_projectiles().first().copied());
+            first_effect = first_effect.or_else(|| economy.possession_effects().first().copied());
+            claimed_slot = economy
+                .spheres()
+                .iter()
+                .find(|sphere| sphere.active && sphere.owner_entity_index == player_entity)
+                .map(|sphere| sphere.source_entity_index);
+            if claimed_slot.is_some() {
+                break;
+            }
+            session
+                .step(guard(&session), GameCommand::default())
+                .unwrap();
+        }
+        let claimed_slot = claimed_slot.unwrap_or_else(|| {
+            let economy = session
+                .backend()
+                .campaign
+                .level2_compatibility()
+                .economy();
+            panic!(
+                "ordinary Possession did not claim the Archer sphere: saw_projectile={saw_projectile}, saw_effect={saw_effect}, first_projectile={first_projectile:?}, first_effect={first_effect:?}, projectile={:?}, effect={:?}, sphere={:?}",
+                economy.possession_projectiles(),
+                economy.possession_effects(),
+                economy
+                    .spheres()
+                    .iter()
+                    .find(|sphere| sphere.source_entity_index == target_slot)
+            )
+        });
+        assert!(
+            session
+                .backend()
+                .campaign
+                .level2_compatibility()
+                .economy()
+                .events()
+                .iter()
+                .any(|event| matches!(
+                    event,
+                    crate::native_world::Level2EconomyEvent::ManaSphereClaimed {
+                        owner_entity_index,
+                        ..
+                    } if *owner_entity_index == player_entity
+                ))
+        );
+        assert_eq!(
+            session
+                .backend()
+                .campaign
+                .level2_compatibility()
+                .economy()
+                .spheres()
+                .iter()
+                .find(|sphere| sphere.source_entity_index == target_slot)
+                .map(|sphere| (sphere.owner_entity_index, sphere.player_entity_index)),
+            Some((player_entity, 0)),
+            "the selected real sphere must consume the Possession mailbox"
+        );
+
+        // This focused producer isolation stages only the already-tested
+        // Castle root constructor. The full lifecycle test below remains the
+        // positive proof for ordinary pickup, semantic cast, projectile, and
+        // root construction.
+        let claimed_position = session
+            .backend()
+            .campaign
+            .level2_compatibility()
+            .economy()
+            .spheres()
+            .iter()
+            .find(|sphere| sphere.source_entity_index == claimed_slot)
+            .expect("claimed sphere remains live before collection")
+            .position;
+        let castle_position = crate::Position {
+            // Stay just beyond the root's strict direct-absorption extent so
+            // the production carrier, not the Castle AABB, owns collection.
+            // The sphere starts moving 16 units back toward the root once
+            // the outbound carrier enters its 1,024-unit attraction radius.
+            // At 2,304 units the two rows meet outside the Castle's
+            // 1,664+28 direct-absorption extent, so this isolation observes
+            // the carrier's strict 3-D collection path.
+            x: claimed_position.x.wrapping_add(2_304),
+            y: claimed_position.y,
+            z: claimed_position.z,
+        };
+        let castle_slot = session
+            .backend_mut()
+            .campaign
+            .level2_compatibility_mut()
+            .economy_mut()
+            .build_castle(castle_position, player_entity)
+            .expect("focused producer isolation stages a stable stage-one Castle root");
+
+        let mut carrier_slot = None;
+        let mut targeted = false;
+        let mut collected = false;
+        let mut deposited = 0;
+        for _ in 0..128 {
+            let economy = session.backend().campaign.level2_compatibility().economy();
+            if let Some(carrier) = economy
+                .carriers()
+                .iter()
+                .find(|carrier| carrier.active && carrier.owner_entity_index == player_entity)
+            {
+                carrier_slot = Some(carrier.source_entity_index);
+                targeted |= carrier.target_sphere_id == u32::from(claimed_slot);
+            }
+            collected |= economy.events().iter().any(|event| {
+                matches!(
+                    event,
+                    crate::native_world::Level2EconomyEvent::ManaSphereCollected {
+                        sphere_id,
+                        carrier_id,
+                        ..
+                    } if *sphere_id == u32::from(claimed_slot)
+                        && Some(u16::try_from(*carrier_id).unwrap()) == carrier_slot
+                )
+            });
+            deposited = economy
+                .events()
+                .iter()
+                .filter_map(|event| match event {
+                    crate::native_world::Level2EconomyEvent::ManaCarrierArrived {
+                        castle_id,
+                        mana,
+                        ..
+                    } if *castle_id == castle_slot => Some(*mana),
+                    _ => None,
+                })
+                .sum();
+            if targeted && collected && deposited > 0 {
+                break;
+            }
+            session
+                .step(guard(&session), GameCommand::default())
+                .unwrap();
+        }
+        assert!(
+            carrier_slot.is_some(),
+            "stage-one Castle upkeep must allocate its carrier"
+        );
+        assert!(
+            targeted,
+            "the carrier scheduler must select the claimed sphere"
+        );
+        assert!(
+            collected,
+            "the ordinary carrier callback must collect its target: carrier={:?}, sphere={:?}, castle={:?}, events={:?}",
+            session
+                .backend()
+                .campaign
+                .level2_compatibility()
+                .economy()
+                .carriers(),
+            session
+                .backend()
+                .campaign
+                .level2_compatibility()
+                .economy()
+                .spheres()
+                .iter()
+                .find(|sphere| sphere.source_entity_index == claimed_slot),
+            session
+                .backend()
+                .campaign
+                .level2_compatibility()
+                .economy()
+                .castle(),
+            session
+                .backend()
+                .campaign
+                .level2_compatibility()
+                .economy()
+                .events()
+                .iter()
+                .rev()
+                .take(16)
+                .collect::<Vec<_>>()
+        );
+        assert!(
+            deposited > 0,
+            "the loaded carrier must return mana to the Castle"
+        );
+        assert!(
+            session
+                .backend()
+                .campaign
+                .level2_compatibility()
+                .economy()
+                .castle()
+                .is_some_and(|castle| castle.mana >= deposited),
+            "the Castle root is the authoritative deposited-mana carrier"
+        );
+        assert_eq!(
+            session
+                .backend()
+                .campaign
+                .level2_compatibility()
+                .economy()
+                .owner_mana_global(),
+            20_077,
+            "deposit transfers the Archer mana into the qualifying Castle row"
+        );
+    }
+
+    #[test]
+    fn campaign_backend_real_level_one_castle_pickup_cast_reaches_mana_objective_and_group_six() {
+        const ARCHER_ROWS: [u16; 4] = [101, 102, 103, 106];
+        const CASTLE_PICKUP_RECORD: u16 = 31;
+        const CASTLE_FAMILY: u8 = 2;
+        const GROUP_SIX_ROWS: &[u16] = &[108, 134, 135, 154, 189, 193];
+
+        let root = level_one_descriptor_fixture_path();
+        let definition = load_mc2_campaign(&root, &default_catalog().unwrap()).unwrap();
+        let castle_id = SemanticId::parse("spell.castle").unwrap();
+        let possession_id = SemanticId::parse("spell.possession").unwrap();
+        let mut session = GameSession::open(
+            &Mc2CampaignAdapter,
+            Arc::new(definition),
+            77,
+            Mc2CampaignInputs::new(&root),
+        )
+        .unwrap();
+        let player_entity = session
+            .backend()
+            .campaign
+            .level2_compatibility()
+            .state
+            .entity_index;
+
+        let step_toward = |session: &mut GameSession<Mc2CampaignBackend>,
+                           target: crate::Position| {
+            let state = session.backend().campaign.level2_compatibility().state;
+            let desired = i16::try_from(crate::heading_for_positions(state.position, target))
+                .expect("source heading is 11-bit");
+            let correction = crate::turn_toward(state.yaw, desired, 127);
+            session
+                .step(
+                    guard(session),
+                    GameCommand {
+                        longitudinal: LongitudinalControl::Accelerate,
+                        roll_axis: correction.clamp(-24, 24) as i8,
+                        pitch_axis: -127,
+                        ..GameCommand::default()
+                    },
+                )
+                .unwrap();
+        };
+        let stage_position = |session: &GameSession<Mc2CampaignBackend>, stage_index: usize| {
+            let compatibility = session.backend().campaign.level2_compatibility();
+            let stage = &compatibility.runtime().stages[stage_index];
+            crate::Position {
+                x: stage.axis_x.cast_unsigned(),
+                y: stage.axis_y.cast_unsigned(),
+                z: compatibility.state.position.z,
+            }
+        };
+        let claim_real_sphere = |session: &mut GameSession<Mc2CampaignBackend>,
+                                 sphere_slot: u16| {
+            for _ in 0..128 {
+                let settled = session
+                    .backend()
+                    .campaign
+                    .level2_compatibility()
+                    .economy()
+                    .spheres()
+                    .iter()
+                    .find(|sphere| sphere.source_entity_index == sphere_slot)
+                    .is_some_and(|sphere| {
+                        sphere.velocity_x == 0
+                            && sphere.velocity_y == 0
+                            && sphere.vertical_velocity == 0
+                    });
+                if settled {
+                    break;
+                }
+                session
+                    .step(guard(session), GameCommand::default())
+                    .unwrap();
+            }
+            let (sphere_position, target_top) = {
+                let compatibility = session.backend().campaign.level2_compatibility();
+                let sphere = compatibility
+                    .economy()
+                    .spheres()
+                    .iter()
+                    .find(|sphere| sphere.source_entity_index == sphere_slot)
+                    .filter(|sphere| {
+                        sphere.active
+                            && !sphere.pending_delete
+                            && sphere.owner_entity_index == 0
+                            && sphere.player_entity_index == 0
+                            && sphere.velocity_x == 0
+                            && sphere.velocity_y == 0
+                            && sphere.vertical_velocity == 0
+                    })
+                    .expect("real death sphere settles while still neutral");
+                (
+                    sphere.position,
+                    compatibility
+                        .possession_guidance_target_top_for_test(sphere_slot)
+                        .expect("death sphere has an exact source guidance top"),
+                )
+            };
+            let (player_yaw, player_fov) = {
+                let state = session.backend().campaign.level2_compatibility().state;
+                (state.yaw, state.entity_fov)
+            };
+            session
+                .step(
+                    guard(session),
+                    GameCommand {
+                        select_spell: Some(possession_id.clone()),
+                        ..GameCommand::default()
+                    },
+                )
+                .unwrap();
+            let mut possession_cast_position = sphere_position;
+            crate::move_entity(
+                &mut possession_cast_position,
+                player_yaw.wrapping_add(1_024),
+                0,
+                crate::level1_mission::POSSESSION_PROJECTILE_SPEED,
+            );
+            let mut launch_position = possession_cast_position;
+            launch_position.z = launch_position.z.wrapping_add(player_fov);
+            let (launch_yaw, launch_pitch) =
+                crate::level1_mission::projectile_guidance_angles(launch_position, target_top);
+            let compatibility = session.backend_mut().campaign.level2_compatibility_mut();
+            compatibility
+                .set_level2_entity_position(player_entity, possession_cast_position)
+                .unwrap();
+            compatibility.set_level2_player_aim_for_test(launch_yaw, launch_pitch);
+            session
+                .step(
+                    guard(session),
+                    GameCommand {
+                        cast_selected: true,
+                        ..GameCommand::default()
+                    },
+                )
+                .unwrap();
+            let mut saw_projectile = false;
+            let mut saw_effect = false;
+            let mut claimed_slot = None;
+            for _ in 0..32 {
+                let economy = session.backend().campaign.level2_compatibility().economy();
+                saw_projectile |= !economy.possession_projectiles().is_empty();
+                saw_effect |= !economy.possession_effects().is_empty();
+                claimed_slot = economy
+                    .spheres()
+                    .iter()
+                    .find(|sphere| {
+                        sphere.active
+                            && !sphere.pending_delete
+                            && sphere.owner_entity_index == player_entity
+                    })
+                    .map(|sphere| sphere.source_entity_index);
+                if claimed_slot.is_some() {
+                    break;
+                }
+                session
+                    .step(guard(session), GameCommand::default())
+                    .unwrap();
+            }
+            let claimed_slot = claimed_slot.unwrap_or_else(|| {
+                panic!(
+                    "ordinary Possession aimed at sphere {sphere_slot} claimed no neutral model-39 row; saw_projectile={saw_projectile}, saw_effect={saw_effect}, spheres={:?}",
+                    session
+                        .backend()
+                        .campaign
+                        .level2_compatibility()
+                        .economy()
+                        .spheres()
+                )
+            });
+            assert_eq!(
+                session
+                    .backend()
+                    .campaign
+                    .level2_compatibility()
+                    .economy()
+                    .spheres()
+                    .iter()
+                    .find(|sphere| sphere.source_entity_index == claimed_slot)
+                    .map(|sphere| (sphere.owner_entity_index, sphere.player_entity_index)),
+                Some((player_entity, 0)),
+                "ordinary Possession changes only the claimed sphere's owner projection"
+            );
+            for _ in 0..32 {
+                let economy = session.backend().campaign.level2_compatibility().economy();
+                if economy.possession_projectiles().is_empty()
+                    && economy.possession_effects().is_empty()
+                {
+                    break;
+                }
+                session
+                    .step(guard(session), GameCommand::default())
+                    .unwrap();
+            }
+            let economy = session.backend().campaign.level2_compatibility().economy();
+            assert!(
+                economy.possession_projectiles().is_empty()
+                    && economy.possession_effects().is_empty(),
+                "Possession projectile/effect cleanup must finish before the next target"
+            );
+            claimed_slot
+        };
+
+        for stage_index in 0..=1 {
+            let target = stage_position(&session, stage_index);
+            for _ in 0..512 {
+                if session
+                    .backend()
+                    .campaign
+                    .level2_compatibility()
+                    .runtime()
+                    .objectives[0]
+                    .stage_selectors[stage_index]
+                    == 2
+                {
+                    break;
+                }
+                step_toward(&mut session, target);
+            }
+            assert_eq!(
+                session
+                    .backend()
+                    .campaign
+                    .level2_compatibility()
+                    .runtime()
+                    .objectives[0]
+                    .stage_selectors[stage_index],
+                2,
+                "ordinary player flight must complete prerequisite waypoint {stage_index}"
+            );
+        }
+
+        for _ in 0..4 {
+            let authored_archers = session
+                .backend()
+                .campaign
+                .level2_compatibility()
+                .economy()
+                .authored_class5()
+                .iter()
+                .filter(|row| ARCHER_ROWS.contains(&row.authored_index))
+                .count();
+            if authored_archers == ARCHER_ROWS.len() {
+                break;
+            }
+            session
+                .step(guard(&session), GameCommand::default())
+                .unwrap();
+        }
+        assert_eq!(
+            session
+                .backend()
+                .campaign
+                .level2_compatibility()
+                .economy()
+                .authored_class5()
+                .iter()
+                .filter(|row| ARCHER_ROWS.contains(&row.authored_index))
+                .map(|row| row.authored_index)
+                .collect::<Vec<_>>(),
+            ARCHER_ROWS,
+            "the following-pass row-99 producer must construct the four package Archers"
+        );
+        let castle_cast_aim = {
+            let state = session.backend().campaign.level2_compatibility().state;
+            (state.yaw, state.display_pitch)
+        };
+
+        let rejected_tick = session.identity().tick;
+        let rejected_hash = session.backend().campaign.state_hash();
+        let rejected = session.step(
+            guard(&session),
+            GameCommand {
+                select_spell: Some(castle_id.clone()),
+                ..GameCommand::default()
+            },
+        );
+        assert!(matches!(
+            rejected,
+            Err(crate::game_session::GameSessionError::Backend(
+                CampaignBackendError::StepRejected { .. }
+            ))
+        ));
+        assert_eq!(session.identity().tick, rejected_tick);
+        assert_eq!(session.backend().campaign.state_hash(), rejected_hash);
+        let castle_pickup = session
+            .backend()
+            .campaign
+            .level2_compatibility()
+            .economy()
+            .spell_pickups()
+            .iter()
+            .find(|pickup| pickup.authored_index == CASTLE_PICKUP_RECORD)
+            .copied()
+            .expect("group 1 Castle pickup is live before acquisition");
+
+        // Start one package Archer's typed damage/death callback. The
+        // ordinary Castle is built below before any later Archer dies, so
+        // every Possession cast sees exactly one neutral model-39 row.
+        let archers = session
+            .backend()
+            .campaign
+            .level2_compatibility()
+            .economy()
+            .authored_class5()
+            .iter()
+            .filter(|source| ARCHER_ROWS.contains(&source.authored_index))
+            .copied()
+            .collect::<Vec<_>>();
+        assert_eq!(archers.len(), ARCHER_ROWS.len());
+        let first_archer = archers.first().expect("one package Archer");
+        assert!(
+            session
+                .backend_mut()
+                .campaign
+                .level2_compatibility_mut()
+                .economy_mut()
+                .stage_archer_mailbox_damage_for_test(
+                    first_archer.source_entity_index,
+                    player_entity,
+                    first_archer.max_life.saturating_add(1),
+                )
+        );
+        let mut mana_sphere_slots = Vec::new();
+        for _ in 0..24 {
+            session
+                .step(guard(&session), GameCommand::default())
+                .unwrap();
+            mana_sphere_slots = session
+                .backend()
+                .campaign
+                .level2_compatibility()
+                .economy()
+                .events()
+                .iter()
+                .filter_map(|event| match event {
+                    crate::native_world::Level2EconomyEvent::ManaSphereSpawned {
+                        sphere_id,
+                        source_entity_index,
+                        mana: 500,
+                        ..
+                    } if archers
+                        .iter()
+                        .any(|archer| archer.source_entity_index == *source_entity_index) =>
+                    {
+                        u16::try_from(*sphere_id).ok()
+                    }
+                    _ => None,
+                })
+                .collect();
+            mana_sphere_slots.sort_unstable();
+            mana_sphere_slots.dedup();
+            if mana_sphere_slots.len() == 1 {
+                break;
+            }
+        }
+        assert_eq!(
+            mana_sphere_slots.len(),
+            1,
+            "the first package Archer death produces one real model-39 row"
+        );
+        session
+            .step(guard(&session), GameCommand::default())
+            .unwrap();
+        assert_eq!(
+            session
+                .backend()
+                .campaign
+                .level2_compatibility()
+                .economy()
+                .owner_mana_global(),
+            20_077,
+            "the first Archer death sphere adds exactly 500 mana to the reset census"
+        );
+        let pickup_slot = castle_pickup.source_entity_index;
+        if session.backend().campaign.level2_compatibility().players()[0].enabled_spell_holders
+            [usize::from(CASTLE_FAMILY)]
+            != pickup_slot
+        {
+            session
+                .backend_mut()
+                .campaign
+                .level2_compatibility_mut()
+                .set_level2_entity_position(player_entity, castle_pickup.position)
+                .unwrap();
+            for _ in 0..4 {
+                session
+                    .step(guard(&session), GameCommand::default())
+                    .unwrap();
+                if session.backend().campaign.events().iter().any(|event| {
+                    matches!(
+                        event,
+                        Level2DispatchEvent::SpellAcquisition {
+                            source_slot,
+                            family: CASTLE_FAMILY,
+                            result: Some(_),
+                            ..
+                        } if *source_slot == pickup_slot
+                    )
+                }) {
+                    break;
+                }
+            }
+        }
+        assert_eq!(
+            session.backend().campaign.level2_compatibility().players()[0].enabled_spell_holders
+                [usize::from(CASTLE_FAMILY)],
+            pickup_slot
+        );
+
+        // Position only at the existing production placement predicate
+        // boundary. The test does not mutate terrain or Castle state.
+        let cast_site = {
+            let compatibility = session.backend().campaign.level2_compatibility();
+            let terrain = compatibility.canonical_terrain();
+            (16_u8..240)
+                .flat_map(|y| (16_u8..240).map(move |x| (x, y)))
+                .find_map(|(x, y)| {
+                    (0..8_u8)
+                        .all(|row| {
+                            (0..8_u8).all(|column| {
+                                terrain
+                                    .angle_flags(crate::Tile {
+                                        x: x - 8 + column,
+                                        y: y - 8 + row,
+                                    })
+                                    .cast_signed()
+                                    >= 0
+                            })
+                        })
+                        .then(|| {
+                            let mut position = crate::Position {
+                                x: (u16::from(x) << 8) + 128,
+                                y: (u16::from(y) << 8) + 128,
+                                z: 0,
+                            };
+                            position.z = terrain.ground_height(position).wrapping_add(256);
+                            position
+                        })
+                })
+                .expect("qualified Level 1 terrain contains a valid Castle footprint")
+        };
+        let compatibility = session.backend_mut().campaign.level2_compatibility_mut();
+        compatibility
+            .set_level2_entity_position(player_entity, cast_site)
+            .unwrap();
+        compatibility.set_level2_player_aim_for_test(castle_cast_aim.0, castle_cast_aim.1);
+
+        session
+            .step(
+                guard(&session),
+                GameCommand {
+                    select_spell: Some(castle_id),
+                    ..GameCommand::default()
+                },
+            )
+            .unwrap();
+        let compatibility = session.backend().campaign.level2_compatibility();
+        assert_eq!(
+            compatibility.shared_spells().players()[0].selected_spell_ui_index,
+            2
+        );
+        session
+            .step(
+                guard(&session),
+                GameCommand {
+                    cast_selected: true,
+                    ..GameCommand::default()
+                },
+            )
+            .unwrap();
+        let mut saw_castle_projectile = false;
+        for _ in 0..64 {
+            saw_castle_projectile |= session
+                .backend()
+                .campaign
+                .level2_compatibility()
+                .dispatch_events()
+                .iter()
+                .any(|event| {
+                    matches!(
+                        event,
+                        Level2DispatchEvent::DynamicArena {
+                            kind: crate::native_world::Level2DynamicArenaKind::CastleProjectile,
+                            ..
+                        }
+                    )
+                });
+            let economy = session.backend().campaign.level2_compatibility().economy();
+            if economy.castle().is_some_and(|castle| {
+                castle.level == 1
+                    && economy.player_castle_entity_index() == castle.source_entity_index
+            }) {
+                break;
+            }
+            session
+                .step(guard(&session), GameCommand::default())
+                .unwrap();
+        }
+        assert!(
+            saw_castle_projectile,
+            "the semantic selection command must feed the ordinary Castle holder callback"
+        );
+        let castle_slot = session
+            .backend()
+            .campaign
+            .level2_compatibility()
+            .economy()
+            .castle()
+            .map(|castle| castle.source_entity_index)
+            .expect("the ordinary Castle projectile collision constructs a Castle root");
+        assert_eq!(
+            session
+                .backend()
+                .campaign
+                .level2_compatibility()
+                .economy()
+                .player_castle_entity_index(),
+            castle_slot
+        );
+
+        let deposit_claimed_sphere = |session: &mut GameSession<Mc2CampaignBackend>,
+                                      sphere_slot: u16,
+                                      expected_mana: i32,
+                                      expected_global: i32| {
+            let (sphere_position, castle_position) = {
+                let economy = session.backend().campaign.level2_compatibility().economy();
+                (
+                    economy
+                        .spheres()
+                        .iter()
+                        .find(|sphere| sphere.source_entity_index == sphere_slot)
+                        .expect("claimed sphere remains live before Castle upkeep")
+                        .position,
+                    economy
+                        .castle()
+                        .expect("Castle remains live before mana collection")
+                        .position,
+                )
+            };
+            let dx = i32::from(
+                sphere_position
+                    .x
+                    .wrapping_sub(castle_position.x)
+                    .cast_signed(),
+            );
+            let dy = i32::from(
+                sphere_position
+                    .y
+                    .wrapping_sub(castle_position.y)
+                    .cast_signed(),
+            );
+            let distance = crate::legacy_sqrt(
+                dx.wrapping_mul(dx)
+                    .wrapping_add(dy.wrapping_mul(dy))
+                    .cast_unsigned(),
+            );
+            let bound = usize::try_from(distance.saturating_mul(2) / 48)
+                .unwrap_or(usize::MAX)
+                .saturating_add(192);
+            for _ in 0..bound {
+                let economy = session.backend().campaign.level2_compatibility().economy();
+                let deposited = economy
+                    .castle()
+                    .is_some_and(|castle| castle.mana == expected_mana);
+                let reclaimed = !economy.spheres().iter().any(|sphere| {
+                    sphere.source_entity_index == sphere_slot
+                        && sphere.active
+                        && !sphere.pending_delete
+                });
+                if deposited && reclaimed {
+                    break;
+                }
+                session
+                    .step(guard(session), GameCommand::default())
+                    .unwrap();
+            }
+            let economy = session.backend().campaign.level2_compatibility().economy();
+            assert_eq!(
+                economy.castle().map(|castle| castle.mana),
+                Some(expected_mana),
+                "claimed sphere {sphere_slot} must deposit exactly once"
+            );
+            assert_eq!(
+                economy.owner_mana_global(),
+                expected_global,
+                "sphere-to-Castle transfer must conserve the live denominator"
+            );
+            assert!(
+                !economy.spheres().iter().any(|sphere| {
+                    sphere.source_entity_index == sphere_slot
+                        && sphere.active
+                        && !sphere.pending_delete
+                }),
+                "deposited sphere {sphere_slot} must finish ordinary reclaim"
+            );
+        };
+
+        let mut expected_castle_mana = 0;
+        let first_sphere = *mana_sphere_slots.first().expect("first Archer sphere");
+        let claimed_slot = claim_real_sphere(&mut session, first_sphere);
+        assert_eq!(claimed_slot, first_sphere);
+        expected_castle_mana += 500;
+        deposit_claimed_sphere(&mut session, claimed_slot, expected_castle_mana, 20_077);
+
+        for (archer_index, archer) in archers.iter().skip(1).enumerate() {
+            assert!(
+                session
+                    .backend_mut()
+                    .campaign
+                    .level2_compatibility_mut()
+                    .economy_mut()
+                    .stage_archer_mailbox_damage_for_test(
+                        archer.source_entity_index,
+                        player_entity,
+                        archer.max_life.saturating_add(1),
+                    )
+            );
+            let mut sphere_slot = None;
+            for _ in 0..24 {
+                session
+                    .step(guard(&session), GameCommand::default())
+                    .unwrap();
+                sphere_slot = session
+                    .backend()
+                    .campaign
+                    .level2_compatibility()
+                    .economy()
+                    .events()
+                    .iter()
+                    .find_map(|event| match event {
+                        crate::native_world::Level2EconomyEvent::ManaSphereSpawned {
+                            sphere_id,
+                            source_entity_index,
+                            mana: 500,
+                            ..
+                        } if *source_entity_index == archer.source_entity_index => {
+                            u16::try_from(*sphere_id).ok()
+                        }
+                        _ => None,
+                    });
+                if sphere_slot.is_some() {
+                    break;
+                }
+            }
+            let sphere_slot = sphere_slot.expect("typed Archer death produces 500-mana model39");
+            session
+                .step(guard(&session), GameCommand::default())
+                .unwrap();
+            let expected_global =
+                20_077 + 500 * i32::try_from(archer_index + 1).expect("four Archers fit i32");
+            assert_eq!(
+                session
+                    .backend()
+                    .campaign
+                    .level2_compatibility()
+                    .economy()
+                    .owner_mana_global(),
+                expected_global,
+                "each Archer sphere adds one exact 500-mana row"
+            );
+            let claimed_slot = claim_real_sphere(&mut session, sphere_slot);
+            assert_eq!(
+                claimed_slot, sphere_slot,
+                "sequential Archer death leaves one neutral sphere target"
+            );
+            expected_castle_mana += 500;
+            deposit_claimed_sphere(
+                &mut session,
+                claimed_slot,
+                expected_castle_mana,
+                expected_global,
+            );
+            mana_sphere_slots.push(claimed_slot);
+        }
+        assert_eq!(mana_sphere_slots.len(), ARCHER_ROWS.len());
+        assert_eq!(expected_castle_mana, 2_000);
+        assert_eq!(
+            session
+                .backend()
+                .campaign
+                .level2_compatibility()
+                .economy()
+                .owner_mana_global(),
+            21_577
+        );
+
+        for _ in 0..24 {
+            if session
+                .backend()
+                .campaign
+                .level2_compatibility()
+                .economy()
+                .authored_model32()
+                .iter()
+                .any(|row| row.authored_index == 190)
+            {
+                break;
+            }
+            session
+                .step(guard(&session), GameCommand::default())
+                .unwrap();
+        }
+        let row190_slot = session
+            .backend()
+            .campaign
+            .level2_compatibility()
+            .economy()
+            .authored_model32()
+            .iter()
+            .find(|row| row.authored_index == 190)
+            .map(|row| row.source_entity_index)
+            .expect("the ordinary Archer objective route materializes row 190");
+        assert_eq!(
+            session
+                .backend()
+                .campaign
+                .level2_compatibility()
+                .runtime()
+                .objectives[0]
+                .stage_selectors[3],
+            1,
+            "row 190 waits on the package Castle-mana objective"
+        );
+
+        // Five reset-live Goats are the smallest additional real package
+        // producer set that can cross the exact 15% integer threshold. At
+        // each turn choose the closest live row whose exact production
+        // class-10 overlap set contains only that Goat. This keeps the real
+        // damage pulse and source row order while preserving one neutral
+        // sphere at a time for the ordinary Possession/carrier lifecycle.
+        let castle_position = session
+            .backend()
+            .campaign
+            .level2_compatibility()
+            .economy()
+            .castle()
+            .expect("the ordinary Castle root remains live")
+            .position;
+        let mut goat_sphere_slots = Vec::new();
+        for goat_index in 0..5 {
+            let goat = {
+                let compatibility = session.backend().campaign.level2_compatibility();
+                let mut candidates = compatibility
+                    .goats()
+                    .iter()
+                    .filter(|goat| goat.active && goat.life >= 0 && goat.mana == 300)
+                    .filter(|goat| {
+                        compatibility.fireball_impact_goat_overlap_slots_for_test(
+                            goat.position,
+                            player_entity,
+                            500,
+                        ) == [goat.entity_index]
+                    })
+                    .cloned()
+                    .map(|goat| {
+                        let dx = i32::from(
+                            goat.position
+                                .x
+                                .wrapping_sub(castle_position.x)
+                                .cast_signed(),
+                        );
+                        let dy = i32::from(
+                            goat.position
+                                .y
+                                .wrapping_sub(castle_position.y)
+                                .cast_signed(),
+                        );
+                        (
+                            crate::legacy_sqrt(
+                                dx.wrapping_mul(dx)
+                                    .wrapping_add(dy.wrapping_mul(dy))
+                                    .cast_unsigned(),
+                            ),
+                            goat,
+                        )
+                    })
+                    .collect::<Vec<_>>();
+                candidates.sort_unstable_by_key(|(distance, goat)| (*distance, goat.entity_index));
+                candidates
+                    .into_iter()
+                    .next()
+                    .map(|(_, goat)| goat)
+                    .expect("five isolated reset-live Goat producers remain available")
+            };
+            assert_eq!((goat.life, goat.mana), (600, 300));
+            assert_eq!(
+                session
+                    .backend()
+                    .campaign
+                    .level2_compatibility()
+                    .fireball_impact_goat_overlap_slots_for_test(
+                        goat.position,
+                        player_entity,
+                        500,
+                    ),
+                [goat.entity_index],
+                "the real class-10 pulse must target exactly the selected Goat"
+            );
+            for _ in 0..2 {
+                session
+                    .backend_mut()
+                    .campaign
+                    .level2_compatibility_mut()
+                    .apply_fireball_impact_to_firefly_for_test(goat.position, player_entity, 500);
+            }
+            let mut sphere_slot = None;
+            for _ in 0..32 {
+                session
+                    .step(guard(&session), GameCommand::default())
+                    .unwrap();
+                sphere_slot = session
+                    .backend()
+                    .campaign
+                    .level2_compatibility()
+                    .economy()
+                    .events()
+                    .iter()
+                    .find_map(|event| match event {
+                        crate::native_world::Level2EconomyEvent::ManaSphereSpawned {
+                            sphere_id,
+                            source_entity_index,
+                            mana: 300,
+                            ..
+                        } if *source_entity_index == goat.entity_index => {
+                            u16::try_from(*sphere_id).ok()
+                        }
+                        _ => None,
+                    });
+                if sphere_slot.is_some() {
+                    break;
+                }
+            }
+            let sphere_slot = sphere_slot.expect("typed Goat death produces 300-mana model39");
+            session
+                .step(guard(&session), GameCommand::default())
+                .unwrap();
+            let expected_global =
+                21_577 + 300 * i32::try_from(goat_index + 1).expect("five Goat rows fit i32");
+            assert_eq!(
+                session
+                    .backend()
+                    .campaign
+                    .level2_compatibility()
+                    .economy()
+                    .owner_mana_global(),
+                expected_global,
+                "each Goat sphere adds one exact 300-mana row"
+            );
+            let claimed_slot = claim_real_sphere(&mut session, sphere_slot);
+            assert_eq!(
+                claimed_slot, sphere_slot,
+                "sequential Goat production leaves one neutral sphere target"
+            );
+            expected_castle_mana += 300;
+            deposit_claimed_sphere(
+                &mut session,
+                claimed_slot,
+                expected_castle_mana,
+                expected_global,
+            );
+            goat_sphere_slots.push(claimed_slot);
+            assert!(
+                !session
+                    .backend()
+                    .campaign
+                    .level2_compatibility()
+                    .economy()
+                    .spheres()
+                    .iter()
+                    .any(|sphere| {
+                        sphere.active
+                            && !sphere.pending_delete
+                            && sphere.owner_entity_index == 0
+                            && sphere.player_entity_index == 0
+                    }),
+                "each Goat deposit must leave no unexpected neutral sphere"
+            );
+        }
+        assert_eq!(goat_sphere_slots.len(), 5);
+        for _ in 0..4 {
+            if session
+                .backend()
+                .campaign
+                .level2_compatibility()
+                .runtime()
+                .objectives[0]
+                .stage_selectors[3]
+                == 2
+            {
+                break;
+            }
+            session
+                .step(guard(&session), GameCommand::default())
+                .unwrap();
+        }
+        let economy = session.backend().campaign.level2_compatibility().economy();
+        assert_eq!(
+            economy.castle().map(|castle| castle.mana),
+            Some(3_500),
+            "all four Archer and five Goat payloads must be deposited"
+        );
+        assert_eq!(economy.owner_mana_global(), 23_077);
+        assert_eq!(
+            100_i32
+                * economy
+                    .owner_mana_aggregate(player_entity)
+                    .saturating_add(economy.castle().expect("Castle remains live").mana)
+                / economy.owner_mana_global(),
+            15,
+            "3,500 / 23,077 must cross the exact integer objective threshold"
+        );
+        assert_eq!(
+            session
+                .backend()
+                .campaign
+                .level2_compatibility()
+                .runtime()
+                .objectives[0]
+                .stage_selectors[3],
+            2
+        );
+
+        session
+            .step(guard(&session), GameCommand::default())
+            .unwrap();
+        assert!(
+            session
+                .backend()
+                .campaign
+                .events()
+                .iter()
+                .any(|event| matches!(
+                    event,
+                    Level2DispatchEvent::AuthoredGroupActivated {
+                        source_slot,
+                        group: 6,
+                        authored_indices,
+                        ..
+                    } if *source_slot == row190_slot && authored_indices.as_ref() == GROUP_SIX_ROWS
+                ))
+        );
+    }
+
+    #[test]
     fn campaign_backend_moves_real_level_one_dynamic_tree_through_group_one_after_reopen() {
         const TREE_RECORD: u16 = 155;
         const PRODUCER_SLOT: u16 = 48;
@@ -14302,7 +15868,7 @@ mod tests {
 
     #[test]
     fn campaign_command_maps_inside_the_adapter() {
-        let mapped = campaign_player_command(GameCommand {
+        let mapped = campaign_player_command(&GameCommand {
             longitudinal: LongitudinalControl::Decelerate,
             lateral: LateralControl::Positive,
             roll_axis: -32,
@@ -14310,6 +15876,7 @@ mod tests {
             cast_left: true,
             cast_right: false,
             cast_selected: true,
+            select_spell: None,
             look_yaw: -17,
             look_pitch: 23,
         });
@@ -14322,7 +15889,7 @@ mod tests {
         assert_eq!(mapped.argument_6.cast_signed(), -17);
         assert_eq!(mapped.argument_8.cast_signed(), 23);
         assert_eq!(
-            campaign_player_command(GameCommand::default()),
+            campaign_player_command(&GameCommand::default()),
             PlayerCommand::default()
         );
     }
