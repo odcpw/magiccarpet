@@ -5700,7 +5700,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn campaign_backend_real_level_two_entry_waypoints_advance_to_nyphur_without_staging() {
+    fn campaign_backend_real_level_two_entry_waypoints_and_fireballs_defeat_nyphur() {
         let root = descriptor_fixture_path();
         let catalog = default_catalog().unwrap();
         let definition = load_mc2_campaign(&root, &catalog).unwrap();
@@ -5835,6 +5835,296 @@ pub(crate) mod tests {
                         ..
                     }
                 ))
+        );
+
+        const NYPHUR_SLOT: u16 = 112;
+        let nyphur_player_state = |session: &GameSession<Mc2CampaignBackend>| {
+            session
+                .backend()
+                .campaign
+                .level2_compatibility()
+                .players()
+                .iter()
+                .find(|player| player.entity_index == NYPHUR_SLOT)
+                .and_then(|player| player.banishment_state_0x006)
+        };
+        let nyphur_action = |session: &GameSession<Mc2CampaignBackend>| {
+            session
+                .backend()
+                .campaign
+                .level2_compatibility()
+                .entities()
+                .iter()
+                .find(|entity| {
+                    entity.active
+                        && entity.index == NYPHUR_SLOT
+                        && entity.class == 3
+                        && entity.model == 1
+                })
+                .map(|entity| entity.action)
+        };
+        let aim_player_at_nyphur = |session: &mut GameSession<Mc2CampaignBackend>| {
+            let (target, player_slot, player_fov) = {
+                let compatibility = session.backend().campaign.level2_compatibility();
+                (
+                    compatibility
+                        .entities()
+                        .iter()
+                        .find(|entity| {
+                            entity.active
+                                && entity.index == NYPHUR_SLOT
+                                && entity.class == 3
+                                && entity.model == 1
+                        })
+                        .cloned()
+                        .expect("real package Nyphur remains live before the cast"),
+                    compatibility.state.entity_index,
+                    compatibility.state.entity_fov,
+                )
+            };
+            let collision = target.collision_target();
+            let mut predicted_target = crate::Position {
+                z: target
+                    .position
+                    .z
+                    .wrapping_add(collision.collision_vertical_offset)
+                    .wrapping_sub(crate::level1_mission::FIREBALL_COLLISION_VERTICAL_OFFSET),
+                ..target.position
+            };
+            crate::move_entity(
+                &mut predicted_target,
+                target.yaw,
+                target.pitch,
+                target.actual_speed,
+            );
+            let current_launch = crate::Position {
+                z: session
+                    .backend()
+                    .campaign
+                    .level2_compatibility()
+                    .state
+                    .position
+                    .z
+                    .wrapping_add(player_fov),
+                ..session
+                    .backend()
+                    .campaign
+                    .level2_compatibility()
+                    .state
+                    .position
+            };
+            let approach_yaw =
+                crate::level1_mission::projectile_guidance_angles(current_launch, predicted_target)
+                    .0;
+            let crossing_distance = crate::level1_mission::FIREBALL_SPEED
+                .saturating_add(crate::level1_mission::FIREBALL_COLLISION_HALF_WIDTH)
+                .saturating_add(collision.collision_half_width)
+                .saturating_sub(1);
+            let mut player_position = predicted_target;
+            crate::move_entity(
+                &mut player_position,
+                approach_yaw.wrapping_add(1024),
+                0,
+                crossing_distance,
+            );
+            player_position.z = crate::FlightWorld::ground_height(
+                session
+                    .backend()
+                    .campaign
+                    .level2_compatibility()
+                    .canonical_terrain(),
+                player_position,
+            )
+            .wrapping_add(256);
+            let mut launch_position = player_position;
+            let provisional_launch = crate::Position {
+                z: launch_position.z.wrapping_add(player_fov),
+                ..launch_position
+            };
+            let provisional = crate::level1_mission::projectile_guidance_angles(
+                provisional_launch,
+                predicted_target,
+            );
+            let direction_bits = session
+                .backend()
+                .campaign
+                .level2_compatibility()
+                .shared_spells()
+                .player_entity()
+                .control_flags
+                & 0x0300;
+            let hand_yaw = if direction_bits & 0x0100 != 0 {
+                Some(provisional.0.wrapping_sub(512))
+            } else if direction_bits & 0x0200 != 0 {
+                Some(provisional.0.wrapping_add(512))
+            } else {
+                None
+            };
+            if let Some(hand_yaw) = hand_yaw {
+                crate::move_entity(&mut launch_position, hand_yaw, 0, 256);
+                if crate::FlightWorld::ground_height(
+                    session
+                        .backend()
+                        .campaign
+                        .level2_compatibility()
+                        .canonical_terrain(),
+                    launch_position,
+                ) > launch_position.z
+                {
+                    launch_position = player_position;
+                }
+            }
+            launch_position.z = launch_position.z.wrapping_add(player_fov);
+            let (yaw, pitch) = crate::level1_mission::projectile_guidance_angles(
+                launch_position,
+                predicted_target,
+            );
+            let compatibility = session.backend_mut().campaign.level2_compatibility_mut();
+            compatibility
+                .set_level2_entity_position(player_slot, player_position)
+                .expect("position the real player at the proven incoming-combat boundary");
+            compatibility.set_level2_player_aim_for_test(yaw, pitch);
+        };
+
+        assert_eq!(nyphur_player_state(&session), Some(1));
+        assert_eq!(nyphur_action(&session), Some(1));
+        for cast_index in 0..32 {
+            if nyphur_action(&session) == Some(2) {
+                break;
+            }
+            let life_before = session
+                .backend()
+                .campaign
+                .level2_compatibility()
+                .nyphur_common_upkeep()
+                .expect("qualified Nyphur common carrier")
+                .life;
+            let projectile_slots_before = session
+                .backend()
+                .campaign
+                .level2_compatibility()
+                .economy()
+                .fireball_projectiles()
+                .iter()
+                .map(|projectile| projectile.source_entity_index)
+                .collect::<BTreeSet<_>>();
+            let impact_slots_before = session
+                .backend()
+                .campaign
+                .level2_compatibility()
+                .economy()
+                .model17_spawned_children()
+                .iter()
+                .map(|impact| impact.source_entity_index)
+                .collect::<BTreeSet<_>>();
+            aim_player_at_nyphur(&mut session);
+            session
+                .step(
+                    guard(&session),
+                    GameCommand {
+                        select_spell: Some(SemanticId::parse("spell.fireball").unwrap()),
+                        cast_selected: true,
+                        ..GameCommand::default()
+                    },
+                )
+                .unwrap();
+            let mut impact_life = None;
+            let mut projectile_slot = None;
+            let mut saw_class10_impact = false;
+            for _ in 0..12 {
+                let compatibility = session.backend().campaign.level2_compatibility();
+                projectile_slot = projectile_slot.or_else(|| {
+                    compatibility
+                        .economy()
+                        .fireball_projectiles()
+                        .iter()
+                        .find(|projectile| {
+                            !projectile_slots_before.contains(&projectile.source_entity_index)
+                                && projectile.owner_entity_index == compatibility.state.entity_index
+                                && projectile.source_subspell_index
+                                    == crate::level1_mission::FIREBALL_PAYLOAD as u16
+                        })
+                        .map(|projectile| projectile.source_entity_index)
+                });
+                saw_class10_impact |= projectile_slot.is_some_and(|projectile_slot| {
+                    compatibility
+                        .economy()
+                        .model17_spawned_children()
+                        .iter()
+                        .any(|impact| {
+                            !impact_slots_before.contains(&impact.source_entity_index)
+                                && impact.source_class == 10
+                                && impact.model == 0
+                                && impact.parent_entity_index == projectile_slot
+                                && impact.subspell_index
+                                    == crate::level1_mission::FIREBALL_PAYLOAD as u16
+                        })
+                });
+                let life = compatibility
+                    .nyphur_common_upkeep()
+                    .expect("Nyphur common carrier survives until lethal impact")
+                    .life;
+                if life < life_before {
+                    impact_life = Some(life);
+                    break;
+                }
+                session
+                    .step(guard(&session), GameCommand::default())
+                    .unwrap();
+            }
+            assert!(
+                impact_life.is_some(),
+                "ordinary semantic Fireball cast {cast_index} did not reach Nyphur's source mailbox"
+            );
+            assert!(
+                saw_class10_impact,
+                "ordinary semantic Fireball cast {cast_index} did not emit the source class-10/model-0 impact"
+            );
+            if impact_life.is_some_and(|life| life < 0) {
+                session
+                    .step(guard(&session), GameCommand::default())
+                    .unwrap();
+                break;
+            }
+        }
+        assert_eq!(nyphur_action(&session), Some(2));
+        assert_eq!(
+            nyphur_player_state(&session),
+            Some(1),
+            "lethal entity state alone must not satisfy the rival objective"
+        );
+        assert_eq!(
+            &session
+                .backend()
+                .campaign
+                .level2_compatibility()
+                .runtime()
+                .objectives[0]
+                .stage_selectors[..5],
+            &[2, 1, 1, 2, 1]
+        );
+
+        for _ in 0..512 {
+            if nyphur_player_state(&session) == Some(0) {
+                break;
+            }
+            session
+                .step(guard(&session), GameCommand::default())
+                .unwrap();
+        }
+        let compatibility = session.backend().campaign.level2_compatibility();
+        assert_eq!(nyphur_player_state(&session), Some(0));
+        assert_eq!(
+            &compatibility.runtime().objectives[0].stage_selectors[..5],
+            &[2, 2, 1, 2, 1]
+        );
+        assert_eq!(
+            progress_id(&session).as_deref(),
+            Some("objective.clear.plague_bees")
+        );
+        assert_eq!(
+            session.snapshot().value.objective_progress.completed_count,
+            3
         );
     }
 

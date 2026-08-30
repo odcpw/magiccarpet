@@ -1761,6 +1761,30 @@ impl PlayerSnapshot {
         self.banishment_state_0x006
     }
 
+    /// Commit the source `array_0x2BDE[color].byte_0x006` banishment flag.
+    /// Only qualified Level-2 player carriers own this byte; older inspection
+    /// records remain closed instead of acquiring mutable objective state.
+    pub(super) fn set_banishment_state(&mut self, value: u8) -> bool {
+        let Some(state) = self.banishment_state_0x006.as_mut() else {
+            return false;
+        };
+        *state = value;
+        self.record[PLAYER_LEVEL2_BANISHMENT_STATE_OFFSET] = value;
+        true
+    }
+
+    /// Apply `sub_5E310`'s released-holder sentinel while keeping the typed
+    /// relation and compact player record in lockstep.
+    pub(super) fn set_enabled_spell_holder_index(&mut self, family: usize, value: u16) -> bool {
+        let Some(holder) = self.enabled_spell_holders.get_mut(family) else {
+            return false;
+        };
+        *holder = value;
+        let offset = 268 + family * std::mem::size_of::<u16>();
+        self.record[offset..offset + 2].copy_from_slice(&value.to_le_bytes());
+        true
+    }
+
     /// Source `roll_0x155_341`, exported at the compact player-state offset
     /// used by the Level 2 reset projection.
     pub(super) fn roll_0x155(&self) -> i16 {

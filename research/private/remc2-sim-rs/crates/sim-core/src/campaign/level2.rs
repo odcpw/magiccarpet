@@ -11934,7 +11934,10 @@ impl Level2ResetSession {
             Level2SourceRoute::CastleRoot => handler == ExistingHandler::CastleRoot,
             Level2SourceRoute::Goat => handler == ExistingHandler::GoatFamily,
             Level2SourceRoute::Player => handler == ExistingHandler::PlayerFlight,
-            Level2SourceRoute::Nyphur => handler == ExistingHandler::NyphurPlayer,
+            Level2SourceRoute::Nyphur => matches!(
+                handler,
+                ExistingHandler::NyphurPlayer | ExistingHandler::PlayerFlight
+            ),
             Level2SourceRoute::Imported => matches!(
                 handler,
                 ExistingHandler::BallisticScenery
@@ -13270,7 +13273,20 @@ impl Level2ResetSession {
                     events: events.into_boxed_slice(),
                 });
             }
-            (ExistingHandler::NyphurPlayer, Level2SourceRoute::Nyphur) => {
+            (
+                ExistingHandler::NyphurPlayer | ExistingHandler::PlayerFlight,
+                Level2SourceRoute::Nyphur,
+            ) => {
+                let action =
+                    self.session.state.live.economy.entities[usize::from(source_slot)].action;
+                if action == 2 {
+                    self.step_level2_nyphur_dying_action(source_slot);
+                    return Ok(());
+                }
+                if action == 3 {
+                    self.step_level2_nyphur_banished_action(source_slot);
+                    return Ok(());
+                }
                 let move_speed_flag = self
                     .session
                     .state
@@ -13287,31 +13303,54 @@ impl Level2ResetSession {
                     .shared_spells
                     .local_player
                     .player_color_index();
-                let terrain = &self.session.state.live.terrain;
-                let players = &self.session.state.live.core.players;
-                let source_arena = &mut self.session.state.live.economy;
-                let (entities, economy) = (&mut source_arena.entities, &mut source_arena.economy);
-                let castle = economy.castle();
-                let castle_children = economy.castle_children().to_vec();
-                match self.session.state.live.nyphur_dispatcher.step_dispatch(
-                    pass,
-                    source_slot,
-                    entities,
-                    economy.spheres_mut(),
-                    castle,
-                    &castle_children,
-                    players,
-                    terrain,
-                    &self.session.definition.presentation,
-                    move_speed_flag,
-                    active_level_color_index,
-                ) {
-                    Ok((_snapshot, trace)) => self
-                        .session
-                        .state
-                        .scratch
-                        .nyphur_dispatch_traces
-                        .push(trace),
+                let dispatch = {
+                    let terrain = &self.session.state.live.terrain;
+                    let players = &self.session.state.live.core.players;
+                    let source_arena = &mut self.session.state.live.economy;
+                    let (entities, economy) =
+                        (&mut source_arena.entities, &mut source_arena.economy);
+                    let castle = economy.castle();
+                    let castle_children = economy.castle_children().to_vec();
+                    self.session.state.live.nyphur_dispatcher.step_dispatch(
+                        pass,
+                        source_slot,
+                        entities,
+                        economy.spheres_mut(),
+                        castle,
+                        &castle_children,
+                        players,
+                        terrain,
+                        &self.session.definition.presentation,
+                        move_speed_flag,
+                        active_level_color_index,
+                    )
+                };
+                match dispatch {
+                    Ok((_snapshot, trace)) => {
+                        let source =
+                            &self.session.state.live.economy.entities[usize::from(source_slot)];
+                        let position = source.position;
+                        let active = source.active;
+                        self.session
+                            .state
+                            .live
+                            .economy
+                            .map_chains
+                            .sync_entity(RenderableMapSeed {
+                                entity_index: source_slot,
+                                active,
+                                x: position.x,
+                                y: position.y,
+                            })
+                            .map_err(|error| {
+                                format!("Nyphur source slot {source_slot} map sync failed: {error}")
+                            })?;
+                        self.session
+                            .state
+                            .scratch
+                            .nyphur_dispatch_traces
+                            .push(trace);
+                    }
                     Err(error) => self.push_dispatch_effect(Level2DispatchEvent::Error {
                         pass,
                         source_slot,
@@ -18533,6 +18572,213 @@ impl Level2ResetSession {
         shield_damage
             .is_none()
             .then_some((damage, attacker, lethal))
+    }
+
+    /// Release the remote AI player's live spell holders at the grounded
+    /// `sub_5E310` death boundary. The numeric rows and the qualified player
+    /// record are the only authorities for Nyphur's holders; the local-player
+    /// shared-spell projection must remain untouched.
+    fn release_level2_nyphur_spell_holders(
+        &mut self,
+        player_entity_index: u16,
+        player_position: Position,
+    ) {
+        let Some(player_index) = self
+            .session
+            .state
+            .live
+            .core
+            .players
+            .iter()
+            .position(|player| player.entity_index == player_entity_index && player.is_ai)
+        else {
+            return;
+        };
+        let enabled = self.session.state.live.core.players[player_index].enabled_spell_holders;
+        let mut rng =
+            self.session.state.live.economy.entities[usize::from(player_entity_index)].entity_rng;
+
+        for (family, holder_index) in enabled.into_iter().enumerate() {
+            if holder_index == 0
+                || usize::from(holder_index) >= self.session.state.live.economy.entities.len()
+            {
+                assert!(
+                    self.session.state.live.core.players[player_index]
+                        .set_enabled_spell_holder_index(family, 0),
+                    "qualified Nyphur player owns every spell-family relation"
+                );
+                continue;
+            }
+            assert!(
+                self.session.state.live.core.players[player_index]
+                    .set_enabled_spell_holder_index(family, 1),
+                "qualified Nyphur player owns every spell-family relation"
+            );
+            {
+                let holder =
+                    &mut self.session.state.live.economy.entities[usize::from(holder_index)];
+                holder.set_control_flags(holder.control_flags & !1);
+                holder.set_source_action(holder.action.wrapping_add(1));
+            }
+
+            rng = level2_next_rng16(rng);
+            let x_offset = i16::try_from(i32::from(rng & 0x01ff) - 256)
+                .expect("nine-bit Nyphur holder x offset fits i16");
+            rng = level2_next_rng16(rng);
+            let y_offset = i16::try_from(i32::from(rng & 0x01ff) - 256)
+                .expect("nine-bit Nyphur holder y offset fits i16");
+            let position = Position {
+                x: player_position.x.wrapping_add_signed(x_offset),
+                y: player_position.y.wrapping_add_signed(y_offset),
+                z: player_position.z,
+            };
+            {
+                let holder =
+                    &mut self.session.state.live.economy.entities[usize::from(holder_index)];
+                holder.set_position(position);
+            }
+            self.session
+                .state
+                .live
+                .economy
+                .map_chains
+                .sync_entity(RenderableMapSeed {
+                    entity_index: holder_index,
+                    active: true,
+                    x: position.x,
+                    y: position.y,
+                })
+                .expect("released Nyphur holder source slot fits map chain");
+            rng = level2_next_rng16(rng);
+            let life = i32::from(rng % 90) + 200;
+            self.session.state.live.economy.entities[usize::from(holder_index)].set_life(life);
+        }
+        self.session.state.live.economy.entities[usize::from(player_entity_index)]
+            .set_entity_rng(rng);
+    }
+
+    /// Continue the ordinary AI player death selected by Nyphur's lethal
+    /// `sub_5EFA0` mailbox result. This is the pinned `sub_5E310` action-2
+    /// transition: fall to terrain, release holders, allocate the death
+    /// marker, redirect owned mana, then select action 3.
+    fn step_level2_nyphur_dying_action(&mut self, source_slot: u16) {
+        const PLAYER_BANISHED_ACTION_TIMER: i32 = 1_200;
+
+        let (old_fall_velocity, source_id, collision_vertical_offset, burst_position) = {
+            let player = &self.session.state.live.economy.entities[usize::from(source_slot)];
+            let collision_vertical_offset = player
+                .parameter_relation
+                .and_then(|index| {
+                    self.session
+                        .definition
+                        .presentation
+                        .entity_parameters
+                        .get(usize::from(index))
+                })
+                .map(|row| i16::from_le_bytes([row[12], row[13]]))
+                .expect("qualified Nyphur parameter row remains present");
+            (
+                player.source_word_2c(),
+                player.source_id,
+                collision_vertical_offset,
+                player.position,
+            )
+        };
+        let mut position = burst_position;
+        position.z = position.z.wrapping_add(old_fall_velocity);
+        let next_fall_velocity = old_fall_velocity.wrapping_sub(2).clamp(-256, 0);
+        let ground = self
+            .session
+            .state
+            .live
+            .terrain
+            .ground_height(position)
+            .wrapping_add(collision_vertical_offset);
+        if position.z < ground {
+            position.z = ground;
+        }
+        self.session.state.live.economy.entities[usize::from(source_slot)]
+            .set_source_word_2c(next_fall_velocity);
+        self.set_level2_entity_position(source_slot, position)
+            .expect("qualified Nyphur map carrier remains valid while dying");
+        let _ = self.session.state.live.economy.spawn_player_dying_burst(
+            source_slot,
+            source_id,
+            burst_position,
+        );
+
+        if position.z != ground {
+            return;
+        }
+        let reset_free_slots = self.session.baseline.economy.economy.free_slots.clone();
+        self.session
+            .state
+            .live
+            .economy
+            .rebuild_free_arena(&reset_free_slots);
+        self.session.state.live.economy.entities[usize::from(source_slot)]
+            .clear_source_upkeep_mailbox();
+        self.release_level2_nyphur_spell_holders(source_slot, position);
+        if let Some(marker) = self
+            .session
+            .state
+            .live
+            .economy
+            .allocate_player_death_marker(source_slot, position)
+        {
+            let player = &mut self.session.state.live.economy.entities[usize::from(source_slot)];
+            player.set_source_action(3);
+            player.set_source_dword_10(PLAYER_BANISHED_ACTION_TIMER);
+            self.session
+                .state
+                .live
+                .economy
+                .redirect_player_mana_spheres_to_death_marker(
+                    source_slot,
+                    marker.source_entity_index,
+                );
+        }
+        self.session.state.live.economy.entities[usize::from(source_slot)]
+            .set_player_death_hidden_bit();
+        self.session
+            .state
+            .live
+            .economy
+            .decrement_replacement_cursor_after_player_contact();
+    }
+
+    /// Execute the AI/no-Castle branch of pinned `sub_5E7C0`. The objective
+    /// carrier changes only after the ordinary lethal mailbox and grounded
+    /// action-2 transition selected action 3.
+    fn step_level2_nyphur_banished_action(&mut self, source_slot: u16) {
+        let Some(player_index) = self
+            .session
+            .state
+            .live
+            .core
+            .players
+            .iter()
+            .position(|player| player.entity_index == source_slot && player.is_ai)
+        else {
+            return;
+        };
+        let castle_entity_index = self
+            .nyphur_common_upkeep()
+            .expect("qualified Nyphur common carrier remains available")
+            .castle_entity_index;
+        if castle_entity_index != 0 {
+            let timer = self.session.state.live.economy.entities[usize::from(source_slot)]
+                .source_dword_10();
+            if timer != 0 {
+                self.session.state.live.economy.entities[usize::from(source_slot)]
+                    .set_source_dword_10(timer.wrapping_sub(1));
+            }
+            return;
+        }
+        assert!(
+            self.session.state.live.core.players[player_index].set_banishment_state(0),
+            "qualified Nyphur player owns the Level-2 banishment carrier"
+        );
     }
 
     fn release_level2_player_spell_holders(&mut self, player_position: Position) {
