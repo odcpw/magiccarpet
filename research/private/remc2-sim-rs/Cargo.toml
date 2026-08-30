@@ -3,6 +3,7 @@ members = [
     "crates/atlas-registry",
     "crates/sim-archer-tmap",
     "crates/sim-classic-hd",
+    "crates/sim-classic-hd-display",
     "crates/sim-collision",
     "crates/sim-combat-tmap",
     "crates/sim-countdown-switch",

@@ -197,6 +197,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "sim-classic-hd-display"
+version = "0.1.0"
+dependencies = [
+ "sim-classic-hd",
+]
+
+[[package]]
 name = "sim-cli"
 version = "0.1.0"
 dependencies = [
@@ -229,6 +236,7 @@ dependencies = [
  "sha2",
  "sim-archer-tmap",
  "sim-classic-hd",
+ "sim-classic-hd-display",
  "sim-collision",
  "sim-combat-tmap",
  "sim-countdown-switch",

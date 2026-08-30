@@ -16,6 +16,7 @@ serde_json = "=1.0.149"
 sha2 = "=0.10.9"
 sim-archer-tmap = { path = "../sim-archer-tmap" }
 sim-classic-hd = { path = "../sim-classic-hd" }
+sim-classic-hd-display = { path = "../sim-classic-hd-display" }
 sim-collision = { path = "../sim-collision" }
 sim-combat-tmap = { path = "../sim-combat-tmap" }
 sim-countdown-switch = { path = "../sim-countdown-switch" }
