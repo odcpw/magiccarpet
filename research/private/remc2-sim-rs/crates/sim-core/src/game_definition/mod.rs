@@ -10,7 +10,8 @@ mod runtime;
 pub use mc2_owned::{Mc2OwnedInputs, load_mc2_owned};
 pub use runtime::{
     DefinitionFireballBinding, DefinitionFlightBinding, DefinitionGoatPolicyBinding,
-    ENEMY_DEFAULT_POLICY_ID, FIREBALL_MANA_COST_ID, PLAYER_MAX_FORWARD_SPEED_ID,
+    ENEMY_DEFAULT_POLICY_ID, FIREBALL_MANA_COST_ID, PLAYER_FORWARD_ACCELERATION_ID,
+    PLAYER_MAX_FORWARD_SPEED_ID,
 };
 pub use sim_definition::runtime_flow::{
     RuntimeFlowDefinition, RuntimeFlowDestination, RuntimeFlowEntry, RuntimeFlowNodeId,

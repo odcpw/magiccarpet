@@ -312,6 +312,23 @@ impl ChangeSetBuilder {
     }
 
     #[must_use]
+    pub fn set_integer_from(
+        mut self,
+        parameter: IntegerParameter,
+        expected_value: i64,
+        value: i64,
+    ) -> Self {
+        self.change_set
+            .operations
+            .push(DefinitionOperation::SetInteger {
+                parameter,
+                value,
+                expected_value: Some(expected_value),
+            });
+        self
+    }
+
+    #[must_use]
     pub fn select_option(mut self, parameter: OptionParameter, option: impl Into<String>) -> Self {
         self.change_set
             .operations

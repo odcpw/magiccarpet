@@ -67,6 +67,8 @@ impl<'de> Deserialize<'de> for ArtifactId {
 pub enum IntegerParameter {
     #[serde(rename = "flight.player.max_forward_speed")]
     PlayerMaxForwardSpeed,
+    #[serde(rename = "flight.player.forward_acceleration")]
+    PlayerForwardAcceleration,
     #[serde(rename = "spell.fireball.mana_cost")]
     FireballManaCost,
 }
@@ -76,6 +78,7 @@ impl IntegerParameter {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::PlayerMaxForwardSpeed => "flight.player.max_forward_speed",
+            Self::PlayerForwardAcceleration => "flight.player.forward_acceleration",
             Self::FireballManaCost => "spell.fireball.mana_cost",
         }
     }
@@ -206,6 +209,7 @@ impl DefinitionOperation {
                     "optional_fields": ["expected_value"],
                     "parameter_ids": [
                         IntegerParameter::PlayerMaxForwardSpeed.as_str(),
+                        IntegerParameter::PlayerForwardAcceleration.as_str(),
                         IntegerParameter::FireballManaCost.as_str(),
                     ],
                     "parameter_requirements": {
@@ -554,7 +558,8 @@ impl DefinitionOperation {
         let playable_operation_is_supported = matches!(
             self,
             Self::SetInteger {
-                parameter: IntegerParameter::PlayerMaxForwardSpeed,
+                parameter: IntegerParameter::PlayerMaxForwardSpeed
+                    | IntegerParameter::PlayerForwardAcceleration,
                 ..
             } | Self::MoveEntity { .. }
                 | Self::SetEntityMaxLife { .. }
@@ -1133,6 +1138,34 @@ mod tests {
         ] {
             assert!(serde_json::from_value::<DefinitionOperation>(value).is_err());
         }
+    }
+
+    #[test]
+    fn forward_acceleration_operation_json_is_typed_and_closed() {
+        let operation = serde_json::from_value::<DefinitionOperation>(serde_json::json!({
+            "operation": "set_integer",
+            "parameter": "flight.player.forward_acceleration",
+            "value": 8,
+            "expected_value": 16
+        }))
+        .unwrap();
+        assert_eq!(
+            operation,
+            DefinitionOperation::SetInteger {
+                parameter: IntegerParameter::PlayerForwardAcceleration,
+                value: 8,
+                expected_value: Some(16),
+            }
+        );
+        assert!(
+            serde_json::from_value::<DefinitionOperation>(serde_json::json!({
+                "operation": "set_integer",
+                "parameter": "flight.player.forward_acceleration",
+                "value": 8,
+                "source_step": 16
+            }))
+            .is_err()
+        );
     }
 
     #[test]

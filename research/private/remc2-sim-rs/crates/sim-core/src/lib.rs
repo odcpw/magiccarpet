@@ -108,11 +108,13 @@ const _: () = assert!(SOURCE_STRAFE_MINIMUM == -SOURCE_STRAFE_MAXIMUM);
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct FlightTuning {
     pub max_forward_speed: i16,
+    pub forward_acceleration: i16,
 }
 
 impl FlightTuning {
     pub const CLASSIC: Self = Self {
         max_forward_speed: SPEED_LIMIT,
+        forward_acceleration: SPEED_STEP,
     };
 }
 
@@ -1735,7 +1737,11 @@ pub fn decode_movement_with_tuning(flags: u8, state: &mut FlightState, tuning: F
     if forward_direction != 0 {
         state.target_speed = state
             .target_speed
-            .saturating_add(SPEED_STEP * forward_direction)
+            .saturating_add(
+                tuning
+                    .forward_acceleration
+                    .saturating_mul(forward_direction),
+            )
             .clamp(SOURCE_REVERSE_LIMIT, tuning.max_forward_speed);
         state.speed_changed_flag = 1;
     }
@@ -1833,7 +1839,7 @@ pub fn step_entity_pass_with_context_and_tuning<W: FlightWorld>(
 ) -> StepEvidence {
     decode_movement_with_tuning(command.flags, state, tuning);
     journal_spell_fire(command.flags, context);
-    step_entity_body_with_context(state, profile, world, context)
+    step_entity_body_with_context_and_tuning(state, profile, world, context, tuning)
 }
 
 /// Execute the recovered `sub_5D530` flight/entity body without relatching
@@ -1847,6 +1853,16 @@ pub fn step_entity_body_with_context<W: FlightWorld>(
     profile: FlightProfile,
     world: &W,
     context: &mut FlightContext,
+) -> StepEvidence {
+    step_entity_body_with_context_and_tuning(state, profile, world, context, FlightTuning::CLASSIC)
+}
+
+fn step_entity_body_with_context_and_tuning<W: FlightWorld>(
+    state: &mut FlightState,
+    profile: FlightProfile,
+    world: &W,
+    context: &mut FlightContext,
+    tuning: FlightTuning,
 ) -> StepEvidence {
     let before = state.position;
 
@@ -1869,7 +1885,11 @@ pub fn step_entity_body_with_context<W: FlightWorld>(
         .pitch_accumulator
         .wrapping_add(modified_control_delta(state, state.pitch_delta));
     state.yaw = wrap_angle(i32::from(state.yaw) + i32::from(state.roll_accumulator) / 8);
-    state.actual_speed = step_speed_without_target_clamp(state.actual_speed, state.target_speed);
+    state.actual_speed = step_speed_without_target_clamp(
+        state.actual_speed,
+        state.target_speed,
+        tuning.forward_acceleration,
+    );
     update_terrain_relative_pitch(state, profile, world);
 
     let mut proposed = before;
@@ -2896,10 +2916,10 @@ fn update_terrain_relative_pitch<W: FlightWorld>(
     state.effective_pitch = wrap_angle(pitch);
 }
 
-fn step_speed_without_target_clamp(value: i16, target: i16) -> i16 {
+fn step_speed_without_target_clamp(value: i16, target: i16, step: i16) -> i16 {
     match value.cmp(&target) {
-        Ordering::Less => value.wrapping_add(SPEED_STEP),
-        Ordering::Greater => value.wrapping_sub(SPEED_STEP),
+        Ordering::Less => value.wrapping_add(step),
+        Ordering::Greater => value.wrapping_sub(step),
         Ordering::Equal => value,
     }
 }

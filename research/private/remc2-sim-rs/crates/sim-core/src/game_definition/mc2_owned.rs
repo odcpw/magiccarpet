@@ -7,7 +7,7 @@ use super::{
     ArtifactKind, DefinitionErrorCode, FIREBALL_MANA_COST_CAPABILITY_ID, GameDefinition,
     RequiredCapability, Result, SemanticCatalog, SemanticId, SemanticValue, engine_capabilities,
 };
-use crate::{SPEED_LIMIT, goat::GoatBehaviorConfig, native_world::NativeWorld};
+use crate::{SPEED_LIMIT, SPEED_STEP, goat::GoatBehaviorConfig, native_world::NativeWorld};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use sim_definition::adapter::{
@@ -117,6 +117,7 @@ pub fn load_mc2_owned(
         .len();
     let binding_payload = json!({
         "flight.player.max_forward_speed": SPEED_LIMIT,
+        "flight.player.forward_acceleration": SPEED_STEP,
         "spell.fireball.mana_cost": holder_cost,
         "ai.enemy.default.policy": "classic_goat_v1",
         "presentation.spell.fireball.projectile_asset": format!("sha256:{}", cache.asset_sha256),
@@ -189,6 +190,10 @@ pub fn load_mc2_owned(
         (
             SemanticId::parse("flight.player.max_forward_speed")?,
             SemanticValue::Integer(i64::from(SPEED_LIMIT)),
+        ),
+        (
+            SemanticId::parse("flight.player.forward_acceleration")?,
+            SemanticValue::Integer(i64::from(SPEED_STEP)),
         ),
         (
             SemanticId::parse("presentation.spell.fireball.projectile_asset")?,

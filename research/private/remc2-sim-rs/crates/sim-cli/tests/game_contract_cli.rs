@@ -99,7 +99,7 @@ fn capabilities_describe_and_get_are_deterministic_data_only_reads() {
     let capabilities: Value = serde_json::from_slice(&capabilities.stdout).expect("JSON stdout");
     assert_eq!(capabilities["ok"], true);
     assert_eq!(capabilities["data"]["read_only"], false);
-    assert_eq!(capabilities["data"]["writable_descriptor_count"], 4);
+    assert_eq!(capabilities["data"]["writable_descriptor_count"], 5);
     assert_eq!(capabilities["contract_version"], "34.0");
     assert_eq!(
         capabilities["data"]["authoring"]["change_set_schema"],
@@ -258,6 +258,7 @@ fn capabilities_describe_and_get_are_deterministic_data_only_reads() {
         set_integer["parameter_ids"],
         serde_json::json!([
             "flight.player.max_forward_speed",
+            "flight.player.forward_acceleration",
             "spell.fireball.mana_cost"
         ])
     );
@@ -492,7 +493,7 @@ fn capabilities_describe_and_get_are_deterministic_data_only_reads() {
             .as_array()
             .unwrap()
             .len(),
-        4
+        5
     );
 
     let fixture = fixture();
@@ -507,16 +508,16 @@ fn capabilities_describe_and_get_are_deterministic_data_only_reads() {
             .as_array()
             .unwrap()
             .len(),
-        4
+        5
     );
     assert_eq!(describe_json["data"]["page"]["complete"], true);
 
-    let first_page = run(&["game", "describe", "--package", fixture, "--limit", "2"]);
+    let first_page = run(&["game", "describe", "--package", fixture, "--limit", "3"]);
     assert!(first_page.status.success());
     let first_page: Value = serde_json::from_slice(&first_page.stdout).expect("JSON stdout");
     assert_eq!(
         first_page["data"]["descriptors"].as_array().unwrap().len(),
-        2
+        3
     );
     assert_eq!(first_page["data"]["page"]["complete"], false);
     let cursor = first_page["data"]["page"]["next_cursor"]
@@ -528,7 +529,7 @@ fn capabilities_describe_and_get_are_deterministic_data_only_reads() {
         "--package",
         fixture,
         "--limit",
-        "2",
+        "3",
         "--cursor",
         cursor,
     ]);

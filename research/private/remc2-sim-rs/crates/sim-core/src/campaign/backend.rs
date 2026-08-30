@@ -3692,6 +3692,141 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn campaign_backend_binds_strict_forward_acceleration_across_level_packages_and_reset() {
+        const ACCELERATION_ID: &str = "flight.player.forward_acceleration";
+        let catalog = default_catalog().unwrap();
+        let acceleration_id = SemanticId::parse(ACCELERATION_ID).unwrap();
+        for (ordinal, root) in [
+            level_one_descriptor_fixture_path(),
+            descriptor_fixture_path(),
+            level_three_descriptor_fixture_path(),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let base = load_mc2_campaign(&root, &catalog).unwrap();
+            assert_eq!(
+                base.value(&acceleration_id),
+                Some(&SemanticValue::Integer(i64::from(crate::SPEED_STEP)))
+            );
+            let descriptor = base
+                .semantic_descriptor(&catalog, &acceleration_id)
+                .expect("qualified campaign package exposes forward acceleration");
+            assert_eq!(descriptor.access, Access::Writable);
+            assert_eq!(descriptor.minimum, Some(1));
+            assert_eq!(descriptor.maximum, Some(i64::from(i16::MAX)));
+
+            let workspace_root =
+                temporary_workspace_path(&format!("campaign-forward-acceleration-{ordinal}"));
+            let store = WorkspaceStore::create(
+                &workspace_root,
+                "campaign-forward-acceleration-authoring",
+                base.clone(),
+            )
+            .unwrap();
+            let before_negative = store.state_bytes().unwrap();
+            let invalid = ChangeSetBuilder::new(
+                "campaign-forward-acceleration-authoring",
+                &base,
+                format!("reject-zero-forward-acceleration-{ordinal}"),
+                RequestedTiming::SessionReset,
+            )
+            .set_integer_from(
+                IntegerParameter::PlayerForwardAcceleration,
+                i64::from(crate::SPEED_STEP),
+                0,
+            )
+            .build()
+            .unwrap();
+            let invalid_validation = store.validate(&catalog, invalid).unwrap();
+            assert!(!invalid_validation.accepted);
+            assert_eq!(store.state_bytes().unwrap(), before_negative);
+
+            let change_set = ChangeSetBuilder::new(
+                "campaign-forward-acceleration-authoring",
+                &base,
+                format!("halve-forward-acceleration-{ordinal}"),
+                RequestedTiming::SessionReset,
+            )
+            .set_integer_from(
+                IntegerParameter::PlayerForwardAcceleration,
+                i64::from(crate::SPEED_STEP),
+                8,
+            )
+            .build()
+            .unwrap();
+            let (validation, diff) = store.diff(&catalog, change_set.clone()).unwrap();
+            assert!(validation.accepted, "{:#?}", validation.diagnostics);
+            assert_eq!(
+                diff.iter()
+                    .map(|entry| (entry.id.as_str(), &entry.before, &entry.after))
+                    .collect::<Vec<_>>(),
+                vec![(
+                    ACCELERATION_ID,
+                    &SemanticValue::Integer(16),
+                    &SemanticValue::Integer(8),
+                )]
+            );
+            assert_eq!(store.state_bytes().unwrap(), before_negative);
+
+            let mut session = GameSession::open(
+                &Mc2CampaignAdapter,
+                Arc::new(base.clone()),
+                140 + u64::try_from(ordinal).unwrap(),
+                Mc2CampaignInputs::new(&root),
+            )
+            .unwrap();
+            store
+                .apply(
+                    &catalog,
+                    change_set,
+                    &validation.receipt_hash,
+                    PublicationFault::None,
+                )
+                .unwrap();
+            let published = store.active_definition().unwrap();
+            assert_eq!(
+                published.semantic_target_value(&acceleration_id),
+                Some(SemanticValue::Integer(8))
+            );
+
+            let accelerate = GameCommand {
+                longitudinal: LongitudinalControl::Accelerate,
+                ..GameCommand::default()
+            };
+            session.step(guard(&session), accelerate.clone()).unwrap();
+            assert_eq!(
+                (
+                    session.snapshot().value.player_motion.target_speed,
+                    session.snapshot().value.player_motion.actual_speed,
+                ),
+                (16, 16),
+                "publication leaves the already-open package authority unchanged"
+            );
+
+            session
+                .reopen(guard(&session), Arc::new(published))
+                .unwrap();
+            session.step(guard(&session), accelerate.clone()).unwrap();
+            let authored_step = session.snapshot().value;
+            assert_eq!(
+                (
+                    authored_step.player_motion.target_speed,
+                    authored_step.player_motion.actual_speed,
+                ),
+                (8, 8),
+                "ordinary input decode and entity integration consume the authored step"
+            );
+
+            session.reset(guard(&session)).unwrap();
+            session.step(guard(&session), accelerate).unwrap();
+            assert_eq!(session.snapshot().value, authored_step);
+
+            std::fs::remove_dir_all(&workspace_root).unwrap();
+        }
+    }
+
+    #[test]
     fn campaign_backend_binds_package_present_goat_policy_across_reopen_and_reset() {
         let catalog = default_catalog().unwrap();
         let policy_id = SemanticId::parse(ENEMY_DEFAULT_POLICY_ID).unwrap();

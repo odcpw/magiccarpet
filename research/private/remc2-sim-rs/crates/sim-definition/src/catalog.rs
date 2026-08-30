@@ -674,6 +674,28 @@ fn validate_player_max_forward_speed(
     Ok(())
 }
 
+fn validate_player_forward_acceleration(
+    _: &GameDefinition,
+    id: &SemanticId,
+    value: &SemanticValue,
+) -> Result<()> {
+    let SemanticValue::Integer(value) = value else {
+        return Err(DefinitionError::new(
+            DefinitionErrorCode::TypeMismatch,
+            id.as_str(),
+            "player forward acceleration is not an integer",
+        ));
+    };
+    if !(1..=i64::from(i16::MAX)).contains(value) {
+        return Err(DefinitionError::new(
+            DefinitionErrorCode::OutOfRange,
+            id.as_str(),
+            "player forward acceleration must fit the positive source i16 carrier",
+        ));
+    }
+    Ok(())
+}
+
 fn validate_presentation_asset_replacement(
     definition: &GameDefinition,
     id: &SemanticId,
@@ -706,6 +728,16 @@ fn writable_player_max_forward_speed_binding() -> Result<SemanticBinding> {
         id: SemanticId::parse("flight.player.max_forward_speed")?,
         read: Some(read_definition_value),
         validate: Some(validate_player_max_forward_speed),
+        apply: Some(apply_definition_replacement),
+        read_back: Some(read_definition_value),
+    })
+}
+
+fn writable_player_forward_acceleration_binding() -> Result<SemanticBinding> {
+    Ok(SemanticBinding {
+        id: SemanticId::parse("flight.player.forward_acceleration")?,
+        read: Some(read_definition_value),
+        validate: Some(validate_player_forward_acceleration),
         apply: Some(apply_definition_replacement),
         read_back: Some(read_definition_value),
     })
@@ -830,6 +862,30 @@ pub fn default_catalog() -> Result<SemanticCatalog> {
             "Maximum forward target speed consumed by the ordinary player flight path.",
         )?,
         descriptor(
+            "flight.player.forward_acceleration",
+            DescriptorKind::Tuning,
+            ValueType::Integer,
+            Some("source_velocity_units_per_input_command"),
+            SemanticValue::Integer(16),
+            (Some(1), Some(i64::from(i16::MAX))),
+            &[],
+            MutationTiming::SessionReset,
+            "sim-core/flight-source-pin",
+            "sha256:171fed6decdb5bf26b89d8067ed6ace8912e6e3baee7353e98f9cb1ec9955be3",
+            Some(TemporalContract {
+                dispatch_phase: "player_input_decode".to_owned(),
+                dispatch_key: "forward_motion".to_owned(),
+                ordinary_producer: "latched player acceleration/deceleration command".to_owned(),
+                handler: "decode movement target-speed change".to_owned(),
+                same_pass_epilogue: "entity flight integration".to_owned(),
+                following_pass_cleanup: "next command latch or reset".to_owned(),
+                authoritative_reads: vec!["rust_player_flight_state".to_owned()],
+                authoritative_writes: vec!["rust_target_speed".to_owned()],
+                rng_and_event_effects: "none".to_owned(),
+            }),
+            "Forward target-speed change consumed by the ordinary player flight path.",
+        )?,
+        descriptor(
             "presentation.spell.fireball.projectile_asset",
             DescriptorKind::AssetSlot,
             ValueType::Reference,
@@ -879,6 +935,7 @@ pub fn default_catalog() -> Result<SemanticCatalog> {
         )?,
     ];
     let flight_id = SemanticId::parse("flight.player.max_forward_speed")?;
+    let acceleration_id = SemanticId::parse("flight.player.forward_acceleration")?;
     let enemy_policy_id = SemanticId::parse("ai.enemy.default.policy")?;
     descriptors
         .iter_mut()
@@ -889,6 +946,11 @@ pub fn default_catalog() -> Result<SemanticCatalog> {
         .iter_mut()
         .find(|descriptor| descriptor.id == flight_id)
         .expect("static flight descriptor exists")
+        .access = Access::Writable;
+    descriptors
+        .iter_mut()
+        .find(|descriptor| descriptor.id == acceleration_id)
+        .expect("static flight acceleration descriptor exists")
         .access = Access::Writable;
     let fireball_cost_id = SemanticId::parse("spell.fireball.mana_cost")?;
     descriptors
@@ -905,6 +967,7 @@ pub fn default_catalog() -> Result<SemanticCatalog> {
     let bindings = vec![
         writable_definition_binding("ai.enemy.default.policy")?,
         writable_player_max_forward_speed_binding()?,
+        writable_player_forward_acceleration_binding()?,
         writable_presentation_asset_binding("presentation.spell.fireball.projectile_asset")?,
         writable_definition_binding("spell.fireball.mana_cost")?,
     ];
@@ -931,7 +994,7 @@ mod tests {
     #[test]
     fn catalog_rejects_duplicate_missing_and_undiscoverable_bindings() {
         let catalog = default_catalog().expect("valid bounded catalog");
-        assert_eq!(catalog.descriptors().len(), 4);
+        assert_eq!(catalog.descriptors().len(), 5);
 
         let descriptor = catalog
             .descriptors()

@@ -452,20 +452,25 @@ fn target_and_strafe_controls_obey_steps_limits_and_decay() {
 }
 
 #[test]
-fn definition_bound_forward_limit_uses_the_ordinary_decoder() {
+fn definition_bound_forward_tuning_uses_the_ordinary_decoder() {
     let tuning = FlightTuning {
         max_forward_speed: 16,
+        forward_acceleration: 8,
     };
     let mut authored = FlightState::default();
     let mut classic = FlightState::default();
-    for _ in 0..4 {
+    decode_movement_with_tuning(1, &mut authored, tuning);
+    decode_movement(1, &mut classic);
+    assert_eq!(authored.target_speed, 8);
+    assert_eq!(classic.target_speed, 16);
+    for _ in 0..3 {
         decode_movement_with_tuning(1, &mut authored, tuning);
         decode_movement(1, &mut classic);
     }
     assert_eq!(authored.target_speed, 16);
     assert_eq!(classic.target_speed, 64);
 
-    for _ in 0..10 {
+    for _ in 0..12 {
         decode_movement_with_tuning(2, &mut authored, tuning);
     }
     assert_eq!(authored.target_speed, -80);
@@ -2148,9 +2153,9 @@ fn recovered_seeded_square_root_is_floor_exact_across_the_u32_domain() {
 
 #[test]
 fn actual_speed_moves_by_exact_steps_and_can_overshoot() {
-    assert_eq!(step_speed_without_target_clamp(0, 10), 16);
-    assert_eq!(step_speed_without_target_clamp(16, 10), 0);
-    assert_eq!(step_speed_without_target_clamp(-5, -10), -21);
+    assert_eq!(step_speed_without_target_clamp(0, 10, SPEED_STEP), 16);
+    assert_eq!(step_speed_without_target_clamp(16, 10, SPEED_STEP), 0);
+    assert_eq!(step_speed_without_target_clamp(-5, -10, SPEED_STEP), -21);
 }
 
 #[test]

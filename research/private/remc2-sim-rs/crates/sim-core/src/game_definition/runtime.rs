@@ -9,6 +9,7 @@ use sim_definition::adapter::definition_error;
 use sim_definition::level_definition::{CreatureKind, LevelEntityKind};
 
 pub const PLAYER_MAX_FORWARD_SPEED_ID: &str = "flight.player.max_forward_speed";
+pub const PLAYER_FORWARD_ACCELERATION_ID: &str = "flight.player.forward_acceleration";
 pub const FIREBALL_MANA_COST_ID: &str = "spell.fireball.mana_cost";
 pub const ENEMY_DEFAULT_POLICY_ID: &str = "ai.enemy.default.policy";
 
@@ -188,8 +189,33 @@ impl DefinitionFlightBinding {
                 "player maximum forward speed must be a nonnegative multiple of 16 through 32752",
             ));
         }
+        let acceleration_id = SemanticId::parse(PLAYER_FORWARD_ACCELERATION_ID)?;
+        let Some(SemanticValue::Integer(value)) = definition.value(&acceleration_id) else {
+            return Err(definition_error(
+                DefinitionErrorCode::TypeMismatch,
+                PLAYER_FORWARD_ACCELERATION_ID,
+                "player forward acceleration is not an integer",
+            ));
+        };
+        let forward_acceleration = i16::try_from(*value).map_err(|_| {
+            definition_error(
+                DefinitionErrorCode::OutOfRange,
+                PLAYER_FORWARD_ACCELERATION_ID,
+                "player forward acceleration does not fit the source i16 carrier",
+            )
+        })?;
+        if forward_acceleration <= 0 {
+            return Err(definition_error(
+                DefinitionErrorCode::OutOfRange,
+                PLAYER_FORWARD_ACCELERATION_ID,
+                "player forward acceleration must be positive",
+            ));
+        }
         Ok(Self {
-            tuning: FlightTuning { max_forward_speed },
+            tuning: FlightTuning {
+                max_forward_speed,
+                forward_acceleration,
+            },
         })
     }
 
@@ -200,6 +226,9 @@ impl DefinitionFlightBinding {
 
     #[must_use]
     pub fn consumes(id: &SemanticId) -> bool {
-        id.as_str() == PLAYER_MAX_FORWARD_SPEED_ID
+        matches!(
+            id.as_str(),
+            PLAYER_MAX_FORWARD_SPEED_ID | PLAYER_FORWARD_ACCELERATION_ID
+        )
     }
 }

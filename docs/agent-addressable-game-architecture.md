@@ -322,10 +322,13 @@ As of the semantic-contract 34.0 milestone, this is a binding target with
 partial real implementation, not a completion claim:
 
 - the transaction store provides guarded atomic/idempotent publication through
-  a discoverable closed operation schema; the first consumed operation binds
-  `flight.player.max_forward_speed` through the ordinary neutral campaign
-  player callback for the real Level 1, 2 and 3 packages, while operations
-  without campaign runtime consumers fail before publication;
+  a discoverable closed operation schema; the consumed flight operations bind
+  `flight.player.max_forward_speed` and
+  `flight.player.forward_acceleration` through the ordinary neutral campaign
+  player callback for the real Level 1, 2 and 3 packages. Already-open sessions
+  retain their bound tuning, while reopen/reset consumes newly published
+  values; operations without campaign runtime consumers fail before
+  publication;
 - the package-bound `spell.fireball.mana_cost` descriptor is consumed for the
   qualified Level 1 local player's already-enabled tier-zero holder. Explicit
   reopen/reset writes both the generic activation affordability carrier and
@@ -730,9 +733,11 @@ partial real implementation, not a completion claim:
   in `sim-core`. The source-shaped outdoor terrain pnt5, fog and TABLESN-row
   integer helpers are now owned by `sim-terrain-presentation`, while terrain
   traversal, rasterization and frame delivery remain with their existing
-  consumers. These are nineteen bounded physical
-  extractions, not a claim that the remaining `sim-core` monolith has been
-  decomposed; and
+  consumers. The exact camera-oriented outdoor terrain lattice is now owned by
+  `sim-terrain-grid`, while terrain projection, raster submission and native
+  session scheduling remain with their existing owners. These are twenty
+  bounded physical extractions, not a claim that the remaining `sim-core`
+  monolith has been decomposed; and
 - the complete title/loading/save/transition flow and full Levels 1–3 domain
   coverage remain open; the current Unity build enters one gameplay scene
   directly, neutral campaign saves/loads do not yet span Levels 1-3 or a
