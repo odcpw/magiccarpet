@@ -1082,7 +1082,7 @@ mod tests {
         assert_eq!(
             contract["replay_save"],
             serde_json::json!({
-                "save_contract": "carpet-flight-mc2-campaign-replay-save/v3",
+                "save_contract": "carpet-flight-mc2-campaign-replay-save/v4",
                 "save_transport": "mc_game_runtime_save_replay_json_v1",
                 "load_transport": "mc_game_runtime_load_replay_json_v1",
                 "load_package_authority": "complete_unordered_resource_set",
@@ -1352,7 +1352,7 @@ mod tests {
         let save_json: Value = serde_json::from_slice(&save).unwrap();
         assert_eq!(
             save_json["save_contract"],
-            "carpet-flight-mc2-campaign-replay-save/v3"
+            "carpet-flight-mc2-campaign-replay-save/v4"
         );
         let operations = save_json["operations"].as_array().unwrap();
         assert_eq!(operations.len(), 5);

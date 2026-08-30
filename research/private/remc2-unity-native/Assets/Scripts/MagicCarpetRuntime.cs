@@ -797,6 +797,7 @@ namespace MagicCarpet.Native
         private bool fireRequested;
         private bool rightSpellRequested;
         private bool selectedSpellRequested;
+        private string gameRuntimeSpellSelectionRequested;
         private short requestedSpell = NativeSim.NoRequestedSpell;
         private int level2SpellMenuCursor = -1;
         private bool spellMenuOpen;
@@ -2617,6 +2618,7 @@ namespace MagicCarpet.Native
                 flags |= 0x40;
                 selectedSpellRequested = false;
             }
+            var selectSpell = gameRuntimeSpellSelectionRequested;
             // Cursor ownership controls whether Unity accumulates input. The
             // accumulated deflection itself is the command value at the fixed
             // step and is cleared whenever the runtime enters Paused.
@@ -2627,7 +2629,9 @@ namespace MagicCarpet.Native
                 appliedPitch,
                 unchecked((sbyte)flags),
                 0,
-                0);
+                0,
+                selectSpell);
+            gameRuntimeSpellSelectionRequested = null;
             DrainGameRuntimeSemanticEvents();
             UpdateGameRuntimeFireballPresentation(gameRuntimeCampaignSnapshot);
         }
@@ -8717,6 +8721,7 @@ namespace MagicCarpet.Native
                 fireRequested = false;
                 rightSpellRequested = false;
                 selectedSpellRequested = false;
+                gameRuntimeSpellSelectionRequested = null;
                 session.GameRuntimeClose();
                 DestroyGameRuntimeFireballPresentation();
                 gameRuntimeCampaignSnapshot = null;
@@ -8732,6 +8737,7 @@ namespace MagicCarpet.Native
                 fireRequested = false;
                 rightSpellRequested = false;
                 selectedSpellRequested = false;
+                gameRuntimeSpellSelectionRequested = null;
                 if (identity.mode == GameRuntimeTransport.PlayingMode)
                 {
                     session.GameRuntimePause();
@@ -8752,6 +8758,7 @@ namespace MagicCarpet.Native
                 fireRequested = false;
                 rightSpellRequested = false;
                 selectedSpellRequested = false;
+                gameRuntimeSpellSelectionRequested = null;
                 return;
             }
             if (identity.mode != GameRuntimeTransport.PlayingMode)
@@ -8834,6 +8841,35 @@ namespace MagicCarpet.Native
             ApplyGameRuntimeProductionInput(pausePressed, false, firePressed);
         }
 
+        internal bool SubmitGameRuntimeSpellSelection(string semanticId)
+        {
+            if (!GameRuntimeProductionStartupReady ||
+                session.GameRuntimeIdentity().mode != GameRuntimeTransport.PlayingMode ||
+                string.IsNullOrWhiteSpace(semanticId) ||
+                gameRuntimeSpellSelectionRequested != null)
+            {
+                return false;
+            }
+            // Rust validates both the closed semantic ID set and whether the
+            // local player actually owns the requested package-present spell.
+            gameRuntimeSpellSelectionRequested = semanticId;
+            return true;
+        }
+
+        internal bool QualificationSelectGameRuntimeProductionSpell(string semanticId)
+        {
+            return SubmitGameRuntimeSpellSelection(semanticId);
+        }
+
+        internal void QualificationRequestGameRuntimeSelectedSpellCast()
+        {
+            Require(
+                GameRuntimeProductionStartupReady &&
+                session.GameRuntimeIdentity().mode == GameRuntimeTransport.PlayingMode,
+                "game runtime selected-spell input requires a validated Playing owner");
+            selectedSpellRequested = true;
+        }
+
         internal void QualificationCloseGameRuntimeProduction()
         {
             ApplyGameRuntimeProductionInput(false, true, false);
@@ -8880,6 +8916,7 @@ namespace MagicCarpet.Native
             fireRequested = false;
             rightSpellRequested = false;
             selectedSpellRequested = false;
+            gameRuntimeSpellSelectionRequested = null;
             CenterSteering();
             gameRuntimeStartupReady = true;
         }
@@ -8917,6 +8954,7 @@ namespace MagicCarpet.Native
             Require(
                 GameRuntimeProductionStartupReady,
                 "game runtime reset route requires a validated production owner");
+            gameRuntimeSpellSelectionRequested = null;
             gameRuntimeCampaignSnapshot = session.GameRuntimeCampaignReset();
             gameRuntimeSemanticEventCursor = gameRuntimeCampaignSnapshot.value.effect_head;
             gameRuntimeRecentSemanticEvents.Clear();
@@ -12651,6 +12689,7 @@ namespace MagicCarpet.Native
                 gameRuntimeCampaignSnapshot = observation;
                 gameRuntimeSemanticEventCursor = observation.value.effect_head;
                 gameRuntimeRecentSemanticEvents.Clear();
+                gameRuntimeSpellSelectionRequested = null;
                 gameRuntimeMode = true;
                 gameRuntimeStartupReady = true;
                 Debug.Log(
@@ -13419,6 +13458,7 @@ namespace MagicCarpet.Native
             level2Mode = false;
             spellMenuCommands.Clear();
             selectedSpellRequested = false;
+            gameRuntimeSpellSelectionRequested = null;
             requestedSpell = NativeSim.NoRequestedSpell;
             level2SpellMenuCursor = -1;
             level2StepSnapshot = default;

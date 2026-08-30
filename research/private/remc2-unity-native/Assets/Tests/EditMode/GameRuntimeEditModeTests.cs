@@ -1106,6 +1106,50 @@ namespace MagicCarpet.Native.Tests
 
         [Test]
         [Timeout(180000)]
+        public void ProductionGameRuntimeSelectsAndCastsAnAcquiredSemanticSpell()
+        {
+            var root = new GameObject("resolver runtime semantic spell input");
+            root.SetActive(false);
+            var runtime = root.AddComponent<MagicCarpetRuntime>();
+            try
+            {
+                runtime.QualificationInitializeGameRuntimeProductionFromArguments(
+                    RuntimeArguments(LevelThreePackage, LevelOnePackage, LevelTwoPackage));
+                var initial = runtime.GameRuntimeProductionCampaignSnapshot;
+                Assert.That(initial.identity.tick, Is.EqualTo("0"));
+                Assert.That(initial.value.presentation_entities, Is.Empty);
+
+                Assert.That(
+                    runtime.QualificationSelectGameRuntimeProductionSpell("spell.fireball"),
+                    Is.True);
+                Assert.That(
+                    runtime.QualificationSelectGameRuntimeProductionSpell("spell.castle"),
+                    Is.False,
+                    "Unity must not overwrite a pending semantic selection before Rust consumes it");
+                runtime.QualificationDriveGameRuntimeFrames(1);
+                var selected = runtime.GameRuntimeProductionCampaignSnapshot;
+                Assert.That(selected.identity.tick, Is.EqualTo("1"));
+                Assert.That(selected.value.presentation_entities, Is.Empty);
+
+                runtime.QualificationRequestGameRuntimeSelectedSpellCast();
+                runtime.QualificationDriveGameRuntimeFrames(1);
+                var cast = runtime.GameRuntimeProductionCampaignSnapshot;
+                Assert.That(cast.identity.tick, Is.EqualTo("2"));
+                Assert.That(
+                    Array.Exists(
+                        cast.value.presentation_entities,
+                        entity => entity.kind == "spell.fireball.projectile"),
+                    Is.True);
+            }
+            finally
+            {
+                runtime.QualificationDisposeNativeOwners();
+                UnityEngine.Object.DestroyImmediate(root);
+            }
+        }
+
+        [Test]
+        [Timeout(180000)]
         public void ProductionGameRuntimeVitalsHudConsumesRustFireballManaAndResetOnSameHandle()
         {
             var root = new GameObject("resolver runtime vitals HUD");

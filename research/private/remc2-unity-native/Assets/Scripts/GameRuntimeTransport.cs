@@ -22,7 +22,7 @@ namespace MagicCarpet.Native
         internal const string InstalledPackageSetContract =
             "carpet-flight-installed-package-set-bootstrap/v1";
         internal const string ReplaySaveContract =
-            "carpet-flight-mc2-campaign-replay-save/v3";
+            "carpet-flight-mc2-campaign-replay-save/v4";
         internal const int MaximumReplaySaveJsonBytes = 16 * 1024 * 1024;
         internal const string TitleMode = "title";
         internal const string LoadingMode = "loading";
@@ -471,7 +471,8 @@ namespace MagicCarpet.Native
             sbyte pitch,
             sbyte flags,
             ushort lookYaw,
-            ushort lookPitch)
+            ushort lookPitch,
+            string selectSpell = null)
         {
             RequireSessionMode(allowPaused: false, "campaign step");
             var before = Current;
@@ -487,7 +488,8 @@ namespace MagicCarpet.Native
                 flags,
                 lookYaw,
                 lookPitch,
-                NegotiatedSessionContract.limits.maximum_command_json_bytes);
+                NegotiatedSessionContract.limits.maximum_command_json_bytes,
+                selectSpell);
             var identity = IdentitySnapshot();
             if (identity.mode != PlayingMode ||
                 ParseCounter(identity.generation, "generation") != beforeRuntimeGeneration ||

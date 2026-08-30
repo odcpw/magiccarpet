@@ -196,9 +196,16 @@ namespace MagicCarpet.Native
             sbyte pitch,
             sbyte flags,
             ushort lookYaw,
-            ushort lookPitch)
+            ushort lookPitch,
+            string selectSpell = null)
         {
-            return gameRuntime?.CampaignStep(roll, pitch, flags, lookYaw, lookPitch) ??
+            return gameRuntime?.CampaignStep(
+                    roll,
+                    pitch,
+                    flags,
+                    lookYaw,
+                    lookPitch,
+                    selectSpell) ??
                 throw new InvalidOperationException("session does not own a game runtime");
         }
 

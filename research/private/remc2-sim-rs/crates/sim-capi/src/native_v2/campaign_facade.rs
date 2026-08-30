@@ -857,6 +857,7 @@ mod tests {
             cast_left: true,
             cast_right: false,
             cast_selected: true,
+            select_spell: None,
             look_yaw: -17,
             look_pitch: 23,
         });
@@ -927,7 +928,7 @@ mod tests {
             longitudinal: LongitudinalControl::Accelerate,
             ..GameCommand::default()
         };
-        let neutral_step = neutral.step(guard(&neutral), command).unwrap();
+        let neutral_step = neutral.step(guard(&neutral), command.clone()).unwrap();
         let legacy_step =
             CampaignFacade::<SealedLevel1Adapter>::step(&mut legacy, mc2_player_command(command))
                 .unwrap();
@@ -1021,8 +1022,8 @@ mod tests {
             ..GameCommand::default()
         };
         for _ in 0..2 {
-            first.step(guard(&first), accelerate).unwrap();
-            second.step(guard(&second), accelerate).unwrap();
+            first.step(guard(&first), accelerate.clone()).unwrap();
+            second.step(guard(&second), accelerate.clone()).unwrap();
         }
         let authored = first.snapshot().value;
         let baseline = second.snapshot().value;
@@ -1061,7 +1062,7 @@ mod tests {
 
         first.reset(guard(&first)).unwrap();
         for _ in 0..2 {
-            first.step(guard(&first), accelerate).unwrap();
+            first.step(guard(&first), accelerate.clone()).unwrap();
         }
         assert_eq!(first.snapshot().value, authored);
 
@@ -1078,8 +1079,8 @@ mod tests {
         first.reopen(guard(&first), restored).unwrap();
         second.reset(guard(&second)).unwrap();
         for _ in 0..2 {
-            first.step(guard(&first), accelerate).unwrap();
-            second.step(guard(&second), accelerate).unwrap();
+            first.step(guard(&first), accelerate.clone()).unwrap();
+            second.step(guard(&second), accelerate.clone()).unwrap();
         }
         assert_eq!(first.snapshot().value, second.snapshot().value);
         let _ = std::fs::remove_dir_all(root);
@@ -1131,8 +1132,8 @@ mod tests {
             ..GameCommand::default()
         };
 
-        baseline.step(guard(&baseline), cast).unwrap();
-        authored.step(guard(&authored), cast).unwrap();
+        baseline.step(guard(&baseline), cast.clone()).unwrap();
+        authored.step(guard(&authored), cast.clone()).unwrap();
         let baseline_snapshot = baseline.snapshot().value;
         let authored_snapshot = authored.snapshot().value;
         assert_eq!(baseline_snapshot.caster_mana, 900);
@@ -1183,7 +1184,7 @@ mod tests {
         );
 
         authored.reset(guard(&authored)).unwrap();
-        authored.step(guard(&authored), cast).unwrap();
+        authored.step(guard(&authored), cast.clone()).unwrap();
         assert_eq!(authored.snapshot().value, authored_snapshot);
 
         store
@@ -1202,7 +1203,7 @@ mod tests {
             )
             .unwrap();
         baseline.reset(guard(&baseline)).unwrap();
-        authored.step(guard(&authored), cast).unwrap();
+        authored.step(guard(&authored), cast.clone()).unwrap();
         baseline.step(guard(&baseline), cast).unwrap();
         assert_eq!(authored.snapshot().value, baseline.snapshot().value);
         let _ = std::fs::remove_dir_all(root);

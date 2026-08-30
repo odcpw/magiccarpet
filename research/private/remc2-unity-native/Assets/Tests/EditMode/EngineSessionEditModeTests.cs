@@ -230,7 +230,7 @@ namespace MagicCarpet.Native.Tests
             Assert.That(contract.transport_contract, Is.EqualTo(EngineSessionTransport.TransportContract));
             Assert.That(contract.capabilities, Is.EqualTo(new[]
                 { "snapshot", "step", "reset", "events", "audio", "presentation_assets",
-                  "presentation_entities" }));
+                  "presentation_entities", "semantic_spell_selection" }));
 
             var unsupported = new EngineSessionTransport.Contract
             {

@@ -429,12 +429,12 @@ pub extern "C" fn mc_game_session_contract_json_v1(
     boundary(|| {
         let contract = serde_json::json!({
             "engine_contract": sim_session::GAME_SESSION_CONTRACT,
-            "transport_contract": "carpet-flight-native-json/v5",
-            "transport_version": 5,
+            "transport_contract": "carpet-flight-native-json/v6",
+            "transport_version": 6,
             "encoding": "utf-8-json",
             "u64_counter_encoding": "decimal-string",
             "u64_hash_encoding": "lowercase-hex-16",
-            "capabilities": ["snapshot", "step", "reset", "events", "audio", "presentation_assets", "presentation_entities"],
+            "capabilities": ["snapshot", "step", "reset", "events", "audio", "presentation_assets", "presentation_entities", "semantic_spell_selection"],
             "session_profiles": [
                 {
                     "profile": "mc2-owned",
@@ -444,7 +444,7 @@ pub extern "C" fn mc_game_session_contract_json_v1(
                 {
                     "profile": "mc2-campaign",
                     "snapshot_value": "campaign_snapshot/v4",
-                    "capabilities": ["snapshot", "step", "reset", "events", "presentation_assets", "presentation_entities"]
+                    "capabilities": ["snapshot", "step", "reset", "events", "presentation_assets", "presentation_entities", "semantic_spell_selection"]
                 }
             ],
             "limits": {
@@ -814,6 +814,21 @@ mod tests {
         })
     }
 
+    fn native_last_error() -> String {
+        let mut length = 0;
+        assert_eq!(mc_native_last_error_length(&raw mut length), MC_STATUS_OK);
+        let mut bytes = vec![0_u8; length as usize + 1];
+        assert_eq!(
+            mc_native_last_error_copy(
+                bytes.as_mut_ptr(),
+                u32::try_from(bytes.len()).unwrap(),
+                &raw mut length,
+            ),
+            MC_STATUS_OK
+        );
+        String::from_utf8(bytes[..length as usize].to_vec()).unwrap()
+    }
+
     fn level_one_autoplay_command(index: usize) -> Vec<u8> {
         let flags = if index < 360 { 1_u8 } else { 0 };
         let (roll_axis, pitch_axis) = if index < 145 {
@@ -866,12 +881,12 @@ mod tests {
         let contract = read_json(|buffer, capacity, length| {
             mc_game_session_contract_json_v1(buffer, capacity, length)
         });
-        assert_eq!(contract["engine_contract"], "carpet-flight-game-session/v5");
+        assert_eq!(contract["engine_contract"], "carpet-flight-game-session/v6");
         assert_eq!(
             contract["transport_contract"],
-            "carpet-flight-native-json/v5"
+            "carpet-flight-native-json/v6"
         );
-        assert_eq!(contract["transport_version"], 5);
+        assert_eq!(contract["transport_version"], 6);
         assert_eq!(contract["u64_counter_encoding"], "decimal-string");
         assert_eq!(contract["u64_hash_encoding"], "lowercase-hex-16");
         assert_eq!(contract["limits"]["maximum_command_json_bytes"], 4_096);
@@ -1239,7 +1254,8 @@ mod tests {
                 "reset",
                 "events",
                 "presentation_assets",
-                "presentation_entities"
+                "presentation_entities",
+                "semantic_spell_selection"
             ])
         );
 
@@ -1694,6 +1710,60 @@ mod tests {
         // mana charge, and restores frame-zero player vitals on reset. It does
         // not prove a Unity renderer, authored asset variants, animation,
         // player damage, or Level 2/3 data.
+    }
+
+    #[test]
+    fn native_json_semantic_spell_selection_is_closed_and_atomic() {
+        let package = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../generated/mc-cf15-level1-package-v3-current");
+        let handle = open_campaign_path(&package);
+        let initial = campaign_snapshot(handle);
+
+        let unacquired = br#"{"select_spell":"spell.castle"}"#;
+        assert_eq!(
+            mc_game_session_step_json_v1(
+                handle,
+                1,
+                0,
+                unacquired.as_ptr(),
+                unacquired.len() as u32,
+            ),
+            MC_STATUS_VALIDATION_FAILED
+        );
+        assert_eq!(
+            campaign_snapshot(handle),
+            initial,
+            "an unacquired semantic selection must not advance or mutate the Rust session"
+        );
+
+        let select = br#"{"select_spell":"spell.fireball"}"#;
+        let select_status =
+            mc_game_session_step_json_v1(handle, 1, 0, select.as_ptr(), select.len() as u32);
+        assert_eq!(select_status, MC_STATUS_OK, "{}", native_last_error());
+        let selected = campaign_snapshot(handle);
+        assert_eq!(selected["identity"]["tick"], "1");
+        assert_eq!(
+            selected["value"]["presentation_entities"],
+            serde_json::json!([]),
+            "selection alone does not manufacture a spell effect"
+        );
+
+        let cast = br#"{"cast_selected":true}"#;
+        assert_eq!(
+            mc_game_session_step_json_v1(handle, 1, 1, cast.as_ptr(), cast.len() as u32,),
+            MC_STATUS_OK
+        );
+        let launched = campaign_snapshot(handle);
+        assert_eq!(launched["identity"]["tick"], "2");
+        assert!(
+            launched["value"]["presentation_entities"]
+                .as_array()
+                .is_some_and(|entities| entities
+                    .iter()
+                    .any(|entity| { entity["kind"] == "spell.fireball.projectile" })),
+            "the separately selected acquired semantic Fireball drives the ordinary cast path"
+        );
+        assert_eq!(mc_game_session_destroy_v1(handle), MC_STATUS_OK);
     }
 
     #[test]

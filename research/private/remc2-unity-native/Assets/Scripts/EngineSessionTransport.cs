@@ -17,17 +17,19 @@ namespace MagicCarpet.Native
     /// </summary>
     internal sealed class EngineSessionTransport
     {
-        internal const string EngineContract = "carpet-flight-game-session/v5";
-        internal const string TransportContract = "carpet-flight-native-json/v5";
+        internal const string EngineContract = "carpet-flight-game-session/v6";
+        internal const string TransportContract = "carpet-flight-native-json/v6";
         internal const string OwnedProfile = "mc2-owned";
         internal const string CampaignProfile = "mc2-campaign";
         private const string CampaignDescriptorEnvelope = "campaign-definition.json";
         private static readonly string[] RequiredCapabilities =
-            { "snapshot", "step", "reset", "events", "audio", "presentation_assets", "presentation_entities" };
+            { "snapshot", "step", "reset", "events", "audio", "presentation_assets",
+              "presentation_entities", "semantic_spell_selection" };
         private static readonly string[] RequiredOwnedCapabilities =
             { "snapshot", "step", "reset", "events", "audio", "presentation_assets" };
         private static readonly string[] RequiredCampaignCapabilities =
-            { "snapshot", "step", "reset", "events", "presentation_assets", "presentation_entities" };
+            { "snapshot", "step", "reset", "events", "presentation_assets",
+              "presentation_entities", "semantic_spell_selection" };
 
         private delegate int JsonRead(IntPtr buffer, uint capacity, out uint length);
 
@@ -291,7 +293,7 @@ namespace MagicCarpet.Native
         }
 
         [Serializable]
-        private sealed class Command
+        private class Command
         {
             public string longitudinal;
             public string lateral;
@@ -302,6 +304,12 @@ namespace MagicCarpet.Native
             public bool cast_selected;
             public int look_yaw;
             public int look_pitch;
+        }
+
+        [Serializable]
+        private sealed class SpellSelectionCommand : Command
+        {
+            public string select_spell;
         }
 
         internal ulong Handle { get; }
@@ -450,10 +458,11 @@ namespace MagicCarpet.Native
             sbyte pitch,
             sbyte flags,
             ushort lookYaw,
-            ushort lookPitch)
+            ushort lookPitch,
+            string selectSpell = null)
         {
             RequireProfile(CampaignProfile, "the campaign step observation");
-            StepNative(roll, pitch, flags, lookYaw, lookPitch);
+            StepNative(roll, pitch, flags, lookYaw, lookPitch, selectSpell);
             return CampaignSnapshot();
         }
 
@@ -462,7 +471,8 @@ namespace MagicCarpet.Native
             sbyte pitch,
             sbyte flags,
             ushort lookYaw,
-            ushort lookPitch)
+            ushort lookPitch,
+            string selectSpell = null)
         {
             StepHandle(
                 Handle,
@@ -472,7 +482,8 @@ namespace MagicCarpet.Native
                 flags,
                 lookYaw,
                 lookPitch,
-                NegotiatedContract.limits.maximum_command_json_bytes);
+                NegotiatedContract.limits.maximum_command_json_bytes,
+                selectSpell);
         }
 
         internal static void StepHandle(
@@ -483,7 +494,8 @@ namespace MagicCarpet.Native
             sbyte flags,
             ushort lookYaw,
             ushort lookPitch,
-            uint maximumCommandJsonBytes)
+            uint maximumCommandJsonBytes,
+            string selectSpell = null)
         {
             ValidateIdentityForHandle(handle, identity);
             var bits = unchecked((byte)flags);
@@ -491,22 +503,22 @@ namespace MagicCarpet.Native
             {
                 throw new ArgumentException("movement flags are outside the neutral command contract");
             }
-            var command = new Command
-            {
-                longitudinal = (bits & 0x01) != 0
-                    ? "accelerate"
-                    : (bits & 0x02) != 0 ? "decelerate" : "coast",
-                lateral = (bits & 0x08) != 0
-                    ? "positive"
-                    : (bits & 0x04) != 0 ? "negative" : "neutral",
-                roll_axis = roll,
-                pitch_axis = pitch,
-                cast_left = (bits & 0x10) != 0,
-                cast_right = (bits & 0x20) != 0,
-                cast_selected = (bits & 0x40) != 0,
-                look_yaw = unchecked((short)lookYaw),
-                look_pitch = unchecked((short)lookPitch),
-            };
+            Command command = selectSpell == null
+                ? new Command()
+                : new SpellSelectionCommand { select_spell = selectSpell };
+            command.longitudinal = (bits & 0x01) != 0
+                ? "accelerate"
+                : (bits & 0x02) != 0 ? "decelerate" : "coast";
+            command.lateral = (bits & 0x08) != 0
+                ? "positive"
+                : (bits & 0x04) != 0 ? "negative" : "neutral";
+            command.roll_axis = roll;
+            command.pitch_axis = pitch;
+            command.cast_left = (bits & 0x10) != 0;
+            command.cast_right = (bits & 0x20) != 0;
+            command.cast_selected = (bits & 0x40) != 0;
+            command.look_yaw = unchecked((short)lookYaw);
+            command.look_pitch = unchecked((short)lookPitch);
             var bytes = Encoding.UTF8.GetBytes(JsonUtility.ToJson(command));
             if (bytes.Length > maximumCommandJsonBytes)
             {
@@ -771,7 +783,7 @@ namespace MagicCarpet.Native
             if (contract == null ||
                 contract.engine_contract != EngineContract ||
                 contract.transport_contract != TransportContract ||
-                contract.transport_version != 5 ||
+                contract.transport_version != 6 ||
                 contract.encoding != "utf-8-json" ||
                 contract.u64_counter_encoding != "decimal-string" ||
                 contract.u64_hash_encoding != "lowercase-hex-16" ||
@@ -973,8 +985,9 @@ namespace MagicCarpet.Native
         {
             if (status != expected)
             {
+                var detail = NativeSession.ReadLastError();
                 throw new InvalidOperationException(
-                    $"{operation} failed: status={status}, expected={expected}");
+                    $"{operation} failed: status={status}, expected={expected}: {detail}");
             }
         }
     }
