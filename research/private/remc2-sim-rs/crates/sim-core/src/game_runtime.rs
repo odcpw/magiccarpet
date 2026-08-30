@@ -2325,41 +2325,8 @@ mod tests {
         assert_eq!(level_two_playing.generation, 5);
         assert_eq!(level_two_playing.session.as_ref().unwrap().generation, 2);
 
-        // Stage only the qualified preceding objective boundary. The normal
-        // numeric scheduler must own group 8, the model-45 lifecycle, the
-        // cadence evaluator, group 31, and terminal exit state.
-        runtime
-            .session_mut()
-            .unwrap()
-            .backend_mut()
-            .compatibility_campaign_mut_for_test()
-            .level2_compatibility_mut()
-            .stage_level_two_final_objective_prerequisite_for_test()
-            .unwrap();
-        let guard = runtime.session().unwrap().identity().guard();
-        runtime
-            .session_mut()
-            .unwrap()
-            .step(guard, GameCommand::default())
-            .unwrap();
-        assert!(
-            runtime
-                .session()
-                .unwrap()
-                .backend()
-                .compatibility_campaign()
-                .level2_compatibility()
-                .dispatch_events()
-                .iter()
-                .any(|event| matches!(
-                    event,
-                    crate::native_world::Level2DispatchEvent::AuthoredGroupActivated {
-                        source_slot: 32,
-                        group: 8,
-                        authored_indices,
-                        ..
-                    } if authored_indices.as_ref() == [153, 154]
-                ))
+        crate::campaign::backend::tests::drive_real_level_two_to_final_vault_objective_for_test(
+            runtime.session_mut().unwrap(),
         );
         {
             let session = runtime
@@ -2368,14 +2335,9 @@ mod tests {
                 .backend()
                 .compatibility_campaign()
                 .level2_compatibility();
-            assert_eq!(session.economy().authored_model45().len(), 2);
             assert!(
-                session
-                    .economy()
-                    .authored_model45()
-                    .iter()
-                    .all(|source| source.active && !source.drawing_enabled),
-                "same-pass model-45 callbacks must hide but retain group-8 rows"
+                session.economy().authored_model45().is_empty(),
+                "organic L2 progression must reach following-pass reclaim for both group-8 vault rows"
             );
             assert_eq!(session.runtime().objectives[0].stage_selectors[4], 1);
             assert!(session.dispatch_events().iter().all(|event| !matches!(
@@ -2689,14 +2651,13 @@ mod tests {
         ));
 
         // No-Claim: this gate starts from the exact resolver-owned L2 Loading
-        // boundary separately proved by the L1->L2 gate, then stages only L2
-        // objectives 0-3/final selection. It proves ordinary L2
-        // group-8/model45/objective/group-31 chronology, authoritative
-        // phase-12 completion, resolver-derived L3 Loading, and same-handle
-        // generation-3 open. It does not prove an uninterrupted L1->L3 run,
-        // organic L1/L2 objective progression or vault destruction, package
-        // installation/discovery, L3 gameplay/completion/Title, CAPI/Unity,
-        // results UI, save/load, replay, or commercial distribution.
+        // boundary separately proved by the L1->L2 gate, drives the real L2
+        // objectives through slot-32/group-8 production and vault reclaim,
+        // then proves group 31, phase-12 completion, resolver-derived L3
+        // Loading, and same-handle generation-3 open. It does not prove one
+        // uninterrupted L1->L3 run, package installation/discovery, L3
+        // gameplay/completion/Title, CAPI/Unity, results UI, save/load, replay,
+        // or commercial distribution.
     }
 
     #[test]

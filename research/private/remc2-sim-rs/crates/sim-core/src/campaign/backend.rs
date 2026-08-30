@@ -5699,18 +5699,10 @@ pub(crate) mod tests {
         // level, stage combat, localize objective text, or prove clients.
     }
 
-    #[test]
-    fn campaign_backend_real_level_two_entry_waypoints_and_fireballs_defeat_nyphur() {
-        let root = descriptor_fixture_path();
-        let catalog = default_catalog().unwrap();
-        let definition = load_mc2_campaign(&root, &catalog).unwrap();
-        let mut session = GameSession::open(
-            &Mc2CampaignAdapter,
-            Arc::new(definition),
-            74,
-            Mc2CampaignInputs::new(&root),
-        )
-        .unwrap();
+    pub(crate) fn drive_real_level_two_to_final_vault_objective_for_test(
+        session: &mut GameSession<Mc2CampaignBackend>,
+    ) {
+        let mut session = session;
 
         let progress_id = |session: &GameSession<Mc2CampaignBackend>| {
             session
@@ -5808,6 +5800,29 @@ pub(crate) mod tests {
         assert_eq!(
             session.snapshot().value.objective_progress.completed_count,
             1
+        );
+
+        session
+            .step(guard(&session), GameCommand::default())
+            .unwrap();
+        let compatibility = session.backend().campaign.level2_compatibility();
+        assert!(compatibility.dispatch_events().iter().any(|event| matches!(
+            event,
+            crate::native_world::Level2DispatchEvent::AuthoredGroupActivated {
+                source_slot: 32,
+                group: 8,
+                authored_indices,
+                ..
+            } if authored_indices.as_ref() == [153, 154]
+        )));
+        assert_eq!(compatibility.economy().authored_model45().len(), 2);
+        assert!(
+            compatibility
+                .economy()
+                .authored_model45()
+                .iter()
+                .all(|source| source.active && !source.drawing_enabled),
+            "the ordinary slot-32 turn hides both group-8 vault rows after their same-pass callbacks"
         );
 
         fly_until_stage_complete(&mut session, 0);
@@ -6599,6 +6614,10 @@ pub(crate) mod tests {
             .filter_map(|bee| bee.authored_index())
             .collect::<BTreeSet<_>>();
         assert!(BTreeSet::from(PLAGUE_BEE_ROWS).is_disjoint(&live_bee_rows));
+        assert!(
+            compatibility.economy().authored_model45().is_empty(),
+            "the real group-8 vault rows reach ordinary hide and following-pass reclaim before their final absence objective"
+        );
         assert_eq!(
             &compatibility.runtime().objectives[0].stage_selectors[..5],
             &[2, 2, 2, 2, 1]
@@ -6611,6 +6630,21 @@ pub(crate) mod tests {
             session.snapshot().value.objective_progress.completed_count,
             4
         );
+    }
+
+    #[test]
+    fn campaign_backend_real_level_two_entry_waypoints_and_fireballs_defeat_nyphur() {
+        let root = descriptor_fixture_path();
+        let catalog = default_catalog().unwrap();
+        let definition = load_mc2_campaign(&root, &catalog).unwrap();
+        let mut session = GameSession::open(
+            &Mc2CampaignAdapter,
+            Arc::new(definition),
+            74,
+            Mc2CampaignInputs::new(&root),
+        )
+        .unwrap();
+        drive_real_level_two_to_final_vault_objective_for_test(&mut session);
     }
 
     #[test]
