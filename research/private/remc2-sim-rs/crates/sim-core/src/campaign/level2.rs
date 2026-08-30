@@ -4003,6 +4003,146 @@ impl Level2ResetSession {
         fire.holders = holders;
     }
 
+    pub(crate) fn apply_carried_spell_families(
+        &mut self,
+        families: &[u8],
+        selected_family: Option<u8>,
+    ) -> Result<()> {
+        let mut seen = BTreeSet::new();
+        if families
+            .iter()
+            .any(|family| usize::from(*family) >= PLAYER_SPELL_COUNT || !seen.insert(*family))
+        {
+            return Err(NativeWorldError::new(
+                "carried spell families are duplicated or out of range",
+            ));
+        }
+        if selected_family.is_some_and(|family| !seen.contains(&family)) {
+            return Err(NativeWorldError::new(
+                "carried selected spell is not acquired",
+            ));
+        }
+
+        fn holder_is_valid(
+            shared_spells: &Level2SharedSpellResetSession,
+            owner_entity_index: u16,
+            family: u8,
+            holder_index: u16,
+        ) -> bool {
+            shared_spells
+                .pickups()
+                .iter()
+                .chain(shared_spells.holders())
+                .chain(shared_spells.dynamic_pickups())
+                .find(|holder| holder.index == holder_index)
+                .is_some_and(|holder| {
+                    holder.active
+                        && holder.class == 15
+                        && holder.model == family
+                        && holder.source_spell_parent_entity_index() == owner_entity_index
+                })
+        }
+
+        let local_player = self.session.state.live.shared_spells.local_player.clone();
+        let mut missing = Vec::new();
+        for &family in families {
+            let holder_index = local_player.enabled_spell_holders[usize::from(family)];
+            if holder_index == 0 {
+                missing.push((family, 0));
+            } else if !holder_is_valid(
+                &self.session.state.live.shared_spells,
+                local_player.entity_index,
+                family,
+                holder_index,
+            ) {
+                return Err(NativeWorldError::new(format!(
+                    "destination spell family {family} has an invalid local holder relation"
+                )));
+            }
+        }
+        {
+            let live = &mut self.session.state.live;
+            live.shared_spells
+                .materialize_carried_spell_families(&mut live.economy.economy, &missing)?;
+        }
+
+        let shared_players = self.session.state.live.shared_spells.players().to_vec();
+        for player in &mut self.session.state.live.core.players {
+            if let Some(source_player) = shared_players
+                .iter()
+                .find(|source_player| source_player.entity_index == player.entity_index)
+            {
+                player.sync_spell_acquisition_from(source_player);
+            }
+        }
+        if let Some(family) = selected_family {
+            let ui_index = SOURCE_SPELL_INDEX_MAP
+                .iter()
+                .position(|candidate| *candidate == family)
+                .ok_or_else(|| {
+                    NativeWorldError::new(format!(
+                        "carried spell family {family} has no source UI selector"
+                    ))
+                })?;
+            let ui_index = u8::try_from(ui_index)
+                .map_err(|_| NativeWorldError::new("carried spell UI selector does not fit u8"))?;
+            let local_entity = self
+                .session
+                .state
+                .live
+                .shared_spells
+                .local_player
+                .entity_index;
+            let holder_index = self
+                .session
+                .state
+                .live
+                .shared_spells
+                .local_player
+                .enabled_spell_holders[usize::from(family)];
+            if holder_index == 0
+                || !holder_is_valid(
+                    &self.session.state.live.shared_spells,
+                    local_entity,
+                    family,
+                    holder_index,
+                )
+            {
+                return Err(NativeWorldError::new(format!(
+                    "carried selected family {family} has no valid local holder"
+                )));
+            }
+            let local_index = self
+                .session
+                .state
+                .live
+                .shared_spells
+                .players()
+                .iter()
+                .position(|player| player.entity_index == local_entity)
+                .ok_or_else(|| NativeWorldError::new("carried spell local player is absent"))?;
+            {
+                let player = &mut self.session.state.live.shared_spells.players[local_index];
+                player.selected_spell_ui_index = ui_index;
+                player.record[561] = ui_index;
+                self.session.state.live.shared_spells.local_player = player.clone();
+            }
+            let player = self
+                .session
+                .state
+                .live
+                .core
+                .players
+                .iter_mut()
+                .find(|player| player.entity_index == local_entity)
+                .ok_or_else(|| NativeWorldError::new("canonical carried-spell player is absent"))?;
+            player.selected_spell_ui_index = ui_index;
+            player.record[561] = ui_index;
+        }
+        self.sync_level2_spell_fire_context();
+        Ok(())
+    }
+
     /// Bind the immutable definition value to every live carrier used by the
     /// ordinary local-player Fireball activation and first-pulse source
     /// callback. The private holder relation is package-derived; no source

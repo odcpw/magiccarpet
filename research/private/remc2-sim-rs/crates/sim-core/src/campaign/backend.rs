@@ -14,7 +14,7 @@ use std::{
     error::Error,
     fmt, fs,
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{Arc, Mutex},
 };
 
 use serde::{Deserialize, Serialize};
@@ -671,6 +671,20 @@ struct ResolvedMc2RuntimePackage {
 pub struct Mc2RuntimePackageResolver {
     flow: RuntimeFlowDefinition,
     by_level: BTreeMap<SemanticLevelId, ResolvedMc2RuntimePackage>,
+    pending_spell_carries: Arc<Mutex<BTreeMap<u64, Mc2PendingSpellCarry>>>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct Mc2SemanticSpellCarry {
+    acquired: Vec<SpellKind>,
+    selected: Option<SpellKind>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct Mc2PendingSpellCarry {
+    loading_generation: u64,
+    destination_level: SemanticLevelId,
+    carry: Mc2SemanticSpellCarry,
 }
 
 impl Mc2RuntimePackageResolver {
@@ -820,7 +834,11 @@ impl Mc2RuntimePackageResolver {
             .and_then(|package| package.definition.runtime_flow())
             .cloned()
             .expect("closed package set contains its validated entry definition");
-        Ok(Self { flow, by_level })
+        Ok(Self {
+            flow,
+            by_level,
+            pending_spell_carries: Arc::new(Mutex::new(BTreeMap::new())),
+        })
     }
 
     #[must_use]
@@ -857,10 +875,50 @@ impl Mc2RuntimePackageResolver {
         crate::game_runtime::RuntimeIdentity,
         crate::game_runtime::OpenLevelError<CampaignBackendError>,
     > {
-        runtime.open_level_resolved(guard, &Mc2CampaignAdapter, session_id, |definition| {
-            self.exact_package_for_definition(definition)
-                .map(|package| package.inputs.clone())
-        })
+        let mut pending = self.pending_spell_carries.lock().map_err(|_| {
+            crate::game_runtime::OpenLevelError::Transition(
+                crate::game_runtime::RuntimeTransitionError::InvalidRuntimeFlow {
+                    message: "resolver spell-carry state is unavailable".to_owned(),
+                },
+            )
+        })?;
+        let carry = pending.get(&guard.runtime_id).cloned();
+        let opened = runtime.open_level_resolved_with_candidate(
+            guard,
+            &Mc2CampaignAdapter,
+            session_id,
+            |definition| {
+                self.exact_package_for_definition(definition)
+                    .map(|package| package.inputs.clone())
+            },
+            |candidate| {
+                let Some(pending) = &carry else {
+                    return Ok(());
+                };
+                let destination = candidate
+                    .definition()
+                    .runtime_flow()
+                    .map(RuntimeFlowDefinition::bound_level_id);
+                if pending.loading_generation != guard.generation
+                    || destination != Some(&pending.destination_level)
+                {
+                    return Err(
+                        crate::game_runtime::RuntimeTransitionError::InvalidRuntimeFlow {
+                            message:
+                                "pending spell carry does not bind this exact Loading transition"
+                                    .to_owned(),
+                        },
+                    );
+                }
+                candidate
+                    .backend_mut()
+                    .apply_semantic_spell_carry(&pending.carry)
+            },
+        );
+        if opened.is_ok() && carry.is_some() {
+            pending.remove(&guard.runtime_id);
+        }
+        opened
     }
 
     /// Serialize one Playing or quiescent Paused runtime as a definition-bound
@@ -1044,7 +1102,20 @@ impl Mc2RuntimePackageResolver {
         crate::game_runtime::CompletionTransitionReceipt,
         crate::game_runtime::RuntimeTransitionError,
     > {
-        runtime.accept_transition_resolved(
+        let mut pending = self.pending_spell_carries.lock().map_err(|_| {
+            crate::game_runtime::RuntimeTransitionError::InvalidRuntimeFlow {
+                message: "resolver spell-carry state is unavailable".to_owned(),
+            }
+        })?;
+        if pending.contains_key(&guard.runtime_id) {
+            return Err(
+                crate::game_runtime::RuntimeTransitionError::InvalidRuntimeFlow {
+                    message: "resolver already owns a pending spell carry for this runtime"
+                        .to_owned(),
+                },
+            );
+        }
+        let (receipt, carry) = runtime.accept_transition_resolved_with_source(
             guard,
             session_guard,
             |source_definition, destination| {
@@ -1070,7 +1141,25 @@ impl Mc2RuntimePackageResolver {
                     }
                 }
             },
-        )
+            |session| session.backend().semantic_spell_carry(),
+        )?;
+        match &receipt.completion_destination {
+            RuntimeFlowDestination::Level { level_id } => {
+                let replaced = pending.insert(
+                    guard.runtime_id,
+                    Mc2PendingSpellCarry {
+                        loading_generation: receipt.after.generation,
+                        destination_level: level_id.clone(),
+                        carry,
+                    },
+                );
+                debug_assert!(replaced.is_none());
+            }
+            RuntimeFlowDestination::Title { .. } => {
+                pending.remove(&guard.runtime_id);
+            }
+        }
+        Ok(receipt)
     }
 }
 
@@ -1495,6 +1584,128 @@ impl GameSessionBackend for Mc2CampaignBackend {
 }
 
 impl Mc2CampaignBackend {
+    fn semantic_spell_carry(
+        &self,
+    ) -> Result<Mc2SemanticSpellCarry, crate::game_runtime::RuntimeTransitionError> {
+        let shared = self.campaign.level2_compatibility().shared_spells();
+        let player = shared.local_player();
+        let mut acquired = Vec::new();
+        for (family, holder_index) in player.enabled_spell_holders.iter().copied().enumerate() {
+            if holder_index == 0 {
+                continue;
+            }
+            let family = u8::try_from(family).expect("player spell family index fits u8");
+            let kind = mc2_spell_kind_for_family(family).ok_or_else(|| {
+                crate::game_runtime::RuntimeTransitionError::InvalidRuntimeFlow {
+                    message: format!(
+                        "local acquired holder family {family} has no closed semantic spell kind"
+                    ),
+                }
+            })?;
+            let valid = shared
+                .pickups()
+                .iter()
+                .chain(shared.holders())
+                .chain(shared.dynamic_pickups())
+                .find(|holder| holder.index == holder_index)
+                .is_some_and(|holder| {
+                    holder.active
+                        && holder.class == 15
+                        && holder.model == family
+                        && holder.source_spell_parent_entity_index() == player.entity_index
+                });
+            if !valid {
+                return Err(
+                    crate::game_runtime::RuntimeTransitionError::InvalidRuntimeFlow {
+                        message: format!(
+                            "local acquired semantic spell {} has an invalid holder relation",
+                            kind.as_str()
+                        ),
+                    },
+                );
+            }
+            acquired.push(kind);
+        }
+        let selected = SOURCE_SPELL_INDEX_MAP
+            .get(usize::from(player.selected_spell_ui_index))
+            .and_then(|family| mc2_spell_kind_for_family(*family))
+            .filter(|kind| acquired.contains(kind));
+        Ok(Mc2SemanticSpellCarry { acquired, selected })
+    }
+
+    fn apply_semantic_spell_carry(
+        &mut self,
+        carry: &Mc2SemanticSpellCarry,
+    ) -> Result<(), crate::game_runtime::RuntimeTransitionError> {
+        let families = carry
+            .acquired
+            .iter()
+            .map(|kind| {
+                mc2_spell_family(*kind).ok_or_else(|| {
+                    crate::game_runtime::RuntimeTransitionError::InvalidRuntimeFlow {
+                        message: format!(
+                            "carried semantic spell {} has no closed MC2 family",
+                            kind.as_str()
+                        ),
+                    }
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let selected_family = carry
+            .selected
+            .map(|kind| {
+                mc2_spell_family(kind).ok_or_else(|| {
+                    crate::game_runtime::RuntimeTransitionError::InvalidRuntimeFlow {
+                        message: format!(
+                            "carried selected spell {} has no closed MC2 family",
+                            kind.as_str()
+                        ),
+                    }
+                })
+            })
+            .transpose()?;
+        let apply = |campaign: &mut CampaignSession| {
+            campaign
+                .level2_compatibility_mut()
+                .apply_carried_spell_families(&families, selected_family)
+                .map_err(
+                    |error| crate::game_runtime::RuntimeTransitionError::InvalidRuntimeFlow {
+                        message: format!("cannot apply semantic spell carry: {error}"),
+                    },
+                )
+        };
+        let mut campaign = self.campaign.clone();
+        let mut package_campaign = self.package_campaign.clone();
+        apply(&mut campaign)?;
+        apply(&mut package_campaign)?;
+        self.campaign = campaign;
+        self.package_campaign = package_campaign;
+        let installed = self.semantic_spell_carry()?;
+        if !carry
+            .acquired
+            .iter()
+            .all(|kind| installed.acquired.contains(kind))
+            || installed.selected != carry.selected
+        {
+            return Err(
+                crate::game_runtime::RuntimeTransitionError::InvalidRuntimeFlow {
+                    message: "semantic spell carry did not survive candidate installation"
+                        .to_owned(),
+                },
+            );
+        }
+        Ok(())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn semantic_spell_state_for_test(
+        &self,
+    ) -> Result<(Vec<SpellKind>, Option<SpellKind>), crate::game_runtime::RuntimeTransitionError>
+    {
+        let carry = self.semantic_spell_carry()?;
+        Ok((carry.acquired, carry.selected))
+    }
+
     /// Read-only view of this backend's one live campaign authority for the
     /// retained `mc_native_campaign_*` presentation projections. No mutable
     /// counterpart exists: the neutral session lifecycle stays the only
@@ -1658,27 +1869,14 @@ impl Mc2CampaignBackend {
             });
         };
         let compatibility = self.campaign.level2_compatibility();
-        let family = compatibility
-            .session
-            .definition
-            .spell_family(kind)
-            .or(match kind {
-                // MC2 reset installs these two base holders before any
-                // authored pickup row exists. Their source families are part
-                // of the qualified reset contract, while every later spell
-                // remains definition-bound and must fail closed when absent.
-                SpellKind::Fireball => Some(0),
-                SpellKind::Possession => Some(1),
-                _ => None,
-            })
-            .ok_or_else(|| CampaignBackendError::StepRejected {
-                message: format!(
-                    "spell selection {} has no bound private spell family",
-                    selection.as_str()
-                ),
-            })?;
+        let family = mc2_spell_family(kind).ok_or_else(|| CampaignBackendError::StepRejected {
+            message: format!(
+                "spell selection {} has no bound private spell family",
+                selection.as_str()
+            ),
+        })?;
         let shared = compatibility.shared_spells();
-        let player = &shared.players()[0];
+        let player = shared.local_player();
         let holder_index = player.enabled_spell_holders[usize::from(family)];
         if holder_index == 0
             || !shared
@@ -1722,6 +1920,33 @@ fn semantic_spell_kind(id: &SemanticId) -> Option<SpellKind> {
         "spell.shield" => Some(SpellKind::Shield),
         "spell.invisibility" => Some(SpellKind::Invisibility),
         "spell.beyond_sight" => Some(SpellKind::BeyondSight),
+        _ => None,
+    }
+}
+
+const fn mc2_spell_family(kind: SpellKind) -> Option<u8> {
+    Some(match kind {
+        SpellKind::Fireball => 0,
+        SpellKind::Possession => 1,
+        SpellKind::Castle => 2,
+        SpellKind::Speed => 3,
+        SpellKind::Morph => 4,
+        SpellKind::Shield => 6,
+        SpellKind::Invisibility => 11,
+        SpellKind::BeyondSight => 12,
+    })
+}
+
+const fn mc2_spell_kind_for_family(family: u8) -> Option<SpellKind> {
+    match family {
+        0 => Some(SpellKind::Fireball),
+        1 => Some(SpellKind::Possession),
+        2 => Some(SpellKind::Castle),
+        3 => Some(SpellKind::Speed),
+        4 => Some(SpellKind::Morph),
+        6 => Some(SpellKind::Shield),
+        11 => Some(SpellKind::Invisibility),
+        12 => Some(SpellKind::BeyondSight),
         _ => None,
     }
 }

@@ -495,6 +495,24 @@ impl<B: GameSessionBackend> GameRuntime<B> {
         A: GameAdapter<Backend = B>,
         F: FnOnce(&GameDefinition) -> Result<A::OpenInput, RuntimeTransitionError>,
     {
+        self.open_level_resolved_with_candidate(guard, adapter, session_id, resolve_input, |_| {
+            Ok(())
+        })
+    }
+
+    pub(crate) fn open_level_resolved_with_candidate<A, F, I>(
+        &mut self,
+        guard: RuntimeGuard,
+        adapter: &A,
+        session_id: u64,
+        resolve_input: F,
+        initialize_candidate: I,
+    ) -> Result<RuntimeIdentity, OpenLevelError<A::Error>>
+    where
+        A: GameAdapter<Backend = B>,
+        F: FnOnce(&GameDefinition) -> Result<A::OpenInput, RuntimeTransitionError>,
+        I: FnOnce(&mut GameSession<B>) -> Result<(), RuntimeTransitionError>,
+    {
         self.validate_guard(guard)
             .map_err(Box::new)
             .map_err(RuntimeTransitionError::Guard)
@@ -515,7 +533,7 @@ impl<B: GameSessionBackend> GameRuntime<B> {
         };
         let next_generation = self.next_generation().map_err(OpenLevelError::Transition)?;
         let input = resolve_input(definition.as_ref()).map_err(OpenLevelError::Transition)?;
-        let session = GameSession::open_with_generation(
+        let mut session = GameSession::open_with_generation(
             adapter,
             definition,
             session_id,
@@ -523,6 +541,7 @@ impl<B: GameSessionBackend> GameRuntime<B> {
             input,
         )
         .map_err(OpenLevelError::Session)?;
+        initialize_candidate(&mut session).map_err(OpenLevelError::Transition)?;
         self.state = RuntimeState::Playing {
             session,
             paused: false,
@@ -645,6 +664,29 @@ impl<B: GameSessionBackend> GameRuntime<B> {
             &RuntimeFlowDestination,
         ) -> Result<ResolvedCompletionTarget, RuntimeTransitionError>,
     {
+        self.accept_transition_resolved_with_source(
+            guard,
+            session_guard,
+            resolve_definition,
+            |_| Ok(()),
+        )
+        .map(|(receipt, ())| receipt)
+    }
+
+    pub(crate) fn accept_transition_resolved_with_source<F, C, T>(
+        &mut self,
+        guard: RuntimeGuard,
+        session_guard: SessionGuard,
+        resolve_definition: F,
+        capture_source: C,
+    ) -> Result<(CompletionTransitionReceipt, T), RuntimeTransitionError>
+    where
+        F: FnOnce(
+            &GameDefinition,
+            &RuntimeFlowDestination,
+        ) -> Result<ResolvedCompletionTarget, RuntimeTransitionError>,
+        C: FnOnce(&GameSession<B>) -> Result<T, RuntimeTransitionError>,
+    {
         self.validate_guard(guard)
             .map_err(Box::new)
             .map_err(RuntimeTransitionError::Guard)?;
@@ -752,6 +794,7 @@ impl<B: GameSessionBackend> GameRuntime<B> {
             .checked_add(1)
             .and_then(NonZeroU64::new)
             .ok_or(RuntimeTransitionError::GenerationExhausted)?;
+        let captured_source = capture_source(session)?;
 
         self.state = match next_definition {
             Some(definition) => RuntimeState::Loading {
@@ -772,16 +815,19 @@ impl<B: GameSessionBackend> GameRuntime<B> {
             &completion_destination,
             &completion,
         );
-        Ok(CompletionTransitionReceipt {
-            receipt_contract: COMPLETION_TRANSITION_RECEIPT,
-            before,
-            after,
-            source_session,
-            completed_level_id,
-            completion_destination,
-            completion,
-            receipt_sha256,
-        })
+        Ok((
+            CompletionTransitionReceipt {
+                receipt_contract: COMPLETION_TRANSITION_RECEIPT,
+                before,
+                after,
+                source_session,
+                completed_level_id,
+                completion_destination,
+                completion,
+                receipt_sha256,
+            },
+            captured_source,
+        ))
     }
 
     /// Enter a quiescent pause boundary without executing a gameplay or
@@ -1001,7 +1047,7 @@ mod tests {
     use super::*;
     use crate::game_definition::{
         RuntimeFlowDefinition, RuntimeFlowDestination, RuntimeFlowEntry, RuntimeFlowNodeId,
-        SemanticGameId, SemanticLevelId,
+        SemanticGameId, SemanticId, SemanticLevelId,
     };
     use crate::{
         campaign::{
@@ -1016,6 +1062,7 @@ mod tests {
             GameCommand, GameSessionError, LateralControl, LongitudinalControl,
             SessionGuardErrorCode,
         },
+        level_definition::SpellKind,
     };
     use std::path::PathBuf;
 
@@ -1893,6 +1940,252 @@ mod tests {
         // gates, all three definitions now restore independently; this is not
         // one cross-level checkpoint, uninterrupted route, migration promise,
         // client menu, or terminal-Title save.
+    }
+
+    #[test]
+    fn runtime_carries_real_level_one_castle_acquisition_into_level_two_before_playing() {
+        const CASTLE_PICKUP_RECORD: u16 = 31;
+        const CASTLE_FAMILY: usize = 2;
+
+        let resolver = Mc2RuntimePackageResolver::load([
+            Mc2CampaignInputs::new(level_three_package()),
+            Mc2CampaignInputs::new(level_one_package()),
+            Mc2CampaignInputs::new(level_two_package()),
+        ])
+        .unwrap();
+        let mut runtime = GameRuntime::<Mc2CampaignBackend>::title(112).unwrap();
+        let title_guard = runtime.identity().guard();
+        let loading = resolver.new_game(&mut runtime, title_guard).unwrap();
+        resolver
+            .open_pending(&mut runtime, loading.guard(), 112)
+            .unwrap();
+
+        {
+            let session = runtime.session_mut().unwrap();
+            let player = session
+                .backend()
+                .compatibility_campaign()
+                .level2_compatibility()
+                .state
+                .entity_index;
+            let outside = crate::Position {
+                x: 0,
+                y: 0,
+                z: session
+                    .backend()
+                    .compatibility_campaign()
+                    .level2_compatibility()
+                    .state
+                    .position
+                    .z,
+            };
+            session
+                .backend_mut()
+                .compatibility_campaign_mut_for_test()
+                .level2_compatibility_mut()
+                .set_level2_entity_position(player, outside)
+                .unwrap();
+            for _ in 0..8 {
+                let guard = session.identity().guard();
+                session.step(guard, GameCommand::default()).unwrap();
+            }
+            let pickup = session
+                .backend()
+                .compatibility_campaign()
+                .level2_compatibility()
+                .economy()
+                .spell_pickups()
+                .iter()
+                .find(|pickup| pickup.authored_index == CASTLE_PICKUP_RECORD)
+                .copied()
+                .expect("the ordinary reset gate materializes the real group-1 Castle pickup");
+            session
+                .backend_mut()
+                .compatibility_campaign_mut_for_test()
+                .level2_compatibility_mut()
+                .set_level2_entity_position(player, pickup.position)
+                .unwrap();
+            for _ in 0..4 {
+                let guard = session.identity().guard();
+                session.step(guard, GameCommand::default()).unwrap();
+                if session
+                    .backend()
+                    .compatibility_campaign()
+                    .level2_compatibility()
+                    .players()[0]
+                    .enabled_spell_holders[CASTLE_FAMILY]
+                    == pickup.source_entity_index
+                {
+                    break;
+                }
+            }
+            assert_eq!(
+                session
+                    .backend()
+                    .compatibility_campaign()
+                    .level2_compatibility()
+                    .players()[0]
+                    .enabled_spell_holders[CASTLE_FAMILY],
+                pickup.source_entity_index,
+                "the ordinary pickup callback acquires the package Castle holder"
+            );
+            let guard = session.identity().guard();
+            session
+                .step(
+                    guard,
+                    GameCommand {
+                        select_spell: Some(SemanticId::parse("spell.castle").unwrap()),
+                        ..GameCommand::default()
+                    },
+                )
+                .unwrap();
+            assert_eq!(
+                session.backend().semantic_spell_state_for_test().unwrap().1,
+                Some(SpellKind::Castle)
+            );
+
+            // Disclosed boundary: the Level-1 objective lifecycles and their
+            // group-4 producer are independently proven. From this exact
+            // exit-group boundary the trigger, phase-12 completion, and
+            // resolver transition remain production-owned.
+            session
+                .backend_mut()
+                .compatibility_campaign_mut_for_test()
+                .level2_compatibility_mut()
+                .activate_authored_group_prerequisite_for_test(4)
+                .expect("stage only the separately-proven Level-1 exit-group boundary");
+        }
+
+        for _ in 0..8 {
+            if runtime
+                .session()
+                .unwrap()
+                .backend()
+                .compatibility_campaign()
+                .level2_compatibility()
+                .economy()
+                .authored_switch_producers()
+                .iter()
+                .any(|source| source.authored_index == 137)
+            {
+                break;
+            }
+            let guard = runtime.session().unwrap().identity().guard();
+            runtime
+                .session_mut()
+                .unwrap()
+                .step(guard, GameCommand::default())
+                .unwrap();
+        }
+        {
+            let session = runtime.session_mut().unwrap();
+            let compatibility = session
+                .backend()
+                .compatibility_campaign()
+                .level2_compatibility();
+            let player = compatibility.state.entity_index;
+            let trigger = compatibility
+                .economy()
+                .authored_switch_producers()
+                .iter()
+                .find(|source| source.authored_index == 137)
+                .copied()
+                .expect("ordinary final-objective service materializes the real exit trigger");
+            session
+                .backend_mut()
+                .compatibility_campaign_mut_for_test()
+                .level2_compatibility_mut()
+                .set_level2_entity_position(player, trigger.position)
+                .unwrap();
+        }
+        for _ in 0..16 {
+            let guard = runtime.session().unwrap().identity().guard();
+            runtime
+                .session_mut()
+                .unwrap()
+                .step(guard, GameCommand::default())
+                .unwrap();
+            if runtime
+                .session()
+                .unwrap()
+                .backend()
+                .compatibility_campaign()
+                .level2_compatibility()
+                .level_exit_sequence()
+                .active
+            {
+                break;
+            }
+        }
+        assert!(
+            runtime
+                .session()
+                .unwrap()
+                .backend()
+                .compatibility_campaign()
+                .level2_compatibility()
+                .level_exit_sequence()
+                .active
+        );
+        for _ in 0..700 {
+            if matches!(
+                runtime.session().unwrap().backend().completion_status(),
+                GameCompletionStatus::Completed { .. }
+            ) {
+                break;
+            }
+            let guard = runtime.session().unwrap().identity().guard();
+            runtime
+                .session_mut()
+                .unwrap()
+                .step(guard, GameCommand::default())
+                .unwrap();
+        }
+        let source_spell_state = runtime
+            .session()
+            .unwrap()
+            .backend()
+            .semantic_spell_state_for_test()
+            .unwrap();
+        assert!(source_spell_state.0.contains(&SpellKind::Castle));
+        assert_eq!(
+            source_spell_state.1,
+            Some(SpellKind::Castle),
+            "the ordinary semantic Castle selection remains current at transition capture"
+        );
+
+        let completed = runtime.identity();
+        assert!(matches!(
+            runtime.session().unwrap().backend().completion_status(),
+            GameCompletionStatus::Completed { .. }
+        ));
+        let loading = resolver
+            .accept_transition(
+                &mut runtime,
+                completed.guard(),
+                completed.session.as_ref().unwrap().guard(),
+            )
+            .unwrap()
+            .after;
+        assert_eq!(loading.mode, RuntimeMode::Loading);
+        let playing = resolver
+            .open_pending(&mut runtime, loading.guard(), 112)
+            .unwrap();
+        assert_eq!(playing.mode, RuntimeMode::Playing);
+        let destination_spell_state = runtime
+            .session()
+            .unwrap()
+            .backend()
+            .semantic_spell_state_for_test()
+            .unwrap();
+        assert!(
+            source_spell_state
+                .0
+                .iter()
+                .all(|kind| destination_spell_state.0.contains(kind)),
+            "the unpublished real Level-2 candidate must retain every acquired source spell"
+        );
+        assert_eq!(destination_spell_state.1, source_spell_state.1);
     }
 
     #[test]

@@ -553,6 +553,174 @@ impl Level2SharedSpellResetSession {
         Ok(())
     }
 
+    pub(crate) fn materialize_carried_spell_families(
+        &mut self,
+        economy: &mut Level2EconomyState,
+        families: &[(u8, u8)],
+    ) -> Result<()> {
+        let economy_before = economy.clone();
+        let template = self
+            .holders
+            .first()
+            .or_else(|| self.pickups.first())
+            .cloned()
+            .ok_or_else(|| NativeWorldError::new("shared class-15 spell template is absent"))?;
+        let player_entity_index = self.player_entity.index;
+        let local_player_index = self
+            .players
+            .iter()
+            .position(|player| player.entity_index == player_entity_index)
+            .ok_or_else(|| NativeWorldError::new("Level 2 local player row is absent"))?;
+        let mut rows = Vec::new();
+        for &(family, tier) in families {
+            let index = usize::from(family);
+            if index >= PLAYER_SPELL_COUNT || rows.iter().any(|(seen, _, _)| *seen == family) {
+                *economy = economy_before;
+                return Err(NativeWorldError::new(format!(
+                    "carried spell family {family} is duplicated or out of range"
+                )));
+            }
+            let tier = tier.min(2);
+            let Some(profile) = level2_direct_starting_spell_profile(family, tier) else {
+                *economy = economy_before;
+                return Err(NativeWorldError::new(format!(
+                    "Level 2 direct starting family {family} has no bounded source profile"
+                )));
+            };
+            let source = economy
+                .allocate_starting_spell_holder(family, self.player_entity.position)
+                .ok_or_else(|| {
+                    *economy = economy_before.clone();
+                    NativeWorldError::new(format!(
+                        "Level 2 direct starting family {family} could not allocate a holder"
+                    ))
+                })?;
+            let mut holder = template.clone();
+            holder.index = source.source_entity_index;
+            holder.source_id = source.source_entity_index;
+            holder.authority = EntityAuthority::SpellActivationLive;
+            holder.active = source.active;
+            holder.max_life = 0;
+            holder.life = 0;
+            holder.class = 15;
+            holder.model = source.family;
+            holder.control_flags = 5;
+            holder.entity_rng = source.entity_rng;
+            holder.action = source.action;
+            holder.action_marker = 0;
+            holder.level_gate = tier.cast_signed();
+            holder.position = source.position;
+            holder.yaw = 75;
+            holder.pitch = 768;
+            holder.fov = 1280;
+            holder.phase = source.phase;
+            holder.subspell_index = profile.subspell_index;
+            holder.byte_3b = profile.byte_0x3b;
+            holder.byte_3c = 0;
+            holder.font_type_index = 0;
+            holder.active_value = 0;
+            holder.activation_value = profile.word_0x30;
+            holder.mana_regen = profile.mana_regen;
+            holder.max_mana = profile.max_mana;
+            holder.mana_cost = profile.max_mana;
+            holder.mana = profile.mana;
+            holder.particle_parameter_index = Some(77);
+            holder.parameter_relation = Some(59);
+            holder.next_relation = None;
+            holder.special_relation = EntitySpecialRelation::None;
+            holder.record[0..2].copy_from_slice(&source.source_entity_index.to_le_bytes());
+            holder.record[2] = u8::from(source.active);
+            holder.record[4..8].fill(0);
+            holder.record[8..16].fill(0);
+            holder.record[16..20].copy_from_slice(&holder.control_flags.to_le_bytes());
+            holder.record[24..26].copy_from_slice(&source.entity_rng.to_le_bytes());
+            holder.record[26..30].fill(0);
+            holder.record[30..32].copy_from_slice(&source.source_entity_index.to_le_bytes());
+            holder.record[32..34].copy_from_slice(&75_i16.to_le_bytes());
+            holder.record[34..36].copy_from_slice(&768_i16.to_le_bytes());
+            holder.record[36..38].copy_from_slice(&768_i16.to_le_bytes());
+            holder.record[38..40].copy_from_slice(&1280_i16.to_le_bytes());
+            holder.record[44..46].copy_from_slice(&player_entity_index.to_le_bytes());
+            holder.record[46..48].copy_from_slice(&profile.subspell_index.to_le_bytes());
+            holder.record[48..50].fill(0);
+            holder.record[50..52].fill(0);
+            holder.record[52..54].copy_from_slice(&profile.word_0x30.to_le_bytes());
+            holder.record[58..60].fill(0);
+            holder.record[164..168].copy_from_slice(&60_u32.to_le_bytes());
+            holder.record[63] = profile.byte_0x3b;
+            holder.record[64] = 0;
+            holder.record[65] = 0;
+            holder.record[66] = source.phase;
+            holder.record[67] = 15;
+            holder.record[68] = family;
+            holder.record[73] = source.action;
+            holder.record[74] = tier;
+            holder.record[78..80].fill(0);
+            holder.record[86..88].copy_from_slice(&75_i16.to_le_bytes());
+            holder.record[88..90].copy_from_slice(&768_i16.to_le_bytes());
+            holder.record[90..92].copy_from_slice(&768_i16.to_le_bytes());
+            holder.record[92..94].copy_from_slice(&1280_i16.to_le_bytes());
+            holder.record[94..96].copy_from_slice(&77_i16.to_le_bytes());
+            holder.record[80..82].copy_from_slice(&source.position.x.to_le_bytes());
+            holder.record[82..84].copy_from_slice(&source.position.y.to_le_bytes());
+            holder.record[84..86].copy_from_slice(&source.position.z.to_le_bytes());
+            holder.record[140..144].copy_from_slice(&profile.mana_regen.to_le_bytes());
+            holder.record[144..148].copy_from_slice(&profile.max_mana.to_le_bytes());
+            holder.record[148..152].copy_from_slice(&profile.mana.to_le_bytes());
+            rows.push((family, tier, holder));
+        }
+
+        for (_, _, holder) in &mut rows {
+            let source_entity_index = holder.index;
+            let old_map_entity = economy.map_chains.old_map_entity(source_entity_index);
+            let next_entity = economy.map_chains.next_entity(source_entity_index);
+            holder.record[26..28].copy_from_slice(&old_map_entity.to_le_bytes());
+            holder.record[28..30].copy_from_slice(&next_entity.to_le_bytes());
+        }
+
+        let mut player = self.players[local_player_index].clone();
+        let mut left = player.left_spell_slot_raw;
+        let mut right = player.right_spell_slot_raw;
+        for (family, tier, holder) in &rows {
+            let index = usize::from(*family);
+            player.enabled_spell_holders[index] = holder.index;
+            player.acquired_spell_flags[index] = 1;
+            player.family_selected_tiers[index] = tier.cast_signed();
+            player.spell_unlocked_levels[index] =
+                player.spell_unlocked_levels[index].max(tier.cast_signed());
+            player.record[268 + index * 2..270 + index * 2]
+                .copy_from_slice(&holder.index.to_le_bytes());
+            player.record[476 + index] = 1;
+            player.record[528 + index] = *tier;
+            player.record[502 + index] = player.spell_unlocked_levels[index].cast_unsigned();
+            if left == -1 {
+                left = i16::from(*family);
+                player.left_subspell_index = 0;
+            } else if right == -1 {
+                right = i16::from(*family);
+                player.right_subspell_index = 0;
+            }
+        }
+        player.left_spell_slot_raw = left;
+        player.right_spell_slot_raw = right;
+        player.left_spell_slot = u8::try_from(left.max(0)).expect("starting left spell fits");
+        player.right_spell_slot = u8::try_from(right.max(0)).expect("starting right spell fits");
+        player.record[554..556].copy_from_slice(&left.to_le_bytes());
+        player.record[556..558].copy_from_slice(&right.to_le_bytes());
+        player.record[558] = player.left_subspell_index.cast_unsigned();
+        player.record[559] = player.right_subspell_index.cast_unsigned();
+
+        self.dynamic_pickups
+            .extend(rows.into_iter().map(|(_, _, holder)| holder));
+        self.players[local_player_index] = player.clone();
+        self.local_player = player;
+        for family in 0..PLAYER_SPELL_COUNT {
+            self.spell_levels[family] =
+                self.spell_levels[family].max(self.local_player.family_selected_tiers[family]);
+        }
+        Ok(())
+    }
+
     #[must_use]
     pub fn pickups(&self) -> &[EntitySnapshot] {
         &self.pickups
@@ -573,6 +741,13 @@ impl Level2SharedSpellResetSession {
     #[must_use]
     pub fn players(&self) -> &[PlayerSnapshot] {
         &self.players
+    }
+
+    /// Borrow the authoritative local player row rather than assuming source
+    /// player-array order identifies the command owner.
+    #[must_use]
+    pub const fn local_player(&self) -> &PlayerSnapshot {
+        &self.local_player
     }
 
     /// Borrow the source local-player entity used by spell activation and
