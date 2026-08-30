@@ -6908,6 +6908,224 @@ pub(crate) mod tests {
         );
     }
 
+    pub(crate) fn drive_real_level_three_guardian_dragons_to_reveal_entrance_for_test(
+        session: &mut GameSession<Mc2CampaignBackend>,
+    ) {
+        const DRAGON_AUTHORED_ROWS: [u16; 2] = [141, 142];
+        const DRAGON_DAMAGE: i32 = 4_500;
+        const DRAGON_MODEL: u8 = 0;
+        const DRAGON_PART_COUNT: usize = 16;
+        const DRAGON_PRE_KILL_ACTION: u8 = 4;
+        const DRAGON_KILL_ACTION: u8 = 5;
+
+        drive_real_level_three_skeleton_horde_to_guardian_dragons_for_test(session);
+
+        session
+            .step(guard(session), GameCommand::default())
+            .unwrap();
+        let compatibility = session.backend().campaign.level2_compatibility();
+        assert!(compatibility.dispatch_events().iter().any(|event| matches!(
+            event,
+            crate::native_world::Level2DispatchEvent::AuthoredGroupActivated {
+                source_slot: 127,
+                group: 1,
+                authored_indices,
+                ..
+            } if authored_indices.as_ref() == DRAGON_AUTHORED_ROWS
+        )));
+        let mut dragon_roots = compatibility
+            .economy()
+            .authored_class5()
+            .iter()
+            .filter(|source| source.model == DRAGON_MODEL)
+            .copied()
+            .collect::<Vec<_>>();
+        dragon_roots.sort_unstable_by_key(|source| source.authored_index);
+        assert_eq!(
+            dragon_roots
+                .iter()
+                .map(|source| source.authored_index)
+                .collect::<Vec<_>>(),
+            DRAGON_AUTHORED_ROWS
+        );
+        let dragon_source_slots = dragon_roots
+            .iter()
+            .map(|source| source.source_entity_index)
+            .collect::<Vec<_>>();
+        let mut expected_death_sources = BTreeSet::new();
+        for root_slot in &dragon_source_slots {
+            expected_death_sources.insert(*root_slot);
+            let body_slots = compatibility
+                .economy()
+                .authored_dragon_parts()
+                .iter()
+                .filter(|part| part.entity_id == *root_slot)
+                .map(|part| part.source_entity_index)
+                .collect::<Vec<_>>();
+            assert_eq!(body_slots.len(), DRAGON_PART_COUNT);
+            expected_death_sources.extend(body_slots);
+        }
+        assert_eq!(expected_death_sources.len(), 34);
+
+        let (sphere_count_before, event_count_before) = {
+            let economy = compatibility.economy();
+            (economy.spheres().len(), economy.events().len())
+        };
+        let attacker = compatibility.state.entity_index;
+        for (dragon_index, root_slot) in dragon_source_slots.iter().copied().enumerate() {
+            let body_slot = session
+                .backend()
+                .campaign
+                .level2_compatibility()
+                .economy()
+                .authored_dragon_parts()
+                .iter()
+                .find(|part| part.entity_id == root_slot)
+                .expect("the package Dragon retains its sixteen-row body")
+                .source_entity_index;
+            // This is the disclosed boundary after a class-10 Fireball pulse
+            // has reached one real body row. Dragon callbacks remain the sole
+            // authority for damage, root propagation, death, outputs, and
+            // source-boundary reclaim.
+            assert!(
+                session
+                    .backend_mut()
+                    .campaign
+                    .level2_compatibility_mut()
+                    .economy_mut()
+                    .stage_dragon_mailbox_damage_for_test(body_slot, attacker, DRAGON_DAMAGE,)
+            );
+
+            let mut observed_root_actions = BTreeSet::new();
+            for _ in 0..16 {
+                session
+                    .step(guard(session), GameCommand::default())
+                    .unwrap();
+                let economy = session.backend().campaign.level2_compatibility().economy();
+                if let Some(root) = economy
+                    .authored_class5()
+                    .iter()
+                    .find(|source| source.source_entity_index == root_slot)
+                {
+                    observed_root_actions.insert(root.action);
+                }
+                let root_present = economy
+                    .authored_class5()
+                    .iter()
+                    .any(|source| source.source_entity_index == root_slot);
+                let body_present = economy
+                    .authored_dragon_parts()
+                    .iter()
+                    .any(|part| part.entity_id == root_slot);
+                if !root_present && !body_present {
+                    break;
+                }
+            }
+            assert!(observed_root_actions.contains(&DRAGON_PRE_KILL_ACTION));
+            assert!(observed_root_actions.contains(&DRAGON_KILL_ACTION));
+            let economy = session.backend().campaign.level2_compatibility().economy();
+            assert!(
+                economy
+                    .authored_class5()
+                    .iter()
+                    .all(|source| source.source_entity_index != root_slot)
+            );
+            assert!(
+                economy
+                    .authored_dragon_parts()
+                    .iter()
+                    .all(|part| part.entity_id != root_slot)
+            );
+            assert_eq!(
+                session
+                    .backend()
+                    .campaign
+                    .level2_compatibility()
+                    .runtime()
+                    .objectives[0]
+                    .stage_selectors[1],
+                if dragon_index + 1 == dragon_source_slots.len() {
+                    2
+                } else {
+                    1
+                }
+            );
+        }
+
+        let compatibility = session.backend().campaign.level2_compatibility();
+        let economy = compatibility.economy();
+        let new_spheres = &economy.spheres()[sphere_count_before..];
+        assert_eq!(new_spheres.len(), expected_death_sources.len());
+        assert_eq!(
+            new_spheres
+                .iter()
+                .filter(|sphere| sphere.mana == 2_250)
+                .count(),
+            2
+        );
+        assert_eq!(
+            new_spheres
+                .iter()
+                .filter(|sphere| sphere.mana == 140)
+                .count(),
+            32
+        );
+        let output_events = &economy.events()[event_count_before..];
+        let sphere_event_sources = output_events
+            .iter()
+            .filter_map(|event| match event {
+                crate::native_world::Level2EconomyEvent::ManaSphereSpawned {
+                    source_entity_index,
+                    ..
+                } => Some(*source_entity_index),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(sphere_event_sources.len(), expected_death_sources.len());
+        assert_eq!(
+            sphere_event_sources.into_iter().collect::<BTreeSet<_>>(),
+            expected_death_sources
+        );
+        let burst_event_sources = output_events
+            .iter()
+            .filter_map(|event| match event {
+                crate::native_world::Level2EconomyEvent::DeathBurstSpawned {
+                    parent_entity_index,
+                    ..
+                } => Some(*parent_entity_index),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(burst_event_sources.len(), expected_death_sources.len());
+        assert_eq!(
+            burst_event_sources.into_iter().collect::<BTreeSet<_>>(),
+            expected_death_sources
+        );
+        assert_eq!(
+            &compatibility.runtime().objectives[0].stage_selectors[..5],
+            &[2, 2, 1, 1, 1]
+        );
+        assert_eq!(compatibility.runtime().objectives[0].text_selector, 2);
+        assert!(
+            compatibility
+                .dispatch_events()
+                .iter()
+                .all(|event| !matches!(
+                    event,
+                    crate::native_world::Level2DispatchEvent::AuthoredGroupActivated {
+                        group: 5,
+                        ..
+                    }
+                ))
+        );
+        let progress = session.snapshot().value.objective_progress;
+        assert_eq!(progress.completed_count, 2);
+        assert_eq!(
+            progress.current_objective.as_ref().map(SemanticId::as_str),
+            Some("objective.charge.reveal_entrance")
+        );
+    }
+
     #[test]
     fn campaign_backend_level_one_fireball_cost_rejects_when_authored_above_player_mana() {
         let root = level_one_descriptor_fixture_path();
