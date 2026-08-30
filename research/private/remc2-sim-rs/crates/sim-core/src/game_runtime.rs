@@ -2661,6 +2661,38 @@ mod tests {
     }
 
     #[test]
+    fn runtime_real_level_three_skeleton_horde_advances_to_guardian_dragons() {
+        let resolver = Mc2RuntimePackageResolver::load([
+            Mc2CampaignInputs::new(level_two_package()),
+            Mc2CampaignInputs::new(level_three_package()),
+            Mc2CampaignInputs::new(level_one_package()),
+        ])
+        .unwrap();
+        let mut runtime = open_real_level_three_at_proven_incoming_boundary(&resolver, 334);
+        let playing = runtime.identity();
+        assert_eq!(playing.mode, RuntimeMode::Playing);
+        assert_eq!(playing.session.as_ref().unwrap().generation, 3);
+
+        crate::campaign::backend::tests::drive_real_level_three_skeleton_horde_to_guardian_dragons_for_test(
+            runtime.session_mut().unwrap(),
+        );
+
+        let progressed = runtime
+            .session()
+            .unwrap()
+            .snapshot()
+            .value
+            .objective_progress;
+        assert_eq!(progressed.completed_count, 1);
+        assert_eq!(progressed.total_count, 5);
+        assert_eq!(
+            progressed.current_objective.as_ref().map(|id| id.as_str()),
+            Some("objective.clear.guardian_dragons")
+        );
+        assert!(!progressed.all_objectives_satisfied);
+    }
+
+    #[test]
     fn runtime_completed_real_level_three_returns_to_title_and_restarts_without_aba() {
         const BEE_ROWS: [u16; 6] = [149, 150, 152, 153, 154, 155];
         const GROUP6_ROWS: [u16; 7] = [196, 197, 198, 199, 200, 201, 202];
