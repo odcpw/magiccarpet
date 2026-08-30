@@ -167,6 +167,10 @@ fn level_two_wind_sub33340_filters_and_moves_model0_target_on_production_turn() 
         target.record[30..32].copy_from_slice(&target.source_id.to_le_bytes());
         target.set_position(parent.position);
         target.set_yaw(0);
+        // Source yaw words are unsigned wrapping angles. This negative signed
+        // equivalent previously panicked in the movement projection instead
+        // of following `sub_33340`'s cast semantics.
+        target.set_source_word_30(u16::MAX);
         target.set_control_flags(0x1000_0000);
         (target.clone(), target.actual_speed)
     };
@@ -185,6 +189,7 @@ fn level_two_wind_sub33340_filters_and_moves_model0_target_on_production_turn() 
         parent_source_id,
         &target_snapshot
     ));
+    assert_eq!(target_snapshot.source_word_30(), u16::MAX);
     let mut rejected = target_snapshot.clone();
     rejected.model = 2;
     rejected.record[68] = 2;
@@ -5618,20 +5623,27 @@ fn level_two_family0_fireball_rejects_invalid_producer_admission_and_capacity() 
 
 #[test]
 fn level_two_fireball_collision_constructs_distinct_one_shot_impact() {
-    let inspection =
-        NativeWorld::inspect_level2(level_two_fixture_path()).expect("qualified Level 2 package");
-    let mut session = inspection
-        .level2_reset_session()
-        .expect("qualified Level 2 session");
+    let package = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../../generated/mc-cf02-campaign-package-v2-b/qualified-level2");
+    let mut campaign = crate::campaign::CampaignSession::open(
+        package,
+        crate::campaign::spec::CampaignSelection::LEVEL2,
+    )
+    .expect("qualified semantic Level 2 campaign");
+    let session = campaign.level2_compatibility_mut();
     session.select_level2_campaign_entry_stage();
     // This is the focused callback split check. The separate production test
     // below owns the public holder -> flyer -> impact proof; here a real
     // package-authored Bee constructor supplies the collision carrier.
-    let mut bee = session
-        .allocate_level2_authored_bee(210)
-        .expect("authored Day Bee row 210");
-    bee.action = 17;
-    assert!(session.economy_mut().replace_authored_bee_for_test(bee));
+    fire_level_two_model32_group(session, 21);
+    let bee = session
+        .economy()
+        .bee_creatures()
+        .iter()
+        .find(|bee| bee.authored_index() == Some(229))
+        .copied()
+        .expect("authored Day Bee row 229");
+    assert_eq!(bee.action, 23, "package Bee retains its constructor action");
     let bee_slot = bee.source_entity_index;
     let qualified_economy = session.economy().clone();
     let terrain = session.canonical_terrain().clone();

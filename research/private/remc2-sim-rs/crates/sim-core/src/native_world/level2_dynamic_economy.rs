@@ -548,7 +548,7 @@ impl Level2EconomyState {
     }
 
     /// Submit one source-shaped Fireball damage mailbox write. The target is
-    /// resolved by class/model/action and live map relation at write time, and
+    /// resolved by class/model and live map relation at write time, and
     /// an already occupied attacker word is rejected so a one-shot projectile
     /// cannot duplicate its hit before the Bee callback consumes it. The
     /// source-shaped damage dword is intentionally retained after consumption.
@@ -569,7 +569,6 @@ impl Level2EconomyState {
                 && bee.entity_id != attacker
                 && bee.source_class == 5
                 && bee.model == 2
-                && bee.action == 17
                 && bee.pending_attacker_entity_index == 0
         }) else {
             return false;

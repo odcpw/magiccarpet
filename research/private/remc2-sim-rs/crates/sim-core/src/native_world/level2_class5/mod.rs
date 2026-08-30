@@ -36,7 +36,7 @@ mod tests;
 ///
 /// The pinned `sub_1F660 -> sub_1BF90` path clears only the attacker word;
 /// the damage dword remains the source's last applied payload.  Returning
-/// `Some(lethal)` tells the enclosing cursor to skip the ordinary action-17
+/// `Some(lethal)` tells the enclosing cursor to skip the ordinary action
 /// body: the source branches directly to action 18 or action 20 from this
 /// callback, so no target scan or extra RNG draw is permitted on the same
 /// visit.
@@ -45,7 +45,7 @@ impl Level2EconomyState {
         &mut self,
         source: &mut BeeCreatureRuntime,
     ) -> Option<bool> {
-        if source.action != 17 || source.pending_attacker_entity_index == 0 {
+        if source.pending_attacker_entity_index == 0 {
             return None;
         }
 

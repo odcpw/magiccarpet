@@ -6126,6 +6126,491 @@ pub(crate) mod tests {
             session.snapshot().value.objective_progress.completed_count,
             3
         );
+
+        const PLAGUE_BEE_ROWS: [u16; 6] = [229, 230, 231, 236, 237, 257];
+        for _ in 0..4 {
+            let bee_rows = session
+                .backend()
+                .campaign
+                .level2_compatibility()
+                .economy()
+                .bee_creatures()
+                .iter()
+                .filter_map(|bee| bee.authored_index())
+                .collect::<BTreeSet<_>>();
+            if bee_rows == BTreeSet::from(PLAGUE_BEE_ROWS) {
+                break;
+            }
+            session
+                .step(guard(&session), GameCommand::default())
+                .unwrap();
+        }
+        let compatibility = session.backend().campaign.level2_compatibility();
+        assert_eq!(
+            compatibility
+                .economy()
+                .bee_creatures()
+                .iter()
+                .filter_map(|bee| bee.authored_index())
+                .collect::<BTreeSet<_>>(),
+            BTreeSet::from(PLAGUE_BEE_ROWS),
+            "the ordinary row-206/group-17 producer materializes exactly the package plague Bees"
+        );
+        assert!(compatibility.dispatch_events().iter().any(|event| matches!(
+            event,
+            crate::native_world::Level2DispatchEvent::AuthoredGroupActivated {
+                group: 17,
+                authored_indices,
+                ..
+            } if authored_indices.as_ref() == [208, 236, 237, 257]
+        )));
+        assert!(compatibility.dispatch_events().iter().any(|event| matches!(
+            event,
+            crate::native_world::Level2DispatchEvent::AuthoredGroupActivated {
+                group: 21,
+                authored_indices,
+                ..
+            } if authored_indices.as_ref() == [229, 230, 231]
+        )));
+        assert_eq!(
+            &compatibility.runtime().objectives[0].stage_selectors[..5],
+            &[2, 2, 1, 2, 1],
+            "materializing the two production plague groups must not complete their absence objective"
+        );
+
+        let position_player_at_bee_boundary =
+            |session: &mut GameSession<Mc2CampaignBackend>, position: crate::Position| {
+                let compatibility = session.backend_mut().campaign.level2_compatibility_mut();
+                let player_slot = compatibility.state.entity_index;
+                compatibility
+                    .set_level2_entity_position(player_slot, position)
+                    .expect("Bee combat boundary remains map-linked");
+                compatibility.set_level2_player_aim_for_test(0, 0);
+            };
+        let aim_player_at_bee =
+            |session: &mut GameSession<Mc2CampaignBackend>,
+             bee: crate::native_world::BeeCreatureRuntime| {
+                let (player_slot, player_fov, direction_bits) = {
+                    let compatibility = session.backend().campaign.level2_compatibility();
+                    (
+                        compatibility.state.entity_index,
+                        compatibility.state.entity_fov,
+                        compatibility.shared_spells().player_entity().control_flags & 0x0300,
+                    )
+                };
+                let mut predicted_target = bee.position;
+                crate::move_entity(&mut predicted_target, bee.yaw, 0, bee.actual_speed);
+                predicted_target.z = predicted_target
+                    .z
+                    .wrapping_sub(crate::level1_mission::FIREBALL_COLLISION_VERTICAL_OFFSET);
+                let mut launch_position = predicted_target;
+                crate::move_entity(
+                    &mut launch_position,
+                    bee.yaw.wrapping_add(1024),
+                    0,
+                    crate::level1_mission::FIREBALL_SPEED,
+                );
+                launch_position.z = crate::FlightWorld::ground_height(
+                    session
+                        .backend()
+                        .campaign
+                        .level2_compatibility()
+                        .canonical_terrain(),
+                    launch_position,
+                )
+                .wrapping_add(256)
+                .wrapping_add(player_fov);
+                let (yaw, pitch) = crate::level1_mission::projectile_guidance_angles(
+                    launch_position,
+                    predicted_target,
+                );
+                let hand_yaw = if direction_bits & 0x0100 != 0 {
+                    Some(yaw.wrapping_sub(512))
+                } else if direction_bits & 0x0200 != 0 {
+                    Some(yaw.wrapping_add(512))
+                } else {
+                    None
+                };
+                let mut player_position = crate::Position {
+                    z: launch_position.z.wrapping_sub(player_fov),
+                    ..launch_position
+                };
+                if let Some(hand_yaw) = hand_yaw {
+                    crate::move_entity(&mut player_position, hand_yaw.wrapping_add(1024), 0, 256);
+                }
+                let compatibility = session.backend_mut().campaign.level2_compatibility_mut();
+                compatibility
+                    .set_level2_entity_position(player_slot, player_position)
+                    .expect("Bee Fireball boundary remains map-linked");
+                compatibility.set_level2_player_aim_for_test(yaw, pitch);
+            };
+
+        let first_bee_position = session
+            .backend()
+            .campaign
+            .level2_compatibility()
+            .economy()
+            .bee_creatures()
+            .iter()
+            .find(|bee| bee.authored_index() == Some(PLAGUE_BEE_ROWS[0]))
+            .expect("first package plague Bee is live")
+            .position;
+        position_player_at_bee_boundary(
+            &mut session,
+            crate::Position {
+                x: first_bee_position.x.wrapping_add(20_000),
+                y: first_bee_position.y.wrapping_add(20_000),
+                z: first_bee_position.z,
+            },
+        );
+        for _ in 0..64 {
+            let state = session.backend().campaign.level2_compatibility().state;
+            if state.target_speed == 0 && state.actual_speed == 0 {
+                break;
+            }
+            let longitudinal = if state.target_speed > 0 {
+                LongitudinalControl::Decelerate
+            } else if state.target_speed < 0 {
+                LongitudinalControl::Accelerate
+            } else {
+                LongitudinalControl::Coast
+            };
+            session
+                .step(
+                    guard(&session),
+                    GameCommand {
+                        longitudinal,
+                        ..GameCommand::default()
+                    },
+                )
+                .unwrap();
+        }
+        let stopped = session.backend().campaign.level2_compatibility().state;
+        assert_eq!(
+            (stopped.target_speed, stopped.actual_speed),
+            (0, 0),
+            "ordinary flight input stops before source-qualified Bee casting"
+        );
+
+        let drive_bee_to_action_seventeen =
+            |session: &mut GameSession<Mc2CampaignBackend>, authored_index: u16| {
+                for _ in 0..160 {
+                    let bee = session
+                        .backend()
+                        .campaign
+                        .level2_compatibility()
+                        .economy()
+                        .bee_creatures()
+                        .iter()
+                        .find(|bee| bee.authored_index() == Some(authored_index))
+                        .copied()
+                        .expect("production plague Bee remains before its lethal callback");
+                    if bee.action == 17 {
+                        return bee;
+                    }
+                    assert!(
+                        !matches!(bee.action, 20 | 21),
+                        "plague Bee {authored_index} reached death before the selected Fireball"
+                    );
+                    let player_position = if bee.action == 23 {
+                        let mut position = bee.position;
+                        crate::move_entity(&mut position, bee.yaw, 0, 1_000);
+                        position.z = bee.position.z;
+                        position
+                    } else {
+                        crate::Position {
+                            x: bee.position.x.wrapping_add(20_000),
+                            y: bee.position.y.wrapping_add(20_000),
+                            z: bee.position.z,
+                        }
+                    };
+                    position_player_at_bee_boundary(session, player_position);
+                    session
+                        .step(guard(session), GameCommand::default())
+                        .unwrap();
+                }
+                let bee = session
+                    .backend()
+                    .campaign
+                    .level2_compatibility()
+                    .economy()
+                    .bee_creatures()
+                    .iter()
+                    .find(|bee| bee.authored_index() == Some(authored_index))
+                    .copied();
+                panic!("plague Bee {authored_index} did not return to source action 17: {bee:?}");
+            };
+
+        const ALL_PACKAGE_BEE_ROWS: [u16; 12] =
+            [210, 211, 212, 229, 230, 231, 236, 237, 257, 307, 308, 312];
+
+        // Keep one complete public semantic route in this causal test. Source
+        // guidance supplies the launch angles, then production owns class-9
+        // construction, class-10 impact, target selection, and the mailbox.
+        let first_bee = drive_bee_to_action_seventeen(&mut session, PLAGUE_BEE_ROWS[0]);
+        let first_life_before = first_bee.life;
+        let other_lives_before = session
+            .backend()
+            .campaign
+            .level2_compatibility()
+            .economy()
+            .bee_creatures()
+            .iter()
+            .filter_map(|bee| {
+                bee.authored_index()
+                    .filter(|row| *row != PLAGUE_BEE_ROWS[0])
+                    .map(|row| (row, bee.life))
+            })
+            .collect::<Vec<_>>();
+        aim_player_at_bee(&mut session, first_bee);
+        session
+            .step(
+                guard(&session),
+                GameCommand {
+                    select_spell: Some(SemanticId::parse("spell.fireball").unwrap()),
+                    cast_selected: true,
+                    ..GameCommand::default()
+                },
+            )
+            .unwrap();
+        let mut public_hit = None;
+        for _ in 0..=24 {
+            let compatibility = session.backend().campaign.level2_compatibility();
+            let current = compatibility
+                .economy()
+                .bee_creatures()
+                .iter()
+                .find(|bee| bee.authored_index() == Some(PLAGUE_BEE_ROWS[0]))
+                .copied()
+                .expect("the public Fireball leaves row 229 addressable");
+            if current.life == first_life_before.wrapping_sub(250)
+                && current.damage_attacker_entity_index == compatibility.state.entity_index
+            {
+                public_hit = Some(current);
+                break;
+            }
+            session
+                .step(guard(&session), GameCommand::default())
+                .unwrap();
+        }
+        let public_hit = public_hit.expect(
+            "one ordinary semantic Fireball reaches class 9, class 10, and row 229's mailbox",
+        );
+        assert!(matches!(public_hit.action, 18 | 20));
+        for (other_row, other_life) in other_lives_before {
+            assert_eq!(
+                session
+                    .backend()
+                    .campaign
+                    .level2_compatibility()
+                    .economy()
+                    .bee_creatures()
+                    .iter()
+                    .find(|bee| bee.authored_index() == Some(other_row))
+                    .map(|bee| bee.life),
+                Some(other_life),
+                "the public collision selects only row 229"
+            );
+        }
+
+        // Subsequent pulses enter at the already-proven class-10-to-mailbox
+        // boundary. Ordinary Bee callbacks still own damage, death phases,
+        // hide, following-pass reclaim, allocator retry, and objective census.
+        let mut reclaimed_rows = BTreeSet::new();
+        let mut terminal_rows = BTreeSet::new();
+        for _ in 0..ALL_PACKAGE_BEE_ROWS.len() {
+            if session
+                .backend()
+                .campaign
+                .level2_compatibility()
+                .runtime()
+                .objectives[0]
+                .stage_selectors[2]
+                == 2
+            {
+                break;
+            }
+            let mut next_bee = None;
+            for _ in 0..4 {
+                next_bee = session
+                    .backend()
+                    .campaign
+                    .level2_compatibility()
+                    .economy()
+                    .bee_creatures()
+                    .iter()
+                    .filter_map(|bee| bee.authored_index())
+                    .min();
+                if next_bee.is_some()
+                    || session
+                        .backend()
+                        .campaign
+                        .level2_compatibility()
+                        .runtime()
+                        .objectives[0]
+                        .stage_selectors[2]
+                        == 2
+                {
+                    break;
+                }
+                session
+                    .step(guard(&session), GameCommand::default())
+                    .unwrap();
+            }
+            let Some(authored_index) = next_bee else {
+                break;
+            };
+            assert!(ALL_PACKAGE_BEE_ROWS.contains(&authored_index));
+            for _pulse in 0..16 {
+                let bee = session
+                    .backend()
+                    .campaign
+                    .level2_compatibility()
+                    .economy()
+                    .bee_creatures()
+                    .iter()
+                    .find(|bee| bee.authored_index() == Some(authored_index))
+                    .copied()
+                    .expect("package Bee remains live until its lethal mailbox callback");
+                let life_before = bee.life;
+                let attacker = session
+                    .backend()
+                    .campaign
+                    .level2_compatibility()
+                    .state
+                    .entity_index;
+                assert!(
+                    session
+                        .backend_mut()
+                        .campaign
+                        .level2_compatibility_mut()
+                        .economy_mut()
+                        .stage_bee_mailbox_damage_for_test(bee.source_entity_index, attacker, 250,)
+                );
+                let mut damaged = None;
+                for _ in 0..4 {
+                    session
+                        .step(guard(&session), GameCommand::default())
+                        .unwrap();
+                    let current = session
+                        .backend()
+                        .campaign
+                        .level2_compatibility()
+                        .economy()
+                        .bee_creatures()
+                        .iter()
+                        .find(|candidate| candidate.authored_index() == Some(authored_index))
+                        .copied()
+                        .expect("the staged Fireball pulse is consumed before Bee reclaim");
+                    if current.life == life_before.wrapping_sub(250) {
+                        damaged = Some(current);
+                        break;
+                    }
+                }
+                let damaged = damaged.unwrap_or_else(|| {
+                    let current = session
+                        .backend()
+                        .campaign
+                        .level2_compatibility()
+                        .economy()
+                        .bee_creatures()
+                        .iter()
+                        .find(|candidate| candidate.authored_index() == Some(authored_index))
+                        .copied();
+                    panic!(
+                        "the accepted Fireball pulse reaches Bee {authored_index}'s callback: before={bee:?}; current={current:?}"
+                    )
+                });
+                assert_eq!(damaged.damage_attacker_entity_index, attacker);
+                if damaged.life < 0 {
+                    assert_eq!(damaged.action, 20);
+                    terminal_rows.insert(authored_index);
+                    break;
+                }
+            }
+
+            let mut objective_completed = false;
+            for _ in 0..24 {
+                if session
+                    .backend()
+                    .campaign
+                    .level2_compatibility()
+                    .runtime()
+                    .objectives[0]
+                    .stage_selectors[2]
+                    == 2
+                {
+                    objective_completed = true;
+                    break;
+                }
+                if session
+                    .backend()
+                    .campaign
+                    .level2_compatibility()
+                    .economy()
+                    .bee_creatures()
+                    .iter()
+                    .all(|bee| bee.authored_index() != Some(authored_index))
+                {
+                    break;
+                }
+                session
+                    .step(guard(&session), GameCommand::default())
+                    .unwrap();
+            }
+            let current = session
+                .backend()
+                .campaign
+                .level2_compatibility()
+                .economy()
+                .bee_creatures()
+                .iter()
+                .find(|bee| bee.authored_index() == Some(authored_index))
+                .copied();
+            if objective_completed {
+                assert!(
+                    current.is_none_or(|bee| !bee.active || !bee.drawing_enabled),
+                    "the final plague Bee is absent from the live census at objective completion: {current:?}"
+                );
+            } else {
+                assert!(
+                    current.is_none(),
+                    "plague Bee {authored_index} reaches following-pass reclaim: {current:?}"
+                );
+                reclaimed_rows.insert(authored_index);
+            }
+        }
+
+        assert_eq!(
+            terminal_rows,
+            BTreeSet::from(PLAGUE_BEE_ROWS),
+            "all six production plague Bees reach their ordinary lethal callback"
+        );
+        assert!(
+            BTreeSet::from([229, 230, 231, 236, 237]).is_subset(&reclaimed_rows),
+            "the first five production plague Bees reach following-pass physical reclaim"
+        );
+        let compatibility = session.backend().campaign.level2_compatibility();
+        let live_bee_rows = compatibility
+            .economy()
+            .bee_creatures()
+            .iter()
+            .filter(|bee| bee.active && bee.drawing_enabled)
+            .filter_map(|bee| bee.authored_index())
+            .collect::<BTreeSet<_>>();
+        assert!(BTreeSet::from(PLAGUE_BEE_ROWS).is_disjoint(&live_bee_rows));
+        assert_eq!(
+            &compatibility.runtime().objectives[0].stage_selectors[..5],
+            &[2, 2, 2, 2, 1]
+        );
+        assert_eq!(
+            progress_id(&session).as_deref(),
+            Some("objective.clear.payahandra_vaults")
+        );
+        assert_eq!(
+            session.snapshot().value.objective_progress.completed_count,
+            4
+        );
     }
 
     #[test]

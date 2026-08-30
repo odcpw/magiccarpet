@@ -603,8 +603,11 @@ impl SourceArena {
             .map(|(source_slot, _)| source_slot)
             .collect::<BTreeSet<_>>();
         let mut slots: [Vec<u16>; 29] = std::array::from_fn(|_| Vec::new());
-        let mut include = |source_slot: u16, model: u8, action: u8, life: i32| {
-            if life < 0 || matches!(action, 180 | 232 | 234) {
+        let mut include = |source_slot: u16, model: u8, action: u8, _life: i32| {
+            // Source class-model membership retains lethal rows through their
+            // visible death callback. Hide/reclaim, not the negative life
+            // mailbox write, removes them from absence-objective census.
+            if matches!(action, 180 | 232 | 234) {
                 return;
             }
             if let Some(bucket) = slots.get_mut(usize::from(model)) {

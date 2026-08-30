@@ -1345,17 +1345,30 @@ fn level_two_non_bee_creature_rng_branches_reject_without_forbidden_draws() {
 
 #[test]
 fn level_two_bee_damage_mailbox_keeps_payload_and_orders_nonlethal_tail() {
-    let inspection =
-        NativeWorld::inspect_level2(level_two_fixture_path()).expect("qualified Level 2 package");
-    let mut session = inspection
-        .level2_reset_session()
-        .expect("qualified Level 2 Bee session");
+    let package = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../../generated/mc-cf02-campaign-package-v2-b/qualified-level2");
+    let mut campaign = crate::campaign::CampaignSession::open(
+        package,
+        crate::campaign::spec::CampaignSelection::LEVEL2,
+    )
+    .expect("qualified semantic Level 2 campaign");
+    let session = campaign.level2_compatibility_mut();
+    session
+        .activate_authored_group_prerequisite_for_test(21)
+        .expect("qualified group-21 Bee boundary");
     let bee = session
-        .allocate_level2_authored_bee(229)
+        .economy()
+        .bee_creatures()
+        .iter()
+        .find(|bee| bee.authored_index() == Some(229))
+        .copied()
         .expect("qualified authored Day Bee");
     let mut source = bee;
     let initial_rng = source.entity_rng;
-    source.action = 17;
+    assert_eq!(
+        source.action, 23,
+        "qualified Bee retains its constructor action"
+    );
     source.pending_damage = 250;
     source.pending_attacker_entity_index = session.state.entity_index;
 

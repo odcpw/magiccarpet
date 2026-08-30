@@ -16952,12 +16952,7 @@ impl Level2ResetSession {
             if move_speed != 0 {
                 let move_yaw = self.session.state.live.economy.entities[usize::from(target_index)]
                     .source_word_30();
-                crate::move_entity(
-                    &mut predicted,
-                    i16::try_from(move_yaw).expect("wind target move yaw fits"),
-                    0,
-                    move_speed,
-                );
+                crate::move_entity(&mut predicted, move_yaw.cast_signed(), 0, move_speed);
             }
             let ground = self.canonical_terrain().ground_height(predicted);
             let ground_clearance = snapshot
