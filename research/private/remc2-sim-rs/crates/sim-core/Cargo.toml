@@ -36,6 +36,7 @@ sim-renderable-map-chain = { path = "../sim-renderable-map-chain" }
 sim-session = { path = "../sim-session" }
 sim-ss2-tmap = { path = "../sim-ss2-tmap" }
 sim-static-world-tmap = { path = "../sim-static-world-tmap" }
+sim-terrain-grid = { path = "../sim-terrain-grid" }
 sim-terrain-presentation = { path = "../sim-terrain-presentation" }
 sim-terrain-raster = { path = "../sim-terrain-raster" }
 sim-voxel = { path = "../sim-voxel" }

@@ -256,6 +256,7 @@ dependencies = [
  "sim-session",
  "sim-ss2-tmap",
  "sim-static-world-tmap",
+ "sim-terrain-grid",
  "sim-terrain-presentation",
  "sim-terrain-raster",
  "sim-voxel",
@@ -354,6 +355,15 @@ name = "sim-static-world-tmap"
 version = "0.1.0"
 dependencies = [
  "sim-ss2-tmap",
+]
+
+[[package]]
+name = "sim-terrain-grid"
+version = "0.1.0"
+dependencies = [
+ "sha2",
+ "sim-render-camera",
+ "sim-terrain-presentation",
 ]
 
 [[package]]

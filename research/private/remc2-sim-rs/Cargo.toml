@@ -23,6 +23,7 @@ members = [
     "crates/sim-ss2-tmap",
     "crates/sim-static-world-tmap",
     "crates/sim-input",
+    "crates/sim-terrain-grid",
     "crates/sim-terrain-presentation",
     "crates/sim-terrain-raster",
     "crates/sim-voxel",
