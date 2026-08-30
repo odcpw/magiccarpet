@@ -1928,31 +1928,36 @@ mod tests {
             .unwrap();
         let stale_level_one_tick_zero_guard = playing.session.as_ref().unwrap().guard();
 
-        // Stage only the already-qualified real group-4 boundary. The real
-        // package portal/trigger, numeric scheduler, player action-12 phases,
-        // journal, persistent completion carrier, and next definition open
-        // remain production-owned.
+        // Drive the same live Level 1 session through the production Castle
+        // mana objective, all five Firefly lifecycles, and the ordinary final
+        // objective gate before entering the real package exit trigger.
         {
-            let campaign = runtime
-                .session_mut()
-                .unwrap()
-                .backend_mut()
-                .compatibility_campaign_mut_for_test();
-            let session = campaign.level2_compatibility_mut();
-            session
-                .activate_authored_group_prerequisite_for_test(4)
-                .expect("real L1 group 4 materializes the exit boundary");
-            let trigger = session
+            let session = runtime.session_mut().unwrap();
+            crate::campaign::backend::tests::complete_real_level_one_castle_route_to_group_six(
+                session,
+            );
+            crate::campaign::backend::tests::complete_real_level_one_firefly_objective_to_exit_group(
+                session,
+                false,
+            );
+            let compatibility = session
+                .backend()
+                .compatibility_campaign()
+                .level2_compatibility();
+            let trigger = compatibility
                 .economy()
                 .authored_switch_producers()
                 .iter()
                 .find(|source| source.authored_index == 137)
                 .copied()
-                .expect("real L1 group 4 contains its exit trigger");
-            let player = session.state.entity_index;
+                .expect("the ordinary final objective materializes the real L1 exit trigger");
+            let player = compatibility.state.entity_index;
             session
+                .backend_mut()
+                .compatibility_campaign_mut_for_test()
+                .level2_compatibility_mut()
                 .set_level2_entity_position(player, trigger.position)
-                .expect("stage the real player inside the real exit trigger");
+                .expect("position the real player inside the proven exit-trigger boundary");
         }
 
         let before_start = runtime.identity();

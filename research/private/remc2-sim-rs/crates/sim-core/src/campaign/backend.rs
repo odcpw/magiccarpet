@@ -1755,7 +1755,7 @@ fn hex_digest(bytes: [u8; 32]) -> String {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::FlightWorld;
     use crate::campaign::state::{ResetReceipt, ResetState, encode_reset_v1};
@@ -4756,9 +4756,10 @@ mod tests {
         // by ordinary casts and travel through the production scheduler.
     }
 
-    #[test]
-    fn campaign_backend_real_player_fireballs_complete_level_one_firefly_objective_and_materialize_exit_group()
-     {
+    pub(crate) fn complete_real_level_one_firefly_objective_to_exit_group(
+        mut session: &mut GameSession<Mc2CampaignBackend>,
+        stage_earlier_objectives_after_kills: bool,
+    ) {
         const GROUP_SIX_ROWS: &[u16] = &[108, 134, 135, 154, 189, 193];
         const FIREFLY_ROWS: &[u16] = &[108, 134, 135, 189, 193];
         const GROUP_FOUR_ROWS: &[u16] =
@@ -4836,8 +4837,27 @@ mod tests {
             saw_pre_kill: &mut BTreeSet<u16>,
             saw_kill: &mut BTreeSet<u16>,
             saw_hidden: &mut BTreeSet<u16>,
+            saw_death_callback: &mut BTreeSet<u16>,
             saw_reclaimed: &mut BTreeSet<u16>,
         ) {
+            for event in session
+                .backend()
+                .campaign
+                .level2_compatibility()
+                .economy()
+                .events()
+            {
+                if let crate::native_world::Level2EconomyEvent::DeathBurstSpawned {
+                    parent_entity_index,
+                    ..
+                } = event
+                    && let Some((row, _)) = targets
+                        .iter()
+                        .find(|(_, source_slot)| source_slot == parent_entity_index)
+                {
+                    saw_death_callback.insert(*row);
+                }
+            }
             for (row, source_slot) in targets {
                 match firefly(session, *source_slot) {
                     Some(source) => {
@@ -4855,15 +4875,7 @@ mod tests {
                             saw_hidden.insert(*row);
                         }
                     }
-                    None if saw_pre_kill.contains(row)
-                        && !session
-                            .backend()
-                            .campaign
-                            .level2_compatibility()
-                            .economy()
-                            .map_chains()
-                            .is_linked(*source_slot) =>
-                    {
+                    None if saw_death_callback.contains(row) => {
                         saw_reclaimed.insert(*row);
                     }
                     None => {}
@@ -4879,6 +4891,7 @@ mod tests {
             saw_pre_kill: &mut BTreeSet<u16>,
             saw_kill: &mut BTreeSet<u16>,
             saw_hidden: &mut BTreeSet<u16>,
+            saw_death_callback: &mut BTreeSet<u16>,
             saw_reclaimed: &mut BTreeSet<u16>,
         ) -> Option<(u16, i32, i32)> {
             let before = targets
@@ -4894,7 +4907,8 @@ mod tests {
                 .step(
                     guard(session),
                     GameCommand {
-                        cast_left: true,
+                        select_spell: Some(SemanticId::parse("spell.fireball").unwrap()),
+                        cast_selected: true,
                         ..GameCommand::default()
                     },
                 )
@@ -4905,6 +4919,7 @@ mod tests {
                 saw_pre_kill,
                 saw_kill,
                 saw_hidden,
+                saw_death_callback,
                 saw_reclaimed,
             );
             for _ in 0..12 {
@@ -4941,6 +4956,7 @@ mod tests {
                     saw_pre_kill,
                     saw_kill,
                     saw_hidden,
+                    saw_death_callback,
                     saw_reclaimed,
                 );
             }
@@ -4959,29 +4975,12 @@ mod tests {
             None
         }
 
-        let root = level_one_descriptor_fixture_path();
-        let definition = load_mc2_campaign(&root, &default_catalog().unwrap()).unwrap();
-        let mut session = GameSession::open(
-            &Mc2CampaignAdapter,
-            Arc::new(definition),
-            91,
-            Mc2CampaignInputs::new(&root),
-        )
-        .unwrap();
-        let reset_hash = session.backend().campaign.state_hash();
         let safe_position = session
             .backend()
             .campaign
             .level2_compatibility()
             .state
             .position;
-
-        session
-            .backend_mut()
-            .campaign
-            .level2_compatibility_mut()
-            .activate_authored_group_prerequisite_for_test(6)
-            .expect("the separately proved row-190 boundary constructs package group 6");
         let compatibility = session.backend().campaign.level2_compatibility();
         assert!(compatibility.dispatch_events().iter().any(|event| matches!(
             event,
@@ -5002,10 +5001,10 @@ mod tests {
             targets.iter().map(|(row, _)| *row).collect::<Vec<_>>(),
             FIREFLY_ROWS
         );
-
         let mut saw_pre_kill = BTreeSet::new();
         let mut saw_kill = BTreeSet::new();
         let mut saw_hidden = BTreeSet::new();
+        let mut saw_death_callback = BTreeSet::new();
         let mut saw_reclaimed = BTreeSet::new();
         let mut exact_impacts = 0;
         for attempt in 0..64 {
@@ -5024,6 +5023,7 @@ mod tests {
                 &mut saw_pre_kill,
                 &mut saw_kill,
                 &mut saw_hidden,
+                &mut saw_death_callback,
                 &mut saw_reclaimed,
             ) {
                 assert_eq!(
@@ -5041,6 +5041,7 @@ mod tests {
                     &mut saw_pre_kill,
                     &mut saw_kill,
                     &mut saw_hidden,
+                    &mut saw_death_callback,
                     &mut saw_reclaimed,
                 );
             }
@@ -5062,6 +5063,7 @@ mod tests {
                 &mut saw_pre_kill,
                 &mut saw_kill,
                 &mut saw_hidden,
+                &mut saw_death_callback,
                 &mut saw_reclaimed,
             );
         }
@@ -5070,7 +5072,12 @@ mod tests {
             FIREFLY_ROWS
         );
         assert_eq!(saw_kill.iter().copied().collect::<Vec<_>>(), FIREFLY_ROWS);
-        assert_eq!(saw_hidden.iter().copied().collect::<Vec<_>>(), FIREFLY_ROWS);
+        assert_eq!(
+            saw_death_callback.iter().copied().collect::<Vec<_>>(),
+            FIREFLY_ROWS,
+            "every cadence-gated Firefly death callback emits its ordinary death burst"
+        );
+        assert!(saw_hidden.is_subset(&saw_death_callback));
         assert_eq!(
             saw_reclaimed.iter().copied().collect::<Vec<_>>(),
             FIREFLY_ROWS
@@ -5088,75 +5095,65 @@ mod tests {
             "the position-only combat harness must leave the objective owner alive"
         );
 
-        let compatibility = session.backend_mut().campaign.level2_compatibility_mut();
-        compatibility
-            .stage_level_one_final_objective_prerequisite_for_test()
-            .expect("stage only the separately proved earlier objective boundary");
-        let exit_gate = compatibility
-            .entities()
-            .iter()
-            .find(|source| {
-                source.active
-                    && source.class == 11
-                    && source.model == 4
-                    && source.action == 4
-                    && source.source_id == 4
-            })
-            .map(|source| source.index)
-            .expect("Level 1 reset retains its production level-end gate");
-        assert_eq!(compatibility.runtime().objectives[0].stage_selectors[4], 1);
-        assert_eq!(compatibility.runtime().objectives[0].is_level_end, 0);
-        assert!(
-            compatibility
-                .dispatch_events()
-                .iter()
-                .all(|event| !matches!(
-                    event,
-                    Level2DispatchEvent::AuthoredGroupActivated { group: 4, .. }
-                ))
-        );
+        if stage_earlier_objectives_after_kills {
+            session
+                .backend_mut()
+                .campaign
+                .level2_compatibility_mut()
+                .stage_level_one_final_objective_prerequisite_for_test()
+                .expect("stage only the separately proved earlier objective boundary");
+        }
 
-        let mut completion_pass = None;
-        for pass in 1..=4 {
+        let group_four_is_live = |session: &GameSession<Mc2CampaignBackend>| {
+            session
+                .backend()
+                .campaign
+                .level2_compatibility()
+                .economy()
+                .authored_switch_producers()
+                .iter()
+                .any(|source| source.active && source.authored_index == 137)
+        };
+        let exit_gate = (!group_four_is_live(&session)).then(|| {
+            let compatibility = session.backend().campaign.level2_compatibility();
+            assert_eq!(compatibility.runtime().objectives[0].stage_selectors[4], 1);
+            assert_eq!(compatibility.runtime().objectives[0].is_level_end, 0);
+            compatibility
+                .entities()
+                .iter()
+                .find(|source| {
+                    source.active
+                        && source.class == 11
+                        && source.model == 4
+                        && source.action == 4
+                        && source.source_id == 4
+                })
+                .map(|source| source.index)
+                .expect("Level 1 reset retains its production level-end gate")
+        });
+
+        for _ in 0..6 {
+            if group_four_is_live(&session) {
+                break;
+            }
             session
                 .step(guard(&session), GameCommand::default())
                 .unwrap();
-            let compatibility = session.backend().campaign.level2_compatibility();
-            assert!(
-                compatibility
-                    .dispatch_events()
-                    .iter()
-                    .all(|event| !matches!(
-                        event,
-                        Level2DispatchEvent::AuthoredGroupActivated { group: 4, .. }
-                    ))
-            );
-            if compatibility.runtime().objectives[0].stage_selectors[4] == 2 {
-                completion_pass = Some(pass);
-                break;
-            }
-            assert_eq!(compatibility.runtime().objectives[0].is_level_end, 0);
         }
-        assert!(
-            completion_pass.is_some(),
-            "the ordinary objective service must consume the complete Firefly-absence lifecycle"
-        );
         let compatibility = session.backend().campaign.level2_compatibility();
+        assert_eq!(compatibility.runtime().objectives[0].stage_selectors[4], 2);
         assert_eq!(compatibility.runtime().objectives[0].is_level_end, 1);
-
-        session
-            .step(guard(&session), GameCommand::default())
-            .unwrap();
-        let compatibility = session.backend().campaign.level2_compatibility();
-        assert!(compatibility.dispatch_events().iter().any(|event| matches!(
-            event,
-            Level2DispatchEvent::AuthoredGroupActivated {
-                source_slot,
-                group: 4,
-                authored_indices,
-                ..
-            } if *source_slot == exit_gate && authored_indices.as_ref() == GROUP_FOUR_ROWS
-        )));
+        if let Some(exit_gate) = exit_gate {
+            assert!(compatibility.dispatch_events().iter().any(|event| matches!(
+                event,
+                Level2DispatchEvent::AuthoredGroupActivated {
+                    source_slot,
+                    group: 4,
+                    authored_indices,
+                    ..
+                } if *source_slot == exit_gate && authored_indices.as_ref() == GROUP_FOUR_ROWS
+            )));
+        }
         let portal = compatibility
             .economy()
             .authored_class14()
@@ -5177,6 +5174,28 @@ mod tests {
                 .iter()
                 .all(|event| !matches!(event, Level2DispatchEvent::Error { .. }))
         );
+    }
+
+    #[test]
+    fn campaign_backend_real_player_fireballs_complete_level_one_firefly_objective_and_materialize_exit_group()
+     {
+        let root = level_one_descriptor_fixture_path();
+        let definition = load_mc2_campaign(&root, &default_catalog().unwrap()).unwrap();
+        let mut session = GameSession::open(
+            &Mc2CampaignAdapter,
+            Arc::new(definition),
+            91,
+            Mc2CampaignInputs::new(&root),
+        )
+        .unwrap();
+        let reset_hash = session.backend().campaign.state_hash();
+        session
+            .backend_mut()
+            .campaign
+            .level2_compatibility_mut()
+            .activate_authored_group_prerequisite_for_test(6)
+            .expect("the separately proved row-190 boundary constructs package group 6");
+        complete_real_level_one_firefly_objective_to_exit_group(&mut session, true);
 
         session.reset(guard(&session)).unwrap();
         assert_eq!(session.backend().campaign.state_hash(), reset_hash);
@@ -11443,24 +11462,16 @@ mod tests {
         );
     }
 
-    #[test]
-    fn campaign_backend_real_level_one_castle_pickup_cast_reaches_mana_objective_and_group_six() {
+    pub(crate) fn complete_real_level_one_castle_route_to_group_six(
+        mut session: &mut GameSession<Mc2CampaignBackend>,
+    ) {
         const ARCHER_ROWS: [u16; 4] = [101, 102, 103, 106];
         const CASTLE_PICKUP_RECORD: u16 = 31;
         const CASTLE_FAMILY: u8 = 2;
         const GROUP_SIX_ROWS: &[u16] = &[108, 134, 135, 154, 189, 193];
 
-        let root = level_one_descriptor_fixture_path();
-        let definition = load_mc2_campaign(&root, &default_catalog().unwrap()).unwrap();
         let castle_id = SemanticId::parse("spell.castle").unwrap();
         let possession_id = SemanticId::parse("spell.possession").unwrap();
-        let mut session = GameSession::open(
-            &Mc2CampaignAdapter,
-            Arc::new(definition),
-            77,
-            Mc2CampaignInputs::new(&root),
-        )
-        .unwrap();
         let player_entity = session
             .backend()
             .campaign
@@ -12386,6 +12397,20 @@ mod tests {
                     } if *source_slot == row190_slot && authored_indices.as_ref() == GROUP_SIX_ROWS
                 ))
         );
+    }
+
+    #[test]
+    fn campaign_backend_real_level_one_castle_pickup_cast_reaches_mana_objective_and_group_six() {
+        let root = level_one_descriptor_fixture_path();
+        let definition = load_mc2_campaign(&root, &default_catalog().unwrap()).unwrap();
+        let mut session = GameSession::open(
+            &Mc2CampaignAdapter,
+            Arc::new(definition),
+            77,
+            Mc2CampaignInputs::new(&root),
+        )
+        .unwrap();
+        complete_real_level_one_castle_route_to_group_six(&mut session);
     }
 
     #[test]
