@@ -60,6 +60,162 @@
     }
 
     #[test]
+    fn level_two_stage_one_castle_uses_one_holder_for_collection_and_arrival() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let mut session = inspection
+            .level2_reset_session()
+            .expect("stage-one Castle holder session");
+        let castle_slot = session
+            .economy_mut()
+            .build_castle(Position::default(), 111)
+            .expect("stage-one Castle");
+        {
+            let mut economy = session.economy_mut();
+            let castle = economy.castle.as_mut().expect("stage-one Castle");
+            castle.level = 1;
+            castle.phase = 0;
+            castle.mana = 0;
+            castle.mana_capacity = 8_500;
+        }
+
+        // Pinned remc2 sub_5FF50 creates one class-3/model-3/action-9 holder
+        // at stages one through three. AddBallon_60AB0 uses that same row for
+        // both collection and deposit; there is no parallel stage-one carrier.
+        session.economy_mut().begin_turn();
+        assert!(session.economy_mut().step_castle_action(castle_slot));
+        assert!(session.economy().carriers().is_empty());
+        let castle = session.economy().castle().expect("stage-one Castle");
+        let defender_slot = castle.defender_slots[0];
+        assert_ne!(defender_slot, 0);
+        assert_eq!(castle.defender_count, 1);
+        assert_eq!(
+            session
+                .economy()
+                .castle_children()
+                .iter()
+                .filter(|child| {
+                    child.active
+                        && child.source_class == 3
+                        && child.model == 3
+                        && child.action == 9
+                })
+                .count(),
+            1
+        );
+        for level in [2, 3] {
+            session
+                .economy_mut()
+                .castle
+                .as_mut()
+                .expect("Castle stage")
+                .level = level;
+            session.economy_mut().maintain_castle_defenders(castle_slot);
+            let castle = session.economy().castle().expect("Castle stage");
+            assert_eq!(castle.defender_count, 1);
+            assert_eq!(castle.defender_slots[0], defender_slot);
+        }
+
+        let holder_position = session
+            .economy()
+            .castle_children()
+            .iter()
+            .find(|child| child.source_entity_index == defender_slot)
+            .expect("source Castle holder")
+            .position;
+        let sphere_id = session
+            .economy_mut()
+            .spawn_mana_sphere_from_death(77, holder_position, 0, 0x1234, 500, 111)
+            .expect("single holder sphere");
+        let sphere_slot = u16::try_from(sphere_id).expect("sphere slot fits");
+        {
+            let mut economy = session.economy_mut();
+            let castle = economy.castle.as_mut().expect("stage-one Castle");
+            castle.level = 1;
+            castle.phase = 0;
+            let holder = economy
+                .castle_children
+                .iter_mut()
+                .find(|child| child.source_entity_index == defender_slot)
+                .expect("source Castle holder");
+            holder.source_byte_3e = 0;
+        }
+        session.economy_mut().maintain_castle_defenders(castle_slot);
+        assert_eq!(
+            session
+                .economy()
+                .castle_children()
+                .iter()
+                .find(|child| child.source_entity_index == defender_slot)
+                .expect("sphere-targeted holder")
+                .target_sphere_slot,
+            sphere_slot
+        );
+        assert!(
+            session
+                .economy_mut()
+                .step_castle_defender_slot(defender_slot)
+        );
+        assert_eq!(
+            session
+                .economy()
+                .events()
+                .iter()
+                .filter(|event| matches!(
+                    event,
+                    Level2EconomyEvent::CastleDefenderCollectedSphere {
+                        defender_slot: event_defender,
+                        sphere_id: event_sphere,
+                        mana: 500,
+                    } if *event_defender == defender_slot && *event_sphere == sphere_id
+                ))
+                .count(),
+            1
+        );
+        assert!(session.economy().events().iter().all(|event| !matches!(
+            event,
+            Level2EconomyEvent::ManaCarrierSpawned { .. }
+                | Level2EconomyEvent::ManaCarrierArrived { .. }
+        )));
+
+        session.economy_mut().maintain_castle_defenders(castle_slot);
+        assert_eq!(
+            session
+                .economy()
+                .castle_children()
+                .iter()
+                .find(|child| child.source_entity_index == defender_slot)
+                .expect("returning holder")
+                .target_sphere_slot,
+            castle_slot
+        );
+        assert!(
+            session
+                .economy_mut()
+                .step_castle_defender_slot(defender_slot)
+        );
+        assert_eq!(session.economy().castle().expect("Castle deposit").mana, 500);
+        assert_eq!(
+            session
+                .economy()
+                .events()
+                .iter()
+                .filter(|event| matches!(
+                    event,
+                    Level2EconomyEvent::CastleDefenderArrived {
+                        defender_slot: event_defender,
+                        castle_id,
+                        mana: 500,
+                    } if *event_defender == defender_slot
+                        && *castle_id == castle_slot
+                ))
+                .count(),
+            1
+        );
+        assert!(session.economy().carriers().is_empty());
+    }
+
+    #[test]
     fn level_two_castle_outer_turn_sub5ff50_transforms_dead_excess_and_reclaims_following_pass() {
         let package = level_two_fixture_path();
         let inspection = NativeWorld::inspect_level2(&package).expect("qualified Level 2 package");

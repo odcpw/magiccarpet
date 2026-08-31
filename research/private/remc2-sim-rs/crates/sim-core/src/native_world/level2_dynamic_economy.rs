@@ -3247,7 +3247,10 @@ impl Level2EconomyState {
                 crate::move_entity(&mut predicted, yaw, 0, child_snapshot.speed);
             }
         } else if let Some(sphere_index) = self.spheres.iter().position(|sphere| {
-            sphere.active && sphere.source_entity_index == child_snapshot.target_sphere_slot
+            sphere.active
+                && !sphere.pending_delete
+                && sphere.control_flags & ENTITY_DRAW_DISABLED_BIT == 0
+                && sphere.source_entity_index == child_snapshot.target_sphere_slot
         }) {
             // Source `AddBallon_60AB0` uses the defender's raw id relation for
             // the owner gate.  This is `source_id_entity_index`, not the
@@ -3773,58 +3776,6 @@ impl Level2EconomyState {
             owner_entity_index,
         });
         Some(source_entity_index)
-    }
-
-    /// Service the source stage-one Castle carrier from the root's even-phase
-    /// action-4 callback. The first callback allocates the class-3/action-9
-    /// row after overflow processing; later callbacks select the nearest
-    /// same-owner live sphere in source-slot order, or send a loaded/full
-    /// carrier back to the authoritative Castle root.
-    fn service_stage_one_mana_carrier(&mut self, castle: Level2CastleState) {
-        if castle.level != 1 {
-            return;
-        }
-        let Some(carrier_index) = self.carriers.iter().position(|carrier| {
-            carrier.active && carrier.owner_entity_index == castle.owner_entity_index
-        }) else {
-            let _ = self.spawn_mana_carrier(castle.position, castle.owner_entity_index, 0);
-            return;
-        };
-        let carrier = self.carriers[carrier_index];
-        let must_return = self
-            .owner_mana_aggregate(castle.source_id_entity_index)
-            .saturating_add(castle.mana)
-            >= castle.mana_capacity
-            || carrier.carried_mana >= carrier.max_mana;
-        let target = (!must_return)
-            .then(|| {
-                self.spheres
-                    .iter()
-                    .filter(|sphere| {
-                        sphere.active
-                            && !sphere.pending_delete
-                            && sphere.control_flags & ENTITY_DRAW_DISABLED_BIT == 0
-                            && sphere.owner_entity_index == carrier.owner_entity_index
-                            && (sphere.assigned_carrier_id == 0
-                                || sphere.assigned_carrier_id == carrier.id)
-                    })
-                    .min_by_key(|sphere| {
-                        (
-                            level2_wrapping_source_distance_3d(carrier.position, sphere.position),
-                            sphere.source_entity_index,
-                        )
-                    })
-                    .map(|sphere| sphere.source_entity_index)
-            })
-            .flatten();
-        let carrier = &mut self.carriers[carrier_index];
-        if let Some(target_slot) = target {
-            carrier.target_sphere_id = u32::from(target_slot);
-            carrier.returning_to_castle = false;
-        } else {
-            carrier.target_sphere_id = u32::from(castle.source_entity_index);
-            carrier.returning_to_castle = true;
-        }
     }
 
     pub fn build_castle(
@@ -4819,6 +4770,8 @@ impl Level2EconomyState {
             .iter()
             .filter(|sphere| {
                 sphere.active
+                    && !sphere.pending_delete
+                    && sphere.control_flags & ENTITY_DRAW_DISABLED_BIT == 0
                     && sphere.player_entity_index == holder_id_entity_index
                     && sphere.control_flags & LEVEL2_MANA_SPHERE_TARGET_SUPPRESSION_BIT == 0
                     && sphere.source_entity_index != exclude_one
@@ -5946,9 +5899,6 @@ impl Level2EconomyState {
                     castle.position.z = terrain.ground_height(castle.position);
                 }
                 self.release_castle_excess_mana(castle_slot, terrain, reset_free_slots);
-                if let Some(castle) = self.castle {
-                    self.service_stage_one_mana_carrier(castle);
-                }
                 self.maintain_castle_defenders(castle_slot, terrain);
                 let Some(castle) = self.castle else {
                     self.advance_castle_phase(castle_slot);
