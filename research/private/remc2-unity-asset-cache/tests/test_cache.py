@@ -1922,6 +1922,110 @@ class CampaignDayMaterialTests(unittest.TestCase):
         extra.unlink()
 
 
+class CampaignDayGameplayAggregateTests(unittest.TestCase):
+    """Level 3 package-present materials plus gameplay/HUD presentation."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.temp_root = Path(
+            tempfile.mkdtemp(prefix="campaign-day-owner-cache-test.", dir=cache.GENERATED)
+        )
+        cls.first = cls.temp_root / "first"
+        cls.second = cls.temp_root / "second"
+        for output in (cls.first, cls.second):
+            cache.build_campaign_day_aggregate_cache(
+                cache.DEFAULT_OWNER,
+                cache.DEFAULT_CAMPAIGN_DAY_OWNER_EXPORT,
+                cache.DEFAULT_CAMPAIGN_DAY_PACKAGE,
+                cache.DEFAULT_CAMPAIGN_DAY_CLOSURE,
+                cache.DEFAULT_CATALOG,
+                output,
+            )
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        shutil.rmtree(cls.temp_root)
+
+    def test_repeatable_exact_level3_package_present_membership(self) -> None:
+        self.assertEqual(tree_identity(self.first), tree_identity(self.second))
+        manifest = cache.validate_campaign_day_aggregate_cache(self.first)
+        self.assertEqual(manifest["schema"], cache.CAMPAIGN_DAY_AGGREGATE_SCHEMA)
+        self.assertEqual(manifest["profile"]["external_level"], 3)
+        self.assertEqual(manifest["profile"]["internal_level"], 2)
+        self.assertEqual(set(manifest["components"]), {"material", "gameplay"})
+        self.assertEqual(len(manifest["outputs"]), 608)
+        self.assertEqual(
+            manifest["presentation_scope"]["audio"],
+            "not_materialized_requires_level_specific_occurrence_census",
+        )
+
+        descriptor = json.loads(
+            (
+                self.first / "components/gameplay/gameplay/descriptor.json"
+            ).read_text(encoding="utf-8")
+        )
+        closure = json.loads(cache.DEFAULT_CAMPAIGN_DAY_CLOSURE.read_text())
+        catalog, _ = cache._level2_catalog_identity(cache.DEFAULT_CATALOG)
+        rows = {
+            row.get("path"): row for row in catalog.get("files", [])
+        }
+        rows.update(
+            {row.get("asset_id"): row for row in catalog.get("entries", [])}
+        )
+        scene, dynamic, selected, excluded = cache._day_gameplay_selected_rows(
+            closure, rows
+        )
+        self.assertEqual(
+            [row["asset_id"] for row in descriptor["assets"]],
+            [row["asset_id"] for row in selected],
+        )
+        self.assertEqual(descriptor["excluded"], excluded)
+        self.assertEqual(len(scene), 174)
+        self.assertEqual(len(dynamic), 46)
+        self.assertEqual(len(selected), 209)
+        self.assertEqual(descriptor["source_sets"]["day_hud"]["output_count"], 75)
+        self.assertEqual(
+            manifest["bindings"]["campaign_package_sha256"],
+            "6f17fe1c33c5852796b08acba2c44e5073939b947975b4f3b330d2c45b62d18d",
+        )
+        self.assertEqual(
+            manifest["bindings"]["level_asset_closure_sha256"],
+            "67dea39e111fd8c6bdfb16867d0d5fcdb6424943bdaf6290e8247e59bd3c926d",
+        )
+
+    def test_tamper_symlink_and_campaign_package_mismatch_fail_closed(self) -> None:
+        descriptor = self.first / "components/gameplay/gameplay/descriptor.json"
+        original = descriptor.read_bytes()
+        descriptor.write_bytes(original + b"tamper")
+        with self.assertRaisesRegex(cache.CacheError, "output hash mismatch"):
+            cache.validate_campaign_day_aggregate_cache(self.first)
+        descriptor.write_bytes(original)
+
+        victim = self.first / "components/gameplay/gameplay/hud/palette/pald.rgb6"
+        victim_original = victim.read_bytes()
+        victim.unlink()
+        victim.symlink_to(
+            self.second / "components/gameplay/gameplay/hud/palette/pald.rgb6"
+        )
+        with self.assertRaisesRegex(cache.CacheError, "missing or symlinked"):
+            cache.validate_campaign_day_aggregate_cache(self.first)
+        victim.unlink()
+        victim.write_bytes(victim_original)
+
+        wrong_package = self.temp_root / "wrong-campaign-package"
+        shutil.copytree(cache.DEFAULT_CAMPAIGN_DAY_PACKAGE, wrong_package)
+        wrong_manifest = wrong_package / "manifest.json"
+        package = json.loads(wrong_manifest.read_text(encoding="utf-8"))
+        package["package_sha256"] = "0" * 64
+        wrong_manifest.write_bytes(cache.canonical_json(package))
+        with self.assertRaisesRegex(
+            cache.CacheError, "campaign Day package identity verification failed"
+        ):
+            cache.validate_campaign_day_aggregate_cache(
+                self.first, campaign_package_dir=wrong_package
+            )
+
+
 class Level2HistoricalV4InspectionTests(unittest.TestCase):
     """Retained v4 artifacts remain inspectable but cannot re-enter production."""
 

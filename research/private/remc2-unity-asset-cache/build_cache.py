@@ -33,8 +33,11 @@ DEFAULT_LEVEL2_PACKAGE = GENERATED / "l2-debug3.fJ3PaM/level2"
 DEFAULT_LEVEL2_CLOSURE = GENERATED / "level2-asset-closure.json"
 DEFAULT_LEVEL2_OUTPUT = GENERATED / "level2-day-material-cache"
 DEFAULT_CAMPAIGN_DAY_OWNER_EXPORT = GENERATED / "mc-iol7n-campaign-census-run-a/level3"
+DEFAULT_CAMPAIGN_DAY_PACKAGE = GENERATED / "mc-cf14-campaign-package-v1-a/qualified-level3"
 DEFAULT_CAMPAIGN_DAY_CLOSURE = GENERATED / "level3-day-material-asset-closure.json"
 DEFAULT_CAMPAIGN_DAY_OUTPUT = GENERATED / "level3-day-material-cache"
+DEFAULT_CAMPAIGN_DAY_GAMEPLAY_OUTPUT = GENERATED / "level3-day-gameplay-cache"
+DEFAULT_CAMPAIGN_DAY_AGGREGATE_OUTPUT = GENERATED / "level3-day-owner-cache"
 DEFAULT_LEVEL2_GAMEPLAY_OUTPUT = GENERATED / "level2-day-gameplay-cache"
 DEFAULT_CONFORMANCE_CONTRACT = (
     PRIVATE / "remc2-sim-rs/level1-conformance/plan29-closure-contract.json"
@@ -79,6 +82,9 @@ LEVEL2_GAMEPLAY_SCHEMA = "mc2-level2-day-gameplay-cache/v1"
 LEVEL2_DAY_HUD_SCHEMA = "mc2-level2-day-hud/v1"
 LEVEL2_AUDIO_SCHEMA = "mc2-level2-day-audio-cache/v1"
 LEVEL2_AGGREGATE_SCHEMA = "mc2-level2-day-owner-cache/v1"
+CAMPAIGN_DAY_GAMEPLAY_SCHEMA = "mc2-day-gameplay-cache/v1"
+CAMPAIGN_DAY_GAMEPLAY_DESCRIPTOR_SCHEMA = "mc2-day-gameplay/v1"
+CAMPAIGN_DAY_AGGREGATE_SCHEMA = "mc2-day-owner-cache/v1"
 LEVEL2_DAY_HUD_BITMAP_SELECTORS = (
     1,
     2,
@@ -5473,21 +5479,12 @@ def _level2_day_hud_products(
     return hud_descriptor, hud_outputs
 
 
-def build_day_gameplay_cache(
-    owner_root: Path,
-    package_dir: Path,
-    closure_path: Path,
-    catalog_path: Path,
-    output: Path,
-) -> dict[str, Any]:
-    """Materialize closure-rooted Level 2 gameplay, HUD, and text spans."""
-    output = validate_output_path(output)
-    profile, package, closure, catalog_rows = _level2_profile(
-        package_dir, closure_path, catalog_path
-    )
+def _day_gameplay_selected_rows(
+    closure: dict[str, Any],
+    catalog_rows: dict[str, Any],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+    """Select only closure-present Day gameplay roots, excluding owned audio."""
     scene, dynamic = _level2_closure_asset_rows(closure, catalog_rows)
-    source_bytes = _level2_owner_sources(owner_root, catalog_rows)
-    source_bytes.update(_level2_gameplay_sources(owner_root, catalog_rows))
     rows_by_id = {row["asset_id"]: row for row in [*scene, *dynamic]}
     for row in closure.get("sets", {}).get("realm_load_roots", {}).get("assets", []):
         relative = row.get("asset_id", "").removeprefix("owner_data:").split("#", 1)[0]
@@ -5499,13 +5496,40 @@ def build_day_gameplay_cache(
         asset_id = row["asset_id"]
         relative = asset_id.removeprefix("owner_data:").split("#", 1)[0]
         if relative in {"SOUND/SOUND.DAT", "SOUND/MUSIC.DAT"}:
-            excluded.append({"asset_id": asset_id, "reason": "owned by L2-13C audio cache"})
+            excluded.append(
+                {"asset_id": asset_id, "reason": "owned by L2-13C audio cache"}
+            )
             continue
         if relative not in set(LEVEL2_DAY_SOURCE_PATHS + LEVEL2_GAMEPLAY_SOURCE_PATHS):
-            raise CacheError(f"Level 2 gameplay closure contains an unowned root: {asset_id}")
+            raise CacheError(f"Day gameplay closure contains an unowned root: {asset_id}")
         selected.append(row)
     selected.sort(key=lambda row: row["asset_id"])
-    stage = Path(tempfile.mkdtemp(prefix=".level2-day-gameplay-", dir=output.parent))
+    excluded.sort(key=lambda row: row["asset_id"])
+    return scene, dynamic, selected, excluded
+
+
+def _build_profiled_day_gameplay_cache(
+    owner_root: Path,
+    profile: dict[str, Any],
+    closure: dict[str, Any],
+    catalog_rows: dict[str, Any],
+    output: Path,
+    *,
+    manifest_schema: str,
+    descriptor_schema: str,
+    stage_prefix: str,
+    kind_prefix: str,
+    bindings: dict[str, Any],
+    validator: Any,
+) -> dict[str, Any]:
+    """Materialize one already-validated Day gameplay/HUD profile."""
+    output = validate_output_path(output)
+    scene, dynamic, selected, excluded = _day_gameplay_selected_rows(
+        closure, catalog_rows
+    )
+    source_bytes = _level2_owner_sources(owner_root, catalog_rows)
+    source_bytes.update(_level2_gameplay_sources(owner_root, catalog_rows))
+    stage = Path(tempfile.mkdtemp(prefix=stage_prefix, dir=output.parent))
     try:
         outputs: list[dict[str, Any]] = []
         descriptors = []
@@ -5518,7 +5542,7 @@ def build_day_gameplay_cache(
                 outputs,
                 target,
                 data,
-                kind=f"level2_{row.get('kind', 'asset')}",
+                kind=f"{kind_prefix}_{row.get('kind', 'asset')}",
                 source_asset_ids=[row["asset_id"]],
                 extra=metadata,
             )
@@ -5537,7 +5561,7 @@ def build_day_gameplay_cache(
             catalog_rows,
         )
         descriptor = {
-            "schema": "mc2-level2-day-gameplay/v1",
+            "schema": descriptor_schema,
             "profile": profile,
             "assets": descriptors,
             "hud": hud_descriptor,
@@ -5567,7 +5591,7 @@ def build_day_gameplay_cache(
             outputs,
             "gameplay/descriptor.json",
             descriptor_bytes,
-            kind="canonical_json_level2_gameplay_descriptor",
+            kind=f"canonical_json_{kind_prefix}_gameplay_descriptor",
             source_asset_ids=sorted(
                 {
                     *[item["asset_id"] for item in descriptors],
@@ -5576,23 +5600,16 @@ def build_day_gameplay_cache(
             ),
         )
         manifest = {
-            "schema": LEVEL2_GAMEPLAY_SCHEMA,
+            "schema": manifest_schema,
             "generator": {"name": "build_cache.py", "version": GENERATOR_VERSION},
             "profile": profile,
-            "bindings": {
-                "level_export_package_sha256": profile["package_sha256"],
-                "level_asset_closure_sha256": profile["closure_sha256"],
-                "owner_catalog_sha256": profile["catalog_sha256"],
-                "owner_catalog_file_sha256": profile["catalog_file_sha256"],
-                "remc2_commit": PINNED_REMC2_COMMIT,
-                **_level2_owner_identity_bindings(profile),
-            },
+            "bindings": bindings,
             "outputs": outputs,
             "cache_content_sha256": _level2_cache_identity(outputs),
         }
         manifest["manifest_payload_sha256"] = sha256_bytes(canonical_json(manifest))
         (stage / "manifest.json").write_bytes(canonical_json(manifest))
-        validate_day_gameplay_cache(stage, profile["package_sha256"], profile["closure_sha256"])
+        validator(stage)
         fsync_tree(stage)
         commit_stage(output, stage)
         return manifest
@@ -5600,6 +5617,94 @@ def build_day_gameplay_cache(
         if stage.exists():
             shutil.rmtree(stage)
         raise
+
+
+def build_day_gameplay_cache(
+    owner_root: Path,
+    package_dir: Path,
+    closure_path: Path,
+    catalog_path: Path,
+    output: Path,
+) -> dict[str, Any]:
+    """Retained Level 2 closure-rooted gameplay/HUD facade."""
+    profile, _package, closure, catalog_rows = _level2_profile(
+        package_dir, closure_path, catalog_path
+    )
+    bindings = {
+        "level_export_package_sha256": profile["package_sha256"],
+        "level_asset_closure_sha256": profile["closure_sha256"],
+        "owner_catalog_sha256": profile["catalog_sha256"],
+        "owner_catalog_file_sha256": profile["catalog_file_sha256"],
+        "remc2_commit": PINNED_REMC2_COMMIT,
+        **_level2_owner_identity_bindings(profile),
+    }
+    return _build_profiled_day_gameplay_cache(
+        owner_root,
+        profile,
+        closure,
+        catalog_rows,
+        output,
+        manifest_schema=LEVEL2_GAMEPLAY_SCHEMA,
+        descriptor_schema="mc2-level2-day-gameplay/v1",
+        stage_prefix=".level2-day-gameplay-",
+        kind_prefix="level2",
+        bindings=bindings,
+        validator=lambda stage: validate_day_gameplay_cache(
+            stage, profile["package_sha256"], profile["closure_sha256"]
+        ),
+    )
+
+
+def _campaign_day_bindings(profile: dict[str, Any]) -> dict[str, Any]:
+    """Seal both the raw owner export and runtime campaign package."""
+    return {
+        "level_export_package_sha256": profile["owner_export_package_sha256"],
+        "campaign_package_sha256": profile["campaign_package_sha256"],
+        "level_asset_closure_sha256": profile["closure_sha256"],
+        "owner_catalog_sha256": profile["catalog_sha256"],
+        "owner_catalog_file_sha256": profile["catalog_file_sha256"],
+        "remc2_commit": PINNED_REMC2_COMMIT,
+        **_level2_owner_identity_bindings(profile),
+    }
+
+
+def build_campaign_day_gameplay_cache(
+    owner_root: Path,
+    owner_export_dir: Path,
+    campaign_package_dir: Path,
+    closure_path: Path,
+    catalog_path: Path,
+    output: Path,
+) -> dict[str, Any]:
+    """Materialize package-present Day gameplay/HUD assets for a campaign level."""
+    profile, _campaign, closure, catalog_rows, _owner_export = (
+        _campaign_day_material_profile(
+            owner_export_dir,
+            campaign_package_dir,
+            closure_path,
+            catalog_path,
+        )
+    )
+    bindings = _campaign_day_bindings(profile)
+    return _build_profiled_day_gameplay_cache(
+        owner_root,
+        profile,
+        closure,
+        catalog_rows,
+        output,
+        manifest_schema=CAMPAIGN_DAY_GAMEPLAY_SCHEMA,
+        descriptor_schema=CAMPAIGN_DAY_GAMEPLAY_DESCRIPTOR_SCHEMA,
+        stage_prefix=".campaign-day-gameplay-",
+        kind_prefix="campaign_day",
+        bindings=bindings,
+        validator=lambda stage: validate_campaign_day_gameplay_cache(
+            stage,
+            owner_export_dir=owner_export_dir,
+            campaign_package_dir=campaign_package_dir,
+            closure_path=closure_path,
+            catalog_path=catalog_path,
+        ),
+    )
 
 
 def _validate_level2_day_hud_descriptor(
@@ -5896,6 +6001,104 @@ def validate_day_gameplay_cache(
         raise CacheError("Level 2 gameplay cache tree contains symlink")
     if actual_tree != {"manifest.json", *seen}:
         raise CacheError("Level 2 gameplay cache tree has missing or extra files")
+    return manifest
+
+
+def validate_campaign_day_gameplay_cache(
+    cache_dir: Path,
+    *,
+    owner_export_dir: Path = DEFAULT_CAMPAIGN_DAY_OWNER_EXPORT,
+    campaign_package_dir: Path = DEFAULT_CAMPAIGN_DAY_PACKAGE,
+    closure_path: Path = DEFAULT_CAMPAIGN_DAY_CLOSURE,
+    catalog_path: Path = DEFAULT_CATALOG,
+) -> dict[str, Any]:
+    """Validate one campaign-bound Day gameplay/HUD cache and its census."""
+    profile, _campaign, closure, catalog_rows, _owner_export = (
+        _campaign_day_material_profile(
+            owner_export_dir,
+            campaign_package_dir,
+            closure_path,
+            catalog_path,
+        )
+    )
+    expected_bindings = _campaign_day_bindings(profile)
+    cache_dir = cache_dir.expanduser().resolve()
+    validate_output_path(cache_dir)
+    manifest_path = cache_dir / "manifest.json"
+    if manifest_path.is_symlink():
+        raise CacheError("campaign Day gameplay manifest is symlinked")
+    manifest = load_json(manifest_path)
+    unsigned = dict(manifest)
+    claim = unsigned.pop("manifest_payload_sha256", None)
+    if sha256_bytes(canonical_json(unsigned)) != claim:
+        raise CacheError("campaign Day gameplay manifest metadata hash mismatch")
+    if manifest.get("schema") != CAMPAIGN_DAY_GAMEPLAY_SCHEMA:
+        raise CacheError("unsupported campaign Day gameplay cache schema")
+    if manifest.get("profile") != profile:
+        raise CacheError("campaign Day gameplay profile identity mismatch")
+    if manifest.get("bindings") != expected_bindings:
+        raise CacheError("campaign Day gameplay binding identity mismatch")
+    outputs = manifest.get("outputs")
+    if not isinstance(outputs, list) or not outputs:
+        raise CacheError("campaign Day gameplay cache has no outputs")
+    paths = [row.get("path") for row in outputs]
+    if (
+        len(paths) != len(set(paths))
+        or any(
+            not isinstance(path, str)
+            or path.startswith("/")
+            or ".." in Path(path).parts
+            for path in paths
+        )
+    ):
+        raise CacheError("invalid campaign Day gameplay output path")
+    for row in outputs:
+        relative = row["path"]
+        path = cache_dir / relative
+        if path.is_symlink():
+            raise CacheError(f"campaign Day gameplay output is symlinked: {relative}")
+        if (
+            not path.is_file()
+            or path.stat().st_size != row.get("bytes")
+            or sha256_file(path) != row.get("sha256")
+        ):
+            raise CacheError(f"campaign Day gameplay output hash mismatch: {relative}")
+    if _level2_cache_identity(outputs) != manifest.get("cache_content_sha256"):
+        raise CacheError("campaign Day gameplay content identity mismatch")
+
+    descriptor = load_json(cache_dir / "gameplay/descriptor.json")
+    if (
+        descriptor.get("schema") != CAMPAIGN_DAY_GAMEPLAY_DESCRIPTOR_SCHEMA
+        or descriptor.get("profile") != profile
+    ):
+        raise CacheError("campaign Day gameplay descriptor identity mismatch")
+    scene, dynamic, selected, excluded = _day_gameplay_selected_rows(
+        closure, catalog_rows
+    )
+    expected_ids = [row["asset_id"] for row in selected]
+    assets = descriptor.get("assets")
+    if (
+        not isinstance(assets, list)
+        or [row.get("asset_id") for row in assets] != expected_ids
+        or descriptor.get("excluded") != excluded
+        or descriptor.get("source_sets", {}).get("scene_reachable") != len(scene)
+        or descriptor.get("source_sets", {}).get("dynamic_dependencies") != len(dynamic)
+        or descriptor.get("source_sets", {}).get("materialized") != len(selected)
+    ):
+        raise CacheError("campaign Day gameplay package-present census changed")
+    hud_paths = _validate_level2_day_hud_descriptor(descriptor, profile, outputs)
+    expected_descriptor_outputs = {row.get("output") for row in assets} | hud_paths
+    if expected_descriptor_outputs != set(paths) - {"gameplay/descriptor.json"}:
+        raise CacheError("campaign Day gameplay descriptor/output set changed")
+    actual_tree = {
+        path.relative_to(cache_dir).as_posix()
+        for path in cache_dir.rglob("*")
+        if path.is_file()
+    }
+    if any(path.is_symlink() for path in cache_dir.rglob("*")):
+        raise CacheError("campaign Day gameplay cache tree contains symlink")
+    if actual_tree != {"manifest.json", *paths}:
+        raise CacheError("campaign Day gameplay cache tree has missing or extra files")
     return manifest
 
 
@@ -6801,6 +7004,275 @@ def validate_day_aggregate_cache(
             actual_tree.add(path.relative_to(cache_dir).as_posix())
     if actual_tree != expected_tree:
         raise CacheError("Level 2 aggregate cache tree has missing or extra files")
+    return manifest
+
+
+def _campaign_day_aggregate_output_rows(
+    stage: Path,
+    child_manifests: dict[str, dict[str, Any]],
+) -> tuple[list[dict[str, Any]], dict[str, dict[str, Any]]]:
+    outputs: list[dict[str, Any]] = []
+    components: dict[str, dict[str, Any]] = {}
+    schemas = {
+        "material": DAY_MATERIAL_SCHEMA,
+        "gameplay": CAMPAIGN_DAY_GAMEPLAY_SCHEMA,
+    }
+    for name in ("material", "gameplay"):
+        root = stage / "components" / name
+        manifest_path = root / "manifest.json"
+        child = child_manifests[name]
+        if child.get("schema") != schemas[name] or not manifest_path.is_file():
+            raise CacheError(f"campaign Day aggregate child identity changed: {name}")
+        manifest_relative = f"components/{name}/manifest.json"
+        outputs.append(
+            {
+                "path": manifest_relative,
+                "kind": "campaign_day_child_manifest",
+                "bytes": manifest_path.stat().st_size,
+                "sha256": sha256_file(manifest_path),
+                "source_asset_ids": [f"campaign_day_component:{name}"],
+                "component": name,
+            }
+        )
+        child_rows = child.get("outputs")
+        if not isinstance(child_rows, list) or not child_rows:
+            raise CacheError(f"campaign Day aggregate child has no outputs: {name}")
+        for child_row in child_rows:
+            relative = child_row.get("path")
+            source_ids = child_row.get("source_asset_ids")
+            if (
+                not isinstance(relative, str)
+                or relative.startswith("/")
+                or ".." in Path(relative).parts
+                or not isinstance(source_ids, list)
+                or not source_ids
+                or any(
+                    not isinstance(source, str)
+                    or not source.startswith("owner_data:")
+                    for source in source_ids
+                )
+            ):
+                raise CacheError(f"campaign Day {name} child output is invalid")
+            aggregate_row = dict(child_row)
+            aggregate_row["path"] = f"components/{name}/{relative}"
+            aggregate_row["component"] = name
+            outputs.append(aggregate_row)
+        components[name] = {
+            "schema": schemas[name],
+            "manifest_path": manifest_relative,
+            "manifest_sha256": sha256_file(manifest_path),
+            "cache_content_sha256": child.get("cache_content_sha256"),
+            "output_count": len(child_rows),
+        }
+    outputs.sort(key=lambda row: row["path"])
+    return outputs, components
+
+
+def build_campaign_day_aggregate_cache(
+    owner_root: Path,
+    owner_export_dir: Path,
+    campaign_package_dir: Path,
+    closure_path: Path,
+    catalog_path: Path,
+    output: Path,
+) -> dict[str, Any]:
+    """Compose the campaign-bound Day material and gameplay/HUD cache."""
+    output = validate_output_path(output)
+    profile, _campaign, _closure, _catalog_rows, _owner_export = (
+        _campaign_day_material_profile(
+            owner_export_dir,
+            campaign_package_dir,
+            closure_path,
+            catalog_path,
+        )
+    )
+    stage = Path(tempfile.mkdtemp(prefix=".campaign-day-aggregate-", dir=output.parent))
+    try:
+        component_root = stage / "components"
+        component_root.mkdir(parents=True, exist_ok=True)
+        children = {
+            "material": build_campaign_day_material_cache(
+                owner_root,
+                owner_export_dir,
+                campaign_package_dir,
+                closure_path,
+                catalog_path,
+                component_root / "material",
+            ),
+            "gameplay": build_campaign_day_gameplay_cache(
+                owner_root,
+                owner_export_dir,
+                campaign_package_dir,
+                closure_path,
+                catalog_path,
+                component_root / "gameplay",
+            ),
+        }
+        outputs, components = _campaign_day_aggregate_output_rows(stage, children)
+        manifest: dict[str, Any] = {
+            "schema": CAMPAIGN_DAY_AGGREGATE_SCHEMA,
+            "generator": {"name": "build_cache.py", "version": GENERATOR_VERSION},
+            "profile": profile,
+            "bindings": _campaign_day_bindings(profile),
+            "presentation_scope": {
+                "material": "materialized",
+                "gameplay_entities_hud_spells_minimap_effects": "materialized_from_closure",
+                "audio": "not_materialized_requires_level_specific_occurrence_census",
+            },
+            "components": components,
+            "outputs": outputs,
+            "cache_content_sha256": _level2_cache_identity(outputs),
+        }
+        manifest["manifest_payload_sha256"] = sha256_bytes(canonical_json(manifest))
+        (stage / "manifest.json").write_bytes(canonical_json(manifest))
+        validate_campaign_day_aggregate_cache(
+            stage,
+            owner_export_dir=owner_export_dir,
+            campaign_package_dir=campaign_package_dir,
+            closure_path=closure_path,
+            catalog_path=catalog_path,
+        )
+        fsync_tree(stage)
+        commit_stage(output, stage)
+        return manifest
+    except Exception:
+        if stage.exists():
+            shutil.rmtree(stage)
+        raise
+
+
+def validate_campaign_day_aggregate_cache(
+    cache_dir: Path,
+    *,
+    owner_export_dir: Path = DEFAULT_CAMPAIGN_DAY_OWNER_EXPORT,
+    campaign_package_dir: Path = DEFAULT_CAMPAIGN_DAY_PACKAGE,
+    closure_path: Path = DEFAULT_CAMPAIGN_DAY_CLOSURE,
+    catalog_path: Path = DEFAULT_CATALOG,
+) -> dict[str, Any]:
+    """Validate exact campaign/package membership of the partial owner cache."""
+    profile, _campaign, closure, catalog_rows, _owner_export = (
+        _campaign_day_material_profile(
+            owner_export_dir,
+            campaign_package_dir,
+            closure_path,
+            catalog_path,
+        )
+    )
+    cache_dir = cache_dir.expanduser().resolve()
+    validate_output_path(cache_dir)
+    manifest_path = cache_dir / "manifest.json"
+    if manifest_path.is_symlink():
+        raise CacheError("campaign Day aggregate manifest is symlinked")
+    manifest = load_json(manifest_path)
+    unsigned = dict(manifest)
+    claim = unsigned.pop("manifest_payload_sha256", None)
+    if sha256_bytes(canonical_json(unsigned)) != claim:
+        raise CacheError("campaign Day aggregate manifest metadata hash mismatch")
+    if manifest.get("schema") != CAMPAIGN_DAY_AGGREGATE_SCHEMA:
+        raise CacheError("unsupported campaign Day aggregate schema")
+    if manifest.get("profile") != profile or manifest.get("bindings") != _campaign_day_bindings(profile):
+        raise CacheError("campaign Day aggregate package binding mismatch")
+    if manifest.get("presentation_scope") != {
+        "material": "materialized",
+        "gameplay_entities_hud_spells_minimap_effects": "materialized_from_closure",
+        "audio": "not_materialized_requires_level_specific_occurrence_census",
+    }:
+        raise CacheError("campaign Day aggregate presentation scope changed")
+    components = manifest.get("components")
+    if not isinstance(components, dict) or set(components) != {"material", "gameplay"}:
+        raise CacheError("campaign Day aggregate component set changed")
+    outputs = manifest.get("outputs")
+    paths = [row.get("path") for row in outputs] if isinstance(outputs, list) else []
+    if (
+        not paths
+        or paths != sorted(paths)
+        or len(paths) != len(set(paths))
+        or any(
+            not isinstance(path, str)
+            or path.startswith("/")
+            or ".." in Path(path).parts
+            for path in paths
+        )
+    ):
+        raise CacheError("campaign Day aggregate output ledger is invalid")
+    for row in outputs:
+        path = cache_dir / row["path"]
+        if path.is_symlink() or not path.is_file():
+            raise CacheError(f"campaign Day aggregate output missing or symlinked: {row['path']}")
+        if path.stat().st_size != row.get("bytes") or sha256_file(path) != row.get("sha256"):
+            raise CacheError(f"campaign Day aggregate output hash mismatch: {row['path']}")
+    if _level2_cache_identity(outputs) != manifest.get("cache_content_sha256"):
+        raise CacheError("campaign Day aggregate content identity mismatch")
+
+    validators = {
+        "material": lambda root: validate_campaign_day_material_cache(
+            root,
+            profile["owner_export_package_sha256"],
+            profile["campaign_package_sha256"],
+            profile["closure_sha256"],
+        ),
+        "gameplay": lambda root: validate_campaign_day_gameplay_cache(
+            root,
+            owner_export_dir=owner_export_dir,
+            campaign_package_dir=campaign_package_dir,
+            closure_path=closure_path,
+            catalog_path=catalog_path,
+        ),
+    }
+    scene, dynamic = _level2_closure_asset_rows(closure, catalog_rows)
+    allowed_source_ids = {row["asset_id"] for row in [*scene, *dynamic]}
+    allowed_source_ids.update(
+        f"owner_data:{relative}"
+        for relative in (*LEVEL2_DAY_SOURCE_PATHS, *LEVEL2_GAMEPLAY_SOURCE_PATHS)
+    )
+    expected_paths: set[str] = set()
+    output_by_path = {row["path"]: row for row in outputs}
+    for name in ("material", "gameplay"):
+        root = cache_dir / "components" / name
+        child = validators[name](root)
+        metadata = components[name]
+        manifest_relative = f"components/{name}/manifest.json"
+        child_manifest_path = root / "manifest.json"
+        if (
+            metadata.get("manifest_path") != manifest_relative
+            or metadata.get("manifest_sha256") != sha256_file(child_manifest_path)
+            or metadata.get("cache_content_sha256") != child.get("cache_content_sha256")
+            or metadata.get("output_count") != len(child.get("outputs", []))
+            or child.get("profile") != profile
+            or child.get("bindings") != manifest.get("bindings")
+        ):
+            raise CacheError(f"campaign Day aggregate {name} identity changed")
+        manifest_row = output_by_path.get(manifest_relative)
+        if (
+            manifest_row is None
+            or manifest_row.get("kind") != "campaign_day_child_manifest"
+            or manifest_row.get("source_asset_ids") != [f"campaign_day_component:{name}"]
+        ):
+            raise CacheError(f"campaign Day aggregate {name} manifest binding changed")
+        expected_paths.add(manifest_relative)
+        for child_row in child["outputs"]:
+            relative = child_row["path"]
+            if any(source not in allowed_source_ids for source in child_row["source_asset_ids"]):
+                raise CacheError(f"campaign Day aggregate {name} output is outside closure: {relative}")
+            aggregate_relative = f"components/{name}/{relative}"
+            aggregate_row = output_by_path.get(aggregate_relative)
+            if aggregate_row is None or any(
+                aggregate_row.get(key) != value
+                for key, value in child_row.items()
+                if key != "path"
+            ):
+                raise CacheError(f"campaign Day aggregate {name} output binding changed: {relative}")
+            expected_paths.add(aggregate_relative)
+    if set(paths) != expected_paths:
+        raise CacheError("campaign Day aggregate output set changed")
+    actual_tree: set[str] = set()
+    for path in cache_dir.rglob("*"):
+        if path.is_symlink():
+            raise CacheError("campaign Day aggregate cache tree contains symlink")
+        if path.is_file():
+            actual_tree.add(path.relative_to(cache_dir).as_posix())
+    if actual_tree != {"manifest.json", *paths}:
+        raise CacheError("campaign Day aggregate cache tree has missing or extra files")
     return manifest
 
 
@@ -10106,6 +10578,20 @@ def parse_args() -> argparse.Namespace:
     build_campaign_day.add_argument("--closure", type=Path, required=True)
     build_campaign_day.add_argument("--catalog", type=Path, default=DEFAULT_CATALOG)
     build_campaign_day.add_argument("--output", type=Path, required=True)
+    build_campaign_gameplay = subparsers.add_parser("build-campaign-day-gameplay")
+    build_campaign_gameplay.add_argument("--owner-root", type=Path, default=DEFAULT_OWNER)
+    build_campaign_gameplay.add_argument("--owner-export", type=Path, default=DEFAULT_CAMPAIGN_DAY_OWNER_EXPORT)
+    build_campaign_gameplay.add_argument("--campaign-package", type=Path, default=DEFAULT_CAMPAIGN_DAY_PACKAGE)
+    build_campaign_gameplay.add_argument("--closure", type=Path, default=DEFAULT_CAMPAIGN_DAY_CLOSURE)
+    build_campaign_gameplay.add_argument("--catalog", type=Path, default=DEFAULT_CATALOG)
+    build_campaign_gameplay.add_argument("--output", type=Path, default=DEFAULT_CAMPAIGN_DAY_GAMEPLAY_OUTPUT)
+    build_campaign_aggregate = subparsers.add_parser("build-campaign-day-aggregate")
+    build_campaign_aggregate.add_argument("--owner-root", type=Path, default=DEFAULT_OWNER)
+    build_campaign_aggregate.add_argument("--owner-export", type=Path, default=DEFAULT_CAMPAIGN_DAY_OWNER_EXPORT)
+    build_campaign_aggregate.add_argument("--campaign-package", type=Path, default=DEFAULT_CAMPAIGN_DAY_PACKAGE)
+    build_campaign_aggregate.add_argument("--closure", type=Path, default=DEFAULT_CAMPAIGN_DAY_CLOSURE)
+    build_campaign_aggregate.add_argument("--catalog", type=Path, default=DEFAULT_CATALOG)
+    build_campaign_aggregate.add_argument("--output", type=Path, default=DEFAULT_CAMPAIGN_DAY_AGGREGATE_OUTPUT)
     build_gameplay = subparsers.add_parser("build-day-gameplay")
     build_gameplay.add_argument("--owner-root", type=Path, default=DEFAULT_OWNER)
     build_gameplay.add_argument("--package", type=Path, default=DEFAULT_LEVEL2_PACKAGE)
@@ -10137,6 +10623,18 @@ def parse_args() -> argparse.Namespace:
     validate_campaign_day.add_argument("--owner-export-sha256")
     validate_campaign_day.add_argument("--campaign-package-sha256")
     validate_campaign_day.add_argument("--closure-sha256")
+    validate_campaign_gameplay = subparsers.add_parser("validate-campaign-day-gameplay")
+    validate_campaign_gameplay.add_argument("--cache", type=Path, default=DEFAULT_CAMPAIGN_DAY_GAMEPLAY_OUTPUT)
+    validate_campaign_gameplay.add_argument("--owner-export", type=Path, default=DEFAULT_CAMPAIGN_DAY_OWNER_EXPORT)
+    validate_campaign_gameplay.add_argument("--campaign-package", type=Path, default=DEFAULT_CAMPAIGN_DAY_PACKAGE)
+    validate_campaign_gameplay.add_argument("--closure", type=Path, default=DEFAULT_CAMPAIGN_DAY_CLOSURE)
+    validate_campaign_gameplay.add_argument("--catalog", type=Path, default=DEFAULT_CATALOG)
+    validate_campaign_aggregate = subparsers.add_parser("validate-campaign-day-aggregate")
+    validate_campaign_aggregate.add_argument("--cache", type=Path, default=DEFAULT_CAMPAIGN_DAY_AGGREGATE_OUTPUT)
+    validate_campaign_aggregate.add_argument("--owner-export", type=Path, default=DEFAULT_CAMPAIGN_DAY_OWNER_EXPORT)
+    validate_campaign_aggregate.add_argument("--campaign-package", type=Path, default=DEFAULT_CAMPAIGN_DAY_PACKAGE)
+    validate_campaign_aggregate.add_argument("--closure", type=Path, default=DEFAULT_CAMPAIGN_DAY_CLOSURE)
+    validate_campaign_aggregate.add_argument("--catalog", type=Path, default=DEFAULT_CATALOG)
     validate_gameplay = subparsers.add_parser("validate-day-gameplay")
     validate_gameplay.add_argument("--cache", type=Path, default=DEFAULT_LEVEL2_GAMEPLAY_OUTPUT)
     validate_gameplay.add_argument("--package-sha256", default=EXPECTED_LEVEL2_PACKAGE)
@@ -10212,6 +10710,32 @@ def main() -> int:
                 f"cache={args.output} outputs={len(manifest['outputs'])} "
                 f"content_sha256={manifest['cache_content_sha256']}"
             )
+        elif args.command == "build-campaign-day-gameplay":
+            manifest = build_campaign_day_gameplay_cache(
+                args.owner_root,
+                args.owner_export,
+                args.campaign_package,
+                args.closure,
+                args.catalog,
+                args.output,
+            )
+            print(
+                f"cache={args.output} outputs={len(manifest['outputs'])} "
+                f"content_sha256={manifest['cache_content_sha256']}"
+            )
+        elif args.command == "build-campaign-day-aggregate":
+            manifest = build_campaign_day_aggregate_cache(
+                args.owner_root,
+                args.owner_export,
+                args.campaign_package,
+                args.closure,
+                args.catalog,
+                args.output,
+            )
+            print(
+                f"cache={args.output} outputs={len(manifest['outputs'])} "
+                f"content_sha256={manifest['cache_content_sha256']}"
+            )
         elif args.command == "build-day-audio":
             manifest = build_day_audio_cache(
                 args.owner_root,
@@ -10262,6 +10786,30 @@ def main() -> int:
                 args.cache,
                 args.package_sha256,
                 args.closure_sha256,
+            )
+            print(
+                f"valid schema={manifest['schema']} "
+                f"content_sha256={manifest['cache_content_sha256']}"
+            )
+        elif args.command == "validate-campaign-day-gameplay":
+            manifest = validate_campaign_day_gameplay_cache(
+                args.cache,
+                owner_export_dir=args.owner_export,
+                campaign_package_dir=args.campaign_package,
+                closure_path=args.closure,
+                catalog_path=args.catalog,
+            )
+            print(
+                f"valid schema={manifest['schema']} "
+                f"content_sha256={manifest['cache_content_sha256']}"
+            )
+        elif args.command == "validate-campaign-day-aggregate":
+            manifest = validate_campaign_day_aggregate_cache(
+                args.cache,
+                owner_export_dir=args.owner_export,
+                campaign_package_dir=args.campaign_package,
+                closure_path=args.closure,
+                catalog_path=args.catalog,
             )
             print(
                 f"valid schema={manifest['schema']} "
