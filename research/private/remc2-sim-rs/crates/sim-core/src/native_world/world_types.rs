@@ -18,6 +18,112 @@ const CAMPAIGN_CASTLE_STAGE_ONE_OWNER_CELLS: [u8; 128] = [
     0xff, 0x00, 0xff, 0x00, 0xff, 0x00, 0xff, 0x00, 0xff, 0x00, 0xff, 0x00, 0xff, 0x00, 0xff, 0x00,
 ];
 
+const CAMPAIGN_CASTLE_STAGE_TWO_OWNER_CELLS_HEX: &str = concat!(
+    "ff00ff00ff00ff00ff00ff00ff00ff00ff00ff00ff00ff00ff00ff00ff00ff00ff00ff00ff00ff00ff00ff001000100010001000ff00ff00ff00ff00",
+    "ff00ff00ff00ff00ff00ff001000100010001000ff00ff00ff001000102810281028ff00ff00ff00ff00ff00ff00ff00ff00ff00ff00100010281028",
+    "1028ff00ff00ff001000102810301028ff00ff00ff00ff00ff00ff00ff00ff00ff00ff001000102810301028ff00ff00ff001000102810281028ff00",
+    "ff00ff00ff00ff00ff00ff00ff00ff00ff001000102810281028ff00ff00ff00ff00ff00ff00ff00ff00ff00ff00ff00ff00ff00ff00ff00ff00ff00",
+    "ff00ff00ff00ff00ff00ff00ff00ff00ff00ff00ff00ff00ffffffffffffffffffffffffffffffffff00ff00ff00ff00ff00ff00ff00ff00ff00ff00",
+    "ff00ff00ff00ffffffffffffffffffffffffffffffffff00ff00ff00ff00ff00ff00ff00ff00ff00ff00ff00ff00ff00ffffffffffffffffffffffff",
+    "ffffffffff00ff00ff00ff00ff00ff00ff00ff00ff00ff00ff00ff00ff00ffffffffffffffffffffffffffffffffff00ff00ff00ff00ff00ff00ff00",
+    "ff00ff00ff00ff00ff00ff00ffffffffffffffffffffffffffffffffff00ff00ff00ff00ff00ff00ff00ff00ff00ff00ff00ff00ff00ffffffffffff",
+    "ffffffffffffffffffffff00ff00ff00ff00ff00ff00ff00ff00ff00ff00ff00ff00ff00ffffffffffffffffffffffffffffffffff00ff00ff00ff00",
+    "ff00ff00ff00ff00ff00ff00ff00ff00ff00ffffffffffffffffffffffffffffffffff00ff00ff00ff00ff00ff00ff00ff00ff00ff00ff00ff00ff00",
+    "ff00ff00ff00ff00ff00ff00ff00ff00ff00ff00ff00ff00ff00ff00ff00ff001000100010001000ff00ff00ff00ff00ff00ff00ff00ff00ff00ff00",
+    "1000100010001000ff00ff00ff001000102810281028ff00ff00ff00ff00ff00ff00ff00ff00ff00ff001000102810281028ff00ff00ff0010001028",
+    "10301028ff00ff00ff00ff00ff00ff00ff00ff00ff00ff001000102810301028ff00ff00ff001000102810281028ff00ff00ff00ff00ff00ff00ff00",
+    "ff00ff00ff001000102810281028ff00ff00ff00ff00ff00ff00ff00ff00ff00ff00ff00ff00ff00ff00ff00ff00ff00ff00ff00ff00ff00ff00ff00",
+    "ff00ff00ff00ff00ff00ff00ff00ff00ff00ff00ff00ff00ff00ff00ff00ff00ff00ff00ff00ff00ff00"
+);
+
+const CAMPAIGN_CASTLE_STAGE_THREE_OWNER_CELLS_HEX: &str = concat!(
+    "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+    "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff10001000100010001000100010001000100010001000ffffffff",
+    "ffffffffffffffffffffffffffffffff10201020101810181020102010201018101810201020ffffffffffffffffffffffffffffffffffffffff1020",
+    "1020101810181020102010201018101810201020ffffffffffffffffffffffffffff1000102010201110111011101110111011101110111011101110",
+    "101010201020ffffffffffffffffffff1000102010201110101010101010101010101010101010101110101010201020ffffffffffffffffffff1000",
+    "1018101811101010ff00ff00ff00ff00ff00ff0010001110101010181018ffffffffffffffffffff10001018101811101010ff00ffffffffffffffff",
+    "ff0010001110101010181018ffffffffffffffffffff10001020102011101010ff00ffffffffffffffffff0010001110101010201020ffffffffffff",
+    "ffffffff10001020102011101010ff00ffffffffffffffffff0010001110101010201020ffffffffffffffffffff10001020102011101010ff00ffff",
+    "ffffffffffff100010001110101010201020ffffffffffffffffffff10001018101811101010ff00ff00ff00110011041108110c1110101010181018",
+    "ffffffffffffffffffff10001018101811101010100010001000100010041008100c1110101010181018ffffffffffffffffffff1000102010201110",
+    "111011101110111011101110111011101110101010201020ffffffffffffffffffff1000102010201010101010101010101010101010101010101010",
+    "101010201020ffffffffffffffffffffffffffffffff10201020101810181020102010201018101810201020ffffffffffffffffffffffffffffffff",
+    "ffffffff10201020101810181020102010201018101810201020ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+    "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+    "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+);
+
+fn decode_campaign_castle_cells(hex: &str, expected_hash: &str) -> Result<Vec<u8>> {
+    if !hex.len().is_multiple_of(2) {
+        return Err(NativeWorldError::new(
+            "qualified campaign Castle BUILD hex has an odd length",
+        ));
+    }
+    let nibble = |byte: u8| -> Option<u8> {
+        match byte {
+            b'0'..=b'9' => Some(byte - b'0'),
+            b'a'..=b'f' => Some(byte - b'a' + 10),
+            _ => None,
+        }
+    };
+    let bytes = hex
+        .as_bytes()
+        .chunks_exact(2)
+        .map(|pair| {
+            Some(
+                nibble(pair[0])?
+                    .wrapping_mul(16)
+                    .wrapping_add(nibble(pair[1])?),
+            )
+        })
+        .collect::<Option<Vec<_>>>()
+        .ok_or_else(|| NativeWorldError::new("qualified campaign Castle BUILD hex is invalid"))?;
+    if sha256_hex(&bytes) != expected_hash {
+        return Err(NativeWorldError::new(
+            "qualified campaign Castle BUILD bytes changed",
+        ));
+    }
+    Ok(bytes)
+}
+
+pub(crate) fn campaign_castle_stage_footprints()
+-> std::result::Result<BTreeMap<u8, CastleBuildFootprint>, NativeWorldError> {
+    let mut footprints = BTreeMap::new();
+    footprints.insert(1, campaign_castle_stage_one_footprint()?);
+    for (stage, hex, hash) in [
+        (
+            2,
+            CAMPAIGN_CASTLE_STAGE_TWO_OWNER_CELLS_HEX,
+            "b0f95d3d845c6113b3c5e2c5a138de716d48e2bfb65866eec8626b8f6ed2cbb6",
+        ),
+        (
+            3,
+            CAMPAIGN_CASTLE_STAGE_THREE_OWNER_CELLS_HEX,
+            "8961e77f7e12599c6841bdf4d81acffde2077add37aca47c680798eefb96a6d2",
+        ),
+    ] {
+        let cells = decode_campaign_castle_cells(hex, hash)?;
+        let footprint = CastleBuildFootprint::from_owner_cells(stage, 21, 21, &cells)
+            .map_err(NativeWorldError::new)?;
+        footprints.insert(stage, footprint);
+    }
+    Ok(footprints)
+}
+
+pub(crate) fn campaign_castle_stage_one_footprint()
+-> std::result::Result<CastleBuildFootprint, NativeWorldError> {
+    if sha256_hex(&CAMPAIGN_CASTLE_STAGE_ONE_OWNER_CELLS)
+        != "f9fb9d8a5c6d2841849bba03479e6503966fa4ec14020508c343296602aa8ae3"
+    {
+        return Err(NativeWorldError::new(
+            "qualified campaign Castle BUILD bytes changed",
+        ));
+    }
+    CastleBuildFootprint::from_owner_cells(1, 8, 8, &CAMPAIGN_CASTLE_STAGE_ONE_OWNER_CELLS)
+        .map_err(NativeWorldError::new)
+}
+
 /// A fail-closed package or closure validation error.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct NativeWorldError(String);
@@ -3893,21 +3999,7 @@ impl NativeWorldInspection {
             .any(|kind| kind == SpellKind::Castle)
             && !castle_stage_footprints.contains_key(&1)
         {
-            if sha256_hex(&CAMPAIGN_CASTLE_STAGE_ONE_OWNER_CELLS)
-                != "f9fb9d8a5c6d2841849bba03479e6503966fa4ec14020508c343296602aa8ae3"
-            {
-                return Err(NativeWorldError::new(
-                    "qualified campaign Castle BUILD bytes changed",
-                ));
-            }
-            let stage_one = CastleBuildFootprint::from_owner_cells(
-                1,
-                8,
-                8,
-                &CAMPAIGN_CASTLE_STAGE_ONE_OWNER_CELLS,
-            )
-            .map_err(NativeWorldError::new)?;
-            castle_stage_footprints.insert(1, stage_one);
+            castle_stage_footprints.extend(campaign_castle_stage_footprints()?);
         }
         let economy = Level2EconomyState::from_parts_with_castle_stage_footprints(
             SessionTerrain::from_inspection(self),

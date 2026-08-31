@@ -228,7 +228,7 @@
     }
 
     #[test]
-    fn level_two_mana_sphere_claim_changes_only_the_owner_projection() {
+    fn level_two_mana_sphere_claim_synchronizes_the_source_player_relation() {
         let mut session = level_two_possession_lifecycle_session();
         let player = session.state.entity_index;
         session.activate_level2_authored_switch_group(0, 23, 1);
@@ -275,7 +275,7 @@
             .find(|sphere| sphere.source_entity_index == target_slot)
             .expect("airborne claimed sphere remains live");
         assert_eq!(sphere.owner_entity_index, player);
-        assert_eq!(sphere.player_entity_index, 112);
+        assert_eq!(sphere.player_entity_index, player);
         assert_eq!(sphere.incoming_owner_entity_index, 0);
         assert_eq!(session.economy().events().len(), baseline_events + 1);
         assert_eq!(

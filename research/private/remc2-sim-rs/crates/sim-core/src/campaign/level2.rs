@@ -4062,6 +4062,20 @@ impl Level2ResetSession {
         }
         {
             let live = &mut self.session.state.live;
+            if families.contains(&2) {
+                for (stage, footprint) in crate::native_world::campaign_castle_stage_footprints()? {
+                    if !live.economy.economy.has_castle_stage_footprint(stage)
+                        && !live
+                            .economy
+                            .economy
+                            .set_castle_stage_footprint(stage, footprint)
+                    {
+                        return Err(NativeWorldError::new(format!(
+                            "qualified carried Castle stage-{stage} footprint was rejected"
+                        )));
+                    }
+                }
+            }
             live.shared_spells
                 .materialize_carried_spell_families(&mut live.economy.economy, &missing)?;
         }
@@ -4140,6 +4154,10 @@ impl Level2ResetSession {
             player.record[561] = ui_index;
         }
         self.sync_level2_spell_fire_context();
+        // Carry installation happens only on an unpublished destination
+        // candidate. Seal its occupied holder slots and spell projections as
+        // that session's reset baseline before ordinary arena rebuilds run.
+        self.session.rebase();
         Ok(())
     }
 

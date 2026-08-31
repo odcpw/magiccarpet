@@ -1180,6 +1180,153 @@ mod tests {
         runtime
     }
 
+    fn complete_real_level_two_and_open_level_three(
+        resolver: &Mc2RuntimePackageResolver,
+        runtime: &mut GameRuntime<Mc2CampaignBackend>,
+        session_id: u64,
+    ) -> (Vec<SpellKind>, Option<SpellKind>) {
+        crate::campaign::backend::tests::drive_real_level_two_to_final_vault_objective_for_test(
+            runtime.session_mut().unwrap(),
+        );
+        for _ in 0..32 {
+            let compatibility = runtime
+                .session()
+                .unwrap()
+                .backend()
+                .compatibility_campaign()
+                .level2_compatibility();
+            if compatibility.runtime().objectives[0].stage_selectors[4] == 2
+                && compatibility.runtime().objectives[0].is_level_end == 1
+            {
+                break;
+            }
+            let guard = runtime.session().unwrap().identity().guard();
+            runtime
+                .session_mut()
+                .unwrap()
+                .step(guard, GameCommand::default())
+                .unwrap();
+        }
+        {
+            let compatibility = runtime
+                .session()
+                .unwrap()
+                .backend()
+                .compatibility_campaign()
+                .level2_compatibility();
+            assert_eq!(compatibility.runtime().objectives[0].stage_selectors[4], 2);
+            assert_eq!(compatibility.runtime().objectives[0].is_level_end, 1);
+        }
+        let guard = runtime.session().unwrap().identity().guard();
+        runtime
+            .session_mut()
+            .unwrap()
+            .step(guard, GameCommand::default())
+            .unwrap();
+        let (player, trigger) = {
+            let compatibility = runtime
+                .session()
+                .unwrap()
+                .backend()
+                .compatibility_campaign()
+                .level2_compatibility();
+            let trigger = compatibility
+                .economy()
+                .authored_switch_producers()
+                .iter()
+                .find(|source| source.authored_index == 209)
+                .copied()
+                .expect("ordinary L2 completion constructs the real group-31 exit trigger");
+            (compatibility.state.entity_index, trigger)
+        };
+        runtime
+            .session_mut()
+            .unwrap()
+            .backend_mut()
+            .compatibility_campaign_mut_for_test()
+            .level2_compatibility_mut()
+            .set_level2_entity_position(player, trigger.position)
+            .expect("position the real L2 player inside the proven exit-trigger boundary");
+        for _ in 0..16 {
+            if runtime
+                .session()
+                .unwrap()
+                .backend()
+                .compatibility_campaign()
+                .level2_compatibility()
+                .level_exit_sequence()
+                .active
+            {
+                break;
+            }
+            let guard = runtime.session().unwrap().identity().guard();
+            runtime
+                .session_mut()
+                .unwrap()
+                .step(guard, GameCommand::default())
+                .unwrap();
+        }
+        assert!(
+            runtime
+                .session()
+                .unwrap()
+                .backend()
+                .compatibility_campaign()
+                .level2_compatibility()
+                .level_exit_sequence()
+                .active
+        );
+        for _ in 0..700 {
+            if matches!(
+                runtime.session().unwrap().backend().completion_status(),
+                GameCompletionStatus::Completed { .. }
+            ) {
+                break;
+            }
+            let guard = runtime.session().unwrap().identity().guard();
+            runtime
+                .session_mut()
+                .unwrap()
+                .step(guard, GameCommand::default())
+                .unwrap();
+        }
+        let completed = runtime.identity();
+        assert!(matches!(
+            runtime.session().unwrap().backend().completion_status(),
+            GameCompletionStatus::Completed { .. }
+        ));
+        let source_spell_state = runtime
+            .session()
+            .unwrap()
+            .backend()
+            .semantic_spell_state_for_test()
+            .unwrap();
+        let loading = resolver
+            .accept_transition(
+                runtime,
+                completed.guard(),
+                completed.session.as_ref().unwrap().guard(),
+            )
+            .unwrap()
+            .after;
+        assert_eq!(loading.mode, RuntimeMode::Loading);
+        let playing = resolver
+            .open_pending(runtime, loading.guard(), session_id)
+            .unwrap();
+        assert_eq!(playing.mode, RuntimeMode::Playing);
+        assert_eq!(playing.session.as_ref().unwrap().generation, 3);
+        assert_eq!(
+            playing
+                .active_runtime_flow
+                .as_ref()
+                .unwrap()
+                .bound_level_id()
+                .as_str(),
+            "level.magic_carpet_2.revealed_way"
+        );
+        source_spell_state
+    }
+
     #[test]
     fn runtime_loading_rejects_wrong_package_then_opens_real_level_one() {
         let catalog = default_catalog().unwrap();
@@ -1943,7 +2090,7 @@ mod tests {
     }
 
     #[test]
-    fn runtime_carries_real_level_one_castle_acquisition_into_level_two_before_playing() {
+    fn runtime_carries_real_level_one_castle_through_level_two_into_level_three_progression() {
         const CASTLE_PICKUP_RECORD: u16 = 31;
         const CASTLE_FAMILY: usize = 2;
 
@@ -2186,6 +2333,44 @@ mod tests {
             "the unpublished real Level-2 candidate must retain every acquired source spell"
         );
         assert_eq!(destination_spell_state.1, source_spell_state.1);
+
+        let level_two_exit_spell_state =
+            complete_real_level_two_and_open_level_three(&resolver, &mut runtime, 112);
+        let level_three_spell_state = runtime
+            .session()
+            .unwrap()
+            .backend()
+            .semantic_spell_state_for_test()
+            .unwrap();
+        assert_eq!(level_three_spell_state, level_two_exit_spell_state);
+        assert!(level_three_spell_state.0.contains(&SpellKind::Castle));
+        assert_eq!(level_three_spell_state.1, Some(SpellKind::Fireball));
+
+        crate::campaign::backend::tests::drive_real_level_three_guardian_dragons_to_reveal_entrance_for_test(
+            runtime.session_mut().unwrap(),
+        );
+        let compatibility = runtime
+            .session()
+            .unwrap()
+            .backend()
+            .compatibility_campaign()
+            .level2_compatibility();
+        assert_eq!(
+            compatibility.runtime().objectives[0].stage_selectors[..5],
+            [2, 2, 1, 1, 1]
+        );
+        assert_eq!(
+            runtime
+                .session()
+                .unwrap()
+                .snapshot()
+                .value
+                .objective_progress
+                .current_objective
+                .as_ref()
+                .map(|id| id.as_str()),
+            Some("objective.charge.reveal_entrance")
+        );
     }
 
     #[test]

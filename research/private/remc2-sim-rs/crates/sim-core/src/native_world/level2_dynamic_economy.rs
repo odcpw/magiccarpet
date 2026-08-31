@@ -2843,9 +2843,9 @@ impl Level2EconomyState {
         };
         // `TransformArcherToMana_35940` consumes the model-12 mailbox before
         // movement. A tier-0 pulse transfers only when the raw protected bit
-        // is clear. The source callback changes only the semantic owner/id
-        // projection; `playerEntityIndex_0x94` is an independent raw relation
-        // consumed by Castle defenders and must remain unchanged.
+        // is clear. The accepted source branch writes `word_0x68` into
+        // `playerEntityIndex_0x94`; keep the semantic owner projection on the
+        // same side so Castle defenders consume the authoritative relation.
         let claimed_owner = {
             let sphere = &mut self.spheres[sphere_index];
             let pending_owner = sphere.incoming_owner_entity_index;
@@ -2858,6 +2858,7 @@ impl Level2EconomyState {
                 let protected = sphere.control_flags & 0x0020_0000 != 0;
                 if sphere.owner_entity_index != pending_owner && (payload != 0 || !protected) {
                     sphere.owner_entity_index = pending_owner;
+                    sphere.player_entity_index = pending_owner;
                     sphere.control_flags &= !0x40;
                     if payload != 0 {
                         sphere.control_flags |= 0x0020_0000;
@@ -4348,6 +4349,11 @@ impl Level2EconomyState {
         }
         self.castle_stage_footprints.insert(stage, footprint);
         true
+    }
+
+    #[must_use]
+    pub(crate) fn has_castle_stage_footprint(&self, stage: u8) -> bool {
+        self.castle_stage_footprints.contains_key(&stage)
     }
 
     fn install_castle_root(

@@ -6955,13 +6955,10 @@ pub(crate) mod tests {
             skeleton(session, *source_slot).is_some_and(|row| row.action == 79)
         }));
 
-        let compatibility = session.backend().campaign.level2_compatibility();
-        assert_eq!(
-            compatibility.shared_spells().players()[0].enabled_spell_holders[0],
-            0,
-            "the qualified Level 3 reset has no acquired base Fireball holder"
-        );
-        let package_fireball_pickups = compatibility
+        let package_fireball_pickups = session
+            .backend()
+            .campaign
+            .level2_compatibility()
             .mission()
             .authored_features()
             .iter()
@@ -6972,10 +6969,11 @@ pub(crate) mod tests {
             package_fireball_pickups.is_empty(),
             "the qualified Level 3 package unexpectedly contains Fireball pickup rows {package_fireball_pickups:?}"
         );
-        // Level 3 therefore cannot issue an ordinary semantic Fireball at
-        // this boundary. Each pulse below is explicitly an already-arrived
-        // class-10 Fireball impact; ordinary Skeleton callbacks still own the
-        // damage branch, death tail, outputs, hide/reclaim, and objective.
+        // The qualified Level 3 package supplies no Fireball pickup. A real
+        // transition may now carry an acquired holder, but this bounded
+        // lifecycle proof deliberately retains its disclosed already-arrived
+        // class-10 impacts. Ordinary Skeleton callbacks still own damage,
+        // death outputs, hide/reclaim, and the objective consumer.
 
         let (sphere_count_before, burst_count_before) = {
             let economy = session.backend().campaign.level2_compatibility().economy();
@@ -7143,21 +7141,51 @@ pub(crate) mod tests {
         const DRAGON_PRE_KILL_ACTION: u8 = 4;
         const DRAGON_KILL_ACTION: u8 = 5;
 
-        drive_real_level_three_skeleton_horde_to_guardian_dragons_for_test(session);
+        if session
+            .backend()
+            .campaign
+            .level2_compatibility()
+            .runtime()
+            .objectives[0]
+            .stage_selectors[0]
+            != 2
+        {
+            drive_real_level_three_skeleton_horde_to_guardian_dragons_for_test(session);
+        }
 
-        session
-            .step(guard(session), GameCommand::default())
-            .unwrap();
+        let dragons_already_materialized = session
+            .backend()
+            .campaign
+            .level2_compatibility()
+            .economy()
+            .authored_class5()
+            .iter()
+            .filter(|source| DRAGON_AUTHORED_ROWS.contains(&source.authored_index))
+            .count()
+            == DRAGON_AUTHORED_ROWS.len();
+        if !dragons_already_materialized {
+            session
+                .step(guard(session), GameCommand::default())
+                .unwrap();
+            assert!(
+                session
+                    .backend()
+                    .campaign
+                    .level2_compatibility()
+                    .dispatch_events()
+                    .iter()
+                    .any(|event| matches!(
+                        event,
+                        crate::native_world::Level2DispatchEvent::AuthoredGroupActivated {
+                            source_slot: 127,
+                            group: 1,
+                            authored_indices,
+                            ..
+                        } if authored_indices.as_ref() == DRAGON_AUTHORED_ROWS
+                    ))
+            );
+        }
         let compatibility = session.backend().campaign.level2_compatibility();
-        assert!(compatibility.dispatch_events().iter().any(|event| matches!(
-            event,
-            crate::native_world::Level2DispatchEvent::AuthoredGroupActivated {
-                source_slot: 127,
-                group: 1,
-                authored_indices,
-                ..
-            } if authored_indices.as_ref() == DRAGON_AUTHORED_ROWS
-        )));
         let mut dragon_roots = compatibility
             .economy()
             .authored_class5()
@@ -7178,24 +7206,27 @@ pub(crate) mod tests {
             .map(|source| source.source_entity_index)
             .collect::<Vec<_>>();
         let mut expected_death_sources = BTreeSet::new();
-        for root_slot in &dragon_source_slots {
-            expected_death_sources.insert(*root_slot);
-            let body_slots = compatibility
+        let mut expected_mana_by_source = BTreeMap::new();
+        for root in &dragon_roots {
+            let root_slot = root.source_entity_index;
+            expected_death_sources.insert(root_slot);
+            expected_mana_by_source.insert(root_slot, root.mana);
+            let body_rows = compatibility
                 .economy()
                 .authored_dragon_parts()
                 .iter()
-                .filter(|part| part.entity_id == *root_slot)
-                .map(|part| part.source_entity_index)
+                .filter(|part| part.entity_id == root_slot)
+                .copied()
                 .collect::<Vec<_>>();
-            assert_eq!(body_slots.len(), DRAGON_PART_COUNT);
-            expected_death_sources.extend(body_slots);
+            assert_eq!(body_rows.len(), DRAGON_PART_COUNT);
+            for part in body_rows {
+                expected_death_sources.insert(part.source_entity_index);
+                expected_mana_by_source.insert(part.source_entity_index, part.mana);
+            }
         }
         assert_eq!(expected_death_sources.len(), 34);
 
-        let (sphere_count_before, event_count_before) = {
-            let economy = compatibility.economy();
-            (economy.spheres().len(), economy.events().len())
-        };
+        let event_count_before = compatibility.economy().events().len();
         let attacker = compatibility.state.entity_index;
         for (dragon_index, root_slot) in dragon_source_slots.iter().copied().enumerate() {
             let body_slot = session
@@ -7222,7 +7253,10 @@ pub(crate) mod tests {
             );
 
             let mut observed_root_actions = BTreeSet::new();
-            for _ in 0..16 {
+            // A transition-carried holder changes the free-stack slots used
+            // by this multipart allocation. Allow both the root/body death
+            // cadence and the following source-boundary reclaim to complete.
+            for _ in 0..32 {
                 session
                     .step(guard(session), GameCommand::default())
                     .unwrap();
@@ -7255,11 +7289,23 @@ pub(crate) mod tests {
                     .iter()
                     .all(|source| source.source_entity_index != root_slot)
             );
+            let remaining_parts = economy
+                .authored_dragon_parts()
+                .iter()
+                .filter(|part| part.entity_id == root_slot)
+                .map(|part| {
+                    (
+                        part.source_entity_index,
+                        part.action,
+                        part.source_byte_3e,
+                        part.active,
+                        part.drawing_enabled,
+                    )
+                })
+                .collect::<Vec<_>>();
             assert!(
-                economy
-                    .authored_dragon_parts()
-                    .iter()
-                    .all(|part| part.entity_id != root_slot)
+                remaining_parts.is_empty(),
+                "Dragon root {root_slot} retained body rows {remaining_parts:?}"
             );
             assert_eq!(
                 session
@@ -7279,38 +7325,29 @@ pub(crate) mod tests {
 
         let compatibility = session.backend().campaign.level2_compatibility();
         let economy = compatibility.economy();
-        let new_spheres = &economy.spheres()[sphere_count_before..];
-        assert_eq!(new_spheres.len(), expected_death_sources.len());
-        assert_eq!(
-            new_spheres
-                .iter()
-                .filter(|sphere| sphere.mana == 2_250)
-                .count(),
-            2
-        );
-        assert_eq!(
-            new_spheres
-                .iter()
-                .filter(|sphere| sphere.mana == 140)
-                .count(),
-            32
-        );
+        let expected_output_count = expected_death_sources.len();
         let output_events = &economy.events()[event_count_before..];
         let sphere_event_sources = output_events
             .iter()
             .filter_map(|event| match event {
                 crate::native_world::Level2EconomyEvent::ManaSphereSpawned {
                     source_entity_index,
+                    mana,
                     ..
-                } => Some(*source_entity_index),
+                } => Some((*source_entity_index, *mana)),
                 _ => None,
             })
             .collect::<Vec<_>>();
-        assert_eq!(sphere_event_sources.len(), expected_death_sources.len());
-        assert_eq!(
-            sphere_event_sources.into_iter().collect::<BTreeSet<_>>(),
-            expected_death_sources
-        );
+        assert_eq!(sphere_event_sources.len(), expected_output_count);
+        for (source_slot, mana) in &sphere_event_sources {
+            assert_eq!(Some(mana), expected_mana_by_source.get(source_slot));
+        }
+        let sphere_event_sources = sphere_event_sources
+            .into_iter()
+            .map(|(source_slot, _)| source_slot)
+            .collect::<BTreeSet<_>>();
+        assert!(sphere_event_sources.is_subset(&expected_death_sources));
+        assert_eq!(sphere_event_sources, expected_death_sources);
         let burst_event_sources = output_events
             .iter()
             .filter_map(|event| match event {
@@ -7321,10 +7358,10 @@ pub(crate) mod tests {
                 _ => None,
             })
             .collect::<Vec<_>>();
-        assert_eq!(burst_event_sources.len(), expected_death_sources.len());
+        assert_eq!(burst_event_sources.len(), expected_output_count);
         assert_eq!(
             burst_event_sources.into_iter().collect::<BTreeSet<_>>(),
-            expected_death_sources
+            sphere_event_sources
         );
         assert_eq!(
             &compatibility.runtime().objectives[0].stage_selectors[..5],
@@ -7348,6 +7385,602 @@ pub(crate) mod tests {
         assert_eq!(
             progress.current_objective.as_ref().map(SemanticId::as_str),
             Some("objective.charge.reveal_entrance")
+        );
+    }
+
+    pub(crate) fn build_real_level_three_carried_castle_for_test(
+        session: &mut GameSession<Mc2CampaignBackend>,
+    ) -> u16 {
+        let (player_entity, castle_cast_aim, cast_site) = {
+            let compatibility = session.backend().campaign.level2_compatibility();
+            let terrain = compatibility.canonical_terrain();
+            let cast_site = (16_u8..240)
+                .flat_map(|y| (16_u8..240).map(move |x| (x, y)))
+                .find_map(|(x, y)| {
+                    (0..8_u8)
+                        .all(|row| {
+                            (0..8_u8).all(|column| {
+                                terrain
+                                    .angle_flags(crate::Tile {
+                                        x: x - 8 + column,
+                                        y: y - 8 + row,
+                                    })
+                                    .cast_signed()
+                                    >= 0
+                            })
+                        })
+                        .then(|| {
+                            let mut position = crate::Position {
+                                x: (u16::from(x) << 8) + 128,
+                                y: (u16::from(y) << 8) + 128,
+                                z: 0,
+                            };
+                            position.z = terrain.ground_height(position).wrapping_add(256);
+                            position
+                        })
+                })
+                .expect("qualified Level 3 terrain contains a valid carried-Castle footprint");
+            (
+                compatibility.state.entity_index,
+                (compatibility.state.yaw, compatibility.state.display_pitch),
+                cast_site,
+            )
+        };
+        session
+            .backend_mut()
+            .campaign
+            .level2_compatibility_mut()
+            .set_level2_entity_position(player_entity, cast_site)
+            .unwrap();
+        let compatibility = session.backend_mut().campaign.level2_compatibility_mut();
+        compatibility.set_level2_player_aim_for_test(castle_cast_aim.0, castle_cast_aim.1);
+
+        session
+            .step(
+                guard(session),
+                GameCommand {
+                    select_spell: Some(SemanticId::parse("spell.castle").unwrap()),
+                    ..GameCommand::default()
+                },
+            )
+            .unwrap();
+        session
+            .step(
+                guard(session),
+                GameCommand {
+                    cast_selected: true,
+                    ..GameCommand::default()
+                },
+            )
+            .unwrap();
+        let mut saw_projectile = false;
+        for _ in 0..64 {
+            let compatibility = session.backend().campaign.level2_compatibility();
+            saw_projectile |= compatibility.dispatch_events().iter().any(|event| {
+                matches!(
+                    event,
+                    crate::native_world::Level2DispatchEvent::DynamicArena {
+                        kind: crate::native_world::Level2DynamicArenaKind::CastleProjectile,
+                        ..
+                    }
+                )
+            });
+            if compatibility.economy().castle().is_some_and(|castle| {
+                castle.level == 1
+                    && compatibility.economy().player_castle_entity_index()
+                        == castle.source_entity_index
+            }) {
+                break;
+            }
+            session
+                .step(guard(session), GameCommand::default())
+                .unwrap();
+        }
+        assert!(
+            saw_projectile,
+            "the carried semantic Castle must use its ordinary holder/projectile path"
+        );
+        let castle = session
+            .backend()
+            .campaign
+            .level2_compatibility()
+            .economy()
+            .castle()
+            .expect("the carried Castle projectile constructs a real stage-one root");
+        assert_eq!((castle.level, castle.mana_capacity), (1, 8_500));
+        castle.source_entity_index
+    }
+
+    fn activate_and_retire_real_level_three_group_five_archers_for_test(
+        session: &mut GameSession<Mc2CampaignBackend>,
+    ) {
+        const GROUP_FIVE_ROWS: &[u16] = &[
+            166, 167, 168, 169, 170, 171, 172, 173, 174, 175, 176, 177, 178, 179, 180, 181, 182,
+            183, 184, 185, 186, 187, 188, 189, 190, 191, 192, 193, 194,
+        ];
+        session
+            .step(guard(session), GameCommand::default())
+            .unwrap();
+        let compatibility = session.backend().campaign.level2_compatibility();
+        assert!(compatibility.dispatch_events().iter().any(|event| matches!(
+            event,
+            crate::native_world::Level2DispatchEvent::AuthoredGroupActivated {
+                source_slot: 218,
+                group: 5,
+                authored_indices,
+                ..
+            } if authored_indices.as_ref() == GROUP_FIVE_ROWS
+        )));
+        let player_entity = compatibility.state.entity_index;
+        let archers = compatibility
+            .economy()
+            .authored_class5()
+            .iter()
+            .filter(|source| (177..=194).contains(&source.authored_index))
+            .copied()
+            .collect::<Vec<_>>();
+        assert_eq!(archers.len(), 18);
+        for archer in &archers {
+            assert!(
+                session
+                    .backend_mut()
+                    .campaign
+                    .level2_compatibility_mut()
+                    .economy_mut()
+                    .stage_archer_mailbox_damage_for_test(
+                        archer.source_entity_index,
+                        player_entity,
+                        archer.max_life.saturating_add(1),
+                    )
+            );
+        }
+        for _ in 0..32 {
+            if session
+                .backend()
+                .campaign
+                .level2_compatibility()
+                .economy()
+                .authored_class5()
+                .iter()
+                .all(|source| !(177..=194).contains(&source.authored_index))
+            {
+                break;
+            }
+            session
+                .step(guard(session), GameCommand::default())
+                .unwrap();
+        }
+        assert!(
+            session
+                .backend()
+                .campaign
+                .level2_compatibility()
+                .economy()
+                .authored_class5()
+                .iter()
+                .all(|source| !(177..=194).contains(&source.authored_index)),
+            "all eighteen real group-5 Archers must finish ordinary death/reclaim"
+        );
+    }
+
+    fn claim_real_neutral_mana_sphere_for_castle_for_test(
+        session: &mut GameSession<Mc2CampaignBackend>,
+    ) -> (u16, i32, usize) {
+        let player_entity = session
+            .backend()
+            .campaign
+            .level2_compatibility()
+            .state
+            .entity_index;
+        let compatibility = session.backend().campaign.level2_compatibility();
+        let local_player = &compatibility.shared_spells().players()[0];
+        let fireball_holder = local_player.enabled_spell_holders[0];
+        let carried_fireball = compatibility
+            .shared_spells()
+            .dynamic_pickups()
+            .iter()
+            .find(|holder| holder.index == fireball_holder);
+        assert!(
+            carried_fireball.is_some_and(|holder| {
+                holder.active
+                    && holder.class == 15
+                    && holder.model == 0
+                    && holder.source_spell_parent_entity_index() == player_entity
+            }),
+            "carried Fireball relation failed before mana claim: player_action_life={:?}, holder_slot={fireball_holder}, dynamic={carried_fireball:?}, raw={:?}",
+            compatibility
+                .entities()
+                .get(usize::from(player_entity))
+                .map(|player| (player.action, player.life, player.control_flags)),
+            compatibility.entities().get(usize::from(fireball_holder))
+        );
+        let spell_state = session.backend().semantic_spell_state_for_test().unwrap();
+        assert!(
+            spell_state.0.contains(&SpellKind::Possession),
+            "Possession carry disappeared before the first mana claim: semantic={spell_state:?}, player={:?}, dynamic={:?}",
+            session
+                .backend()
+                .campaign
+                .level2_compatibility()
+                .shared_spells()
+                .players()[0],
+            session
+                .backend()
+                .campaign
+                .level2_compatibility()
+                .shared_spells()
+                .dynamic_pickups()
+        );
+        let sphere_slot = (0..256)
+            .find_map(|_| {
+                let settled = session
+                    .backend()
+                    .campaign
+                    .level2_compatibility()
+                    .economy()
+                    .spheres()
+                    .iter()
+                    .find(|sphere| {
+                        sphere.active
+                            && !sphere.pending_delete
+                            && sphere.owner_entity_index == 0
+                            && sphere.player_entity_index == 0
+                            && sphere.vertical_velocity == 0
+                    })
+                    .map(|sphere| sphere.source_entity_index);
+                if settled.is_none() {
+                    session
+                        .step(guard(session), GameCommand::default())
+                        .unwrap();
+                }
+                settled
+            })
+            .expect("one real death sphere must settle while still neutral");
+        let (sphere_position, target_top, mana) = {
+            let compatibility = session.backend().campaign.level2_compatibility();
+            let sphere = compatibility
+                .economy()
+                .spheres()
+                .iter()
+                .find(|sphere| sphere.source_entity_index == sphere_slot)
+                .expect("the selected neutral sphere remains live");
+            (
+                sphere.position,
+                compatibility
+                    .possession_guidance_target_top_for_test(sphere_slot)
+                    .expect("the real sphere exposes its source guidance top"),
+                sphere.mana,
+            )
+        };
+        let event_count_before = session
+            .backend()
+            .campaign
+            .level2_compatibility()
+            .economy()
+            .events()
+            .len();
+        session
+            .step(
+                guard(session),
+                GameCommand {
+                    select_spell: Some(SemanticId::parse("spell.possession").unwrap()),
+                    ..GameCommand::default()
+                },
+            )
+            .unwrap();
+        let state = session.backend().campaign.level2_compatibility().state;
+        let mut cast_position = sphere_position;
+        crate::move_entity(
+            &mut cast_position,
+            state.yaw.wrapping_add(1_024),
+            0,
+            crate::level1_mission::POSSESSION_PROJECTILE_SPEED,
+        );
+        let mut launch_position = cast_position;
+        launch_position.z = launch_position.z.wrapping_add(state.entity_fov);
+        let (launch_yaw, launch_pitch) =
+            crate::level1_mission::projectile_guidance_angles(launch_position, target_top);
+        let compatibility = session.backend_mut().campaign.level2_compatibility_mut();
+        compatibility
+            .set_level2_entity_position(player_entity, cast_position)
+            .unwrap();
+        compatibility.set_level2_player_aim_for_test(launch_yaw, launch_pitch);
+        session
+            .step(
+                guard(session),
+                GameCommand {
+                    cast_selected: true,
+                    ..GameCommand::default()
+                },
+            )
+            .unwrap();
+        for _ in 0..32 {
+            if session
+                .backend()
+                .campaign
+                .level2_compatibility()
+                .economy()
+                .spheres()
+                .iter()
+                .any(|sphere| {
+                    sphere.source_entity_index == sphere_slot
+                        && sphere.active
+                        && !sphere.pending_delete
+                        && sphere.owner_entity_index == player_entity
+                })
+            {
+                break;
+            }
+            session
+                .step(guard(session), GameCommand::default())
+                .unwrap();
+        }
+        assert_eq!(
+            session
+                .backend()
+                .campaign
+                .level2_compatibility()
+                .economy()
+                .spheres()
+                .iter()
+                .find(|sphere| sphere.source_entity_index == sphere_slot)
+                .map(|sphere| sphere.owner_entity_index),
+            Some(player_entity),
+            "ordinary Possession must claim the selected real death sphere"
+        );
+        (sphere_slot, mana, event_count_before)
+    }
+
+    fn await_real_castle_sphere_deposit_for_test(
+        session: &mut GameSession<Mc2CampaignBackend>,
+        sphere_slot: u16,
+        mana_before: i32,
+        sphere_mana: i32,
+        event_count_before: usize,
+    ) -> i32 {
+        let (player_entity, castle_slot, castle_position) = {
+            let compatibility = session.backend().campaign.level2_compatibility();
+            let castle = compatibility
+                .economy()
+                .castle()
+                .expect("the carried Castle remains live before deposit");
+            (
+                compatibility.state.entity_index,
+                castle.source_entity_index,
+                castle.position,
+            )
+        };
+        session
+            .backend_mut()
+            .campaign
+            .level2_compatibility_mut()
+            .set_level2_entity_position(player_entity, castle_position)
+            .unwrap();
+        let minimum_mana = mana_before.saturating_add(sphere_mana);
+        for _ in 0..2_048 {
+            let economy = session.backend().campaign.level2_compatibility().economy();
+            if economy
+                .castle()
+                .is_some_and(|castle| castle.mana >= minimum_mana)
+            {
+                break;
+            }
+            session
+                .step(guard(session), GameCommand::default())
+                .unwrap();
+        }
+        let economy = session.backend().campaign.level2_compatibility().economy();
+        let deposited_mana = economy
+            .castle()
+            .map(|castle| castle.mana)
+            .expect("the carried Castle remains live through deposit");
+        assert!(
+            deposited_mana >= minimum_mana,
+            "the ordinary stage-one carrier must deposit at least claimed sphere {sphere_slot}: before={mana_before}, sphere={sphere_mana}, after={deposited_mana}"
+        );
+        let castle_deposit = economy.events()[event_count_before..]
+            .iter()
+            .filter_map(|event| match event {
+                crate::native_world::Level2EconomyEvent::ManaSphereCollected {
+                    carrier_id,
+                    mana,
+                    ..
+                } if *carrier_id == u32::from(castle_slot) => Some(*mana),
+                crate::native_world::Level2EconomyEvent::ManaCarrierArrived {
+                    castle_id,
+                    mana,
+                    ..
+                }
+                | crate::native_world::Level2EconomyEvent::CastleDefenderArrived {
+                    castle_id,
+                    mana,
+                    ..
+                } if *castle_id == castle_slot => Some(*mana),
+                _ => None,
+            })
+            .fold(0_i32, i32::saturating_add);
+        assert!(
+            castle_deposit >= sphere_mana,
+            "the persistent root/carrier/defender deposit events must account for the claimed payload: sphere={sphere_slot}, claimed={sphere_mana}, deposited={castle_deposit}"
+        );
+        deposited_mana
+    }
+
+    fn upgrade_real_castle_for_test(
+        session: &mut GameSession<Mc2CampaignBackend>,
+        expected_level: u8,
+    ) {
+        let (player_entity, castle_position) = {
+            let compatibility = session.backend().campaign.level2_compatibility();
+            (
+                compatibility.state.entity_index,
+                compatibility
+                    .economy()
+                    .castle()
+                    .expect("the Castle remains live before its upgrade")
+                    .position,
+            )
+        };
+        session
+            .backend_mut()
+            .campaign
+            .level2_compatibility_mut()
+            .set_level2_entity_position(player_entity, castle_position)
+            .unwrap();
+        session
+            .step(
+                guard(session),
+                GameCommand {
+                    select_spell: Some(SemanticId::parse("spell.castle").unwrap()),
+                    ..GameCommand::default()
+                },
+            )
+            .unwrap();
+        session
+            .step(
+                guard(session),
+                GameCommand {
+                    cast_selected: true,
+                    ..GameCommand::default()
+                },
+            )
+            .unwrap();
+        for _ in 0..128 {
+            if session
+                .backend()
+                .campaign
+                .level2_compatibility()
+                .economy()
+                .castle()
+                .is_some_and(|castle| castle.level == expected_level)
+            {
+                break;
+            }
+            session
+                .step(guard(session), GameCommand::default())
+                .unwrap();
+        }
+        let castle = session
+            .backend()
+            .campaign
+            .level2_compatibility()
+            .economy()
+            .castle()
+            .expect("the upgraded Castle remains live");
+        assert_eq!(castle.level, expected_level);
+        assert_eq!(
+            castle.mana_capacity,
+            match expected_level {
+                2 => 18_000,
+                3 => 38_800,
+                _ => unreachable!("the focused route upgrades only through stage three"),
+            }
+        );
+    }
+
+    #[test]
+    fn campaign_backend_level_three_guardian_helper_accepts_carried_base_holders() {
+        let root = level_three_descriptor_fixture_path();
+        let catalog = default_catalog().unwrap();
+        let definition = Arc::new(load_mc2_campaign(&root, &catalog).unwrap());
+        let mut session = GameSession::open(
+            &Mc2CampaignAdapter,
+            definition,
+            63,
+            Mc2CampaignInputs::new(&root),
+        )
+        .unwrap();
+        session
+            .backend_mut()
+            .campaign
+            .level2_compatibility_mut()
+            .apply_carried_spell_families(&[0, 1, 2, 3], Some(2))
+            .unwrap();
+
+        drive_real_level_three_skeleton_horde_to_guardian_dragons_for_test(&mut session);
+        build_real_level_three_carried_castle_for_test(&mut session);
+        drive_real_level_three_guardian_dragons_to_reveal_entrance_for_test(&mut session);
+        activate_and_retire_real_level_three_group_five_archers_for_test(&mut session);
+        for expected_level in 1..=2 {
+            for _ in 0..40 {
+                let castle = session
+                    .backend()
+                    .campaign
+                    .level2_compatibility()
+                    .economy()
+                    .castle()
+                    .expect("the carried Castle remains live");
+                if castle.mana >= castle.mana_capacity {
+                    break;
+                }
+                let mana_before = castle.mana;
+                let (sphere_slot, sphere_mana, event_count_before) =
+                    claim_real_neutral_mana_sphere_for_castle_for_test(&mut session);
+                await_real_castle_sphere_deposit_for_test(
+                    &mut session,
+                    sphere_slot,
+                    mana_before,
+                    sphere_mana,
+                    event_count_before,
+                );
+            }
+            upgrade_real_castle_for_test(&mut session, expected_level + 1);
+        }
+        for _ in 0..40 {
+            if session
+                .backend()
+                .campaign
+                .level2_compatibility()
+                .runtime()
+                .objectives[0]
+                .stage_selectors[2]
+                == 2
+            {
+                break;
+            }
+            let mana_before = session
+                .backend()
+                .campaign
+                .level2_compatibility()
+                .economy()
+                .castle()
+                .expect("the carried Castle remains live")
+                .mana;
+            let (sphere_slot, sphere_mana, event_count_before) =
+                claim_real_neutral_mana_sphere_for_castle_for_test(&mut session);
+            await_real_castle_sphere_deposit_for_test(
+                &mut session,
+                sphere_slot,
+                mana_before,
+                sphere_mana,
+                event_count_before,
+            );
+        }
+        for _ in 0..4 {
+            if session
+                .backend()
+                .campaign
+                .level2_compatibility()
+                .runtime()
+                .objectives[0]
+                .stage_selectors[2]
+                == 2
+            {
+                break;
+            }
+            session
+                .step(guard(&session), GameCommand::default())
+                .unwrap();
+        }
+        let compatibility = session.backend().campaign.level2_compatibility();
+        let economy = compatibility.economy();
+        let castle = economy.castle().expect("the carried Castle remains live");
+        assert_eq!(castle.level, 3);
+        assert!(castle.mana < castle.mana_capacity);
+        assert_eq!(
+            compatibility.runtime().objectives[0].stage_selectors[2],
+            2,
+            "the production Castle route must satisfy the exact 30% objective"
         );
     }
 
