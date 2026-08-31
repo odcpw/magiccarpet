@@ -1952,12 +1952,24 @@ class CampaignDayGameplayAggregateTests(unittest.TestCase):
         self.assertEqual(manifest["schema"], cache.CAMPAIGN_DAY_AGGREGATE_SCHEMA)
         self.assertEqual(manifest["profile"]["external_level"], 3)
         self.assertEqual(manifest["profile"]["internal_level"], 2)
-        self.assertEqual(set(manifest["components"]), {"material", "gameplay"})
-        self.assertEqual(len(manifest["outputs"]), 608)
+        self.assertEqual(set(manifest["components"]), {"material", "gameplay", "audio"})
+        self.assertEqual(len(manifest["outputs"]), 642)
         self.assertEqual(
             manifest["presentation_scope"]["audio"],
-            "not_materialized_requires_level_specific_occurrence_census",
+            "materialized_from_source_qualified_level3_occurrences",
         )
+
+        audio = json.loads(
+            (self.first / "components/audio/audio/descriptor.json").read_text()
+        )
+        self.assertEqual(len(audio["sound"]["occurrences"]), 34)
+        self.assertEqual(len(audio["excluded"]), 85)
+        self.assertEqual(
+            [row["sound_id"] for row in audio["sound"]["records"]],
+            [1, 2, 3, 5, 8, 9, 10, 12, 13, 14, 15, 16, 18, 19, 23, 29, 30, 31, 40, 41, 43, 44, 47, 54, 55, 56, 57, 60, 61],
+        )
+        self.assertEqual(audio["music"]["maptype_music"], 2)
+        self.assertEqual(audio["music"]["lifecycle"], ["StartMusic", "FadeWarMusic", "UpdateMusic", "StopMusic"])
 
         descriptor = json.loads(
             (
@@ -2012,6 +2024,13 @@ class CampaignDayGameplayAggregateTests(unittest.TestCase):
         victim.unlink()
         victim.write_bytes(victim_original)
 
+        wav = self.first / "components/audio/audio/sfx/012.wav"
+        wav_original = wav.read_bytes()
+        wav.write_bytes(wav_original + b"tamper")
+        with self.assertRaisesRegex(cache.CacheError, "output hash mismatch"):
+            cache.validate_campaign_day_aggregate_cache(self.first)
+        wav.write_bytes(wav_original)
+
         wrong_package = self.temp_root / "wrong-campaign-package"
         shutil.copytree(cache.DEFAULT_CAMPAIGN_DAY_PACKAGE, wrong_package)
         wrong_manifest = wrong_package / "manifest.json"
@@ -2024,6 +2043,47 @@ class CampaignDayGameplayAggregateTests(unittest.TestCase):
             cache.validate_campaign_day_aggregate_cache(
                 self.first, campaign_package_dir=wrong_package
             )
+
+    def test_level3_audio_denominator_rebuilds_exactly(self) -> None:
+        builder_path = (
+            cache.PRIVATE
+            / "remc2-sim-rs/level3-conformance/audio/build_level3_audio_denominator.py"
+        )
+        spec = importlib.util.spec_from_file_location("level3_audio_denominator", builder_path)
+        self.assertIsNotNone(spec)
+        assert spec and spec.loader
+        builder = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(builder)
+        expected = cache.CAMPAIGN_DAY_AUDIO_DENOMINATOR.read_bytes()
+        self.assertEqual(builder.canonical(builder.build()), expected)
+        denominator = json.loads(expected)
+        reachable = [
+            row for row in denominator["audio"]["rows"]
+            if row["classification"] == "reachable_level3"
+        ]
+        self.assertEqual(len(reachable), 34)
+        self.assertEqual(len({row["stable_occurrence_hash_sha256"] for row in reachable}), 34)
+
+    def test_level3_audio_rejects_unsupported_occurrence_selector(self) -> None:
+        tampered = self.temp_root / "tampered-audio-selector"
+        shutil.copytree(self.first / "components/audio", tampered)
+        descriptor_path = tampered / "audio/descriptor.json"
+        descriptor = json.loads(descriptor_path.read_text())
+        descriptor["sound"]["occurrences"][0]["sound_selector"]["sound_ids"] = [64]
+        descriptor_path.write_bytes(cache.canonical_json(descriptor))
+        manifest_path = tampered / "manifest.json"
+        manifest = json.loads(manifest_path.read_text())
+        for row in manifest["outputs"]:
+            if row["path"] == "audio/descriptor.json":
+                row["bytes"] = descriptor_path.stat().st_size
+                row["sha256"] = cache.sha256_file(descriptor_path)
+        manifest["cache_content_sha256"] = cache._level2_cache_identity(manifest["outputs"])
+        unsigned = dict(manifest)
+        unsigned.pop("manifest_payload_sha256", None)
+        manifest["manifest_payload_sha256"] = cache.sha256_bytes(cache.canonical_json(unsigned))
+        manifest_path.write_bytes(cache.canonical_json(manifest))
+        with self.assertRaisesRegex(cache.CacheError, "occurrence descriptor changed"):
+            cache.validate_campaign_day_audio_cache(tampered)
 
 
 class Level2HistoricalV4InspectionTests(unittest.TestCase):

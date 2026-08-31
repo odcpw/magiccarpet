@@ -81,6 +81,7 @@ DAY_MATERIAL_DESCRIPTOR_SCHEMA = "mc2-day-materials/v1"
 LEVEL2_GAMEPLAY_SCHEMA = "mc2-level2-day-gameplay-cache/v1"
 LEVEL2_DAY_HUD_SCHEMA = "mc2-level2-day-hud/v1"
 LEVEL2_AUDIO_SCHEMA = "mc2-level2-day-audio-cache/v1"
+CAMPAIGN_DAY_AUDIO_SCHEMA = "mc2-day-audio-cache/v1"
 LEVEL2_AGGREGATE_SCHEMA = "mc2-level2-day-owner-cache/v1"
 CAMPAIGN_DAY_GAMEPLAY_SCHEMA = "mc2-day-gameplay-cache/v1"
 CAMPAIGN_DAY_GAMEPLAY_DESCRIPTOR_SCHEMA = "mc2-day-gameplay/v1"
@@ -113,6 +114,10 @@ LEVEL2_AUDIO_DENOMINATOR = (
     PRIVATE
     / "remc2-sim-rs/level2-conformance/denominator/level2-dispatch-rng-audio-presentation.json"
 )
+CAMPAIGN_DAY_AUDIO_DENOMINATOR = (
+    PRIVATE / "remc2-sim-rs/level3-conformance/audio/level3-audio-denominator.json"
+)
+DEFAULT_CAMPAIGN_DAY_AUDIO_OUTPUT = GENERATED / "level3-day-audio-cache"
 DEFAULT_LEVEL2_AUDIO_OUTPUT = GENERATED / "level2-day-audio-cache"
 DEFAULT_LEVEL2_AGGREGATE_OUTPUT = GENERATED / "level2-day-owner-cache"
 CONFORMANCE_SEAL_SCHEMA = "mc2-plan29-cache-conformance-identity/v1"
@@ -6120,6 +6125,24 @@ def _level2_audio_denominator() -> tuple[list[dict[str, Any]], list[dict[str, An
     return reachable, unreachable
 
 
+def _campaign_day_audio_denominator() -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    denominator = load_json(CAMPAIGN_DAY_AUDIO_DENOMINATOR)
+    audio = denominator.get("audio", {})
+    rows = audio.get("rows")
+    if audio.get("denominator") != 119 or audio.get("counts") != {
+        "mechanically_unreachable_level3": 85,
+        "reachable_level3": 34,
+    } or not isinstance(rows, list) or len(rows) != 119:
+        raise CacheError("campaign Day audio denominator changed")
+    if len({row.get("stable_occurrence_hash_sha256") for row in rows}) != 119:
+        raise CacheError("campaign Day audio occurrence identities are not unique")
+    reachable = [row for row in rows if row.get("classification") == "reachable_level3"]
+    unreachable = [row for row in rows if row.get("classification") != "reachable_level3"]
+    if len(reachable) != 34 or len(unreachable) != 85:
+        raise CacheError("campaign Day audio reachable/unreachable partition changed")
+    return reachable, unreachable
+
+
 def _level2_sound_selector(expression: str) -> dict[str, Any]:
     numbers = [int(value) for value in re.findall(r"\d+", expression)]
     if expression == "v6":
@@ -6129,6 +6152,15 @@ def _level2_sound_selector(expression: str) -> dict[str, Any]:
             "sound_ids": [9, 15, 23],
             "source_binding": "sub_6DCA0 v6 initializes 15 and assigns 9/23 on spell branches",
         }
+    if expression == "v19":
+        return {
+            "expression": expression,
+            "status": "qualified_bounded_source_selector",
+            "sound_ids": [43, 44],
+            "source_binding": "HitFirebug_25610 v19 is assigned (source RNG & 1) + 43",
+        }
+    if "12" in expression and "& 1" in expression:
+        return {"expression": expression, "status": "bounded_runtime_range", "sound_ids": [12, 13]}
     if "54" in expression and "3" in expression:
         return {"expression": expression, "status": "bounded_runtime_range", "sound_ids": [54, 55, 56, 57]}
     if len(numbers) == 1:
@@ -6142,13 +6174,32 @@ def build_day_audio_cache(
     closure_path: Path,
     catalog_path: Path,
     output: Path,
+    *,
+    owner_export_dir: Path | None = None,
 ) -> dict[str, Any]:
-    """Materialize the exact Level 2 sound/music banks and occurrence ledger."""
+    """Materialize exact Day sound/music banks and a source occurrence ledger."""
     output = validate_output_path(output)
-    profile, package, closure, catalog_rows = _level2_profile(
-        package_dir, closure_path, catalog_path
-    )
-    reachable, unreachable = _level2_audio_denominator()
+    campaign_day = owner_export_dir is not None
+    if campaign_day:
+        profile, _campaign, closure, catalog_rows, _owner = _campaign_day_material_profile(
+            owner_export_dir, package_dir, closure_path, catalog_path
+        )
+        reachable, unreachable = _campaign_day_audio_denominator()
+        denominator_path = CAMPAIGN_DAY_AUDIO_DENOMINATOR
+        cache_schema = CAMPAIGN_DAY_AUDIO_SCHEMA
+        descriptor_schema = "mc2-day-audio/v1"
+        profile_label = "campaign Day"
+        cache_prefix = ".campaign-day-audio-"
+    else:
+        profile, _package, closure, catalog_rows = _level2_profile(
+            package_dir, closure_path, catalog_path
+        )
+        reachable, unreachable = _level2_audio_denominator()
+        denominator_path = LEVEL2_AUDIO_DENOMINATOR
+        cache_schema = LEVEL2_AUDIO_SCHEMA
+        descriptor_schema = "mc2-level2-day-audio/v1"
+        profile_label = "Level 2"
+        cache_prefix = ".level2-day-audio-"
     dynamic_assets = {
         row["asset_id"]: row
         for row in closure.get("sets", {}).get("dynamic_dependencies", {}).get("assets", [])
@@ -6158,14 +6209,14 @@ def build_day_audio_cache(
         row = dynamic_assets.get(asset_id)
         file_row = catalog_rows.get(relative)
         if not isinstance(row, dict) or not isinstance(file_row, dict):
-            raise CacheError(f"Level 2 audio closure is missing {relative}")
+            raise CacheError(f"{profile_label} audio closure is missing {relative}")
         source_path = confined_source(owner_root, relative)
         source = source_path.read_bytes()
         if sha256_bytes(source) != file_row.get("sha256") or row.get("content_address") != f"sha256:{sha256_bytes(source)}":
-            raise CacheError(f"Level 2 audio source hash mismatch: {relative}")
+            raise CacheError(f"{profile_label} audio source hash mismatch: {relative}")
     sound = confined_source(owner_root, "SOUND/SOUND.DAT").read_bytes()
     music = confined_source(owner_root, "SOUND/MUSIC.DAT").read_bytes()
-    stage = Path(tempfile.mkdtemp(prefix=".level2-day-audio-", dir=output.parent))
+    stage = Path(tempfile.mkdtemp(prefix=cache_prefix, dir=output.parent))
     try:
         outputs: list[dict[str, Any]] = []
         sound_output = write_output(
@@ -6284,8 +6335,8 @@ def build_day_audio_cache(
                 },
                 "sound_selector": selector,
                 "owner_expression": row["owner_expression"],
-                "helper_path": row["helper_path"],
-                "dispatch_bindings": row["dispatch_bindings"],
+                "helper_path": row.get("helper_path", []),
+                "dispatch_bindings": row.get("dispatch_bindings", []),
                 "source_asset_id": "owner_data:SOUND/SOUND.DAT",
                 "shared_voice_identity": [
                     f"sound-bank-1-slot-{sound_id}" for sound_id in selector.get("sound_ids", [])
@@ -6297,13 +6348,17 @@ def build_day_audio_cache(
                     "status": "explicit_source_metadata_boundary; no guessed constants",
                 },
             })
-        presentation = load_json(LEVEL2_AUDIO_DENOMINATOR).get("presentation", {})
-        music_refs = [
-            row for row in presentation.get("source_references", [])
-            if row.get("classification") == "reachable_level2" and row.get("dependency_kind") == "music"
-        ]
+        denominator = load_json(denominator_path)
+        if campaign_day:
+            music_refs = denominator.get("music", {}).get("source_references", [])
+        else:
+            presentation = denominator.get("presentation", {})
+            music_refs = [
+                row for row in presentation.get("source_references", [])
+                if row.get("classification") == "reachable_level2" and row.get("dependency_kind") == "music"
+            ]
         descriptor = {
-            "schema": "mc2-level2-day-audio/v1",
+            "schema": descriptor_schema,
             "profile": profile,
             "sound": {
                 "bank": 1,
@@ -6314,7 +6369,7 @@ def build_day_audio_cache(
                 "source_ledger_denominator": 119,
                 "records": sound_record_rows,
                 "decoder": decoder_identity,
-                "record_census_sha256": EXPECTED_LEVEL2_SOUND_RECORDS_SHA256,
+                "record_census_sha256": sha256_bytes(canonical_json(sound_record_rows)) if campaign_day else EXPECTED_LEVEL2_SOUND_RECORDS_SHA256,
             },
             "music": {
                 "container_path": music_output["path"],
@@ -6328,7 +6383,7 @@ def build_day_audio_cache(
                 "reachable_source_references": music_refs,
                 "records": music_record_rows,
                 "decoder": decoder_identity,
-                "record_census_sha256": EXPECTED_LEVEL2_MUSIC_RECORDS_SHA256,
+                "record_census_sha256": sha256_bytes(canonical_json(music_record_rows)) if campaign_day else EXPECTED_LEVEL2_MUSIC_RECORDS_SHA256,
             },
             "excluded": [
                 {
@@ -6336,7 +6391,7 @@ def build_day_audio_cache(
                     "stable_occurrence_hash_sha256": row["stable_occurrence_hash_sha256"],
                     "classification": row["classification"],
                     "source": {"path": row["path"], "pinned_line": row["pinned_line"], "enclosing_symbol": row["enclosing_symbol"]},
-                    "reason": "mechanically_unreachable_level2",
+                    "reason": row["classification"],
                 }
                 for row in unreachable
             ],
@@ -6347,29 +6402,39 @@ def build_day_audio_cache(
             outputs,
             "audio/descriptor.json",
             canonical_json(descriptor),
-            kind="canonical_json_level2_audio_descriptor",
+            kind="canonical_json_campaign_day_audio_descriptor" if campaign_day else "canonical_json_level2_audio_descriptor",
             source_asset_ids=["owner_data:SOUND/SOUND.DAT", "owner_data:SOUND/MUSIC.DAT"],
-            extra={"reachable_occurrences": 26, "excluded_occurrences": 93},
+            extra={"reachable_occurrences": len(reachable), "excluded_occurrences": len(unreachable)},
         )
+        bindings = _campaign_day_bindings(profile) if campaign_day else {
+            "level_export_package_sha256": profile["package_sha256"],
+            "level_asset_closure_sha256": profile["closure_sha256"],
+            "owner_catalog_sha256": profile["catalog_sha256"],
+            "owner_catalog_file_sha256": profile["catalog_file_sha256"],
+            "remc2_commit": PINNED_REMC2_COMMIT,
+            **_level2_owner_identity_bindings(profile),
+        }
+        bindings["audio_denominator_sha256"] = sha256_file(denominator_path)
         manifest = {
-            "schema": LEVEL2_AUDIO_SCHEMA,
+            "schema": cache_schema,
             "generator": {"name": "build_cache.py", "version": GENERATOR_VERSION},
             "profile": profile,
-            "bindings": {
-                "level_export_package_sha256": profile["package_sha256"],
-                "level_asset_closure_sha256": profile["closure_sha256"],
-                "owner_catalog_sha256": profile["catalog_sha256"],
-                "owner_catalog_file_sha256": profile["catalog_file_sha256"],
-                "remc2_commit": PINNED_REMC2_COMMIT,
-                "audio_denominator_sha256": sha256_file(LEVEL2_AUDIO_DENOMINATOR),
-                **_level2_owner_identity_bindings(profile),
-            },
+            "bindings": bindings,
             "outputs": outputs,
             "cache_content_sha256": _level2_cache_identity(outputs),
         }
         manifest["manifest_payload_sha256"] = sha256_bytes(canonical_json(manifest))
         (stage / "manifest.json").write_bytes(canonical_json(manifest))
-        validate_day_audio_cache(stage, profile["package_sha256"], profile["closure_sha256"])
+        if campaign_day:
+            validate_campaign_day_audio_cache(
+                stage,
+                owner_export_dir=owner_export_dir,
+                campaign_package_dir=package_dir,
+                closure_path=closure_path,
+                catalog_path=catalog_path,
+            )
+        else:
+            validate_day_audio_cache(stage, profile["package_sha256"], profile["closure_sha256"])
         fsync_tree(stage)
         commit_stage(output, stage)
         return manifest
@@ -6513,6 +6578,120 @@ def validate_day_audio_cache(
     actual_tree = {path.relative_to(cache_dir).as_posix() for path in cache_dir.rglob("*") if path.is_file()}
     if any(path.is_symlink() for path in cache_dir.rglob("*")) or actual_tree != {"manifest.json", *seen}:
         raise CacheError("Level 2 audio cache tree has missing, extra, or symlinked files")
+    return manifest
+
+
+def build_campaign_day_audio_cache(
+    owner_root: Path,
+    owner_export_dir: Path,
+    campaign_package_dir: Path,
+    closure_path: Path,
+    catalog_path: Path,
+    output: Path,
+) -> dict[str, Any]:
+    return build_day_audio_cache(
+        owner_root,
+        campaign_package_dir,
+        closure_path,
+        catalog_path,
+        output,
+        owner_export_dir=owner_export_dir,
+    )
+
+
+def validate_campaign_day_audio_cache(
+    cache_dir: Path,
+    *,
+    owner_export_dir: Path = DEFAULT_CAMPAIGN_DAY_OWNER_EXPORT,
+    campaign_package_dir: Path = DEFAULT_CAMPAIGN_DAY_PACKAGE,
+    closure_path: Path = DEFAULT_CAMPAIGN_DAY_CLOSURE,
+    catalog_path: Path = DEFAULT_CATALOG,
+) -> dict[str, Any]:
+    profile, _campaign, _closure, _catalog, _owner = _campaign_day_material_profile(
+        owner_export_dir, campaign_package_dir, closure_path, catalog_path
+    )
+    cache_dir = cache_dir.expanduser().resolve()
+    manifest_path = cache_dir / "manifest.json"
+    if manifest_path.is_symlink():
+        raise CacheError("campaign Day audio manifest is symlinked")
+    manifest = load_json(manifest_path)
+    unsigned = dict(manifest)
+    claim = unsigned.pop("manifest_payload_sha256", None)
+    if sha256_bytes(canonical_json(unsigned)) != claim:
+        raise CacheError("campaign Day audio manifest metadata hash mismatch")
+    expected_bindings = {
+        **_campaign_day_bindings(profile),
+        "audio_denominator_sha256": sha256_file(CAMPAIGN_DAY_AUDIO_DENOMINATOR),
+    }
+    if (
+        manifest.get("schema") != CAMPAIGN_DAY_AUDIO_SCHEMA
+        or manifest.get("profile") != profile
+        or manifest.get("bindings") != expected_bindings
+    ):
+        raise CacheError("campaign Day audio package binding mismatch")
+    outputs = manifest.get("outputs")
+    if not isinstance(outputs, list) or len(outputs) < 4:
+        raise CacheError("campaign Day audio output set changed")
+    paths: set[str] = set()
+    for row in outputs:
+        relative = row.get("path")
+        if not isinstance(relative, str) or relative in paths or relative.startswith("/") or ".." in Path(relative).parts:
+            raise CacheError("invalid campaign Day audio output path")
+        paths.add(relative)
+        path = cache_dir / relative
+        if path.is_symlink() or not path.is_file() or path.stat().st_size != row.get("bytes") or sha256_file(path) != row.get("sha256"):
+            raise CacheError(f"campaign Day audio output hash mismatch: {relative}")
+    if _level2_cache_identity(outputs) != manifest.get("cache_content_sha256"):
+        raise CacheError("campaign Day audio content identity mismatch")
+    descriptor = load_json(cache_dir / "audio/descriptor.json")
+    if descriptor.get("schema") != "mc2-day-audio/v1" or descriptor.get("profile") != profile:
+        raise CacheError("campaign Day audio descriptor identity mismatch")
+    reachable, excluded = _campaign_day_audio_denominator()
+    occurrences = descriptor.get("sound", {}).get("occurrences", [])
+    if [row.get("id") for row in occurrences] != [row["id"] for row in reachable]:
+        raise CacheError("campaign Day audio reachable occurrence identity changed")
+    for actual, expected in zip(occurrences, reachable):
+        if (
+            actual.get("stable_occurrence_hash_sha256") != expected["stable_occurrence_hash_sha256"]
+            or actual.get("source", {}).get("path") != expected["path"]
+            or actual.get("source", {}).get("pinned_line") != expected["pinned_line"]
+            or actual.get("sound_selector") != _level2_sound_selector(expected["sound_expression"])
+        ):
+            raise CacheError(f"campaign Day audio occurrence descriptor changed: {expected['id']}")
+    if [row.get("id") for row in descriptor.get("excluded", [])] != [row["id"] for row in excluded]:
+        raise CacheError("campaign Day audio exclusion identity changed")
+    sound_records = descriptor.get("sound", {}).get("records", [])
+    music_records = descriptor.get("music", {}).get("records", [])
+    expected_sound_ids = sorted({sound_id for row in reachable for sound_id in _level2_sound_selector(row["sound_expression"])["sound_ids"]})
+    if [row.get("sound_id") for row in sound_records] != expected_sound_ids:
+        raise CacheError("campaign Day sound record membership changed")
+    if descriptor.get("sound", {}).get("record_census_sha256") != sha256_bytes(canonical_json(sound_records)):
+        raise CacheError("campaign Day sound record descriptor changed")
+    if descriptor.get("music", {}).get("record_census_sha256") != sha256_bytes(canonical_json(music_records)):
+        raise CacheError("campaign Day music record descriptor changed")
+    music = load_json(CAMPAIGN_DAY_AUDIO_DENOMINATOR)["music"]
+    if (
+        descriptor.get("music", {}).get("maptype_music") != music["maptype_music"]
+        or descriptor.get("music", {}).get("channel") != music["channel"]
+        or descriptor.get("music", {}).get("driver") != music["driver"]
+        or descriptor.get("music", {}).get("lifecycle") != music["lifecycle"]
+        or descriptor.get("music", {}).get("reachable_source_references") != music["source_references"]
+    ):
+        raise CacheError("campaign Day music source lifecycle changed")
+    expected_paths = {
+        "audio/SOUND.DAT", "audio/MUSIC.DAT", "audio/descriptor.json",
+        *[row.get("asset_path") for row in sound_records],
+        music_records[0].get("asset_path") if music_records else None,
+    }
+    if None in expected_paths or paths != expected_paths:
+        raise CacheError("campaign Day audio record output set changed")
+    output_by_path = {row["path"]: row for row in outputs}
+    for record in [*sound_records, music_records[0]]:
+        if output_by_path.get(record.get("asset_path"), {}).get("sha256") != record.get("asset_sha256"):
+            raise CacheError("campaign Day audio record asset binding mismatch")
+    actual_tree = {path.relative_to(cache_dir).as_posix() for path in cache_dir.rglob("*") if path.is_file()}
+    if any(path.is_symlink() for path in cache_dir.rglob("*")) or actual_tree != {"manifest.json", *paths}:
+        raise CacheError("campaign Day audio cache tree has missing, extra, or symlinked files")
     return manifest
 
 
@@ -7016,8 +7195,9 @@ def _campaign_day_aggregate_output_rows(
     schemas = {
         "material": DAY_MATERIAL_SCHEMA,
         "gameplay": CAMPAIGN_DAY_GAMEPLAY_SCHEMA,
+        "audio": CAMPAIGN_DAY_AUDIO_SCHEMA,
     }
-    for name in ("material", "gameplay"):
+    for name in ("material", "gameplay", "audio"):
         root = stage / "components" / name
         manifest_path = root / "manifest.json"
         child = child_manifests[name]
@@ -7076,7 +7256,7 @@ def build_campaign_day_aggregate_cache(
     catalog_path: Path,
     output: Path,
 ) -> dict[str, Any]:
-    """Compose the campaign-bound Day material and gameplay/HUD cache."""
+    """Compose the sealed campaign-bound Day presentation cache."""
     output = validate_output_path(output)
     profile, _campaign, _closure, _catalog_rows, _owner_export = (
         _campaign_day_material_profile(
@@ -7107,6 +7287,14 @@ def build_campaign_day_aggregate_cache(
                 catalog_path,
                 component_root / "gameplay",
             ),
+            "audio": build_campaign_day_audio_cache(
+                owner_root,
+                owner_export_dir,
+                campaign_package_dir,
+                closure_path,
+                catalog_path,
+                component_root / "audio",
+            ),
         }
         outputs, components = _campaign_day_aggregate_output_rows(stage, children)
         manifest: dict[str, Any] = {
@@ -7117,7 +7305,7 @@ def build_campaign_day_aggregate_cache(
             "presentation_scope": {
                 "material": "materialized",
                 "gameplay_entities_hud_spells_minimap_effects": "materialized_from_closure",
-                "audio": "not_materialized_requires_level_specific_occurrence_census",
+                "audio": "materialized_from_source_qualified_level3_occurrences",
             },
             "components": components,
             "outputs": outputs,
@@ -7175,11 +7363,11 @@ def validate_campaign_day_aggregate_cache(
     if manifest.get("presentation_scope") != {
         "material": "materialized",
         "gameplay_entities_hud_spells_minimap_effects": "materialized_from_closure",
-        "audio": "not_materialized_requires_level_specific_occurrence_census",
+        "audio": "materialized_from_source_qualified_level3_occurrences",
     }:
         raise CacheError("campaign Day aggregate presentation scope changed")
     components = manifest.get("components")
-    if not isinstance(components, dict) or set(components) != {"material", "gameplay"}:
+    if not isinstance(components, dict) or set(components) != {"material", "gameplay", "audio"}:
         raise CacheError("campaign Day aggregate component set changed")
     outputs = manifest.get("outputs")
     paths = [row.get("path") for row in outputs] if isinstance(outputs, list) else []
@@ -7218,19 +7406,29 @@ def validate_campaign_day_aggregate_cache(
             closure_path=closure_path,
             catalog_path=catalog_path,
         ),
+        "audio": lambda root: validate_campaign_day_audio_cache(
+            root,
+            owner_export_dir=owner_export_dir,
+            campaign_package_dir=campaign_package_dir,
+            closure_path=closure_path,
+            catalog_path=catalog_path,
+        ),
     }
     scene, dynamic = _level2_closure_asset_rows(closure, catalog_rows)
     allowed_source_ids = {row["asset_id"] for row in [*scene, *dynamic]}
     allowed_source_ids.update(
         f"owner_data:{relative}"
-        for relative in (*LEVEL2_DAY_SOURCE_PATHS, *LEVEL2_GAMEPLAY_SOURCE_PATHS)
+        for relative in (*LEVEL2_DAY_SOURCE_PATHS, *LEVEL2_GAMEPLAY_SOURCE_PATHS, *LEVEL2_AUDIO_SOURCE_PATHS)
     )
     expected_paths: set[str] = set()
     output_by_path = {row["path"]: row for row in outputs}
-    for name in ("material", "gameplay"):
+    for name in ("material", "gameplay", "audio"):
         root = cache_dir / "components" / name
         child = validators[name](root)
         metadata = components[name]
+        expected_child_bindings = dict(manifest["bindings"])
+        if name == "audio":
+            expected_child_bindings["audio_denominator_sha256"] = sha256_file(CAMPAIGN_DAY_AUDIO_DENOMINATOR)
         manifest_relative = f"components/{name}/manifest.json"
         child_manifest_path = root / "manifest.json"
         if (
@@ -7239,7 +7437,7 @@ def validate_campaign_day_aggregate_cache(
             or metadata.get("cache_content_sha256") != child.get("cache_content_sha256")
             or metadata.get("output_count") != len(child.get("outputs", []))
             or child.get("profile") != profile
-            or child.get("bindings") != manifest.get("bindings")
+            or child.get("bindings") != expected_child_bindings
         ):
             raise CacheError(f"campaign Day aggregate {name} identity changed")
         manifest_row = output_by_path.get(manifest_relative)
