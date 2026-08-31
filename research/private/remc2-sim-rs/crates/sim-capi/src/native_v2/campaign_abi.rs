@@ -11,6 +11,36 @@ pub(super) struct Registry {
     pub(super) sessions: BTreeMap<u64, RegistryEntry>,
 }
 
+#[derive(Clone, Copy)]
+enum HandleNamespace {
+    SharedSession,
+    RetainedCampaign,
+}
+
+impl HandleNamespace {
+    fn next(self, previous: u64) -> u64 {
+        match self {
+            // All handles owned by the shared legacy/neutral/runtime registry
+            // are odd. Preserve 1 as the first handle and cycle only through
+            // the odd half of the nonzero u64 space.
+            Self::SharedSession => {
+                if previous == 0 || previous == u64::MAX {
+                    1
+                } else {
+                    (previous | 1).wrapping_add(2)
+                }
+            }
+            // Retained campaign handles are even. This makes the two live
+            // registries globally disjoint without changing the public u64
+            // ABI or coupling their independent lifecycle locks.
+            Self::RetainedCampaign => {
+                let next = (previous & !1).wrapping_add(2);
+                if next == 0 { 2 } else { next }
+            }
+        }
+    }
+}
+
 #[derive(Clone)]
 pub(super) enum RegistryEntry {
     Legacy(Arc<Mutex<SessionRecord>>),
@@ -27,7 +57,7 @@ impl Registry {
 
     pub(super) fn reserve_handle(&mut self) -> AbiResult<u64> {
         for _ in 0..u16::MAX {
-            self.next_handle = next_nonzero(self.next_handle);
+            self.next_handle = HandleNamespace::SharedSession.next(self.next_handle);
             if !self.sessions.contains_key(&self.next_handle) {
                 return Ok(self.next_handle);
             }
@@ -43,10 +73,10 @@ impl Registry {
         handle: u64,
         session: super::game_session_abi::NeutralSession,
     ) -> AbiResult<()> {
-        if handle == 0 || self.sessions.contains_key(&handle) {
+        if handle == 0 || handle & 1 == 0 || self.sessions.contains_key(&handle) {
             return Err(AbiError::new(
                 MC_STATUS_LOCK_FAILED,
-                format!("neutral session handle collision {handle}"),
+                format!("invalid or colliding neutral session handle {handle}"),
             ));
         }
         self.sessions.insert(
@@ -433,7 +463,7 @@ pub(super) struct CampaignRegistry {
 impl CampaignRegistry {
     pub(super) fn insert(&mut self, session: CampaignSessionRecord) -> AbiResult<u64> {
         for _ in 0..u16::MAX {
-            self.next_handle = next_nonzero(self.next_handle);
+            self.next_handle = HandleNamespace::RetainedCampaign.next(self.next_handle);
             if !self.sessions.contains_key(&self.next_handle) {
                 let handle = self.next_handle;
                 self.sessions.insert(handle, Arc::new(Mutex::new(session)));
