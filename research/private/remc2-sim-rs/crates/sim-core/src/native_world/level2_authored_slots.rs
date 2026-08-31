@@ -2,6 +2,25 @@
 // This child module preserves native_world's prior effective visibility boundary.
 use super::*;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum AuthoredBeeSound {
+    Action17Acquire(u16),
+    Action18Contact(u16),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct AuthoredBeeStepOutcome {
+    pub(super) live: bool,
+    pub(super) sound: Option<AuthoredBeeSound>,
+}
+
+impl AuthoredBeeStepOutcome {
+    const INACTIVE: Self = Self {
+        live: false,
+        sound: None,
+    };
+}
+
 impl Level2EconomyState {
     #[cfg(test)]
     pub(super) fn from_parts(
@@ -2577,6 +2596,7 @@ impl Level2EconomyState {
             target_position.map(|position| (position, 0, true)),
             terrain,
         )
+        .live
     }
 
     pub(super) fn step_authored_bee_slot_with_target(
@@ -2584,7 +2604,7 @@ impl Level2EconomyState {
         source_slot: u16,
         target: Option<(Position, i16, bool)>,
         terrain: &SessionTerrain,
-    ) -> bool {
+    ) -> AuthoredBeeStepOutcome {
         self.step_authored_bee_slot_with_target_and_peers(source_slot, target, &[], &[], terrain)
     }
 
@@ -2595,15 +2615,16 @@ impl Level2EconomyState {
         peers: &[(u16, Position)],
         class3_candidates: &[(u16, Position, u32)],
         terrain: &SessionTerrain,
-    ) -> bool {
+    ) -> AuthoredBeeStepOutcome {
         let Some(source_index) = self
             .bee_creatures
             .iter()
             .position(|source| source.active && source.source_entity_index == source_slot)
         else {
-            return false;
+            return AuthoredBeeStepOutcome::INACTIVE;
         };
         let mut source = self.bee_creatures[source_index];
+        let mut sound = None;
         // `sub_1F660` consumes the action-17 mailbox before dispatching the
         // ordinary callback body.  A consumed mailbox selects action 18 or
         // action 20 directly, so the target scan and its RNG tail must not
@@ -2616,7 +2637,7 @@ impl Level2EconomyState {
             source.phase = source.phase.wrapping_add(1);
             self.source_rng.insert(source_slot, source.entity_rng);
             self.bee_creatures[source_index] = source;
-            return self
+            let live = self
                 .map_chains
                 .sync_entity(RenderableMapSeed {
                     entity_index: source_slot,
@@ -2625,6 +2646,7 @@ impl Level2EconomyState {
                     y: source.position.y,
                 })
                 .is_ok();
+            return AuthoredBeeStepOutcome { live, sound };
         }
         match source.action {
             16 => {
@@ -2648,6 +2670,7 @@ impl Level2EconomyState {
                     source.action = 18;
                     source.entity_rng = level2_next_rng16(source.entity_rng);
                     source.last_sound_id = (source.entity_rng & 1) + 12;
+                    sound = Some(AuthoredBeeSound::Action17Acquire(source.last_sound_id));
                     source.dword_0x10 = 1;
                 }
             }
@@ -2707,6 +2730,7 @@ impl Level2EconomyState {
                         {
                             source.entity_rng = level2_next_rng16(source.entity_rng);
                             source.last_sound_id = (source.entity_rng & 1) + 12;
+                            sound = Some(AuthoredBeeSound::Action18Contact(source.last_sound_id));
                             source.actual_speed = -source.maximum_speed;
                             source.dword_0x10 = i32::from(3 * source.action_window);
                         }
@@ -2876,14 +2900,16 @@ impl Level2EconomyState {
         source.phase = source.phase.wrapping_add(1);
         self.source_rng.insert(source_slot, source.entity_rng);
         self.bee_creatures[source_index] = source;
-        self.map_chains
+        let live = self
+            .map_chains
             .sync_entity(RenderableMapSeed {
                 entity_index: source_slot,
                 active: source.active,
                 x: source.position.x,
                 y: source.position.y,
             })
-            .is_ok()
+            .is_ok();
+        AuthoredBeeStepOutcome { live, sound }
     }
 
     /// Allocate the authored class-10/model-13 emitter initialized by the

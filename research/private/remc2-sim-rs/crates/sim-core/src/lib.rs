@@ -683,6 +683,7 @@ pub enum MissionAudioSite {
     ObjectiveAnnouncement,
     BuilderBuild,
     FireflyCharge,
+    BeeAttack,
     DragonFireball,
     MultipartAttack,
     ArcherArrow,
@@ -699,7 +700,8 @@ pub enum MissionAudioSite {
 }
 
 /// One-to-one identity for each reachable pinned remc2
-/// `PrepareEventSound_6E450` occurrence in the canonical Level 1 profile.
+/// `PrepareEventSound_6E450` occurrence in the qualified owner campaign
+/// profiles.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 #[repr(u8)]
 pub enum SourceAudioCallTag {
@@ -737,7 +739,11 @@ pub enum SourceAudioCallTag {
     PossessionLaunchBasic,
     InitialCastleLaunch,
     SpeedSpellActivation,
-    MorphSpellActivation,
+    MorphSpellStart,
+    MorphSpellExpiry,
+    BeeAction17Acquire,
+    BeeAction18Contact,
+    DragonAction02Fireball,
     ArcherArrowLaunch,
     SurfaceWaterLoop,
     SurfaceLandLoop,
@@ -756,7 +762,7 @@ pub enum SourceAudioCallTag {
 
 /// Compiler-checked binding from every reachable source occurrence identity
 /// to the production tag used at its Rust call path.
-pub const SOURCE_AUDIO_CALL_BINDINGS: [(SourceAudioCallTag, &str); 49] = [
+pub const SOURCE_AUDIO_CALL_BINDINGS: [(SourceAudioCallTag, &str); 53] = [
     (
         SourceAudioCallTag::VolumePreviewAdjustVolume,
         "286982557778df1130f462a82b40225bf7e9cff0ef1a128b9d00f0a7a0d6ea2a",
@@ -894,11 +900,28 @@ pub const SOURCE_AUDIO_CALL_BINDINGS: [(SourceAudioCallTag, &str); 49] = [
         "c6b694c0a1b64535d469458085a0e119bcaf323fb9e160a7987b0d985cee2e0d",
     ),
     // GOLDEN-CHANGE: Level 3's package-present family-4/action-12 route makes
-    // the previously Level-1-excluded first sub_6A030 sound reachable. The
-    // occurrence hash is the frozen owner ledger value for pinned line 56382.
+    // the previously Level-1-excluded sub_6A030 start and expiry sounds
+    // reachable. Each occurrence retains its distinct frozen owner-ledger
+    // identity rather than sharing the presentation-level Morph site.
     (
-        SourceAudioCallTag::MorphSpellActivation,
+        SourceAudioCallTag::MorphSpellStart,
         "51d9ecbc8c8301f053d666cd4dd85e983569ca314534fa5e57d0a2d5014eaeaf",
+    ),
+    (
+        SourceAudioCallTag::MorphSpellExpiry,
+        "687653fd4ce5b3a30b90f6928339af0e948c20a8ad7f048e005ca8885c7887c6",
+    ),
+    (
+        SourceAudioCallTag::BeeAction17Acquire,
+        "2200cca745cfe455d9fbd0dc0624b00c43948b2f8e7ee9236b34fc4a0a86f4f4",
+    ),
+    (
+        SourceAudioCallTag::BeeAction18Contact,
+        "61ff6913f34e4284a2b98125cb5ea0915db5e5530e9ab5c567cb216e87cec4d6",
+    ),
+    (
+        SourceAudioCallTag::DragonAction02Fireball,
+        "328391c4a0c9cdb021d471d00d68353a68074f1301c07fe1aa3bd6c47991aa8d",
     ),
     (
         SourceAudioCallTag::ArcherArrowLaunch,
@@ -963,7 +986,7 @@ pub fn mark_source_audio_call(_tag: SourceAudioCallTag) {}
 
 #[cfg(test)]
 impl SourceAudioCallTag {
-    pub const ALL: [Self; 49] = [
+    pub const ALL: [Self; 53] = [
         Self::VolumePreviewAdjustVolume,
         Self::GoatAction08Bleat,
         Self::GoatAction09Bleat,
@@ -998,7 +1021,11 @@ impl SourceAudioCallTag {
         Self::PossessionLaunchBasic,
         Self::InitialCastleLaunch,
         Self::SpeedSpellActivation,
-        Self::MorphSpellActivation,
+        Self::MorphSpellStart,
+        Self::MorphSpellExpiry,
+        Self::BeeAction17Acquire,
+        Self::BeeAction18Contact,
+        Self::DragonAction02Fireball,
         Self::ArcherArrowLaunch,
         Self::SurfaceWaterLoop,
         Self::SurfaceLandLoop,
@@ -1063,6 +1090,7 @@ impl MissionAudioSite {
         Self::ObjectiveAnnouncement,
         Self::BuilderBuild,
         Self::FireflyCharge,
+        Self::BeeAttack,
         Self::DragonFireball,
         Self::MultipartAttack,
         Self::ArcherArrow,
@@ -1334,6 +1362,14 @@ impl MissionAudioSite {
                 "3",
                 "next global RNG %30 -15",
                 "EventsFunctions.cpp:16505-16513; Sound.cpp:6334-6339",
+                true,
+            ),
+            Self::BeeAttack => (
+                "12/13",
+                "Bee entity",
+                "3",
+                "fixed 0",
+                "EventsFunctions.cpp:11484-11524",
                 true,
             ),
             Self::DragonFireball => (

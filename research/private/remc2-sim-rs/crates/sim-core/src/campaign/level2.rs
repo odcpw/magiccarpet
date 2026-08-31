@@ -12988,6 +12988,7 @@ impl Level2ResetSession {
                                     &mut source_arena.entities,
                                     launch.target_entity_index,
                                 );
+                                mark_source_audio_call(SourceAudioCallTag::DragonAction02Fireball);
                                 self.push_flight_effect(FlightEvent::PrepareSound {
                                     #[cfg(test)]
                                     audio_site: crate::MissionAudioSite::DragonFireball,
@@ -15081,7 +15082,7 @@ impl Level2ResetSession {
             }
             let control_flags = parent.as_ref().map_or(0, |parent| parent.control_flags) | 0x21;
             self.commit_morph_parent_control(parent_entity_index, control_flags);
-            mark_source_audio_call(SourceAudioCallTag::MorphSpellActivation);
+            mark_source_audio_call(SourceAudioCallTag::MorphSpellStart);
             self.session
                 .state
                 .live
@@ -15129,7 +15130,7 @@ impl Level2ResetSession {
             }
             let control_flags = parent.as_ref().map_or(0, |parent| parent.control_flags) & !0x20;
             self.commit_morph_parent_control(parent_entity_index, control_flags);
-            mark_source_audio_call(SourceAudioCallTag::MorphSpellActivation);
+            mark_source_audio_call(SourceAudioCallTag::MorphSpellExpiry);
             self.session
                 .state
                 .live
@@ -17382,7 +17383,7 @@ impl Level2ResetSession {
                             == 0;
                     let peers = self.level2_bee_peer_rows(source_before.model);
                     let terrain = &self.session.state.live.terrain;
-                    let live = self
+                    let outcome = self
                         .session
                         .state
                         .live
@@ -17394,6 +17395,24 @@ impl Level2ResetSession {
                             &class3_candidates,
                             terrain,
                         );
+                    if let Some(sound) = outcome.sound {
+                        let (source_call, sound_id) = match sound {
+                            level2_authored_slots::AuthoredBeeSound::Action17Acquire(sound_id) => {
+                                (SourceAudioCallTag::BeeAction17Acquire, sound_id)
+                            }
+                            level2_authored_slots::AuthoredBeeSound::Action18Contact(sound_id) => {
+                                (SourceAudioCallTag::BeeAction18Contact, sound_id)
+                            }
+                        };
+                        mark_source_audio_call(source_call);
+                        self.push_flight_effect(FlightEvent::PrepareSound {
+                            #[cfg(test)]
+                            audio_site: crate::MissionAudioSite::BeeAttack,
+                            entity_index: source_slot,
+                            player_index: -1,
+                            sound_id,
+                        });
+                    }
                     if let Some(killer_entity_index) = pre_kill_credit {
                         // `PreKillEntity_1C890` credits only a live, drawn
                         // class-3/model-0 owner distinct from the killed root.
@@ -17454,7 +17473,7 @@ impl Level2ResetSession {
                             }
                         }
                     }
-                    live
+                    outcome.live
                 }
             }
             Level2DynamicArenaKind::Model13SpawnedChild => {
@@ -22544,6 +22563,13 @@ mod tests {
             })
             .count();
         assert_eq!(launch_sounds, 1);
+        assert_eq!(
+            crate::SOURCE_AUDIO_CALL_BINDINGS
+                .iter()
+                .find(|(tag, _)| *tag == SourceAudioCallTag::DragonAction02Fireball)
+                .map(|(_, hash)| *hash),
+            Some("328391c4a0c9cdb021d471d00d68353a68074f1301c07fe1aa3bd6c47991aa8d")
+        );
 
         // The preceding route proves the complete death and source-boundary
         // reclaim of one real Dragon. Stage only that already-proven terminal
@@ -23003,6 +23029,219 @@ mod tests {
                 .authored_dragon_parts()
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn cf14_level3_bee_source_audio_preserves_callback_rng_and_cadence() {
+        const BEE_ROW: u16 = 149;
+
+        let package = level_three_descriptor_fixture_path();
+        let mut campaign = CampaignSession::open(&package, CampaignSelection::LEVEL3)
+            .expect("qualified Level 3 descriptor opens");
+        let player_entity_index = campaign
+            .level2_compatibility()
+            .session
+            .state
+            .live
+            .core
+            .state
+            .entity_index;
+        let feature = campaign
+            .level2_compatibility()
+            .session
+            .state
+            .live
+            .mission
+            .authored_features()
+            .iter()
+            .find(|feature| feature.index == BEE_ROW)
+            .copied()
+            .expect("Level 3 package contains Bee row 149");
+        let initial = campaign
+            .level2_compatibility_mut()
+            .allocate_level2_authored_bee_feature(feature)
+            .expect("package-present Bee allocates through its ordinary constructor");
+        let source_slot = initial.source_entity_index;
+
+        let mut target_after_move = initial.position;
+        crate::move_entity(&mut target_after_move, initial.yaw, 0, initial.actual_speed);
+        campaign
+            .level2_compatibility_mut()
+            .set_level2_entity_position(player_entity_index, target_after_move)
+            .expect("place the real player on the Bee's post-move awareness point");
+        let mut action17 = initial;
+        action17.action = 17;
+        action17.source_byte_3e = 0;
+        action17.source_byte_39 = 1;
+        action17.target_entity_index = Some(player_entity_index);
+        assert!(
+            campaign
+                .level2_compatibility_mut()
+                .session
+                .state
+                .live
+                .economy
+                .economy
+                .replace_authored_bee_for_test(action17)
+        );
+
+        let action17_cursor = campaign
+            .level2_compatibility()
+            .effect_journal()
+            .records()
+            .len();
+        let _ = campaign.step(PlayerCommand::default(), 0);
+        let first = level2_next_rng16(initial.entity_rng);
+        let second = level2_next_rng16(first);
+        let third = level2_next_rng16(second);
+        let acquired = campaign
+            .level2_compatibility()
+            .session
+            .state
+            .live
+            .economy
+            .economy
+            .bee_creatures()
+            .iter()
+            .find(|source| source.source_entity_index == source_slot)
+            .copied()
+            .expect("action-17 Bee remains live");
+        assert_eq!((acquired.action, acquired.entity_rng), (18, third));
+        let action17_sounds = campaign.level2_compatibility().effect_journal().records()
+            [action17_cursor..]
+            .iter()
+            .filter_map(|record| match record.effect {
+                crate::campaign::journal::CampaignEffect::Flight(FlightEvent::PrepareSound {
+                    audio_site: crate::MissionAudioSite::BeeAttack,
+                    entity_index,
+                    player_index: -1,
+                    sound_id,
+                }) if entity_index == source_slot => Some((record.sequence, sound_id)),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(action17_sounds.len(), 1);
+        assert_eq!(action17_sounds[0].1, (third & 1) + 12);
+
+        let off_cadence_rng = acquired.entity_rng;
+        let off_cadence_cursor = campaign
+            .level2_compatibility()
+            .effect_journal()
+            .records()
+            .len();
+        let _ = campaign.step(PlayerCommand::default(), 0);
+        let off_cadence = campaign
+            .level2_compatibility()
+            .session
+            .state
+            .live
+            .economy
+            .economy
+            .bee_creatures()
+            .iter()
+            .find(|source| source.source_entity_index == source_slot)
+            .copied()
+            .expect("off-cadence Bee remains live");
+        assert_eq!(off_cadence.entity_rng, off_cadence_rng);
+        assert!(
+            campaign.level2_compatibility().effect_journal().records()[off_cadence_cursor..]
+                .iter()
+                .all(|record| !matches!(
+                    record.effect,
+                    crate::campaign::journal::CampaignEffect::Flight(
+                        FlightEvent::PrepareSound {
+                            audio_site: crate::MissionAudioSite::BeeAttack,
+                            entity_index,
+                            ..
+                        }
+                    ) if entity_index == source_slot
+                ))
+        );
+
+        let mut contact = off_cadence;
+        contact.source_byte_3e = 0;
+        contact.control_flags |= LEVEL2_BEE_MOVEMENT_SKIP_BIT;
+        contact.target_entity_index = Some(player_entity_index);
+        let live_player_position = campaign
+            .level2_compatibility()
+            .session
+            .state
+            .live
+            .core
+            .state
+            .position;
+        contact.position = Position {
+            x: live_player_position.x.wrapping_add(
+                u16::try_from(LEVEL2_BEE_CONTACT_RADIUS - 1).expect("Bee contact radius fits u16"),
+            ),
+            y: live_player_position.y,
+            z: live_player_position.z,
+        };
+        assert!(
+            campaign
+                .level2_compatibility_mut()
+                .session
+                .state
+                .live
+                .economy
+                .economy
+                .replace_authored_bee_for_test(contact)
+        );
+        let contact_cursor = campaign
+            .level2_compatibility()
+            .effect_journal()
+            .records()
+            .len();
+        let _ = campaign.step(PlayerCommand::default(), 0);
+        let contact_rng = level2_next_rng16(off_cadence_rng);
+        let contacted = campaign
+            .level2_compatibility()
+            .session
+            .state
+            .live
+            .economy
+            .economy
+            .bee_creatures()
+            .iter()
+            .find(|source| source.source_entity_index == source_slot)
+            .copied()
+            .expect("contacting Bee remains live");
+        assert_eq!(contacted.entity_rng, contact_rng);
+        let contact_sounds = campaign.level2_compatibility().effect_journal().records()
+            [contact_cursor..]
+            .iter()
+            .filter_map(|record| match record.effect {
+                crate::campaign::journal::CampaignEffect::Flight(FlightEvent::PrepareSound {
+                    audio_site: crate::MissionAudioSite::BeeAttack,
+                    entity_index,
+                    player_index: -1,
+                    sound_id,
+                }) if entity_index == source_slot => Some((record.sequence, sound_id)),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(contact_sounds.len(), 1);
+        assert_eq!(contact_sounds[0].1, (contact_rng & 1) + 12);
+        assert!(action17_sounds[0].0 < contact_sounds[0].0);
+
+        for (tag, expected_hash) in [
+            (
+                SourceAudioCallTag::BeeAction17Acquire,
+                "2200cca745cfe455d9fbd0dc0624b00c43948b2f8e7ee9236b34fc4a0a86f4f4",
+            ),
+            (
+                SourceAudioCallTag::BeeAction18Contact,
+                "61ff6913f34e4284a2b98125cb5ea0915db5e5530e9ab5c567cb216e87cec4d6",
+            ),
+        ] {
+            assert_eq!(
+                crate::SOURCE_AUDIO_CALL_BINDINGS
+                    .iter()
+                    .find(|(candidate, _)| *candidate == tag)
+                    .map(|(_, hash)| *hash),
+                Some(expected_hash)
+            );
+        }
     }
 
     #[test]
@@ -23752,6 +23991,13 @@ mod tests {
                 .count(),
             1
         );
+        assert_eq!(
+            crate::SOURCE_AUDIO_CALL_BINDINGS
+                .iter()
+                .find(|(tag, _)| *tag == SourceAudioCallTag::MorphSpellStart)
+                .map(|(_, hash)| *hash),
+            Some("51d9ecbc8c8301f053d666cd4dd85e983569ca314534fa5e57d0a2d5014eaeaf")
+        );
         let receipts = campaign
             .level2_compatibility()
             .cf10_production_schedule_receipts();
@@ -23775,6 +24021,30 @@ mod tests {
         if let Some(bee_callback) = bee_callback {
             assert!(holder_callback < bee_callback);
         }
+
+        let mut non_expiry = campaign.clone();
+        let non_expiry_effect_cursor = non_expiry
+            .level2_compatibility()
+            .effect_journal()
+            .records()
+            .len();
+        step(&mut non_expiry);
+        assert!(
+            non_expiry.level2_compatibility().effect_journal().records()
+                [non_expiry_effect_cursor..]
+                .iter()
+                .all(|record| !matches!(
+                    record.effect,
+                    crate::campaign::journal::CampaignEffect::Flight(
+                        FlightEvent::PrepareSound {
+                            entity_index,
+                            sound_id: 60,
+                            ..
+                        }
+                    ) if entity_index == player_entity_index
+                )),
+            "an ordinary non-expiry Morph pulse must not emit either terminal sound"
+        );
 
         let mut morph_hash_negative = campaign.clone();
         let morph_hash = campaign.state_hash();
@@ -23882,6 +24152,13 @@ mod tests {
                 ))
                 .count(),
             1
+        );
+        assert_eq!(
+            crate::SOURCE_AUDIO_CALL_BINDINGS
+                .iter()
+                .find(|(tag, _)| *tag == SourceAudioCallTag::MorphSpellExpiry)
+                .map(|(_, hash)| *hash),
+            Some("687653fd4ce5b3a30b90f6928339af0e948c20a8ad7f048e005ca8885c7887c6")
         );
         assert!(
             queued_expiry

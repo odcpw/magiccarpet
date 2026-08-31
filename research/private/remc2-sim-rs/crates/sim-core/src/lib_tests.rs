@@ -132,6 +132,37 @@ fn mission_audio_census_is_unique_complete_and_compiler_bound() {
     );
 }
 
+#[test]
+fn source_audio_occurrence_bindings_are_unique_and_exhaustive() {
+    use std::collections::BTreeSet;
+
+    let all_tags = SourceAudioCallTag::ALL.into_iter().collect::<BTreeSet<_>>();
+    let bound_tags = SOURCE_AUDIO_CALL_BINDINGS
+        .iter()
+        .map(|(tag, _)| *tag)
+        .collect::<BTreeSet<_>>();
+    let bound_hashes = SOURCE_AUDIO_CALL_BINDINGS
+        .iter()
+        .map(|(_, hash)| *hash)
+        .collect::<BTreeSet<_>>();
+
+    assert_eq!(SourceAudioCallTag::ALL.len(), 53);
+    assert_eq!(SOURCE_AUDIO_CALL_BINDINGS.len(), 53);
+    assert_eq!(all_tags.len(), 53, "every source tag must be distinct");
+    assert_eq!(
+        bound_tags, all_tags,
+        "every source tag must bind exactly once"
+    );
+    assert_eq!(
+        bound_hashes.len(),
+        53,
+        "each reachable source occurrence must retain a distinct pinned hash"
+    );
+    assert!(SOURCE_AUDIO_CALL_BINDINGS.iter().all(|(_, hash)| {
+        hash.len() == 64 && hash.bytes().all(|byte| byte.is_ascii_hexdigit())
+    }));
+}
+
 #[derive(Clone, Copy)]
 struct FlatWorld {
     ground: i16,
