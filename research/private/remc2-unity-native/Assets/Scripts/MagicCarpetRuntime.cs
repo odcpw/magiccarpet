@@ -635,6 +635,8 @@ namespace MagicCarpet.Native
         private const string GameRuntimeFireballKind = "spell.fireball.projectile";
         private const string GameRuntimeLevelTwoId =
             "level.magic_carpet_2.payahandra_ruins";
+        private const string GameRuntimeLevelThreeId =
+            "level.magic_carpet_2.revealed_way";
         private bool gameRuntimeMode;
         private bool gameRuntimeStartupReady;
         private readonly GameRuntimeLoadingPresentationGate
@@ -696,6 +698,9 @@ namespace MagicCarpet.Native
         private short level2LastStepInputZ;
         private bool level2Mode;
         private bool level2StartupReady;
+        private bool level3Mode;
+        private bool level3StartupReady;
+        private Level3PresentationSurface level3PresentationSurface;
         private GameObject level2IndexedFrameObject;
         private Camera level2IndexedFrameCamera;
         private Mesh level2IndexedFrameMesh;
@@ -1112,9 +1117,12 @@ namespace MagicCarpet.Native
             (session.GameRuntimeIdentity().mode == GameRuntimeTransport.LoadingMode &&
              gameRuntimeTransitionPresenter?.IsVisible == true ||
              level2Mode && level2StartupReady ||
+             level3Mode && level3StartupReady ||
              gameRuntimePresentationAssetCache != null &&
              gameRuntimeFireballAsset?.value != null) &&
-            (campaignSession == null || level2Mode && level2StartupReady);
+            (campaignSession == null ||
+             level2Mode && level2StartupReady ||
+             level3Mode && level3StartupReady);
 
         internal bool GameRuntimeLoadingPresentationVisible =>
             gameRuntimeTransitionPresenter?.IsVisible == true;
@@ -1137,6 +1145,31 @@ namespace MagicCarpet.Native
             level2MinimapProjectionReady &&
             level2ProductionEntityPresenter != null &&
             level2ProductionEntityPresenter.LastPresentSucceeded;
+
+        internal bool GameRuntimeLevel3PresentationReady =>
+            GameRuntimeProductionStartupReady &&
+            level3Mode &&
+            level3StartupReady &&
+            campaignSession != null &&
+            level3PresentationSurface?.WorldReady == true &&
+            level3PresentationSurface.HudReady &&
+            level3PresentationSurface.LiveMinimapReady &&
+            level3PresentationSurface.RenderedEntitySurfaceCount > 0;
+
+        internal ulong GameRuntimeLevel3PresentationGeneration =>
+            level3PresentationSurface?.Generation ?? 0;
+
+        internal ulong GameRuntimeLevel3PresentationTick =>
+            level3PresentationSurface?.Tick ?? 0;
+
+        internal int GameRuntimeLevel3EntitySurfaceCount =>
+            level3PresentationSurface?.EntitySurfaceCount ?? 0;
+
+        internal int GameRuntimeLevel3RenderedEntitySurfaceCount =>
+            level3PresentationSurface?.RenderedEntitySurfaceCount ?? 0;
+
+        internal int GameRuntimeLevel3PresentationInstanceId =>
+            level3PresentationSurface?.Root?.gameObject.GetInstanceID() ?? 0;
 
         internal GameRuntimeTransport.Identity GameRuntimeProductionIdentity =>
             session?.GameRuntimeIdentity() ?? throw new InvalidOperationException(
@@ -2741,10 +2774,10 @@ namespace MagicCarpet.Native
             {
                 gameRuntimeCampaignSnapshot = session.GameRuntimeCampaignPausedFrame();
                 DrainGameRuntimeSemanticEvents();
-                if (level2Mode)
+                if (level2Mode || level3Mode)
                 {
                     // Paused frames are observational; the last composed
-                    // Level 2 world/HUD remains live without a presentation
+                    // campaign world/HUD remains live without a presentation
                     // projection that mutates gameplay state.
                     campaignSession.SynchronizeGameRuntimeIdentity(
                         session.GameRuntimeIdentity());
@@ -2794,6 +2827,12 @@ namespace MagicCarpet.Native
             if (level2Mode)
             {
                 UpdateGameRuntimeLevel2Presentation(
+                    afterStepIdentity,
+                    gameRuntimeCampaignSnapshot);
+            }
+            else if (level3Mode)
+            {
+                UpdateGameRuntimeLevel3Presentation(
                     afterStepIdentity,
                     gameRuntimeCampaignSnapshot);
             }
@@ -8867,6 +8906,14 @@ namespace MagicCarpet.Native
             }
         }
 
+        internal void QualificationDisposeGameRuntimeProduction()
+        {
+            Require(
+                !gameObject.activeInHierarchy,
+                "EditMode game-runtime disposal requires an inactive object");
+            DisposeSession();
+        }
+
         internal void QualificationDriveGameRuntimeFrames(int frameCount)
         {
             Require(
@@ -9095,13 +9142,18 @@ namespace MagicCarpet.Native
             Require(
                 receipt.after.mode == GameRuntimeTransport.LoadingMode &&
                 receipt.completion_destination.kind == "level" &&
-                receipt.completion_destination.level_id == GameRuntimeLevelTwoId,
+                (receipt.completion_destination.level_id == GameRuntimeLevelTwoId ||
+                 receipt.completion_destination.level_id == GameRuntimeLevelThreeId),
                 "accepted nonterminal completion entered resolver-owned Loading");
             EnsureGameRuntimeTransitionPresentation();
             PresentGameRuntimeTransition(receipt);
             gameRuntimeLoadingPresentationGate.Begin(
                 receipt.after,
                 receipt.completion_destination.level_id);
+            if (level2Mode)
+            {
+                DisposeGameRuntimeLevel2Presentation();
+            }
             return receipt;
         }
 
@@ -9139,7 +9191,19 @@ namespace MagicCarpet.Native
             gameRuntimeLoadingPresentationGate.Complete(identity);
             gameRuntimeCampaignSnapshot = observation;
             gameRuntimeSemanticEventCursor = observation.value.effect_head;
-            ComposeGameRuntimeLevel2Presentation(identity, observation);
+            if (identity.active_runtime_flow.bound_level_id == GameRuntimeLevelTwoId)
+            {
+                ComposeGameRuntimeLevel2Presentation(identity, observation);
+            }
+            else if (identity.active_runtime_flow.bound_level_id == GameRuntimeLevelThreeId)
+            {
+                ComposeGameRuntimeLevel3Presentation(identity, observation);
+            }
+            else
+            {
+                throw new InvalidOperationException(
+                    "resolver opened an unsupported campaign presentation level");
+            }
         }
 
         private void ObserveGameRuntimeLoadingPresentationFrame()
@@ -9226,12 +9290,8 @@ namespace MagicCarpet.Native
             GameRuntimeTransport.Identity identity,
             EngineSessionTransport.CampaignSnapshotObservation observation)
         {
-            var resource = gameRuntimePackages.SingleOrDefault(candidate =>
-                !string.IsNullOrWhiteSpace(candidate.presentation_cache_path));
-            Require(
-                resource != null &&
-                !string.IsNullOrWhiteSpace(resource.presentation_cache_path),
-                "resolver-selected Level 2 has an explicit owner presentation cache");
+            var selection = NativeSim.CampaignSelection.Level2Day();
+            var resource = ResolveGameRuntimePresentationResource(selection);
 
             level2Mode = true;
             level2StartupReady = false;
@@ -9242,7 +9302,8 @@ namespace MagicCarpet.Native
             campaignSession = NativeCampaignSession.BorrowGameRuntime(
                 session.Handle,
                 identity,
-                resource.package_dir);
+                resource.package_dir,
+                selection);
             campaignWorldInfo = campaignSession.WorldInfo();
             InitializeLevel2SpellPresentation();
             level2SpellMenuCursor = -1;
@@ -9253,6 +9314,101 @@ namespace MagicCarpet.Native
             Debug.Log(
                 $"MC_GAME_RUNTIME_LEVEL2_PRESENTATION VERIFIED handle={session.Handle} " +
                 $"generation={identity.session.generation} tick={identity.session.tick}");
+        }
+
+        private void ComposeGameRuntimeLevel3Presentation(
+            GameRuntimeTransport.Identity identity,
+            EngineSessionTransport.CampaignSnapshotObservation observation)
+        {
+            var selection = NativeSim.CampaignSelection.Create(3, 2, 0);
+            var resource = ResolveGameRuntimePresentationResource(selection);
+
+            level3Mode = true;
+            level3StartupReady = false;
+            ownerAssetCache = OwnerAssetCache.OpenAndValidateLevel3(
+                resource.presentation_cache_path);
+            campaignSession = NativeCampaignSession.BorrowGameRuntime(
+                session.Handle,
+                identity,
+                resource.package_dir,
+                selection);
+            level3PresentationSurface?.Dispose();
+            level3PresentationSurface = new Level3PresentationSurface(transform);
+            level3StartupReady = true;
+            UpdateGameRuntimeLevel3Presentation(identity, observation);
+            Debug.Log(
+                $"MC_GAME_RUNTIME_LEVEL3_PRESENTATION VERIFIED handle={session.Handle} " +
+                $"generation={identity.session.generation} tick={identity.session.tick}");
+        }
+
+        private GameRuntimeTransport.InstalledPackageResource
+            ResolveGameRuntimePresentationResource(
+                NativeSim.CampaignSelection selection)
+        {
+            var matches = gameRuntimePackages.Where(candidate =>
+            {
+                if (candidate == null ||
+                    string.IsNullOrWhiteSpace(candidate.presentation_cache_path))
+                {
+                    return false;
+                }
+                try
+                {
+                    NativeCampaignSession.ReadPackageIdentity(
+                        candidate.package_dir,
+                        selection);
+                    return true;
+                }
+                catch (InvalidDataException)
+                {
+                    return false;
+                }
+            }).ToArray();
+            Require(
+                matches.Length == 1,
+                "resolver-selected campaign has one selection-bound owner presentation cache");
+            return matches[0];
+        }
+
+        private void UpdateGameRuntimeLevel3Presentation(
+            GameRuntimeTransport.Identity identity,
+            EngineSessionTransport.CampaignSnapshotObservation observation)
+        {
+            Require(
+                level3Mode && level3StartupReady && campaignSession != null &&
+                level3PresentationSurface != null &&
+                observation?.identity != null && observation.value != null,
+                "game runtime Level 3 presentation has one borrowed campaign projection");
+            campaignSession.SynchronizeGameRuntimeIdentity(identity);
+            Require(
+                observation.identity.generation == campaignSession.Generation.ToString() &&
+                observation.identity.tick == campaignSession.Tick.ToString(),
+                "Level 3 presentation is bound to the current game runtime frame");
+            level3PresentationSurface.Present(campaignSession, ownerAssetCache);
+        }
+
+        private void DisposeGameRuntimeLevel2Presentation()
+        {
+            QualificationDisposeLevel2EntityPresenter();
+            DestroyLevel2IndexedFramePresentation();
+            DestroyLevel2DayHudPresentation();
+            level2MinimapPresenter?.Dispose();
+            level2AudioPresenter?.Dispose();
+            level2SpellPresenter?.Dispose();
+            level2IndexedWorldPresenter = null;
+            level2EntityPresenter = null;
+            level2HudPresenter = null;
+            level2MinimapPresenter = null;
+            level2AudioPresenter = null;
+            level2SpellPresenter = null;
+            level2PresentationOrder.Clear();
+            campaignSession?.Dispose();
+            campaignSession = null;
+            ownerAssetCache = null;
+            level2StartupReady = false;
+            level2Mode = false;
+            level2DayHudPresenterReady = false;
+            level2MinimapProjectionReady = false;
         }
 
         private void UpdateGameRuntimeLevel2Presentation(
@@ -9385,7 +9541,23 @@ namespace MagicCarpet.Native
             gameRuntimeCampaignSnapshot = session.GameRuntimeCampaignReset();
             gameRuntimeSemanticEventCursor = gameRuntimeCampaignSnapshot.value.effect_head;
             gameRuntimeRecentSemanticEvents.Clear();
-            UpdateGameRuntimeFireballPresentation(gameRuntimeCampaignSnapshot);
+            var identity = session.GameRuntimeIdentity();
+            if (level2Mode)
+            {
+                UpdateGameRuntimeLevel2Presentation(
+                    identity,
+                    gameRuntimeCampaignSnapshot);
+            }
+            else if (level3Mode)
+            {
+                UpdateGameRuntimeLevel3Presentation(
+                    identity,
+                    gameRuntimeCampaignSnapshot);
+            }
+            else
+            {
+                UpdateGameRuntimeFireballPresentation(gameRuntimeCampaignSnapshot);
+            }
         }
 
         internal void QualificationRefreshGameRuntimeProductionEvents()
@@ -13146,9 +13318,14 @@ namespace MagicCarpet.Native
                 gameRuntimeMode = true;
                 gameRuntimeStartupReady = true;
                 if (identity.active_runtime_flow.bound_level_id ==
-                    "level.magic_carpet_2.payahandra_ruins")
+                    GameRuntimeLevelTwoId)
                 {
                     ComposeGameRuntimeLevel2Presentation(identity, observation);
+                }
+                else if (identity.active_runtime_flow.bound_level_id ==
+                    GameRuntimeLevelThreeId)
+                {
+                    ComposeGameRuntimeLevel3Presentation(identity, observation);
                 }
                 else
                 {
@@ -13169,6 +13346,10 @@ namespace MagicCarpet.Native
             }
             catch
             {
+                level3PresentationSurface?.Dispose();
+                level3PresentationSurface = null;
+                campaignSession?.Dispose();
+                campaignSession = null;
                 DestroyGameRuntimeFireballPresentation();
                 opened.Dispose();
                 throw;
@@ -13917,6 +14098,8 @@ namespace MagicCarpet.Native
                 DestroyLevel2DayHudPresentation();
                 ownerAssetCache = null;
             }
+            level3PresentationSurface?.Dispose();
+            level3PresentationSurface = null;
             level2MinimapPresenter?.Dispose();
             level2AudioPresenter?.Dispose();
             level2SpellPresenter?.Dispose();
@@ -13943,6 +14126,8 @@ namespace MagicCarpet.Native
             CenterSteering();
             level2StartupReady = false;
             level2Mode = false;
+            level3StartupReady = false;
+            level3Mode = false;
             spellMenuCommands.Clear();
             selectedSpellRequested = false;
             gameRuntimeSpellSelectionRequested = null;

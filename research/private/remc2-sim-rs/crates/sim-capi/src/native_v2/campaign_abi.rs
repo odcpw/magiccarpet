@@ -292,7 +292,7 @@ impl std::ops::DerefMut for CampaignLevel2Authority {
 }
 
 impl CampaignLevel2Authority {
-    fn definition_identity(&self) -> CampaignSelection {
+    pub(super) fn definition_identity(&self) -> CampaignSelection {
         match self {
             Self::Legacy(_) => CampaignSelection::LEVEL2,
             Self::Descriptor(session) => session.definition().identity,
@@ -531,6 +531,34 @@ pub(super) fn with_campaign_session<T>(
         effect_state_hashes: BTreeMap::new(),
     };
     operation(&record)
+}
+
+fn with_campaign_presentation_session_mut<T>(
+    handle: u64,
+    operation: impl FnOnce(&mut CampaignSessionRecord, bool) -> AbiResult<T>,
+) -> AbiResult<T> {
+    let entry = with_campaign_registry(|registry| Ok(registry.sessions.get(&handle).cloned()))?;
+    if let Some(entry) = entry {
+        let mut guard = entry.lock().map_err(|_| {
+            AbiError::new(MC_STATUS_LOCK_FAILED, "campaign session lock is poisoned")
+        })?;
+        return operation(&mut guard, false);
+    }
+
+    let entry = super::game_session_abi::neutral_session_arc(handle)?;
+    let mut guard = entry
+        .lock()
+        .map_err(|_| AbiError::new(MC_STATUS_LOCK_FAILED, "game runtime lock is poisoned"))?;
+    let super::game_session_abi::NeutralSession::Runtime(runtime) = &mut *guard else {
+        return Err(AbiError::new(
+            MC_STATUS_UNKNOWN_HANDLE,
+            format!("handle {handle} is not a campaign or game runtime"),
+        ));
+    };
+    let mut record = runtime.take_campaign_presentation_record()?;
+    let result = operation(&mut record, true);
+    runtime.retain_campaign_presentation_record(record);
+    result
 }
 
 pub(super) fn with_campaign_session_mut<T>(
@@ -2010,7 +2038,7 @@ pub extern "C" fn mc_native_campaign_presentation_frame_copy(
         // null, zero-capacity sidecar and report zero bytes instead of
         // fabricating provenance or claiming compositor completeness.
         let _ = (provenance_buffer, provenance_capacity);
-        with_campaign_session_mut(handle, |session| {
+        with_campaign_presentation_session_mut(handle, |session, borrowed_runtime| {
             if query.generation != session.generation {
                 return Err(AbiError::new(
                     MC_STATUS_GENERATION_MISMATCH,
@@ -2033,7 +2061,7 @@ pub extern "C" fn mc_native_campaign_presentation_frame_copy(
                 ));
             };
             let campaign = reset.descriptor()?;
-            if campaign.generation() != query.generation {
+            if !borrowed_runtime && campaign.generation() != query.generation {
                 return Err(AbiError::new(
                     MC_STATUS_GENERATION_MISMATCH,
                     "campaign presentation generation does not match its Rust authority",
@@ -2415,7 +2443,7 @@ pub extern "C" fn mc_native_campaign_day_indexed_frame_render(
     out_info_size: u32,
 ) -> i32 {
     boundary_value(out_info, out_info_size, || {
-        with_campaign_session_mut(handle, |session| {
+        with_campaign_presentation_session_mut(handle, |session, _borrowed_runtime| {
             if generation != session.generation {
                 return Err(AbiError::new(
                     MC_STATUS_GENERATION_MISMATCH,
@@ -2491,7 +2519,7 @@ pub extern "C" fn mc_native_campaign_day_indexed_frame_copy(
         require_output(out_palette_written, "Day indexed frame palette count")?;
         write_output(out_index_written, 0);
         write_output(out_palette_written, 0);
-        with_campaign_session(handle, |session| {
+        with_campaign_presentation_session_mut(handle, |session, _borrowed_runtime| {
             with_level2_campaign_day_frame(session, generation, expected_tick, |frame| {
                 let index_required =
                     u32::try_from(frame.indices.len()).expect("Day frame index extent fits u32");

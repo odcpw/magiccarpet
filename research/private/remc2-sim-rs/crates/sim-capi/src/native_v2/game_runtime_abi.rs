@@ -42,6 +42,8 @@ struct InstalledPackageLocation {
 pub(super) struct RuntimeRecord {
     runtime: GameRuntime<Mc2CampaignBackend>,
     resolver: Option<Mc2RuntimePackageResolver>,
+    installed_inputs: Vec<Mc2CampaignInputs>,
+    campaign_presentation: Option<super::campaign_abi::CampaignSessionRecord>,
     completion_transition_receipt: Option<CompletionTransitionReceipt>,
     closed: bool,
 }
@@ -52,6 +54,8 @@ impl RuntimeRecord {
         Ok(Self {
             runtime,
             resolver: None,
+            installed_inputs: Vec::new(),
+            campaign_presentation: None,
             completion_transition_receipt: None,
             closed: false,
         })
@@ -109,7 +113,7 @@ impl RuntimeRecord {
             ));
         }
         let inputs = installed_package_set_inputs(request_json, request_json_len)?;
-        let resolver = Mc2RuntimePackageResolver::load(inputs).map_err(|error| {
+        let resolver = Mc2RuntimePackageResolver::load(inputs.clone()).map_err(|error| {
             AbiError::new(
                 MC_STATUS_VALIDATION_FAILED,
                 format!("cannot load installed game runtime package set: {error}"),
@@ -125,6 +129,7 @@ impl RuntimeRecord {
             )
             .map_err(map_transition_error)?;
         self.resolver = Some(resolver);
+        self.installed_inputs = inputs;
         Ok(())
     }
 
@@ -235,7 +240,7 @@ impl RuntimeRecord {
             ));
         }
         let inputs = installed_package_set_inputs(package_set_json, package_set_json_len)?;
-        let resolver = Mc2RuntimePackageResolver::load(inputs).map_err(|error| {
+        let resolver = Mc2RuntimePackageResolver::load(inputs.clone()).map_err(|error| {
             AbiError::new(
                 MC_STATUS_VALIDATION_FAILED,
                 format!("cannot load replay package set: {error}"),
@@ -253,7 +258,83 @@ impl RuntimeRecord {
             )
             .map_err(map_replay_save_error)?;
         self.resolver = Some(resolver);
+        self.installed_inputs = inputs;
         Ok(())
+    }
+
+    pub(super) fn take_campaign_presentation_record(
+        &mut self,
+    ) -> AbiResult<super::campaign_abi::CampaignSessionRecord> {
+        let (generation, campaign) = {
+            let session = self.session()?;
+            (
+                session.identity().generation,
+                session.backend().campaign_presentation_source().clone(),
+            )
+        };
+        let selection = campaign.definition().identity;
+        let input = self
+            .installed_inputs
+            .iter()
+            .find(|input| {
+                sim_core::campaign::spec::CampaignDefinition::declared_selection(
+                    &input.package_root,
+                )
+                .is_ok_and(|candidate| candidate == selection)
+            })
+            .ok_or_else(|| {
+                AbiError::new(
+                    MC_STATUS_VALIDATION_FAILED,
+                    "active game-runtime campaign has no selection-bound installed resource",
+                )
+            })?;
+        let inspection = Arc::new(campaign.inspection().clone());
+        let retained = self.campaign_presentation.take().and_then(|record| {
+            if record.generation != generation {
+                return None;
+            }
+            let super::campaign_abi::CampaignSessionKind::Level2 {
+                reset,
+                day_frame_assets,
+                day_frame_state,
+                ..
+            } = record.kind
+            else {
+                return None;
+            };
+            (reset.definition_identity() == selection)
+                .then_some((day_frame_assets, day_frame_state))
+        });
+        let (assets, state) = match retained {
+            Some(retained) => retained,
+            None => (
+                load_optional_day_frame_assets(
+                    input.owner_cache.as_deref().and_then(Path::to_str),
+                    inspection.as_ref(),
+                    Some(&campaign.definition().package_sha256),
+                )?
+                .map(Arc::new),
+                DayIndexedFrameState::new(generation),
+            ),
+        };
+        Ok(super::campaign_abi::CampaignSessionRecord {
+            kind: super::campaign_abi::CampaignSessionKind::Level2 {
+                inspection,
+                reset: super::campaign_abi::CampaignLevel2Authority::Descriptor(campaign),
+                day_frame_assets: assets,
+                day_frame_state: state,
+            },
+            generation,
+            day_music: None,
+            effect_state_hashes: BTreeMap::new(),
+        })
+    }
+
+    pub(super) fn retain_campaign_presentation_record(
+        &mut self,
+        record: super::campaign_abi::CampaignSessionRecord,
+    ) {
+        self.campaign_presentation = Some(record);
     }
 
     fn pause(&mut self, handle: u64, generation: u64) -> AbiResult<()> {
@@ -1392,6 +1473,8 @@ mod tests {
         let mut returned_title = RuntimeRecord {
             runtime: GameRuntime::title(991).unwrap(),
             resolver: Some(installed_resolver),
+            installed_inputs: Vec::new(),
+            campaign_presentation: None,
             completion_transition_receipt: None,
             closed: false,
         };
@@ -2061,5 +2144,132 @@ mod tests {
         assert_eq!(identity(failed_open_handle), failed_open_loading);
         assert_eq!(mc_game_runtime_destroy_v1(failed_open_handle), MC_STATUS_OK);
         fs::remove_dir_all(failed_open_root).unwrap();
+    }
+
+    #[test]
+    fn opened_level_three_runtime_projects_persistent_day_frame_on_same_handle() {
+        let replay_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../generated/opened-l3-runtime-replay-v5.json");
+        let replay = fs::read(replay_path)
+            .expect("owner-local Level 3 replay is generated by the exact sim-core replay test");
+        let level_three_cache = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../generated/level3-day-material-cache");
+        let package_set = serde_json::to_vec(&serde_json::json!({
+            "request_contract": INSTALLED_PACKAGE_SET_CONTRACT,
+            "packages": [
+                { "package_dir": level_three_package(), "owner_cache_path": level_three_cache },
+                { "package_dir": level_one_package(), "owner_cache_path": null },
+                { "package_dir": level_two_package(), "owner_cache_path": null }
+            ]
+        }))
+        .unwrap();
+
+        let mut handle = 0_u64;
+        assert_eq!(mc_game_runtime_create_v1(&raw mut handle), MC_STATUS_OK);
+        assert_eq!(
+            mc_game_runtime_load_replay_json_v1(
+                handle,
+                1,
+                package_set.as_ptr(),
+                package_set.len() as u32,
+                replay.as_ptr(),
+                replay.len() as u32,
+            ),
+            MC_STATUS_OK,
+            "{}",
+            LAST_ERROR.with(|value| value.borrow().clone())
+        );
+        let opened = identity(handle);
+        assert_eq!(opened["runtime_id"], handle.to_string());
+        assert_eq!(opened["session"]["session_id"], handle.to_string());
+        assert_eq!(
+            opened["active_runtime_flow"]["bound_level_id"],
+            "level.magic_carpet_2.revealed_way"
+        );
+        let generation = opened["session"]["generation"]
+            .as_str()
+            .unwrap()
+            .parse::<u64>()
+            .unwrap();
+        let tick = opened["session"]["tick"]
+            .as_str()
+            .unwrap()
+            .parse::<u64>()
+            .unwrap();
+
+        let query = McPresentationFrameQueryV2 {
+            abi_version: MC_NATIVE_ABI_VERSION,
+            struct_size: struct_size::<McPresentationFrameQueryV2>(),
+            generation,
+            tick,
+            presentation_revision: tick,
+            viewport_width: 320,
+            viewport_height: 200,
+            screen_stride: 320,
+            vga_resolution: 1,
+            ..McPresentationFrameQueryV2::default()
+        };
+        let mut generic_indices = vec![0_u8; LEVEL1_VIEW_PIXELS];
+        let mut generic = McPresentationFrameInfoV2::default();
+        assert_eq!(
+            mc_native_campaign_presentation_frame_copy(
+                handle,
+                &raw const query,
+                generic_indices.as_mut_ptr(),
+                generic_indices.len() as u32,
+                std::ptr::null_mut(),
+                0,
+                &raw mut generic,
+                struct_size::<McPresentationFrameInfoV2>(),
+            ),
+            MC_STATUS_OK,
+            "{}",
+            LAST_ERROR.with(|value| value.borrow().clone())
+        );
+        assert_eq!((generic.generation, generic.tick), (generation, tick));
+
+        let mut day = McCampaignDayIndexedFrameInfoV2::default();
+        assert_eq!(
+            mc_native_campaign_day_indexed_frame_render(
+                handle,
+                generation,
+                tick,
+                &raw mut day,
+                struct_size::<McCampaignDayIndexedFrameInfoV2>(),
+            ),
+            MC_STATUS_OK
+        );
+        assert_eq!(day.index_hash, generic.index_hash);
+        let mut day_indices = vec![0_u8; LEVEL1_VIEW_PIXELS];
+        let mut palette = vec![0_u8; 256 * 3];
+        let mut index_written = 0_u32;
+        let mut palette_written = 0_u32;
+        assert_eq!(
+            mc_native_campaign_day_indexed_frame_copy(
+                handle,
+                generation,
+                tick,
+                day_indices.as_mut_ptr(),
+                day_indices.len() as u32,
+                palette.as_mut_ptr(),
+                palette.len() as u32,
+                &raw mut index_written,
+                &raw mut palette_written,
+            ),
+            MC_STATUS_OK
+        );
+        assert_eq!(generic_indices, day_indices);
+        assert_eq!((index_written, palette_written), (64_000, 768));
+        assert_eq!(
+            mc_native_campaign_day_indexed_frame_render(
+                handle,
+                generation.wrapping_add(1),
+                tick,
+                &raw mut day,
+                struct_size::<McCampaignDayIndexedFrameInfoV2>(),
+            ),
+            MC_STATUS_GENERATION_MISMATCH
+        );
+        assert_eq!(mc_game_runtime_destroy_v1(handle), MC_STATUS_OK);
     }
 }

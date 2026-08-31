@@ -5,6 +5,7 @@ using System.Linq;
 using System.Security.Cryptography;
 using System.Text;
 using System.Threading;
+using UnityEngine;
 
 namespace MagicCarpet.Native
 {
@@ -13,6 +14,20 @@ namespace MagicCarpet.Native
     /// the sole owner of gameplay state, ordering, effects, and reset identity.
     internal sealed class NativeCampaignSession : IDisposable
     {
+        [Serializable]
+        private sealed class CampaignDefinitionEnvelope
+        {
+            public CampaignDefinitionIdentity identity;
+        }
+
+        [Serializable]
+        private sealed class CampaignDefinitionIdentity
+        {
+            public ushort external_level;
+            public ushort internal_level;
+            public byte map_type_id;
+        }
+
         internal readonly struct CampaignPackageIdentity
         {
             internal CampaignPackageIdentity(
@@ -213,15 +228,33 @@ namespace MagicCarpet.Native
             GameRuntimeTransport.Identity identity,
             string packagePath)
         {
+            return BorrowGameRuntime(
+                handle,
+                identity,
+                packagePath,
+                NativeSim.CampaignSelection.Level2Day());
+        }
+
+        internal static NativeCampaignSession BorrowGameRuntime(
+            ulong handle,
+            GameRuntimeTransport.Identity identity,
+            string packagePath,
+            NativeSim.CampaignSelection selection)
+        {
             if (handle == 0 || identity?.session == null ||
                 identity.session.session_id != handle.ToString() ||
                 (identity.mode != GameRuntimeTransport.PlayingMode &&
                  identity.mode != GameRuntimeTransport.PausedMode))
             {
                 throw new InvalidOperationException(
-                    "Level 2 presentation borrow requires the bound runtime handle");
+                    "campaign presentation borrow requires the bound runtime handle");
             }
-            var selection = NativeSim.CampaignSelection.Level2Day();
+            ValidateSelection(selection);
+            if (!IsPresentationSelection(selection))
+            {
+                throw new InvalidDataException(
+                    "campaign presentation borrow rejects an unknown profile");
+            }
             var packageIdentity = ReadPackageIdentity(packagePath, selection);
             var status = NativeSim.mc_native_campaign_world_info(
                 handle, out var worldInfo, 64);
@@ -276,6 +309,16 @@ namespace MagicCarpet.Native
 
             var manifest = RequireRegularFile(package, "manifest.json");
             var definition = RequireRegularFile(package, "campaign-definition.json");
+            var envelope = JsonUtility.FromJson<CampaignDefinitionEnvelope>(
+                File.ReadAllText(definition));
+            if (envelope?.identity == null ||
+                envelope.identity.external_level != selection.externalLevel ||
+                envelope.identity.internal_level != selection.internalLevel ||
+                envelope.identity.map_type_id != selection.mapType)
+            {
+                throw new InvalidDataException(
+                    "campaign package definition does not match the requested selection");
+            }
             return new CampaignPackageIdentity(
                 package,
                 Sha256(manifest),
@@ -337,6 +380,14 @@ namespace MagicCarpet.Native
             return left.externalLevel == right.externalLevel &&
                    left.internalLevel == right.internalLevel &&
                    left.mapType == right.mapType;
+        }
+
+        private static bool IsPresentationSelection(
+            NativeSim.CampaignSelection selection)
+        {
+            return selection.mapType == 0 &&
+                   (selection.externalLevel == 2 && selection.internalLevel == 1 ||
+                    selection.externalLevel == 3 && selection.internalLevel == 2);
         }
 
         private static void ValidateSelection(NativeSim.CampaignSelection selection)
