@@ -318,8 +318,38 @@ authoring API, focused tests and the first-three-level runtime gate.
 
 ## Current migration frontier
 
-As of the semantic-contract 34.0 milestone, this is a binding target with
-partial real implementation, not a completion claim:
+The first-three-level implementation milestone is now closed through focused,
+composing production-owner tests rather than one synthetic omnibus. The current
+evidence establishes all of the following:
+
+- the qualified Level 1, 2 and 3 packages publish stable semantic definitions,
+  package-present entity/objective/spell censuses and fail-closed compiled
+  capabilities;
+- the ordinary package schedulers and downstream consumers cover the real
+  Level 1 Castle/mana/Firefly exit route, the Level 2 waypoint/Nyphur/plague-Bee
+  exit route, and the Level 3 Skeleton/Dragon/Castle-charge/revealed-way/final-
+  Bee exit route through Rust-owned transitions and Title restart;
+- semantic acquired/selected spell state is carried across transitions, and
+  replay-save v5 persists the exact destination definition, receipt-bound
+  spell carry, command trace and generation/hash identities across pause,
+  resume, reset and fresh-runtime restore;
+- the native and managed transports accept replay v5, reject stale v4
+  atomically, and restore a real paused Level 1 session into a fresh managed
+  owner; completion transition remains destination-authoritative in Rust;
+- the strict authoring surface discovers, stages, validates, diffs, applies and
+  reads back representative placement, tuning, behavior, indexed presentation
+  asset and sound edits. The Fireball launch-sound slot is backed by the exact
+  qualified owner-cache WAV artifacts, and its ordinary launch consumer retains
+  an old session's binding while reopen/reset consumes the published choice;
+  and
+- twenty-one bounded isomorphic crates now own extracted pure behavior while
+  the established `sim_core` paths and production scheduling authority remain
+  compatible.
+
+The detailed ledger below records how that milestone accreted. Earlier
+slice-local “does not yet prove” clauses describe the boundary of that focused
+test at the time; the composed evidence above supersedes them where a later
+owning route closes the named gap.
 
 - the transaction store provides guarded atomic/idempotent publication through
   a discoverable closed operation schema; the consumed flight operations bind
@@ -606,13 +636,14 @@ partial real implementation, not a completion claim:
   managed Enter can now restart the immutable resolver-owned entry on that same
   handle and open a fresh Level 1 session above the retained nested generation
   floor. Native/Unity completion-transition exposure, production package
-  discovery, installation and shell wiring, an uninterrupted Level 1-to-Title
-  playthrough, quick-load after close, and full Title/results presentation
-  remain open. The runtime now exposes a guard-bound `paused_frame` operation
+  discovery, installation and same-handle shell wiring are now present;
+  a human-input-only Level 1-to-Title playthrough and full Title/results
+  presentation remain product gates rather than Rust-authority gaps. The
+  runtime now exposes a guard-bound `paused_frame` operation
   for the qualified Level 1 package. Each call executes the source-authorized
   pre-gate global-RNG and objective-presentation prefix while freezing the
   gameplay tick, player pose/motion and terrain. Paused frames are retained in
-  exact order with gameplay commands, and the v3 replay envelope reproduces
+  exact order with gameplay commands, and the v5 replay envelope reproduces
   their authoritative state on a fresh resolver-owned handle. Level 2/3 pause
   policy and pause-menu audio remain open. Its Unity transport
   now validates that flow identity and borrows snapshot, step, event and reset
@@ -646,8 +677,10 @@ partial real implementation, not a completion claim:
   After each fixed step the same owner now drains the ordered,
   opaque-actor semantic event pages through the nested session guard and shows
   the latest retained event in that strip without replaying it on another poll.
-  Source-art HUD, localized objective text, spell UI, terrain, world-space
-  effects and audio playback have not yet migrated to this owner. The resolver
+  Source-art objective HUD, localized text and complete later-level visual
+  composition have not yet migrated to this owner. Terrain, semantic events,
+  world-space effects and owner-cache audio playback remain observational
+  consumers of Rust state. The resolver
   can now serialize one real Level 1 Playing or Paused session as its immutable
   semantic definition, ordered neutral command-and-paused-frame operation
   trace and exact state/terrain/
@@ -664,13 +697,16 @@ partial real implementation, not a completion claim:
   file before reading, and still treats the contents as opaque Rust data. This
   writer is triggered by F5 or the same internal request seam when
   `-mc-runtime-replay-save <path>` is configured, and the loader is selected by
-  the production `-mc-runtime-replay-load` startup option. This is one Level 1
-  replay checkpoint including replay-visible paused time, not cross-level
-  persistence, menu UI, migration or a full campaign save;
-- broader placement/spawn/behavior/asset authoring and the remaining objective
-  fields are not yet complete, and
-  package definition/behavior artifacts are not yet fully parsed as the typed
-  composition above;
+  the production `-mc-runtime-replay-load` startup option. Core replay v5 now
+  additionally restores a real transition-carried Level 3 definition and spell
+  state with deterministic continuation, pause/resume and reset guards. The
+  focused managed proof remains a real Level 1 checkpoint; menu save-slot UI,
+  migration from earlier save contracts and terminal-Title saves remain later
+  product work;
+- representative placement, behavior, tuning, presentation-asset and sound
+  authoring is complete for the milestone. Broader population/spawn editing,
+  the remaining read-only objective fields and arbitrary owner-artifact import
+  remain later extensions of the same closed operation model;
 - the MC2 adapter produces useful semantic bindings, while source-shaped
   compatibility types remain implementation-visible. The shared, pure
   ground-creature retry and terrain-transition algorithm is now owned by the
@@ -742,12 +778,11 @@ partial real implementation, not a completion claim:
   scheduling stays with its existing owners. These are twenty-one
   bounded physical extractions, not a claim that the remaining `sim-core`
   monolith has been decomposed; and
-- the complete title/loading/save/transition flow and full Levels 1–3 domain
-  coverage remain open; the current Unity build enters one gameplay scene
-  directly, neutral campaign saves/loads do not yet span Levels 1-3 or a
-  production menu flow, and level completion has not yet been
-  proved as one uninterrupted Rust-owned 1 -> 2 -> 3 -> Title playthrough or
-  exposed through the production client.
+- the first-three-level semantic/runtime/persistence work packs are complete in
+  focused composing gates. A single human-input-only Unity playthrough,
+  source-art-complete menus/results, later campaign levels, commercial artifact
+  distribution and OpenXR remain subsequent product milestones; they do not
+  create a second gameplay authority or weaken the completed Rust contracts.
 
 The next foundation seam extends the same stable definition-to-runtime binding
 to the next package-present semantic domain without adding another arena,
