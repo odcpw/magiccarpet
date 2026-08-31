@@ -61,8 +61,8 @@ use level_definition::{CreatureKind, LevelDefinition, LevelEntityKind};
 use runtime_flow::RuntimeFlowDefinition;
 
 pub const GAME_PACKAGE_SCHEMA: &str = "carpet-flight-game-package/v1";
-pub const GAME_DEFINITION_SCHEMA: &str = "carpet-flight-game-definition/v10";
-pub const SEMANTIC_CONTRACT_VERSION: &str = "35.0";
+pub const GAME_DEFINITION_SCHEMA: &str = "carpet-flight-game-definition/v11";
+pub const SEMANTIC_CONTRACT_VERSION: &str = "36.0";
 
 pub const FIREBALL_LAUNCH_SOUND_ASSET_SLOT_ID: &str = "audio.spell.fireball.launch_sound";
 

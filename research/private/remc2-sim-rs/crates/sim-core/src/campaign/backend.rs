@@ -25,7 +25,8 @@ use sim_definition::adapter::{
 };
 use sim_definition::runtime_flow::{
     RuntimeFlowDefinition, RuntimeFlowDestination, RuntimeFlowEntry, RuntimeFlowNodeId,
-    SemanticGameId, SemanticLevelId,
+    RuntimeFlowPresentationDefinition, RuntimeFlowPresentationEntry, SemanticGameId,
+    SemanticLevelId, SemanticPresentationCueId, TITLE_PRESENTATION_CUE_ID,
 };
 
 use crate::{
@@ -489,6 +490,30 @@ fn mc2_runtime_flow(
     let spire = SemanticLevelId::parse("level.magic_carpet_2.night_spire")?;
     let payahandra = SemanticLevelId::parse("level.magic_carpet_2.payahandra_ruins")?;
     let entrance = SemanticLevelId::parse("level.magic_carpet_2.revealed_way")?;
+    let presentation = RuntimeFlowPresentationDefinition::new(
+        SemanticPresentationCueId::parse(TITLE_PRESENTATION_CUE_ID)?,
+        [
+            (&spire, "night_spire"),
+            (&payahandra, "payahandra_ruins"),
+            (&entrance, "revealed_way"),
+        ]
+        .into_iter()
+        .map(|(level_id, name)| {
+            Ok(RuntimeFlowPresentationEntry::new(
+                level_id.clone(),
+                SemanticPresentationCueId::parse(&format!(
+                    "presentation.magic_carpet_2.{name}.loading"
+                ))?,
+                SemanticPresentationCueId::parse(&format!(
+                    "presentation.magic_carpet_2.{name}.entry"
+                ))?,
+                SemanticPresentationCueId::parse(&format!(
+                    "presentation.magic_carpet_2.{name}.completion"
+                ))?,
+            ))
+        })
+        .collect::<crate::game_definition::Result<Vec<_>>>()?,
+    );
     RuntimeFlowDefinition::new(
         SemanticGameId::parse("game.magic_carpet_2")?,
         SemanticLevelId::parse(bound_level)?,
@@ -513,6 +538,7 @@ fn mc2_runtime_flow(
                 },
             ),
         ],
+        presentation,
     )
 }
 

@@ -5,7 +5,10 @@
 //! a level is playing.
 
 use crate::game_definition::GameDefinition;
-use crate::game_definition::{RuntimeFlowDefinition, RuntimeFlowDestination, SemanticLevelId};
+use crate::game_definition::{
+    RuntimeFlowDefinition, RuntimeFlowDestination, SemanticLevelId, SemanticPresentationCueId,
+    TITLE_PRESENTATION_CUE_ID,
+};
 use crate::game_session::{
     GameAdapter, GameCompletion, GameCompletionStatus, GameSession, GameSessionBackend,
     GameSessionError, OpenSessionError, SessionGuard, SessionGuardError, SessionIdentity,
@@ -14,8 +17,8 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{error::Error, fmt, num::NonZeroU64, sync::Arc};
 
-pub const GAME_RUNTIME_CONTRACT: &str = "carpet-flight-game-runtime/v9";
-pub const COMPLETION_TRANSITION_RECEIPT: &str = "carpet-flight-completion-transition-receipt/v1";
+pub const GAME_RUNTIME_CONTRACT: &str = "carpet-flight-game-runtime/v10";
+pub const COMPLETION_TRANSITION_RECEIPT: &str = "carpet-flight-completion-transition-receipt/v2";
 
 fn serialize_u64_decimal<S>(value: &u64, serializer: S) -> Result<S::Ok, S::Error>
 where
@@ -32,6 +35,40 @@ pub enum RuntimeMode {
     Loading,
     Playing,
     Paused,
+}
+
+/// Lifecycle meaning of one Rust-selected semantic presentation cue.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimePresentationPhase {
+    Title,
+    Loading,
+    LevelEntry,
+    LevelCompletion,
+}
+
+/// Observable identity of one presentation cue selected by the authoritative
+/// runtime. Clients cannot submit this identity or its level/destination
+/// context back into a state-changing transition.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct RuntimePresentationCue {
+    pub cue_id: SemanticPresentationCueId,
+    pub phase: RuntimePresentationPhase,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub level_id: Option<SemanticLevelId>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub completion_destination: Option<RuntimeFlowDestination>,
+}
+
+impl RuntimePresentationCue {
+    fn title(cue_id: SemanticPresentationCueId) -> Self {
+        Self {
+            cue_id,
+            phase: RuntimePresentationPhase::Title,
+            level_id: None,
+            completion_destination: None,
+        }
+    }
 }
 
 /// Deterministic operations retained by package replay adapters. Paused
@@ -96,6 +133,7 @@ pub struct RuntimeIdentity {
     #[serde(serialize_with = "serialize_u64_decimal")]
     pub generation: u64,
     pub mode: RuntimeMode,
+    pub presentation: RuntimePresentationCue,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pending_definition: Option<RuntimeDefinitionIdentity>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -114,6 +152,7 @@ pub struct CompletionTransitionReceipt {
     pub completed_level_id: SemanticLevelId,
     pub completion_destination: RuntimeFlowDestination,
     pub completion: GameCompletion,
+    pub presentation_sequence: Vec<RuntimePresentationCue>,
     pub receipt_sha256: String,
 }
 
@@ -131,6 +170,7 @@ impl CompletionTransitionReceipt {
                     &self.completed_level_id,
                     &self.completion_destination,
                     &self.completion,
+                    &self.presentation_sequence,
                 )
     }
 }
@@ -144,6 +184,7 @@ struct CompletionTransitionReceiptPayload<'a> {
     completed_level_id: &'a SemanticLevelId,
     completion_destination: &'a RuntimeFlowDestination,
     completion: &'a GameCompletion,
+    presentation_sequence: &'a [RuntimePresentationCue],
 }
 
 impl RuntimeIdentity {
@@ -324,6 +365,7 @@ impl<E: Error + 'static> Error for OpenLevelError<E> {}
 enum RuntimeState<B> {
     Title {
         session_generation: NonZeroU64,
+        presentation_cue: SemanticPresentationCueId,
     },
     Loading {
         definition: Arc<GameDefinition>,
@@ -364,36 +406,50 @@ impl<B: GameSessionBackend> GameRuntime<B> {
             generation: 1,
             state: RuntimeState::Title {
                 session_generation: NonZeroU64::MIN,
+                presentation_cue: SemanticPresentationCueId::parse(TITLE_PRESENTATION_CUE_ID)
+                    .expect("engine title presentation cue is valid"),
             },
         })
     }
 
     #[must_use]
     pub fn identity(&self) -> RuntimeIdentity {
-        let (mode, pending_definition, active_runtime_flow, session) = match &self.state {
-            RuntimeState::Title { .. } => (RuntimeMode::Title, None, None, None),
-            RuntimeState::Loading { definition, .. } => (
-                RuntimeMode::Loading,
-                Some(RuntimeDefinitionIdentity::from_definition(definition)),
-                None,
-                None,
-            ),
-            RuntimeState::Playing { session, paused } => (
-                if *paused {
-                    RuntimeMode::Paused
-                } else {
-                    RuntimeMode::Playing
-                },
-                None,
-                session.definition().runtime_flow().cloned(),
-                Some(session.identity()),
-            ),
-        };
+        let (mode, presentation, pending_definition, active_runtime_flow, session) =
+            match &self.state {
+                RuntimeState::Title {
+                    presentation_cue, ..
+                } => (
+                    RuntimeMode::Title,
+                    RuntimePresentationCue::title(presentation_cue.clone()),
+                    None,
+                    None,
+                    None,
+                ),
+                RuntimeState::Loading { definition, .. } => (
+                    RuntimeMode::Loading,
+                    loading_presentation(definition),
+                    Some(RuntimeDefinitionIdentity::from_definition(definition)),
+                    None,
+                    None,
+                ),
+                RuntimeState::Playing { session, paused } => (
+                    if *paused {
+                        RuntimeMode::Paused
+                    } else {
+                        RuntimeMode::Playing
+                    },
+                    entry_presentation(session.definition()),
+                    None,
+                    session.definition().runtime_flow().cloned(),
+                    Some(session.identity()),
+                ),
+            };
         RuntimeIdentity {
             runtime_contract: GAME_RUNTIME_CONTRACT,
             runtime_id: self.runtime_id,
             generation: self.generation,
             mode,
+            presentation,
             pending_definition,
             active_runtime_flow,
             session,
@@ -434,7 +490,9 @@ impl<B: GameSessionBackend> GameRuntime<B> {
             .map_err(Box::new)
             .map_err(RuntimeTransitionError::Guard)?;
         let session_generation = match &self.state {
-            RuntimeState::Title { session_generation } => *session_generation,
+            RuntimeState::Title {
+                session_generation, ..
+            } => *session_generation,
             _ => {
                 return Err(RuntimeTransitionError::InvalidMode {
                     expected: RuntimeMode::Title,
@@ -579,7 +637,9 @@ impl<B: GameSessionBackend> GameRuntime<B> {
             .map_err(RuntimeTransitionError::Guard)
             .map_err(RestorePlayingError::Transition)?;
         let session_generation = match &self.state {
-            RuntimeState::Title { session_generation } => *session_generation,
+            RuntimeState::Title {
+                session_generation, ..
+            } => *session_generation,
             _ => {
                 return Err(RestorePlayingError::Transition(
                     RuntimeTransitionError::InvalidMode {
@@ -761,6 +821,7 @@ impl<B: GameSessionBackend> GameRuntime<B> {
                 if candidate_flow.game_id() != current_flow.game_id()
                     || candidate_flow.entry_level_id() != current_flow.entry_level_id()
                     || candidate_flow.entries() != current_flow.entries()
+                    || candidate_flow.presentation() != current_flow.presentation()
                 {
                     return Err(RuntimeTransitionError::InvalidRuntimeFlow {
                         message: "next definition does not retain the active semantic game and ordered flow"
@@ -799,6 +860,12 @@ impl<B: GameSessionBackend> GameRuntime<B> {
             .and_then(NonZeroU64::new)
             .ok_or(RuntimeTransitionError::GenerationExhausted)?;
         let captured_source = capture_source(session)?;
+        let completion_presentation = current_flow
+            .presentation()
+            .entry(&completed_level_id)
+            .expect("validated presentation flow binds its completed level");
+        let completion_presentation_cue = completion_presentation.completion_cue().clone();
+        let title_presentation_cue = current_flow.presentation().title_cue().clone();
 
         self.state = match next_definition {
             Some(definition) => RuntimeState::Loading {
@@ -807,10 +874,20 @@ impl<B: GameSessionBackend> GameRuntime<B> {
             },
             None => RuntimeState::Title {
                 session_generation: next_session_generation,
+                presentation_cue: title_presentation_cue,
             },
         };
         self.generation = next_runtime_generation;
         let after = self.identity();
+        let presentation_sequence = vec![
+            RuntimePresentationCue {
+                cue_id: completion_presentation_cue,
+                phase: RuntimePresentationPhase::LevelCompletion,
+                level_id: Some(completed_level_id.clone()),
+                completion_destination: Some(completion_destination.clone()),
+            },
+            after.presentation.clone(),
+        ];
         let receipt_sha256 = completion_receipt_sha256(
             &before,
             &after,
@@ -818,6 +895,7 @@ impl<B: GameSessionBackend> GameRuntime<B> {
             &completed_level_id,
             &completion_destination,
             &completion,
+            &presentation_sequence,
         );
         Ok((
             CompletionTransitionReceipt {
@@ -828,6 +906,7 @@ impl<B: GameSessionBackend> GameRuntime<B> {
                 completed_level_id,
                 completion_destination,
                 completion,
+                presentation_sequence,
                 receipt_sha256,
             },
             captured_source,
@@ -919,6 +998,13 @@ impl<B: GameSessionBackend> GameRuntime<B> {
         let RuntimeState::Playing { session, .. } = &mut self.state else {
             unreachable!("validated runtime mode owns a gameplay session")
         };
+        let title_presentation_cue = session
+            .definition()
+            .runtime_flow()
+            .expect("playing definition owns a validated runtime flow")
+            .presentation()
+            .title_cue()
+            .clone();
         let next_session_generation = session
             .advance_lifecycle_generation(session_guard)
             .map_err(Box::new)
@@ -928,6 +1014,7 @@ impl<B: GameSessionBackend> GameRuntime<B> {
         self.state = RuntimeState::Title {
             session_generation: NonZeroU64::new(next_session_generation)
                 .expect("session lifecycle generations are non-zero"),
+            presentation_cue: title_presentation_cue,
         };
         self.generation = next_runtime_generation;
         Ok(self.identity())
@@ -1021,6 +1108,40 @@ impl<B: GameSessionBackend> GameRuntime<B> {
     }
 }
 
+fn loading_presentation(definition: &GameDefinition) -> RuntimePresentationCue {
+    let flow = definition
+        .runtime_flow()
+        .expect("loading definition owns a validated runtime flow");
+    let level_id = flow.bound_level_id().clone();
+    let binding = flow
+        .presentation()
+        .entry(&level_id)
+        .expect("validated presentation flow binds its loading level");
+    RuntimePresentationCue {
+        cue_id: binding.loading_cue().clone(),
+        phase: RuntimePresentationPhase::Loading,
+        level_id: Some(level_id),
+        completion_destination: None,
+    }
+}
+
+fn entry_presentation(definition: &GameDefinition) -> RuntimePresentationCue {
+    let flow = definition
+        .runtime_flow()
+        .expect("playing definition owns a validated runtime flow");
+    let level_id = flow.bound_level_id().clone();
+    let binding = flow
+        .presentation()
+        .entry(&level_id)
+        .expect("validated presentation flow binds its playing level");
+    RuntimePresentationCue {
+        cue_id: binding.entry_cue().clone(),
+        phase: RuntimePresentationPhase::LevelEntry,
+        level_id: Some(level_id),
+        completion_destination: None,
+    }
+}
+
 fn completion_receipt_sha256(
     before: &RuntimeIdentity,
     after: &RuntimeIdentity,
@@ -1028,6 +1149,7 @@ fn completion_receipt_sha256(
     completed_level_id: &SemanticLevelId,
     completion_destination: &RuntimeFlowDestination,
     completion: &GameCompletion,
+    presentation_sequence: &[RuntimePresentationCue],
 ) -> String {
     let payload = CompletionTransitionReceiptPayload {
         receipt_contract: COMPLETION_TRANSITION_RECEIPT,
@@ -1037,6 +1159,7 @@ fn completion_receipt_sha256(
         completed_level_id,
         completion_destination,
         completion,
+        presentation_sequence,
     };
     let bytes = serde_json::to_vec(&payload)
         .expect("completion transition receipt payload is serializable");
@@ -1098,6 +1221,24 @@ mod tests {
             },
             PathBuf::from,
         )
+    }
+
+    fn assert_presentation(
+        identity: &RuntimeIdentity,
+        phase: RuntimePresentationPhase,
+        cue_id: &str,
+        level_id: Option<&str>,
+    ) {
+        assert_eq!(identity.presentation.phase, phase);
+        assert_eq!(identity.presentation.cue_id.as_str(), cue_id);
+        assert_eq!(
+            identity
+                .presentation
+                .level_id
+                .as_ref()
+                .map(SemanticLevelId::as_str),
+            level_id
+        );
     }
 
     fn level_one_paused_carriers(runtime: &GameRuntime<Mc2CampaignBackend>) -> (u32, u8, u8, u8) {
@@ -1342,6 +1483,17 @@ mod tests {
         let title = runtime.identity();
         assert_eq!(title.mode, RuntimeMode::Title);
         assert_eq!(title.generation, 1);
+        assert_presentation(
+            &title,
+            RuntimePresentationPhase::Title,
+            TITLE_PRESENTATION_CUE_ID,
+            None,
+        );
+        assert_eq!(
+            runtime.identity(),
+            title,
+            "identity polling is observational"
+        );
         assert!(runtime.session().is_none());
 
         let stale = RuntimeGuard {
@@ -1393,6 +1545,7 @@ mod tests {
                     },
                 ),
             ],
+            definition.runtime_flow().unwrap().presentation().clone(),
         )
         .unwrap();
         let reordered_definition = Arc::new(sim_definition::adapter::with_level_and_runtime_flow(
@@ -1426,6 +1579,12 @@ mod tests {
             .unwrap();
         assert_eq!(loading.mode, RuntimeMode::Loading);
         assert_eq!(loading.generation, 2);
+        assert_presentation(
+            &loading,
+            RuntimePresentationPhase::Loading,
+            "presentation.magic_carpet_2.night_spire.loading",
+            Some("level.magic_carpet_2.night_spire"),
+        );
         assert_eq!(loading.pending_definition, Some(expected_definition));
         let loading_flow = loading
             .pending_definition
@@ -1468,6 +1627,17 @@ mod tests {
             .unwrap();
         assert_eq!(playing.mode, RuntimeMode::Playing);
         assert_eq!(playing.generation, 3);
+        assert_presentation(
+            &playing,
+            RuntimePresentationPhase::LevelEntry,
+            "presentation.magic_carpet_2.night_spire.entry",
+            Some("level.magic_carpet_2.night_spire"),
+        );
+        assert_eq!(
+            runtime.identity(),
+            playing,
+            "entry cue polling is observational"
+        );
         assert!(playing.pending_definition.is_none());
         assert_eq!(
             playing.active_runtime_flow.as_ref(),
@@ -2872,7 +3042,23 @@ mod tests {
             RuntimeFlowDestination::Level { ref level_id }
                 if level_id.as_str() == "level.magic_carpet_2.payahandra_ruins"
         ));
+        assert_eq!(receipt.presentation_sequence.len(), 2);
+        assert_eq!(
+            receipt.presentation_sequence[0].phase,
+            RuntimePresentationPhase::LevelCompletion
+        );
+        assert_eq!(
+            receipt.presentation_sequence[0].cue_id.as_str(),
+            "presentation.magic_carpet_2.night_spire.completion"
+        );
+        assert_eq!(receipt.presentation_sequence[1], receipt.after.presentation);
         assert_eq!(runtime.identity().mode, RuntimeMode::Loading);
+        assert_presentation(
+            &runtime.identity(),
+            RuntimePresentationPhase::Loading,
+            "presentation.magic_carpet_2.payahandra_ruins.loading",
+            Some("level.magic_carpet_2.payahandra_ruins"),
+        );
         assert!(runtime.session().is_none());
 
         let duplicate = resolver.accept_transition(
@@ -2891,6 +3077,12 @@ mod tests {
             .open_pending(&mut runtime, pending_level_two.guard(), 111)
             .unwrap();
         assert_eq!(level_two_playing.mode, RuntimeMode::Playing);
+        assert_presentation(
+            &level_two_playing,
+            RuntimePresentationPhase::LevelEntry,
+            "presentation.magic_carpet_2.payahandra_ruins.entry",
+            Some("level.magic_carpet_2.payahandra_ruins"),
+        );
         assert_eq!(pending_level_two.runtime_id, 111);
         assert_eq!(level_two_playing.runtime_id, pending_level_two.runtime_id);
         assert_eq!(level_two_playing.session.as_ref().unwrap().session_id, 111);
@@ -3248,9 +3440,21 @@ mod tests {
             RuntimeFlowDestination::Level { ref level_id }
                 if level_id.as_str() == "level.magic_carpet_2.revealed_way"
         ));
+        assert_eq!(receipt.presentation_sequence.len(), 2);
+        assert_eq!(
+            receipt.presentation_sequence[0].cue_id.as_str(),
+            "presentation.magic_carpet_2.payahandra_ruins.completion"
+        );
+        assert_eq!(receipt.presentation_sequence[1], receipt.after.presentation);
         let level_three_loading = runtime.identity();
         assert_eq!(level_three_loading.generation, 6);
         assert_eq!(level_three_loading.mode, RuntimeMode::Loading);
+        assert_presentation(
+            &level_three_loading,
+            RuntimePresentationPhase::Loading,
+            "presentation.magic_carpet_2.revealed_way.loading",
+            Some("level.magic_carpet_2.revealed_way"),
+        );
         assert!(level_three_loading.session.is_none());
         let pending = level_three_loading.pending_definition.as_ref().unwrap();
         assert_eq!(
@@ -3281,6 +3485,12 @@ mod tests {
         assert_eq!(level_three_playing.generation, 7);
         assert_eq!(level_three_playing.runtime_id, 222);
         assert_eq!(level_three_playing.mode, RuntimeMode::Playing);
+        assert_presentation(
+            &level_three_playing,
+            RuntimePresentationPhase::LevelEntry,
+            "presentation.magic_carpet_2.revealed_way.entry",
+            Some("level.magic_carpet_2.revealed_way"),
+        );
         assert_eq!(
             level_three_playing.session.as_ref().unwrap().session_id,
             222
@@ -3642,9 +3852,21 @@ mod tests {
             RuntimeFlowDestination::Title { ref node_id }
                 if node_id.as_str() == "flow.magic_carpet_2.return_to_title"
         ));
+        assert_eq!(receipt.presentation_sequence.len(), 2);
+        assert_eq!(
+            receipt.presentation_sequence[0].cue_id.as_str(),
+            "presentation.magic_carpet_2.revealed_way.completion"
+        );
         let title = runtime.identity();
         assert_eq!(title.generation, 8);
         assert_eq!(title.mode, RuntimeMode::Title);
+        assert_presentation(
+            &title,
+            RuntimePresentationPhase::Title,
+            TITLE_PRESENTATION_CUE_ID,
+            None,
+        );
+        assert_eq!(receipt.presentation_sequence[1], title.presentation);
         assert!(title.pending_definition.is_none());
         assert!(title.active_runtime_flow.is_none());
         assert!(title.session.is_none());

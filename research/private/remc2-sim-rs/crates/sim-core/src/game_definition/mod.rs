@@ -15,7 +15,8 @@ pub use runtime::{
 };
 pub use sim_definition::runtime_flow::{
     RuntimeFlowDefinition, RuntimeFlowDestination, RuntimeFlowEntry, RuntimeFlowNodeId,
-    SemanticGameId, SemanticLevelId,
+    RuntimeFlowPresentationDefinition, RuntimeFlowPresentationEntry, SemanticGameId,
+    SemanticLevelId, SemanticPresentationCueId, TITLE_PRESENTATION_CUE_ID,
 };
 pub use sim_definition::{
     APPLY_RECEIPT_SCHEMA, ARCHER_MAX_LIFE_CAPABILITY_ID, AREA_ENTRY_OVERLAP_EXTENT_CAPABILITY_ID,
