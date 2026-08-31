@@ -720,6 +720,7 @@ namespace MagicCarpet.Native.Tests
         }
 
         [TestCase(1)]
+        [TestCase(2)]
         [TestCase(3)]
         [Timeout(300000)]
         public void ProductionControlsRemainBoundAcrossVerifiedLevelBoundaries(
@@ -823,22 +824,39 @@ namespace MagicCarpet.Native.Tests
                         Is.False,
                         "the fire input suppressed while Paused was not replayed after resume");
 
-                    if (externalLevel == 1)
+                    if (externalLevel != 3)
                     {
                         Assert.That(
                             restored.QualificationSelectGameRuntimeProductionSpell(
                                 "spell.fireball"),
                             Is.True);
                         restored.QualificationDriveGameRuntimeFrames(1);
+                        var eventCursorBeforeCast = ulong.Parse(
+                            restored.GameRuntimeProductionSemanticEventCursor);
                         restored.QualificationRequestGameRuntimeSelectedSpellCast();
                         restored.QualificationDriveGameRuntimeFrames(1);
-                        Assert.That(
-                            Array.Exists(
-                                restored.GameRuntimeProductionCampaignSnapshot.value
-                                    .presentation_entities,
-                                entity => entity.kind == "spell.fireball.projectile"),
-                            Is.True,
-                            "Level 1 selected and cast its acquired semantic Fireball");
+                        var afterCast = restored.GameRuntimeProductionCampaignSnapshot;
+                        if (externalLevel == 1)
+                        {
+                            Assert.That(
+                                Array.Exists(
+                                    afterCast.value.presentation_entities,
+                                    entity => entity.kind == "spell.fireball.projectile"),
+                                Is.True,
+                                "Level 1 presented its selected Fireball projectile");
+                        }
+                        else
+                        {
+                            Assert.That(
+                                Array.Exists(
+                                    restored.GameRuntimeProductionRecentSemanticEvents,
+                                    gameEvent =>
+                                        gameEvent.event_id == "spell.activation_requested" &&
+                                        ulong.Parse(gameEvent.sequence) > eventCursorBeforeCast &&
+                                        !string.IsNullOrWhiteSpace(gameEvent.actor)),
+                                Is.True,
+                                "Level 2 requested activation through its acquired Fireball holder");
+                        }
                     }
 
                     var generationBeforeReset =
@@ -912,11 +930,9 @@ namespace MagicCarpet.Native.Tests
                 NativeCampaignSession.ActiveSessionCount,
                 Is.EqualTo(campaignSessionsBefore));
 
-            // Level 2 is intentionally not admitted here: its exact current
-            // Rust replay-save/restore owner test rejects the regenerated v11
-            // boundary with a receipt mismatch. The current Level 3 boundary
-            // explicitly carries no acquired spells; the focused lifecycle
-            // test above pins that Rust-owned package state separately.
+            // All first-three-level boundaries are admitted. The current
+            // Level 3 boundary explicitly carries no acquired spells; the
+            // focused lifecycle test above pins that Rust-owned package state.
         }
 
         [Test]
