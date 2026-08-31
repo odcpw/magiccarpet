@@ -20,7 +20,7 @@ use sim_core::{
 };
 use sim_session::{GameSession, OpenSessionError, SessionGuard};
 
-const GAME_RUNTIME_TRANSPORT_CONTRACT: &str = "carpet-flight-native-game-runtime-json/v9";
+const GAME_RUNTIME_TRANSPORT_CONTRACT: &str = "carpet-flight-native-game-runtime-json/v10";
 const INSTALLED_PACKAGE_SET_CONTRACT: &str = "carpet-flight-installed-package-set-bootstrap/v1";
 const MAX_INSTALLED_PACKAGE_SET_JSON_BYTES: u32 = 64 * 1024;
 const MAX_INSTALLED_PACKAGE_COUNT: usize = 16;
@@ -684,7 +684,9 @@ pub extern "C" fn mc_game_runtime_contract_json_v1(
         let contract = serde_json::json!({
             "runtime_contract": sim_core::game_runtime::GAME_RUNTIME_CONTRACT,
             "transport_contract": GAME_RUNTIME_TRANSPORT_CONTRACT,
-            "transport_version": 9,
+            "transport_version": 10,
+            "definition_contract": sim_core::game_definition::GAME_DEFINITION_SCHEMA,
+            "semantic_contract_version": sim_core::game_definition::SEMANTIC_CONTRACT_VERSION,
             "encoding": "utf-8-json",
             "u64_counter_encoding": "decimal-string",
             "modes": ["title", "loading", "playing", "paused"],
@@ -715,7 +717,8 @@ pub extern "C" fn mc_game_runtime_contract_json_v1(
             "runtime_flow": {
                 "title": "absent",
                 "loading": "pending_definition.runtime_flow",
-                "playing_and_paused": "active_runtime_flow"
+                "playing_and_paused": "active_runtime_flow",
+                "presentation_cue": "identity.presentation"
             },
             "completion_transition": {
                 "receipt_contract": COMPLETION_TRANSITION_RECEIPT,
@@ -723,6 +726,7 @@ pub extern "C" fn mc_game_runtime_contract_json_v1(
                 "receipt_transport": "mc_game_runtime_completion_transition_receipt_json_v1",
                 "destination_authority": "rust_owned_semantic_flow",
                 "package_authority": "installed_package_resolver",
+                "presentation_sequence": "ordered_rust_owned_semantic_cues",
                 "guards": ["runtime_generation", "session_generation", "expected_tick"]
             },
             "limits": {
@@ -1123,13 +1127,18 @@ mod tests {
         });
         assert_eq!(
             contract["runtime_contract"],
-            "carpet-flight-game-runtime/v9"
+            "carpet-flight-game-runtime/v10"
         );
         assert_eq!(
             contract["transport_contract"],
-            "carpet-flight-native-game-runtime-json/v9"
+            "carpet-flight-native-game-runtime-json/v10"
         );
-        assert_eq!(contract["transport_version"], 9);
+        assert_eq!(contract["transport_version"], 10);
+        assert_eq!(
+            contract["definition_contract"],
+            "carpet-flight-game-definition/v11"
+        );
+        assert_eq!(contract["semantic_contract_version"], "36.0");
         assert_eq!(
             contract["modes"],
             serde_json::json!(["title", "loading", "playing", "paused"])
@@ -1184,11 +1193,12 @@ mod tests {
         assert_eq!(
             contract["completion_transition"],
             serde_json::json!({
-                "receipt_contract": "carpet-flight-completion-transition-receipt/v1",
+                "receipt_contract": "carpet-flight-completion-transition-receipt/v2",
                 "accept_transport": "mc_game_runtime_accept_transition_v1",
                 "receipt_transport": "mc_game_runtime_completion_transition_receipt_json_v1",
                 "destination_authority": "rust_owned_semantic_flow",
                 "package_authority": "installed_package_resolver",
+                "presentation_sequence": "ordered_rust_owned_semantic_cues",
                 "guards": ["runtime_generation", "session_generation", "expected_tick"]
             })
         );
@@ -1207,7 +1217,8 @@ mod tests {
             serde_json::json!({
                 "title": "absent",
                 "loading": "pending_definition.runtime_flow",
-                "playing_and_paused": "active_runtime_flow"
+                "playing_and_paused": "active_runtime_flow",
+                "presentation_cue": "identity.presentation"
             })
         );
 
@@ -1217,6 +1228,13 @@ mod tests {
         let title = identity(handle);
         assert_eq!(title["mode"], "title");
         assert_eq!(title["generation"], "1");
+        assert_eq!(
+            title["presentation"],
+            serde_json::json!({
+                "cue_id": "presentation.campaign.title",
+                "phase": "title"
+            })
+        );
         assert!(title.get("active_runtime_flow").is_none());
 
         let forbidden_next = serde_json::to_vec(&serde_json::json!({
@@ -1279,6 +1297,14 @@ mod tests {
         assert_eq!(loading["mode"], "loading");
         assert_eq!(loading["generation"], "2");
         assert_eq!(
+            loading["presentation"],
+            serde_json::json!({
+                "cue_id": "presentation.magic_carpet_2.night_spire.loading",
+                "phase": "loading",
+                "level_id": "level.magic_carpet_2.night_spire"
+            })
+        );
+        assert_eq!(
             loading["pending_definition"]["runtime_flow"]["game_id"],
             "game.magic_carpet_2"
         );
@@ -1294,6 +1320,14 @@ mod tests {
         assert_eq!(playing["session"]["session_id"], handle.to_string());
         assert_eq!(playing["session"]["generation"], "1");
         assert_eq!(playing["session"]["tick"], "0");
+        assert_eq!(
+            playing["presentation"],
+            serde_json::json!({
+                "cue_id": "presentation.magic_carpet_2.night_spire.entry",
+                "phase": "level_entry",
+                "level_id": "level.magic_carpet_2.night_spire"
+            })
+        );
         assert_eq!(
             playing["active_runtime_flow"],
             loading["pending_definition"]["runtime_flow"]
@@ -1845,6 +1879,85 @@ mod tests {
             ),
             MC_STATUS_INVALID_ARGUMENT,
             "rejected transitions must not manufacture a receipt"
+        );
+        assert_eq!(mc_game_runtime_destroy_v1(handle), MC_STATUS_OK);
+    }
+
+    #[test]
+    fn runtime_completion_receipt_json_preserves_ordered_semantic_cues() {
+        use sim_core::{
+            game_definition::{
+                RuntimeFlowDestination, RuntimeFlowNodeId, SemanticLevelId,
+                SemanticPresentationCueId,
+            },
+            game_runtime::{RuntimePresentationCue, RuntimePresentationPhase},
+        };
+
+        let mut handle = 0_u64;
+        assert_eq!(mc_game_runtime_create_v1(&raw mut handle), MC_STATUS_OK);
+        let title = with_runtime(handle, |runtime| Ok(runtime.runtime.identity())).unwrap();
+        let completed_level = SemanticLevelId::parse("level.magic_carpet_2.revealed_way").unwrap();
+        let destination = RuntimeFlowDestination::Title {
+            node_id: RuntimeFlowNodeId::parse("flow.magic_carpet_2.return_to_title").unwrap(),
+        };
+        let completion_cue = RuntimePresentationCue {
+            cue_id: SemanticPresentationCueId::parse(
+                "presentation.magic_carpet_2.revealed_way.completion",
+            )
+            .unwrap(),
+            phase: RuntimePresentationPhase::LevelCompletion,
+            level_id: Some(completed_level.clone()),
+            completion_destination: Some(destination.clone()),
+        };
+        let receipt = CompletionTransitionReceipt {
+            receipt_contract: COMPLETION_TRANSITION_RECEIPT,
+            before: title.clone(),
+            after: title.clone(),
+            source_session: sim_session::SessionIdentity {
+                engine_contract: sim_session::GAME_SESSION_CONTRACT,
+                package_graph_hash: "sha256:package".to_owned(),
+                definition_hash: "sha256:definition".to_owned(),
+                definition_revision: 1,
+                session_id: handle,
+                generation: 1,
+                tick: 9,
+            },
+            completed_level_id: completed_level,
+            completion_destination: destination,
+            completion: sim_session::GameCompletion { state_hash: 0x1234 },
+            presentation_sequence: vec![completion_cue, title.presentation.clone()],
+            receipt_sha256: "0".repeat(64),
+        };
+        with_runtime_mut(handle, |runtime| {
+            runtime.completion_transition_receipt = Some(receipt);
+            Ok(())
+        })
+        .unwrap();
+
+        let encoded = read_json(|buffer, capacity, length| {
+            mc_game_runtime_completion_transition_receipt_json_v1(handle, buffer, capacity, length)
+        });
+        assert_eq!(
+            encoded["receipt_contract"],
+            "carpet-flight-completion-transition-receipt/v2"
+        );
+        assert_eq!(
+            encoded["presentation_sequence"],
+            serde_json::json!([
+                {
+                    "cue_id": "presentation.magic_carpet_2.revealed_way.completion",
+                    "phase": "level_completion",
+                    "level_id": "level.magic_carpet_2.revealed_way",
+                    "completion_destination": {
+                        "kind": "title",
+                        "node_id": "flow.magic_carpet_2.return_to_title"
+                    }
+                },
+                {
+                    "cue_id": "presentation.campaign.title",
+                    "phase": "title"
+                }
+            ])
         );
         assert_eq!(mc_game_runtime_destroy_v1(handle), MC_STATUS_OK);
     }

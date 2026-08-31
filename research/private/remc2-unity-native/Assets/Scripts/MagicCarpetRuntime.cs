@@ -9087,7 +9087,7 @@ namespace MagicCarpet.Native
             gameRuntimeRecentSemanticEvents.Clear();
             if (receipt.after.mode == GameRuntimeTransport.TitleMode)
             {
-                PresentGameRuntimeTransition(receipt.after);
+                PresentGameRuntimeTransition(receipt);
                 gameRuntimeLoadingPresentationGate.Reset();
                 gameRuntimeStartupReady = false;
                 return receipt;
@@ -9098,7 +9098,7 @@ namespace MagicCarpet.Native
                 receipt.completion_destination.level_id == GameRuntimeLevelTwoId,
                 "accepted nonterminal completion entered resolver-owned Loading");
             EnsureGameRuntimeTransitionPresentation();
-            PresentGameRuntimeTransition(receipt.after);
+            PresentGameRuntimeTransition(receipt);
             gameRuntimeLoadingPresentationGate.Begin(
                 receipt.after,
                 receipt.completion_destination.level_id);
@@ -9196,6 +9196,18 @@ namespace MagicCarpet.Native
             {
                 gameRuntimeTransitionCamera.enabled =
                     identity?.mode == GameRuntimeTransport.LoadingMode &&
+                    !Application.isBatchMode;
+            }
+        }
+
+        private void PresentGameRuntimeTransition(
+            GameRuntimeTransport.CompletionTransitionReceipt receipt)
+        {
+            gameRuntimeTransitionPresenter?.Present(receipt);
+            if (gameRuntimeTransitionCamera != null)
+            {
+                gameRuntimeTransitionCamera.enabled =
+                    gameRuntimeTransitionPresenter?.IsVisible == true &&
                     !Application.isBatchMode;
             }
         }

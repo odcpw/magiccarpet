@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Security.Cryptography;
 using UnityEngine;
@@ -19,6 +20,20 @@ namespace MagicCarpet.Native
             "frame/reset-loaded-main-320x200.indices.u8";
         internal const string PalettePath =
             "frame/reset-loaded-main.palette.rgb6";
+        private static readonly HashSet<string> KnownCueIds = new(
+            StringComparer.Ordinal)
+        {
+            GameRuntimeTransport.TitlePresentationCue,
+            "presentation.magic_carpet_2.night_spire.loading",
+            "presentation.magic_carpet_2.night_spire.entry",
+            "presentation.magic_carpet_2.night_spire.completion",
+            "presentation.magic_carpet_2.payahandra_ruins.loading",
+            "presentation.magic_carpet_2.payahandra_ruins.entry",
+            "presentation.magic_carpet_2.payahandra_ruins.completion",
+            "presentation.magic_carpet_2.revealed_way.loading",
+            "presentation.magic_carpet_2.revealed_way.entry",
+            "presentation.magic_carpet_2.revealed_way.completion"
+        };
 
         private GameObject root;
         private Mesh mesh;
@@ -34,6 +49,9 @@ namespace MagicCarpet.Native
         internal string IndicesSha256 { get; private set; }
         internal string PaletteRgb6Sha256 { get; private set; }
         internal string PaletteRgb8Sha256 { get; private set; }
+        internal string LastPresentedCueId { get; private set; }
+        internal string[] LastPresentationSequence { get; private set; } =
+            Array.Empty<string>();
 
         internal CampaignTransitionPresenter(
             Transform parent,
@@ -152,7 +170,40 @@ namespace MagicCarpet.Native
             {
                 throw new ObjectDisposedException(nameof(CampaignTransitionPresenter));
             }
-            root.SetActive(identity?.mode == GameRuntimeTransport.LoadingMode);
+            GameRuntimeTransport.ValidateIdentityPresentation(identity);
+            LastPresentationSequence = new[] { identity.presentation.cue_id };
+            ApplyCue(identity.presentation);
+        }
+
+        internal void Present(
+            GameRuntimeTransport.CompletionTransitionReceipt receipt)
+        {
+            if (root == null)
+            {
+                throw new ObjectDisposedException(nameof(CampaignTransitionPresenter));
+            }
+            GameRuntimeTransport.ValidateCompletionPresentationSequence(receipt);
+            LastPresentationSequence = Array.ConvertAll(
+                receipt.presentation_sequence,
+                cue => cue.cue_id);
+            foreach (var cue in receipt.presentation_sequence)
+            {
+                ApplyCue(cue);
+            }
+        }
+
+        private void ApplyCue(GameRuntimeTransport.RuntimePresentationCue cue)
+        {
+            GameRuntimeTransport.ValidatePresentationCue(cue);
+            if (!KnownCueIds.Contains(cue.cue_id))
+            {
+                throw new InvalidDataException(
+                    "campaign transition presenter has no binding for Rust cue " +
+                    cue.cue_id);
+            }
+            LastPresentedCueId = cue.cue_id;
+            root.SetActive(
+                cue.phase == GameRuntimeTransport.LoadingPresentationPhase);
         }
 
         public void Dispose()

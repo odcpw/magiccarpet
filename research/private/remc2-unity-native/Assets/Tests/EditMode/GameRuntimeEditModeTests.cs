@@ -199,6 +199,10 @@ namespace MagicCarpet.Native.Tests
                 Assert.That(
                     runtime.NegotiatedContract.installed_package_set.request_contract,
                     Is.EqualTo(GameRuntimeTransport.InstalledPackageSetContract));
+                Assert.That(runtime.NegotiatedContract.definition_contract,
+                    Is.EqualTo(GameRuntimeTransport.DefinitionContract));
+                Assert.That(runtime.NegotiatedContract.semantic_contract_version,
+                    Is.EqualTo(GameRuntimeTransport.SemanticContractVersion));
                 var title = runtime.IdentitySnapshot();
                 Assert.That(title.mode, Is.EqualTo(GameRuntimeTransport.TitleMode));
                 Assert.That(title.generation, Is.EqualTo("1"));
@@ -208,6 +212,10 @@ namespace MagicCarpet.Native.Tests
                     Is.Null.Or.Empty);
                 Assert.That(title.active_runtime_flow?.game_id, Is.Null.Or.Empty);
                 Assert.That(title.session.session_id, Is.Null.Or.Empty);
+                Assert.That(title.presentation.cue_id,
+                    Is.EqualTo(GameRuntimeTransport.TitlePresentationCue));
+                Assert.That(title.presentation.phase,
+                    Is.EqualTo(GameRuntimeTransport.TitlePresentationPhase));
 
                 title.pending_definition.runtime_flow =
                     new GameRuntimeTransport.RuntimeFlowDefinition
@@ -262,6 +270,13 @@ namespace MagicCarpet.Native.Tests
                     Is.EqualTo(3));
                 Assert.That(loading.active_runtime_flow?.game_id, Is.Null.Or.Empty);
                 Assert.That(loading.session.session_id, Is.Null.Or.Empty);
+                Assert.That(loading.presentation.cue_id,
+                    Is.EqualTo(
+                        "presentation.magic_carpet_2.night_spire.loading"));
+                Assert.That(loading.presentation.phase,
+                    Is.EqualTo(GameRuntimeTransport.LoadingPresentationPhase));
+                Assert.That(loading.presentation.level_id,
+                    Is.EqualTo("level.magic_carpet_2.night_spire"));
 
                 loading.active_runtime_flow = new GameRuntimeTransport.RuntimeFlowDefinition
                 {
@@ -295,6 +310,11 @@ namespace MagicCarpet.Native.Tests
                 Assert.That(playing.session.session_id, Is.EqualTo(runtime.Handle.ToString()));
                 Assert.That(playing.session.generation, Is.EqualTo("1"));
                 Assert.That(playing.session.tick, Is.EqualTo("0"));
+                Assert.That(playing.presentation.cue_id,
+                    Is.EqualTo(
+                        "presentation.magic_carpet_2.night_spire.entry"));
+                Assert.That(playing.presentation.phase,
+                    Is.EqualTo(GameRuntimeTransport.LevelEntryPresentationPhase));
 
                 playing.pending_definition.runtime_flow =
                     new GameRuntimeTransport.RuntimeFlowDefinition

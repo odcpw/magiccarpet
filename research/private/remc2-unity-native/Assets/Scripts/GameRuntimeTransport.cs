@@ -16,11 +16,14 @@ namespace MagicCarpet.Native
     /// </summary>
     internal sealed class GameRuntimeTransport : IDisposable
     {
-        internal const string RuntimeContract = "carpet-flight-game-runtime/v9";
+        internal const string RuntimeContract = "carpet-flight-game-runtime/v10";
         internal const string TransportContract =
-            "carpet-flight-native-game-runtime-json/v9";
+            "carpet-flight-native-game-runtime-json/v10";
+        internal const string DefinitionContract =
+            "carpet-flight-game-definition/v11";
+        internal const string SemanticContractVersion = "36.0";
         internal const string CompletionTransitionReceiptContract =
-            "carpet-flight-completion-transition-receipt/v1";
+            "carpet-flight-completion-transition-receipt/v2";
         internal const string InstalledPackageSetContract =
             "carpet-flight-installed-package-set-bootstrap/v1";
         internal const string ReplaySaveContract =
@@ -30,6 +33,11 @@ namespace MagicCarpet.Native
         internal const string LoadingMode = "loading";
         internal const string PlayingMode = "playing";
         internal const string PausedMode = "paused";
+        internal const string TitlePresentationPhase = "title";
+        internal const string LoadingPresentationPhase = "loading";
+        internal const string LevelEntryPresentationPhase = "level_entry";
+        internal const string LevelCompletionPresentationPhase = "level_completion";
+        internal const string TitlePresentationCue = "presentation.campaign.title";
 
         private delegate int JsonRead(IntPtr buffer, uint capacity, out uint length);
 
@@ -39,6 +47,8 @@ namespace MagicCarpet.Native
             public string runtime_contract;
             public string transport_contract;
             public int transport_version;
+            public string definition_contract;
+            public string semantic_contract_version;
             public string encoding;
             public string u64_counter_encoding;
             public string[] modes;
@@ -91,6 +101,7 @@ namespace MagicCarpet.Native
             public string receipt_transport;
             public string destination_authority;
             public string package_authority;
+            public string presentation_sequence;
             public string[] guards;
         }
 
@@ -116,6 +127,7 @@ namespace MagicCarpet.Native
             public string title;
             public string loading;
             public string playing_and_paused;
+            public string presentation_cue;
         }
 
         [Serializable]
@@ -168,9 +180,19 @@ namespace MagicCarpet.Native
             public string runtime_id;
             public string generation;
             public string mode;
+            public RuntimePresentationCue presentation;
             public DefinitionIdentity pending_definition;
             public RuntimeFlowDefinition active_runtime_flow;
             public EngineSessionTransport.Identity session;
+        }
+
+        [Serializable]
+        internal sealed class RuntimePresentationCue
+        {
+            public string cue_id;
+            public string phase;
+            public string level_id;
+            public RuntimeFlowDestination completion_destination;
         }
 
         [Serializable]
@@ -189,6 +211,7 @@ namespace MagicCarpet.Native
             public string completed_level_id;
             public RuntimeFlowDestination completion_destination;
             public GameCompletion completion;
+            public RuntimePresentationCue[] presentation_sequence;
             public string receipt_sha256;
         }
 
@@ -644,7 +667,9 @@ namespace MagicCarpet.Native
             if (contract == null ||
                 contract.runtime_contract != RuntimeContract ||
                 contract.transport_contract != TransportContract ||
-                contract.transport_version != 9 ||
+                contract.transport_version != 10 ||
+                contract.definition_contract != DefinitionContract ||
+                contract.semantic_contract_version != SemanticContractVersion ||
                 contract.encoding != "utf-8-json" ||
                 contract.u64_counter_encoding != "decimal-string" ||
                 contract.playing_session_transport !=
@@ -680,6 +705,7 @@ namespace MagicCarpet.Native
                 contract.runtime_flow.title != "absent" ||
                 contract.runtime_flow.loading != "pending_definition.runtime_flow" ||
                 contract.runtime_flow.playing_and_paused != "active_runtime_flow" ||
+                contract.runtime_flow.presentation_cue != "identity.presentation" ||
                 contract.completion_transition == null ||
                 contract.completion_transition.receipt_contract !=
                     CompletionTransitionReceiptContract ||
@@ -691,6 +717,8 @@ namespace MagicCarpet.Native
                     "rust_owned_semantic_flow" ||
                 contract.completion_transition.package_authority !=
                     "installed_package_resolver" ||
+                contract.completion_transition.presentation_sequence !=
+                    "ordered_rust_owned_semantic_cues" ||
                 contract.completion_transition.guards == null ||
                 !new[] { "runtime_generation", "session_generation", "expected_tick" }
                     .SequenceEqual(contract.completion_transition.guards) ||
@@ -732,6 +760,7 @@ namespace MagicCarpet.Native
                 throw new InvalidOperationException("game runtime identity is incomplete");
             }
             ParseCounter(identity.generation, "generation");
+            ValidateIdentityPresentation(identity);
             switch (identity.mode)
             {
                 case TitleMode:
@@ -770,6 +799,35 @@ namespace MagicCarpet.Native
                     EngineSessionTransport.ValidateIdentity(identity.session);
                     ValidateRuntimeFlow(identity.active_runtime_flow);
                     break;
+            }
+        }
+
+        internal static void ValidateIdentityPresentation(Identity identity)
+        {
+            ValidatePresentationCue(identity?.presentation);
+            var expectedPhase = identity?.mode switch
+            {
+                TitleMode => TitlePresentationPhase,
+                LoadingMode => LoadingPresentationPhase,
+                PlayingMode => LevelEntryPresentationPhase,
+                PausedMode => LevelEntryPresentationPhase,
+                _ => null
+            };
+            var expectedLevel = identity?.mode switch
+            {
+                LoadingMode => identity.pending_definition?.runtime_flow?.bound_level_id,
+                PlayingMode => identity.active_runtime_flow?.bound_level_id,
+                PausedMode => identity.active_runtime_flow?.bound_level_id,
+                _ => null
+            };
+            if (identity?.presentation?.phase != expectedPhase ||
+                (expectedPhase == TitlePresentationPhase &&
+                 identity.presentation.cue_id != TitlePresentationCue) ||
+                (expectedPhase != TitlePresentationPhase &&
+                 identity.presentation.level_id != expectedLevel))
+            {
+                throw new InvalidOperationException(
+                    "runtime presentation cue is not identity-bound");
             }
         }
 
@@ -837,6 +895,7 @@ namespace MagicCarpet.Native
                 throw new InvalidOperationException(
                     "completion transition receipt is not bound to the accepted Rust transition");
             }
+            ValidateCompletionPresentationSequence(receipt);
             if (receipt.completion_destination.kind == "level")
             {
                 if (after.mode != LoadingMode ||
@@ -864,6 +923,73 @@ namespace MagicCarpet.Native
             {
                 throw new InvalidOperationException(
                     "completion transition receipt has an unknown destination");
+            }
+        }
+
+        internal static void ValidatePresentationCue(RuntimePresentationCue cue)
+        {
+            if (cue == null || !IsSemanticId(cue.cue_id, "presentation") ||
+                !new[] {
+                    TitlePresentationPhase,
+                    LoadingPresentationPhase,
+                    LevelEntryPresentationPhase,
+                    LevelCompletionPresentationPhase
+                }.Contains(cue.phase))
+            {
+                throw new InvalidOperationException(
+                    "runtime presentation cue is incomplete");
+            }
+            if (cue.phase == TitlePresentationPhase)
+            {
+                if (cue.cue_id != TitlePresentationCue ||
+                    !string.IsNullOrEmpty(cue.level_id) ||
+                    HasDestinationData(cue.completion_destination))
+                {
+                    throw new InvalidOperationException(
+                        "Title presentation cue carries invalid context");
+                }
+                return;
+            }
+            if (!IsSemanticId(cue.level_id, "level"))
+            {
+                throw new InvalidOperationException(
+                    "level presentation cue has no semantic level context");
+            }
+            if (cue.phase == LevelCompletionPresentationPhase)
+            {
+                ValidateDestination(cue.completion_destination);
+            }
+            else if (HasDestinationData(cue.completion_destination))
+            {
+                throw new InvalidOperationException(
+                    "non-completion presentation cue carries a destination");
+            }
+        }
+
+        internal static void ValidateCompletionPresentationSequence(
+            CompletionTransitionReceipt receipt)
+        {
+            if (receipt?.presentation_sequence == null ||
+                receipt.presentation_sequence.Length != 2)
+            {
+                throw new InvalidOperationException(
+                    "completion transition has no ordered presentation sequence");
+            }
+            foreach (var cue in receipt.presentation_sequence)
+            {
+                ValidatePresentationCue(cue);
+            }
+            var completion = receipt.presentation_sequence[0];
+            var destination = receipt.presentation_sequence[1];
+            if (completion.phase != LevelCompletionPresentationPhase ||
+                completion.level_id != receipt.completed_level_id ||
+                !SameDestination(
+                    completion.completion_destination,
+                    receipt.completion_destination) ||
+                !SamePresentationCue(destination, receipt.after?.presentation))
+            {
+                throw new InvalidOperationException(
+                    "completion transition presentation sequence is not receipt-bound");
             }
         }
 
@@ -1087,6 +1213,7 @@ namespace MagicCarpet.Native
                 left.runtime_id == right.runtime_id &&
                 left.generation == right.generation &&
                 left.mode == right.mode &&
+                SamePresentationCue(left.presentation, right.presentation) &&
                 SameDefinitionIdentity(left.pending_definition, right.pending_definition) &&
                 SameRuntimeFlow(left.active_runtime_flow, right.active_runtime_flow) &&
                 SameSessionIdentity(left.session, right.session);
@@ -1131,6 +1258,51 @@ namespace MagicCarpet.Native
                 left.kind == right.kind &&
                 left.level_id == right.level_id &&
                 left.node_id == right.node_id;
+        }
+
+        private static bool SamePresentationCue(
+            RuntimePresentationCue left,
+            RuntimePresentationCue right)
+        {
+            return left != null && right != null &&
+                left.cue_id == right.cue_id &&
+                left.phase == right.phase &&
+                left.level_id == right.level_id &&
+                ((!HasDestinationData(left.completion_destination) &&
+                  !HasDestinationData(right.completion_destination)) ||
+                 SameDestination(
+                     left.completion_destination,
+                     right.completion_destination));
+        }
+
+        private static bool HasDestinationData(RuntimeFlowDestination destination)
+        {
+            return destination != null &&
+                (!string.IsNullOrEmpty(destination.kind) ||
+                 !string.IsNullOrEmpty(destination.level_id) ||
+                 !string.IsNullOrEmpty(destination.node_id));
+        }
+
+        private static void ValidateDestination(RuntimeFlowDestination destination)
+        {
+            if (destination?.kind == "level")
+            {
+                if (!IsSemanticId(destination.level_id, "level") ||
+                    !string.IsNullOrEmpty(destination.node_id))
+                {
+                    throw new InvalidOperationException(
+                        "presentation cue level destination is invalid");
+                }
+                return;
+            }
+            if (destination?.kind == "title" &&
+                IsSemanticId(destination.node_id, "flow") &&
+                string.IsNullOrEmpty(destination.level_id))
+            {
+                return;
+            }
+            throw new InvalidOperationException(
+                "presentation cue destination is invalid");
         }
 
         private static bool IsLowerHex(string value, int width)

@@ -77,6 +77,9 @@ namespace MagicCarpet.Native.Tests
 
                 presenter.Present(runtime.IdentitySnapshot());
                 Assert.That(presenter.IsVisible, Is.False, "title is not loading");
+                Assert.That(
+                    presenter.LastPresentedCueId,
+                    Is.EqualTo(GameRuntimeTransport.TitlePresentationCue));
 
                 var loading = runtime.BootstrapPackageSet(
                     Package(LevelThreePackage),
@@ -84,6 +87,10 @@ namespace MagicCarpet.Native.Tests
                     Package(LevelTwoPackage));
                 presenter.Present(loading);
                 Assert.That(presenter.IsVisible, Is.True);
+                Assert.That(
+                    presenter.LastPresentedCueId,
+                    Is.EqualTo(
+                        "presentation.magic_carpet_2.night_spire.loading"));
 
                 var indicesTexture = presenter.IndicesTexture;
                 var paletteTexture = presenter.PaletteTexture;
@@ -101,6 +108,100 @@ namespace MagicCarpet.Native.Tests
                 Assert.That(presenter.IsVisible, Is.False, "playing hides loading");
                 presenter.Present(runtime.Pause());
                 Assert.That(presenter.IsVisible, Is.False, "paused hides loading");
+
+                var destination = new GameRuntimeTransport.RuntimeFlowDestination
+                {
+                    kind = "level",
+                    level_id = "level.magic_carpet_2.payahandra_ruins"
+                };
+                var completionCue = new GameRuntimeTransport.RuntimePresentationCue
+                {
+                    cue_id =
+                        "presentation.magic_carpet_2.night_spire.completion",
+                    phase = GameRuntimeTransport.LevelCompletionPresentationPhase,
+                    level_id = "level.magic_carpet_2.night_spire",
+                    completion_destination = destination
+                };
+                var nextLoadingCue = new GameRuntimeTransport.RuntimePresentationCue
+                {
+                    cue_id =
+                        "presentation.magic_carpet_2.payahandra_ruins.loading",
+                    phase = GameRuntimeTransport.LoadingPresentationPhase,
+                    level_id = "level.magic_carpet_2.payahandra_ruins"
+                };
+                presenter.Present(new GameRuntimeTransport.CompletionTransitionReceipt
+                {
+                    completed_level_id = "level.magic_carpet_2.night_spire",
+                    completion_destination = destination,
+                    after = new GameRuntimeTransport.Identity
+                    {
+                        presentation = nextLoadingCue
+                    },
+                    presentation_sequence = new[]
+                    {
+                        completionCue,
+                        nextLoadingCue
+                    }
+                });
+                Assert.That(
+                    presenter.LastPresentationSequence,
+                    Is.EqualTo(new[]
+                    {
+                        "presentation.magic_carpet_2.night_spire.completion",
+                        "presentation.magic_carpet_2.payahandra_ruins.loading"
+                    }));
+                Assert.That(presenter.LastPresentedCueId,
+                    Is.EqualTo(nextLoadingCue.cue_id));
+                Assert.That(presenter.IsVisible, Is.True,
+                    "the ordered Rust receipt ends on its selected Loading cue");
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(parent);
+            }
+        }
+
+        [Test]
+        public void UnknownAndMalformedRustCuesFailClosed()
+        {
+            var parent = new GameObject("unknown transition cue test parent");
+            try
+            {
+                using var presenter = new CampaignTransitionPresenter(
+                    parent.transform,
+                    new byte[CampaignTransitionPresenter.FrameWidth *
+                             CampaignTransitionPresenter.FrameHeight],
+                    new byte[256 * 3]);
+                Assert.Throws<InvalidDataException>(() => presenter.Present(
+                    new GameRuntimeTransport.Identity
+                    {
+                        mode = GameRuntimeTransport.LoadingMode,
+                        presentation = new GameRuntimeTransport.RuntimePresentationCue
+                        {
+                            cue_id =
+                                "presentation.magic_carpet_2.unknown.loading",
+                            phase = GameRuntimeTransport.LoadingPresentationPhase,
+                            level_id = "level.magic_carpet_2.unknown"
+                        },
+                        pending_definition = new GameRuntimeTransport.DefinitionIdentity
+                        {
+                            runtime_flow = new GameRuntimeTransport.RuntimeFlowDefinition
+                            {
+                                bound_level_id = "level.magic_carpet_2.unknown"
+                            }
+                        }
+                    }));
+                Assert.That(presenter.IsVisible, Is.False);
+
+                Assert.Throws<InvalidOperationException>(() =>
+                    GameRuntimeTransport.ValidatePresentationCue(
+                        new GameRuntimeTransport.RuntimePresentationCue
+                        {
+                            cue_id = "presentation.magic_carpet_2.night_spire.loading",
+                            phase = "invented",
+                            level_id = "level.magic_carpet_2.night_spire"
+                        }));
+                Assert.That(presenter.IsVisible, Is.False);
             }
             finally
             {
