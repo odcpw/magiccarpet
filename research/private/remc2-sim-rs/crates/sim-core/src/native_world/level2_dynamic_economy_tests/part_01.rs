@@ -1387,6 +1387,7 @@
             .spawn_mana_sphere_from_death(101, position, 0, 0x1234, 500, 0)
             .expect("neutral Archer death sphere");
         assert_eq!(sphere_id, u32::from(sphere_slot));
+        let sphere_generation = session.economy().slot_generation(sphere_slot);
         {
             let mut economy = session.economy_mut();
             let sphere = economy
@@ -1516,6 +1517,43 @@
             .any(|sphere| sphere.source_entity_index == sphere_slot));
         assert!(!session.economy().map_chains().is_linked(sphere_slot));
         assert!(session.economy().free_slots.contains(&sphere_slot));
+
+        session.economy_mut().free_slots = vec![sphere_slot];
+        let replacement_id = session
+            .economy_mut()
+            .spawn_mana_sphere_from_death(202, position, 0, 0x4321, 300, 0)
+            .expect("reclaimed numeric slot admits a later sphere generation");
+        assert_eq!(replacement_id, sphere_id);
+        assert!(session.economy().slot_generation(sphere_slot) > sphere_generation);
+        assert_eq!(
+            session
+                .economy()
+                .spheres()
+                .iter()
+                .find(|sphere| sphere.source_entity_index == sphere_slot)
+                .map(|sphere| sphere.mana),
+            Some(300)
+        );
+        assert!(session.economy().events().iter().any(|event| {
+            matches!(
+                event,
+                Level2EconomyEvent::ManaSphereCollected {
+                    sphere_id: event_sphere,
+                    mana: 500,
+                    ..
+                } if *event_sphere == sphere_id
+            )
+        }));
+        assert!(session.economy().events().iter().any(|event| {
+            matches!(
+                event,
+                Level2EconomyEvent::ManaSphereSpawned {
+                    sphere_id: event_sphere,
+                    source_entity_index: 202,
+                    mana: 300,
+                } if *event_sphere == sphere_id
+            )
+        }));
     }
 
     #[test]
