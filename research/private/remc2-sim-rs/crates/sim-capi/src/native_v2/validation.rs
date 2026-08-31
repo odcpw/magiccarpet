@@ -175,7 +175,9 @@ pub(super) fn campaign_opponent_snapshot(
         abi_version: MC_NATIVE_ABI_VERSION,
         struct_size: struct_size::<McCampaignOpponentSnapshotV2>(),
         generation,
-        active: 1,
+        active: u8::from(
+            participant.player_slot != u8::MAX && participant.entity_index != u16::MAX,
+        ),
         player_slot: participant.player_slot,
         is_ai: u8::from(participant.is_ai),
         color_index: participant.color_index,

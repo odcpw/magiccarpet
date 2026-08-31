@@ -714,6 +714,31 @@ pub struct McCampaignEntitySnapshotV2 {
     pub reserved: [u32; 4],
 }
 
+/// Read-only source/package sprite identity for one live campaign entity.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct McCampaignEntityPresentationV2 {
+    pub abi_version: u32,
+    pub struct_size: u32,
+    pub generation: u64,
+    pub tick: u64,
+    pub entity_index: u16,
+    pub source_id: u16,
+    pub render_parameter_index: u16,
+    pub base_tmap: u16,
+    pub selected_tmap: u16,
+    pub logical_height: u16,
+    pub render_mode: u8,
+    pub orientation_sector: u8,
+    pub mirrored: u8,
+    pub reserved_0: u8,
+    pub x: u16,
+    pub y: u16,
+    pub z: i16,
+    pub yaw: i16,
+    pub reserved: [u32; 4],
+}
+
 /// Additive family-6 Shield state projection.  The row is generation-bound
 /// like the other Level 2 campaign snapshots; `active == 0` is the qualified
 /// reset/no-holder state rather than an error.

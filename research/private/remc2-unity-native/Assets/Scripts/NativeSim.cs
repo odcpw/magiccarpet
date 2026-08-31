@@ -517,6 +517,31 @@ namespace MagicCarpet.Native
         }
 
         [StructLayout(LayoutKind.Sequential)]
+        internal struct CampaignEntityPresentation
+        {
+            internal uint abiVersion;
+            internal uint structSize;
+            internal ulong generation;
+            internal ulong tick;
+            internal ushort entityIndex;
+            internal ushort sourceId;
+            internal ushort renderParameterIndex;
+            internal ushort baseTmap;
+            internal ushort selectedTmap;
+            internal ushort logicalHeight;
+            internal byte renderMode;
+            internal byte orientationSector;
+            internal byte mirrored;
+            internal byte reserved0;
+            internal ushort x;
+            internal ushort y;
+            internal short z;
+            internal short yaw;
+            [MarshalAs(UnmanagedType.ByValArray, SizeConst = 4)]
+            internal uint[] reserved;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
         internal struct CampaignShieldSnapshot
         {
             internal uint abiVersion;
@@ -2479,6 +2504,17 @@ namespace MagicCarpet.Native
             out uint written);
 
         [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+        internal static extern int mc_native_campaign_entity_presentations_copy(
+            ulong handle,
+            ulong generation,
+            ulong tick,
+            short cameraYaw,
+            [Out] CampaignEntityPresentation[] buffer,
+            uint capacity,
+            uint elementSize,
+            out uint written);
+
+        [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
         internal static extern int mc_native_campaign_goats_copy(
             ulong handle,
             ulong generation,
@@ -3162,6 +3198,7 @@ namespace MagicCarpet.Native
             RequireSize<CampaignObjectiveStageSnapshot>(48);
             RequireSize<CampaignPlayerSnapshot>(48);
             RequireSize<CampaignEntitySnapshot>(52);
+            RequireSize<CampaignEntityPresentation>(64);
             RequireSize<CampaignShieldSnapshot>(72);
             RequireSize<CampaignInvisibleSnapshot>(80);
             RequireSize<CampaignBeyondSightSnapshot>(80);
@@ -3252,6 +3289,9 @@ namespace MagicCarpet.Native
                 nameof(CampaignObjectiveStageSnapshot.reserved), 32);
             RequireOffset<CampaignPlayerSnapshot>(nameof(CampaignPlayerSnapshot.turn), 16);
             RequireOffset<CampaignEntitySnapshot>(nameof(CampaignEntitySnapshot.reserved), 36);
+            RequireOffset<CampaignEntityPresentation>(nameof(CampaignEntityPresentation.entityIndex), 24);
+            RequireOffset<CampaignEntityPresentation>(nameof(CampaignEntityPresentation.x), 40);
+            RequireOffset<CampaignEntityPresentation>(nameof(CampaignEntityPresentation.reserved), 48);
             RequireOffset<CampaignShieldSnapshot>(nameof(CampaignShieldSnapshot.parentStatusFlags), 48);
             RequireOffset<CampaignInvisibleSnapshot>(nameof(CampaignInvisibleSnapshot.parentStatusFlags), 52);
             RequireOffset<CampaignBeyondSightSnapshot>(nameof(CampaignBeyondSightSnapshot.experienceAwarded), 52);

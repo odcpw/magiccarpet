@@ -41,6 +41,7 @@ fn layouts_and_versions_are_stable() {
     assert_eq!(size_of::<McCampaignTerrainStateV2>(), 64);
     assert_eq!(size_of::<McCampaignPlayerSnapshotV2>(), 48);
     assert_eq!(size_of::<McCampaignEntitySnapshotV2>(), 52);
+    assert_eq!(size_of::<McCampaignEntityPresentationV2>(), 64);
     assert_eq!(size_of::<McCampaignShieldSnapshotV2>(), 72);
     assert_eq!(size_of::<McCampaignInvisibleSnapshotV2>(), 80);
     assert_eq!(size_of::<McCampaignBeyondSightSnapshotV2>(), 80);
@@ -2946,6 +2947,67 @@ fn cf14_level3_descriptor_package() -> PathBuf {
     )
 }
 
+#[test]
+fn level2_campaign_hud_and_minimap_keep_exact_nyphur_reset_identity() {
+    let level2_package = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../../generated/l2-debug3.fJ3PaM/level2");
+    let package = level2_package.to_string_lossy();
+    let selection = McCampaignSelectionV2 {
+        abi_version: MC_NATIVE_ABI_VERSION,
+        struct_size: struct_size::<McCampaignSelectionV2>(),
+        external_level: 2,
+        internal_level: 1,
+        map_type: 0,
+        ..McCampaignSelectionV2::default()
+    };
+    let mut handle = 0;
+    assert_eq!(
+        mc_native_campaign_session_open(
+            package.as_ptr(),
+            package.len() as u32,
+            std::ptr::null(),
+            0,
+            &raw const selection,
+            &raw mut handle,
+        ),
+        MC_STATUS_OK
+    );
+    let mut hud = McCampaignDayHudSnapshotV2::default();
+    assert_eq!(
+        mc_native_campaign_day_hud_state(
+            handle,
+            0,
+            0,
+            &raw mut hud,
+            struct_size::<McCampaignDayHudSnapshotV2>(),
+        ),
+        MC_STATUS_OK
+    );
+    assert_eq!(
+        (
+            hud.nyphur.active,
+            hud.nyphur.player_slot,
+            hud.nyphur.entity_index,
+            hud.nyphur.fireball_holder_index,
+            hud.nyphur.possession_holder_index,
+        ),
+        (1, 1, 112, 113, 114)
+    );
+    let mut minimap = McCampaignMinimapStateV2::default();
+    assert_eq!(
+        mc_native_campaign_minimap_state(
+            handle,
+            0,
+            0,
+            &raw mut minimap,
+            struct_size::<McCampaignMinimapStateV2>(),
+        ),
+        MC_STATUS_OK
+    );
+    assert!(minimap.entity_count > 0);
+    assert_eq!(mc_native_campaign_session_destroy(handle), MC_STATUS_OK);
+}
+
 fn cf14_campaign_day_material_cache() -> PathBuf {
     std::env::var_os("MC_CAMPAIGN_ASSET_CACHE_LEVEL3_V1").map_or_else(
         || {
@@ -3146,6 +3208,69 @@ fn cf14_level3_uses_generic_campaign_abi() {
         (local.entity_index, 1)
     );
 
+    let assert_level3_surfaces = |tick: u64| {
+        let mut hud = McCampaignDayHudSnapshotV2::default();
+        assert_eq!(
+            mc_native_campaign_day_hud_state(
+                handle,
+                0,
+                tick,
+                &raw mut hud,
+                struct_size::<McCampaignDayHudSnapshotV2>(),
+            ),
+            MC_STATUS_OK,
+            "{}",
+            LAST_ERROR.with(|value| value.borrow().clone())
+        );
+        assert_eq!((hud.generation, hud.tick), (0, tick));
+        assert_eq!(hud.local_player_entity_index, local.entity_index);
+        assert_eq!(hud.minimap_panel_selector, 40);
+
+        let mut minimap = McCampaignMinimapStateV2::default();
+        assert_eq!(
+            mc_native_campaign_minimap_state(
+                handle,
+                0,
+                tick,
+                &raw mut minimap,
+                struct_size::<McCampaignMinimapStateV2>(),
+            ),
+            MC_STATUS_OK,
+            "{}",
+            LAST_ERROR.with(|value| value.borrow().clone())
+        );
+        assert_eq!((minimap.generation, minimap.tick), (0, tick));
+        assert!(minimap.entity_count > 0);
+
+        let mut sprites = vec![McCampaignEntityPresentationV2::default(); 1_000];
+        let mut sprite_count = 0;
+        assert_eq!(
+            mc_native_campaign_entity_presentations_copy(
+                handle,
+                0,
+                tick,
+                0,
+                sprites.as_mut_ptr(),
+                sprites.len() as u32,
+                struct_size::<McCampaignEntityPresentationV2>(),
+                &raw mut sprite_count,
+            ),
+            MC_STATUS_OK,
+            "{}",
+            LAST_ERROR.with(|value| value.borrow().clone())
+        );
+        assert!(sprite_count > 0);
+        assert!(sprites[..sprite_count as usize].iter().all(|row| {
+            row.abi_version == MC_NATIVE_ABI_VERSION
+                && row.struct_size == struct_size::<McCampaignEntityPresentationV2>()
+                && row.generation == 0
+                && row.tick == tick
+                && row.selected_tmap >= row.base_tmap
+                && row.reserved == [0; 4]
+        }));
+    };
+    assert_level3_surfaces(0);
+
     let step_input = McCampaignStepInputV2 {
         abi_version: MC_NATIVE_ABI_VERSION,
         struct_size: struct_size::<McCampaignStepInputV2>(),
@@ -3232,6 +3357,7 @@ fn cf14_level3_uses_generic_campaign_abi() {
     );
     assert_eq!((stepped_frame.generation, stepped_frame.tick), (0, 1));
     assert_eq!(byte_hash(&stepped_indices), stepped_frame.index_hash);
+    assert_level3_surfaces(1);
 
     assert_eq!(mc_native_campaign_session_reset(handle), MC_STATUS_OK);
     let mut stale_batch = McEventBatchV2::default();

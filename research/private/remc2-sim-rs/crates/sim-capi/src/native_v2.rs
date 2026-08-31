@@ -174,7 +174,7 @@ use sim_core::{
 use crate::presentation_bridge::{
     LIVE_MENU_AUTH_ALL, LIVE_MENU_AUTH_DEBUG_METRICS, Level1PresentationLive, Level2MinimapEntity,
     Level2MinimapMark, Level2MinimapPlan, LiveDebugEntity, LiveHud, LiveMenuState, LiveSpellMenu,
-    LiveSpellSlot, PresentationBridgeQuery, build_level1_final_main, level2_minimap_plan,
+    LiveSpellSlot, PresentationBridgeQuery, build_level1_final_main, campaign_minimap_plan,
 };
 
 #[cfg(test)]

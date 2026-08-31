@@ -5164,8 +5164,79 @@ impl Level2ResetSession {
     }
 
     #[must_use]
+    pub fn campaign_tick(&self) -> u64 {
+        self.session.state.live.core.state.tick
+    }
+
+    #[must_use]
     pub fn semantic_level_definition(&self) -> Option<&crate::level_definition::LevelDefinition> {
         self.session.definition.semantic_level()
+    }
+
+    /// Project live renderable entities through the package's particle table.
+    /// The camera-relative selector rules are the same source rules used by
+    /// the indexed Rust renderer; unknown modes and missing parameter rows
+    /// fail closed instead of becoming a neighboring or client-guessed TMAP.
+    pub fn campaign_entity_presentations(
+        &self,
+        camera_yaw: i16,
+    ) -> Result<Vec<CampaignEntityPresentation>> {
+        self.entities()
+            .iter()
+            .filter(|entity| entity.active && !entity.drawing_disabled())
+            .filter_map(|entity| entity.particle_parameter_index.map(|index| (entity, index)))
+            .map(|(entity, render_parameter_index)| {
+                let parameter = self
+                    .session
+                    .definition
+                    .presentation
+                    .particles
+                    .get(usize::from(render_parameter_index))
+                    .ok_or_else(|| {
+                        NativeWorldError::new(format!(
+                            "campaign entity {} particle parameter {} is absent",
+                            entity.index, render_parameter_index
+                        ))
+                    })?;
+                let (orientation_sector, selected_tmap, mirrored) = match parameter.render_mode {
+                    17 => crate::goat_sprite_raster::mode17_selector_for_base(
+                        parameter.base_tmap,
+                        entity.yaw,
+                        camera_yaw,
+                    ),
+                    19 => crate::goat_sprite_raster::mode19_selector_for_base(
+                        parameter.base_tmap,
+                        entity.yaw,
+                        camera_yaw,
+                    ),
+                    20 => crate::goat_sprite_raster::mode20_selector_for_base(
+                        parameter.base_tmap,
+                        entity.yaw,
+                        camera_yaw,
+                    ),
+                    0 | 1 | 11 | 21 | 36 => (0, parameter.base_tmap, false),
+                    mode => {
+                        return Err(NativeWorldError::new(format!(
+                            "campaign entity {} uses unsupported render mode {mode}",
+                            entity.index
+                        )));
+                    }
+                };
+                Ok(CampaignEntityPresentation {
+                    entity_index: entity.index,
+                    source_id: entity.source_id,
+                    render_parameter_index,
+                    base_tmap: parameter.base_tmap,
+                    selected_tmap,
+                    logical_height: parameter.rotation_speed,
+                    render_mode: parameter.render_mode,
+                    orientation_sector,
+                    mirrored,
+                    position: entity.position,
+                    yaw: entity.yaw,
+                })
+            })
+            .collect()
     }
 
     /// Return the source `str_D93C0` byte-2 flags for one entity-parameter
@@ -6259,10 +6330,201 @@ impl Level2ResetSession {
         )
     }
 
+    /// Resolve the package-authored AI participant used by common Day
+    /// presentation. Level 2 retains its exact Nyphur census. Other admitted
+    /// campaign profiles bind player slot 1 and its current left/right holder
+    /// chain from the qualified package instead of importing Level 2 slots.
+    pub fn campaign_presentation_opponent(
+        &self,
+        selection: CampaignSelection,
+    ) -> Result<Level2NyphurParticipant> {
+        if selection == CampaignSelection::LEVEL2 {
+            return self.nyphur_participant();
+        }
+        if !matches!(
+            selection,
+            CampaignSelection::LEVEL1 | CampaignSelection::LEVEL3
+        ) {
+            return Err(NativeWorldError::new(
+                "campaign presentation opponent profile is unknown or mismatched",
+            ));
+        }
+        if self.session.state.live.core.runtime.player_count <= 1 {
+            return Ok(Level2NyphurParticipant {
+                player_slot: u8::MAX,
+                entity_index: u16::MAX,
+                is_ai: false,
+                color_index: 0,
+                entity_class: 0,
+                entity_model: 0,
+                entity_action: 0,
+                entity_source_id: u16::MAX,
+                entity_next_relation: None,
+                entity_next_entity: 0,
+                entity_control_flags: 0,
+                entity_life: 0,
+                entity_max_life: 0,
+                entity_mana: 0,
+                entity_max_mana: 0,
+                fireball_holder_index: 0,
+                fireball_action: 0,
+                fireball_parent_entity_index: 0,
+                fireball_next_entity: 0,
+                possession_holder_index: 0,
+                possession_action: 0,
+                possession_parent_entity_index: 0,
+                possession_next_entity: 0,
+                objective_stage_relation: RuntimeRelation::Null,
+            });
+        }
+        let player = self
+            .session
+            .state
+            .live
+            .core
+            .players
+            .get(1)
+            .ok_or_else(|| NativeWorldError::new("campaign AI player row 1 is absent"))?;
+        let entity = self
+            .session
+            .state
+            .live
+            .economy
+            .entities
+            .get(usize::from(player.entity_index))
+            .ok_or_else(|| NativeWorldError::new("campaign AI entity row is absent"))?;
+        if player.slot != 1
+            || !player.is_ai
+            || !entity.active
+            || entity.index != player.entity_index
+            || entity.class != 3
+            || entity.model != 1
+            || entity.source_id != entity.index
+            || entity.special_relation != EntitySpecialRelation::PlayerState(1)
+        {
+            return Err(NativeWorldError::new(
+                "campaign AI player/entity ownership census is invalid",
+            ));
+        }
+        let holder = |raw: i16| -> Result<Option<&EntitySnapshot>> {
+            if raw < 0 {
+                return Ok(None);
+            }
+            let family = usize::try_from(raw)
+                .map_err(|_| NativeWorldError::new("campaign AI spell family is invalid"))?;
+            let index = *player.enabled_spell_holders.get(family).ok_or_else(|| {
+                NativeWorldError::new("campaign AI spell family is outside the package census")
+            })?;
+            if index == 0 {
+                return Err(NativeWorldError::new(
+                    "campaign AI selected spell has no package holder",
+                ));
+            }
+            self.session
+                .state
+                .live
+                .economy
+                .entities
+                .get(usize::from(index))
+                .into_iter()
+                .chain(self.session.state.live.shared_spells.holders.iter())
+                .chain(self.session.state.live.shared_spells.pickups().iter())
+                .chain(
+                    self.session
+                        .state
+                        .live
+                        .shared_spells
+                        .dynamic_pickups()
+                        .iter(),
+                )
+                .find(|holder| holder.index == index && holder.active && holder.class == 15)
+                .map(Some)
+                .ok_or_else(|| NativeWorldError::new("campaign AI selected holder is absent"))
+        };
+        let left = holder(player.left_spell_slot_raw)?;
+        let right = holder(player.right_spell_slot_raw)?;
+        let holder_fields = |row: Option<&EntitySnapshot>| {
+            row.map_or((0, 0, 0, 0), |row| {
+                (
+                    row.index,
+                    row.action,
+                    row.source_spell_parent_entity_index(),
+                    row.next_entity(),
+                )
+            })
+        };
+        let (left_index, left_action, left_parent, left_next) = holder_fields(left);
+        let (right_index, right_action, right_parent, right_next) = holder_fields(right);
+        if [left_parent, right_parent]
+            .into_iter()
+            .any(|parent| parent != 0 && parent != entity.index)
+        {
+            return Err(NativeWorldError::new(
+                "campaign AI selected holder belongs to another entity",
+            ));
+        }
+        let objective_stage_relation = self
+            .session
+            .state
+            .live
+            .core
+            .runtime
+            .objectives
+            .get(1)
+            .and_then(|objective| {
+                self.session
+                    .state
+                    .live
+                    .core
+                    .runtime
+                    .stages
+                    .get(usize::from(objective.text_selector))
+            })
+            .map_or(RuntimeRelation::Null, |stage| stage.relation);
+        Ok(Level2NyphurParticipant {
+            player_slot: player.slot,
+            entity_index: entity.index,
+            is_ai: player.is_ai,
+            color_index: player.player_color_index(),
+            entity_class: entity.class,
+            entity_model: entity.model,
+            entity_action: entity.action,
+            entity_source_id: entity.source_id,
+            entity_next_relation: entity.next_relation,
+            entity_next_entity: entity.next_entity(),
+            entity_control_flags: entity.control_flags,
+            entity_life: entity.life,
+            entity_max_life: entity.max_life,
+            entity_mana: entity.mana,
+            entity_max_mana: entity.max_mana,
+            fireball_holder_index: left_index,
+            fireball_action: left_action,
+            fireball_parent_entity_index: left_parent,
+            fireball_next_entity: left_next,
+            possession_holder_index: right_index,
+            possession_action: right_action,
+            possession_parent_entity_index: right_parent,
+            possession_next_entity: right_next,
+            objective_stage_relation,
+        })
+    }
+
     /// Build the generation-bound Day HUD projection from the live shared
     /// spell/session state. Unknown hand selectors and broken parent links are
     /// rejected so presentation cannot fall back to a neighboring asset row.
     pub fn day_hud(&self) -> Result<Level2DayHudSnapshot> {
+        self.day_hud_for(CampaignSelection::LEVEL2)
+    }
+
+    pub fn day_hud_for(&self, selection: CampaignSelection) -> Result<Level2DayHudSnapshot> {
+        if !matches!(
+            selection,
+            CampaignSelection::LEVEL1 | CampaignSelection::LEVEL2 | CampaignSelection::LEVEL3
+        ) {
+            return Err(NativeWorldError::new(
+                "campaign Day HUD profile is unknown or mismatched",
+            ));
+        }
         let local_player_slot = self.session.state.live.core.runtime.local_player_slot;
         let local_player = &self.session.state.live.shared_spells.local_player;
         let local_entity = &self.session.state.live.shared_spells.player_entity;
@@ -6412,8 +6674,8 @@ impl Level2ResetSession {
             mana_max_palette_index,
             left: spell_slot(local_player.left_spell_slot_raw)?,
             right: spell_slot(local_player.right_spell_slot_raw)?,
-            nyphur: self.nyphur_participant()?,
-            nyphur_visibility: self.nyphur_visibility()?,
+            nyphur: self.campaign_presentation_opponent(selection)?,
+            nyphur_visibility: self.campaign_presentation_visibility(selection)?,
         })
     }
 
@@ -6472,7 +6734,24 @@ impl Level2ResetSession {
     /// not reveal an Invisible owner, while tiers 1 and 2 do, subject to the
     /// target's source family-4 active-holder gate for tier 1.
     pub fn nyphur_visibility(&self) -> Result<Level2NyphurVisibility> {
-        let participant = self.nyphur_participant()?;
+        self.campaign_presentation_visibility(CampaignSelection::LEVEL2)
+    }
+
+    pub fn campaign_presentation_visibility(
+        &self,
+        selection: CampaignSelection,
+    ) -> Result<Level2NyphurVisibility> {
+        let participant = self.campaign_presentation_opponent(selection)?;
+        if participant.player_slot == u8::MAX && participant.entity_index == u16::MAX {
+            return Ok(Level2NyphurVisibility {
+                owner_visibility_mode: 0,
+                beyond_sight_holder_present: false,
+                beyond_sight_active: false,
+                beyond_sight_tier: None,
+                family4_gate_active: false,
+                visible_to_local_player: false,
+            });
+        }
         let owner = self
             .session
             .state

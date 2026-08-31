@@ -660,6 +660,26 @@ pub struct Level2DayHudSnapshot {
     pub nyphur_visibility: Level2NyphurVisibility,
 }
 
+/// Source/package-owned sprite selection for one live campaign entity.
+///
+/// The selected TMAP is derived from the entity's live particle-parameter
+/// relation and the qualified package presentation table. Presentation
+/// clients copy this projection; they never infer a selector from class/model.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CampaignEntityPresentation {
+    pub entity_index: u16,
+    pub source_id: u16,
+    pub render_parameter_index: u16,
+    pub base_tmap: u16,
+    pub selected_tmap: u16,
+    pub logical_height: u16,
+    pub render_mode: u8,
+    pub orientation_sector: u8,
+    pub mirrored: bool,
+    pub position: Position,
+    pub yaw: i16,
+}
+
 /// Level 2's shared spell/economy reset projection. The two active authored
 /// pickups and the AI's Fireball/Possession holders are retained as typed,
 /// source-ordered records; generic acquisition states additionally root the

@@ -15,6 +15,8 @@ namespace MagicCarpet.Native
         internal byte Action { get; private set; }
         internal ulong Generation { get; private set; }
         internal ulong Tick { get; private set; }
+        internal ushort AssetSelector { get; private set; }
+        internal bool SpriteReady { get; private set; }
 
         internal void Bind(
             NativeSim.CampaignEntitySnapshot row,
@@ -33,6 +35,32 @@ namespace MagicCarpet.Native
                 row.z / 64f,
                 row.y / 64f);
         }
+
+        internal void BindSprite(
+            NativeSim.CampaignEntityPresentation row,
+            OwnerAssetCache.Level3Texture texture,
+            Mesh quad,
+            Material material)
+        {
+            var visual = transform.Find("package sprite");
+            if (visual == null)
+            {
+                visual = new GameObject("package sprite").transform;
+                visual.SetParent(transform, false);
+                visual.gameObject.AddComponent<MeshFilter>();
+                visual.gameObject.AddComponent<MeshRenderer>();
+            }
+            var height = row.logicalHeight / 64f;
+            var width = height * texture.width / texture.height;
+            visual.localPosition = new Vector3(0f, height * 0.5f, 0f);
+            visual.localScale = new Vector3(row.mirrored == 0 ? width : -width, height, 1f);
+            visual.GetComponent<MeshFilter>().sharedMesh = quad;
+            var renderer = visual.GetComponent<MeshRenderer>();
+            renderer.sharedMaterial = material;
+            renderer.enabled = true;
+            AssetSelector = row.selectedTmap;
+            SpriteReady = true;
+        }
     }
 
     /// <summary>
@@ -47,6 +75,9 @@ namespace MagicCarpet.Native
         private readonly Transform root;
         private readonly Dictionary<ushort, Level3EntitySurfaceMarker> entities = new();
         private readonly List<Texture2D> hudTextures = new();
+        private readonly Dictionary<int, OwnerAssetCache.Level3Texture> materialRows = new();
+        private readonly Dictionary<int, Texture2D> entityTextures = new();
+        private readonly Dictionary<int, Material> entityMaterials = new();
         private GameObject worldObject;
         private Mesh worldMesh;
         private Material worldMaterial;
@@ -70,8 +101,9 @@ namespace MagicCarpet.Native
                                     worldObject.GetComponent<MeshRenderer>()?.enabled == true;
         internal bool HudReady { get; private set; }
         internal bool MinimapPanelReady { get; private set; }
-        internal bool LiveMinimapReady => false;
+        internal bool LiveMinimapReady { get; private set; }
         internal int EntitySurfaceCount => entities.Count;
+        internal int RenderedEntitySurfaceCount => entities.Values.Count(row => row.SpriteReady);
         internal int HudBitmapSurfaceCount { get; private set; }
         internal int SpellTierSurfaceCount { get; private set; }
         internal int LiveSpellSurfaceCount { get; private set; }
@@ -94,16 +126,21 @@ namespace MagicCarpet.Native
             var frame = session.CopyDayIndexedFrame(tick);
             var terrain = session.TerrainState();
             var entityRows = session.Entities();
-            var localPlayer = session.Players()
-                .Single(player => player.slot == 0 && player.active != 0);
+            var hud = session.DayHudState(tick);
+            var minimap = session.MinimapState(tick);
+            var minimapEntities = session.MinimapEntities(tick, minimap);
+            var minimapMarks = session.MinimapMarks(tick, minimap);
+            var entityPresentations = session.EntityPresentations(0);
             if (frame.generation != generation || frame.tick != tick ||
                 terrain.generation != generation ||
                 terrain.tick != tick)
                 throw new InvalidOperationException("Level 3 presentation generation/tick mismatch");
 
             EnsureWorld(session.DayIndexedFrameIndices, session.DayIndexedFramePalette);
-            MaterializeHud(cache, localPlayer);
-            MaterializeEntities(entityRows, generation, tick);
+            MaterializeHud(cache, hud);
+            LiveMinimapReady = minimap.entityCount == (uint)minimapEntities.Length &&
+                               minimap.markCount == (uint)minimapMarks.Length;
+            MaterializeEntities(entityRows, entityPresentations, cache, generation, tick);
 
             Generation = generation;
             Tick = tick;
@@ -159,7 +196,7 @@ namespace MagicCarpet.Native
 
         private void MaterializeHud(
             OwnerAssetCache cache,
-            NativeSim.CampaignPlayerSnapshot localPlayer)
+            NativeSim.CampaignDayHudSnapshot hud)
         {
             if (!ReferenceEquals(cache.DayHud, null) && HudBitmapSurfaceCount == 0)
             {
@@ -222,14 +259,16 @@ namespace MagicCarpet.Native
             if (cache.DayHud == null || HudBitmapSurfaceCount != 34 || SpellTierSurfaceCount != 5)
                 throw new InvalidOperationException("Level 3 HUD cache surface census is incomplete");
             LiveSpellSurfaceCount =
-                (localPlayer.leftSpellSlotRaw >= 0 ? 1 : 0) +
-                (localPlayer.rightSpellSlotRaw >= 0 ? 1 : 0);
+                (hud.left.rawSpellSelector >= 0 ? 1 : 0) +
+                (hud.right.rawSpellSelector >= 0 ? 1 : 0);
             MinimapPanelReady = cache.DayHud.bitmap_selectors.Contains(1);
             HudReady = true;
         }
 
         private void MaterializeEntities(
             NativeSim.CampaignEntitySnapshot[] rows,
+            NativeSim.CampaignEntityPresentation[] presentations,
+            OwnerAssetCache cache,
             ulong generation,
             ulong tick)
         {
@@ -251,6 +290,23 @@ namespace MagicCarpet.Native
                 }
                 marker.Bind(row, generation, tick);
             }
+            if (materialRows.Count == 0)
+            {
+                foreach (var texture in cache.Level3Materials.tmaps0.textures)
+                    materialRows.Add(texture.index, texture);
+            }
+            foreach (var presentation in presentations)
+            {
+                if (!entities.TryGetValue(presentation.entityIndex, out var marker) ||
+                    !materialRows.TryGetValue(presentation.selectedTmap, out var texture))
+                    throw new InvalidOperationException(
+                        $"Level 3 entity {presentation.entityIndex} selector {presentation.selectedTmap} is absent from the qualified cache");
+                marker.BindSprite(
+                    presentation,
+                    texture,
+                    worldMesh,
+                    EnsureEntityMaterial(cache, texture));
+            }
             var live = new HashSet<ushort>(rows.Where(row => row.active != 0)
                 .Select(row => row.entityIndex));
             foreach (var stale in entities.Keys.Where(key => !live.Contains(key)).ToArray())
@@ -258,6 +314,47 @@ namespace MagicCarpet.Native
                 DestroyObject(entities[stale].gameObject);
                 entities.Remove(stale);
             }
+        }
+
+        private Material EnsureEntityMaterial(
+            OwnerAssetCache cache,
+            OwnerAssetCache.Level3Texture row)
+        {
+            if (entityMaterials.TryGetValue(row.index, out var material)) return material;
+            var bytes = cache.ReadLevel3MaterialOutput(row.indices_path);
+            if (bytes.Length != row.width * row.height)
+                throw new InvalidOperationException($"Level 3 TMAP {row.index} is incomplete");
+            var texture = new Texture2D(row.width, row.height, TextureFormat.R8, false, true)
+            {
+                filterMode = FilterMode.Point,
+                wrapMode = TextureWrapMode.Clamp
+            };
+            texture.LoadRawTextureData(bytes);
+            texture.Apply(false, true);
+            var shader = Resources.Load<Shader>("EntitySprite");
+            if (shader == null) throw new InvalidOperationException("entity sprite shader is missing");
+            material = new Material(shader);
+            material.SetTexture("_Indices", texture);
+            material.SetTexture("_Palette", EnsureEntityPalette(cache));
+            entityTextures.Add(row.index, texture);
+            entityMaterials.Add(row.index, material);
+            return material;
+        }
+
+        private Texture2D EnsureEntityPalette(OwnerAssetCache cache)
+        {
+            if (hudPalette != null) return hudPalette;
+            var bytes = cache.ReadLevel3MaterialOutput(cache.Level3Materials.palette.rgb8_path);
+            if (bytes.Length != 256 * 3)
+                throw new InvalidOperationException("Level 3 material palette is incomplete");
+            hudPalette = new Texture2D(256, 1, TextureFormat.RGB24, false, false)
+            {
+                filterMode = FilterMode.Point,
+                wrapMode = TextureWrapMode.Clamp
+            };
+            hudPalette.LoadRawTextureData(bytes);
+            hudPalette.Apply(false, true);
+            return hudPalette;
         }
 
         public void Dispose()
@@ -269,12 +366,18 @@ namespace MagicCarpet.Native
             DestroyObject(worldPalette);
             DestroyObject(hudPalette);
             foreach (var texture in hudTextures) DestroyObject(texture);
+            foreach (var material in entityMaterials.Values) DestroyObject(material);
+            foreach (var texture in entityTextures.Values) DestroyObject(texture);
             hudTextures.Clear();
+            entityMaterials.Clear();
+            entityTextures.Clear();
+            materialRows.Clear();
             DestroyObject(worldMesh);
             if (root != null) DestroyObject(root.gameObject);
             entities.Clear();
             HudReady = false;
             MinimapPanelReady = false;
+            LiveMinimapReady = false;
         }
 
         private static Mesh CreateQuad()

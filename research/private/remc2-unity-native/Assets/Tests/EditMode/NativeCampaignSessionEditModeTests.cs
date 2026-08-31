@@ -903,7 +903,7 @@ namespace MagicCarpet.Native.Tests
 
             var cache = OwnerAssetCache.OpenAndValidateLevel3(Level3OwnerCache);
             Assert.That(cache.IsLevel3Aggregate, Is.True);
-            Assert.That(cache.OutputCount, Is.EqualTo(608));
+            Assert.That(cache.OutputCount, Is.EqualTo(644));
             Assert.That(cache.DayHud.bitmap_assets.Length, Is.EqualTo(34));
             Assert.That(cache.DayHud.spell_tier_text.tiers.Length, Is.EqualTo(5));
             Assert.That(cache.Level3Materials.tmaps0.textures.Length, Is.EqualTo(156));
@@ -924,18 +924,18 @@ namespace MagicCarpet.Native.Tests
                     Assert.That(surface.FrameHash, Is.Not.Zero);
                     Assert.That(surface.TerrainHash, Is.Not.Zero);
                     Assert.That(surface.EntitySurfaceCount, Is.EqualTo(252));
+                    Assert.That(surface.RenderedEntitySurfaceCount, Is.GreaterThan(0));
                     Assert.That(surface.HudReady, Is.True);
                     Assert.That(surface.HudBitmapSurfaceCount, Is.EqualTo(34));
                     Assert.That(surface.SpellTierSurfaceCount, Is.EqualTo(5));
                     Assert.That(surface.MinimapPanelReady, Is.True);
                     Assert.That(
                         surface.LiveMinimapReady,
-                        Is.False,
-                        "the native minimap endpoint remains Level-2-Nyphur-bound");
+                        Is.True);
                     Assert.That(
                         surface.CacheContentHash,
                         Is.EqualTo(
-                            "4443bb9cdcfc670c235402d7d3680dd119739f4554204aebc2a0b8e9f9e71a98"));
+                            "74008ec454d0ddbba8cef39a15402f72273e35de9eadedbe4a61ee3108d6569a"));
 
                     var localPlayer = session.Players()
                         .Single(player => player.slot == 0 && player.active != 0);
@@ -949,6 +949,12 @@ namespace MagicCarpet.Native.Tests
                             .All(marker =>
                                 marker.Generation == session.Generation &&
                                 marker.Tick == session.Tick),
+                        Is.True);
+                    Assert.That(
+                        surface.Root.GetComponentsInChildren<Level3EntitySurfaceMarker>()
+                            .Where(marker => marker.SpriteReady)
+                            .All(marker => cache.Level3Materials.tmaps0.selectors
+                                .Contains(marker.AssetSelector)),
                         Is.True);
                 }
                 Assert.That(NativeCampaignSession.ActiveSessionCount, Is.Zero);

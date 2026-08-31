@@ -7,6 +7,7 @@
 
 use sim_core::{
     FlightState, Position,
+    campaign::spec::CampaignSelection,
     indexed_overlay::{
         FixedOverlayProfile, IndexedOverlayAssets, IndexedOverlayCommand, IndexedOverlayError,
         IndexedOverlayStage, Level1FinalMainState,
@@ -414,6 +415,13 @@ fn level2_day_minimap_command(
 pub(crate) fn level2_minimap_plan(
     session: &Level2ResetSession,
 ) -> Result<Level2MinimapPlan, String> {
+    campaign_minimap_plan(session, CampaignSelection::LEVEL2)
+}
+
+pub(crate) fn campaign_minimap_plan(
+    session: &Level2ResetSession,
+    selection: CampaignSelection,
+) -> Result<Level2MinimapPlan, String> {
     let local_player_slot = session.runtime().local_player_slot as usize;
     let local_player = session
         .players()
@@ -421,10 +429,10 @@ pub(crate) fn level2_minimap_plan(
         .ok_or_else(|| "level2 minimap local player is unavailable".to_owned())?;
     let local_entity_index = local_player.entity_index;
     let nyphur = session
-        .nyphur_participant()
+        .campaign_presentation_opponent(selection)
         .map_err(|error| error.to_string())?;
     let visibility = session
-        .nyphur_visibility()
+        .campaign_presentation_visibility(selection)
         .map_err(|error| error.to_string())?;
     let family12_enabled = session
         .players()

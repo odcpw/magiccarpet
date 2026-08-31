@@ -87,10 +87,11 @@ namespace MagicCarpet.Native
         private const string Level3GameplaySchema = "mc2-day-gameplay-cache/v1";
         private const string Level3GameplayDescriptorSchema = "mc2-day-gameplay/v1";
         private const string Level3MaterialDescriptorSchema = "mc2-day-materials/v1";
+        private const string Level3AudioSchema = "mc2-day-audio-cache/v1";
         private const string Level3AggregateManifestHash =
-            "f985e01522954fcd404fb8e47bdc92206656d59e53de5511afc5bebdcb9cdb0c";
+            "ae770ca7f0dc28bebc8c47f049b79ef9df023af2adb81c91b45c378ceec654c4";
         private const string Level3AggregateContentHash =
-            "4443bb9cdcfc670c235402d7d3680dd119739f4554204aebc2a0b8e9f9e71a98";
+            "74008ec454d0ddbba8cef39a15402f72273e35de9eadedbe4a61ee3108d6569a";
         private const string Level3MaterialManifestHash =
             "04ff8787ebac24d60ebb7e8764a8ca5ab05df6b5d492b14921e65b7523b69cdc";
         private const string Level3MaterialContentHash =
@@ -99,6 +100,12 @@ namespace MagicCarpet.Native
             "08ffc1879154d2468107e1211b45982017baa1dd65313bd22ec8009a2032bd14";
         private const string Level3GameplayContentHash =
             "6934968cfa3f64d62024ce7789bfde21e11d0feb2487fb187a3c457258fdb546";
+        private const string Level3AudioManifestHash =
+            "d7b556a1d63c2c576915f2b54747a4f4e9807f962eb183ae38a92f5070dab059";
+        private const string Level3AudioContentHash =
+            "e7ca74c6f1faf57fd271efd5356eb72da7bc5a729d134252987b00fd5894c287";
+        private const string Level3AudioDenominatorHash =
+            "a885675828a35203e1941fc24d8d060d8b732753f7ac295988b36a2ec327512c";
         private const string Level3MaterialDescriptorHash =
             "1d4980361223aab9681f8514af607c3cf03529e50d3e67469a8d114a34cc35fa";
         private const string Level3GameplayDescriptorHash =
@@ -487,6 +494,19 @@ namespace MagicCarpet.Native
             return File.ReadAllBytes(ConfinedPath(RootPath, aggregatePath));
         }
 
+        internal byte[] ReadLevel3MaterialOutput(string relative)
+        {
+            if (!IsLevel3Aggregate)
+                throw new InvalidDataException("cache is not the qualified Level 3 aggregate");
+            var canonical = relative?.Replace(Path.DirectorySeparatorChar, '/');
+            ValidateLevel2RelativePath(canonical, "Level 3 material output path");
+            var aggregatePath = $"components/material/{canonical}";
+            RequireLevel2(
+                approvedPaths.Contains(aggregatePath),
+                $"Level 3 material output membership {relative}");
+            return File.ReadAllBytes(ConfinedPath(RootPath, aggregatePath));
+        }
+
         public static string ResolveOptionalPath(string[] arguments)
         {
             for (var index = 0; index + 1 < arguments.Length; index++)
@@ -665,16 +685,11 @@ namespace MagicCarpet.Native
                 manifest.components != null &&
                 manifest.components.material != null &&
                 manifest.components.gameplay != null &&
-                (manifest.components.audio == null ||
-                 string.IsNullOrEmpty(manifest.components.audio.schema) &&
-                 string.IsNullOrEmpty(manifest.components.audio.manifest_path) &&
-                 string.IsNullOrEmpty(manifest.components.audio.manifest_sha256) &&
-                 string.IsNullOrEmpty(manifest.components.audio.cache_content_sha256) &&
-                 manifest.components.audio.output_count == 0),
-                "exact non-audio Level 3 aggregate component set");
+                manifest.components.audio != null,
+                "exact Level 3 aggregate component set");
             RequireLevel2(
                 manifest.cache_content_sha256 == Level3AggregateContentHash &&
-                manifest.outputs != null && manifest.outputs.Length == 608,
+                manifest.outputs != null && manifest.outputs.Length == 644,
                 "exact Level 3 aggregate content identity and output count");
 
             var aggregateRows = ValidateLevel2OutputRows(
@@ -700,6 +715,15 @@ namespace MagicCarpet.Native
                 Level3GameplayManifestHash,
                 Level3GameplayContentHash,
                 285,
+                aggregateRows);
+            ValidateLevel3Component(
+                root,
+                "audio",
+                manifest.components.audio,
+                Level3AudioSchema,
+                Level3AudioManifestHash,
+                Level3AudioContentHash,
+                35,
                 aggregateRows);
             var materials = ValidateLevel3MaterialDescriptor(root, aggregateRows);
             var hud = ValidateLevel3GameplayDescriptor(root, gameplayRows);
@@ -745,7 +769,10 @@ namespace MagicCarpet.Native
                 child != null && child.schema == expectedSchema,
                 $"Level 3 {name} child schema");
             ValidateLevel3Profile(child.profile, $"Level 3 {name} child profile");
-            ValidateLevel3Bindings(child.bindings, $"Level 3 {name} child bindings");
+            ValidateLevel3Bindings(
+                child.bindings,
+                $"Level 3 {name} child bindings",
+                name == "audio");
             RequireLevel2(
                 child.cache_content_sha256 == expectedContentHash &&
                 child.outputs != null && child.outputs.Length == expectedOutputCount,
@@ -904,7 +931,10 @@ namespace MagicCarpet.Native
                 description);
         }
 
-        private static void ValidateLevel3Bindings(Level2Bindings bindings, string description)
+        private static void ValidateLevel3Bindings(
+            Level2Bindings bindings,
+            string description,
+            bool audio = false)
         {
             RequireLevel2(
                 bindings != null &&
@@ -919,7 +949,9 @@ namespace MagicCarpet.Native
                 bindings.players_component_record_bytes == Level2PlayersComponentRecordBytes &&
                 bindings.players_component_count == Level2PlayersComponentCount &&
                 bindings.remc2_commit == PinnedRemc2Commit &&
-                string.IsNullOrEmpty(bindings.audio_denominator_sha256),
+                (audio
+                    ? bindings.audio_denominator_sha256 == Level3AudioDenominatorHash
+                    : string.IsNullOrEmpty(bindings.audio_denominator_sha256)),
                 description);
         }
 

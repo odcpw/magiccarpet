@@ -693,8 +693,12 @@ namespace MagicCarpet.Native
                 expectedTick,
                 ref state,
                 272);
-            NativeSession.Check(status, "read Level 2 Day HUD state");
-            ValidateDayHudState(state, generation, expectedTick);
+            NativeSession.Check(status, "read campaign Day HUD state");
+            ValidateDayHudState(
+                state,
+                generation,
+                expectedTick,
+                packageIdentity.Selection.externalLevel);
             return state;
         }
 
@@ -702,6 +706,15 @@ namespace MagicCarpet.Native
             NativeSim.CampaignDayHudSnapshot state,
             ulong expectedGeneration,
             ulong expectedTick)
+        {
+            ValidateDayHudState(state, expectedGeneration, expectedTick, 2);
+        }
+
+        private static void ValidateDayHudState(
+            NativeSim.CampaignDayHudSnapshot state,
+            ulong expectedGeneration,
+            ulong expectedTick,
+            int externalLevel)
         {
             if (
                 state.abiVersion != NativeSim.AbiVersion ||
@@ -732,27 +745,46 @@ namespace MagicCarpet.Native
 
             ValidateDayHudSpellSlot(state.left, state.localPlayerEntityIndex);
             ValidateDayHudSpellSlot(state.right, state.localPlayerEntityIndex);
+            if (externalLevel < 1 || externalLevel > 3)
+                throw new InvalidOperationException("campaign Day HUD profile is unknown");
             var nyphur = state.nyphur;
             if (
                 nyphur.abiVersion != NativeSim.AbiVersion ||
                 nyphur.structSize != 104 ||
                 nyphur.generation != expectedGeneration ||
-                nyphur.active != 1 ||
-                nyphur.playerSlot != 1 ||
-                nyphur.isAi != 1 ||
-                nyphur.colorIndex != 1 ||
-                nyphur.entityIndex != 112 ||
-                nyphur.entityClass != 3 ||
-                nyphur.entityModel != 1 ||
-                nyphur.entityAction != 1 ||
-                nyphur.fireballHolderIndex != 113 ||
-                nyphur.possessionHolderIndex != 114 ||
+                nyphur.active > 1 ||
                 (nyphur.visibilityFlags & ~0x1Fu) != 0 ||
                 !AllZero(nyphur.reserved4) ||
                 !AllZero(nyphur.reserved))
             {
                 throw new InvalidOperationException(
                     "native Level 2 Day HUD state returned an unqualified Nyphur row");
+            }
+            if (externalLevel == 2)
+            {
+                if (nyphur.active != 1 || nyphur.playerSlot != 1 ||
+                    nyphur.isAi != 1 || nyphur.colorIndex != 1 ||
+                    nyphur.entityIndex != 112 || nyphur.entityClass != 3 ||
+                    nyphur.entityModel != 1 || nyphur.entityAction != 1 ||
+                    nyphur.fireballHolderIndex != 113 ||
+                    nyphur.possessionHolderIndex != 114)
+                    throw new InvalidOperationException(
+                        "native Level 2 Day HUD state returned an unqualified Nyphur row");
+            }
+            else if (nyphur.active == 0)
+            {
+                if (nyphur.playerSlot != byte.MaxValue ||
+                    nyphur.entityIndex != ushort.MaxValue ||
+                    nyphur.fireballHolderIndex != 0 ||
+                    nyphur.possessionHolderIndex != 0)
+                    throw new InvalidOperationException(
+                        "campaign Day HUD absent opponent sentinel is invalid");
+            }
+            else if (nyphur.playerSlot != 1 || nyphur.isAi != 1 ||
+                     nyphur.entityClass != 3 || nyphur.entityModel != 1)
+            {
+                throw new InvalidOperationException(
+                    "campaign Day HUD package opponent identity is invalid");
             }
         }
 
@@ -1176,6 +1208,34 @@ namespace MagicCarpet.Native
                     $"campaign entity copy wrote {written}, expected {count}");
             }
             return entities;
+        }
+
+        internal NativeSim.CampaignEntityPresentation[] EntityPresentations(short cameraYaw)
+        {
+            var rows = new NativeSim.CampaignEntityPresentation[1000];
+            var status = NativeSim.mc_native_campaign_entity_presentations_copy(
+                Handle,
+                generation,
+                tick,
+                cameraYaw,
+                rows,
+                checked((uint)rows.Length),
+                64,
+                out var written);
+            NativeSession.Check(status, "read campaign entity presentation");
+            Array.Resize(ref rows, checked((int)written));
+            var seen = new HashSet<ushort>();
+            foreach (var row in rows)
+            {
+                if (row.abiVersion != NativeSim.AbiVersion || row.structSize != 64 ||
+                    row.generation != generation || row.tick != tick ||
+                    !seen.Add(row.entityIndex) || row.selectedTmap < row.baseTmap ||
+                    row.orientationSector > 15 || row.mirrored > 1 ||
+                    row.reserved0 != 0 || !AllZero(row.reserved))
+                    throw new InvalidOperationException(
+                        "campaign entity presentation identity is invalid");
+            }
+            return rows;
         }
 
         internal NativeSim.CampaignGoatSnapshot[] Goats()

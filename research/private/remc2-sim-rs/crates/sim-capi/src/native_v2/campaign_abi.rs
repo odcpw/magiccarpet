@@ -291,6 +291,15 @@ impl std::ops::DerefMut for CampaignLevel2Authority {
     }
 }
 
+impl CampaignLevel2Authority {
+    fn definition_identity(&self) -> CampaignSelection {
+        match self {
+            Self::Legacy(_) => CampaignSelection::LEVEL2,
+            Self::Descriptor(session) => session.definition().identity,
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub(super) enum CampaignSessionKind {
     Level1 {
@@ -1184,7 +1193,8 @@ pub extern "C" fn mc_native_campaign_day_hud_state(
                     ),
                 ));
             }
-            let snapshot = reset.day_hud().map_err(|error| {
+            let selection = reset.definition_identity();
+            let snapshot = reset.day_hud_for(selection).map_err(|error| {
                 AbiError::new(
                     MC_STATUS_INVALID_ARGUMENT,
                     format!("campaign Day HUD projection is invalid: {error}"),
@@ -1394,7 +1404,8 @@ pub(super) fn campaign_minimap_projection(
             )
         })?
         .entity_index;
-    let plan = level2_minimap_plan(reset).map_err(|error| {
+    let selection = reset.definition_identity();
+    let plan = campaign_minimap_plan(reset, selection).map_err(|error| {
         AbiError::new(
             MC_STATUS_INVALID_ARGUMENT,
             format!("campaign minimap projection is invalid: {error}"),
@@ -2953,6 +2964,108 @@ pub extern "C" fn mc_native_campaign_entities_copy(
             write_output(
                 out_written,
                 u32::try_from(count).expect("entity count fits u32"),
+            );
+            Ok(())
+        })
+    })
+}
+
+/// Copy live sprite selectors derived by Rust from the qualified campaign
+/// package. The caller contributes only camera yaw; class/model mapping never
+/// crosses the ABI.
+#[unsafe(no_mangle)]
+pub extern "C" fn mc_native_campaign_entity_presentations_copy(
+    handle: u64,
+    generation: u64,
+    tick: u64,
+    camera_yaw: i16,
+    buffer: *mut McCampaignEntityPresentationV2,
+    capacity: u32,
+    element_size: u32,
+    out_written: *mut u32,
+) -> i32 {
+    boundary(|| {
+        require_output(out_written, "out_written")?;
+        require_element_size::<McCampaignEntityPresentationV2>(
+            element_size,
+            "campaign entity presentation element",
+        )?;
+        with_campaign_session(handle, |session| {
+            let CampaignSessionKind::Level2 { reset, .. } = &session.kind else {
+                return Err(AbiError::new(
+                    MC_STATUS_INVALID_ARGUMENT,
+                    "campaign entity presentation requires a descriptor campaign session",
+                ));
+            };
+            if generation != session.generation {
+                return Err(AbiError::new(
+                    MC_STATUS_GENERATION_MISMATCH,
+                    format!(
+                        "campaign entity presentation generation {generation} does not match {}",
+                        session.generation
+                    ),
+                ));
+            }
+            if tick != reset.campaign_tick() {
+                return Err(AbiError::new(
+                    MC_STATUS_GENERATION_MISMATCH,
+                    format!(
+                        "campaign entity presentation tick {tick} does not match {}",
+                        reset.campaign_tick()
+                    ),
+                ));
+            }
+            let rows = reset
+                .campaign_entity_presentations(camera_yaw)
+                .map_err(|error| AbiError::new(MC_STATUS_VALIDATION_FAILED, error.to_string()))?;
+            let capacity = usize::try_from(capacity).map_err(|_| {
+                AbiError::new(
+                    MC_STATUS_BOUNDS,
+                    "campaign presentation capacity exceeds usize",
+                )
+            })?;
+            if rows.len() > capacity {
+                return Err(AbiError::new(
+                    MC_STATUS_BOUNDS,
+                    format!(
+                        "campaign entity presentation needs {} rows, capacity is {capacity}",
+                        rows.len()
+                    ),
+                ));
+            }
+            if !rows.is_empty() && buffer.is_null() {
+                return Err(AbiError::new(
+                    MC_STATUS_NULL_POINTER,
+                    "campaign entity presentation buffer is null",
+                ));
+            }
+            for (ordinal, row) in rows.iter().enumerate() {
+                let value = McCampaignEntityPresentationV2 {
+                    abi_version: MC_NATIVE_ABI_VERSION,
+                    struct_size: struct_size::<McCampaignEntityPresentationV2>(),
+                    generation,
+                    tick,
+                    entity_index: row.entity_index,
+                    source_id: row.source_id,
+                    render_parameter_index: row.render_parameter_index,
+                    base_tmap: row.base_tmap,
+                    selected_tmap: row.selected_tmap,
+                    logical_height: row.logical_height,
+                    render_mode: row.render_mode,
+                    orientation_sector: row.orientation_sector,
+                    mirrored: u8::from(row.mirrored),
+                    reserved_0: 0,
+                    x: row.position.x,
+                    y: row.position.y,
+                    z: row.position.z,
+                    yaw: row.yaw,
+                    reserved: [0; 4],
+                };
+                unsafe { buffer.add(ordinal).write_unaligned(value) };
+            }
+            write_output(
+                out_written,
+                u32::try_from(rows.len()).expect("campaign presentation count fits u32"),
             );
             Ok(())
         })
