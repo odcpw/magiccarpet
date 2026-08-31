@@ -935,6 +935,81 @@ namespace MagicCarpet.Native.Tests
             // focused lifecycle test above pins that Rust-owned package state.
         }
 
+        [TestCase(1)]
+        [TestCase(2)]
+        [TestCase(3)]
+        [Timeout(300000)]
+        public void ProductionPublicResetAndQuitKeysDispatchAcrossPlayableLevels(
+            int externalLevel)
+        {
+            var nativeSessionsBefore = NativeSession.ActiveSessionCount;
+            var campaignSessionsBefore = NativeCampaignSession.ActiveSessionCount;
+            var root = new GameObject(
+                $"game runtime public keys L{externalLevel}");
+            root.SetActive(false);
+            var runtime = root.AddComponent<MagicCarpetRuntime>();
+            try
+            {
+                runtime.QualificationInitializeGameRuntimeProductionFromArguments(
+                    PlayableLevelArguments(externalLevel));
+                runtime.QualificationApplyGameRuntimeProductionMovement(
+                    accelerate: true,
+                    decelerate: false,
+                    strafeLeft: true,
+                    strafeRight: false);
+                runtime.QualificationApplyGameRuntimeProductionSteering(16f, -4f);
+                runtime.QualificationDriveGameRuntimeFrames(2);
+
+                var beforeReset = runtime.GameRuntimeProductionIdentity;
+                var presentationBeforeReset =
+                    runtime.GameRuntimeActiveLevelPresentationInstanceId;
+                Assert.That(
+                    runtime.QualificationDispatchGameRuntimePublicControlInput(
+                        resetPressed: true,
+                        quitPressed: false),
+                    Is.False,
+                    "R dispatches reset without requesting application quit");
+
+                var afterReset = runtime.GameRuntimeProductionIdentity;
+                Assert.That(
+                    ulong.Parse(afterReset.session.generation),
+                    Is.GreaterThan(ulong.Parse(beforeReset.session.generation)));
+                Assert.That(afterReset.session.tick, Is.EqualTo("0"));
+                Assert.That(
+                    runtime.GameRuntimeActiveLevelPresentationInstanceId,
+                    Is.EqualTo(presentationBeforeReset),
+                    $"Level {externalLevel} presentation rebound to the reset generation");
+                AssertPlayableLevelPresentation(runtime, externalLevel);
+                runtime.QualificationDriveGameRuntimeFrames(1);
+                Assert.That(runtime.GameRuntimeProductionIdentity.session.tick,
+                    Is.EqualTo("1"));
+
+                var beforeQuit = runtime.GameRuntimeProductionIdentity;
+                Assert.That(
+                    runtime.QualificationDispatchGameRuntimePublicControlInput(
+                        resetPressed: false,
+                        quitPressed: true),
+                    Is.True,
+                    "F10 dispatches the application quit request without quitting the editor");
+                var afterQuitRequest = runtime.GameRuntimeProductionIdentity;
+                Assert.That(afterQuitRequest.runtime_id, Is.EqualTo(beforeQuit.runtime_id));
+                Assert.That(afterQuitRequest.generation, Is.EqualTo(beforeQuit.generation));
+                Assert.That(
+                    afterQuitRequest.session.generation,
+                    Is.EqualTo(beforeQuit.session.generation));
+                Assert.That(afterQuitRequest.session.tick, Is.EqualTo(beforeQuit.session.tick));
+            }
+            finally
+            {
+                runtime.QualificationDisposeGameRuntimeProduction();
+                UnityEngine.Object.DestroyImmediate(root);
+            }
+            Assert.That(NativeSession.ActiveSessionCount, Is.EqualTo(nativeSessionsBefore));
+            Assert.That(
+                NativeCampaignSession.ActiveSessionCount,
+                Is.EqualTo(campaignSessionsBefore));
+        }
+
         [Test]
         [Timeout(180000)]
         public void ProductionLoadingGateWaitsForVisibleFrameBeforeRealRustOpen()

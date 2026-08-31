@@ -3166,6 +3166,13 @@ namespace MagicCarpet.Native
         {
             if (gameRuntimeMode)
             {
+                if (DispatchGameRuntimePublicControlInput(
+                    Input.GetKeyDown(KeyCode.R),
+                    Input.GetKeyDown(KeyCode.F10)))
+                {
+                    Application.Quit();
+                    return;
+                }
                 if (!AutomatedInput)
                 {
                     var runtimeIdentity = session.GameRuntimeIdentity();
@@ -9561,11 +9568,17 @@ namespace MagicCarpet.Native
 
         internal void QualificationResetGameRuntimeProduction()
         {
+            ResetGameRuntimeProduction();
+        }
+
+        private void ResetGameRuntimeProduction()
+        {
             Require(
                 GameRuntimeProductionStartupReady,
                 "game runtime reset route requires a validated production owner");
-            gameRuntimeSpellSelectionRequested = null;
+            FreezeGameRuntimeInput();
             gameRuntimeCampaignSnapshot = session.GameRuntimeCampaignReset();
+            gameRuntimeLastCompletionTransitionReceipt = null;
             gameRuntimeSemanticEventCursor = gameRuntimeCampaignSnapshot.value.effect_head;
             gameRuntimeRecentSemanticEvents.Clear();
             var identity = session.GameRuntimeIdentity();
@@ -9585,6 +9598,30 @@ namespace MagicCarpet.Native
             {
                 UpdateGameRuntimeFireballPresentation(gameRuntimeCampaignSnapshot);
             }
+        }
+
+        private bool DispatchGameRuntimePublicControlInput(
+            bool resetPressed,
+            bool quitPressed)
+        {
+            if (quitPressed) return true;
+            if (!resetPressed || !GameRuntimeProductionStartupReady) return false;
+            var mode = session.GameRuntimeIdentity().mode;
+            if (mode == GameRuntimeTransport.PlayingMode ||
+                mode == GameRuntimeTransport.PausedMode)
+            {
+                ResetGameRuntimeProduction();
+            }
+            return false;
+        }
+
+        internal bool QualificationDispatchGameRuntimePublicControlInput(
+            bool resetPressed,
+            bool quitPressed)
+        {
+            return DispatchGameRuntimePublicControlInput(
+                resetPressed,
+                quitPressed);
         }
 
         internal void QualificationRefreshGameRuntimeProductionEvents()
