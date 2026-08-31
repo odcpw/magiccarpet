@@ -3221,24 +3221,14 @@ mod tests {
             .backend_mut()
             .compatibility_campaign_mut_for_test()
             .level2_compatibility_mut()
-            .stage_level_three_final_objective_prerequisite_for_test()
+            .apply_carried_spell_families(&[0, 1, 2, 3], Some(2))
             .unwrap();
-        assert_eq!(
-            runtime
-                .session()
-                .unwrap()
-                .backend()
-                .compatibility_campaign()
-                .level2_compatibility()
-                .level2_selected_objective_stage_state(),
-            2
+        crate::campaign::backend::tests::drive_real_level_three_carried_castle_to_revealed_way_for_test(
+            runtime.session_mut().unwrap(),
         );
-        let guard = runtime.session().unwrap().identity().guard();
-        runtime
-            .session_mut()
-            .unwrap()
-            .step(guard, GameCommand::default())
-            .unwrap();
+        crate::campaign::backend::tests::drive_real_level_three_revealed_way_through_final_bees_for_test(
+            runtime.session_mut().unwrap(),
+        );
         {
             let session = runtime
                 .session()
@@ -3246,52 +3236,13 @@ mod tests {
                 .backend()
                 .compatibility_campaign()
                 .level2_compatibility();
-            assert!(session.dispatch_events().iter().any(|event| matches!(
-                event,
-                crate::native_world::Level2DispatchEvent::AuthoredGroupActivated {
-                    source_slot: 129,
-                    group: 3,
-                    authored_indices,
-                    ..
-                } if authored_indices.as_ref() == BEE_ROWS
-            )));
-            assert_eq!(
+            assert!(
                 session
                     .economy()
                     .bee_creatures()
                     .iter()
-                    .filter_map(crate::native_world::BeeCreatureRuntime::authored_index)
-                    .collect::<Vec<_>>(),
-                BEE_ROWS
+                    .all(|bee| !BEE_ROWS.contains(&bee.authored_index().unwrap_or(u16::MAX)))
             );
-            assert_eq!(session.runtime().objectives[0].stage_selectors[4], 1);
-        }
-
-        assert_eq!(
-            runtime
-                .session_mut()
-                .unwrap()
-                .backend_mut()
-                .compatibility_campaign_mut_for_test()
-                .level2_compatibility_mut()
-                .economy_mut()
-                .stage_authored_bee_terminal_hide_for_test(&BEE_ROWS),
-            BEE_ROWS.len()
-        );
-        let guard = runtime.session().unwrap().identity().guard();
-        runtime
-            .session_mut()
-            .unwrap()
-            .step(guard, GameCommand::default())
-            .unwrap();
-        {
-            let session = runtime
-                .session()
-                .unwrap()
-                .backend()
-                .compatibility_campaign()
-                .level2_compatibility();
-            assert!(session.economy().bee_creatures().is_empty());
             assert_eq!(session.runtime().objectives[0].stage_selectors[4], 2);
             assert_eq!(session.runtime().objectives[0].is_level_end, 1);
             assert!(session.dispatch_events().iter().all(|event| !matches!(
@@ -3535,13 +3486,13 @@ mod tests {
         ));
 
         // No-Claim: this gate starts from the exact resolver-owned L3 Loading
-        // boundary separately proved by the L2->L3 gate, stages objectives
-        // 0-3/final selection, and stages the already-proven terminal hide for
-        // the real final Bee roots. It proves ordinary final-objective/group-6
-        // chronology, authoritative phase-12 completion, semantic Title,
-        // and same-handle generation-4 restart. It does not prove an
-        // uninterrupted L1->Title run, organic L3 objectives or Bee combat,
-        // Title/results presentation, CAPI/Unity transition exposure, package
-        // installation/discovery, save/load, replay, or distribution.
+        // boundary separately proved by the L2->L3 gate and applies the
+        // separately proved incoming spell carry. It then exercises the real
+        // Skeleton, Dragon, carried-Castle/mana, terrain-strip, commanded
+        // reach, final-Bee damage/death/reclaim, group-6, phase-12, semantic
+        // Title, and same-handle generation-4 restart chronology. It does not
+        // prove an uninterrupted L1->Title run, Title/results presentation,
+        // CAPI/Unity transition exposure, package installation/discovery,
+        // save/load, replay, or distribution.
     }
 }

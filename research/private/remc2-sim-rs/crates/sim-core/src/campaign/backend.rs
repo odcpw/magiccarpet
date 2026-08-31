@@ -5924,6 +5924,167 @@ pub(crate) mod tests {
         // level, stage combat, localize objective text, or prove clients.
     }
 
+    fn position_player_at_bee_fireball_boundary_for_test(
+        session: &mut GameSession<Mc2CampaignBackend>,
+        position: crate::Position,
+    ) {
+        let compatibility = session.backend_mut().campaign.level2_compatibility_mut();
+        let player_slot = compatibility.state.entity_index;
+        compatibility
+            .set_level2_entity_position(player_slot, position)
+            .expect("Bee combat boundary remains map-linked");
+        compatibility.set_level2_player_aim_for_test(0, 0);
+    }
+
+    fn aim_real_player_fireball_at_bee_for_test(
+        session: &mut GameSession<Mc2CampaignBackend>,
+        bee: crate::native_world::BeeCreatureRuntime,
+    ) {
+        let (player_slot, player_fov, direction_bits) = {
+            let compatibility = session.backend().campaign.level2_compatibility();
+            (
+                compatibility.state.entity_index,
+                compatibility.state.entity_fov,
+                compatibility.shared_spells().player_entity().control_flags & 0x0300,
+            )
+        };
+        let mut predicted_target = bee.position;
+        crate::move_entity(&mut predicted_target, bee.yaw, 0, bee.actual_speed);
+        predicted_target.z = predicted_target
+            .z
+            .wrapping_sub(crate::level1_mission::FIREBALL_COLLISION_VERTICAL_OFFSET);
+        let mut launch_position = predicted_target;
+        crate::move_entity(
+            &mut launch_position,
+            bee.yaw.wrapping_add(1024),
+            0,
+            crate::level1_mission::FIREBALL_SPEED,
+        );
+        launch_position.z = crate::FlightWorld::ground_height(
+            session
+                .backend()
+                .campaign
+                .level2_compatibility()
+                .canonical_terrain(),
+            launch_position,
+        )
+        .wrapping_add(256)
+        .wrapping_add(player_fov);
+        let (yaw, pitch) =
+            crate::level1_mission::projectile_guidance_angles(launch_position, predicted_target);
+        let hand_yaw = if direction_bits & 0x0100 != 0 {
+            Some(yaw.wrapping_sub(512))
+        } else if direction_bits & 0x0200 != 0 {
+            Some(yaw.wrapping_add(512))
+        } else {
+            None
+        };
+        let mut player_position = crate::Position {
+            z: launch_position.z.wrapping_sub(player_fov),
+            ..launch_position
+        };
+        if let Some(hand_yaw) = hand_yaw {
+            crate::move_entity(&mut player_position, hand_yaw.wrapping_add(1024), 0, 256);
+        }
+        let compatibility = session.backend_mut().campaign.level2_compatibility_mut();
+        compatibility
+            .set_level2_entity_position(player_slot, player_position)
+            .expect("Bee Fireball boundary remains map-linked");
+        compatibility.set_level2_player_aim_for_test(yaw, pitch);
+    }
+
+    fn drive_real_bee_to_fireball_action_for_test(
+        session: &mut GameSession<Mc2CampaignBackend>,
+        authored_index: u16,
+    ) -> crate::native_world::BeeCreatureRuntime {
+        for _ in 0..160 {
+            let bee = session
+                .backend()
+                .campaign
+                .level2_compatibility()
+                .economy()
+                .bee_creatures()
+                .iter()
+                .find(|bee| bee.authored_index() == Some(authored_index))
+                .copied()
+                .expect("production Bee remains before its public Fireball callback");
+            if bee.action == 17 {
+                return bee;
+            }
+            assert!(
+                !matches!(bee.action, 20 | 21),
+                "Bee {authored_index} reached death before the selected Fireball"
+            );
+            let player_position = if bee.action == 23 {
+                let mut position = bee.position;
+                crate::move_entity(&mut position, bee.yaw, 0, 1_000);
+                position.z = bee.position.z;
+                position
+            } else {
+                crate::Position {
+                    x: bee.position.x.wrapping_add(20_000),
+                    y: bee.position.y.wrapping_add(20_000),
+                    z: bee.position.z,
+                }
+            };
+            position_player_at_bee_fireball_boundary_for_test(session, player_position);
+            session
+                .step(guard(session), GameCommand::default())
+                .unwrap();
+        }
+        let bee = session
+            .backend()
+            .campaign
+            .level2_compatibility()
+            .economy()
+            .bee_creatures()
+            .iter()
+            .find(|bee| bee.authored_index() == Some(authored_index))
+            .copied();
+        panic!("Bee {authored_index} did not return to source action 17: {bee:?}");
+    }
+
+    fn fire_real_player_fireball_at_bee_for_test(
+        session: &mut GameSession<Mc2CampaignBackend>,
+        authored_index: u16,
+    ) -> crate::native_world::BeeCreatureRuntime {
+        let bee = drive_real_bee_to_fireball_action_for_test(session, authored_index);
+        let life_before = bee.life;
+        aim_real_player_fireball_at_bee_for_test(session, bee);
+        session
+            .step(
+                guard(session),
+                GameCommand {
+                    select_spell: Some(SemanticId::parse("spell.fireball").unwrap()),
+                    cast_selected: true,
+                    ..GameCommand::default()
+                },
+            )
+            .unwrap();
+        for _ in 0..=24 {
+            let compatibility = session.backend().campaign.level2_compatibility();
+            let current = compatibility
+                .economy()
+                .bee_creatures()
+                .iter()
+                .find(|bee| bee.authored_index() == Some(authored_index))
+                .copied()
+                .expect("the public Fireball leaves its real Bee addressable");
+            if current.life == life_before.wrapping_sub(250)
+                && current.damage_attacker_entity_index == compatibility.state.entity_index
+            {
+                assert!(matches!(current.action, 18 | 20));
+                return current;
+            }
+            session
+                .step(guard(session), GameCommand::default())
+                .unwrap();
+        }
+        panic!(
+            "one ordinary semantic Fireball did not reach Bee {authored_index}'s source mailbox"
+        );
+    }
+
     pub(crate) fn drive_real_level_two_to_final_vault_objective_for_test(
         session: &mut GameSession<Mc2CampaignBackend>,
     ) {
@@ -6418,73 +6579,6 @@ pub(crate) mod tests {
             "materializing the two production plague groups must not complete their absence objective"
         );
 
-        let position_player_at_bee_boundary =
-            |session: &mut GameSession<Mc2CampaignBackend>, position: crate::Position| {
-                let compatibility = session.backend_mut().campaign.level2_compatibility_mut();
-                let player_slot = compatibility.state.entity_index;
-                compatibility
-                    .set_level2_entity_position(player_slot, position)
-                    .expect("Bee combat boundary remains map-linked");
-                compatibility.set_level2_player_aim_for_test(0, 0);
-            };
-        let aim_player_at_bee =
-            |session: &mut GameSession<Mc2CampaignBackend>,
-             bee: crate::native_world::BeeCreatureRuntime| {
-                let (player_slot, player_fov, direction_bits) = {
-                    let compatibility = session.backend().campaign.level2_compatibility();
-                    (
-                        compatibility.state.entity_index,
-                        compatibility.state.entity_fov,
-                        compatibility.shared_spells().player_entity().control_flags & 0x0300,
-                    )
-                };
-                let mut predicted_target = bee.position;
-                crate::move_entity(&mut predicted_target, bee.yaw, 0, bee.actual_speed);
-                predicted_target.z = predicted_target
-                    .z
-                    .wrapping_sub(crate::level1_mission::FIREBALL_COLLISION_VERTICAL_OFFSET);
-                let mut launch_position = predicted_target;
-                crate::move_entity(
-                    &mut launch_position,
-                    bee.yaw.wrapping_add(1024),
-                    0,
-                    crate::level1_mission::FIREBALL_SPEED,
-                );
-                launch_position.z = crate::FlightWorld::ground_height(
-                    session
-                        .backend()
-                        .campaign
-                        .level2_compatibility()
-                        .canonical_terrain(),
-                    launch_position,
-                )
-                .wrapping_add(256)
-                .wrapping_add(player_fov);
-                let (yaw, pitch) = crate::level1_mission::projectile_guidance_angles(
-                    launch_position,
-                    predicted_target,
-                );
-                let hand_yaw = if direction_bits & 0x0100 != 0 {
-                    Some(yaw.wrapping_sub(512))
-                } else if direction_bits & 0x0200 != 0 {
-                    Some(yaw.wrapping_add(512))
-                } else {
-                    None
-                };
-                let mut player_position = crate::Position {
-                    z: launch_position.z.wrapping_sub(player_fov),
-                    ..launch_position
-                };
-                if let Some(hand_yaw) = hand_yaw {
-                    crate::move_entity(&mut player_position, hand_yaw.wrapping_add(1024), 0, 256);
-                }
-                let compatibility = session.backend_mut().campaign.level2_compatibility_mut();
-                compatibility
-                    .set_level2_entity_position(player_slot, player_position)
-                    .expect("Bee Fireball boundary remains map-linked");
-                compatibility.set_level2_player_aim_for_test(yaw, pitch);
-            };
-
         let first_bee_position = session
             .backend()
             .campaign
@@ -6495,7 +6589,7 @@ pub(crate) mod tests {
             .find(|bee| bee.authored_index() == Some(PLAGUE_BEE_ROWS[0]))
             .expect("first package plague Bee is live")
             .position;
-        position_player_at_bee_boundary(
+        position_player_at_bee_fireball_boundary_for_test(
             &mut session,
             crate::Position {
                 x: first_bee_position.x.wrapping_add(20_000),
@@ -6532,62 +6626,14 @@ pub(crate) mod tests {
             "ordinary flight input stops before source-qualified Bee casting"
         );
 
-        let drive_bee_to_action_seventeen =
-            |session: &mut GameSession<Mc2CampaignBackend>, authored_index: u16| {
-                for _ in 0..160 {
-                    let bee = session
-                        .backend()
-                        .campaign
-                        .level2_compatibility()
-                        .economy()
-                        .bee_creatures()
-                        .iter()
-                        .find(|bee| bee.authored_index() == Some(authored_index))
-                        .copied()
-                        .expect("production plague Bee remains before its lethal callback");
-                    if bee.action == 17 {
-                        return bee;
-                    }
-                    assert!(
-                        !matches!(bee.action, 20 | 21),
-                        "plague Bee {authored_index} reached death before the selected Fireball"
-                    );
-                    let player_position = if bee.action == 23 {
-                        let mut position = bee.position;
-                        crate::move_entity(&mut position, bee.yaw, 0, 1_000);
-                        position.z = bee.position.z;
-                        position
-                    } else {
-                        crate::Position {
-                            x: bee.position.x.wrapping_add(20_000),
-                            y: bee.position.y.wrapping_add(20_000),
-                            z: bee.position.z,
-                        }
-                    };
-                    position_player_at_bee_boundary(session, player_position);
-                    session
-                        .step(guard(session), GameCommand::default())
-                        .unwrap();
-                }
-                let bee = session
-                    .backend()
-                    .campaign
-                    .level2_compatibility()
-                    .economy()
-                    .bee_creatures()
-                    .iter()
-                    .find(|bee| bee.authored_index() == Some(authored_index))
-                    .copied();
-                panic!("plague Bee {authored_index} did not return to source action 17: {bee:?}");
-            };
-
         const ALL_PACKAGE_BEE_ROWS: [u16; 12] =
             [210, 211, 212, 229, 230, 231, 236, 237, 257, 307, 308, 312];
 
         // Keep one complete public semantic route in this causal test. Source
         // guidance supplies the launch angles, then production owns class-9
         // construction, class-10 impact, target selection, and the mailbox.
-        let first_bee = drive_bee_to_action_seventeen(&mut session, PLAGUE_BEE_ROWS[0]);
+        let first_bee =
+            drive_real_bee_to_fireball_action_for_test(&mut session, PLAGUE_BEE_ROWS[0]);
         let first_life_before = first_bee.life;
         let other_lives_before = session
             .backend()
@@ -6602,41 +6648,9 @@ pub(crate) mod tests {
                     .map(|row| (row, bee.life))
             })
             .collect::<Vec<_>>();
-        aim_player_at_bee(&mut session, first_bee);
-        session
-            .step(
-                guard(&session),
-                GameCommand {
-                    select_spell: Some(SemanticId::parse("spell.fireball").unwrap()),
-                    cast_selected: true,
-                    ..GameCommand::default()
-                },
-            )
-            .unwrap();
-        let mut public_hit = None;
-        for _ in 0..=24 {
-            let compatibility = session.backend().campaign.level2_compatibility();
-            let current = compatibility
-                .economy()
-                .bee_creatures()
-                .iter()
-                .find(|bee| bee.authored_index() == Some(PLAGUE_BEE_ROWS[0]))
-                .copied()
-                .expect("the public Fireball leaves row 229 addressable");
-            if current.life == first_life_before.wrapping_sub(250)
-                && current.damage_attacker_entity_index == compatibility.state.entity_index
-            {
-                public_hit = Some(current);
-                break;
-            }
-            session
-                .step(guard(&session), GameCommand::default())
-                .unwrap();
-        }
-        let public_hit = public_hit.expect(
-            "one ordinary semantic Fireball reaches class 9, class 10, and row 229's mailbox",
-        );
-        assert!(matches!(public_hit.action, 18 | 20));
+        let public_hit =
+            fire_real_player_fireball_at_bee_for_test(&mut session, PLAGUE_BEE_ROWS[0]);
+        assert_eq!(public_hit.life, first_life_before.wrapping_sub(250));
         for (other_row, other_life) in other_lives_before {
             assert_eq!(
                 session
@@ -7388,38 +7402,56 @@ pub(crate) mod tests {
         );
     }
 
+    fn valid_level_three_castle_sites_for_test(
+        session: &GameSession<Mc2CampaignBackend>,
+    ) -> Vec<crate::Position> {
+        let compatibility = session.backend().campaign.level2_compatibility();
+        let terrain = compatibility.canonical_terrain();
+        let cast_yaw = compatibility.state.yaw;
+        let entity_fov = compatibility.state.entity_fov;
+        (16_u8..240)
+            .flat_map(|y| (16_u8..240).map(move |x| (x, y)))
+            .filter_map(|(x, y)| {
+                let mut position = crate::Position {
+                    x: (u16::from(x) << 8) + 128,
+                    y: (u16::from(y) << 8) + 128,
+                    z: 0,
+                };
+                position.z = terrain.ground_height(position).wrapping_add(256);
+                let mut launch_position = position;
+                crate::move_entity(&mut launch_position, cast_yaw.wrapping_sub(512), 0, 256);
+                if terrain.ground_height(launch_position) > launch_position.z {
+                    launch_position = position;
+                }
+                launch_position.z = launch_position.z.wrapping_add(entity_fov);
+                compatibility
+                    .castle_projectile_site_admitted_for_test(launch_position)
+                    .then_some(position)
+            })
+            .collect()
+    }
+
+    fn nearest_level_three_castle_site_for_test(
+        session: &GameSession<Mc2CampaignBackend>,
+        origin: crate::Position,
+    ) -> crate::Position {
+        valid_level_three_castle_sites_for_test(session)
+            .into_iter()
+            .min_by_key(|site| {
+                let dx = i64::from(i32::from(site.x) - i32::from(origin.x));
+                let dy = i64::from(i32::from(site.y) - i32::from(origin.y));
+                dx * dx + dy * dy
+            })
+            .expect("qualified Level 3 terrain contains a valid carried-Castle footprint")
+    }
+
     pub(crate) fn build_real_level_three_carried_castle_for_test(
         session: &mut GameSession<Mc2CampaignBackend>,
     ) -> u16 {
         let (player_entity, castle_cast_aim, cast_site) = {
             let compatibility = session.backend().campaign.level2_compatibility();
-            let terrain = compatibility.canonical_terrain();
-            let cast_site = (16_u8..240)
-                .flat_map(|y| (16_u8..240).map(move |x| (x, y)))
-                .find_map(|(x, y)| {
-                    (0..8_u8)
-                        .all(|row| {
-                            (0..8_u8).all(|column| {
-                                terrain
-                                    .angle_flags(crate::Tile {
-                                        x: x - 8 + column,
-                                        y: y - 8 + row,
-                                    })
-                                    .cast_signed()
-                                    >= 0
-                            })
-                        })
-                        .then(|| {
-                            let mut position = crate::Position {
-                                x: (u16::from(x) << 8) + 128,
-                                y: (u16::from(y) << 8) + 128,
-                                z: 0,
-                            };
-                            position.z = terrain.ground_height(position).wrapping_add(256);
-                            position
-                        })
-                })
-                .expect("qualified Level 3 terrain contains a valid carried-Castle footprint");
+            let cast_site =
+                nearest_level_three_castle_site_for_test(session, compatibility.state.position);
             (
                 compatibility.state.entity_index,
                 (compatibility.state.yaw, compatibility.state.display_pitch),
@@ -7498,6 +7530,22 @@ pub(crate) mod tests {
             166, 167, 168, 169, 170, 171, 172, 173, 174, 175, 176, 177, 178, 179, 180, 181, 182,
             183, 184, 185, 186, 187, 188, 189, 190, 191, 192, 193, 194,
         ];
+        let (player_entity, safe_combat_site) = {
+            let compatibility = session.backend().campaign.level2_compatibility();
+            (
+                compatibility.state.entity_index,
+                valid_level_three_castle_sites_for_test(session)
+                    .into_iter()
+                    .next()
+                    .expect("qualified Level 3 terrain contains a valid combat footprint"),
+            )
+        };
+        session
+            .backend_mut()
+            .campaign
+            .level2_compatibility_mut()
+            .set_level2_entity_position(player_entity, safe_combat_site)
+            .unwrap();
         session
             .step(guard(session), GameCommand::default())
             .unwrap();
@@ -7511,7 +7559,6 @@ pub(crate) mod tests {
                 ..
             } if authored_indices.as_ref() == GROUP_FIVE_ROWS
         )));
-        let player_entity = compatibility.state.entity_index;
         let archers = compatibility
             .economy()
             .authored_class5()
@@ -7878,29 +7925,13 @@ pub(crate) mod tests {
         );
     }
 
-    #[test]
-    fn campaign_backend_level_three_guardian_helper_accepts_carried_base_holders() {
-        let root = level_three_descriptor_fixture_path();
-        let catalog = default_catalog().unwrap();
-        let definition = Arc::new(load_mc2_campaign(&root, &catalog).unwrap());
-        let mut session = GameSession::open(
-            &Mc2CampaignAdapter,
-            definition,
-            63,
-            Mc2CampaignInputs::new(&root),
-        )
-        .unwrap();
-        session
-            .backend_mut()
-            .campaign
-            .level2_compatibility_mut()
-            .apply_carried_spell_families(&[0, 1, 2, 3], Some(2))
-            .unwrap();
-
-        drive_real_level_three_skeleton_horde_to_guardian_dragons_for_test(&mut session);
-        build_real_level_three_carried_castle_for_test(&mut session);
-        drive_real_level_three_guardian_dragons_to_reveal_entrance_for_test(&mut session);
-        activate_and_retire_real_level_three_group_five_archers_for_test(&mut session);
+    pub(crate) fn drive_real_level_three_carried_castle_to_revealed_way_for_test(
+        session: &mut GameSession<Mc2CampaignBackend>,
+    ) {
+        drive_real_level_three_skeleton_horde_to_guardian_dragons_for_test(session);
+        build_real_level_three_carried_castle_for_test(session);
+        drive_real_level_three_guardian_dragons_to_reveal_entrance_for_test(session);
+        activate_and_retire_real_level_three_group_five_archers_for_test(session);
         for expected_level in 1..=2 {
             for _ in 0..40 {
                 let castle = session
@@ -7915,16 +7946,16 @@ pub(crate) mod tests {
                 }
                 let mana_before = castle.mana;
                 let (sphere_slot, sphere_mana, event_count_before) =
-                    claim_real_neutral_mana_sphere_for_castle_for_test(&mut session);
+                    claim_real_neutral_mana_sphere_for_castle_for_test(session);
                 await_real_castle_sphere_deposit_for_test(
-                    &mut session,
+                    session,
                     sphere_slot,
                     mana_before,
                     sphere_mana,
                     event_count_before,
                 );
             }
-            upgrade_real_castle_for_test(&mut session, expected_level + 1);
+            upgrade_real_castle_for_test(session, expected_level + 1);
         }
         for _ in 0..40 {
             if session
@@ -7947,9 +7978,9 @@ pub(crate) mod tests {
                 .expect("the carried Castle remains live")
                 .mana;
             let (sphere_slot, sphere_mana, event_count_before) =
-                claim_real_neutral_mana_sphere_for_castle_for_test(&mut session);
+                claim_real_neutral_mana_sphere_for_castle_for_test(session);
             await_real_castle_sphere_deposit_for_test(
-                &mut session,
+                session,
                 sphere_slot,
                 mana_before,
                 sphere_mana,
@@ -7982,6 +8013,341 @@ pub(crate) mod tests {
             2,
             "the production Castle route must satisfy the exact 30% objective"
         );
+    }
+
+    pub(crate) fn drive_real_level_three_revealed_way_through_final_bees_for_test(
+        session: &mut GameSession<Mc2CampaignBackend>,
+    ) {
+        const REVEALED_WAY_STAGE: usize = 3;
+        const FINAL_BEE_STAGE: usize = 4;
+        const BEE_ROWS: [u16; 6] = [149, 150, 152, 153, 154, 155];
+
+        assert_eq!(
+            &session
+                .backend()
+                .campaign
+                .level2_compatibility()
+                .runtime()
+                .objectives[0]
+                .stage_selectors[..5],
+            &[2, 2, 2, 1, 1]
+        );
+        assert_eq!(
+            session
+                .snapshot()
+                .value
+                .objective_progress
+                .current_objective
+                .as_ref()
+                .map(SemanticId::as_str),
+            Some("objective.reach.revealed_way")
+        );
+
+        // The Castle-mana predicate is serviced post-pass. Its imported
+        // model-32 gate can see selector 2 only on a following numeric pass,
+        // where it constructs and visits the package's row-146 close command.
+        let mut saw_group_two = false;
+        for _ in 0..4 {
+            session
+                .step(guard(session), GameCommand::default())
+                .unwrap();
+            saw_group_two |= session
+                .backend()
+                .campaign
+                .level2_compatibility()
+                .dispatch_events()
+                .iter()
+                .any(|event| {
+                    matches!(
+                        event,
+                        crate::native_world::Level2DispatchEvent::AuthoredGroupActivated {
+                            source_slot: 128,
+                            group: 2,
+                            authored_indices,
+                            ..
+                        } if authored_indices.as_ref() == [146]
+                    )
+                });
+            if saw_group_two {
+                break;
+            }
+        }
+        assert!(
+            saw_group_two,
+            "the following source pass must construct exact terrain-strip row 146"
+        );
+
+        let target = {
+            let compatibility = session.backend().campaign.level2_compatibility();
+            let stage = &compatibility.runtime().stages[REVEALED_WAY_STAGE];
+            crate::Position {
+                x: stage.axis_x.cast_unsigned(),
+                y: stage.axis_y.cast_unsigned(),
+                z: compatibility.state.position.z,
+            }
+        };
+        for _ in 0..1_280 {
+            if session
+                .backend()
+                .campaign
+                .level2_compatibility()
+                .runtime()
+                .objectives[0]
+                .stage_selectors[REVEALED_WAY_STAGE]
+                == 2
+            {
+                break;
+            }
+            let state = session.backend().campaign.level2_compatibility().state;
+            let desired = i16::try_from(crate::heading_for_positions(state.position, target))
+                .expect("source heading is 11-bit");
+            let correction = crate::turn_toward(state.yaw, desired, 127);
+            session
+                .step(
+                    guard(session),
+                    GameCommand {
+                        longitudinal: LongitudinalControl::Accelerate,
+                        roll_axis: correction.clamp(-24, 24) as i8,
+                        pitch_axis: -127,
+                        ..GameCommand::default()
+                    },
+                )
+                .unwrap();
+        }
+        let compatibility = session.backend().campaign.level2_compatibility();
+        assert_eq!(
+            compatibility.runtime().objectives[0].stage_selectors[REVEALED_WAY_STAGE],
+            2,
+            "ordinary commanded flight did not reach the package point: state={:?}, target={target:?}",
+            compatibility.state
+        );
+        assert_eq!(
+            session
+                .snapshot()
+                .value
+                .objective_progress
+                .current_objective
+                .as_ref()
+                .map(SemanticId::as_str),
+            Some("objective.clear.final_bees")
+        );
+
+        for _ in 0..4 {
+            let bee_rows = session
+                .backend()
+                .campaign
+                .level2_compatibility()
+                .economy()
+                .bee_creatures()
+                .iter()
+                .filter_map(|bee| bee.authored_index())
+                .collect::<Vec<_>>();
+            if bee_rows == BEE_ROWS {
+                break;
+            }
+            session
+                .step(guard(session), GameCommand::default())
+                .unwrap();
+        }
+        let compatibility = session.backend().campaign.level2_compatibility();
+        assert!(compatibility.dispatch_events().iter().any(|event| matches!(
+            event,
+            crate::native_world::Level2DispatchEvent::AuthoredGroupActivated {
+                source_slot: 129,
+                group: 3,
+                authored_indices,
+                ..
+            } if authored_indices.as_ref() == BEE_ROWS
+        )));
+        assert_eq!(
+            compatibility
+                .economy()
+                .bee_creatures()
+                .iter()
+                .filter_map(|bee| bee.authored_index())
+                .collect::<Vec<_>>(),
+            BEE_ROWS
+        );
+        assert_eq!(
+            compatibility.runtime().objectives[0].stage_selectors[FINAL_BEE_STAGE],
+            1
+        );
+
+        let first_life = compatibility
+            .economy()
+            .bee_creatures()
+            .iter()
+            .find(|bee| bee.authored_index() == Some(BEE_ROWS[0]))
+            .expect("the first final Bee is live")
+            .life;
+        let first_hit = fire_real_player_fireball_at_bee_for_test(session, BEE_ROWS[0]);
+        assert_eq!(first_hit.life, first_life.wrapping_sub(250));
+
+        let retreat = {
+            let first = session
+                .backend()
+                .campaign
+                .level2_compatibility()
+                .economy()
+                .bee_creatures()
+                .iter()
+                .find(|bee| bee.authored_index() == Some(BEE_ROWS[0]))
+                .expect("the first final Bee remains after its public hit");
+            crate::Position {
+                x: first.position.x.wrapping_add(20_000),
+                y: first.position.y.wrapping_add(20_000),
+                z: first.position.z,
+            }
+        };
+        position_player_at_bee_fireball_boundary_for_test(session, retreat);
+
+        let attacker = session
+            .backend()
+            .campaign
+            .level2_compatibility()
+            .state
+            .entity_index;
+        let mut terminal_rows = BTreeSet::new();
+        let mut reclaimed_rows = BTreeSet::new();
+        for authored_index in BEE_ROWS {
+            for _ in 0..16 {
+                let Some(bee) = session
+                    .backend()
+                    .campaign
+                    .level2_compatibility()
+                    .economy()
+                    .bee_creatures()
+                    .iter()
+                    .find(|bee| bee.authored_index() == Some(authored_index))
+                    .copied()
+                else {
+                    break;
+                };
+                if bee.life < 0 {
+                    terminal_rows.insert(authored_index);
+                    break;
+                }
+                assert!(
+                    session
+                        .backend_mut()
+                        .campaign
+                        .level2_compatibility_mut()
+                        .economy_mut()
+                        .stage_bee_mailbox_damage_for_test(bee.source_entity_index, attacker, 250,)
+                );
+                let life_before = bee.life;
+                let mut consumed = false;
+                for _ in 0..4 {
+                    session
+                        .step(guard(session), GameCommand::default())
+                        .unwrap();
+                    let current = session
+                        .backend()
+                        .campaign
+                        .level2_compatibility()
+                        .economy()
+                        .bee_creatures()
+                        .iter()
+                        .find(|candidate| candidate.authored_index() == Some(authored_index))
+                        .copied()
+                        .expect("the source-arrived pulse is consumed before Bee reclaim");
+                    if current.life == life_before.wrapping_sub(250) {
+                        consumed = true;
+                        if current.life < 0 {
+                            assert_eq!(current.action, 20);
+                            terminal_rows.insert(authored_index);
+                        }
+                        break;
+                    }
+                }
+                assert!(
+                    consumed,
+                    "Bee {authored_index} did not consume its source mailbox"
+                );
+                if terminal_rows.contains(&authored_index) {
+                    break;
+                }
+            }
+
+            for _ in 0..24 {
+                if session
+                    .backend()
+                    .campaign
+                    .level2_compatibility()
+                    .economy()
+                    .bee_creatures()
+                    .iter()
+                    .all(|bee| bee.authored_index() != Some(authored_index))
+                {
+                    reclaimed_rows.insert(authored_index);
+                    break;
+                }
+                session
+                    .step(guard(session), GameCommand::default())
+                    .unwrap();
+            }
+        }
+
+        assert_eq!(terminal_rows, BTreeSet::from(BEE_ROWS));
+        for _ in 0..24 {
+            if session
+                .backend()
+                .campaign
+                .level2_compatibility()
+                .economy()
+                .bee_creatures()
+                .iter()
+                .all(|bee| !BEE_ROWS.contains(&bee.authored_index().unwrap_or(u16::MAX)))
+            {
+                break;
+            }
+            session
+                .step(guard(session), GameCommand::default())
+                .unwrap();
+        }
+        let compatibility = session.backend().campaign.level2_compatibility();
+        let remaining = compatibility
+            .economy()
+            .bee_creatures()
+            .iter()
+            .filter_map(|bee| bee.authored_index())
+            .filter(|row| BEE_ROWS.contains(row))
+            .collect::<Vec<_>>();
+        assert!(
+            remaining.is_empty(),
+            "final Bees were not reclaimed: {remaining:?}"
+        );
+        assert!(
+            BTreeSet::from([149, 150, 152, 153, 154]).is_subset(&reclaimed_rows),
+            "the first five final Bees must each reach following-pass reclaim: {reclaimed_rows:?}"
+        );
+        assert_eq!(
+            compatibility.runtime().objectives[0].stage_selectors[FINAL_BEE_STAGE],
+            2
+        );
+        assert_eq!(compatibility.runtime().objectives[0].is_level_end, 1);
+    }
+
+    #[test]
+    fn campaign_backend_level_three_guardian_helper_accepts_carried_base_holders() {
+        let root = level_three_descriptor_fixture_path();
+        let catalog = default_catalog().unwrap();
+        let definition = Arc::new(load_mc2_campaign(&root, &catalog).unwrap());
+        let mut session = GameSession::open(
+            &Mc2CampaignAdapter,
+            definition,
+            63,
+            Mc2CampaignInputs::new(&root),
+        )
+        .unwrap();
+        session
+            .backend_mut()
+            .campaign
+            .level2_compatibility_mut()
+            .apply_carried_spell_families(&[0, 1, 2, 3], Some(2))
+            .unwrap();
+
+        drive_real_level_three_carried_castle_to_revealed_way_for_test(&mut session);
     }
 
     #[test]

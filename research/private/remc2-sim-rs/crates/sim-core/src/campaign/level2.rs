@@ -5326,66 +5326,6 @@ impl Level2ResetSession {
         Ok(())
     }
 
-    /// Stage only the qualified Level-3 objective boundary immediately before
-    /// its final Bee group. Production source callbacks still own group 3,
-    /// Bee reclaim, final-objective evaluation, group 6, the exit trigger,
-    /// player action 12, and terminal completion.
-    #[cfg(test)]
-    pub(crate) fn stage_level_three_final_objective_prerequisite_for_test(
-        &mut self,
-    ) -> std::result::Result<(), String> {
-        const FINAL_STAGE: usize = 4;
-        let stage_count = self.session.state.live.core.runtime.objectives[0]
-            .stage_selectors
-            .len();
-        for stage_index in 0..stage_count {
-            self.session
-                .state
-                .live
-                .core
-                .runtime
-                .set_level2_objective_stage_selector_for(0, stage_index, 0);
-        }
-        for stage_index in 0..FINAL_STAGE {
-            self.session
-                .state
-                .live
-                .core
-                .runtime
-                .set_level2_objective_stage_selector_for(0, stage_index, 2);
-        }
-        self.session
-            .state
-            .live
-            .core
-            .runtime
-            .set_level2_objective_stage_selector_for(0, FINAL_STAGE, 1);
-        self.session
-            .state
-            .live
-            .core
-            .runtime
-            .set_level2_objective_text_selector_for(0, FINAL_STAGE);
-        self.session
-            .state
-            .live
-            .core
-            .runtime
-            .set_level2_objective_level_end_for(0, 0);
-        while self.session.state.live.core.runtime.objectives[0].done != 0 {
-            self.session
-                .state
-                .live
-                .core
-                .runtime
-                .consume_objective_done_pause_for(0);
-        }
-        self.session.state.live.level2_objective_pause = 0;
-        self.session.state.live.level2_objective_done = false;
-        self.set_level2_selected_objective_stage_state(2)
-            .map_err(|error| error.to_string())
-    }
-
     /// Corrupt only the private terminal result byte after a completed exit,
     /// so the neutral completion projection's fail-closed branch can be
     /// discriminated without exposing that source byte in production APIs.
@@ -6627,6 +6567,16 @@ impl Level2ResetSession {
     #[must_use]
     pub fn economy(&self) -> &Level2EconomyState {
         &self.session.state.live.economy
+    }
+
+    #[cfg(test)]
+    pub(crate) fn castle_projectile_site_admitted_for_test(&self, position: Position) -> bool {
+        let live = &self.session.state.live;
+        !live.economy.economy.castle_projectile_site_blocked(
+            position,
+            &live.economy.entities,
+            &live.terrain,
+        )
     }
 
     #[cfg(not(test))]

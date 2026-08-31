@@ -4042,7 +4042,7 @@ impl Level2EconomyState {
         if projectile.source_word_96 == 0
             && projectile.control_flags & LEVEL2_CASTLE_CONSTRUCTION_INITIALIZED_BIT == 0
         {
-            if self.castle_projectile_site_blocked(projectile, entities, terrain) {
+            if self.castle_projectile_site_blocked(projectile.position, entities, terrain) {
                 self.disable_castle_projectile(source_slot, true);
                 return false;
             }
@@ -4120,7 +4120,7 @@ impl Level2EconomyState {
             // same-speed bounce before allocation.
             let gate_blocked = !collision_landed
                 && projectile.source_word_96 == 0
-                && self.castle_projectile_site_blocked(moved, entities, terrain);
+                && self.castle_projectile_site_blocked(moved.position, entities, terrain);
             let landed = collision_landed || gate_blocked;
             if gate_blocked {
                 moved.yaw = (moved.yaw.wrapping_add(0x400)) & 0x07ff;
@@ -4248,31 +4248,31 @@ impl Level2EconomyState {
     /// fixed 8x8 window around the flyer, then rejects a nearby owned
     /// class-3/model-2 Castle row. BUILD cell payloads are construction data,
     /// not placement validity.
-    fn castle_projectile_site_blocked(
+    pub(crate) fn castle_projectile_site_blocked(
         &self,
-        projectile: Level2CastleProjectile,
+        position: Position,
         entities: &[EntitySnapshot],
         terrain: &SessionTerrain,
     ) -> bool {
-        let start_x = (projectile.position.x >> 8) as u8;
-        let start_y = (projectile.position.y >> 8) as u8;
+        let start_x = (position.x >> 8) as u8;
+        let start_y = (position.y >> 8) as u8;
         let nearby_castle = self.castle.is_some_and(|castle| {
             castle.active
                 && castle.source_class == 3
                 && castle.source_model == 2
-                && level2_castle_nearby_projectile(castle, projectile.position)
+                && level2_castle_nearby_projectile(castle, position)
         }) || entities.iter().any(|entity| {
             entity.active
                 && entity.life >= 0
                 && entity.class == 3
                 && entity.model == 2
-                && level2_entity_nearby_projectile(entity, projectile.position)
+                && level2_entity_nearby_projectile(entity, position)
         });
         let nearby_model45 = entities.iter().any(|entity| {
             entity.active
                 && entity.class == 10
                 && entity.model == 45
-                && level2_entity_nearby_projectile(entity, projectile.position)
+                && level2_entity_nearby_projectile(entity, position)
         });
         if nearby_castle || nearby_model45 {
             return true;
