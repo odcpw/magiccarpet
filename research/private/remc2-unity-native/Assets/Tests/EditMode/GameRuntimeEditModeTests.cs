@@ -27,6 +27,12 @@ namespace MagicCarpet.Native.Tests
                 PrivateRoot,
                 "generated/mc-cf14-campaign-package-v1-a/qualified-level3");
 
+        private static string LevelTwoOwnerCache =>
+            Path.Combine(PrivateRoot, "generated/level2-day-owner-cache");
+
+        private static string OpenedLevelTwoReplay =>
+            Path.Combine(PrivateRoot, "generated/opened-l2-runtime-replay-v5.json");
+
         private static GameRuntimeTransport.InstalledPackageResource Package(string path)
         {
             return new GameRuntimeTransport.InstalledPackageResource
@@ -67,6 +73,19 @@ namespace MagicCarpet.Native.Tests
             arguments[arguments.Length - 2] = "-mc-runtime-replay-load";
             arguments[arguments.Length - 1] = replayPath;
             return arguments;
+        }
+
+        private static string[] OpenedLevelTwoReplayArguments()
+        {
+            return new[]
+            {
+                "-mc-game-runtime",
+                "-mc-runtime-package", LevelThreePackage,
+                "-mc-runtime-package", LevelOnePackage,
+                "-mc-runtime-package", LevelTwoPackage,
+                "-mc-runtime-presentation-cache", LevelTwoOwnerCache,
+                "-mc-runtime-replay-load", OpenedLevelTwoReplay
+            };
         }
 
         private static string[] RuntimeReplaySaveArguments(
@@ -367,6 +386,61 @@ namespace MagicCarpet.Native.Tests
                 Assert.That(final.generation, Is.EqualTo(before.generation));
                 Assert.That(final.session.generation, Is.EqualTo(before.session.generation));
                 Assert.That(final.session.tick, Is.EqualTo(before.session.tick));
+            }
+        }
+
+        [Test]
+        [Timeout(180000)]
+        public void OpenedLevelTwoReplayKeepsLivePresentationOnOneRuntimeHandle()
+        {
+            Assert.That(File.Exists(OpenedLevelTwoReplay), Is.True,
+                "focused owner-local opened-Level-2 replay fixture");
+            var root = new GameObject("Game Runtime Level 2 Composition Test");
+            root.SetActive(false);
+            var runtime = root.AddComponent<MagicCarpetRuntime>();
+            try
+            {
+                runtime.QualificationInitializeGameRuntimeProductionFromArguments(
+                    OpenedLevelTwoReplayArguments());
+                var opened = runtime.GameRuntimeProductionIdentity;
+                Assert.That(opened.mode, Is.EqualTo(GameRuntimeTransport.PlayingMode));
+                Assert.That(
+                    opened.active_runtime_flow.bound_level_id,
+                    Is.EqualTo("level.magic_carpet_2.payahandra_ruins"));
+                var handle = ulong.Parse(opened.runtime_id);
+                Assert.That(opened.session.session_id, Is.EqualTo(opened.runtime_id));
+                Assert.That(ulong.Parse(opened.session.generation), Is.GreaterThan(0));
+                Assert.That(runtime.GameRuntimeLevel2PresentationReady, Is.True);
+                Assert.That(runtime.Level2ProductionWorldInfo.externalLevel, Is.EqualTo(2));
+                Assert.That(runtime.Level2ProductionDayHudPresenterReady, Is.True);
+                Assert.That(runtime.Level2ProductionMinimapProjectionReady, Is.True);
+
+                runtime.QualificationApplyGameRuntimeProductionMovement(
+                    accelerate: true,
+                    decelerate: false,
+                    strafeLeft: false,
+                    strafeRight: false);
+                var tickBefore = ulong.Parse(opened.session.tick);
+                runtime.QualificationDriveGameRuntimeFrames(1);
+                var stepped = runtime.GameRuntimeProductionIdentity;
+                Assert.That(ulong.Parse(stepped.session.tick), Is.EqualTo(tickBefore + 1));
+                Assert.That(runtime.GameRuntimeLevel2PresentationReady, Is.True);
+                Assert.That(runtime.Level2ProductionDayHud.tick, Is.EqualTo(tickBefore + 1));
+
+                Assert.That(
+                    NativeSim.mc_game_runtime_accept_transition_v1(
+                        handle,
+                        ulong.Parse(opened.generation) - 1,
+                        ulong.Parse(opened.session.generation),
+                        ulong.Parse(opened.session.tick)),
+                    Is.EqualTo(NativeSim.GenerationMismatch));
+                Assert.That(
+                    runtime.GameRuntimeProductionIdentity.active_runtime_flow.bound_level_id,
+                    Is.EqualTo("level.magic_carpet_2.payahandra_ruins"));
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(root);
             }
         }
 

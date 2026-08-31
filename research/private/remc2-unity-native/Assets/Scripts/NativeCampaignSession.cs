@@ -38,6 +38,7 @@ namespace MagicCarpet.Native
         private ulong generation;
         private ulong tick;
         private ulong effectCursor;
+        private readonly bool ownsHandle;
         private readonly bool dayMusicAvailable;
         private readonly CampaignPackageIdentity packageIdentity;
         private readonly NativeSim.CampaignWorldInfo initialWorldInfo;
@@ -57,13 +58,18 @@ namespace MagicCarpet.Native
             ulong handle,
             bool dayMusicAvailable,
             CampaignPackageIdentity packageIdentity,
-            NativeSim.CampaignWorldInfo initialWorldInfo)
+            NativeSim.CampaignWorldInfo initialWorldInfo,
+            bool ownsHandle = true)
         {
             handleBits = unchecked((long)handle);
+            this.ownsHandle = ownsHandle;
             this.dayMusicAvailable = dayMusicAvailable;
             this.packageIdentity = packageIdentity;
             this.initialWorldInfo = initialWorldInfo;
-            Interlocked.Increment(ref activeSessionCount);
+            if (ownsHandle)
+            {
+                Interlocked.Increment(ref activeSessionCount);
+            }
         }
 
         internal static int ActiveSessionCount =>
@@ -196,6 +202,53 @@ namespace MagicCarpet.Native
                         error);
                 }
                 throw;
+            }
+        }
+
+        /// Read-only retained Level 2 projections over the campaign nested in
+        /// a game-runtime handle.  Disposal never destroys the borrowed
+        /// runtime, and gameplay mutation remains on GameRuntimeTransport.
+        internal static NativeCampaignSession BorrowGameRuntime(
+            ulong handle,
+            GameRuntimeTransport.Identity identity,
+            string packagePath)
+        {
+            if (handle == 0 || identity?.session == null ||
+                identity.session.session_id != handle.ToString() ||
+                (identity.mode != GameRuntimeTransport.PlayingMode &&
+                 identity.mode != GameRuntimeTransport.PausedMode))
+            {
+                throw new InvalidOperationException(
+                    "Level 2 presentation borrow requires the bound runtime handle");
+            }
+            var selection = NativeSim.CampaignSelection.Level2Day();
+            var packageIdentity = ReadPackageIdentity(packagePath, selection);
+            var status = NativeSim.mc_native_campaign_world_info(
+                handle, out var worldInfo, 64);
+            NativeSession.Check(status, "read borrowed campaign world identity");
+            ValidateWorldInfo(worldInfo, selection);
+            var borrowed = new NativeCampaignSession(
+                handle,
+                false,
+                packageIdentity,
+                worldInfo,
+                false);
+            borrowed.SynchronizeGameRuntimeIdentity(identity);
+            return borrowed;
+        }
+
+        internal void SynchronizeGameRuntimeIdentity(
+            GameRuntimeTransport.Identity identity)
+        {
+            if (ownsHandle || identity?.session == null ||
+                identity.session.session_id != Handle.ToString() ||
+                (identity.mode != GameRuntimeTransport.PlayingMode &&
+                 identity.mode != GameRuntimeTransport.PausedMode) ||
+                !ulong.TryParse(identity.session.generation, out generation) ||
+                !ulong.TryParse(identity.session.tick, out tick))
+            {
+                throw new InvalidOperationException(
+                    "borrowed campaign projection lost its runtime identity binding");
             }
         }
 
@@ -1535,6 +1588,10 @@ namespace MagicCarpet.Native
         {
             var value = Interlocked.Exchange(ref handleBits, 0);
             if (value == 0)
+            {
+                return;
+            }
+            if (!ownsHandle)
             {
                 return;
             }

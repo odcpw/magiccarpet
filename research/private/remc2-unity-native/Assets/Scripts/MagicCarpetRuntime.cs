@@ -543,6 +543,8 @@ namespace MagicCarpet.Native
             gameRuntimeRecentSemanticEvents = new();
         private EngineSessionTransport.PresentationAssetObservation gameRuntimeFireballAsset;
         private SemanticPresentationAssetCache gameRuntimePresentationAssetCache;
+        private GameRuntimeTransport.InstalledPackageResource[] gameRuntimePackages =
+            Array.Empty<GameRuntimeTransport.InstalledPackageResource>();
         private readonly Dictionary<ulong, GameRuntimePresentationMarker>
             gameRuntimeFireballMarkers = new();
         private Transform gameRuntimeWorldRoot;
@@ -1000,9 +1002,20 @@ namespace MagicCarpet.Native
             string.IsNullOrEmpty(fatalError) &&
             session != null &&
             session.UsesGameRuntimeContract &&
-            gameRuntimePresentationAssetCache != null &&
-            gameRuntimeFireballAsset?.value != null &&
-            campaignSession == null;
+            (level2Mode && level2StartupReady ||
+             gameRuntimePresentationAssetCache != null &&
+             gameRuntimeFireballAsset?.value != null) &&
+            (campaignSession == null || level2Mode && level2StartupReady);
+
+        internal bool GameRuntimeLevel2PresentationReady =>
+            GameRuntimeProductionStartupReady &&
+            level2Mode &&
+            level2StartupReady &&
+            campaignSession != null &&
+            level2DayHudPresenterReady &&
+            level2MinimapProjectionReady &&
+            level2ProductionEntityPresenter != null &&
+            level2ProductionEntityPresenter.LastPresentSucceeded;
 
         internal GameRuntimeTransport.Identity GameRuntimeProductionIdentity =>
             session?.GameRuntimeIdentity() ?? throw new InvalidOperationException(
@@ -2601,7 +2614,18 @@ namespace MagicCarpet.Native
             {
                 gameRuntimeCampaignSnapshot = session.GameRuntimeCampaignPausedFrame();
                 DrainGameRuntimeSemanticEvents();
-                UpdateGameRuntimeFireballPresentation(gameRuntimeCampaignSnapshot);
+                if (level2Mode)
+                {
+                    // Paused frames are observational; the last composed
+                    // Level 2 world/HUD remains live without a presentation
+                    // projection that mutates gameplay state.
+                    campaignSession.SynchronizeGameRuntimeIdentity(
+                        session.GameRuntimeIdentity());
+                }
+                else
+                {
+                    UpdateGameRuntimeFireballPresentation(gameRuntimeCampaignSnapshot);
+                }
                 return;
             }
             if (identity.mode != GameRuntimeTransport.PlayingMode)
@@ -2638,8 +2662,18 @@ namespace MagicCarpet.Native
                 0,
                 selectSpell);
             gameRuntimeSpellSelectionRequested = null;
+            var afterStepIdentity = session.GameRuntimeIdentity();
             DrainGameRuntimeSemanticEvents();
-            UpdateGameRuntimeFireballPresentation(gameRuntimeCampaignSnapshot);
+            if (level2Mode)
+            {
+                UpdateGameRuntimeLevel2Presentation(
+                    afterStepIdentity,
+                    gameRuntimeCampaignSnapshot);
+            }
+            else
+            {
+                UpdateGameRuntimeFireballPresentation(gameRuntimeCampaignSnapshot);
+            }
         }
 
         private void DrainGameRuntimeSemanticEvents()
@@ -8919,12 +8953,76 @@ namespace MagicCarpet.Native
                 "existing Rust runtime handle opened its resolver-selected destination");
             gameRuntimeCampaignSnapshot = observation;
             gameRuntimeSemanticEventCursor = observation.value.effect_head;
-            // The first package transition is now authoritative and observable.
-            // Its L2 presentation package is not yet composed through this
-            // Level-1 Fireball-only shell, so park fixed updates at the clean
-            // Rust Playing boundary instead of inventing a client fallback.
-            gameRuntimeStartupReady = false;
+            ComposeGameRuntimeLevel2Presentation(identity, observation);
             return receipt;
+        }
+
+        private void ComposeGameRuntimeLevel2Presentation(
+            GameRuntimeTransport.Identity identity,
+            EngineSessionTransport.CampaignSnapshotObservation observation)
+        {
+            var resource = gameRuntimePackages.SingleOrDefault(candidate =>
+                !string.IsNullOrWhiteSpace(candidate.presentation_cache_path));
+            Require(
+                resource != null &&
+                !string.IsNullOrWhiteSpace(resource.presentation_cache_path),
+                "resolver-selected Level 2 has an explicit owner presentation cache");
+
+            level2Mode = true;
+            level2StartupReady = false;
+            ownerAssetCache = OwnerAssetCache.OpenAndValidateLevel2(
+                resource.presentation_cache_path);
+            level2DayHudDescriptor = ownerAssetCache.DayHud;
+            MaterializeLevel2DayHud();
+            campaignSession = NativeCampaignSession.BorrowGameRuntime(
+                session.Handle,
+                identity,
+                resource.package_dir);
+            campaignWorldInfo = campaignSession.WorldInfo();
+            InitializeLevel2SpellPresentation();
+            level2SpellMenuCursor = -1;
+            spellMenuCommands.Clear();
+            selectedSpellRequested = false;
+            level2StartupReady = true;
+            UpdateGameRuntimeLevel2Presentation(identity, observation);
+            Debug.Log(
+                $"MC_GAME_RUNTIME_LEVEL2_PRESENTATION VERIFIED handle={session.Handle} " +
+                $"generation={identity.session.generation} tick={identity.session.tick}");
+        }
+
+        private void UpdateGameRuntimeLevel2Presentation(
+            GameRuntimeTransport.Identity identity,
+            EngineSessionTransport.CampaignSnapshotObservation observation)
+        {
+            Require(
+                level2Mode && level2StartupReady && campaignSession != null &&
+                observation?.identity != null && observation.value != null,
+                "game runtime Level 2 presentation has one borrowed campaign projection");
+            campaignSession.SynchronizeGameRuntimeIdentity(identity);
+            var generation = campaignSession.Generation;
+            var tick = campaignSession.Tick;
+            Require(
+                observation.identity.generation == generation.ToString() &&
+                observation.identity.tick == tick.ToString(),
+                "Level 2 presentation is bound to the current game runtime frame");
+            level2TerrainState = campaignSession.TerrainState();
+            level2DayHud = campaignSession.DayHudState(tick);
+            PresentLevel2DayHud(level2DayHud);
+            ProjectLevel2Minimap(tick);
+
+            EnsureLevel2EntityPresenterDriver();
+            level2ProductionEntityPresenter ??=
+                new global::MagicCarpet.Native.Level2EntityPresenter(transform);
+            level2ProductionEntityPresenter.AttachTo(transform);
+            Require(
+                level2ProductionEntityPresenter.Present(
+                    generation,
+                    tick,
+                    campaignSession.Entities(),
+                    campaignSession.Goats(),
+                    ownerAssetCache,
+                    observation.value.player_pose.yaw),
+                "Level 2 entity/world presenter accepted the runtime-bound frame");
         }
 
         internal GameRuntimeTransport.CompletionTransitionReceipt
@@ -12659,6 +12757,30 @@ namespace MagicCarpet.Native
             var packages = new List<GameRuntimeTransport.InstalledPackageResource>();
             for (var index = 0; index < arguments.Length; index++)
             {
+                if (arguments[index] == "-mc-runtime-owner-cache")
+                {
+                    if (packages.Count == 0 || ++index >= arguments.Length ||
+                        string.IsNullOrWhiteSpace(arguments[index]))
+                    {
+                        throw new InvalidDataException(
+                            "-mc-runtime-owner-cache must follow a package and requires a path");
+                    }
+                    packages[packages.Count - 1].owner_cache_path =
+                        Path.GetFullPath(arguments[index]);
+                    continue;
+                }
+                if (arguments[index] == "-mc-runtime-presentation-cache")
+                {
+                    if (packages.Count == 0 || ++index >= arguments.Length ||
+                        string.IsNullOrWhiteSpace(arguments[index]))
+                    {
+                        throw new InvalidDataException(
+                            "-mc-runtime-presentation-cache must follow a package and requires a path");
+                    }
+                    packages[packages.Count - 1].presentation_cache_path =
+                        Path.GetFullPath(arguments[index]);
+                    continue;
+                }
                 if (arguments[index] != "-mc-runtime-package") continue;
                 if (++index >= arguments.Length ||
                     string.IsNullOrWhiteSpace(arguments[index]))
@@ -12703,6 +12825,7 @@ namespace MagicCarpet.Native
                 throw new InvalidOperationException(
                     "a native gameplay owner is already attached to this runtime");
             }
+            gameRuntimePackages = packages;
             AttachAndValidateGameRuntimeProductionSession(
                 OpenGameRuntimeSessionForPackages(packages));
         }
@@ -12716,6 +12839,7 @@ namespace MagicCarpet.Native
                 throw new InvalidOperationException(
                     "a native gameplay owner is already attached to this runtime");
             }
+            gameRuntimePackages = packages;
             AttachAndValidateGameRuntimeProductionSession(
                 OpenGameRuntimeReplaySessionForPackages(replaySave, packages));
         }
@@ -12726,15 +12850,13 @@ namespace MagicCarpet.Native
             {
                 var identity = opened.GameRuntimeIdentity();
                 var observation = opened.GameRuntimeCampaignSnapshot();
-                var fireballAsset = opened.GameRuntimePresentationAsset(
-                    GameRuntimeFireballAssetSlot);
                 Require(
                     (identity.mode == GameRuntimeTransport.PlayingMode ||
                      identity.mode == GameRuntimeTransport.PausedMode) &&
                     identity.active_runtime_flow != null &&
-                    identity.active_runtime_flow.bound_level_id ==
-                        identity.active_runtime_flow.entry_level_id,
-                    "resolver-derived game runtime opened its declared semantic entry");
+                    identity.active_runtime_flow.entries.Any(entry =>
+                        entry.level_id == identity.active_runtime_flow.bound_level_id),
+                    "resolver-derived game runtime opened a declared semantic level");
                 Require(
                     identity.session != null &&
                     identity.session.session_id == opened.Handle.ToString() &&
@@ -12742,13 +12864,6 @@ namespace MagicCarpet.Native
                     observation.identity.generation == identity.session.generation &&
                     observation.identity.tick == identity.session.tick,
                     "production game runtime snapshot is bound to the same nested session");
-                Require(
-                    fireballAsset.identity.session_id == identity.session.session_id &&
-                    fireballAsset.identity.generation == identity.session.generation &&
-                    fireballAsset.identity.tick == identity.session.tick &&
-                    fireballAsset.value.slot_id == GameRuntimeFireballAssetSlot,
-                    "production Fireball asset is bound to the same nested session");
-                ConfigureGameRuntimeFireballPresentation(fireballAsset, observation);
                 session = opened;
                 gameRuntimeCampaignSnapshot = observation;
                 gameRuntimeLastCompletionTransitionReceipt = null;
@@ -12757,6 +12872,23 @@ namespace MagicCarpet.Native
                 gameRuntimeSpellSelectionRequested = null;
                 gameRuntimeMode = true;
                 gameRuntimeStartupReady = true;
+                if (identity.active_runtime_flow.bound_level_id ==
+                    "level.magic_carpet_2.payahandra_ruins")
+                {
+                    ComposeGameRuntimeLevel2Presentation(identity, observation);
+                }
+                else
+                {
+                    var fireballAsset = opened.GameRuntimePresentationAsset(
+                        GameRuntimeFireballAssetSlot);
+                    Require(
+                        fireballAsset.identity.session_id == identity.session.session_id &&
+                        fireballAsset.identity.generation == identity.session.generation &&
+                        fireballAsset.identity.tick == identity.session.tick &&
+                        fireballAsset.value.slot_id == GameRuntimeFireballAssetSlot,
+                        "production Fireball asset is bound to the same nested session");
+                    ConfigureGameRuntimeFireballPresentation(fireballAsset, observation);
+                }
                 Debug.Log(
                     $"MC_GAME_RUNTIME_STARTUP VERIFIED handle={opened.Handle} " +
                     $"level={identity.active_runtime_flow.bound_level_id} " +
@@ -13518,6 +13650,7 @@ namespace MagicCarpet.Native
             gameRuntimeLastCompletionTransitionReceipt = null;
             gameRuntimeSemanticEventCursor = "0";
             gameRuntimeRecentSemanticEvents.Clear();
+            gameRuntimePackages = Array.Empty<GameRuntimeTransport.InstalledPackageResource>();
             gameRuntimeMovementFlags = 0;
             CenterSteering();
             level2StartupReady = false;

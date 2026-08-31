@@ -99,6 +99,8 @@ namespace MagicCarpet.Native
         {
             public string package_dir;
             public string owner_cache_path;
+            [NonSerialized]
+            public string presentation_cache_path;
         }
 
         [Serializable]

@@ -1264,6 +1264,17 @@ pub struct Mc2CampaignBackend {
     replay_operations: Vec<crate::game_runtime::ReplayOperation<GameCommand>>,
 }
 
+impl Mc2CampaignBackend {
+    /// Borrow the one live campaign authority for compatibility presentation
+    /// adapters.  This never exposes mutation or creates another session; the
+    /// neutral [`GameSession`] remains the sole lifecycle and step owner.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn campaign_presentation_source(&self) -> &CampaignSession {
+        &self.campaign
+    }
+}
+
 impl GameAdapter for Mc2CampaignAdapter {
     type Backend = Mc2CampaignBackend;
     type OpenInput = Mc2CampaignInputs;

@@ -490,11 +490,38 @@ pub(super) fn with_campaign_session<T>(
     handle: u64,
     operation: impl FnOnce(&CampaignSessionRecord) -> AbiResult<T>,
 ) -> AbiResult<T> {
-    let entry = with_campaign_registry(|registry| campaign_session_arc(registry, handle))?;
+    let entry = with_campaign_registry(|registry| Ok(registry.sessions.get(&handle).cloned()))?;
+    if let Some(entry) = entry {
+        let guard = entry.lock().map_err(|_| {
+            AbiError::new(MC_STATUS_LOCK_FAILED, "campaign session lock is poisoned")
+        })?;
+        return operation(&guard);
+    }
+
+    // The neutral game-runtime handle owns the same descriptor campaign that
+    // the retained Level 2 presentation ABI knows how to project.  Materialize
+    // only a read adapter around a clone while holding the runtime lock: no
+    // registry entry, step authority, reset path, or independently advancing
+    // state is created.  Mutating campaign exports deliberately continue to
+    // reject this handle through `with_campaign_session_mut`.
+    let entry = super::game_session_abi::neutral_session_arc(handle)?;
     let guard = entry
         .lock()
-        .map_err(|_| AbiError::new(MC_STATUS_LOCK_FAILED, "campaign session lock is poisoned"))?;
-    operation(&guard)
+        .map_err(|_| AbiError::new(MC_STATUS_LOCK_FAILED, "neutral session lock is poisoned"))?;
+    let (backend, generation) = guard.campaign_backend_and_generation()?;
+    let campaign = backend.campaign_presentation_source().clone();
+    let record = CampaignSessionRecord {
+        kind: CampaignSessionKind::Level2 {
+            inspection: Arc::new(campaign.inspection().clone()),
+            reset: CampaignLevel2Authority::Descriptor(campaign),
+            day_frame_assets: None,
+            day_frame_state: DayIndexedFrameState::new(generation),
+        },
+        generation,
+        day_music: None,
+        effect_state_hashes: BTreeMap::new(),
+    };
+    operation(&record)
 }
 
 pub(super) fn with_campaign_session_mut<T>(

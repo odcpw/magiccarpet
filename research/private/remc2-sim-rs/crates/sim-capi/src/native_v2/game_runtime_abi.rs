@@ -1315,6 +1315,23 @@ mod tests {
             mc_game_session_snapshot_json_v1(handle, buffer, capacity, length)
         });
         assert_eq!(snapshot["identity"], playing["session"]);
+        let mut world = McCampaignWorldInfoV2::default();
+        assert_eq!(
+            mc_native_campaign_world_info(
+                handle,
+                &raw mut world,
+                struct_size::<McCampaignWorldInfoV2>(),
+            ),
+            MC_STATUS_OK
+        );
+        assert_eq!((world.external_level, world.internal_level), (1, 0));
+        let mut entity_count = 0_u32;
+        assert_eq!(
+            mc_native_campaign_entity_count(handle, &raw mut entity_count),
+            MC_STATUS_OK
+        );
+        assert_eq!(entity_count, world.entity_count);
+        assert!(entity_count > 0);
         let command = br#"{"longitudinal":"accelerate"}"#;
         assert_eq!(
             mc_game_session_step_json_v1(handle, 1, 0, command.as_ptr(), command.len() as u32,),

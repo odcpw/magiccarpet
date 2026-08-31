@@ -42,6 +42,20 @@ pub(super) enum NeutralSession {
 }
 
 impl NeutralSession {
+    pub(super) fn campaign_backend_and_generation(&self) -> AbiResult<(&Mc2CampaignBackend, u64)> {
+        match self {
+            Self::Mc2Campaign(session) => Ok((session.backend(), session.identity().generation)),
+            Self::Runtime(runtime) => {
+                let session = runtime.session()?;
+                Ok((session.backend(), session.identity().generation))
+            }
+            Self::Mc2Owned(_) => Err(AbiError::new(
+                MC_STATUS_INVALID_ARGUMENT,
+                "campaign presentation is unavailable on an MC2-owned session",
+            )),
+        }
+    }
+
     /// Same-state compatibility projection for the frozen `mc_native_*`
     /// surfaces. The campaign adapter retains no `SessionRecord` carrier, so
     /// it fails closed instead of fabricating one.
@@ -180,7 +194,7 @@ fn next_session_id() -> AbiResult<u64> {
     with_registry_mut(Registry::reserve_handle)
 }
 
-fn neutral_session_arc(handle: u64) -> AbiResult<Arc<Mutex<NeutralSession>>> {
+pub(super) fn neutral_session_arc(handle: u64) -> AbiResult<Arc<Mutex<NeutralSession>>> {
     if handle == 0 {
         return Err(AbiError::new(
             MC_STATUS_UNKNOWN_HANDLE,

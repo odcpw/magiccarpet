@@ -2323,6 +2323,25 @@ mod tests {
             .open_pending(&mut runtime, loading.guard(), 112)
             .unwrap();
         assert_eq!(playing.mode, RuntimeMode::Playing);
+        assert_eq!(playing.runtime_id, completed.runtime_id);
+        assert_eq!(playing.runtime_id, 112);
+        assert_eq!(
+            playing.session.as_ref().unwrap().session_id,
+            completed.session.as_ref().unwrap().session_id
+        );
+        assert_eq!(
+            playing.session.as_ref().unwrap().generation,
+            completed.session.as_ref().unwrap().generation + 1
+        );
+        assert_eq!(
+            playing
+                .active_runtime_flow
+                .as_ref()
+                .unwrap()
+                .bound_level_id()
+                .as_str(),
+            "level.magic_carpet_2.payahandra_ruins"
+        );
         let destination_spell_state = runtime
             .session()
             .unwrap()
