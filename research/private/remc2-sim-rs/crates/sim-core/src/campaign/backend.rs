@@ -14764,8 +14764,8 @@ pub(crate) mod tests {
                     .iter()
                     .find(|sphere| sphere.source_entity_index == claimed_slot)
                     .map(|sphere| (sphere.owner_entity_index, sphere.player_entity_index)),
-                Some((player_entity, 0)),
-                "ordinary Possession changes only the claimed sphere's owner projection"
+                Some((player_entity, player_entity)),
+                "ordinary Possession synchronizes the claimed sphere's semantic owner and raw player relation"
             );
             for _ in 0..32 {
                 let economy = session.backend().campaign.level2_compatibility().economy();
