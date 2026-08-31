@@ -6319,6 +6319,102 @@ def build_day_audio_cache(
             {"slot": row["slot"], "filename": row["filename"], "relative_data_offset": row["relative_data_offset"], "record_bytes": row["bytes"], "record_sha256": row["payload_sha256"], "metadata_word": row["word"], "channel": 0, "driver": "f", "asset_path": music_track_output["path"] if row["slot"] == 0 else None, "asset_sha256": music_track_output["sha256"] if row["slot"] == 0 else None}
             for row in music_records
         ]
+        music_presentation: dict[str, Any] = {}
+        if campaign_day:
+            xmi_converter, xmi_provenance = compile_xmi_converter(rnc_work)
+            music_midi = transcode_xmi(
+                xmi_converter, music_payload, rnc_work, "C2GAME1"
+            )
+            playback_control_census = midi_dynamic_control_census(
+                music_midi, "C2GAME1 converted MIDI"
+            )
+            if (
+                playback_control_census["trigger_events"] != []
+                or playback_control_census["tagged_channels"] != []
+                or playback_control_census["loop_controller_events"] != [
+                    {"tick": 0, "channel": 1, "controller": 116, "value": 0},
+                    {"tick": 158265, "channel": 1, "controller": 117, "value": 127},
+                ]
+            ):
+                raise CacheError("qualified C2GAME1 dynamic control census changed")
+            scan_record = music_records[1]
+            scan_offset = scan_record["relative_data_offset"]
+            scan_payload = music_data[
+                scan_offset:scan_offset + scan_record["bytes"]
+            ]
+            scan_midi = transcode_xmi(
+                xmi_converter, scan_payload, rnc_work, "C2GAME2-census"
+            )
+            scan_control_census = midi_dynamic_control_census(
+                scan_midi, "C2GAME2 loop-scan converted MIDI"
+            )
+            if (
+                scan_control_census["trigger_events"] != [
+                    {"tick": 0, "channel": 7, "controller": 119, "value": 0},
+                    {"tick": 0, "channel": 8, "controller": 119, "value": 0},
+                ]
+                or scan_control_census["tagged_channels"] != [7, 8]
+            ):
+                raise CacheError("qualified C2GAME2 dynamic control census changed")
+            music_midi_output = write_output(
+                stage,
+                outputs,
+                "audio/music/C2GAME1.mid",
+                music_midi,
+                kind="standard_MIDI_deterministic_remc2_conversion",
+                source_asset_ids=["owner_data:SOUND/MUSIC.DAT"],
+                extra={
+                    "logical_track": 1,
+                    "playback_slot": 0,
+                    "conversion_status": "deterministic_container_conversion_not_DOS_timbre",
+                },
+            )
+            adl_renderer, adl_provenance = compile_adl_renderer()
+            music_wave = render_midi_wave(
+                adl_renderer, music_midi, rnc_work, "C2GAME1"
+            )
+            music_wave_properties = wav_properties(
+                music_wave, "C2GAME1 rendered music"
+            )
+            music_wave_output = write_output(
+                stage,
+                outputs,
+                "audio/music/C2GAME1-adlmidi-bank59.wav",
+                music_wave,
+                kind="Unity_ready_PCM16_stereo_deterministic_libADLMIDI_render",
+                source_asset_ids=["owner_data:SOUND/MUSIC.DAT"],
+                extra={
+                    "logical_track": 1,
+                    "playback_slot": 0,
+                    "rendering": "libADLMIDI_bank59_two_chips",
+                    "presentation_status": "deterministic_owner_local_adaptation_not_exact_DOS_hardware_timbre",
+                    **music_wave_properties,
+                },
+            )
+            music_presentation = {
+                "midi_path": music_midi_output["path"],
+                "midi_sha256": music_midi_output["sha256"],
+                "xmi_converter": xmi_provenance,
+                "unity_wave_path": music_wave_output["path"],
+                "unity_wave_sha256": music_wave_output["sha256"],
+                "unity_wave": music_wave_properties,
+                "unity_wave_renderer": adl_provenance,
+                "dynamic_control": {
+                    "update_mode_field": "target_mode",
+                    "timer_multiplier": 3,
+                    "timer_hz_formula": "30 * timer_multiplier",
+                    "timer_hz": 90,
+                    "envelope_min": 0,
+                    "envelope_max": 127,
+                    "envelope_step_per_callback": 1,
+                    "playback_slot_census": playback_control_census,
+                    "loop_scan_pointer_census": scan_control_census,
+                    "audible_channel_resolution": "Unresolved_playback_slot0_has_no_CC119_but_loop_scan_slot1_tags_channels7_8",
+                },
+                "initial_start_status": "SourceOrderQualified_remc2_local_gameTurn1_after_second_DrawAndEvents",
+                "exact_DOS_hardware_timbre": "Deferred",
+                "optional_random_OGG_path": "Excluded",
+            }
         shutil.rmtree(rnc_work)
         occurrence_rows = []
         for row in reachable:
@@ -6384,6 +6480,7 @@ def build_day_audio_cache(
                 "records": music_record_rows,
                 "decoder": decoder_identity,
                 "record_census_sha256": sha256_bytes(canonical_json(music_record_rows)) if campaign_day else EXPECTED_LEVEL2_MUSIC_RECORDS_SHA256,
+                **music_presentation,
             },
             "excluded": [
                 {
@@ -6678,10 +6775,94 @@ def validate_campaign_day_audio_cache(
         or descriptor.get("music", {}).get("reachable_source_references") != music["source_references"]
     ):
         raise CacheError("campaign Day music source lifecycle changed")
+    music_descriptor = descriptor["music"]
+    expected_wave = {
+        "riff_declared_bytes": 77_889_580,
+        "channels": 2,
+        "sample_width_bytes": 2,
+        "sample_rate": 44_100,
+        "frame_count": 19_472_384,
+        "duration_numerator_frames": 19_472_384,
+        "duration_denominator_hz": 44_100,
+    }
+    expected_dynamic_control = {
+        "update_mode_field": "target_mode",
+        "timer_multiplier": 3,
+        "timer_hz_formula": "30 * timer_multiplier",
+        "timer_hz": 90,
+        "envelope_min": 0,
+        "envelope_max": 127,
+        "envelope_step_per_callback": 1,
+        "playback_slot_census": {
+            "midi_format": 0,
+            "track_count": 1,
+            "division": 201,
+            "trigger_controller": 119,
+            "trigger_events": [],
+            "tagged_channels": [],
+            "loop_controller_events": [
+                {"tick": 0, "channel": 1, "controller": 116, "value": 0},
+                {"tick": 158265, "channel": 1, "controller": 117, "value": 127},
+            ],
+        },
+        "loop_scan_pointer_census": {
+            "midi_format": 0,
+            "track_count": 1,
+            "division": 167,
+            "trigger_controller": 119,
+            "trigger_events": [
+                {"tick": 0, "channel": 7, "controller": 119, "value": 0},
+                {"tick": 0, "channel": 8, "controller": 119, "value": 0},
+            ],
+            "tagged_channels": [7, 8],
+            "loop_controller_events": [
+                {"tick": 0, "channel": 2, "controller": 116, "value": 0},
+            ],
+        },
+        "audible_channel_resolution": "Unresolved_playback_slot0_has_no_CC119_but_loop_scan_slot1_tags_channels7_8",
+    }
+    expected_renderer = {
+        "id": "libADLMIDI-private-owner-cache-render-adapter",
+        "source_revision": PINNED_REMC2_COMMIT,
+        "source_archive_sha256": EXPECTED_ADLMIDI_ARCHIVE_SHA256,
+        "source_license": "LGPL-2.1-or-later/GPL-3.0-or-later upstream dual license",
+        "adapter_sha256": sha256_file(ADL_RENDER_HELPER),
+        "compile_flags": ["-std=c++17", "-O2"],
+        "bank": 59,
+        "chips": 2,
+        "sample_rate": 44_100,
+        "host_tool_and_library_embedded_in_Unity": False,
+    }
+    if (
+        music_descriptor.get("unity_wave_path") != "audio/music/C2GAME1-adlmidi-bank59.wav"
+        or music_descriptor.get("unity_wave_sha256") != "03b3f951048504d8a6d30611d6c44a62ec1c463726b30c33c16e3cb69824605d"
+        or music_descriptor.get("unity_wave") != expected_wave
+        or music_descriptor.get("unity_wave_renderer") != expected_renderer
+        or music_descriptor.get("dynamic_control") != expected_dynamic_control
+        or music_descriptor.get("initial_start_status") != "SourceOrderQualified_remc2_local_gameTurn1_after_second_DrawAndEvents"
+        or music_descriptor.get("exact_DOS_hardware_timbre") != "Deferred"
+        or music_descriptor.get("optional_random_OGG_path") != "Excluded"
+    ):
+        raise CacheError("campaign Day Unity music render contract changed")
+    expected_converter = {
+        "id": "remc2-TranscodeXmiToMid-owner-cache-adapter",
+        "adapter_sha256": sha256_file(XMI_HELPER),
+        "implementation_sha256": sha256_bytes(pinned_remc2_blob(XMI_IMPLEMENTATION_SOURCE)),
+        "header_sha256": sha256_bytes(pinned_remc2_blob(XMI_HEADER_SOURCE)),
+        "compile_flags": ["-std=c++17", "-O2"],
+        "host_compiler_metadata_identity_bearing": False,
+    }
+    if (
+        music_descriptor.get("midi_path") != "audio/music/C2GAME1.mid"
+        or music_descriptor.get("xmi_converter") != expected_converter
+    ):
+        raise CacheError("campaign Day music conversion provenance changed")
     expected_paths = {
         "audio/SOUND.DAT", "audio/MUSIC.DAT", "audio/descriptor.json",
         *[row.get("asset_path") for row in sound_records],
         music_records[0].get("asset_path") if music_records else None,
+        music_descriptor.get("midi_path"),
+        music_descriptor.get("unity_wave_path"),
     }
     if None in expected_paths or paths != expected_paths:
         raise CacheError("campaign Day audio record output set changed")
@@ -6689,6 +6870,15 @@ def validate_campaign_day_audio_cache(
     for record in [*sound_records, music_records[0]]:
         if output_by_path.get(record.get("asset_path"), {}).get("sha256") != record.get("asset_sha256"):
             raise CacheError("campaign Day audio record asset binding mismatch")
+    if (
+        output_by_path.get(music_descriptor["midi_path"], {}).get("sha256") != music_descriptor.get("midi_sha256")
+        or output_by_path.get(music_descriptor["unity_wave_path"], {}).get("sha256") != music_descriptor.get("unity_wave_sha256")
+        or wav_properties(
+            (cache_dir / music_descriptor["unity_wave_path"]).read_bytes(),
+            "campaign Day rendered music",
+        ) != expected_wave
+    ):
+        raise CacheError("campaign Day Unity music output binding mismatch")
     actual_tree = {path.relative_to(cache_dir).as_posix() for path in cache_dir.rglob("*") if path.is_file()}
     if any(path.is_symlink() for path in cache_dir.rglob("*")) or actual_tree != {"manifest.json", *paths}:
         raise CacheError("campaign Day audio cache tree has missing, extra, or symlinked files")

@@ -1953,7 +1953,7 @@ class CampaignDayGameplayAggregateTests(unittest.TestCase):
         self.assertEqual(manifest["profile"]["external_level"], 3)
         self.assertEqual(manifest["profile"]["internal_level"], 2)
         self.assertEqual(set(manifest["components"]), {"material", "gameplay", "audio"})
-        self.assertEqual(len(manifest["outputs"]), 642)
+        self.assertEqual(len(manifest["outputs"]), 644)
         self.assertEqual(
             manifest["presentation_scope"]["audio"],
             "materialized_from_source_qualified_level3_occurrences",
@@ -1970,6 +1970,34 @@ class CampaignDayGameplayAggregateTests(unittest.TestCase):
         )
         self.assertEqual(audio["music"]["maptype_music"], 2)
         self.assertEqual(audio["music"]["lifecycle"], ["StartMusic", "FadeWarMusic", "UpdateMusic", "StopMusic"])
+        self.assertEqual(
+            audio["music"]["unity_wave_sha256"],
+            "03b3f951048504d8a6d30611d6c44a62ec1c463726b30c33c16e3cb69824605d",
+        )
+        self.assertEqual(
+            audio["music"]["unity_wave"],
+            {
+                "riff_declared_bytes": 77889580,
+                "channels": 2,
+                "sample_width_bytes": 2,
+                "sample_rate": 44100,
+                "frame_count": 19472384,
+                "duration_numerator_frames": 19472384,
+                "duration_denominator_hz": 44100,
+            },
+        )
+        self.assertEqual(
+            audio["music"]["dynamic_control"]["playback_slot_census"]["division"],
+            201,
+        )
+        self.assertEqual(
+            audio["music"]["dynamic_control"]["loop_scan_pointer_census"]["tagged_channels"],
+            [7, 8],
+        )
+        self.assertEqual(
+            (self.first / "components/audio" / audio["music"]["midi_path"]).read_bytes()[:4],
+            b"MThd",
+        )
 
         descriptor = json.loads(
             (
@@ -2030,6 +2058,20 @@ class CampaignDayGameplayAggregateTests(unittest.TestCase):
         with self.assertRaisesRegex(cache.CacheError, "output hash mismatch"):
             cache.validate_campaign_day_aggregate_cache(self.first)
         wav.write_bytes(wav_original)
+
+        music_wave = self.first / "components/audio/audio/music/C2GAME1-adlmidi-bank59.wav"
+        with music_wave.open("r+b") as stream:
+            stream.seek(-1, os.SEEK_END)
+            last = stream.read(1)
+            stream.seek(-1, os.SEEK_END)
+            stream.write(bytes([last[0] ^ 1]))
+        with self.assertRaisesRegex(cache.CacheError, "output hash mismatch"):
+            cache.validate_campaign_day_aggregate_cache(self.first)
+        with music_wave.open("r+b") as stream:
+            stream.seek(-1, os.SEEK_END)
+            last = stream.read(1)
+            stream.seek(-1, os.SEEK_END)
+            stream.write(bytes([last[0] ^ 1]))
 
         wrong_package = self.temp_root / "wrong-campaign-package"
         shutil.copytree(cache.DEFAULT_CAMPAIGN_DAY_PACKAGE, wrong_package)
