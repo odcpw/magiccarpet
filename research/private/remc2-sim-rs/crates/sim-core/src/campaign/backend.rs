@@ -1831,6 +1831,15 @@ impl Mc2CampaignBackend {
         &mut self,
         carry: &Mc2SemanticSpellCarry,
     ) -> Result<(), crate::game_runtime::RuntimeTransitionError> {
+        // Replay saves retain the complete semantic spell state, while a
+        // freshly opened bound package may already contain that exact state.
+        // Treat an equivalent installation as observationally inert: the
+        // materializer seals a new reset baseline, which is correct for real
+        // cross-level additions but would otherwise change an unchanged
+        // package's canonical state receipt before replay begins.
+        if self.semantic_spell_carry()? == *carry {
+            return Ok(());
+        }
         let families = carry
             .acquired
             .iter()
@@ -14600,6 +14609,7 @@ pub(crate) mod tests {
         const GROUP_SIX_ROWS: &[u16] = &[108, 134, 135, 154, 189, 193];
 
         let castle_id = SemanticId::parse("spell.castle").unwrap();
+        let fireball_id = SemanticId::parse("spell.fireball").unwrap();
         let possession_id = SemanticId::parse("spell.possession").unwrap();
         let player_entity = session
             .backend()
@@ -14635,6 +14645,153 @@ pub(crate) mod tests {
                 z: compatibility.state.position.z,
             }
         };
+        let kill_archer_with_fireballs =
+            |session: &mut GameSession<Mc2CampaignBackend>, source_slot: u16| {
+                for _ in 0..16 {
+                    let archer = session
+                        .backend()
+                        .campaign
+                        .level2_compatibility()
+                        .economy()
+                        .authored_class5()
+                        .iter()
+                        .find(|source| source.source_entity_index == source_slot)
+                        .copied();
+                    let Some(archer) = archer else {
+                        break;
+                    };
+                    if archer.life < 0 {
+                        break;
+                    }
+                    for _ in 0..640 {
+                        let compatibility = session.backend().campaign.level2_compatibility();
+                        let archer = compatibility
+                            .economy()
+                            .authored_class5()
+                            .iter()
+                            .find(|source| source.source_entity_index == source_slot)
+                            .copied()
+                            .expect("package Archer remains live while approaching");
+                        let state = compatibility.state;
+                        let dx = i32::from(
+                            archer
+                                .position
+                                .x
+                                .wrapping_sub(state.position.x)
+                                .cast_signed(),
+                        );
+                        let dy = i32::from(
+                            archer
+                                .position
+                                .y
+                                .wrapping_sub(state.position.y)
+                                .cast_signed(),
+                        );
+                        if crate::legacy_sqrt(
+                            dx.wrapping_mul(dx)
+                                .wrapping_add(dy.wrapping_mul(dy))
+                                .cast_unsigned(),
+                        ) <= 3_500
+                        {
+                            break;
+                        }
+                        let desired = i16::try_from(crate::heading_for_positions(
+                            state.position,
+                            archer.position,
+                        ))
+                        .expect("source heading is 11-bit");
+                        let correction = crate::turn_toward(state.yaw, desired, 127);
+                        session
+                            .step(
+                                guard(session),
+                                GameCommand {
+                                    longitudinal: LongitudinalControl::Accelerate,
+                                    roll_axis: correction.clamp(-24, 24) as i8,
+                                    pitch_axis: -127,
+                                    ..GameCommand::default()
+                                },
+                            )
+                            .unwrap();
+                    }
+                    let (aim_yaw, aim_pitch, state_yaw, display_pitch) = {
+                        let compatibility = session.backend().campaign.level2_compatibility();
+                        let archer = compatibility
+                            .economy()
+                            .authored_class5()
+                            .iter()
+                            .find(|source| source.source_entity_index == source_slot)
+                            .copied()
+                            .expect("package Archer remains live before Fireball cast");
+                        let state = compatibility.state;
+                        let direction_bits =
+                            compatibility.shared_spells().player_entity().control_flags & 0x0300;
+                        let mut launch = state.position;
+                        let hand_yaw = if direction_bits & 0x0100 != 0 {
+                            Some(state.yaw.wrapping_sub(512))
+                        } else if direction_bits & 0x0200 != 0 {
+                            Some(state.yaw.wrapping_add(512))
+                        } else {
+                            None
+                        };
+                        if let Some(hand_yaw) = hand_yaw {
+                            crate::move_entity(&mut launch, hand_yaw, 0, 256);
+                            if crate::FlightWorld::ground_height(
+                                compatibility.canonical_terrain(),
+                                launch,
+                            ) > launch.z
+                            {
+                                launch = state.position;
+                            }
+                        }
+                        launch.z = launch.z.wrapping_add(state.entity_fov);
+                        let mut target = archer.position;
+                        target.z = target.z.wrapping_sub(
+                            crate::level1_mission::FIREBALL_COLLISION_VERTICAL_OFFSET,
+                        );
+                        let (yaw, pitch) =
+                            crate::level1_mission::projectile_guidance_angles(launch, target);
+                        (yaw, pitch, state.yaw, state.display_pitch)
+                    };
+                    session
+                        .step(
+                            guard(session),
+                            GameCommand {
+                                select_spell: Some(fireball_id.clone()),
+                                cast_selected: true,
+                                look_yaw: aim_yaw.wrapping_sub(state_yaw),
+                                look_pitch: aim_pitch.wrapping_sub(display_pitch),
+                                ..GameCommand::default()
+                            },
+                        )
+                        .unwrap();
+                    for _ in 0..48 {
+                        let killed = session
+                            .backend()
+                            .campaign
+                            .level2_compatibility()
+                            .economy()
+                            .events()
+                            .iter()
+                            .any(|event| {
+                                matches!(
+                                    event,
+                                    crate::native_world::Level2EconomyEvent::ManaSphereSpawned {
+                                        source_entity_index,
+                                        mana: 500,
+                                        ..
+                                    } if *source_entity_index == source_slot
+                                )
+                            });
+                        if killed {
+                            return;
+                        }
+                        session
+                            .step(guard(session), GameCommand::default())
+                            .unwrap();
+                    }
+                }
+                panic!("ordinary commanded Fireballs did not kill Archer slot {source_slot}");
+            };
         let claim_real_sphere = |session: &mut GameSession<Mc2CampaignBackend>,
                                  sphere_slot: u16| {
             for _ in 0..128 {
@@ -14895,18 +15052,7 @@ pub(crate) mod tests {
             .collect::<Vec<_>>();
         assert_eq!(archers.len(), ARCHER_ROWS.len());
         let first_archer = archers.first().expect("one package Archer");
-        assert!(
-            session
-                .backend_mut()
-                .campaign
-                .level2_compatibility_mut()
-                .economy_mut()
-                .stage_archer_mailbox_damage_for_test(
-                    first_archer.source_entity_index,
-                    player_entity,
-                    first_archer.max_life.saturating_add(1),
-                )
-        );
+        kill_archer_with_fireballs(&mut session, first_archer.source_entity_index);
         let mut mana_sphere_slots = Vec::new();
         for _ in 0..24 {
             session
@@ -15190,18 +15336,7 @@ pub(crate) mod tests {
         deposit_claimed_sphere(&mut session, claimed_slot, expected_castle_mana, 20_077);
 
         for (archer_index, archer) in archers.iter().skip(1).enumerate() {
-            assert!(
-                session
-                    .backend_mut()
-                    .campaign
-                    .level2_compatibility_mut()
-                    .economy_mut()
-                    .stage_archer_mailbox_damage_for_test(
-                        archer.source_entity_index,
-                        player_entity,
-                        archer.max_life.saturating_add(1),
-                    )
-            );
+            kill_archer_with_fireballs(&mut session, archer.source_entity_index);
             let mut sphere_slot = None;
             for _ in 0..24 {
                 session

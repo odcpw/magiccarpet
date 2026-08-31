@@ -1952,7 +1952,7 @@ mod tests {
             save_json["save_contract"],
             crate::campaign::backend::MC2_CAMPAIGN_REPLAY_SAVE_CONTRACT
         );
-        assert_eq!(save_json["commands"].as_array().unwrap().len(), 3);
+        assert_eq!(save_json["operations"].as_array().unwrap().len(), 3);
         assert_eq!(save_json["paused"], true);
         assert_eq!(save_json["expected_tick"], 3);
         assert_eq!(
