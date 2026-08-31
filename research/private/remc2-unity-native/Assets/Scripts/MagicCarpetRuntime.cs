@@ -94,6 +94,106 @@ namespace MagicCarpet.Native
             }
         }
 
+        /// <summary>
+        /// Presentation scheduling guard for one resolver-owned Loading
+        /// identity. It can delay an ordinary open until a render boundary has
+        /// observed the loading frame, but it cannot select a destination or
+        /// mutate the Rust runtime.
+        /// </summary>
+        internal sealed class GameRuntimeLoadingPresentationGate
+        {
+            private string runtimeId;
+            private string loadingGeneration;
+            private string destinationLevelId;
+            private bool frameObserved;
+            private bool openClaimed;
+
+            internal bool IsPending => !string.IsNullOrEmpty(runtimeId);
+
+            internal void Begin(
+                GameRuntimeTransport.Identity loading,
+                string destination)
+            {
+                if (IsPending ||
+                    loading?.mode != GameRuntimeTransport.LoadingMode ||
+                    string.IsNullOrWhiteSpace(loading.runtime_id) ||
+                    string.IsNullOrWhiteSpace(loading.generation) ||
+                    loading.pending_definition?.runtime_flow?.bound_level_id != destination ||
+                    !string.IsNullOrEmpty(loading.session?.session_id) ||
+                    string.IsNullOrWhiteSpace(destination))
+                {
+                    throw new InvalidOperationException(
+                        "loading presentation gate requires one resolver-bound Loading identity");
+                }
+                runtimeId = loading.runtime_id;
+                loadingGeneration = loading.generation;
+                destinationLevelId = destination;
+                frameObserved = false;
+                openClaimed = false;
+            }
+
+            internal void Observe(
+                GameRuntimeTransport.Identity loading,
+                bool presentationVisible)
+            {
+                ValidateLoading(loading, presentationVisible);
+                frameObserved = true;
+            }
+
+            internal bool TryClaimOpen(
+                GameRuntimeTransport.Identity loading,
+                bool presentationVisible)
+            {
+                ValidateLoading(loading, presentationVisible);
+                if (!frameObserved || openClaimed)
+                {
+                    return false;
+                }
+                openClaimed = true;
+                return true;
+            }
+
+            internal void Complete(GameRuntimeTransport.Identity playing)
+            {
+                if (!IsPending || !openClaimed ||
+                    playing?.mode != GameRuntimeTransport.PlayingMode ||
+                    playing.runtime_id != runtimeId ||
+                    playing.active_runtime_flow?.bound_level_id != destinationLevelId ||
+                    string.IsNullOrWhiteSpace(playing.session?.session_id))
+                {
+                    throw new InvalidOperationException(
+                        "loading presentation gate completion is not resolver-bound Playing");
+                }
+                Reset();
+            }
+
+            internal void Reset()
+            {
+                runtimeId = null;
+                loadingGeneration = null;
+                destinationLevelId = null;
+                frameObserved = false;
+                openClaimed = false;
+            }
+
+            private void ValidateLoading(
+                GameRuntimeTransport.Identity loading,
+                bool presentationVisible)
+            {
+                if (!IsPending || openClaimed || !presentationVisible ||
+                    loading?.mode != GameRuntimeTransport.LoadingMode ||
+                    loading.runtime_id != runtimeId ||
+                    loading.generation != loadingGeneration ||
+                    loading.pending_definition?.runtime_flow?.bound_level_id !=
+                        destinationLevelId ||
+                    !string.IsNullOrEmpty(loading.session?.session_id))
+                {
+                    throw new InvalidOperationException(
+                        "loading presentation gate lost its exact resolver identity");
+                }
+            }
+        }
+
         internal readonly struct SpellMenuGeometry
         {
             internal SpellMenuGeometry(
@@ -533,8 +633,12 @@ namespace MagicCarpet.Native
         private const string GameRuntimeFireballAssetSlot =
             "presentation.spell.fireball.projectile_asset";
         private const string GameRuntimeFireballKind = "spell.fireball.projectile";
+        private const string GameRuntimeLevelTwoId =
+            "level.magic_carpet_2.payahandra_ruins";
         private bool gameRuntimeMode;
         private bool gameRuntimeStartupReady;
+        private readonly GameRuntimeLoadingPresentationGate
+            gameRuntimeLoadingPresentationGate = new();
         private EngineSessionTransport.CampaignSnapshotObservation gameRuntimeCampaignSnapshot;
         private GameRuntimeTransport.CompletionTransitionReceipt
             gameRuntimeLastCompletionTransitionReceipt;
@@ -551,6 +655,8 @@ namespace MagicCarpet.Native
         private Transform gameRuntimeCameraRig;
         private Camera gameRuntimeCamera;
         private Material gameRuntimeFireballMaterial;
+        private CampaignTransitionPresenter gameRuntimeTransitionPresenter;
+        private Camera gameRuntimeTransitionCamera;
         private ushort gameRuntimePriorPlayerX;
         private ushort gameRuntimePriorPlayerY;
         private long gameRuntimeUnwrappedPlayerX;
@@ -814,6 +920,7 @@ namespace MagicCarpet.Native
         private bool autoplayQuit;
         private bool engineSessionRequested;
         private bool gameRuntimeRequested;
+        private string gameRuntimeLoadingCachePath;
         private string gameRuntimeReplaySavePath;
         private bool gameRuntimeReplaySaveRequested;
         private bool level1Autoplay;
@@ -1002,10 +1109,24 @@ namespace MagicCarpet.Native
             string.IsNullOrEmpty(fatalError) &&
             session != null &&
             session.UsesGameRuntimeContract &&
-            (level2Mode && level2StartupReady ||
+            (session.GameRuntimeIdentity().mode == GameRuntimeTransport.LoadingMode &&
+             gameRuntimeTransitionPresenter?.IsVisible == true ||
+             level2Mode && level2StartupReady ||
              gameRuntimePresentationAssetCache != null &&
              gameRuntimeFireballAsset?.value != null) &&
             (campaignSession == null || level2Mode && level2StartupReady);
+
+        internal bool GameRuntimeLoadingPresentationVisible =>
+            gameRuntimeTransitionPresenter?.IsVisible == true;
+
+        internal string GameRuntimeLoadingPresentationIndicesSha256 =>
+            gameRuntimeTransitionPresenter?.IndicesSha256;
+
+        internal string GameRuntimeLoadingPresentationPaletteRgb6Sha256 =>
+            gameRuntimeTransitionPresenter?.PaletteRgb6Sha256;
+
+        internal int GameRuntimeLoadingPresentationInstanceId =>
+            gameRuntimeTransitionPresenter?.Root?.GetInstanceID() ?? 0;
 
         internal bool GameRuntimeLevel2PresentationReady =>
             GameRuntimeProductionStartupReady &&
@@ -2595,6 +2716,13 @@ namespace MagicCarpet.Native
             {
                 return;
             }
+            var identity = session.GameRuntimeIdentity();
+            if (identity.mode == GameRuntimeTransport.LoadingMode)
+            {
+                FreezeGameRuntimeInput();
+                AdvanceGameRuntimeLoadingPresentation(identity);
+                return;
+            }
             var saveRequested = gameRuntimeReplaySaveRequested ||
                 (!Application.isBatchMode && Input.GetKeyDown(KeyCode.F5));
             if (saveRequested)
@@ -2609,7 +2737,6 @@ namespace MagicCarpet.Native
                     gameRuntimeReplaySavePath);
                 Debug.Log($"MC_GAME_RUNTIME_REPLAY_SAVED path={gameRuntimeReplaySavePath}");
             }
-            var identity = session.GameRuntimeIdentity();
             if (identity.mode == GameRuntimeTransport.PausedMode)
             {
                 gameRuntimeCampaignSnapshot = session.GameRuntimeCampaignPausedFrame();
@@ -3007,6 +3134,11 @@ namespace MagicCarpet.Native
                         }
                         return;
                     }
+                    if (runtimeIdentity.mode == GameRuntimeTransport.LoadingMode)
+                    {
+                        FreezeGameRuntimeInput();
+                        return;
+                    }
                     ApplyGameRuntimeProductionInput(
                         Input.GetKeyDown(KeyCode.P),
                         Input.GetKeyDown(KeyCode.Escape),
@@ -3348,6 +3480,10 @@ namespace MagicCarpet.Native
 
         private void LateUpdate()
         {
+            if (gameRuntimeMode)
+            {
+                ObserveGameRuntimeLoadingPresentationFrame();
+            }
             if (level2Mode) return;
             if (localAudioQualificationMode)
             {
@@ -8745,6 +8881,15 @@ namespace MagicCarpet.Native
             }
         }
 
+        internal void QualificationObserveGameRuntimeLoadingPresentationFrame()
+        {
+            Require(
+                GameRuntimeProductionStartupReady &&
+                session.GameRuntimeIdentity().mode == GameRuntimeTransport.LoadingMode,
+                "loading-frame observation requires the retained resolver Loading owner");
+            ObserveGameRuntimeLoadingPresentationFrame();
+        }
+
         private void ApplyGameRuntimeProductionInput(
             bool pausePressed,
             bool closePressed,
@@ -8754,6 +8899,11 @@ namespace MagicCarpet.Native
                 GameRuntimeProductionStartupReady,
                 "game runtime input requires a validated production owner");
             var identity = session.GameRuntimeIdentity();
+            if (identity.mode == GameRuntimeTransport.LoadingMode)
+            {
+                FreezeGameRuntimeInput();
+                return;
+            }
             if (closePressed)
             {
                 CenterSteering();
@@ -8823,6 +8973,11 @@ namespace MagicCarpet.Native
                 GameRuntimeProductionStartupReady,
                 "game runtime movement input requires a validated production owner");
             var identity = session.GameRuntimeIdentity();
+            if (identity.mode == GameRuntimeTransport.LoadingMode)
+            {
+                FreezeGameRuntimeInput();
+                return;
+            }
             if (identity.mode == GameRuntimeTransport.PausedMode)
             {
                 gameRuntimeMovementFlags = 0;
@@ -8854,6 +9009,11 @@ namespace MagicCarpet.Native
                 GameRuntimeProductionStartupReady,
                 "game runtime steering requires a validated production owner");
             var identity = session.GameRuntimeIdentity();
+            if (identity.mode == GameRuntimeTransport.LoadingMode)
+            {
+                FreezeGameRuntimeInput();
+                return;
+            }
             if (identity.mode == GameRuntimeTransport.PausedMode)
             {
                 CenterSteering();
@@ -8918,12 +9078,7 @@ namespace MagicCarpet.Native
                 GameRuntimeProductionStartupReady &&
                 session.GameRuntimeIdentity().mode == GameRuntimeTransport.PlayingMode,
                 "game runtime completion acceptance requires a validated Playing owner");
-            CenterSteering();
-            gameRuntimeMovementFlags = 0;
-            fireRequested = false;
-            rightSpellRequested = false;
-            selectedSpellRequested = false;
-            gameRuntimeSpellSelectionRequested = null;
+            FreezeGameRuntimeInput();
             var receipt = session.GameRuntimeAcceptCompletionTransition();
             gameRuntimeLastCompletionTransitionReceipt = receipt;
             DestroyGameRuntimeFireballPresentation();
@@ -8932,29 +9087,127 @@ namespace MagicCarpet.Native
             gameRuntimeRecentSemanticEvents.Clear();
             if (receipt.after.mode == GameRuntimeTransport.TitleMode)
             {
+                PresentGameRuntimeTransition(receipt.after);
+                gameRuntimeLoadingPresentationGate.Reset();
                 gameRuntimeStartupReady = false;
                 return receipt;
             }
             Require(
                 receipt.after.mode == GameRuntimeTransport.LoadingMode &&
-                receipt.completion_destination.kind == "level",
+                receipt.completion_destination.kind == "level" &&
+                receipt.completion_destination.level_id == GameRuntimeLevelTwoId,
                 "accepted nonterminal completion entered resolver-owned Loading");
+            EnsureGameRuntimeTransitionPresentation();
+            PresentGameRuntimeTransition(receipt.after);
+            gameRuntimeLoadingPresentationGate.Begin(
+                receipt.after,
+                receipt.completion_destination.level_id);
+            return receipt;
+        }
+
+        private void AdvanceGameRuntimeLoadingPresentation(
+            GameRuntimeTransport.Identity loading)
+        {
+            Require(
+                gameRuntimeLastCompletionTransitionReceipt?.after != null &&
+                loading.runtime_id == gameRuntimeLastCompletionTransitionReceipt.after.runtime_id &&
+                loading.generation == gameRuntimeLastCompletionTransitionReceipt.after.generation &&
+                loading.pending_definition?.runtime_flow?.bound_level_id ==
+                    gameRuntimeLastCompletionTransitionReceipt.completion_destination.level_id &&
+                gameRuntimeTransitionPresenter?.IsVisible == true,
+                "Loading remains bound to the accepted resolver destination and visible frame");
+            if (!gameRuntimeLoadingPresentationGate.TryClaimOpen(
+                    loading,
+                    gameRuntimeTransitionPresenter?.IsVisible == true))
+            {
+                return;
+            }
+
             var identity = session.GameRuntimeOpenLevel();
             var observation = session.GameRuntimeCampaignSnapshot();
             Require(
                 identity.mode == GameRuntimeTransport.PlayingMode &&
-                identity.runtime_id == receipt.after.runtime_id &&
+                identity.runtime_id == loading.runtime_id &&
                 identity.active_runtime_flow?.bound_level_id ==
-                    receipt.completion_destination.level_id &&
+                    gameRuntimeLastCompletionTransitionReceipt.completion_destination.level_id &&
                 identity.session?.session_id == session.Handle.ToString() &&
                 observation.identity.session_id == identity.session.session_id &&
                 observation.identity.generation == identity.session.generation &&
                 observation.identity.tick == identity.session.tick,
                 "existing Rust runtime handle opened its resolver-selected destination");
+            PresentGameRuntimeTransition(identity);
+            gameRuntimeLoadingPresentationGate.Complete(identity);
             gameRuntimeCampaignSnapshot = observation;
             gameRuntimeSemanticEventCursor = observation.value.effect_head;
             ComposeGameRuntimeLevel2Presentation(identity, observation);
-            return receipt;
+        }
+
+        private void ObserveGameRuntimeLoadingPresentationFrame()
+        {
+            if (!gameRuntimeStartupReady || session == null ||
+                session.GameRuntimeIdentity().mode != GameRuntimeTransport.LoadingMode)
+            {
+                return;
+            }
+            gameRuntimeLoadingPresentationGate.Observe(
+                session.GameRuntimeIdentity(),
+                gameRuntimeTransitionPresenter?.IsVisible == true);
+        }
+
+        private void EnsureGameRuntimeTransitionPresentation()
+        {
+            if (gameRuntimeTransitionPresenter != null)
+            {
+                return;
+            }
+            Require(
+                !string.IsNullOrWhiteSpace(gameRuntimeLoadingCachePath),
+                "campaign Loading requires an explicit qualified Level 1 owner cache");
+            var cache = OwnerAssetCache.OpenAndValidate(
+                gameRuntimeLoadingCachePath,
+                ExpectedPackageHash,
+                ExpectedOwnerAssetClosureHash);
+            gameRuntimeTransitionPresenter =
+                new CampaignTransitionPresenter(transform, cache);
+
+            gameRuntimeTransitionCamera = new GameObject(
+                    "Game Runtime Loading Presentation Camera")
+                .AddComponent<Camera>();
+            gameRuntimeTransitionCamera.transform.SetParent(transform, false);
+            gameRuntimeTransitionCamera.transform.localPosition =
+                new Vector3(0f, 0f, -1f);
+            gameRuntimeTransitionCamera.transform.localRotation = Quaternion.identity;
+            gameRuntimeTransitionCamera.clearFlags = CameraClearFlags.SolidColor;
+            gameRuntimeTransitionCamera.backgroundColor = Color.black;
+            gameRuntimeTransitionCamera.orthographic = true;
+            gameRuntimeTransitionCamera.orthographicSize = 1f;
+            gameRuntimeTransitionCamera.aspect = 1.6f;
+            gameRuntimeTransitionCamera.nearClipPlane = 0.01f;
+            gameRuntimeTransitionCamera.farClipPlane = 10f;
+            gameRuntimeTransitionCamera.depth = 100f;
+            gameRuntimeTransitionCamera.enabled = false;
+        }
+
+        private void PresentGameRuntimeTransition(
+            GameRuntimeTransport.Identity identity)
+        {
+            gameRuntimeTransitionPresenter?.Present(identity);
+            if (gameRuntimeTransitionCamera != null)
+            {
+                gameRuntimeTransitionCamera.enabled =
+                    identity?.mode == GameRuntimeTransport.LoadingMode &&
+                    !Application.isBatchMode;
+            }
+        }
+
+        private void FreezeGameRuntimeInput()
+        {
+            CenterSteering();
+            gameRuntimeMovementFlags = 0;
+            fireRequested = false;
+            rightSpellRequested = false;
+            selectedSpellRequested = false;
+            gameRuntimeSpellSelectionRequested = null;
         }
 
         private void ComposeGameRuntimeLevel2Presentation(
@@ -12581,6 +12834,8 @@ namespace MagicCarpet.Native
             engineSessionRequested =
                 HasArgument(arguments, "-mc-engine-session");
             gameRuntimeRequested = HasArgument(arguments, "-mc-game-runtime");
+            gameRuntimeLoadingCachePath =
+                ArgumentValue(arguments, "-mc-runtime-loading-cache");
             gameRuntimeReplaySavePath =
                 ArgumentValue(arguments, "-mc-runtime-replay-save");
             gameRuntimeReplaySaveRequested = false;
@@ -12669,6 +12924,12 @@ namespace MagicCarpet.Native
                 {
                     throw new InvalidDataException(
                         "-mc-runtime-replay-save requires a replay save path");
+                }
+                if (HasArgument(arguments, "-mc-runtime-loading-cache") &&
+                    string.IsNullOrWhiteSpace(gameRuntimeLoadingCachePath))
+                {
+                    throw new InvalidDataException(
+                        "-mc-runtime-loading-cache requires a qualified owner cache path");
                 }
                 qualifiedMode = false;
                 return;
@@ -13075,6 +13336,19 @@ namespace MagicCarpet.Native
             gameRuntimePriorPlayerY = 0;
             gameRuntimeUnwrappedPlayerX = 0;
             gameRuntimeUnwrappedPlayerY = 0;
+        }
+
+        private void DestroyGameRuntimeTransitionPresentation()
+        {
+            gameRuntimeTransitionPresenter?.Dispose();
+            gameRuntimeTransitionPresenter = null;
+            if (gameRuntimeTransitionCamera != null)
+            {
+                DestroyOwnedPresentationObject(
+                    gameRuntimeTransitionCamera.gameObject);
+            }
+            gameRuntimeTransitionCamera = null;
+            gameRuntimeLoadingPresentationGate.Reset();
         }
 
         private static NativeSession OpenSessionWithAssetCache(
@@ -13644,6 +13918,7 @@ namespace MagicCarpet.Native
             campaignSession?.Dispose();
             campaignSession = null;
             DestroyGameRuntimeFireballPresentation();
+            DestroyGameRuntimeTransitionPresentation();
             gameRuntimeMode = false;
             gameRuntimeStartupReady = false;
             gameRuntimeCampaignSnapshot = null;
@@ -13651,6 +13926,7 @@ namespace MagicCarpet.Native
             gameRuntimeSemanticEventCursor = "0";
             gameRuntimeRecentSemanticEvents.Clear();
             gameRuntimePackages = Array.Empty<GameRuntimeTransport.InstalledPackageResource>();
+            gameRuntimeLoadingCachePath = null;
             gameRuntimeMovementFlags = 0;
             CenterSteering();
             level2StartupReady = false;

@@ -30,6 +30,11 @@ namespace MagicCarpet.Native.Tests
         private static string LevelTwoOwnerCache =>
             Path.Combine(PrivateRoot, "generated/level2-day-owner-cache");
 
+        private static string LevelOneOwnerCache =>
+            Path.Combine(
+                PrivateRoot,
+                "generated/level1-unity-asset-cache-plan29-final");
+
         private static string OpenedLevelTwoReplay =>
             Path.Combine(PrivateRoot, "generated/opened-l2-runtime-replay-v5.json");
 
@@ -437,6 +442,77 @@ namespace MagicCarpet.Native.Tests
                 Assert.That(
                     runtime.GameRuntimeProductionIdentity.active_runtime_flow.bound_level_id,
                     Is.EqualTo("level.magic_carpet_2.payahandra_ruins"));
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(root);
+            }
+        }
+
+        [Test]
+        [Timeout(180000)]
+        public void ProductionLoadingGateWaitsForVisibleFrameBeforeRealRustOpen()
+        {
+            var root = new GameObject("Game Runtime Loading Gate Test");
+            try
+            {
+                var cache = OwnerAssetCache.OpenAndValidate(
+                    LevelOneOwnerCache,
+                    MagicCarpetRuntime.ExpectedPackageHash,
+                    MagicCarpetRuntime.ExpectedOwnerAssetClosureHash);
+                using var presenter = new CampaignTransitionPresenter(
+                    root.transform,
+                    cache);
+                using var transport = new GameRuntimeTransport();
+                var gate = new MagicCarpetRuntime.GameRuntimeLoadingPresentationGate();
+
+                var title = transport.IdentitySnapshot();
+                presenter.Present(title);
+                Assert.That(presenter.IsVisible, Is.False);
+
+                var loading = transport.BootstrapPackageSet(ResolverPackages());
+                GameRuntimeTransport.ValidateIdentity(loading, transport.Handle);
+                Assert.That(loading.mode, Is.EqualTo(GameRuntimeTransport.LoadingMode));
+                Assert.That(loading.session.session_id, Is.Null.Or.Empty);
+                presenter.Present(loading);
+                gate.Begin(
+                    loading,
+                    loading.pending_definition.runtime_flow.bound_level_id);
+                Assert.That(presenter.IsVisible, Is.True);
+                Assert.That(
+                    presenter.IndicesSha256,
+                    Is.EqualTo(
+                        "fc27e10c722725e5d4e99ecc01a5bf1f0ff4269e9ff766fdbbad7f424860cc59"));
+                Assert.That(
+                    presenter.PaletteRgb6Sha256,
+                    Is.EqualTo(
+                        "7ced7d7bca9414b2890dc086c90efabf424de5694f140262f058ee175f0a1797"));
+                Assert.That(
+                    gate.TryClaimOpen(loading, presenter.IsVisible),
+                    Is.False,
+                    "fixed updates cannot skip the presentation-frame boundary");
+                Assert.That(
+                    gate.TryClaimOpen(transport.IdentitySnapshot(), presenter.IsVisible),
+                    Is.False,
+                    "repeated Loading polling neither opens nor duplicates state");
+
+                gate.Observe(transport.IdentitySnapshot(), presenter.IsVisible);
+                Assert.That(
+                    gate.TryClaimOpen(transport.IdentitySnapshot(), presenter.IsVisible),
+                    Is.True);
+                var opened = transport.OpenLevel();
+                GameRuntimeTransport.ValidateIdentity(opened, transport.Handle);
+                presenter.Present(opened);
+                gate.Complete(opened);
+                Assert.That(opened.mode, Is.EqualTo(GameRuntimeTransport.PlayingMode));
+                Assert.That(opened.runtime_id, Is.EqualTo(loading.runtime_id));
+                Assert.That(opened.session.session_id,
+                    Is.EqualTo(transport.Handle.ToString()));
+                Assert.That(opened.session.tick, Is.EqualTo("0"));
+                Assert.That(opened.active_runtime_flow.bound_level_id,
+                    Is.EqualTo(loading.pending_definition.runtime_flow.bound_level_id));
+                Assert.That(presenter.IsVisible, Is.False);
+                Assert.That(gate.IsPending, Is.False);
             }
             finally
             {
