@@ -259,6 +259,7 @@ dependencies = [
  "sim-terrain-grid",
  "sim-terrain-presentation",
  "sim-terrain-raster",
+ "sim-terrain-reflection",
  "sim-voxel",
 ]
 
@@ -376,6 +377,13 @@ dependencies = [
 [[package]]
 name = "sim-terrain-raster"
 version = "0.1.0"
+
+[[package]]
+name = "sim-terrain-reflection"
+version = "0.1.0"
+dependencies = [
+ "sim-terrain-grid",
+]
 
 [[package]]
 name = "sim-voxel"

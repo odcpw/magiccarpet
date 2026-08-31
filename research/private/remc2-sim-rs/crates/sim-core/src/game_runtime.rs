@@ -552,9 +552,10 @@ impl<B: GameSessionBackend> GameRuntime<B> {
 
     /// Restore one definition-bound playing session by replaying its retained
     /// semantic commands into a locally constructed candidate. Guard, mode,
-    /// package resolution, every command, and the caller's exact receipt
-    /// verifier all succeed before the runtime publishes the candidate.
-    pub(crate) fn restore_playing_resolved<A, F, V, I>(
+    /// package resolution, semantic pre-replay initialization, every command,
+    /// and the caller's exact receipt verifier all succeed before the runtime
+    /// publishes the candidate.
+    pub(crate) fn restore_playing_resolved<A, F, P, V, I>(
         &mut self,
         guard: RuntimeGuard,
         definition: Arc<GameDefinition>,
@@ -563,11 +564,13 @@ impl<B: GameSessionBackend> GameRuntime<B> {
         operations: I,
         paused: bool,
         resolve_input: F,
+        prepare: P,
         verify: V,
     ) -> Result<RuntimeIdentity, RestorePlayingError<A::Error>>
     where
         A: GameAdapter<Backend = B, Error = B::Error>,
         F: FnOnce(&GameDefinition) -> Result<A::OpenInput, RuntimeTransitionError>,
+        P: FnOnce(&mut GameSession<B>) -> Result<(), RuntimeTransitionError>,
         V: FnOnce(&GameSession<B>) -> Result<(), RuntimeTransitionError>,
         I: IntoIterator<Item = ReplayOperation<B::Command>>,
     {
@@ -598,6 +601,7 @@ impl<B: GameSessionBackend> GameRuntime<B> {
             input,
         )
         .map_err(RestorePlayingError::Session)?;
+        prepare(&mut candidate).map_err(RestorePlayingError::Transition)?;
         for (operation_index, operation) in operations.into_iter().enumerate() {
             let guard = candidate.identity().guard();
             match operation {
@@ -2346,6 +2350,182 @@ mod tests {
         assert!(level_three_spell_state.0.contains(&SpellKind::Castle));
         assert_eq!(level_three_spell_state.1, Some(SpellKind::Fireball));
 
+        let source_identity = runtime.identity();
+        let source_session = source_identity.session.as_ref().unwrap().clone();
+        let source_snapshot = runtime.session().unwrap().snapshot();
+        assert_eq!(source_session.generation, 3);
+        assert_eq!(
+            source_identity
+                .active_runtime_flow
+                .as_ref()
+                .unwrap()
+                .bound_level_id()
+                .as_str(),
+            "level.magic_carpet_2.revealed_way"
+        );
+        let save = resolver.save_replay(&runtime).unwrap();
+        let save_json: serde_json::Value = serde_json::from_slice(&save).unwrap();
+        assert_eq!(
+            save_json["save_contract"],
+            crate::campaign::backend::MC2_CAMPAIGN_REPLAY_SAVE_CONTRACT
+        );
+        assert_eq!(
+            save_json["definition"]["runtime_flow"]["bound_level_id"],
+            "level.magic_carpet_2.revealed_way"
+        );
+        assert!(
+            save_json["semantic_spell_carry"]["acquired"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|kind| kind == "castle")
+        );
+        assert_eq!(save_json["semantic_spell_carry"]["selected"], "fireball");
+
+        let mut restored = GameRuntime::<Mc2CampaignBackend>::title(113).unwrap();
+        let restored_title = restored.identity();
+        let restored_identity = resolver
+            .load_replay(&mut restored, restored_title.guard(), 113, &save)
+            .unwrap();
+        assert_eq!(restored_identity.mode, RuntimeMode::Playing);
+        assert_eq!(restored_identity.runtime_id, 113);
+        assert_eq!(restored_identity.generation, 2);
+        assert_eq!(
+            restored_identity.active_runtime_flow,
+            source_identity.active_runtime_flow
+        );
+        let restored_session = restored_identity.session.as_ref().unwrap();
+        assert_eq!(restored_session.session_id, 113);
+        assert_eq!(restored_session.generation, 1);
+        assert_eq!(restored_session.tick, source_session.tick);
+        assert_eq!(
+            restored_session.package_graph_hash,
+            source_session.package_graph_hash
+        );
+        assert_eq!(
+            restored_session.definition_hash,
+            source_session.definition_hash
+        );
+        assert_eq!(
+            restored_session.definition_revision,
+            source_session.definition_revision
+        );
+        assert_eq!(
+            restored.session().unwrap().snapshot().value,
+            source_snapshot.value
+        );
+        assert_eq!(
+            restored
+                .session()
+                .unwrap()
+                .backend()
+                .semantic_spell_state_for_test()
+                .unwrap(),
+            level_three_spell_state
+        );
+
+        let following_command = GameCommand {
+            longitudinal: LongitudinalControl::Accelerate,
+            lateral: LateralControl::Negative,
+            look_yaw: 17,
+            pitch_axis: -3,
+            ..GameCommand::default()
+        };
+        let source_after = runtime
+            .session_mut()
+            .unwrap()
+            .step(source_session.guard(), following_command.clone())
+            .unwrap();
+        let restored_after = restored
+            .session_mut()
+            .unwrap()
+            .step(restored_session.guard(), following_command)
+            .unwrap();
+        assert_eq!(restored_after.value, source_after.value);
+
+        let before_pause = restored.identity();
+        let before_pause_snapshot = restored.session().unwrap().snapshot();
+        let paused = restored.pause(before_pause.guard()).unwrap();
+        assert_eq!(paused.mode, RuntimeMode::Paused);
+        assert_eq!(paused.generation, before_pause.generation + 1);
+        assert_eq!(
+            paused.session.as_ref().unwrap().generation,
+            before_pause.session.as_ref().unwrap().generation + 1
+        );
+        assert_eq!(
+            paused.session.as_ref().unwrap().tick,
+            before_pause.session.as_ref().unwrap().tick
+        );
+        assert!(restored.session_mut().is_none());
+        assert_eq!(
+            restored.session().unwrap().snapshot().value,
+            before_pause_snapshot.value
+        );
+        let stale_resume = restored.resume(before_pause.guard());
+        assert!(matches!(
+            stale_resume,
+            Err(RuntimeTransitionError::Guard(error))
+                if error.code == RuntimeGuardErrorCode::GenerationMismatch
+        ));
+        let resumed = restored.resume(paused.guard()).unwrap();
+        assert_eq!(resumed.mode, RuntimeMode::Playing);
+        assert_eq!(resumed.generation, paused.generation + 1);
+        assert_eq!(
+            resumed.session.as_ref().unwrap().generation,
+            paused.session.as_ref().unwrap().generation + 1
+        );
+        assert_eq!(
+            restored.session().unwrap().snapshot().value,
+            before_pause_snapshot.value
+        );
+        assert_eq!(
+            restored
+                .session()
+                .unwrap()
+                .backend()
+                .semantic_spell_state_for_test()
+                .unwrap(),
+            level_three_spell_state
+        );
+
+        let before_reset_runtime = restored.identity();
+        let before_reset_session = before_reset_runtime.session.as_ref().unwrap().clone();
+        let reset = restored
+            .session_mut()
+            .unwrap()
+            .reset(before_reset_session.guard())
+            .unwrap();
+        assert_eq!(reset.identity.session_id, 113);
+        assert_eq!(
+            reset.identity.generation,
+            before_reset_session.generation + 1
+        );
+        assert_eq!(reset.identity.tick, 0);
+        let after_reset_runtime = restored.identity();
+        assert_eq!(
+            after_reset_runtime.generation,
+            before_reset_runtime.generation
+        );
+        assert_eq!(after_reset_runtime.session.as_ref(), Some(&reset.identity));
+        assert_eq!(
+            restored
+                .session()
+                .unwrap()
+                .backend()
+                .semantic_spell_state_for_test()
+                .unwrap(),
+            level_three_spell_state
+        );
+        let stale_after_reset = restored
+            .session_mut()
+            .unwrap()
+            .step(before_reset_session.guard(), GameCommand::default());
+        assert!(matches!(
+            stale_after_reset,
+            Err(GameSessionError::Guard(error))
+                if error.code == SessionGuardErrorCode::GenerationMismatch
+        ));
+
         crate::campaign::backend::tests::drive_real_level_three_guardian_dragons_to_reveal_entrance_for_test(
             runtime.session_mut().unwrap(),
         );
@@ -2371,6 +2551,13 @@ mod tests {
                 .map(|id| id.as_str()),
             Some("objective.charge.reveal_entrance")
         );
+
+        // No-Claim: this checkpoint begins with a real Level-1 Castle pickup,
+        // carries semantic spell state through the organic Level-2 route into
+        // Level 3, and restores that exact definition-bound L3 state from a
+        // receipt-verified replay before testing deterministic continuation,
+        // pause/resume, reset, and stale-guard rejection. It does not persist
+        // Loading/Title boundaries, client state, or arbitrary package bytes.
     }
 
     #[test]

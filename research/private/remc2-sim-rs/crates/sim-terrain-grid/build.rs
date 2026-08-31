@@ -46,7 +46,7 @@ fn main() {
     let output = PathBuf::from(env::var_os("OUT_DIR").expect("OUT_DIR")).join("sine_table.rs");
     fs::write(
         output,
-        format!("const SIN_16_16: [i32; 2560] = {values:?};\n"),
+        format!("pub const SIN_16_16: [i32; 2560] = {values:?};\n"),
     )
     .expect("write generated sine table");
 }

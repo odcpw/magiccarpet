@@ -735,7 +735,11 @@ partial real implementation, not a completion claim:
   traversal, rasterization and frame delivery remain with their existing
   consumers. The exact camera-oriented outdoor terrain lattice is now owned by
   `sim-terrain-grid`, while terrain projection, raster submission and native
-  session scheduling remain with their existing owners. These are twenty
+  session scheduling remain with their existing owners. The exact reflected-
+  terrain projection, material classification and triangle submission order
+  are now owned by `sim-terrain-reflection`, while the established
+  `sim_core::terrain_reflection` path remains a compatibility façade and frame
+  scheduling stays with its existing owners. These are twenty-one
   bounded physical extractions, not a claim that the remaining `sim-core`
   monolith has been decomposed; and
 - the complete title/loading/save/transition flow and full Levels 1–3 domain

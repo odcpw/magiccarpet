@@ -25,6 +25,7 @@ members = [
     "crates/sim-input",
     "crates/sim-terrain-grid",
     "crates/sim-terrain-presentation",
+    "crates/sim-terrain-reflection",
     "crates/sim-terrain-raster",
     "crates/sim-voxel",
     "crates/sim-core",

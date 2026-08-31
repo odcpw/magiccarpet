@@ -547,7 +547,7 @@ impl Mc2CampaignInputs {
     }
 }
 
-pub const MC2_CAMPAIGN_REPLAY_SAVE_CONTRACT: &str = "carpet-flight-mc2-campaign-replay-save/v4";
+pub const MC2_CAMPAIGN_REPLAY_SAVE_CONTRACT: &str = "carpet-flight-mc2-campaign-replay-save/v5";
 pub const MAX_MC2_CAMPAIGN_REPLAY_SAVE_BYTES: usize = 16 * 1024 * 1024;
 pub const MAX_MC2_CAMPAIGN_REPLAY_OPERATIONS: usize = 1_000_000;
 
@@ -557,6 +557,7 @@ struct Mc2CampaignReplaySave {
     save_contract: String,
     paused: bool,
     definition: GameDefinition,
+    semantic_spell_carry: Mc2SemanticSpellCarry,
     operations: Vec<crate::game_runtime::ReplayOperation<GameCommand>>,
     expected_tick: u64,
     expected_state_hash: u64,
@@ -571,6 +572,7 @@ struct Mc2CampaignReplaySavePayload<'a> {
     save_contract: &'a str,
     paused: bool,
     definition: &'a GameDefinition,
+    semantic_spell_carry: &'a Mc2SemanticSpellCarry,
     operations: &'a [crate::game_runtime::ReplayOperation<GameCommand>],
     expected_tick: u64,
     expected_state_hash: u64,
@@ -583,6 +585,7 @@ impl Mc2CampaignReplaySave {
     fn new(
         paused: bool,
         definition: GameDefinition,
+        semantic_spell_carry: Mc2SemanticSpellCarry,
         operations: Vec<crate::game_runtime::ReplayOperation<GameCommand>>,
         snapshot: &CampaignSnapshot,
     ) -> Self {
@@ -590,6 +593,7 @@ impl Mc2CampaignReplaySave {
             save_contract: MC2_CAMPAIGN_REPLAY_SAVE_CONTRACT.to_owned(),
             paused,
             definition,
+            semantic_spell_carry,
             operations,
             expected_tick: snapshot.tick,
             expected_state_hash: snapshot.state_hash,
@@ -607,6 +611,7 @@ impl Mc2CampaignReplaySave {
             save_contract: &self.save_contract,
             paused: self.paused,
             definition: &self.definition,
+            semantic_spell_carry: &self.semantic_spell_carry,
             operations: &self.operations,
             expected_tick: self.expected_tick,
             expected_state_hash: self.expected_state_hash,
@@ -674,7 +679,8 @@ pub struct Mc2RuntimePackageResolver {
     pending_spell_carries: Arc<Mutex<BTreeMap<u64, Mc2PendingSpellCarry>>>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 struct Mc2SemanticSpellCarry {
     acquired: Vec<SpellKind>,
     selected: Option<SpellKind>,
@@ -964,9 +970,14 @@ impl Mc2RuntimePackageResolver {
                 ),
             });
         }
+        let semantic_spell_carry = session
+            .backend()
+            .semantic_spell_carry()
+            .map_err(Mc2CampaignReplaySaveError::Runtime)?;
         let save = Mc2CampaignReplaySave::new(
             mode == crate::game_runtime::RuntimeMode::Paused,
             session.definition().as_ref().clone(),
+            semantic_spell_carry,
             session.backend().replay_operations.clone(),
             &snapshot,
         );
@@ -1045,6 +1056,7 @@ impl Mc2RuntimePackageResolver {
             .verify_semantic_variant_of(&package.definition, &catalog)
             .map_err(Mc2CampaignReplaySaveError::Definition)?;
         let definition = Arc::new(save.definition);
+        let semantic_spell_carry = save.semantic_spell_carry;
         let operations = save.operations;
         let expected_tick = save.expected_tick;
         let expected_state_hash = save.expected_state_hash;
@@ -1061,6 +1073,11 @@ impl Mc2RuntimePackageResolver {
                 operations,
                 paused,
                 |_| Ok(package.inputs.clone()),
+                move |candidate| {
+                    candidate
+                        .backend_mut()
+                        .apply_semantic_spell_carry(&semantic_spell_carry)
+                },
                 move |candidate| {
                     let actual = candidate.backend().snapshot();
                     if actual.tick != expected_tick
