@@ -3274,6 +3274,65 @@
     }
 
     #[test]
+    fn level_two_castle_four_passes_collect_a_disabled_sphere_once() {
+        // Pinned remc2 6806c72, EndOfCastleProjectile_5F8F0 adds the first
+        // owned model-39 row from the live chain and immediately calls
+        // DisableEntityDrawing04_57F10. Later UpdateEntities passes cannot
+        // find that disabled row again before its following-boundary reclaim.
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let mut session = inspection
+            .level2_reset_session()
+            .expect("four-pass Castle session");
+        let castle_slot = session
+            .economy_mut()
+            .build_castle(Position::default(), 111)
+            .expect("action-4 Castle");
+        let castle_position = session.economy().castle().expect("Castle").position;
+        let sphere_id = session
+            .economy_mut()
+            .spawn_mana_sphere_from_death(51, castle_position, 0, 0x7777, 500, 111)
+            .expect("owned Castle sphere");
+        session
+            .economy_mut()
+            .castle
+            .as_mut()
+            .expect("action-4 Castle")
+            .phase = 0;
+        session.economy_mut().begin_turn();
+
+        for _ in 0..4 {
+            assert!(session.economy_mut().step_castle_action(castle_slot));
+        }
+
+        assert_eq!(session.economy().castle().expect("Castle").mana, 500);
+        assert_eq!(
+            session
+                .economy()
+                .events()
+                .iter()
+                .filter(|event| matches!(
+                    event,
+                    Level2EconomyEvent::ManaSphereCollected {
+                        sphere_id: collected,
+                        carrier_id,
+                        mana: 500,
+                    } if *collected == sphere_id && *carrier_id == u32::from(castle_slot)
+                ))
+                .count(),
+            1
+        );
+        let sphere = session
+            .economy()
+            .spheres()
+            .iter()
+            .find(|sphere| sphere.id == sphere_id)
+            .expect("disabled sphere remains allocated until source-boundary reclaim");
+        assert!(sphere.pending_delete);
+        assert_ne!(sphere.control_flags & ENTITY_DRAW_DISABLED_BIT, 0);
+    }
+
+    #[test]
     fn level_two_castle_stage_controller_matches_source() {
         let package = level_two_fixture_path();
         let gameplay_cache = PathBuf::from(env!("CARGO_MANIFEST_DIR"))

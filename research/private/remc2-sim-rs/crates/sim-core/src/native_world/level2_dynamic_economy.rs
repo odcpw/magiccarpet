@@ -5960,6 +5960,8 @@ impl Level2EconomyState {
                 }
                 let Some(sphere_index) = self.spheres.iter().position(|sphere| {
                     sphere.active
+                        && !sphere.pending_delete
+                        && sphere.control_flags & ENTITY_DRAW_DISABLED_BIT == 0
                         && sphere.owner_entity_index == castle.owner_entity_index
                         && level2_castle_sphere_overlap(castle.position, sphere)
                 }) else {
