@@ -129,6 +129,57 @@ namespace MagicCarpet.Native.Tests
             return arguments;
         }
 
+        private static string[] PlayableLevelArguments(int externalLevel, string replayPath = null)
+        {
+            if (externalLevel == 1)
+            {
+                return string.IsNullOrWhiteSpace(replayPath)
+                    ? RuntimeArguments(LevelThreePackage, LevelOnePackage, LevelTwoPackage)
+                    : RuntimeReplayArguments(
+                        replayPath,
+                        LevelThreePackage,
+                        LevelOnePackage,
+                        LevelTwoPackage);
+            }
+            var arguments = externalLevel == 2
+                ? OpenedLevelTwoReplayArguments()
+                : externalLevel == 3
+                    ? OpenedLevelThreeReplayArguments()
+                    : throw new ArgumentOutOfRangeException(nameof(externalLevel));
+            if (!string.IsNullOrWhiteSpace(replayPath))
+            {
+                arguments[^1] = replayPath;
+            }
+            return arguments;
+        }
+
+        private static void AssertPlayableLevelPresentation(
+            MagicCarpetRuntime runtime,
+            int externalLevel)
+        {
+            Assert.That(runtime.GameRuntimeProductionStartupReady, Is.True);
+            Assert.That(runtime.GameRuntimeActiveLevelPresentationInstanceId, Is.Not.Zero);
+            if (externalLevel == 1)
+            {
+                Assert.That(runtime.GameRuntimeProductionFireballTexture, Is.Not.Null);
+            }
+            else if (externalLevel == 2)
+            {
+                Assert.That(runtime.GameRuntimeLevel2PresentationReady, Is.True);
+            }
+            else
+            {
+                Assert.That(runtime.GameRuntimeLevel3PresentationReady, Is.True);
+            }
+        }
+
+        private static bool ContainsInstance(GameObject root, int instanceId)
+        {
+            return Array.Exists(
+                root.GetComponentsInChildren<Transform>(true),
+                candidate => candidate.GetInstanceID() == instanceId);
+        }
+
         private static byte[] PackageSetJson(
             params GameRuntimeTransport.InstalledPackageResource[] packages)
         {
@@ -593,6 +644,205 @@ namespace MagicCarpet.Native.Tests
                     FindObjectsSortMode.None),
                 Is.Empty,
                 $"Level 3 surface {surfaceId} is disposed with its runtime");
+        }
+
+        [TestCase(1)]
+        [TestCase(3)]
+        [Timeout(300000)]
+        public void ProductionControlsRemainBoundAcrossVerifiedLevelBoundaries(
+            int externalLevel)
+        {
+            Assert.That(File.Exists(OpenedLevelThreeReplay), Is.True,
+                "owner-local opened-Level-3 replay boundary");
+            Assert.That(Directory.Exists(LevelThreeOwnerCache), Is.True);
+
+            var nativeSessionsBefore = NativeSession.ActiveSessionCount;
+            var campaignSessionsBefore = NativeCampaignSession.ActiveSessionCount;
+            var replayPath = Path.Combine(
+                Path.GetTempPath(),
+                $"magiccarpet-controls-level-{externalLevel}-{Guid.NewGuid():N}.json");
+            GameObject sourceRoot = null;
+            GameObject restoredRoot = null;
+            try
+            {
+                    sourceRoot = new GameObject($"game runtime controls L{externalLevel} source");
+                    sourceRoot.SetActive(false);
+                    var source = sourceRoot.AddComponent<MagicCarpetRuntime>();
+                    source.QualificationInitializeGameRuntimeProductionFromArguments(
+                        PlayableLevelArguments(externalLevel));
+                    var opened = source.GameRuntimeProductionIdentity;
+                    var openedTick = ulong.Parse(opened.session.tick);
+                    var beforeMotion = source.GameRuntimeProductionCampaignSnapshot;
+                    AssertPlayableLevelPresentation(source, externalLevel);
+
+                    source.QualificationApplyGameRuntimeProductionMovement(
+                        accelerate: true,
+                        decelerate: false,
+                        strafeLeft: true,
+                        strafeRight: false);
+                    source.QualificationApplyGameRuntimeProductionSteering(24f, -8f);
+                    source.QualificationDriveGameRuntimeFrames(3);
+                    var afterMotion = source.GameRuntimeProductionCampaignSnapshot;
+                    Assert.That(
+                        ulong.Parse(afterMotion.identity.tick),
+                        Is.EqualTo(openedTick + 3));
+                    Assert.That(
+                        afterMotion.value.player_motion.actual_speed !=
+                            beforeMotion.value.player_motion.actual_speed ||
+                        afterMotion.value.player_pose.yaw != beforeMotion.value.player_pose.yaw ||
+                        afterMotion.value.player_pose.roll != beforeMotion.value.player_pose.roll,
+                        Is.True,
+                        $"Level {externalLevel} consumed ordinary movement and steering");
+
+                    source.QualificationApplyGameRuntimeProductionInput(true, false);
+                    var paused = source.GameRuntimeProductionIdentity;
+                    var pausedSnapshot = source.GameRuntimeProductionCampaignSnapshot;
+                    Assert.That(paused.mode, Is.EqualTo(GameRuntimeTransport.PausedMode));
+                    source.QualificationApplyGameRuntimeProductionMovement(true, false, false, true);
+                    source.QualificationApplyGameRuntimeProductionSteering(64f, 64f);
+                    source.QualificationApplyGameRuntimeProductionInput(false, true);
+                    Assert.That(
+                        source.QualificationSelectGameRuntimeProductionSpell("spell.fireball"),
+                        Is.False,
+                        "paused input cannot queue a semantic spell selection");
+                    source.QualificationDriveGameRuntimeFrames(1);
+                    var afterPausedInput = source.GameRuntimeProductionCampaignSnapshot;
+                    Assert.That(afterPausedInput.identity.tick, Is.EqualTo(pausedSnapshot.identity.tick));
+                    Assert.That(afterPausedInput.value.player_pose.x,
+                        Is.EqualTo(pausedSnapshot.value.player_pose.x));
+                    Assert.That(afterPausedInput.value.player_pose.y,
+                        Is.EqualTo(pausedSnapshot.value.player_pose.y));
+                    Assert.That(afterPausedInput.value.player_pose.z,
+                        Is.EqualTo(pausedSnapshot.value.player_pose.z));
+
+                    File.WriteAllBytes(
+                        replayPath,
+                        source.QualificationSaveGameRuntimeProductionReplay());
+                    var sourcePresentation = source.GameRuntimeActiveLevelPresentationInstanceId;
+                    source.QualificationDisposeGameRuntimeProduction();
+                    Assert.That(ContainsInstance(sourceRoot, sourcePresentation), Is.False,
+                        $"Level {externalLevel} source presentation disposed before replay load");
+                    UnityEngine.Object.DestroyImmediate(sourceRoot);
+                    sourceRoot = null;
+
+                    restoredRoot = new GameObject(
+                        $"game runtime controls L{externalLevel} restored");
+                    restoredRoot.SetActive(false);
+                    var restored = restoredRoot.AddComponent<MagicCarpetRuntime>();
+                    restored.QualificationInitializeGameRuntimeProductionFromArguments(
+                        PlayableLevelArguments(externalLevel, replayPath));
+                    var replayed = restored.GameRuntimeProductionIdentity;
+                    Assert.That(replayed.mode, Is.EqualTo(GameRuntimeTransport.PausedMode));
+                    Assert.That(
+                        replayed.active_runtime_flow.bound_level_id,
+                        Is.EqualTo(opened.active_runtime_flow.bound_level_id));
+                    AssertPlayableLevelPresentation(restored, externalLevel);
+
+                    restored.QualificationApplyGameRuntimeProductionInput(true, false);
+                    Assert.That(
+                        restored.GameRuntimeProductionIdentity.mode,
+                        Is.EqualTo(GameRuntimeTransport.PlayingMode));
+                    restored.QualificationDriveGameRuntimeFrames(1);
+                    Assert.That(
+                        Array.Exists(
+                            restored.GameRuntimeProductionCampaignSnapshot.value.presentation_entities,
+                            entity => entity.kind == "spell.fireball.projectile"),
+                        Is.False,
+                        "the fire input suppressed while Paused was not replayed after resume");
+
+                    if (externalLevel == 1)
+                    {
+                        Assert.That(
+                            restored.QualificationSelectGameRuntimeProductionSpell(
+                                "spell.fireball"),
+                            Is.True);
+                        restored.QualificationDriveGameRuntimeFrames(1);
+                        restored.QualificationRequestGameRuntimeSelectedSpellCast();
+                        restored.QualificationDriveGameRuntimeFrames(1);
+                        Assert.That(
+                            Array.Exists(
+                                restored.GameRuntimeProductionCampaignSnapshot.value
+                                    .presentation_entities,
+                                entity => entity.kind == "spell.fireball.projectile"),
+                            Is.True,
+                            "Level 1 selected and cast its acquired semantic Fireball");
+                    }
+
+                    var generationBeforeReset =
+                        ulong.Parse(restored.GameRuntimeProductionIdentity.session.generation);
+                    var presentationBeforeReset =
+                        restored.GameRuntimeActiveLevelPresentationInstanceId;
+                    restored.QualificationResetGameRuntimeProduction();
+                    var reset = restored.GameRuntimeProductionIdentity;
+                    Assert.That(
+                        ulong.Parse(reset.session.generation),
+                        Is.GreaterThan(generationBeforeReset));
+                    Assert.That(reset.session.tick, Is.EqualTo("0"));
+                    AssertPlayableLevelPresentation(restored, externalLevel);
+                    Assert.That(
+                        restored.GameRuntimeActiveLevelPresentationInstanceId,
+                        Is.EqualTo(presentationBeforeReset),
+                        "the active presenter rebound to the reset generation");
+
+                    var runtimeId = reset.runtime_id;
+                    var runtimeGeneration = ulong.Parse(reset.generation);
+                    var activePresentation =
+                        restored.GameRuntimeActiveLevelPresentationInstanceId;
+                    restored.QualificationCloseGameRuntimeProduction();
+                    var title = restored.GameRuntimeProductionIdentity;
+                    Assert.That(title.runtime_id, Is.EqualTo(runtimeId));
+                    Assert.That(title.mode, Is.EqualTo(GameRuntimeTransport.TitleMode));
+                    Assert.That(
+                        ulong.Parse(title.generation),
+                        Is.EqualTo(runtimeGeneration + 1));
+                    Assert.That(restored.GameRuntimeActiveLevelPresentationInstanceId, Is.Zero);
+                    Assert.That(ContainsInstance(restoredRoot, activePresentation), Is.False,
+                        $"Level {externalLevel} presentation disposed on close-to-Title");
+
+                    restored.QualificationRestartGameRuntimeProduction();
+                    var restarted = restored.GameRuntimeProductionIdentity;
+                    Assert.That(restarted.runtime_id, Is.EqualTo(runtimeId));
+                    Assert.That(restarted.mode, Is.EqualTo(GameRuntimeTransport.PlayingMode));
+                    Assert.That(
+                        restarted.active_runtime_flow.bound_level_id,
+                        Is.EqualTo(restarted.active_runtime_flow.entry_level_id));
+                    Assert.That(restored.GameRuntimeLevel2PresentationReady, Is.False);
+                    Assert.That(restored.GameRuntimeLevel3PresentationReady, Is.False);
+                    AssertPlayableLevelPresentation(restored, 1);
+                    restored.QualificationDriveGameRuntimeFrames(1);
+                    Assert.That(restored.GameRuntimeProductionIdentity.session.tick, Is.EqualTo("1"));
+            }
+            finally
+            {
+                if (sourceRoot != null)
+                {
+                    var source = sourceRoot.GetComponent<MagicCarpetRuntime>();
+                    if (source != null)
+                    {
+                        source.QualificationDisposeGameRuntimeProduction();
+                    }
+                    UnityEngine.Object.DestroyImmediate(sourceRoot);
+                }
+                if (restoredRoot != null)
+                {
+                    var restored = restoredRoot.GetComponent<MagicCarpetRuntime>();
+                    if (restored != null)
+                    {
+                        restored.QualificationDisposeGameRuntimeProduction();
+                    }
+                    UnityEngine.Object.DestroyImmediate(restoredRoot);
+                }
+                if (File.Exists(replayPath)) File.Delete(replayPath);
+            }
+            Assert.That(NativeSession.ActiveSessionCount, Is.EqualTo(nativeSessionsBefore));
+            Assert.That(
+                NativeCampaignSession.ActiveSessionCount,
+                Is.EqualTo(campaignSessionsBefore));
+
+            // Level 2 is intentionally not admitted here: its exact current
+            // Rust replay-save/restore owner test rejects the regenerated v11
+            // boundary with a receipt mismatch. Level 3 acquired-spell carry
+            // is likewise not claimed by this control/lifecycle test.
         }
 
         [Test]

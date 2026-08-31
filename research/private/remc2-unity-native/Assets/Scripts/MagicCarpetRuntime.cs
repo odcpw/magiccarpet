@@ -1171,6 +1171,13 @@ namespace MagicCarpet.Native
         internal int GameRuntimeLevel3PresentationInstanceId =>
             level3PresentationSurface?.Root?.gameObject.GetInstanceID() ?? 0;
 
+        internal int GameRuntimeActiveLevelPresentationInstanceId =>
+            level3Mode
+                ? level3PresentationSurface?.Root?.gameObject.GetInstanceID() ?? 0
+                : level2Mode
+                    ? level2ProductionEntityPresenter?.Root?.gameObject.GetInstanceID() ?? 0
+                    : gameRuntimeWorldRoot?.gameObject.GetInstanceID() ?? 0;
+
         internal GameRuntimeTransport.Identity GameRuntimeProductionIdentity =>
             session?.GameRuntimeIdentity() ?? throw new InvalidOperationException(
                 "game runtime production owner is not initialized");
@@ -8953,13 +8960,9 @@ namespace MagicCarpet.Native
             }
             if (closePressed)
             {
-                CenterSteering();
-                gameRuntimeMovementFlags = 0;
-                fireRequested = false;
-                rightSpellRequested = false;
-                selectedSpellRequested = false;
-                gameRuntimeSpellSelectionRequested = null;
+                FreezeGameRuntimeInput();
                 session.GameRuntimeClose();
+                DisposeGameRuntimeCampaignPresentation();
                 DestroyGameRuntimeFireballPresentation();
                 gameRuntimeCampaignSnapshot = null;
                 gameRuntimeLastCompletionTransitionReceipt = null;
@@ -9134,6 +9137,7 @@ namespace MagicCarpet.Native
             gameRuntimeRecentSemanticEvents.Clear();
             if (receipt.after.mode == GameRuntimeTransport.TitleMode)
             {
+                DisposeGameRuntimeCampaignPresentation();
                 PresentGameRuntimeTransition(receipt);
                 gameRuntimeLoadingPresentationGate.Reset();
                 gameRuntimeStartupReady = false;
@@ -9409,6 +9413,29 @@ namespace MagicCarpet.Native
             level2Mode = false;
             level2DayHudPresenterReady = false;
             level2MinimapProjectionReady = false;
+        }
+
+        private void DisposeGameRuntimeLevel3Presentation()
+        {
+            level3PresentationSurface?.Dispose();
+            level3PresentationSurface = null;
+            campaignSession?.Dispose();
+            campaignSession = null;
+            ownerAssetCache = null;
+            level3StartupReady = false;
+            level3Mode = false;
+        }
+
+        private void DisposeGameRuntimeCampaignPresentation()
+        {
+            if (level2Mode)
+            {
+                DisposeGameRuntimeLevel2Presentation();
+            }
+            if (level3Mode)
+            {
+                DisposeGameRuntimeLevel3Presentation();
+            }
         }
 
         private void UpdateGameRuntimeLevel2Presentation(
