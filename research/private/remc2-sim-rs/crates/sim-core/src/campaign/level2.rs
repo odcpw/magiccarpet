@@ -4862,9 +4862,20 @@ impl Level2ResetSession {
                     })
             })
             .or_else(|| {
-                self.session
-                    .definition
-                    .switch_for_initial_source_slot(source_slot)
+                (self
+                    .session
+                    .state
+                    .live
+                    .economy
+                    .economy
+                    .slot_generation(source_slot)
+                    == 0)
+                    .then(|| {
+                        self.session
+                            .definition
+                            .switch_for_initial_source_slot(source_slot)
+                    })
+                    .flatten()
             })
     }
 
@@ -20597,10 +20608,20 @@ mod tests {
 
     #[test]
     fn package_stone_is_not_misclassified_as_an_area_exit_switch() {
+        const REUSED_SWITCH_SLOT: u16 = 150;
+
         let package = level_one_descriptor_fixture_path();
         let mut campaign = CampaignSession::open(&package, CampaignSelection::LEVEL1)
             .expect("real Level 1 descriptor opens");
         let session = campaign.level2_compatibility_mut();
+        assert_eq!(
+            session
+                .session
+                .definition
+                .switch_for_initial_source_slot(REUSED_SWITCH_SLOT),
+            Some(SwitchKind::AreaEntryTrigger)
+        );
+        assert_eq!(session.economy().slot_generation(REUSED_SWITCH_SLOT), 0);
         let stone_feature = session
             .session
             .state
@@ -20612,9 +20633,17 @@ mod tests {
             .find(|feature| feature.index == 154)
             .expect("package group 6 contains its authored Stone");
         assert_eq!((stone_feature.kind, stone_feature.subtype), (2, 1));
+        session.economy_mut().exhaust_new_event_capacity_for_test();
+        assert!(
+            session
+                .economy_mut()
+                .restore_new_event_slot_for_test(REUSED_SWITCH_SLOT)
+        );
         let stone_slot = session
             .allocate_authored_stone_feature(stone_feature)
-            .expect("the real package Stone materializes in the shared source arena");
+            .expect("the real package Stone reuses the semantic switch slot");
+        assert_eq!(stone_slot, REUSED_SWITCH_SLOT);
+        assert!(session.economy().slot_generation(stone_slot) > 0);
         let phase_before = session.entities()[usize::from(stone_slot)].phase;
 
         session.step_outer_turn(PlayerCommand::default(), 0);
