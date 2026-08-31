@@ -646,6 +646,79 @@ namespace MagicCarpet.Native.Tests
                 $"Level 3 surface {surfaceId} is disposed with its runtime");
         }
 
+        [Test]
+        [Timeout(180000)]
+        public void OpenedLevelThreeReplayCarriesNoAcquiredSpellAcrossLifecycleBoundaries()
+        {
+            var fixture = File.ReadAllBytes(OpenedLevelThreeReplay);
+            StringAssert.Contains(
+                "\"semantic_spell_carry\":{\"acquired\":[],\"selected\":null}",
+                Encoding.UTF8.GetString(fixture));
+            var packages = new[]
+            {
+                new GameRuntimeTransport.InstalledPackageResource
+                {
+                    package_dir = LevelThreePackage,
+                    owner_cache_path = LevelThreeDayCache
+                },
+                Package(LevelOnePackage),
+                Package(LevelTwoPackage)
+            };
+
+            static void AssertRejected(NativeSession session, string boundary)
+            {
+                var before = session.GameRuntimeCampaignSnapshot();
+                var error = Assert.Throws<InvalidOperationException>(() =>
+                    session.GameRuntimeCampaignStep(0, 0, 0, 0, 0, "spell.fireball"));
+                StringAssert.Contains("spell.fireball is not acquired", error.Message, boundary);
+                var after = session.GameRuntimeCampaignSnapshot();
+                Assert.That(after.identity.generation, Is.EqualTo(before.identity.generation));
+                Assert.That(after.identity.tick, Is.EqualTo(before.identity.tick));
+                Assert.That(after.value.state_hash, Is.EqualTo(before.value.state_hash));
+            }
+
+            using (var initial = NativeSession.OpenGameRuntimeReplay(fixture, packages))
+            {
+                Assert.That(initial.GameRuntimeIdentity().mode,
+                    Is.EqualTo(GameRuntimeTransport.PlayingMode));
+                AssertRejected(initial, "immediately after initial opened-L3 fixture load");
+            }
+
+            byte[] pausedSave;
+            string pausedTick;
+            using (var source = NativeSession.OpenGameRuntimeReplay(fixture, packages))
+            {
+                Assert.That(source.GameRuntimePause().mode,
+                    Is.EqualTo(GameRuntimeTransport.PausedMode));
+                pausedTick = source.GameRuntimeIdentity().session.tick;
+                pausedSave = source.GameRuntimeSaveReplay();
+            }
+            StringAssert.Contains(
+                "\"semantic_spell_carry\":{\"acquired\":[],\"selected\":null}",
+                Encoding.UTF8.GetString(pausedSave));
+            using (var restored = NativeSession.OpenGameRuntimeReplay(pausedSave, packages))
+            {
+                Assert.That(restored.GameRuntimeIdentity().mode,
+                    Is.EqualTo(GameRuntimeTransport.PausedMode));
+                Assert.That(restored.GameRuntimeCampaignSnapshot().identity.tick,
+                    Is.EqualTo(pausedTick));
+                Assert.That(restored.GameRuntimeResume().mode,
+                    Is.EqualTo(GameRuntimeTransport.PlayingMode));
+                AssertRejected(restored, "after pause/save/load and resume");
+            }
+
+            using (var reset = NativeSession.OpenGameRuntimeReplay(fixture, packages))
+            {
+                var beforeGeneration =
+                    ulong.Parse(reset.GameRuntimeIdentity().session.generation);
+                reset.GameRuntimeCampaignReset();
+                Assert.That(
+                    ulong.Parse(reset.GameRuntimeIdentity().session.generation),
+                    Is.GreaterThan(beforeGeneration));
+                AssertRejected(reset, "after reset");
+            }
+        }
+
         [TestCase(1)]
         [TestCase(3)]
         [Timeout(300000)]
@@ -841,8 +914,9 @@ namespace MagicCarpet.Native.Tests
 
             // Level 2 is intentionally not admitted here: its exact current
             // Rust replay-save/restore owner test rejects the regenerated v11
-            // boundary with a receipt mismatch. Level 3 acquired-spell carry
-            // is likewise not claimed by this control/lifecycle test.
+            // boundary with a receipt mismatch. The current Level 3 boundary
+            // explicitly carries no acquired spells; the focused lifecycle
+            // test above pins that Rust-owned package state separately.
         }
 
         [Test]
