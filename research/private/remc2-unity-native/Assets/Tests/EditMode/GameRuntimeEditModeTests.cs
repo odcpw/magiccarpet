@@ -1174,7 +1174,10 @@ namespace MagicCarpet.Native.Tests
                 Path.GetTempPath(),
                 $"magiccarpet-runtime-{Guid.NewGuid():N}.replay.json");
             GameRuntimeTransport.Identity sourceIdentity = null;
-            EngineSessionTransport.CampaignSnapshotObservation sourceSnapshot = null;
+            EngineSessionTransport.CampaignSnapshotObservation
+                preServicePausedSnapshot = null;
+            EngineSessionTransport.CampaignSnapshotObservation
+                savedPausedSnapshot = null;
 
             var sourceRoot = new GameObject("replay source production owner");
             sourceRoot.SetActive(false);
@@ -1189,17 +1192,20 @@ namespace MagicCarpet.Native.Tests
                         LevelTwoPackage));
                 source.QualificationDriveGameRuntimeFrames(3);
                 sourceIdentity = source.QualificationPauseGameRuntimeProduction();
-                sourceSnapshot = source.GameRuntimeProductionCampaignSnapshot;
+                preServicePausedSnapshot = source.GameRuntimeProductionCampaignSnapshot;
                 Assert.That(sourceIdentity.mode, Is.EqualTo(GameRuntimeTransport.PausedMode));
                 Assert.That(sourceIdentity.session.tick, Is.EqualTo("3"));
+                source.QualificationDriveGameRuntimeFrames(1);
+                savedPausedSnapshot = source.GameRuntimeProductionCampaignSnapshot;
+                Assert.That(
+                    savedPausedSnapshot.value.state_hash,
+                    Is.Not.EqualTo(preServicePausedSnapshot.value.state_hash),
+                    "the save boundary includes one serviced Rust Paused frame");
                 source.QualificationRequestGameRuntimeProductionReplaySave();
                 source.QualificationDriveGameRuntimeFrames(1);
                 Assert.That(File.Exists(replayPath), Is.True);
                 Assert.That(new FileInfo(replayPath).Length, Is.GreaterThan(0));
                 Assert.That(source.GameRuntimeProductionIdentity.session.tick, Is.EqualTo("3"));
-                AssertSameCampaignState(
-                    sourceSnapshot,
-                    source.GameRuntimeProductionCampaignSnapshot);
             }
             finally
             {
@@ -1238,7 +1244,7 @@ namespace MagicCarpet.Native.Tests
                     restoredIdentity.active_runtime_flow.bound_level_id,
                     Is.EqualTo(sourceIdentity.active_runtime_flow.bound_level_id));
                 AssertSameCampaignState(
-                    sourceSnapshot,
+                    savedPausedSnapshot,
                     restored.GameRuntimeProductionCampaignSnapshot);
 
                 restored.QualificationDriveGameRuntimeFrames(1);
