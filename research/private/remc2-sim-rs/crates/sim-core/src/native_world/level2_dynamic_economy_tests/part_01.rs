@@ -1351,6 +1351,174 @@
     }
 
     #[test]
+    fn level_two_possession_claim_can_handoff_to_later_castle_root_in_the_same_pass() {
+        let mut session = level_two_possession_lifecycle_session();
+        let owner_entity_index = session.state.entity_index;
+        let position = Position {
+            x: 32_000,
+            y: 32_000,
+            z: 0,
+        };
+        let position = Position {
+            z: session.canonical_terrain().ground_height(position),
+            ..position
+        };
+        let mut slots = session.economy().free_slots.clone();
+        slots.retain(|slot| *slot != owner_entity_index);
+        slots.sort_unstable();
+        let [effect_slot, projectile_slot, sphere_slot, castle_slot] =
+            slots[..4].try_into().expect("four ordered dynamic slots");
+
+        session.economy_mut().free_slots = vec![castle_slot];
+        assert_eq!(
+            session.economy_mut().build_castle(position, owner_entity_index),
+            Some(castle_slot)
+        );
+        session
+            .economy_mut()
+            .castle
+            .as_mut()
+            .expect("stage-one Castle")
+            .phase = 0;
+
+        session.economy_mut().free_slots = vec![sphere_slot];
+        let sphere_id = session
+            .economy_mut()
+            .spawn_mana_sphere_from_death(101, position, 0, 0x1234, 500, 0)
+            .expect("neutral Archer death sphere");
+        assert_eq!(sphere_id, u32::from(sphere_slot));
+        {
+            let mut economy = session.economy_mut();
+            let sphere = economy
+                .spheres
+                .iter_mut()
+                .find(|sphere| sphere.source_entity_index == sphere_slot)
+                .expect("neutral sphere remains mutable");
+            sphere.position = position;
+            sphere.velocity_x = 0;
+            sphere.velocity_y = 0;
+            sphere.vertical_velocity = 0;
+            economy
+                .map_chains
+                .sync_entity(RenderableMapSeed {
+                    entity_index: sphere_slot,
+                    active: true,
+                    x: position.x,
+                    y: position.y,
+                })
+                .expect("neutral sphere remains map-linked");
+        }
+
+        session.economy_mut().free_slots = vec![projectile_slot];
+        assert_eq!(
+            session.economy_mut().spawn_possession_projectile(
+                position,
+                owner_entity_index,
+                116,
+                0,
+                0,
+                0,
+                position,
+            ),
+            Some(projectile_slot)
+        );
+        {
+            let mut economy = session.economy_mut();
+            let projectile = {
+                let projectile = economy
+                    .possession_projectiles
+                    .iter_mut()
+                    .find(|projectile| projectile.source_entity_index == projectile_slot)
+                    .expect("Possession flyer remains mutable before contact");
+                projectile.position = position;
+                projectile.actual_speed = 0;
+                *projectile
+            };
+            economy
+                .map_chains
+                .sync_entity(RenderableMapSeed {
+                    entity_index: projectile_slot,
+                    active: true,
+                    x: position.x,
+                    y: position.y,
+                })
+                .expect("Possession flyer remains map-linked");
+            economy.free_slots = vec![effect_slot];
+            assert_eq!(
+                level2_first_possession_target_sphere_slot(
+                    &economy.map_chains,
+                    &economy.spheres,
+                    projectile,
+                ),
+                Some(sphere_slot),
+                "the controlled contact fixture exposes the neutral sphere to the flyer"
+            );
+        }
+        assert!(
+            !session
+                .economy_mut()
+                .step_possession_projectile_slot(projectile_slot),
+            "strict contact allocates the real model-12 effect"
+        );
+        assert!(session
+            .economy()
+            .possession_effects()
+            .iter()
+            .any(|effect| effect.source_entity_index == effect_slot));
+
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        let events = session.economy().events();
+        let claim_index = events
+            .iter()
+            .position(|event| {
+                matches!(
+                    event,
+                    Level2EconomyEvent::ManaSphereClaimed {
+                        sphere_id: event_sphere,
+                        owner_entity_index: event_owner,
+                    } if *event_sphere == sphere_id && *event_owner == owner_entity_index
+                )
+            })
+            .expect("Possession mailbox is consumed before later Castle upkeep");
+        let collect_index = events
+            .iter()
+            .position(|event| {
+                matches!(
+                    event,
+                    Level2EconomyEvent::ManaSphereCollected {
+                        sphere_id: event_sphere,
+                        carrier_id,
+                        mana: 500,
+                    } if *event_sphere == sphere_id && *carrier_id == u32::from(castle_slot)
+                )
+            })
+            .expect("later Castle root collects the newly claimed sphere in the same pass");
+        assert!(claim_index < collect_index);
+        assert_eq!(session.economy().castle().map(|castle| castle.mana), Some(500));
+        let hidden = session
+            .economy()
+            .spheres()
+            .iter()
+            .find(|sphere| sphere.source_entity_index == sphere_slot)
+            .expect("callback-hidden sphere remains allocated through the pass");
+        assert_eq!(
+            (hidden.owner_entity_index, hidden.player_entity_index),
+            (owner_entity_index, owner_entity_index)
+        );
+        assert!(hidden.pending_delete);
+        assert_ne!(hidden.control_flags & ENTITY_DRAW_DISABLED_BIT, 0);
+
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        assert!(!session
+            .economy()
+            .spheres()
+            .iter()
+            .any(|sphere| sphere.source_entity_index == sphere_slot));
+        assert!(!session.economy().map_chains().is_linked(sphere_slot));
+        assert!(session.economy().free_slots.contains(&sphere_slot));
+    }
+
+    #[test]
     fn level_two_economy_projection_tracks_source_order_failure_rng_and_reset() {
         let package = level_two_fixture_path();
         let gameplay_cache = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
