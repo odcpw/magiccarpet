@@ -142,7 +142,24 @@ pub fn load_mc2_campaign(
     package_root: impl AsRef<Path>,
     catalog: &SemanticCatalog,
 ) -> crate::game_definition::Result<GameDefinition> {
-    let package_root = package_root.as_ref();
+    load_mc2_campaign_internal(package_root.as_ref(), None, catalog)
+}
+
+/// Load a campaign definition with exact owner-cache audio artifacts retained
+/// for semantic authoring. The cache remains an explicit private input.
+pub fn load_mc2_campaign_with_owner_cache(
+    package_root: impl AsRef<Path>,
+    owner_cache: impl AsRef<Path>,
+    catalog: &SemanticCatalog,
+) -> crate::game_definition::Result<GameDefinition> {
+    load_mc2_campaign_internal(package_root.as_ref(), Some(owner_cache.as_ref()), catalog)
+}
+
+fn load_mc2_campaign_internal(
+    package_root: &Path,
+    owner_cache: Option<&Path>,
+    catalog: &SemanticCatalog,
+) -> crate::game_definition::Result<GameDefinition> {
     let selection = CampaignDescriptor::declared_selection(package_root).map_err(|error| {
         definition_error(
             DefinitionErrorCode::InvalidSchema,
@@ -176,7 +193,7 @@ pub fn load_mc2_campaign(
         &[],
     )?];
     let mut artifact_payloads = BTreeMap::new();
-    let mut package_dependencies = vec!["campaign.owner_export"];
+    let mut package_dependencies = vec!["campaign.owner_export".to_owned()];
     let mut bindings = Vec::new();
     for asset in descriptor.presentation_assets() {
         let payload = descriptor
@@ -196,16 +213,51 @@ pub fn load_mc2_campaign(
             payload.len() as u64,
             &[],
         )?);
-        package_dependencies.push(&asset.artifact_id);
+        package_dependencies.push(asset.artifact_id.clone());
         artifact_payloads.insert(asset.artifact_id.clone(), payload);
     }
+    if selection == CampaignSelection::LEVEL1
+        && let Some(owner_cache) = owner_cache
+    {
+        let audio_artifacts = crate::native_world::qualified_fireball_sound_artifacts(owner_cache)
+            .map_err(|error| {
+                definition_error(
+                    DefinitionErrorCode::InvalidSchema,
+                    "mc2_campaign.owner_cache.fireball_audio",
+                    error.to_string(),
+                )
+            })?;
+        for artifact in &audio_artifacts {
+            artifacts.push(artifact_node(
+                artifact.artifact_id,
+                ArtifactKind::Asset,
+                artifact.logical_path,
+                &artifact.content_hash,
+                artifact.payload.len() as u64,
+                &[],
+            )?);
+            package_dependencies.push(artifact.artifact_id.to_owned());
+            artifact_payloads.insert(artifact.artifact_id.to_owned(), artifact.payload.clone());
+        }
+        let base_audio = audio_artifacts
+            .first()
+            .expect("qualified Fireball audio set is non-empty");
+        bindings.push((
+            SemanticId::parse(sim_definition::FIREBALL_LAUNCH_SOUND_ASSET_SLOT_ID)?,
+            sim_definition::SemanticValue::Reference(format!("sha256:{}", base_audio.content_hash)),
+        ));
+    }
+    let package_dependency_refs = package_dependencies
+        .iter()
+        .map(String::as_str)
+        .collect::<Vec<_>>();
     artifacts.push(artifact_node(
         "campaign.package",
         ArtifactKind::Definition,
         "campaign/package",
         &descriptor.package_sha256,
         package_bytes,
-        &package_dependencies,
+        &package_dependency_refs,
     )?);
     if let Some(base_asset) = descriptor.presentation_assets().first() {
         bindings.push((
@@ -357,6 +409,9 @@ pub fn load_mc2_campaign(
     }
     if !descriptor.presentation_assets().is_empty() {
         requirement_ids.push("engine.presentation.indexed_asset");
+    }
+    if selection == CampaignSelection::LEVEL1 && owner_cache.is_some() {
+        requirement_ids.push("engine.audio.semantic_asset");
     }
     let requirements = requirement_ids
         .into_iter()
@@ -544,6 +599,18 @@ impl Mc2CampaignInputs {
             package_root: package_root.into(),
             owner_cache: Some(owner_cache.into()),
         }
+    }
+}
+
+fn load_mc2_campaign_inputs(
+    input: &Mc2CampaignInputs,
+    catalog: &SemanticCatalog,
+) -> crate::game_definition::Result<GameDefinition> {
+    match &input.owner_cache {
+        Some(owner_cache) => {
+            load_mc2_campaign_with_owner_cache(&input.package_root, owner_cache, catalog)
+        }
+        None => load_mc2_campaign(&input.package_root, catalog),
     }
 }
 
@@ -771,7 +838,7 @@ impl Mc2RuntimePackageResolver {
         let mut flow: Option<RuntimeFlowDefinition> = None;
         let mut by_level = BTreeMap::new();
         for input in inputs {
-            let definition = Arc::new(load_mc2_campaign(&input.package_root, &catalog)?);
+            let definition = Arc::new(load_mc2_campaign_inputs(&input, &catalog)?);
             definition.verify_identity()?;
             let candidate = definition.runtime_flow().cloned().ok_or_else(|| {
                 definition_error(
@@ -1189,6 +1256,7 @@ pub struct Mc2CampaignBackend {
     flight_binding: DefinitionFlightBinding,
     fireball_binding: Option<DefinitionFireballBinding>,
     fireball_projectile_asset: Option<GameAssetReference>,
+    fireball_launch_sound_choices: BTreeMap<String, u16>,
     goat_policy_binding: Option<DefinitionGoatPolicyBinding>,
     package_base: GameDefinition,
     package_graph_hash: String,
@@ -1214,15 +1282,8 @@ impl GameAdapter for Mc2CampaignAdapter {
         let goat_policy_binding = DefinitionGoatPolicyBinding::from_definition(definition)
             .map_err(CampaignBackendError::Definition)?;
         let fireball_projectile_asset = fireball_projectile_asset_reference(definition)?;
-        require_catalog_defaults(
-            definition,
-            &catalog,
-            fireball_binding.is_some(),
-            goat_policy_binding.is_some(),
-            consumes_fireball_projectile_asset(definition),
-        )?;
-        let package_base = load_mc2_campaign(&input.package_root, &catalog)
-            .map_err(CampaignBackendError::Definition)?;
+        let package_base =
+            load_mc2_campaign_inputs(&input, &catalog).map_err(CampaignBackendError::Definition)?;
         definition
             .verify_semantic_variant_of(&package_base, &catalog)
             .map_err(CampaignBackendError::Definition)?;
@@ -1235,6 +1296,17 @@ impl GameAdapter for Mc2CampaignAdapter {
             None => CampaignSession::open(&input.package_root, selection),
         }
         .map_err(CampaignBackendError::Open)?;
+        let fireball_launch_sound_choices = fireball_launch_sound_choices(&package_base, &input)?;
+        let fireball_launch_sound_id =
+            selected_fireball_launch_sound(definition, &fireball_launch_sound_choices)?;
+        require_catalog_defaults(
+            definition,
+            &catalog,
+            fireball_binding.is_some(),
+            goat_policy_binding.is_some(),
+            consumes_fireball_projectile_asset(definition),
+            fireball_launch_sound_id.is_some(),
+        )?;
         // The neutral session is the campaign route: bind the authored
         // campaign entry stage before the first generation is exposed, like
         // the retained `mc_native_campaign_*` opens. The pristine
@@ -1265,12 +1337,16 @@ impl GameAdapter for Mc2CampaignAdapter {
                     CampaignBackendError::Open(CampaignOpenError::Materialization(error))
                 })?;
         }
+        if let Some(source_sound_id) = fireball_launch_sound_id {
+            campaign.apply_fireball_launch_sound(source_sound_id);
+        }
         Ok(Mc2CampaignBackend {
             campaign,
             package_campaign,
             flight_binding,
             fireball_binding,
             fireball_projectile_asset,
+            fireball_launch_sound_choices,
             goat_policy_binding,
             package_graph_hash: definition.package_graph_hash().to_owned(),
             artifact_graph_hash: definition.artifact_graph_hash().to_owned(),
@@ -1289,6 +1365,7 @@ fn require_catalog_defaults(
     consumes_fireball_cost: bool,
     consumes_goat_policy: bool,
     consumes_fireball_projectile_asset: bool,
+    consumes_fireball_launch_sound: bool,
 ) -> Result<(), CampaignBackendError> {
     for descriptor in catalog.descriptors() {
         if DefinitionFlightBinding::consumes(&descriptor.id)
@@ -1296,6 +1373,8 @@ fn require_catalog_defaults(
             || (consumes_goat_policy && DefinitionGoatPolicyBinding::consumes(&descriptor.id))
             || (consumes_fireball_projectile_asset
                 && descriptor.id.as_str() == "presentation.spell.fireball.projectile_asset")
+            || (consumes_fireball_launch_sound
+                && descriptor.id.as_str() == sim_definition::FIREBALL_LAUNCH_SOUND_ASSET_SLOT_ID)
         {
             continue;
         }
@@ -1337,6 +1416,61 @@ fn fireball_projectile_asset_reference(
         id: id.as_str().to_owned(),
         content_address: asset.content_address,
     }))
+}
+
+fn fireball_launch_sound_choices(
+    package_base: &GameDefinition,
+    input: &Mc2CampaignInputs,
+) -> Result<BTreeMap<String, u16>, CampaignBackendError> {
+    let Some(owner_cache) = &input.owner_cache else {
+        return Ok(BTreeMap::new());
+    };
+    if !package_base
+        .required_capabilities()
+        .iter()
+        .any(|requirement| {
+            requirement.id.as_str() == "engine.audio.semantic_asset"
+                && requirement.exact_version == 1
+        })
+    {
+        return Ok(BTreeMap::new());
+    }
+    let artifacts = crate::native_world::qualified_fireball_sound_artifacts(owner_cache)
+        .map_err(|error| CampaignBackendError::Open(CampaignOpenError::Materialization(error)))?;
+    Ok(artifacts
+        .into_iter()
+        .map(|artifact| {
+            (
+                format!("sha256:{}", artifact.content_hash),
+                artifact.source_sound_id,
+            )
+        })
+        .collect())
+}
+
+fn selected_fireball_launch_sound(
+    definition: &GameDefinition,
+    choices: &BTreeMap<String, u16>,
+) -> Result<Option<u16>, CampaignBackendError> {
+    if choices.is_empty() {
+        return Ok(None);
+    }
+    let id = SemanticId::parse(sim_definition::FIREBALL_LAUNCH_SOUND_ASSET_SLOT_ID)
+        .map_err(CampaignBackendError::Definition)?;
+    let asset = definition
+        .audio_asset(&id)
+        .map_err(CampaignBackendError::Definition)?;
+    choices
+        .get(&asset.content_address)
+        .copied()
+        .map(Some)
+        .ok_or_else(|| {
+            CampaignBackendError::Definition(definition_error(
+                DefinitionErrorCode::TypeMismatch,
+                id.as_str(),
+                "Fireball launch sound is not one of the qualified owner-cache choices",
+            ))
+        })
 }
 
 impl GameSessionBackend for Mc2CampaignBackend {
@@ -1567,7 +1701,10 @@ impl GameSessionBackend for Mc2CampaignBackend {
             fireball_binding.is_some(),
             goat_policy_binding.is_some(),
             consumes_fireball_projectile_asset(definition),
+            !self.fireball_launch_sound_choices.is_empty(),
         )?;
+        let fireball_launch_sound_id =
+            selected_fireball_launch_sound(definition, &self.fireball_launch_sound_choices)?;
         let next_generation = self.campaign.generation().wrapping_add(1);
         let mut campaign = self.package_campaign.clone();
         campaign
@@ -1588,6 +1725,9 @@ impl GameSessionBackend for Mc2CampaignBackend {
                 .map_err(|error| {
                     CampaignBackendError::Open(CampaignOpenError::Materialization(error))
                 })?;
+        }
+        if let Some(source_sound_id) = fireball_launch_sound_id {
+            campaign.apply_fireball_launch_sound(source_sound_id);
         }
         campaign.set_runtime_generation(next_generation);
         self.campaign = campaign;
@@ -2057,6 +2197,11 @@ pub(crate) mod tests {
             },
             PathBuf::from,
         )
+    }
+
+    fn level_one_owner_cache_path() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../generated/level1-unity-asset-cache-plan29-final")
     }
 
     fn temporary_workspace_path(label: &str) -> PathBuf {
@@ -5678,6 +5823,150 @@ pub(crate) mod tests {
         // reset retention, and base-definition restoration. It does not prove
         // animation, rendering, projectile gameplay changes, artifact import,
         // Level 2/3 presentation, Unity consumption, saves, or distribution.
+    }
+
+    #[test]
+    fn campaign_backend_authors_real_owner_fireball_launch_sound_through_reopen_and_reset() {
+        const CLASSIC: &str = "audio.fireball.launch.classic";
+        const ALTERNATE: &str = "audio.fireball.launch.alternate";
+        let root = level_one_descriptor_fixture_path();
+        let owner_cache = level_one_owner_cache_path();
+        let inputs = Mc2CampaignInputs::with_owner_cache(&root, &owner_cache);
+        let catalog = default_catalog().unwrap();
+        let base = load_mc2_campaign_inputs(&inputs, &catalog).unwrap();
+        let slot = SemanticId::parse(sim_definition::FIREBALL_LAUNCH_SOUND_ASSET_SLOT_ID).unwrap();
+        let descriptor = base.semantic_descriptor(&catalog, &slot).unwrap();
+        assert_eq!(descriptor.access, sim_definition::Access::Writable);
+        let compatible = base.compatible_presentation_artifacts(&slot).unwrap();
+        assert_eq!(
+            compatible
+                .iter()
+                .map(|artifact| artifact.artifact_id.as_str())
+                .collect::<Vec<_>>(),
+            vec![ALTERNATE, CLASSIC]
+        );
+        assert!(
+            compatible
+                .iter()
+                .all(|artifact| artifact.kind == "audio_asset")
+        );
+
+        let workspace_root = temporary_workspace_path("campaign-fireball-launch-sound");
+        let store = WorkspaceStore::create(
+            &workspace_root,
+            "campaign-fireball-launch-sound",
+            base.clone(),
+        )
+        .unwrap();
+        let incompatible = ChangeSetBuilder::new(
+            "campaign-fireball-launch-sound",
+            &base,
+            "reject-projectile-as-sound",
+            RequestedTiming::PackageReload,
+        )
+        .bind_asset(
+            PresentationAssetSlot::FireballLaunchSound,
+            ArtifactId::parse("presentation.fireball.projectile.base").unwrap(),
+        )
+        .build()
+        .unwrap();
+        let rejection = store.validate(&catalog, incompatible).unwrap();
+        assert!(!rejection.accepted);
+        assert!(
+            rejection.diagnostics.iter().any(|diagnostic| {
+                diagnostic.code == DefinitionErrorCode::TypeMismatch.as_str()
+            })
+        );
+
+        let change_set = ChangeSetBuilder::new(
+            "campaign-fireball-launch-sound",
+            &base,
+            "bind-alternate-fireball-launch-sound",
+            RequestedTiming::PackageReload,
+        )
+        .bind_asset(
+            PresentationAssetSlot::FireballLaunchSound,
+            ArtifactId::parse(ALTERNATE).unwrap(),
+        )
+        .build()
+        .unwrap();
+        let validation = store.validate(&catalog, change_set.clone()).unwrap();
+        assert!(validation.accepted, "{:#?}", validation.diagnostics);
+        store
+            .apply(
+                &catalog,
+                change_set,
+                &validation.receipt_hash,
+                PublicationFault::None,
+            )
+            .unwrap();
+        let authored = store.active_definition().unwrap();
+        let alternate_value = sim_definition::SemanticValue::Reference(
+            compatible
+                .iter()
+                .find(|artifact| artifact.artifact_id == ALTERNATE)
+                .unwrap()
+                .content_address
+                .clone(),
+        );
+        assert_eq!(authored.value(&slot), Some(&alternate_value));
+
+        let mut session =
+            GameSession::open(&Mc2CampaignAdapter, Arc::new(base), 105, inputs).unwrap();
+        assert_eq!(
+            session
+                .backend()
+                .campaign
+                .level2_compatibility()
+                .fireball_launch_sound_id,
+            9,
+            "publishing a package-reload edit cannot mutate an already-open session"
+        );
+        session.reopen(guard(&session), Arc::new(authored)).unwrap();
+        assert_eq!(
+            session
+                .backend()
+                .campaign
+                .level2_compatibility()
+                .fireball_launch_sound_id,
+            15
+        );
+        session
+            .step(
+                guard(&session),
+                GameCommand {
+                    cast_left: true,
+                    ..GameCommand::default()
+                },
+            )
+            .unwrap();
+        assert!(
+            session
+                .backend()
+                .campaign
+                .level2_compatibility()
+                .effect_journal()
+                .records()
+                .iter()
+                .any(|record| matches!(
+                    record.effect,
+                    CampaignEffect::Flight(FlightEvent::PrepareSound {
+                        audio_site: crate::MissionAudioSite::FireballLaunch,
+                        sound_id: 15,
+                        ..
+                    })
+                ))
+        );
+        session.reset(guard(&session)).unwrap();
+        assert_eq!(
+            session
+                .backend()
+                .campaign
+                .level2_compatibility()
+                .fireball_launch_sound_id,
+            15
+        );
+        std::fs::remove_dir_all(workspace_root).unwrap();
     }
 
     #[test]

@@ -99,8 +99,8 @@ fn capabilities_describe_and_get_are_deterministic_data_only_reads() {
     let capabilities: Value = serde_json::from_slice(&capabilities.stdout).expect("JSON stdout");
     assert_eq!(capabilities["ok"], true);
     assert_eq!(capabilities["data"]["read_only"], false);
-    assert_eq!(capabilities["data"]["writable_descriptor_count"], 5);
-    assert_eq!(capabilities["contract_version"], "34.0");
+    assert_eq!(capabilities["data"]["writable_descriptor_count"], 6);
+    assert_eq!(capabilities["contract_version"], "35.0");
     assert_eq!(
         capabilities["data"]["authoring"]["change_set_schema"],
         "carpet-flight-change-set/v9"
@@ -274,7 +274,7 @@ fn capabilities_describe_and_get_are_deterministic_data_only_reads() {
             .as_array()
             .unwrap()
             .len(),
-        24
+        25
     );
     let archer_health_capability = capabilities["data"]["compiled_capabilities"]
         .as_array()
@@ -488,12 +488,20 @@ fn capabilities_describe_and_get_are_deterministic_data_only_reads() {
         .expect("package-bound Fireball cost capability is discoverable");
     assert_eq!(fireball_cost_capability["version"], 1);
     assert_eq!(fireball_cost_capability["provider"], "engine_compiled");
+    let audio_capability = capabilities["data"]["compiled_capabilities"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|capability| capability["id"] == "engine.audio.semantic_asset")
+        .expect("semantic audio capability is discoverable");
+    assert_eq!(audio_capability["version"], 1);
+    assert_eq!(audio_capability["provider"], "engine_compiled");
     assert_eq!(
         capabilities["data"]["semantic_ids"]
             .as_array()
             .unwrap()
             .len(),
-        5
+        6
     );
 
     let fixture = fixture();
@@ -508,7 +516,7 @@ fn capabilities_describe_and_get_are_deterministic_data_only_reads() {
             .as_array()
             .unwrap()
             .len(),
-        5
+        6
     );
     assert_eq!(describe_json["data"]["page"]["complete"], true);
 
@@ -537,7 +545,7 @@ fn capabilities_describe_and_get_are_deterministic_data_only_reads() {
     let second_page: Value = serde_json::from_slice(&second_page.stdout).expect("JSON stdout");
     assert_eq!(
         second_page["data"]["descriptors"].as_array().unwrap().len(),
-        2
+        3
     );
     assert_eq!(second_page["data"]["page"]["complete"], true);
 
@@ -575,7 +583,7 @@ fn semantic_level_entities_are_discoverable_without_source_identity() {
     assert!(entities.status.success(), "{:?}", entities.stderr);
     assert!(entities.stderr.is_empty());
     let entities: Value = serde_json::from_slice(&entities.stdout).unwrap();
-    assert_eq!(entities["contract_version"], "34.0");
+    assert_eq!(entities["contract_version"], "35.0");
     assert_eq!(entities["data"]["page"]["total"], 1);
     assert_eq!(
         entities["data"]["entities"][0]["id"],
@@ -912,7 +920,7 @@ fn campaign_workspace_authors_one_absence_countdown_through_the_typed_cli_lifecy
     assert!(described.stderr.is_empty());
     let described: Value = serde_json::from_slice(&described.stdout).unwrap();
     let descriptor = &described["data"]["descriptors"][0];
-    assert_eq!(described["contract_version"], "34.0");
+    assert_eq!(described["contract_version"], "35.0");
     assert_eq!(
         described["identity"]["schema"],
         "carpet-flight-game-definition/v10"
@@ -1191,7 +1199,7 @@ fn campaign_workspace_authors_exit_sequence_overlap_through_the_typed_cli_lifecy
         assert!(described.stderr.is_empty());
         let described: Value = serde_json::from_slice(&described.stdout).unwrap();
         let descriptor = &described["data"]["descriptors"][0];
-        assert_eq!(described["contract_version"], "34.0");
+        assert_eq!(described["contract_version"], "35.0");
         assert_eq!(
             described["identity"]["schema"],
             "carpet-flight-game-definition/v10"
@@ -1363,7 +1371,7 @@ fn campaign_workspace_authors_area_entry_overlap_through_the_typed_cli_lifecycle
     assert!(described.stderr.is_empty());
     let described: Value = serde_json::from_slice(&described.stdout).unwrap();
     let descriptor = &described["data"]["descriptors"][0];
-    assert_eq!(described["contract_version"], "34.0");
+    assert_eq!(described["contract_version"], "35.0");
     assert_eq!(
         described["identity"]["schema"],
         "carpet-flight-game-definition/v10"
@@ -1533,7 +1541,7 @@ fn campaign_workspace_authors_area_exit_overlap_through_the_typed_cli_lifecycle(
     assert!(described.stderr.is_empty());
     let described: Value = serde_json::from_slice(&described.stdout).unwrap();
     let descriptor = &described["data"]["descriptors"][0];
-    assert_eq!(described["contract_version"], "34.0");
+    assert_eq!(described["contract_version"], "35.0");
     assert_eq!(descriptor["id"], TARGET);
     assert_eq!(descriptor["unit"], "tiles");
     assert_eq!(descriptor["access"], "writable");
@@ -1667,7 +1675,7 @@ fn campaign_workspace_authors_grouped_house_construction_visits_through_the_type
     assert!(described.stderr.is_empty());
     let described: Value = serde_json::from_slice(&described.stdout).unwrap();
     let descriptor = &described["data"]["descriptors"][0];
-    assert_eq!(described["contract_version"], "34.0");
+    assert_eq!(described["contract_version"], "35.0");
     assert_eq!(descriptor["id"], TARGET);
     assert_eq!(descriptor["unit"], "entity_visits");
     assert_eq!(descriptor["access"], "writable");
@@ -1831,7 +1839,7 @@ fn campaign_workspace_authors_one_firefly_max_life_through_the_typed_cli_lifecyc
     assert!(described.stderr.is_empty());
     let described: Value = serde_json::from_slice(&described.stdout).unwrap();
     let descriptor = &described["data"]["descriptors"][0];
-    assert_eq!(described["contract_version"], "34.0");
+    assert_eq!(described["contract_version"], "35.0");
     assert_eq!(descriptor["id"], TARGET);
     assert_eq!(descriptor["kind"], "entity_parameter");
     assert_eq!(descriptor["value_type"], "integer");
@@ -2458,7 +2466,7 @@ fn campaign_workspace_authors_level_one_fireball_cost_through_typed_cli() {
     assert!(described.status.success(), "{:?}", described.stderr);
     assert!(described.stderr.is_empty());
     let described: Value = serde_json::from_slice(&described.stdout).unwrap();
-    assert_eq!(described["contract_version"], "34.0");
+    assert_eq!(described["contract_version"], "35.0");
     assert_eq!(
         described["identity"]["schema"],
         "carpet-flight-game-definition/v10"
@@ -2785,7 +2793,7 @@ fn campaign_workspace_authors_level_one_castle_mana_objective_through_typed_cli(
     assert!(described.status.success(), "{:?}", described.stderr);
     assert!(described.stderr.is_empty());
     let described: Value = serde_json::from_slice(&described.stdout).unwrap();
-    assert_eq!(described["contract_version"], "34.0");
+    assert_eq!(described["contract_version"], "35.0");
     assert_eq!(
         described["identity"]["schema"],
         "carpet-flight-game-definition/v10"
@@ -3067,7 +3075,7 @@ fn campaign_workspace_authors_level_one_creature_absence_objective_through_typed
     ]);
     assert!(described.status.success(), "{:?}", described.stderr);
     let described: Value = serde_json::from_slice(&described.stdout).unwrap();
-    assert_eq!(described["contract_version"], "34.0");
+    assert_eq!(described["contract_version"], "35.0");
     assert_eq!(
         described["identity"]["schema"],
         "carpet-flight-game-definition/v10"
@@ -3421,6 +3429,129 @@ fn describe_loads_the_real_owner_definition_through_the_same_cli_contract() {
 }
 
 #[test]
+fn campaign_sound_authoring_cli_discovers_diffs_applies_and_reads_back_real_owner_audio() {
+    const SLOT: &str = "audio.spell.fireball.launch_sound";
+    const BASE: &str = "audio.fireball.launch.classic";
+    const ALTERNATE: &str = "audio.fireball.launch.alternate";
+    const BASE_SHA: &str =
+        "sha256:8bacc231f15be4c688d7abada4bb2531ae4b8a87160633fdb1bbba4c6bad9153";
+    const ALTERNATE_SHA: &str =
+        "sha256:69122af4883939c44437cd5fbf6aac4696f97e238adc2c091f2b97a3deb1a0f2";
+    let temporary = TempWorkspace::new("real-fireball-launch-audio");
+    let workspace = temporary.0.to_str().unwrap();
+    let package = level_one_campaign_fixture();
+    let private = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../..");
+    let cache = private.join("generated/level1-unity-asset-cache-plan29-final");
+    let created = run(&[
+        "game",
+        "workspace-create",
+        "--workspace",
+        workspace,
+        "--workspace-id",
+        "real-fireball-launch-audio",
+        "--campaign-package",
+        package.to_str().unwrap(),
+        "--owner-cache",
+        cache.to_str().unwrap(),
+    ]);
+    assert!(created.status.success(), "{:?}", created.stderr);
+    let described = run(&["game", "describe", "--workspace", workspace, "--id", SLOT]);
+    assert!(described.status.success(), "{:?}", described.stderr);
+    let described: Value = serde_json::from_slice(&described.stdout).unwrap();
+    assert_eq!(described["data"]["descriptors"][0]["access"], "writable");
+    assert_eq!(
+        described["data"]["descriptors"][0]["effective_artifact_id"],
+        BASE
+    );
+    assert_eq!(
+        described["data"]["descriptors"][0]["compatible_artifacts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|artifact| artifact["artifact_id"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        vec![ALTERNATE, BASE]
+    );
+
+    let operations = temporary.0.join("bind-alternate-audio.json");
+    fs::write(
+        &operations,
+        serde_json::to_vec(&serde_json::json!([{
+            "operation": "bind_asset",
+            "slot": SLOT,
+            "artifact": ALTERNATE,
+            "expected_artifact": BASE
+        }]))
+        .unwrap(),
+    )
+    .unwrap();
+    let staged = run(&[
+        "game",
+        "set",
+        "--workspace",
+        workspace,
+        "--idempotency-key",
+        "bind-alternate-fireball-audio",
+        "--timing",
+        "package_reload",
+        "--changes",
+        operations.to_str().unwrap(),
+    ]);
+    assert!(staged.status.success(), "{:?}", staged.stderr);
+    let staged: Value = serde_json::from_slice(&staged.stdout).unwrap();
+    let change_set = temporary.0.join("audio-change-set.json");
+    fs::write(
+        &change_set,
+        serde_json::to_vec(&staged["data"]["change_set"]).unwrap(),
+    )
+    .unwrap();
+    let validated = run(&[
+        "game",
+        "validate",
+        "--workspace",
+        workspace,
+        "--change-set",
+        change_set.to_str().unwrap(),
+    ]);
+    assert!(validated.status.success(), "{:?}", validated.stderr);
+    let validated: Value = serde_json::from_slice(&validated.stdout).unwrap();
+    assert_eq!(validated["data"]["validation"]["accepted"], true);
+    let diff = run(&[
+        "game",
+        "diff",
+        "--workspace",
+        workspace,
+        "--change-set",
+        change_set.to_str().unwrap(),
+    ]);
+    assert!(diff.status.success(), "{:?}", diff.stderr);
+    let diff: Value = serde_json::from_slice(&diff.stdout).unwrap();
+    assert_eq!(diff["data"]["diff"][0]["before"]["value"], BASE_SHA);
+    assert_eq!(diff["data"]["diff"][0]["after"]["value"], ALTERNATE_SHA);
+    let applied = run(&[
+        "game",
+        "apply",
+        "--workspace",
+        workspace,
+        "--change-set",
+        change_set.to_str().unwrap(),
+        "--validation-receipt",
+        validated["data"]["validation"]["receipt_hash"]
+            .as_str()
+            .unwrap(),
+    ]);
+    assert!(applied.status.success(), "{:?}", applied.stderr);
+    let read_back = run(&["game", "get", "--workspace", workspace, "--id", SLOT]);
+    assert!(read_back.status.success(), "{:?}", read_back.stderr);
+    let read_back: Value = serde_json::from_slice(&read_back.stdout).unwrap();
+    assert_eq!(
+        read_back["data"]["descriptor"]["effective_artifact_id"],
+        ALTERNATE
+    );
+    assert_eq!(read_back["data"]["value"]["value"], ALTERNATE_SHA);
+}
+
+#[test]
 fn workspace_authoring_cli_stages_previews_and_refuses_unsafe_asset_timing_without_mutation() {
     let temporary = TempWorkspace::new("f9-unsafe-asset-timing");
     let workspace = temporary.0.to_str().unwrap();
@@ -3598,7 +3729,7 @@ fn real_campaign_goat_policy_is_discoverable_and_publishes_through_the_typed_cli
         assert!(described.status.success(), "{:?}", described.stderr);
         assert!(described.stderr.is_empty());
         let described: Value = serde_json::from_slice(&described.stdout).unwrap();
-        assert_eq!(described["contract_version"], "34.0");
+        assert_eq!(described["contract_version"], "35.0");
         let descriptor = &described["data"]["descriptors"][0];
         assert_eq!(descriptor["id"], TARGET);
         assert_eq!(descriptor["kind"], "behavior");
@@ -3765,8 +3896,12 @@ fn real_level_one_fireball_asset_is_discoverable_publishable_and_package_scoped(
         .find(|variant| variant["operation"] == "bind_asset")
         .unwrap();
     assert_eq!(
-        bind_asset["required_capability"],
+        bind_asset["slot_requirements"][SLOT]["required_capability"],
         serde_json::json!({"id": "engine.presentation.indexed_asset", "exact_version": 1})
+    );
+    assert_eq!(
+        bind_asset["slot_requirements"]["audio.spell.fireball.launch_sound"]["required_capability"],
+        serde_json::json!({"id": "engine.audio.semantic_asset", "exact_version": 1})
     );
     assert_eq!(bind_asset["mutation_timing"], "package_reload");
 
@@ -3783,7 +3918,7 @@ fn real_level_one_fireball_asset_is_discoverable_publishable_and_package_scoped(
     assert!(described.status.success(), "{:?}", described.stderr);
     assert!(described.stderr.is_empty());
     let described: Value = serde_json::from_slice(&described.stdout).unwrap();
-    assert_eq!(described["contract_version"], "34.0");
+    assert_eq!(described["contract_version"], "35.0");
     let descriptor = &described["data"]["descriptors"][0];
     assert_eq!(descriptor["access"], "writable");
     assert_eq!(descriptor["mutation_timing"], "package_reload");

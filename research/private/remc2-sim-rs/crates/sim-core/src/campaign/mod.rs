@@ -507,6 +507,10 @@ impl CampaignSession {
         self.level2.bind_local_player_fireball_mana_cost(mana_cost)
     }
 
+    pub(crate) fn apply_fireball_launch_sound(&mut self, source_sound_id: u16) {
+        self.level2.bind_fireball_launch_sound(source_sound_id);
+    }
+
     pub(crate) fn apply_enemy_goat_policy(
         &mut self,
         binding: crate::game_definition::DefinitionGoatPolicyBinding,

@@ -285,6 +285,10 @@ pub fn engine_capabilities() -> Result<CompiledCapabilityRegistry> {
                 "Typed indexed presentation-asset binding.",
             ),
             (
+                "engine.audio.semantic_asset",
+                "Typed owner-qualified semantic audio-asset binding.",
+            ),
+            (
                 "engine.spell.projectile",
                 "Compiled spell activation and projectile lifecycle.",
             ),

@@ -4,6 +4,7 @@
 //! definition transactions. It does not own a live gameplay session,
 //! transport, or gameplay scheduler.
 
+mod audio_asset;
 mod catalog;
 mod operation;
 mod package;
@@ -15,6 +16,7 @@ pub mod adapter;
 pub mod level_definition;
 pub mod runtime_flow;
 
+pub use audio_asset::{BoundAudioAsset, PcmWaveAsset};
 pub use catalog::{
     Access, ApplyBinding, DescriptorKind, MutationTiming, ReadBackBinding, ReadBinding,
     SemanticBinding, SemanticCatalog, SemanticDescriptor, SemanticId, SemanticValue,
@@ -60,7 +62,9 @@ use runtime_flow::RuntimeFlowDefinition;
 
 pub const GAME_PACKAGE_SCHEMA: &str = "carpet-flight-game-package/v1";
 pub const GAME_DEFINITION_SCHEMA: &str = "carpet-flight-game-definition/v10";
-pub const SEMANTIC_CONTRACT_VERSION: &str = "34.0";
+pub const SEMANTIC_CONTRACT_VERSION: &str = "35.0";
+
+pub const FIREBALL_LAUNCH_SOUND_ASSET_SLOT_ID: &str = "audio.spell.fireball.launch_sound";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DefinitionErrorCode {
@@ -229,10 +233,17 @@ impl GameDefinition {
         {
             descriptor.access = Access::ReadOnly;
         }
-        if id.as_str() == PresentationAssetSlot::FireballProjectile.as_str() {
+        if matches!(
+            id.as_str(),
+            "presentation.spell.fireball.projectile_asset" | FIREBALL_LAUNCH_SOUND_ASSET_SLOT_ID
+        ) {
+            let required_capability = if id.as_str() == FIREBALL_LAUNCH_SOUND_ASSET_SLOT_ID {
+                "engine.audio.semantic_asset"
+            } else {
+                "engine.presentation.indexed_asset"
+            };
             let capability_present = self.required_capabilities.iter().any(|requirement| {
-                requirement.id.as_str() == "engine.presentation.indexed_asset"
-                    && requirement.exact_version == 1
+                requirement.id.as_str() == required_capability && requirement.exact_version == 1
             });
             let has_choice = matches!(
                 self.compatible_presentation_artifacts(id),
@@ -402,7 +413,16 @@ impl GameDefinition {
         &self,
         id: &SemanticId,
     ) -> Result<Vec<CompatiblePresentationArtifact>> {
-        presentation_asset::compatible_artifacts(self, id)
+        if id.as_str() == FIREBALL_LAUNCH_SOUND_ASSET_SLOT_ID {
+            audio_asset::compatible_artifacts(self, id)
+        } else {
+            presentation_asset::compatible_artifacts(self, id)
+        }
+    }
+
+    /// Resolve one owner-qualified semantic audio slot.
+    pub fn audio_asset(&self, id: &SemanticId) -> Result<BoundAudioAsset> {
+        audio_asset::resolve(self, id)
     }
 
     pub(crate) fn validate_presentation_asset_value(
@@ -417,7 +437,11 @@ impl GameDefinition {
                 "presentation replacement is not a content reference",
             ));
         };
-        let _ = presentation_asset::resolve_reference(self, id, reference)?;
+        if id.as_str() == FIREBALL_LAUNCH_SOUND_ASSET_SLOT_ID {
+            let _ = audio_asset::resolve_reference(self, id, reference)?;
+        } else {
+            let _ = presentation_asset::resolve_reference(self, id, reference)?;
+        }
         if !self
             .compatible_presentation_artifacts(id)?
             .iter()
@@ -1731,7 +1755,11 @@ impl GameDefinition {
                 continue;
             };
             if self.artifact_payload(&artifact.id).is_some() {
-                let _ = self.presentation_asset(&descriptor.id)?;
+                if descriptor.id.as_str() == FIREBALL_LAUNCH_SOUND_ASSET_SLOT_ID {
+                    let _ = self.audio_asset(&descriptor.id)?;
+                } else {
+                    let _ = self.presentation_asset(&descriptor.id)?;
+                }
             }
         }
         Ok(())

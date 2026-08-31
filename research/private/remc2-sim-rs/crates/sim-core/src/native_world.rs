@@ -3185,6 +3185,7 @@ pub struct Level2LiveState {
     pub(crate) ordinary: Level2OrdinaryResetSession,
     pub(crate) goats: GoatFamily,
     pub(crate) mission: MissionContentSession,
+    pub(crate) fireball_launch_sound_id: u16,
     pub(crate) nyphur_dispatcher: NyphurCapability,
     /// Source `FrameTimingIndex_26`, advanced once by PlayerEvents before
     /// UpdateEntities and kept distinct from every player's turn byte.
@@ -8740,6 +8741,112 @@ pub(crate) struct QualifiedOwnerCacheReader {
     root: PathBuf,
     manifest: Value,
     outputs: BTreeMap<String, (String, u64)>,
+}
+
+/// One private source mapping retained only long enough for the MC2 adapter
+/// to bind a semantic audio artifact to the ordinary runtime event.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct QualifiedFireballSoundArtifact {
+    pub(crate) artifact_id: &'static str,
+    pub(crate) logical_path: &'static str,
+    pub(crate) content_hash: String,
+    pub(crate) payload: Vec<u8>,
+    pub(crate) source_sound_id: u16,
+}
+
+/// Read the two package-compatible Fireball launch sounds through the same
+/// exact-manifest and output-hash validator used by the owner presentation
+/// runtime. Raw sound selectors remain private to this adapter result.
+pub(crate) fn qualified_fireball_sound_artifacts(
+    root: &Path,
+) -> Result<Vec<QualifiedFireballSoundArtifact>> {
+    let cache = QualifiedOwnerCacheReader::open(root)?;
+    let manifest = cache.manifest_object()?;
+    let bindings = require_object(manifest, "bindings", "Fireball audio cache manifest")?;
+    let _source_export_package_sha256 = require_hash_string(
+        bindings,
+        "level_export_package_sha256",
+        "Fireball audio cache bindings",
+    )?;
+    let assets = require_object(manifest, "assets", "Fireball audio cache manifest")?;
+    let audio = require_object(assets, "level1_audio", "Fireball audio cache assets")?;
+    let descriptor_path = require_string(
+        audio,
+        "sound_descriptor_path",
+        "Fireball audio cache assets",
+    )?;
+    let descriptor_bytes = cache.read(descriptor_path)?;
+    let descriptor: Value = serde_json::from_slice(&descriptor_bytes).map_err(|error| {
+        NativeWorldError::new(format!("invalid Fireball sound descriptor: {error}"))
+    })?;
+    let descriptor = as_object(&descriptor, "Fireball sound descriptor")?;
+    if require_string(descriptor, "schema", "Fireball sound descriptor")?
+        != "mc2-level1-sound-bank/v1"
+    {
+        return Err(NativeWorldError::new(
+            "Fireball sound descriptor schema mismatch",
+        ));
+    }
+    require_exact_u64(descriptor, "bank", 1, "Fireball sound descriptor")?;
+    require_exact_u64(descriptor, "quality", 822, "Fireball sound descriptor")?;
+    require_exact_u64(descriptor, "quality_index", 3, "Fireball sound descriptor")?;
+    let rows = require_array(descriptor, "level1_assets", "Fireball sound descriptor")?;
+    let expected = [
+        (
+            9_u16,
+            "audio.fireball.launch.classic",
+            "campaign/audio/fireball-launch-classic.wav",
+        ),
+        (
+            15_u16,
+            "audio.fireball.launch.alternate",
+            "campaign/audio/fireball-launch-alternate.wav",
+        ),
+    ];
+    let mut result = Vec::with_capacity(expected.len());
+    for (source_sound_id, artifact_id, logical_path) in expected {
+        let row = rows
+            .iter()
+            .map(|row| as_object(row, "Fireball sound mapping"))
+            .collect::<Result<Vec<_>>>()?
+            .into_iter()
+            .find(|row| {
+                require_value(row, "sound_id", "Fireball sound mapping")
+                    .ok()
+                    .and_then(Value::as_u64)
+                    == Some(u64::from(source_sound_id))
+            })
+            .ok_or_else(|| NativeWorldError::new("Fireball sound mapping is absent"))?;
+        if require_string(row, "mapping_status", "Fireball sound mapping")? != "proven_Level1"
+            || require_string(row, "play_class", "Fireball sound mapping")? != "one_shot"
+            || require_string(row, "playback_scope", "Fireball sound mapping")?
+                != "original_stereo_positional"
+        {
+            return Err(NativeWorldError::new(
+                "Fireball sound mapping playback contract changed",
+            ));
+        }
+        let path = require_string(row, "asset_path", "Fireball sound mapping")?;
+        let payload = cache.read(path)?;
+        let content_hash = require_hash_string(row, "asset_sha256", "Fireball sound mapping")?;
+        if sha256_hex(&payload) != content_hash {
+            return Err(NativeWorldError::new(
+                "Fireball sound mapping does not bind its materialized payload",
+            ));
+        }
+        let wave = require_object(row, "wav", "Fireball sound mapping")?;
+        require_exact_u64(wave, "channels", 1, "Fireball sound WAVE")?;
+        require_exact_u64(wave, "sample_rate", 22_050, "Fireball sound WAVE")?;
+        require_exact_u64(wave, "sample_width_bytes", 1, "Fireball sound WAVE")?;
+        result.push(QualifiedFireballSoundArtifact {
+            artifact_id,
+            logical_path,
+            content_hash: content_hash.to_owned(),
+            payload,
+            source_sound_id,
+        });
+    }
+    Ok(result)
 }
 
 impl QualifiedOwnerCacheReader {

@@ -75,9 +75,10 @@ fn workspace_create(arguments: &[String]) -> ExitCode {
         (Some(package), None, None, None, None) => {
             DefinitionSource::Portable(PathBuf::from(package))
         }
-        (None, Some(package), None, None, None) => {
-            DefinitionSource::Campaign(PathBuf::from(package))
-        }
+        (None, Some(package), None, None, owner_cache) => DefinitionSource::Campaign {
+            package: PathBuf::from(package),
+            owner_cache: owner_cache.map(PathBuf::from),
+        },
         (None, None, Some(export), Some(closure), Some(cache)) => {
             DefinitionSource::Owner(Mc2OwnedInputs::new(
                 PathBuf::from(export),
@@ -89,7 +90,7 @@ fn workspace_create(arguments: &[String]) -> ExitCode {
             return game_request_error(
                 "workspace-create",
                 "AMBIGUOUS_DEFINITION_SOURCE",
-                "provide --package, --campaign-package, or all three owner input paths",
+                "provide --package, --campaign-package (optionally with --owner-cache), or all three owner input paths",
             );
         }
     };

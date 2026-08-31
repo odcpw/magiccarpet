@@ -903,6 +903,23 @@ pub fn default_catalog() -> Result<SemanticCatalog> {
             "Indexed projectile frame selected by the ordinary presentation binding.",
         )?,
         descriptor(
+            crate::FIREBALL_LAUNCH_SOUND_ASSET_SLOT_ID,
+            DescriptorKind::AssetSlot,
+            ValueType::Reference,
+            None,
+            SemanticValue::Reference(
+                "sha256:8bacc231f15be4c688d7abada4bb2531ae4b8a87160633fdb1bbba4c6bad9153"
+                    .to_owned(),
+            ),
+            (None, None),
+            &[],
+            MutationTiming::PackageReload,
+            "sim-core/owner-qualified-fireball-audio",
+            "sha256:8bacc231f15be4c688d7abada4bb2531ae4b8a87160633fdb1bbba4c6bad9153",
+            None,
+            "Owner-qualified launch sound selected by the ordinary Fireball audio event.",
+        )?,
+        descriptor(
             "spell.fireball.mana_cost",
             DescriptorKind::Rule,
             ValueType::Integer,
@@ -964,11 +981,18 @@ pub fn default_catalog() -> Result<SemanticCatalog> {
         .find(|descriptor| descriptor.id == projectile_asset_id)
         .expect("static projectile-asset descriptor exists")
         .access = Access::Writable;
+    let fireball_sound_id = SemanticId::parse(crate::FIREBALL_LAUNCH_SOUND_ASSET_SLOT_ID)?;
+    descriptors
+        .iter_mut()
+        .find(|descriptor| descriptor.id == fireball_sound_id)
+        .expect("static Fireball sound descriptor exists")
+        .access = Access::Writable;
     let bindings = vec![
         writable_definition_binding("ai.enemy.default.policy")?,
         writable_player_max_forward_speed_binding()?,
         writable_player_forward_acceleration_binding()?,
         writable_presentation_asset_binding("presentation.spell.fireball.projectile_asset")?,
+        writable_presentation_asset_binding(crate::FIREBALL_LAUNCH_SOUND_ASSET_SLOT_ID)?,
         writable_definition_binding("spell.fireball.mana_cost")?,
     ];
     SemanticCatalog::try_from_parts(descriptors, bindings)
@@ -994,7 +1018,7 @@ mod tests {
     #[test]
     fn catalog_rejects_duplicate_missing_and_undiscoverable_bindings() {
         let catalog = default_catalog().expect("valid bounded catalog");
-        assert_eq!(catalog.descriptors().len(), 5);
+        assert_eq!(catalog.descriptors().len(), 6);
 
         let descriptor = catalog
             .descriptors()

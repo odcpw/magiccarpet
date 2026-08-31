@@ -7,7 +7,10 @@ use std::process::ExitCode;
 
 pub(crate) enum DefinitionSource {
     Portable(std::path::PathBuf),
-    Campaign(std::path::PathBuf),
+    Campaign {
+        package: std::path::PathBuf,
+        owner_cache: Option<std::path::PathBuf>,
+    },
     Owner(Mc2OwnedInputs),
     Workspace(std::path::PathBuf),
 }
@@ -574,7 +577,11 @@ fn public_semantic_descriptor_json(
     effective_value: Option<&SemanticValue>,
 ) -> serde_json::Value {
     let mut value = descriptor.to_json(effective_value);
-    if descriptor.id.as_str() != "presentation.spell.fireball.projectile_asset" {
+    if !matches!(
+        descriptor.id.as_str(),
+        "presentation.spell.fireball.projectile_asset"
+            | sim_core::game_definition::FIREBALL_LAUNCH_SOUND_ASSET_SLOT_ID
+    ) {
         return value;
     }
     let compatible = definition
@@ -721,7 +728,10 @@ fn parse_definition_request(
     ) {
         (Some(path), None, None, None, None, None) => DefinitionSource::Workspace(path),
         (None, Some(path), None, None, None, None) => DefinitionSource::Portable(path),
-        (None, None, Some(path), None, None, None) => DefinitionSource::Campaign(path),
+        (None, None, Some(package), None, None, owner_cache) => DefinitionSource::Campaign {
+            package,
+            owner_cache,
+        },
         (None, None, None, Some(export), Some(closure), Some(cache)) => {
             DefinitionSource::Owner(Mc2OwnedInputs::new(export, closure, cache))
         }
@@ -783,9 +793,17 @@ pub(crate) fn load_definition(
         DefinitionSource::Portable(path) => {
             GameDefinition::from_package(GamePackage::load(path)?, &engine_capabilities()?, catalog)
         }
-        DefinitionSource::Campaign(path) => {
-            sim_core::campaign::backend::load_mc2_campaign(path, catalog)
-        }
+        DefinitionSource::Campaign {
+            package,
+            owner_cache,
+        } => match owner_cache {
+            Some(owner_cache) => sim_core::campaign::backend::load_mc2_campaign_with_owner_cache(
+                package,
+                owner_cache,
+                catalog,
+            ),
+            None => sim_core::campaign::backend::load_mc2_campaign(package, catalog),
+        },
         DefinitionSource::Owner(inputs) => load_mc2_owned(&inputs, catalog),
         DefinitionSource::Workspace(path) => sim_core::game_definition::WorkspaceStore::open(path)
             .active_definition()

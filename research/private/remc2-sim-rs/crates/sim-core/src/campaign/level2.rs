@@ -3024,7 +3024,7 @@ impl Level2ResetSession {
                             audio_site: crate::MissionAudioSite::FireballLaunch,
                             entity_index: spawned_slot,
                             player_index: -1,
-                            sound_id: 9,
+                            sound_id: self.session.state.live.fireball_launch_sound_id,
                         });
                     }
                 }
@@ -3346,7 +3346,7 @@ impl Level2ResetSession {
                             audio_site: crate::MissionAudioSite::FireballLaunch,
                             entity_index: spawned_slot,
                             player_index: -1,
-                            sound_id: 9,
+                            sound_id: self.session.state.live.fireball_launch_sound_id,
                         });
                     }
                 }
@@ -4285,6 +4285,11 @@ impl Level2ResetSession {
         Ok(())
     }
 
+    pub(crate) fn bind_fireball_launch_sound(&mut self, source_sound_id: u16) {
+        self.session.state.live.fireball_launch_sound_id = source_sound_id;
+        self.session.rebase();
+    }
+
     /// Bind the immutable compiled Goat policy to the package-decoded
     /// behavior configuration before the session generation is exposed.
     pub(crate) fn bind_enemy_goat_policy(
@@ -4519,6 +4524,7 @@ impl Level2ResetSession {
             ordinary,
             goats,
             mission,
+            fireball_launch_sound_id: crate::level1_mission::FIREBALL_LAUNCH_SOUND,
             nyphur_dispatcher,
             source_frame_timing_index: 0,
             source_model45_building_selectors,

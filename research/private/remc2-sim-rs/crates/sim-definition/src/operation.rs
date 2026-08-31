@@ -111,12 +111,17 @@ impl OptionParameter {
 pub enum PresentationAssetSlot {
     #[serde(rename = "presentation.spell.fireball.projectile_asset")]
     FireballProjectile,
+    #[serde(rename = "audio.spell.fireball.launch_sound")]
+    FireballLaunchSound,
 }
 
 impl PresentationAssetSlot {
     #[must_use]
     pub const fn as_str(self) -> &'static str {
-        "presentation.spell.fireball.projectile_asset"
+        match self {
+            Self::FireballProjectile => "presentation.spell.fireball.projectile_asset",
+            Self::FireballLaunchSound => crate::FIREBALL_LAUNCH_SOUND_ASSET_SLOT_ID,
+        }
     }
 
     pub(crate) fn semantic_id(self) -> SemanticId {
@@ -240,17 +245,30 @@ impl DefinitionOperation {
                     "operation": "bind_asset",
                     "required_fields": ["slot", "artifact"],
                     "optional_fields": ["expected_artifact"],
-                    "slot_ids": [PresentationAssetSlot::FireballProjectile.as_str()],
-                    "required_capability": {
-                        "id": "engine.presentation.indexed_asset",
-                        "exact_version": 1,
+                    "slot_ids": [
+                        PresentationAssetSlot::FireballProjectile.as_str(),
+                        PresentationAssetSlot::FireballLaunchSound.as_str(),
+                    ],
+                    "slot_requirements": {
+                        PresentationAssetSlot::FireballProjectile.as_str(): {
+                            "required_capability": {
+                                "id": "engine.presentation.indexed_asset",
+                                "exact_version": 1,
+                            },
+                        },
+                        PresentationAssetSlot::FireballLaunchSound.as_str(): {
+                            "required_capability": {
+                                "id": "engine.audio.semantic_asset",
+                                "exact_version": 1,
+                            },
+                        },
                     },
                     "artifact_ids": "target descriptor -> compatible_artifacts[].artifact_id",
                     "expected_artifact": "target descriptor -> effective_artifact_id",
                     "writable_when": "the active definition retains at least two compatible typed artifacts",
                     "mutation_timing": "package_reload",
-                    "describe": "game describe --id presentation.spell.fireball.projectile_asset",
-                    "read_back": "game get --id presentation.spell.fireball.projectile_asset",
+                    "describe": "game describe --id <slot-id>",
+                    "read_back": "game get --id <slot-id>",
                 },
                 {
                     "operation": "move_entity",
@@ -531,28 +549,27 @@ impl DefinitionOperation {
                 "definition has no package-qualified Goat policy runtime consumer",
             ));
         }
-        let asset_descriptor = matches!(self, Self::BindAsset { .. }).then(|| {
-            crate::default_catalog().and_then(|catalog| {
+        let asset_descriptor = if let Self::BindAsset { slot, .. } = self {
+            Some(crate::default_catalog().and_then(|catalog| {
                 definition
-                    .semantic_descriptor(
-                        &catalog,
-                        &PresentationAssetSlot::FireballProjectile.semantic_id(),
-                    )
+                    .semantic_descriptor(&catalog, &slot.semantic_id())
                     .ok_or_else(|| {
                         DefinitionError::new(
                             DefinitionErrorCode::UnknownSemanticId,
                             self.target_id().as_str(),
-                            "definition has no presentation-asset descriptor",
+                            "definition has no typed asset descriptor",
                         )
                     })
-            })
-        });
+            }))
+        } else {
+            None
+        };
         if matches!(asset_descriptor.transpose()?, Some(descriptor) if descriptor.access != Access::Writable)
         {
             return Err(DefinitionError::new(
                 DefinitionErrorCode::DependencyFailed,
                 self.target_id().as_str(),
-                "definition has no package-qualified compatible presentation-asset choice",
+                "definition has no package-qualified compatible typed-asset choice",
             ));
         }
         let playable_operation_is_supported = matches!(
