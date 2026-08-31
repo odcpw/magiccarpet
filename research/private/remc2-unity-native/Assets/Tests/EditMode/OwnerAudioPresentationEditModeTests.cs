@@ -1,0 +1,211 @@
+using System;
+using System.IO;
+using NUnit.Framework;
+using UnityEngine;
+
+namespace MagicCarpet.Native.Tests
+{
+    public sealed class OwnerAudioPresentationEditModeTests
+    {
+        private static string PrivateRoot =>
+            Path.GetFullPath(Path.Combine(Application.dataPath, "../.."));
+
+        private static string Level2OwnerCache =>
+            Path.Combine(PrivateRoot, "generated/level2-day-owner-cache");
+
+        private static string Level1OwnerCache =>
+            Path.Combine(PrivateRoot, "generated/level1-unity-asset-cache-plan29-final");
+
+        private static string Level3OwnerCache =>
+            Environment.GetEnvironmentVariable("MC_CAMPAIGN_OWNER_CACHE_LEVEL3_V1") ??
+            Path.Combine(PrivateRoot, "generated/level3-day-owner-cache");
+
+        [Test]
+        public void Level1LoaderRetainsItsExactNightDescriptorAndExplicitNullSound()
+        {
+            var cache = OwnerAssetCache.OpenAndValidate(
+                Level1OwnerCache,
+                "730d2fa084265df839f3f2b55ed766ac167a8b152ca4631b5ded9d0bb9104ac8",
+                "878123908f6de05f684f4cd1d73cff8d2ff08701cb6fdd12b7165bfcacc75719");
+            var root = new GameObject("Level 1 owner audio regression test");
+            OwnerAudioPresentation audio = null;
+            try
+            {
+                audio = OwnerAudioPresentation.Load(
+                    cache,
+                    "audio/sound-bank-1-822.json",
+                    "audio/music-channel-0-f.json",
+                    root.transform);
+                Assert.That(audio.QualificationSoundCount, Is.EqualTo(32));
+                Assert.That(audio.QualificationHasSound(12), Is.True);
+                Assert.That(audio.QualificationHasSound(13), Is.False);
+
+                audio.Consume(new NativeSim.NativeEvent {
+                    abiVersion = NativeSim.AbiVersion,
+                    structSize = 72,
+                    generation = 1,
+                    sequence = 1,
+                    stateHash = 1,
+                    kind = NativeSim.EventPrepareSound,
+                    code = 12,
+                    assetRefIndex = 84,
+                    reserved = new uint[4]
+                });
+                Assert.That(audio.HadSuppressedUnknown, Is.False);
+            }
+            finally
+            {
+                audio?.Dispose();
+                UnityEngine.Object.DestroyImmediate(root);
+            }
+        }
+
+        [Test]
+        public void Level3DayCacheLoadsExactSoundsAndPlaysNativeSoundAndMusicEvents()
+        {
+            var cache = OwnerAssetCache.OpenAndValidateLevel3(Level3OwnerCache);
+            var root = new GameObject("Level 3 owner audio test");
+            OwnerAudioPresentation audio = null;
+            try
+            {
+                audio = OwnerAudioPresentation.LoadCampaignDay(cache, root.transform);
+                Assert.That(audio.QualificationSoundCount, Is.EqualTo(29));
+                Assert.That(audio.QualificationHasSound(12), Is.True);
+                Assert.That(audio.QualificationHasSound(13), Is.True);
+                Assert.That(audio.QualificationHasSound(60), Is.True);
+                Assert.That(audio.QualificationHasSound(63), Is.False);
+
+                const ulong generation = 4;
+                const ulong sequence = 19;
+                const ulong stateHash = 0x1234_5678_9abc_def0;
+                const uint assetRef = 501;
+                var soundEvent = new NativeSim.NativeEvent {
+                    abiVersion = NativeSim.AbiVersion,
+                    structSize = 72,
+                    generation = generation,
+                    sequence = sequence,
+                    stateHash = stateHash,
+                    kind = NativeSim.EventPrepareSound,
+                    code = 60,
+                    entityIndex = 17,
+                    playerIndex = 0,
+                    assetRefIndex = assetRef,
+                    reserved = new uint[4]
+                };
+                var command = new NativeSim.AudioCommand {
+                    abiVersion = NativeSim.AbiVersion,
+                    structSize = 88,
+                    generation = generation,
+                    eventSequence = sequence,
+                    stateHash = stateHash,
+                    assetRefIndex = assetRef,
+                    playbackRateHz = 22050,
+                    soundId = 60,
+                    entityIndex = 17,
+                    playerIndex = 0,
+                    volumeQ15 = 0x7fff,
+                    panQ16 = 0x8000,
+                    voiceIndex = 0,
+                    playType = NativeSim.AudioEntitySoundRestartOrStart,
+                    loopCount = 0,
+                    action = NativeSim.AudioActionStart,
+                    pooledFlushRank = 0,
+                    reserved = new uint[4]
+                };
+                audio.Consume(soundEvent, command, reportCompletion: false);
+                Assert.That(audio.QualificationPositionalPlayStarts(60), Is.EqualTo(1));
+                Assert.That(audio.HadSuppressedUnknown, Is.False);
+
+                audio.Consume(new NativeSim.NativeEvent {
+                    abiVersion = NativeSim.AbiVersion,
+                    structSize = 72,
+                    generation = generation,
+                    sequence = sequence + 1,
+                    stateHash = stateHash,
+                    kind = NativeSim.EventStartMusic,
+                    code = 1,
+                    value0 = 0,
+                    value1 = 1,
+                    assetRefIndex = assetRef,
+                    reserved = new uint[4]
+                });
+                Assert.That(audio.QualificationMusicStartCount, Is.EqualTo(1));
+                Assert.That(audio.QualificationMusicUpdatesEnabled, Is.True);
+            }
+            finally
+            {
+                audio?.Dispose();
+                UnityEngine.Object.DestroyImmediate(root);
+            }
+        }
+
+        [Test]
+        public void Level3DayLoaderRejectsWrongLevelAndPostValidationDescriptorTamper()
+        {
+            var wrongCache = OwnerAssetCache.OpenAndValidateLevel2(Level2OwnerCache);
+            var root = new GameObject("Level 3 owner audio refusal test");
+            try
+            {
+                var wrongLevel = Assert.Throws<InvalidDataException>(
+                    () => OwnerAudioPresentation.LoadCampaignDay(
+                        wrongCache,
+                        root.transform));
+                StringAssert.Contains("Level 3 aggregate", wrongLevel.Message);
+
+                var tamperedRoot = Path.Combine(
+                    Path.GetTempPath(),
+                    $"magiccarpet-level3-audio-{Guid.NewGuid():N}");
+                CopyTree(Level3OwnerCache, tamperedRoot);
+                try
+                {
+                    var tamperedCache = OwnerAssetCache.OpenAndValidateLevel3(tamperedRoot);
+                    var descriptorPath = Path.Combine(
+                        tamperedRoot,
+                        "components/audio/audio/descriptor.json");
+                    var descriptor = File.ReadAllText(descriptorPath);
+                    File.WriteAllText(
+                        descriptorPath,
+                        descriptor.Replace("mc2-day-audio/v1", "mc2-day-audio/x1"));
+                    var tampered = Assert.Throws<InvalidDataException>(
+                        () => OwnerAudioPresentation.LoadCampaignDay(
+                            tamperedCache,
+                            root.transform));
+                    StringAssert.Contains("Level 3 Day audio descriptor", tampered.Message);
+                }
+                finally
+                {
+                    Directory.Delete(tamperedRoot, true);
+                }
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(root);
+            }
+        }
+
+        private static void CopyTree(string sourceRoot, string destinationRoot)
+        {
+            Directory.CreateDirectory(destinationRoot);
+            foreach (var directory in Directory.GetDirectories(
+                         sourceRoot,
+                         "*",
+                         SearchOption.AllDirectories))
+            {
+                var relative = directory.Substring(sourceRoot.Length)
+                    .TrimStart(Path.DirectorySeparatorChar);
+                Directory.CreateDirectory(Path.Combine(destinationRoot, relative));
+            }
+            foreach (var source in Directory.GetFiles(
+                         sourceRoot,
+                         "*",
+                         SearchOption.AllDirectories))
+            {
+                var relative = source.Substring(sourceRoot.Length)
+                    .TrimStart(Path.DirectorySeparatorChar);
+                var destination = Path.Combine(destinationRoot, relative);
+                Directory.CreateDirectory(Path.GetDirectoryName(destination));
+                File.Copy(source, destination);
+            }
+        }
+    }
+}

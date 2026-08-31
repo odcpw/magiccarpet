@@ -7,7 +7,7 @@ using UnityEngine;
 namespace MagicCarpet.Native
 {
     /// <summary>
-    /// Owner-local Level 1 audio presentation. It consumes only validated
+    /// Owner-local audio presentation. It consumes only level-bound validated
     /// cache outputs and typed simulation events; no owner bytes are embedded
     /// in the Unity project or build.
     /// </summary>
@@ -21,6 +21,21 @@ namespace MagicCarpet.Native
         {
             1, 2, 3, 4, 5, 8, 9, 10, 12, 14, 15, 16, 18, 19, 27, 29, 30, 31,
             33, 34, 37, 39, 40, 41, 43, 44, 46, 54, 55, 56, 57, 63
+        };
+        private static readonly int[] ExactCampaignDaySoundOrder =
+        {
+            1, 2, 3, 5, 8, 9, 10, 12, 13, 14, 15, 16, 18, 19, 23, 29, 30, 31,
+            40, 41, 43, 44, 47, 54, 55, 56, 57, 60, 61
+        };
+        private static readonly string[] ExactCampaignDaySoundFiles =
+        {
+            "OCEAN.WAV", "CRICKET2.WAV", "EXPLOD3.WAV", "FIRE.WAV",
+            "DRAGROAR.WAV", "FIREBAL1.WAV", "QUAKE4.WAV", "NULL.WAV",
+            "NULL.WAV", "SELECT.WAV", "FIREBAL2.WAV", "DIE.WAV",
+            "GETSPELL.WAV", "SPEEDUP.WAV", "LITNING.WAV", "CANTUSE.WAV",
+            "METEOREX.WAV", "MARKET.WAV", "MANASHOT.WAV", "SWITCH.WAV",
+            "FIREFLY1.WAV", "FIREFLY2.WAV", "DOORC2.WAV", "HIT1.WAV",
+            "HIT2.WAV", "HIT3.WAV", "HIT4.WAV", "MORPH.WAV", "SUCCESS2.WAV"
         };
 
         [Serializable]
@@ -49,18 +64,84 @@ namespace MagicCarpet.Native
         private sealed class MusicDescriptor
         {
             public string schema;
+            public int bank;
             public int channel;
             public string driver_type;
+            public string driver;
             public int driver_index;
+            public string map_type;
+            public int maptype_music;
             public int logical_track;
             public int playback_slot;
             public int loop_scan_pointer_slot;
             public string unity_wave_path;
             public string unity_wave_sha256;
+            public WaveDescriptor unity_wave;
             public string initial_start_status;
             public string optional_random_OGG_path;
             public string exact_DOS_hardware_timbre;
             public MusicDynamicControl dynamic_control;
+            public MusicRecord[] records;
+        }
+
+        [Serializable]
+        private sealed class MusicRecord
+        {
+            public int slot;
+            public string filename;
+            public string asset_path;
+            public string asset_sha256;
+        }
+
+        [Serializable]
+        private sealed class CampaignDayAudioDescriptor
+        {
+            public string schema;
+            public CampaignDayProfile profile;
+            public CampaignDaySoundDescriptor sound;
+            public MusicDescriptor music;
+        }
+
+        [Serializable]
+        private sealed class CampaignDayProfile
+        {
+            public int external_level;
+            public int internal_level;
+            public CampaignDayMapType map_type;
+        }
+
+        [Serializable]
+        private sealed class CampaignDayMapType
+        {
+            public int id;
+            public string name;
+        }
+
+        [Serializable]
+        private sealed class CampaignDaySoundDescriptor
+        {
+            public int bank;
+            public int reachable_occurrence_count;
+            public CampaignDaySoundRecord[] records;
+        }
+
+        [Serializable]
+        private sealed class CampaignDaySoundRecord
+        {
+            public int sound_id;
+            public string filename;
+            public string asset_path;
+            public string asset_sha256;
+            public WaveDescriptor wav;
+        }
+
+        [Serializable]
+        private sealed class WaveDescriptor
+        {
+            public int channels;
+            public int sample_width_bytes;
+            public int sample_rate;
+            public int frame_count;
         }
 
         [Serializable]
@@ -182,6 +263,8 @@ namespace MagicCarpet.Native
         private readonly AudioClip musicClip;
         private readonly StreamingPcm16 musicStream;
         private readonly Action<ulong, ushort, ulong> voiceCompleted;
+        private readonly bool legacyAssetReferences;
+        private readonly bool soundTwelveIsExplicitNull;
         private float fadeAccumulator;
         private float musicFadeAccumulator;
         private int oneShotPlayCount;
@@ -202,13 +285,17 @@ namespace MagicCarpet.Native
             AudioSource musicSource,
             AudioClip musicClip,
             StreamingPcm16 musicStream,
-            Action<ulong, ushort, ulong> voiceCompleted)
+            Action<ulong, ushort, ulong> voiceCompleted,
+            bool legacyAssetReferences = true,
+            bool soundTwelveIsExplicitNull = true)
         {
             this.root = root;
             this.musicSource = musicSource;
             this.musicClip = musicClip;
             this.musicStream = musicStream;
             this.voiceCompleted = voiceCompleted;
+            this.legacyAssetReferences = legacyAssetReferences;
+            this.soundTwelveIsExplicitNull = soundTwelveIsExplicitNull;
             positionalVoices = new PositionalVoice[10];
             for (var index = 0; index < positionalVoices.Length; index++)
             {
@@ -325,13 +412,126 @@ namespace MagicCarpet.Native
                 }
                 else
                 {
-                    if (musicSource != null)
-                    {
-                        musicSource.Stop();
-                        musicSource.clip = null;
-                    }
-                    if (musicClip != null) UnityEngine.Object.Destroy(musicClip);
-                    if (root != null) UnityEngine.Object.Destroy(root);
+                    StopAndDetach(musicSource);
+                    DestroyOwnedObject(musicClip);
+                    DestroyOwnedObject(root);
+                }
+                Interlocked.Increment(ref qualificationTransactionalCleanupCount);
+                throw;
+            }
+        }
+
+        internal static OwnerAudioPresentation LoadCampaignDay(
+            OwnerAssetCache cache,
+            Transform parent,
+            Action<ulong, ushort, ulong> voiceCompleted = null,
+            int qualificationFailAfterSoundRows = -1)
+        {
+            Require(
+                cache != null && cache.IsLevel3Aggregate,
+                "qualified Level 3 aggregate owner cache");
+            const string component = "components/audio/";
+            var descriptor = JsonUtility.FromJson<CampaignDayAudioDescriptor>(
+                cache.ReadOutputText(component + "audio/descriptor.json"));
+            Require(
+                descriptor != null && descriptor.schema == "mc2-day-audio/v1" &&
+                descriptor.profile != null && descriptor.profile.external_level == 3 &&
+                descriptor.profile.internal_level == 2 &&
+                descriptor.profile.map_type != null &&
+                descriptor.profile.map_type.id == 0 &&
+                descriptor.profile.map_type.name == "Day" &&
+                descriptor.sound != null && descriptor.sound.bank == 1 &&
+                descriptor.sound.reachable_occurrence_count == 34 &&
+                descriptor.sound.records != null &&
+                descriptor.sound.records.Length == ExactCampaignDaySoundOrder.Length,
+                "qualified Level 3 Day audio descriptor");
+            ValidateCampaignDayMusic(descriptor.music);
+
+            GameObject root = null;
+            AudioSource musicSource = null;
+            AudioClip musicClip = null;
+            OwnerAudioPresentation presentation = null;
+            try
+            {
+                root = new GameObject("Owner-local Level 3 Day audio");
+                root.transform.SetParent(parent, false);
+                musicSource = AddSource(
+                    root, "C2GAME1 Day owner-local presentation adaptation", true);
+                var musicWave = ParseWave(
+                    cache.ReadOutput(component + descriptor.music.unity_wave_path));
+                Require(
+                    musicWave.Channels == 2 && musicWave.SampleWidth == 2 &&
+                    musicWave.SampleRate == 44100 && musicWave.Frames == 19472384,
+                    "qualified deterministic campaign Day C2GAME1 PCM render");
+                var stream = new StreamingPcm16(musicWave.Pcm, musicWave.Channels);
+                musicClip = AudioClip.Create(
+                    "C2GAME1 Day — deterministic ADLMIDI bank 59",
+                    musicWave.Frames,
+                    musicWave.Channels,
+                    musicWave.SampleRate,
+                    true,
+                    stream.Read,
+                    stream.Seek);
+                musicSource.clip = musicClip;
+                musicSource.volume = 0.55f;
+
+                presentation = new OwnerAudioPresentation(
+                    root,
+                    musicSource,
+                    musicClip,
+                    stream,
+                    voiceCompleted,
+                    legacyAssetReferences: false,
+                    soundTwelveIsExplicitNull: false);
+                for (var index = 0; index < ExactCampaignDaySoundOrder.Length; index++)
+                {
+                    if (index == qualificationFailAfterSoundRows)
+                        throw new InvalidDataException(
+                            "qualification-forced owner-audio load failure");
+                    var record = descriptor.sound.records[index];
+                    var soundId = ExactCampaignDaySoundOrder[index];
+                    var expectedPath = $"audio/sfx/{soundId:000}.wav";
+                    Require(
+                        record != null && record.sound_id == soundId &&
+                        record.filename == ExactCampaignDaySoundFiles[index] &&
+                        record.asset_path == expectedPath &&
+                        IsSha256(record.asset_sha256) &&
+                        CampaignDayWaveMatches(record.wav),
+                        $"campaign Day sound descriptor row {index}");
+                    var wave = ParseWave(cache.ReadOutput(component + record.asset_path));
+                    Require(
+                        wave.Channels == 1 && wave.SampleWidth == 1 &&
+                        wave.SampleRate == 22050 && wave.Frames == record.wav.frame_count,
+                        $"campaign Day sound ID {soundId} exact PCM format");
+                    var row = new SoundRow {
+                        sound_id = soundId,
+                        semantic_name = Path.GetFileNameWithoutExtension(record.filename)
+                            .ToLowerInvariant(),
+                        play_class = CampaignDayPlayClass(soundId),
+                        playback_scope = CampaignDayPlaybackScope(soundId),
+                        loop_target_volume = CampaignDayLoopVolume(soundId),
+                        asset_path = record.asset_path,
+                        mapping_status = "materialized_campaign_Day"
+                    };
+                    presentation.rows.Add(soundId, row);
+                    presentation.waves.Add(soundId, wave);
+                    presentation.clips.Add(
+                        soundId,
+                        CreatePcm8Clip(row.semantic_name, wave));
+                }
+                return presentation;
+            }
+            catch
+            {
+                if (presentation != null)
+                {
+                    presentation.Dispose();
+                }
+                else
+                {
+                    StopAndDetach(musicSource);
+                    DestroyOwnedObject(musicClip);
+                    DestroyOwnedObject(root);
                 }
                 Interlocked.Increment(ref qualificationTransactionalCleanupCount);
                 throw;
@@ -340,10 +540,12 @@ namespace MagicCarpet.Native
 
         internal void LogProbe(int tick)
         {
+            var source = musicSource;
+            Require(source != null, "music probe owns its constructed source");
             Debug.Log(
                 $"MC_AUDIO_PROBE tick={tick} listener={AudioListener.volume:F3}/" +
-                $"{AudioListener.pause} sourcePlaying={musicSource.isPlaying} " +
-                $"timeSamples={musicSource.timeSamples} streamReads={musicStream.ReadCalls} " +
+                $"{AudioListener.pause} sourcePlaying={source.isPlaying} " +
+                $"timeSamples={source.timeSamples} streamReads={musicStream.ReadCalls} " +
                 $"streamNonZero={musicStream.NonZeroSamples}");
         }
 
@@ -406,7 +608,7 @@ namespace MagicCarpet.Native
                     EndLoop(nativeEvent, audioCommand);
                     break;
                 case NativeSim.EventUpdateMusic:
-                    if (nativeEvent.assetRefIndex != MusicAssetRef ||
+                    if (!MusicAssetReferenceMatches(nativeEvent.assetRefIndex) ||
                         (nativeEvent.code != 1 && nativeEvent.code != 2) ||
                         nativeEvent.value0 != 3)
                     {
@@ -416,7 +618,7 @@ namespace MagicCarpet.Native
                     UpdateMusicEnvelope((int)nativeEvent.code, nativeEvent.value0);
                     break;
                 case NativeSim.EventStartMusic:
-                    if (nativeEvent.assetRefIndex != MusicAssetRef ||
+                    if (!MusicAssetReferenceMatches(nativeEvent.assetRefIndex) ||
                         nativeEvent.code != 1 ||
                         nativeEvent.value0 != 0 ||
                         nativeEvent.value1 != 1)
@@ -535,6 +737,8 @@ namespace MagicCarpet.Native
         }
 
         internal int QualificationOneShotPlayCount => oneShotPlayCount;
+        internal int QualificationSoundCount => rows.Count;
+        internal bool QualificationHasSound(int soundId) => rows.ContainsKey(soundId);
         internal bool QualificationOneShotIsPlaying =>
             QualificationPositionalIsPlaying(29);
         internal bool QualificationMusicIsPlaying => musicSource.isPlaying;
@@ -605,7 +809,7 @@ namespace MagicCarpet.Native
                 state.Source.Stop();
                 state.Source.clip = null;
                 if (state.RenderedClip != null)
-                    UnityEngine.Object.Destroy(state.RenderedClip);
+                    DestroyOwnedObject(state.RenderedClip);
                 state.RenderedClip = null;
                 state.SoundId = -1;
                 state.Generation = 0;
@@ -623,10 +827,10 @@ namespace MagicCarpet.Native
             musicSource.Stop();
             musicSource.clip = null;
             foreach (var clip in clips.Values)
-                if (clip != null) UnityEngine.Object.Destroy(clip);
+                DestroyOwnedObject(clip);
             clips.Clear();
-            if (musicClip != null) UnityEngine.Object.Destroy(musicClip);
-            if (root != null) UnityEngine.Object.Destroy(root);
+            DestroyOwnedObject(musicClip);
+            DestroyOwnedObject(root);
         }
 
         private void StartMusicFromSourceEvent()
@@ -699,9 +903,9 @@ namespace MagicCarpet.Native
                 Suppress(nativeEvent, "unknown_prepare_sound");
                 return;
             }
-            Require(nativeEvent.assetRefIndex == ExpectedSoundAssetRef(soundId),
+            Require(SoundAssetReferenceMatches(soundId, nativeEvent.assetRefIndex),
                 $"sound ID {soundId} descriptor-backed asset reference");
-            if (soundId == 12) return;
+            if (soundId == 12 && soundTwelveIsExplicitNull) return;
             if (!audioCommand.HasValue)
             {
                 Suppress(
@@ -786,7 +990,7 @@ namespace MagicCarpet.Native
                 state.Source.Stop();
                 state.Source.clip = null;
                 if (state.RenderedClip != null)
-                    UnityEngine.Object.Destroy(state.RenderedClip);
+                    DestroyOwnedObject(state.RenderedClip);
             }
 
             var volumeUnits = command.volumeQ15 >> 8;
@@ -936,7 +1140,7 @@ namespace MagicCarpet.Native
                 var notify = state.CompletionPending;
                 state.Source.clip = null;
                 if (state.RenderedClip != null)
-                    UnityEngine.Object.Destroy(state.RenderedClip);
+                    DestroyOwnedObject(state.RenderedClip);
                 state.RenderedClip = null;
                 state.SoundId = -1;
                 state.Generation = 0;
@@ -965,7 +1169,7 @@ namespace MagicCarpet.Native
                 Suppress(nativeEvent, "unknown_end_loop");
                 return;
             }
-            Require(nativeEvent.assetRefIndex == ExpectedSoundAssetRef(soundId),
+            Require(SoundAssetReferenceMatches(soundId, nativeEvent.assetRefIndex),
                 $"EndLoop sound ID {soundId} descriptor-backed asset reference");
             if (!audioCommand.HasValue)
             {
@@ -1041,6 +1245,94 @@ namespace MagicCarpet.Native
                 57 => "original_stereo_positional",
                 63 => "original_stereo_positional",
                 _ => null
+            };
+        }
+
+        private bool SoundAssetReferenceMatches(int soundId, uint assetRefIndex)
+        {
+            return legacyAssetReferences
+                ? assetRefIndex == ExpectedSoundAssetRef(soundId)
+                : assetRefIndex != uint.MaxValue;
+        }
+
+        private bool MusicAssetReferenceMatches(uint assetRefIndex)
+        {
+            return legacyAssetReferences
+                ? assetRefIndex == MusicAssetRef
+                : assetRefIndex != uint.MaxValue;
+        }
+
+        private static void ValidateCampaignDayMusic(MusicDescriptor music)
+        {
+            Require(
+                music != null && music.bank == 1 && music.channel == 0 &&
+                music.driver == "f" && music.map_type == "Day" &&
+                music.maptype_music == 2 &&
+                music.records != null && music.records.Length == 6 &&
+                music.records[0] != null && music.records[0].slot == 0 &&
+                music.records[0].filename == "C2GAME1.XMI" &&
+                music.records[0].asset_path == "audio/music/C2GAME1.xmi" &&
+                music.records[0].asset_sha256 ==
+                    "0f8081d8ef6ad609f406638862a573b9d1d014f940f0f3194e4d5687f724bd8d" &&
+                music.unity_wave_path ==
+                    "audio/music/C2GAME1-adlmidi-bank59.wav" &&
+                music.unity_wave_sha256 ==
+                    "03b3f951048504d8a6d30611d6c44a62ec1c463726b30c33c16e3cb69824605d" &&
+                music.unity_wave != null && music.unity_wave.channels == 2 &&
+                music.unity_wave.sample_width_bytes == 2 &&
+                music.unity_wave.sample_rate == 44100 &&
+                music.unity_wave.frame_count == 19472384 &&
+                music.initial_start_status ==
+                    "SourceOrderQualified_remc2_local_gameTurn1_after_second_DrawAndEvents" &&
+                music.optional_random_OGG_path == "Excluded" &&
+                music.exact_DOS_hardware_timbre == "Deferred",
+                "qualified campaign Day music descriptor");
+            ValidateMusicDynamicControl(music.dynamic_control);
+        }
+
+        private static bool CampaignDayWaveMatches(WaveDescriptor wave)
+        {
+            return wave != null && wave.channels == 1 &&
+                wave.sample_width_bytes == 1 && wave.sample_rate == 22050 &&
+                wave.frame_count > 0;
+        }
+
+        private static bool IsSha256(string value)
+        {
+            if (value == null || value.Length != 64) return false;
+            foreach (var character in value)
+            {
+                var hex = (character >= '0' && character <= '9') ||
+                    (character >= 'a' && character <= 'f');
+                if (!hex) return false;
+            }
+            return true;
+        }
+
+        private static string CampaignDayPlayClass(int soundId)
+        {
+            return soundId == 1 || soundId == 2 || soundId == 5 || soundId == 31
+                ? "loop"
+                : "one_shot";
+        }
+
+        private static string CampaignDayPlaybackScope(int soundId)
+        {
+            if (soundId == 1 || soundId == 2 || soundId == 5 || soundId == 31)
+                return "local_ambient";
+            return soundId == 14 || soundId == 29
+                ? "local_feedback"
+                : "original_stereo_positional";
+        }
+
+        private static int CampaignDayLoopVolume(int soundId)
+        {
+            return soundId switch {
+                1 => 70,
+                2 => 70,
+                5 => 120,
+                31 => 85,
+                _ => 127
             };
         }
 
@@ -1133,6 +1425,22 @@ namespace MagicCarpet.Native
             source.rolloffMode = AudioRolloffMode.Custom;
             node.SetActive(true);
             return source;
+        }
+
+        private static void DestroyOwnedObject(UnityEngine.Object value)
+        {
+            if (value == null) return;
+            if (Application.isPlaying)
+                UnityEngine.Object.Destroy(value);
+            else
+                UnityEngine.Object.DestroyImmediate(value);
+        }
+
+        private static void StopAndDetach(AudioSource source)
+        {
+            if (source == null) return;
+            source.Stop();
+            source.clip = null;
         }
 
         private static AudioClip CreatePcm8Clip(string name, WaveData wave)
