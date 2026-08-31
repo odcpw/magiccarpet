@@ -390,8 +390,25 @@ namespace MagicCarpet.Native.Tests
                 Assert.That(save, Is.Not.Empty);
                 Assert.That(save.Length, Is.LessThanOrEqualTo(
                     source.NegotiatedContract.limits.maximum_replay_save_json_bytes));
+                var saveJson = Encoding.UTF8.GetString(save);
+                Assert.That(saveJson, Does.Contain(GameRuntimeTransport.ReplaySaveContract));
                 Assert.That(source.IdentitySnapshot().session.tick, Is.EqualTo("3"));
                 AssertSameCampaignState(sourceSnapshot, source.CampaignSnapshot());
+
+                using (var staleTarget = new GameRuntimeTransport())
+                {
+                    var staleSave = Encoding.UTF8.GetBytes(saveJson.Replace(
+                        GameRuntimeTransport.ReplaySaveContract,
+                        "carpet-flight-mc2-campaign-replay-save/v4"));
+                    Assert.That(staleSave, Is.Not.EqualTo(save));
+                    var staleTitle = staleTarget.IdentitySnapshot();
+                    var stale = Assert.Throws<GameRuntimeTransport.TransitionException>(() =>
+                        staleTarget.LoadReplay(staleSave, ResolverPackages()));
+                    Assert.That(stale.Status, Is.EqualTo(NativeSim.ValidationFailed));
+                    var afterStale = staleTarget.IdentitySnapshot();
+                    Assert.That(afterStale.mode, Is.EqualTo(GameRuntimeTransport.TitleMode));
+                    Assert.That(afterStale.generation, Is.EqualTo(staleTitle.generation));
+                }
 
                 using (var restored = new GameRuntimeTransport())
                 {
@@ -428,10 +445,11 @@ namespace MagicCarpet.Native.Tests
                 }
             }
 
-            // No-Claim: this proves opaque quiescent-Paused replay bytes pass
-            // through the managed transport, remain mutation-frozen, and
-            // resume on one fresh real-L1 Rust owner. It does not prove paused
-            // frame service, cross-level saves, migration, or menu wiring.
+            // This proves opaque v5 quiescent-Paused replay bytes pass through
+            // the managed transport, remain mutation-frozen, and resume on one
+            // fresh real-L1 Rust owner while stale v4 fails atomically. It does
+            // not prove paused-frame service, cross-level saves, migration, or
+            // menu wiring.
         }
 
         [Test]

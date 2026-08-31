@@ -1318,6 +1318,9 @@ uint8_t mc_sim_last_resolution(void);
  * mc_game_session_*_v1 functions below address the nested authoritative
  * GameSession through this handle. Completion acceptance is guarded by both
  * outer and nested identity and resolves its destination/package in Rust.
+ * Replay saves are opaque UTF-8 JSON under
+ * `carpet-flight-mc2-campaign-replay-save/v5`; older save contracts fail
+ * closed during load.
  */
 int32_t mc_game_runtime_contract_json_v1(
     uint8_t *buffer, uint32_t capacity, uint32_t *out_length);

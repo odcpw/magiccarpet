@@ -1174,7 +1174,7 @@ mod tests {
         assert_eq!(
             contract["replay_save"],
             serde_json::json!({
-                "save_contract": "carpet-flight-mc2-campaign-replay-save/v4",
+                "save_contract": "carpet-flight-mc2-campaign-replay-save/v5",
                 "save_transport": "mc_game_runtime_save_replay_json_v1",
                 "load_transport": "mc_game_runtime_load_replay_json_v1",
                 "load_package_authority": "complete_unordered_resource_set",
@@ -1456,7 +1456,7 @@ mod tests {
         let save_json: Value = serde_json::from_slice(&save).unwrap();
         assert_eq!(
             save_json["save_contract"],
-            "carpet-flight-mc2-campaign-replay-save/v4"
+            "carpet-flight-mc2-campaign-replay-save/v5"
         );
         let operations = save_json["operations"].as_array().unwrap();
         assert_eq!(operations.len(), 5);
@@ -1467,6 +1467,22 @@ mod tests {
         let mut restored = 0_u64;
         assert_eq!(mc_game_runtime_create_v1(&raw mut restored), MC_STATUS_OK);
         let restored_title = identity(restored);
+        let mut stale_save_json = save_json.clone();
+        stale_save_json["save_contract"] =
+            Value::String("carpet-flight-mc2-campaign-replay-save/v4".to_owned());
+        let stale_save = serde_json::to_vec(&stale_save_json).unwrap();
+        assert_eq!(
+            mc_game_runtime_load_replay_json_v1(
+                restored,
+                1,
+                package_set.as_ptr(),
+                package_set.len() as u32,
+                stale_save.as_ptr(),
+                stale_save.len() as u32,
+            ),
+            MC_STATUS_VALIDATION_FAILED
+        );
+        assert_eq!(identity(restored), restored_title);
         let incomplete = installed_package_set_json(&[level_one_package(), level_two_package()]);
         assert_eq!(
             mc_game_runtime_load_replay_json_v1(

@@ -283,6 +283,16 @@ impl SealedLevel1Adapter {
                 "flight.player.max_forward_speed exceeds the Rust flight carrier",
             )
         })?;
+        let forward_acceleration = i16::try_from(Self::integer_value(
+            definition,
+            "flight.player.forward_acceleration",
+        )?)
+        .map_err(|_| {
+            AbiError::new(
+                MC_STATUS_VALIDATION_FAILED,
+                "flight.player.forward_acceleration exceeds the Rust flight carrier",
+            )
+        })?;
         let mana_cost = i32::try_from(Self::integer_value(definition, "spell.fireball.mana_cost")?)
             .map_err(|_| {
                 AbiError::new(
@@ -310,7 +320,10 @@ impl SealedLevel1Adapter {
             }
         }
         Ok(SessionDefinitionTuning {
-            flight: FlightTuning { max_forward_speed },
+            flight: FlightTuning {
+                max_forward_speed,
+                forward_acceleration,
+            },
             fireball_mana_cost: mana_cost,
             goat_config,
         })
