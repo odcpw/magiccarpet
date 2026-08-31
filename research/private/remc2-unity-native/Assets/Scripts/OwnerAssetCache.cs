@@ -82,6 +82,33 @@ namespace MagicCarpet.Native
             147, 148
         };
         private static readonly string[] Level2HudTexts = { "I", "II", "III", "IV", "V" };
+        private const string Level3AggregateSchema = "mc2-day-owner-cache/v1";
+        private const string Level3MaterialSchema = "mc2-day-material-cache/v1";
+        private const string Level3GameplaySchema = "mc2-day-gameplay-cache/v1";
+        private const string Level3GameplayDescriptorSchema = "mc2-day-gameplay/v1";
+        private const string Level3MaterialDescriptorSchema = "mc2-day-materials/v1";
+        private const string Level3AggregateManifestHash =
+            "f985e01522954fcd404fb8e47bdc92206656d59e53de5511afc5bebdcb9cdb0c";
+        private const string Level3AggregateContentHash =
+            "4443bb9cdcfc670c235402d7d3680dd119739f4554204aebc2a0b8e9f9e71a98";
+        private const string Level3MaterialManifestHash =
+            "04ff8787ebac24d60ebb7e8764a8ca5ab05df6b5d492b14921e65b7523b69cdc";
+        private const string Level3MaterialContentHash =
+            "b4007617309530d4e4018733e318aba5b9e6f6812f531e037e45f708650ee7ea";
+        private const string Level3GameplayManifestHash =
+            "08ffc1879154d2468107e1211b45982017baa1dd65313bd22ec8009a2032bd14";
+        private const string Level3GameplayContentHash =
+            "6934968cfa3f64d62024ce7789bfde21e11d0feb2487fb187a3c457258fdb546";
+        private const string Level3MaterialDescriptorHash =
+            "1d4980361223aab9681f8514af607c3cf03529e50d3e67469a8d114a34cc35fa";
+        private const string Level3GameplayDescriptorHash =
+            "30d0a6c698209b3d022822015802bde002f8662ac645a47313eaac8aec6c47d6";
+        private const string Level3OwnerExportPackageHash =
+            "0d10845690d7c9753246c633be771e54f3d6a481940af3f5fb33b909e0241a73";
+        private const string Level3CampaignPackageHash =
+            "6f17fe1c33c5852796b08acba2c44e5073939b947975b4f3b330d2c45b62d18d";
+        private const string Level3ClosureHash =
+            "67dea39e111fd8c6bdfb16867d0d5fcdb6424943bdaf6290e8247e59bd3c926d";
 
         [Serializable]
         private sealed class Manifest
@@ -290,6 +317,41 @@ namespace MagicCarpet.Native
         }
 
         [Serializable]
+        internal sealed class Level3MaterialDescriptor
+        {
+            public string schema;
+            public Level2Profile profile;
+            public Level3Palette palette;
+            public Level3TextureBank tmaps0;
+        }
+
+        [Serializable]
+        internal sealed class Level3Palette
+        {
+            public int entries;
+            public string rgb8_path;
+        }
+
+        [Serializable]
+        internal sealed class Level3TextureBank
+        {
+            public string bank;
+            public string palette_asset_id;
+            public int[] selectors;
+            public Level3Texture[] textures;
+        }
+
+        [Serializable]
+        internal sealed class Level3Texture
+        {
+            public int index;
+            public int width;
+            public int height;
+            public int frame_count;
+            public string indices_path;
+        }
+
+        [Serializable]
         internal sealed class Level2Profile
         {
             public string name;
@@ -298,6 +360,8 @@ namespace MagicCarpet.Native
             public Level2MapType map_type;
             public Level2Selectors selectors;
             public string package_sha256;
+            public string owner_export_package_sha256;
+            public string campaign_package_sha256;
             public string closure_sha256;
             public string catalog_sha256;
             public string catalog_file_sha256;
@@ -347,6 +411,7 @@ namespace MagicCarpet.Native
         internal sealed class Level2Bindings
         {
             public string level_export_package_sha256;
+            public string campaign_package_sha256;
             public string level_asset_closure_sha256;
             public string owner_catalog_sha256;
             public string owner_catalog_file_sha256;
@@ -363,6 +428,8 @@ namespace MagicCarpet.Native
         public string ContentHash { get; }
         public int OutputCount { get; }
         internal Level2DayHudDescriptor DayHud { get; }
+        internal Level3MaterialDescriptor Level3Materials { get; }
+        internal bool IsLevel3Aggregate { get; }
         private readonly HashSet<string> approvedPaths;
 
         private OwnerAssetCache(
@@ -370,12 +437,16 @@ namespace MagicCarpet.Native
             string contentHash,
             int outputCount,
             HashSet<string> approvedPaths,
-            Level2DayHudDescriptor dayHud = null)
+            Level2DayHudDescriptor dayHud = null,
+            Level3MaterialDescriptor level3Materials = null,
+            bool isLevel3Aggregate = false)
         {
             RootPath = rootPath;
             ContentHash = contentHash;
             OutputCount = outputCount;
             DayHud = dayHud;
+            Level3Materials = level3Materials;
+            IsLevel3Aggregate = isLevel3Aggregate;
             this.approvedPaths = approvedPaths;
         }
 
@@ -400,6 +471,19 @@ namespace MagicCarpet.Native
             RequireLevel2(
                 approvedPaths.Contains(aggregatePath),
                 $"Level 2 gameplay output membership {relative}");
+            return File.ReadAllBytes(ConfinedPath(RootPath, aggregatePath));
+        }
+
+        internal byte[] ReadLevel3GameplayOutput(string relative)
+        {
+            if (!IsLevel3Aggregate)
+                throw new InvalidDataException("cache is not the qualified Level 3 aggregate");
+            var canonical = relative?.Replace(Path.DirectorySeparatorChar, '/');
+            ValidateLevel2RelativePath(canonical, "Level 3 gameplay output path");
+            var aggregatePath = $"components/gameplay/{canonical}";
+            RequireLevel2(
+                approvedPaths.Contains(aggregatePath),
+                $"Level 3 gameplay output membership {relative}");
             return File.ReadAllBytes(ConfinedPath(RootPath, aggregatePath));
         }
 
@@ -559,6 +643,284 @@ namespace MagicCarpet.Native
                 aggregateRows.Count,
                 new HashSet<string>(aggregateRows.Keys, StringComparer.Ordinal),
                 hud);
+        }
+
+        public static OwnerAssetCache OpenAndValidateLevel3(string rootPath)
+        {
+            var root = Path.GetFullPath(rootPath);
+            RequireLevel2Directory(root, "Level 3 aggregate root");
+            var manifestPath = ConfinedPath(root, "manifest.json");
+            RequireLevel2File(manifestPath, "Level 3 aggregate manifest");
+            RequireLevel2(
+                Sha256File(manifestPath) == Level3AggregateManifestHash,
+                "exact Level 3 aggregate manifest identity");
+            var manifest = JsonUtility.FromJson<Level2AggregateManifest>(
+                File.ReadAllText(manifestPath));
+            RequireLevel2(
+                manifest != null && manifest.schema == Level3AggregateSchema,
+                "Level 3 aggregate schema");
+            ValidateLevel3Profile(manifest.profile, "Level 3 aggregate profile");
+            ValidateLevel3Bindings(manifest.bindings, "Level 3 aggregate bindings");
+            RequireLevel2(
+                manifest.components != null &&
+                manifest.components.material != null &&
+                manifest.components.gameplay != null &&
+                (manifest.components.audio == null ||
+                 string.IsNullOrEmpty(manifest.components.audio.schema) &&
+                 string.IsNullOrEmpty(manifest.components.audio.manifest_path) &&
+                 string.IsNullOrEmpty(manifest.components.audio.manifest_sha256) &&
+                 string.IsNullOrEmpty(manifest.components.audio.cache_content_sha256) &&
+                 manifest.components.audio.output_count == 0),
+                "exact non-audio Level 3 aggregate component set");
+            RequireLevel2(
+                manifest.cache_content_sha256 == Level3AggregateContentHash &&
+                manifest.outputs != null && manifest.outputs.Length == 608,
+                "exact Level 3 aggregate content identity and output count");
+
+            var aggregateRows = ValidateLevel2OutputRows(
+                root,
+                manifest.outputs,
+                Level3AggregateContentHash,
+                "Level 3 aggregate",
+                true);
+            ValidateLevel3Component(
+                root,
+                "material",
+                manifest.components.material,
+                Level3MaterialSchema,
+                Level3MaterialManifestHash,
+                Level3MaterialContentHash,
+                321,
+                aggregateRows);
+            var gameplayRows = ValidateLevel3Component(
+                root,
+                "gameplay",
+                manifest.components.gameplay,
+                Level3GameplaySchema,
+                Level3GameplayManifestHash,
+                Level3GameplayContentHash,
+                285,
+                aggregateRows);
+            var materials = ValidateLevel3MaterialDescriptor(root, aggregateRows);
+            var hud = ValidateLevel3GameplayDescriptor(root, gameplayRows);
+            return new OwnerAssetCache(
+                root,
+                Level3AggregateContentHash,
+                aggregateRows.Count,
+                new HashSet<string>(aggregateRows.Keys, StringComparer.Ordinal),
+                hud,
+                materials,
+                true);
+        }
+
+        private static Dictionary<string, Level2Output> ValidateLevel3Component(
+            string root,
+            string name,
+            Level2ComponentSummary summary,
+            string expectedSchema,
+            string expectedManifestHash,
+            string expectedContentHash,
+            int expectedOutputCount,
+            Dictionary<string, Level2Output> aggregateRows)
+        {
+            var manifestRelative = $"components/{name}/manifest.json";
+            RequireLevel2(
+                summary != null &&
+                summary.schema == expectedSchema &&
+                summary.manifest_path == manifestRelative &&
+                summary.manifest_sha256 == expectedManifestHash &&
+                summary.cache_content_sha256 == expectedContentHash &&
+                summary.output_count == expectedOutputCount,
+                $"exact Level 3 {name} component receipt");
+            var childRoot = ConfinedPath(root, $"components/{name}");
+            RequireLevel2Directory(childRoot, $"Level 3 {name} component root");
+            var childManifestPath = ConfinedPath(root, manifestRelative);
+            RequireLevel2File(childManifestPath, $"Level 3 {name} manifest");
+            RequireLevel2(
+                Sha256File(childManifestPath) == expectedManifestHash,
+                $"Level 3 {name} manifest hash");
+            var child = JsonUtility.FromJson<Level2ComponentManifest>(
+                File.ReadAllText(childManifestPath));
+            RequireLevel2(
+                child != null && child.schema == expectedSchema,
+                $"Level 3 {name} child schema");
+            ValidateLevel3Profile(child.profile, $"Level 3 {name} child profile");
+            ValidateLevel3Bindings(child.bindings, $"Level 3 {name} child bindings");
+            RequireLevel2(
+                child.cache_content_sha256 == expectedContentHash &&
+                child.outputs != null && child.outputs.Length == expectedOutputCount,
+                $"Level 3 {name} child content identity");
+            var childRows = ValidateLevel2OutputRows(
+                childRoot,
+                child.outputs,
+                expectedContentHash,
+                $"Level 3 {name} child",
+                false);
+            foreach (var pair in childRows)
+            {
+                var aggregatePath = $"components/{name}/{pair.Key}";
+                RequireLevel2(
+                    aggregateRows.TryGetValue(aggregatePath, out var aggregateRow) &&
+                    aggregateRow.bytes == pair.Value.bytes &&
+                    aggregateRow.sha256 == pair.Value.sha256 &&
+                    aggregateRow.component == name,
+                    $"Level 3 {name} aggregate membership {pair.Key}");
+            }
+            return childRows;
+        }
+
+        private static Level3MaterialDescriptor ValidateLevel3MaterialDescriptor(
+            string root,
+            Dictionary<string, Level2Output> aggregateRows)
+        {
+            const string relative = "materials/descriptor.json";
+            var aggregateRelative = $"components/material/{relative}";
+            RequireLevel2(
+                aggregateRows.TryGetValue(aggregateRelative, out var row) &&
+                row.sha256 == Level3MaterialDescriptorHash,
+                "exact Level 3 material descriptor receipt");
+            var descriptor = JsonUtility.FromJson<Level3MaterialDescriptor>(
+                File.ReadAllText(ConfinedPath(root, aggregateRelative)));
+            RequireLevel2(
+                descriptor != null &&
+                descriptor.schema == Level3MaterialDescriptorSchema,
+                "Level 3 material descriptor schema");
+            ValidateLevel3Profile(descriptor.profile, "Level 3 material descriptor profile");
+            RequireLevel2(
+                descriptor.palette != null &&
+                descriptor.palette.entries == 256 &&
+                descriptor.palette.rgb8_path == "palette/pald.rgb8" &&
+                descriptor.tmaps0 != null &&
+                descriptor.tmaps0.bank == "TMAPS0-0" &&
+                descriptor.tmaps0.palette_asset_id == "owner_data:DATA/PALD-0.DAT" &&
+                descriptor.tmaps0.selectors != null &&
+                descriptor.tmaps0.textures != null &&
+                descriptor.tmaps0.selectors.Length == 156 &&
+                descriptor.tmaps0.textures.Length == 156,
+                "Level 3 material selector census");
+            var selectors = new HashSet<int>();
+            foreach (var texture in descriptor.tmaps0.textures)
+            {
+                RequireLevel2(
+                    texture != null &&
+                    selectors.Add(texture.index) &&
+                    texture.index >= 0 && texture.index <= ushort.MaxValue &&
+                    texture.width > 0 && texture.height > 0 &&
+                    texture.frame_count > 0 &&
+                    !string.IsNullOrEmpty(texture.indices_path) &&
+                    aggregateRows.TryGetValue(
+                        $"components/material/{texture.indices_path}",
+                        out var textureRow) &&
+                    textureRow.bytes == (long)texture.width * texture.height,
+                    "Level 3 material texture membership and bounds");
+            }
+            RequireLevel2(
+                selectors.SetEquals(descriptor.tmaps0.selectors),
+                "Level 3 material texture/selector equality");
+            return descriptor;
+        }
+
+        private static Level2DayHudDescriptor ValidateLevel3GameplayDescriptor(
+            string root,
+            Dictionary<string, Level2Output> gameplayRows)
+        {
+            const string relative = "gameplay/descriptor.json";
+            RequireLevel2(
+                gameplayRows.TryGetValue(relative, out var row) &&
+                row.sha256 == Level3GameplayDescriptorHash,
+                "exact Level 3 gameplay descriptor receipt");
+            var descriptor = JsonUtility.FromJson<Level2GameplayDescriptor>(
+                File.ReadAllText(ConfinedPath(root, $"components/gameplay/{relative}")));
+            RequireLevel2(
+                descriptor != null && descriptor.schema == Level3GameplayDescriptorSchema,
+                "Level 3 gameplay descriptor schema");
+            ValidateLevel3Profile(descriptor.profile, "Level 3 gameplay descriptor profile");
+            var hud = descriptor.hud;
+            RequireLevel2(
+                hud != null &&
+                hud.schema == "mc2-level2-day-hud/v1" &&
+                hud.authority == "SourceMappedLive" &&
+                hud.bitmap_selectors != null &&
+                hud.bitmap_selectors.Length == Level2HudSelectors.Length &&
+                new HashSet<int>(hud.bitmap_selectors).SetEquals(Level2HudSelectors) &&
+                hud.bitmap_assets != null &&
+                hud.bitmap_assets.Length == Level2HudSelectors.Length &&
+                hud.spell_tier_text != null &&
+                hud.spell_tier_text.tiers != null &&
+                hud.spell_tier_text.tiers.Length == Level2HudTexts.Length &&
+                descriptor.hud_outputs != null &&
+                descriptor.hud_outputs.Length == 75,
+                "exact Level 3 Day HUD, spell, and minimap surface census");
+            var ledger = new HashSet<string>(StringComparer.Ordinal);
+            foreach (var output in descriptor.hud_outputs)
+            {
+                RequireLevel2(
+                    output != null &&
+                    ledger.Add(output.path) &&
+                    output.path.StartsWith("gameplay/hud/", StringComparison.Ordinal) &&
+                    gameplayRows.TryGetValue(output.path, out var gameplayRow) &&
+                    gameplayRow.bytes == output.bytes &&
+                    gameplayRow.sha256 == output.sha256,
+                    "Level 3 HUD output ledger membership");
+            }
+            return hud;
+        }
+
+        private static void ValidateLevel3Profile(Level2Profile profile, string description)
+        {
+            RequireLevel2(
+                profile != null &&
+                profile.name == "day-material" &&
+                profile.external_level == 3 &&
+                profile.internal_level == 2 &&
+                profile.map_type != null &&
+                profile.map_type.id == 0 &&
+                profile.map_type.name == "Day" &&
+                profile.package_sha256 == Level3OwnerExportPackageHash &&
+                profile.owner_export_package_sha256 == Level3OwnerExportPackageHash &&
+                profile.campaign_package_sha256 == Level3CampaignPackageHash &&
+                profile.closure_sha256 == Level3ClosureHash &&
+                profile.catalog_sha256 == Level2CatalogHash &&
+                profile.catalog_file_sha256 == Level2CatalogFileHash &&
+                profile.spec_commit == PinnedRemc2Commit &&
+                profile.owner_package != null &&
+                profile.owner_package.manifest_schema == Level2OwnerManifestSchema &&
+                profile.owner_package.players_component != null &&
+                profile.owner_package.players_component.magic == Level2PlayersComponentMagic &&
+                profile.owner_package.players_component.version == Level2PlayersComponentVersion &&
+                profile.owner_package.players_component.record_bytes == Level2PlayersComponentRecordBytes &&
+                profile.owner_package.players_component.count == Level2PlayersComponentCount &&
+                profile.selectors != null &&
+                profile.selectors.vga_resolution_selector == 1 &&
+                profile.selectors.texture_size == 32 &&
+                profile.selectors.terrain_graphics_flags == 0 &&
+                !profile.selectors.terrain_graphics_flag_2 &&
+                profile.selectors.terrain_bank == "TMAPS0-0" &&
+                profile.selectors.sprite_bank == "MSPRD0-0" &&
+                profile.selectors.web_bank == "MWEBD0-0" &&
+                profile.selectors.block_bank == "BL32N0-0" &&
+                profile.selectors.palette == "PALD-0" &&
+                profile.selectors.sky_bank == "SKYD0-0",
+                description);
+        }
+
+        private static void ValidateLevel3Bindings(Level2Bindings bindings, string description)
+        {
+            RequireLevel2(
+                bindings != null &&
+                bindings.level_export_package_sha256 == Level3OwnerExportPackageHash &&
+                bindings.campaign_package_sha256 == Level3CampaignPackageHash &&
+                bindings.level_asset_closure_sha256 == Level3ClosureHash &&
+                bindings.owner_catalog_sha256 == Level2CatalogHash &&
+                bindings.owner_catalog_file_sha256 == Level2CatalogFileHash &&
+                bindings.owner_manifest_schema == Level2OwnerManifestSchema &&
+                bindings.players_component_magic == Level2PlayersComponentMagic &&
+                bindings.players_component_version == Level2PlayersComponentVersion &&
+                bindings.players_component_record_bytes == Level2PlayersComponentRecordBytes &&
+                bindings.players_component_count == Level2PlayersComponentCount &&
+                bindings.remc2_commit == PinnedRemc2Commit &&
+                string.IsNullOrEmpty(bindings.audio_denominator_sha256),
+                description);
         }
 
         private static Dictionary<string, Level2Output> ValidateLevel2Component(

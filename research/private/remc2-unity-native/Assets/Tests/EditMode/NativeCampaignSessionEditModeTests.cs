@@ -37,6 +37,10 @@ namespace MagicCarpet.Native.Tests
             Environment.GetEnvironmentVariable("MC_CAMPAIGN_ASSET_CACHE_LEVEL3_V1") ??
             Path.Combine(PrivateRoot, "generated/level3-day-material-cache");
 
+        private static string Level3OwnerCache =>
+            Environment.GetEnvironmentVariable("MC_CAMPAIGN_OWNER_CACHE_LEVEL3_V1") ??
+            Path.Combine(PrivateRoot, "generated/level3-day-owner-cache");
+
         [Test]
         public void Level2ProductionStartupOpensCampaignSessionAndValidatesDayProfile()
         {
@@ -857,6 +861,110 @@ namespace MagicCarpet.Native.Tests
                 crossBoundSession?.Dispose();
             }
             Assert.That(NativeCampaignSession.ActiveSessionCount, Is.Zero);
+        }
+
+        [Test]
+        public void Level3OwnerCachePresentsLiveWorldAndEntitiesWithExactInterfaceSurfaces()
+        {
+            var wrongCache = Assert.Throws<InvalidDataException>(
+                () => OwnerAssetCache.OpenAndValidateLevel3(Level2DayCache));
+            StringAssert.Contains("Level 3", wrongCache.Message);
+
+            var tamperedRoot = Path.Combine(
+                Path.GetTempPath(),
+                $"magiccarpet-level3-cache-{Guid.NewGuid():N}");
+            Directory.CreateDirectory(tamperedRoot);
+            foreach (var source in Directory.GetFiles(
+                         Level3OwnerCache,
+                         "*",
+                         SearchOption.AllDirectories))
+            {
+                var relative = source.Substring(Level3OwnerCache.Length)
+                    .TrimStart(Path.DirectorySeparatorChar);
+                var destination = Path.Combine(tamperedRoot, relative);
+                Directory.CreateDirectory(Path.GetDirectoryName(destination));
+                File.Copy(source, destination);
+            }
+            File.AppendAllText(
+                Path.Combine(
+                    tamperedRoot,
+                    "components/gameplay/gameplay/descriptor.json"),
+                "\n");
+            try
+            {
+                var tampered = Assert.Throws<InvalidDataException>(
+                    () => OwnerAssetCache.OpenAndValidateLevel3(tamperedRoot));
+                StringAssert.Contains("output size", tampered.Message);
+            }
+            finally
+            {
+                Directory.Delete(tamperedRoot, true);
+            }
+
+            var cache = OwnerAssetCache.OpenAndValidateLevel3(Level3OwnerCache);
+            Assert.That(cache.IsLevel3Aggregate, Is.True);
+            Assert.That(cache.OutputCount, Is.EqualTo(608));
+            Assert.That(cache.DayHud.bitmap_assets.Length, Is.EqualTo(34));
+            Assert.That(cache.DayHud.spell_tier_text.tiers.Length, Is.EqualTo(5));
+            Assert.That(cache.Level3Materials.tmaps0.textures.Length, Is.EqualTo(156));
+
+            var root = new GameObject("Level 3 presentation qualification");
+            Level3PresentationSurface surface = null;
+            try
+            {
+                using (var session = NativeCampaignSession.Open(
+                           Level3Package,
+                           NativeSim.CampaignSelection.Create(3, 2, 0),
+                           Level3DayCache))
+                {
+                    surface = new Level3PresentationSurface(root.transform);
+                    surface.Present(session, cache);
+                    Assert.That((surface.Generation, surface.Tick), Is.EqualTo((0ul, 0ul)));
+                    Assert.That(surface.WorldReady, Is.True);
+                    Assert.That(surface.FrameHash, Is.Not.Zero);
+                    Assert.That(surface.TerrainHash, Is.Not.Zero);
+                    Assert.That(surface.EntitySurfaceCount, Is.EqualTo(252));
+                    Assert.That(surface.HudReady, Is.True);
+                    Assert.That(surface.HudBitmapSurfaceCount, Is.EqualTo(34));
+                    Assert.That(surface.SpellTierSurfaceCount, Is.EqualTo(5));
+                    Assert.That(surface.MinimapPanelReady, Is.True);
+                    Assert.That(
+                        surface.LiveMinimapReady,
+                        Is.False,
+                        "the native minimap endpoint remains Level-2-Nyphur-bound");
+                    Assert.That(
+                        surface.CacheContentHash,
+                        Is.EqualTo(
+                            "4443bb9cdcfc670c235402d7d3680dd119739f4554204aebc2a0b8e9f9e71a98"));
+
+                    var localPlayer = session.Players()
+                        .Single(player => player.slot == 0 && player.active != 0);
+                    var localEntity = session.Entities()
+                        .Single(entity => entity.entityIndex == localPlayer.entityIndex);
+                    session.Step(localEntity.x, localEntity.y, localEntity.z);
+                    surface.Present(session, cache);
+                    Assert.That((surface.Generation, surface.Tick), Is.EqualTo((0ul, 1ul)));
+                    Assert.That(
+                        surface.Root.GetComponentsInChildren<Level3EntitySurfaceMarker>()
+                            .All(marker =>
+                                marker.Generation == session.Generation &&
+                                marker.Tick == session.Tick),
+                        Is.True);
+                }
+                Assert.That(NativeCampaignSession.ActiveSessionCount, Is.Zero);
+            }
+            finally
+            {
+                surface?.Dispose();
+                UnityEngine.Object.DestroyImmediate(root);
+            }
+
+            Assert.That(NativeCampaignSession.ActiveSessionCount, Is.Zero);
+            Assert.That(
+                UnityEngine.Object.FindObjectsByType<Level3EntitySurfaceMarker>(
+                    FindObjectsInactive.Include,
+                    FindObjectsSortMode.None),
+                Is.Empty);
         }
 
         [Test]
