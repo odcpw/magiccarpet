@@ -3566,6 +3566,14 @@ mod tests {
         let playing = runtime.identity();
         assert_eq!(playing.mode, RuntimeMode::Playing);
         assert_eq!(playing.session.as_ref().unwrap().generation, 3);
+        runtime
+            .session_mut()
+            .unwrap()
+            .backend_mut()
+            .compatibility_campaign_mut_for_test()
+            .level2_compatibility_mut()
+            .apply_carried_spell_families(&[0], Some(0))
+            .unwrap();
 
         crate::campaign::backend::tests::drive_real_level_three_skeleton_horde_to_guardian_dragons_for_test(
             runtime.session_mut().unwrap(),
@@ -3598,6 +3606,14 @@ mod tests {
         let playing = runtime.identity();
         assert_eq!(playing.mode, RuntimeMode::Playing);
         assert_eq!(playing.session.as_ref().unwrap().generation, 3);
+        runtime
+            .session_mut()
+            .unwrap()
+            .backend_mut()
+            .compatibility_campaign_mut_for_test()
+            .level2_compatibility_mut()
+            .apply_carried_spell_families(&[0], Some(0))
+            .unwrap();
 
         crate::campaign::backend::tests::drive_real_level_three_guardian_dragons_to_reveal_entrance_for_test(
             runtime.session_mut().unwrap(),

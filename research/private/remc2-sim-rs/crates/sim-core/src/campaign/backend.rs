@@ -7858,11 +7858,494 @@ pub(crate) mod tests {
         drive_real_level_two_to_final_vault_objective_for_test(&mut session);
     }
 
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    struct SkeletonFireballDamageReceipt {
+        source_slot: u16,
+        life_before: i32,
+        life_after: i32,
+    }
+
+    fn level_three_skeleton(
+        session: &GameSession<Mc2CampaignBackend>,
+        source_slot: u16,
+    ) -> Option<crate::native_world::EntitySnapshot> {
+        session
+            .backend()
+            .campaign
+            .level2_compatibility()
+            .entities()
+            .get(usize::from(source_slot))
+            .filter(|source| {
+                source.active
+                    && !source.drawing_disabled()
+                    && source.index == source_slot
+                    && source.class == 5
+                    && source.model == 9
+            })
+            .cloned()
+    }
+
+    fn observe_real_level_three_skeleton_actions_for_test(
+        session: &GameSession<Mc2CampaignBackend>,
+        observed_actions: &mut BTreeMap<u16, BTreeSet<u8>>,
+    ) {
+        for (source_slot, actions) in observed_actions {
+            if let Some(source) = session
+                .backend()
+                .campaign
+                .level2_compatibility()
+                .entities()
+                .get(usize::from(*source_slot))
+                .filter(|source| {
+                    source.active
+                        && source.index == *source_slot
+                        && source.class == 5
+                        && source.model == 9
+                })
+            {
+                actions.insert(source.action);
+            }
+        }
+    }
+
+    fn step_real_level_three_skeleton_route_for_test(
+        session: &mut GameSession<Mc2CampaignBackend>,
+        command: GameCommand,
+        observed_actions: &mut BTreeMap<u16, BTreeSet<u8>>,
+    ) {
+        observe_real_level_three_skeleton_actions_for_test(session, observed_actions);
+        session.step(guard(session), command).unwrap();
+        observe_real_level_three_skeleton_actions_for_test(session, observed_actions);
+    }
+
+    fn drive_real_level_three_skeleton_to_fireball_range_for_test(
+        session: &mut GameSession<Mc2CampaignBackend>,
+        source_slot: u16,
+        observed_actions: &mut BTreeMap<u16, BTreeSet<u8>>,
+    ) -> crate::native_world::EntitySnapshot {
+        for _ in 0..24 {
+            if let Some(source) = level_three_skeleton(session, source_slot)
+                && source.life >= 0
+                && matches!(source.action, 74 | 79)
+            {
+                break;
+            }
+            step_real_level_three_skeleton_route_for_test(
+                session,
+                GameCommand::default(),
+                observed_actions,
+            );
+        }
+
+        for _ in 0..640 {
+            let source = level_three_skeleton(session, source_slot)
+                .filter(|source| source.life >= 0 && matches!(source.action, 74 | 79))
+                .expect("real Level 3 Skeleton remains in a public Fireball-consuming state");
+            let state = session.backend().campaign.level2_compatibility().state;
+            let dx = i32::from(
+                source
+                    .position
+                    .x
+                    .wrapping_sub(state.position.x)
+                    .cast_signed(),
+            );
+            let dy = i32::from(
+                source
+                    .position
+                    .y
+                    .wrapping_sub(state.position.y)
+                    .cast_signed(),
+            );
+            let distance = crate::legacy_sqrt(
+                dx.wrapping_mul(dx)
+                    .wrapping_add(dy.wrapping_mul(dy))
+                    .cast_unsigned(),
+            );
+            if distance <= 3_500 {
+                return source;
+            }
+            let desired = i16::try_from(crate::heading_for_positions(
+                state.position,
+                source.position,
+            ))
+            .expect("source heading is 11-bit");
+            let correction = crate::turn_toward(state.yaw, desired, 127);
+            step_real_level_three_skeleton_route_for_test(
+                session,
+                GameCommand {
+                    longitudinal: LongitudinalControl::Accelerate,
+                    roll_axis: correction.clamp(-24, 24) as i8,
+                    pitch_axis: -127,
+                    ..GameCommand::default()
+                },
+                observed_actions,
+            );
+        }
+        panic!("ordinary player flight did not reach Skeleton source slot {source_slot}");
+    }
+
+    fn fire_real_player_fireball_at_level_three_skeleton_for_test(
+        session: &mut GameSession<Mc2CampaignBackend>,
+        source_slot: u16,
+        exact_skeleton_slots: &[u16],
+        observed_actions: &mut BTreeMap<u16, BTreeSet<u8>>,
+    ) -> Vec<SkeletonFireballDamageReceipt> {
+        for _ in 0..=24 {
+            let compatibility = session.backend().campaign.level2_compatibility();
+            let economy = compatibility.economy();
+            let player_slot = compatibility.state.entity_index;
+            let has_player_projectile = economy
+                .fireball_projectiles()
+                .iter()
+                .any(|projectile| projectile.owner_entity_index == player_slot);
+            let has_player_impact = economy.model17_spawned_children().iter().any(|impact| {
+                impact.source_class == 10
+                    && impact.model == 0
+                    && impact.parent_entity_id == player_slot
+            });
+            if !has_player_projectile && !has_player_impact {
+                break;
+            }
+            step_real_level_three_skeleton_route_for_test(
+                session,
+                GameCommand::default(),
+                observed_actions,
+            );
+        }
+
+        let aimed = drive_real_level_three_skeleton_to_fireball_range_for_test(
+            session,
+            source_slot,
+            observed_actions,
+        );
+        let (
+            attacker,
+            direction_bits,
+            player_state,
+            before,
+            projectile_occurrences_before,
+            impact_occurrences_before,
+        ) = {
+            let compatibility = session.backend().campaign.level2_compatibility();
+            let shared = compatibility.shared_spells();
+            let player = shared.local_player();
+            let holder_slot = player.enabled_spell_holders[0];
+            let holder = shared
+                .pickups()
+                .iter()
+                .chain(shared.holders())
+                .chain(shared.dynamic_pickups())
+                .find(|holder| holder.index == holder_slot)
+                .expect("incoming campaign state retains the carried Fireball holder");
+            assert!(holder.active);
+            assert_eq!((holder.class, holder.model, holder.action), (15, 0, 0));
+            assert_eq!(
+                holder.source_spell_parent_entity_index(),
+                player.entity_index
+            );
+            assert!((0..=2).contains(&holder.level_gate));
+            assert!(shared.player_mana() >= holder.max_mana);
+            let before = exact_skeleton_slots
+                .iter()
+                .map(|slot| {
+                    let source = level_three_skeleton(session, *slot)
+                        .expect("all real Level 3 Skeletons remain addressable before the cast");
+                    (*slot, source.life)
+                })
+                .collect::<Vec<_>>();
+            (
+                compatibility.state.entity_index,
+                shared.player_entity().control_flags & 0x0300,
+                compatibility.state,
+                before,
+                compatibility
+                    .economy()
+                    .fireball_projectiles()
+                    .iter()
+                    .map(|projectile| {
+                        (
+                            projectile.source_entity_index,
+                            compatibility
+                                .economy()
+                                .slot_generation(projectile.source_entity_index),
+                        )
+                    })
+                    .collect::<BTreeSet<_>>(),
+                compatibility
+                    .economy()
+                    .model17_spawned_children()
+                    .iter()
+                    .map(|impact| {
+                        (
+                            impact.source_entity_index,
+                            compatibility
+                                .economy()
+                                .slot_generation(impact.source_entity_index),
+                        )
+                    })
+                    .collect::<BTreeSet<_>>(),
+            )
+        };
+        assert_eq!(
+            aimed.life,
+            before
+                .iter()
+                .find(|(slot, _)| *slot == source_slot)
+                .unwrap()
+                .1
+        );
+
+        let collision = aimed.collision_target();
+        let mut predicted_target = crate::Position {
+            z: aimed
+                .position
+                .z
+                .wrapping_add(collision.collision_vertical_offset)
+                .wrapping_sub(crate::level1_mission::FIREBALL_COLLISION_VERTICAL_OFFSET),
+            ..aimed.position
+        };
+        crate::move_entity(
+            &mut predicted_target,
+            aimed.yaw,
+            aimed.pitch,
+            aimed.actual_speed,
+        );
+        let mut launch_position = player_state.position;
+        let provisional_launch = crate::Position {
+            z: launch_position.z.wrapping_add(player_state.entity_fov),
+            ..launch_position
+        };
+        let provisional =
+            crate::level1_mission::projectile_guidance_angles(provisional_launch, predicted_target);
+        let hand_yaw = if direction_bits & 0x0100 != 0 {
+            Some(provisional.0.wrapping_sub(512))
+        } else if direction_bits & 0x0200 != 0 {
+            Some(provisional.0.wrapping_add(512))
+        } else {
+            None
+        };
+        if let Some(hand_yaw) = hand_yaw {
+            crate::move_entity(&mut launch_position, hand_yaw, 0, 256);
+            if crate::FlightWorld::ground_height(
+                session
+                    .backend()
+                    .campaign
+                    .level2_compatibility()
+                    .canonical_terrain(),
+                launch_position,
+            ) > launch_position.z
+            {
+                launch_position = player_state.position;
+            }
+        }
+        launch_position.z = launch_position.z.wrapping_add(player_state.entity_fov);
+        let (aim_yaw, aim_pitch) =
+            crate::level1_mission::projectile_guidance_angles(launch_position, predicted_target);
+        step_real_level_three_skeleton_route_for_test(
+            session,
+            GameCommand {
+                select_spell: Some(SemanticId::parse("spell.fireball").unwrap()),
+                cast_selected: true,
+                look_yaw: aim_yaw.wrapping_sub(player_state.yaw),
+                look_pitch: aim_pitch.wrapping_sub(player_state.display_pitch),
+                ..GameCommand::default()
+            },
+            observed_actions,
+        );
+
+        let mut saw_projectile = false;
+        let mut saw_impact = false;
+        let mut projectile_slot = None;
+        let mut impact_slot = None;
+        for _ in 0..=24 {
+            {
+                let compatibility = session.backend().campaign.level2_compatibility();
+                let economy = compatibility.economy();
+                if let Some(projectile) = economy.fireball_projectiles().iter().find(|projectile| {
+                    projectile.owner_entity_index == attacker
+                        && projectile.source_subspell_index
+                            == crate::level1_mission::FIREBALL_PAYLOAD as u16
+                        && !projectile_occurrences_before.contains(&(
+                            projectile.source_entity_index,
+                            economy.slot_generation(projectile.source_entity_index),
+                        ))
+                }) {
+                    projectile_slot = Some(projectile.source_entity_index);
+                    saw_projectile = true;
+                }
+                if let Some(impact) = economy.model17_spawned_children().iter().find(|impact| {
+                    impact.source_class == 10
+                        && impact.model == 0
+                        && impact.parent_entity_id == attacker
+                        && impact.subspell_index == crate::level1_mission::FIREBALL_PAYLOAD as u16
+                        && !impact_occurrences_before.contains(&(
+                            impact.source_entity_index,
+                            economy.slot_generation(impact.source_entity_index),
+                        ))
+                }) {
+                    projectile_slot = Some(impact.parent_entity_index);
+                    impact_slot = Some(impact.source_entity_index);
+                    saw_projectile = true;
+                    saw_impact = true;
+                }
+            }
+            for event in session.backend().campaign.events() {
+                if let Level2DispatchEvent::DynamicArena {
+                    source_slot, kind, ..
+                } = event
+                {
+                    saw_projectile |= projectile_slot == Some(*source_slot)
+                        && matches!(
+                            kind,
+                            crate::native_world::Level2DynamicArenaKind::FireballProjectile
+                        );
+                    saw_impact |= impact_slot == Some(*source_slot)
+                        && matches!(
+                            kind,
+                            crate::native_world::Level2DynamicArenaKind::Model17SpawnedChild
+                        );
+                }
+            }
+            let receipts = before
+                .iter()
+                .filter_map(|(slot, life_before)| {
+                    let current = level_three_skeleton(session, *slot)?;
+                    (current.life
+                        == life_before.wrapping_sub(crate::level1_mission::FIREBALL_PAYLOAD)
+                        && current.word_26() == attacker)
+                        .then_some(SkeletonFireballDamageReceipt {
+                            source_slot: *slot,
+                            life_before: *life_before,
+                            life_after: current.life,
+                        })
+                })
+                .collect::<Vec<_>>();
+            if !receipts.is_empty() {
+                for (slot, life_before) in &before {
+                    let current = level_three_skeleton(session, *slot)
+                        .expect("public Fireball keeps every nonterminal Skeleton addressable");
+                    let received = receipts.iter().any(|receipt| receipt.source_slot == *slot);
+                    assert!(
+                        received || current.life == *life_before,
+                        "public Fireball changed unrelated Skeleton slot {slot}: {life_before} -> {}",
+                        current.life
+                    );
+                }
+                assert!(
+                    saw_projectile,
+                    "semantic cast did not dispatch its class-9 Fireball"
+                );
+                assert!(
+                    saw_impact,
+                    "semantic cast did not dispatch its class-10 impact"
+                );
+                return receipts;
+            }
+            step_real_level_three_skeleton_route_for_test(
+                session,
+                GameCommand::default(),
+                observed_actions,
+            );
+        }
+        Vec::new()
+    }
+
+    #[test]
+    fn campaign_backend_carried_fireball_hits_real_level_three_skeleton_through_public_command() {
+        const NEAREST_SKELETON_SLOT: u16 = 248;
+
+        let root = level_three_descriptor_fixture_path();
+        let catalog = default_catalog().unwrap();
+        let definition = Arc::new(load_mc2_campaign(&root, &catalog).unwrap());
+        let mut session = GameSession::open(
+            &Mc2CampaignAdapter,
+            definition,
+            64,
+            Mc2CampaignInputs::new(&root),
+        )
+        .unwrap();
+        session
+            .backend_mut()
+            .campaign
+            .level2_compatibility_mut()
+            .apply_carried_spell_families(&[0], Some(0))
+            .unwrap();
+        let skeleton_slots = session
+            .backend()
+            .campaign
+            .level2_compatibility()
+            .entities()
+            .iter()
+            .filter(|source| source.active && source.class == 5 && source.model == 9)
+            .map(|source| source.index)
+            .collect::<Vec<_>>();
+        assert_eq!(skeleton_slots.len(), 11);
+        assert!(skeleton_slots.contains(&NEAREST_SKELETON_SLOT));
+        let mut observed_actions = skeleton_slots
+            .iter()
+            .map(|source_slot| {
+                (
+                    *source_slot,
+                    BTreeSet::from([level_three_skeleton(&session, *source_slot).unwrap().action]),
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+
+        let receipts = fire_real_player_fireball_at_level_three_skeleton_for_test(
+            &mut session,
+            NEAREST_SKELETON_SLOT,
+            &skeleton_slots,
+            &mut observed_actions,
+        );
+        assert_eq!(
+            receipts,
+            vec![SkeletonFireballDamageReceipt {
+                source_slot: NEAREST_SKELETON_SLOT,
+                life_before: 1_000,
+                life_after: 750,
+            }]
+        );
+        let player = session
+            .backend()
+            .campaign
+            .level2_compatibility()
+            .state
+            .entity_index;
+        let damaged = level_three_skeleton(&session, NEAREST_SKELETON_SLOT).unwrap();
+        assert_eq!(
+            (damaged.life, damaged.action, damaged.word_26()),
+            (750, 74, player)
+        );
+        assert_eq!(&damaged.record_bytes()[102..104], &[0, 0]);
+
+        let repeated = fire_real_player_fireball_at_level_three_skeleton_for_test(
+            &mut session,
+            NEAREST_SKELETON_SLOT,
+            &skeleton_slots,
+            &mut observed_actions,
+        );
+        assert_eq!(
+            repeated,
+            vec![SkeletonFireballDamageReceipt {
+                source_slot: NEAREST_SKELETON_SLOT,
+                life_before: 750,
+                life_after: 500,
+            }]
+        );
+        let damaged_again = level_three_skeleton(&session, NEAREST_SKELETON_SLOT).unwrap();
+        assert_eq!(
+            (
+                damaged_again.life,
+                damaged_again.action,
+                damaged_again.word_26()
+            ),
+            (500, 74, player)
+        );
+    }
+
     pub(crate) fn drive_real_level_three_skeleton_horde_to_guardian_dragons_for_test(
         session: &mut GameSession<Mc2CampaignBackend>,
     ) {
-        const FIREBALL_DAMAGE: u16 = 500;
-
         let skeleton = |session: &GameSession<Mc2CampaignBackend>, source_slot: u16| {
             session
                 .backend()
@@ -7955,65 +8438,59 @@ pub(crate) mod tests {
             package_fireball_pickups.is_empty(),
             "the qualified Level 3 package unexpectedly contains Fireball pickup rows {package_fireball_pickups:?}"
         );
-        // The qualified Level 3 package supplies no Fireball pickup. A real
-        // transition may now carry an acquired holder, but this bounded
-        // lifecycle proof deliberately retains its disclosed already-arrived
-        // class-10 impacts. Ordinary Skeleton callbacks still own damage,
-        // death outputs, hide/reclaim, and the objective consumer.
+        // The qualified Level 3 package supplies no Fireball pickup, so this
+        // public route consumes the acquired family-0 holder carried across
+        // the real campaign transition.
 
-        let (sphere_count_before, burst_count_before) = {
+        let (sphere_count_before, economy_event_start) = {
             let economy = session.backend().campaign.level2_compatibility().economy();
-            (economy.spheres().len(), economy.death_bursts().len())
+            (economy.spheres().len(), economy.events().len())
         };
-        for _ in 0..40 {
-            let Some(source_slot) = skeleton_slots.iter().copied().find(|source_slot| {
-                skeleton(session, *source_slot).is_some_and(|source| source.life >= 0)
+        let mut hit_count = 0_usize;
+        let mut miss_count = 0_usize;
+        for _ in 0..skeleton_slots.len() * 16 {
+            let current_slots = skeleton_slots
+                .iter()
+                .copied()
+                .filter(|source_slot| {
+                    skeleton(session, *source_slot).is_some_and(|source| source.life >= 0)
+                })
+                .collect::<Vec<_>>();
+            let Some(source_slot) = current_slots.iter().copied().min_by_key(|source_slot| {
+                let source = skeleton(session, *source_slot).unwrap();
+                let player = session
+                    .backend()
+                    .campaign
+                    .level2_compatibility()
+                    .state
+                    .position;
+                let dx = i64::from(i32::from(
+                    source.position.x.wrapping_sub(player.x).cast_signed(),
+                ));
+                let dy = i64::from(i32::from(
+                    source.position.y.wrapping_sub(player.y).cast_signed(),
+                ));
+                dx * dx + dy * dy
             }) else {
                 break;
             };
-            let lives_before = skeleton_slots
-                .iter()
-                .filter_map(|candidate| {
-                    skeleton(session, *candidate)
-                        .filter(|source| source.life >= 0)
-                        .map(|source| (*candidate, source.life))
-                })
-                .collect::<BTreeMap<_, _>>();
-            let attacker = session
-                .backend()
-                .campaign
-                .level2_compatibility()
-                .state
-                .entity_index;
-            session
-                .backend_mut()
-                .campaign
-                .level2_compatibility_mut()
-                .stage_imported_skeleton_fireball_damage_for_test(
-                    source_slot,
-                    attacker,
-                    FIREBALL_DAMAGE,
-                )
-                .unwrap();
-            session
-                .step(guard(session), GameCommand::default())
-                .unwrap();
-
-            let changed = lives_before
-                .iter()
-                .filter_map(|(candidate, life)| {
-                    skeleton(session, *candidate)
-                        .filter(|source| source.life != *life)
-                        .map(|source| (*candidate, *life, source.life))
-                })
-                .collect::<Vec<_>>();
-            assert!(
-                changed
-                    .iter()
-                    .any(|(candidate, _, _)| *candidate == source_slot)
+            let receipts = fire_real_player_fireball_at_level_three_skeleton_for_test(
+                session,
+                source_slot,
+                &current_slots,
+                &mut observed_actions,
             );
-            assert!(changed.iter().all(|(candidate, before, after)| {
-                skeleton_slots.contains(candidate) && *after == *before - i32::from(FIREBALL_DAMAGE)
+            if receipts.is_empty() {
+                miss_count += 1;
+            } else {
+                hit_count += receipts.len();
+            }
+            assert!(receipts.iter().all(|receipt| {
+                skeleton_slots.contains(&receipt.source_slot)
+                    && receipt.life_after
+                        == receipt
+                            .life_before
+                            .wrapping_sub(crate::level1_mission::FIREBALL_PAYLOAD)
             }));
             for candidate in &skeleton_slots {
                 if let Some(source) = skeleton(session, *candidate) {
@@ -8024,9 +8501,12 @@ pub(crate) mod tests {
                 }
             }
         }
-        assert!(skeleton_slots.iter().all(|source_slot| {
-            skeleton(session, *source_slot).is_none_or(|source| source.life < 0)
-        }));
+        assert!(
+            skeleton_slots.iter().all(|source_slot| {
+                skeleton(session, *source_slot).is_none_or(|source| source.life < 0)
+            }),
+            "public Fireballs exhausted the existing per-target cast budget: hits={hit_count}, misses={miss_count}"
+        );
 
         for _ in 0..16 {
             if session
@@ -8074,16 +8554,27 @@ pub(crate) mod tests {
                 .iter()
                 .all(|sphere| sphere.mana == 500)
         );
-        let burst_sources = economy.death_bursts()[burst_count_before..]
+        let burst_sources = economy.events()[economy_event_start..]
             .iter()
-            .map(|burst| burst.parent_entity_index)
-            .collect::<BTreeSet<_>>();
+            .filter_map(|event| match event {
+                crate::native_world::Level2EconomyEvent::DeathBurstSpawned {
+                    parent_entity_index,
+                    ..
+                } => Some(*parent_entity_index),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(burst_sources.len(), skeleton_slots.len());
+        assert_eq!(
+            burst_sources.into_iter().collect::<BTreeSet<_>>(),
+            skeleton_slots.iter().copied().collect::<BTreeSet<_>>()
+        );
         assert!(
-            !burst_sources.is_empty()
-                && burst_sources
-                    .iter()
-                    .all(|source_slot| skeleton_slots.contains(source_slot)),
-            "source-flag-admitted Skeleton death bursts must belong to the real horde: {burst_sources:?}"
+            economy
+                .death_bursts()
+                .iter()
+                .all(|burst| !skeleton_slots.contains(&burst.parent_entity_index)),
+            "ordinary following-pass cleanup must reclaim every real Skeleton death burst"
         );
 
         let compatibility = session.backend().campaign.level2_compatibility();
