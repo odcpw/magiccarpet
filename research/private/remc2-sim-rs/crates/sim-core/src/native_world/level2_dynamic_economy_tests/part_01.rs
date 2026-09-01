@@ -3158,18 +3158,48 @@
         let baseline_free_slots = session.economy().free_slot_count();
         let target_slot = session
             .economy_mut()
-            .spawn_mana_sphere_from_death(903, Position::default(), 0, 0x5678, 100, 111)
+            .spawn_mana_sphere_from_death(903, Position::default(), 0, 0x5678, 100, 0)
             .expect("target sphere allocation");
         let source_slot = session
             .economy_mut()
-            .spawn_mana_sphere_from_death(904, Position::default(), 0, 0x6789, 50, 112)
+            .spawn_mana_sphere_from_death(904, Position::default(), 0, 0x6789, 50, 0)
             .expect("source sphere allocation");
+        let target_generation = session
+            .economy()
+            .slot_generation(u16::try_from(target_slot).expect("target slot fits"));
         assert_eq!(session.economy().free_slot_count(), baseline_free_slots - 2);
         session.economy_mut().begin_turn();
         assert!(session.economy_mut().merge_mana_spheres(
             u16::try_from(target_slot).expect("target slot fits"),
             u16::try_from(source_slot).expect("source slot fits"),
         ));
+        let neutral = session
+            .economy()
+            .spheres()
+            .iter()
+            .filter(|sphere| {
+                sphere.active
+                    && !sphere.pending_delete
+                    && sphere.owner_entity_index == 0
+                    && sphere.player_entity_index == 0
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(neutral.len(), 1);
+        assert_eq!(
+            (
+                neutral[0].source_entity_index,
+                session
+                    .economy()
+                    .slot_generation(neutral[0].source_entity_index),
+                neutral[0].mana,
+            ),
+            (
+                u16::try_from(target_slot).expect("target slot fits"),
+                target_generation,
+                150,
+            ),
+            "a current-neutral census reselects the surviving target with the exact merged payload"
+        );
         assert_eq!(
             session.economy().free_slot_count(),
             baseline_free_slots - 1,
