@@ -664,7 +664,9 @@ class CampaignDayMaterialClosureTests(unittest.TestCase):
         self.assertEqual(closure.canonical_json(first), closure.canonical_json(second))
         self.assertEqual(
             first["closure_sha256"],
-            "67dea39e111fd8c6bdfb16867d0d5fcdb6424943bdaf6290e8247e59bd3c926d",
+            # GOLDEN-CHANGE: subtype-9's source-owned particles 201/202 add
+            # exact TMAP allocation groups 110..115 to the dynamic closure.
+            "d6e909d65437a37fed699429efa968175f39d6253c350537a1c82ce9729d5871",
         )
         self.assertEqual(
             first["profile"],
@@ -699,6 +701,8 @@ class CampaignDayMaterialClosureTests(unittest.TestCase):
                 40,
                 88,
                 *range(89, 105),
+                201,
+                202,
                 220,
                 238,
             ],
@@ -709,10 +713,80 @@ class CampaignDayMaterialClosureTests(unittest.TestCase):
             for row in partition["assets"]
             if row["asset_id"].startswith("owner_data:DATA/TMAPS0-0.DAT#")
         }
-        self.assertEqual(len(tmap_selectors), 156)
+        self.assertEqual(len(tmap_selectors), 162)
         self.assertTrue(set(range(14, 30)).issubset(tmap_selectors))
+        self.assertTrue(set(range(110, 116)).issubset(tmap_selectors))
         self.assertTrue({152, 153, 154}.issubset(tmap_selectors))
         self.assertTrue({138, 139, 140}.isdisjoint(tmap_selectors))
+
+        dynamic = {
+            row["asset_id"]: row
+            for row in first["sets"]["dynamic_dependencies"]["assets"]
+        }
+        self.assertEqual(
+            dynamic["owner_data:DATA/TMAPS0-0.DAT#112"]["content_address"],
+            "sha256:026a755e02646f4c0a2f47e7447d12de680934a4cbca52318c5d945a9fb3fa4c",
+        )
+        model9_edges = [
+            (row["from"], int(row["to"].rsplit("#", 1)[1]))
+            for row in first["edges"]
+            if row["from"]
+            in {
+                "folded_rooted_class5_particle_parameter[201]",
+                "folded_rooted_class5_particle_parameter[202]",
+            }
+        ]
+        self.assertEqual(
+            sorted(
+                selector
+                for source, selector in model9_edges
+                if source.endswith("[201]")
+            ),
+            [110, 111, 112],
+        )
+        self.assertEqual(
+            sorted(
+                selector
+                for source, selector in model9_edges
+                if source.endswith("[202]")
+            ),
+            [113, 114, 115],
+        )
+
+    def test_level3_model9_runtime_pose_selector_tamper_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            export = Path(tmp) / "level3"
+            shutil.copytree(LEVEL3_EXPORT, export)
+            presentation = bytearray((export / "presentation.bin").read_bytes())
+            particle_201_base_offset = 12 + 201 * 14
+            presentation[particle_201_base_offset:particle_201_base_offset + 2] = (
+                111
+            ).to_bytes(2, "little")
+            presentation_path = export / "presentation.bin"
+            presentation_path.write_bytes(presentation)
+
+            manifest_path = export / "manifest.json"
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            manifest["files"]["presentation.bin"] = {
+                **manifest["files"]["presentation.bin"],
+                "bytes": len(presentation),
+                "sha256": closure.sha256_bytes(presentation),
+            }
+            identity_rows = [
+                f"{name}\0{manifest['files'][name]['sha256']}\0"
+                f"{manifest['files'][name]['bytes']}\n"
+                for name in sorted(manifest["files"])
+            ]
+            manifest["package_sha256"] = closure.sha256_bytes(
+                "".join(identity_rows).encode("utf-8")
+            )
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+            with self.assertRaisesRegex(
+                closure.ClosureError,
+                "folded class-5 presentation tuple changed: model9-movement",
+            ):
+                closure.build_campaign_day_material_closure(export, CATALOG, OWNER)
 
     def test_level3_day_material_closure_rejects_member_tamper(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

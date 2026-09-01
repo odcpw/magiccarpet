@@ -903,10 +903,15 @@ namespace MagicCarpet.Native.Tests
 
             var cache = OwnerAssetCache.OpenAndValidateLevel3(Level3OwnerCache);
             Assert.That(cache.IsLevel3Aggregate, Is.True);
-            Assert.That(cache.OutputCount, Is.EqualTo(644));
+            // GOLDEN-CHANGE: particles 201/202 contribute six exact TMAP
+            // selectors to both the material and closure-bound gameplay set.
+            Assert.That(cache.OutputCount, Is.EqualTo(662));
             Assert.That(cache.DayHud.bitmap_assets.Length, Is.EqualTo(34));
             Assert.That(cache.DayHud.spell_tier_text.tiers.Length, Is.EqualTo(5));
-            Assert.That(cache.Level3Materials.tmaps0.textures.Length, Is.EqualTo(156));
+            Assert.That(cache.Level3Materials.tmaps0.textures.Length, Is.EqualTo(162));
+            CollectionAssert.IsSubsetOf(
+                new[] { 110, 111, 112, 113, 114, 115 },
+                cache.Level3Materials.tmaps0.selectors);
 
             var root = new GameObject("Level 3 presentation qualification");
             Level3PresentationSurface surface = null;
@@ -935,7 +940,7 @@ namespace MagicCarpet.Native.Tests
                     Assert.That(
                         surface.CacheContentHash,
                         Is.EqualTo(
-                            "74008ec454d0ddbba8cef39a15402f72273e35de9eadedbe4a61ee3108d6569a"));
+                            "a6f7d5c63d8d2612df166ca75034fa0ceb325439ae489245cf9122864765fbf9"));
 
                     var localPlayer = session.Players()
                         .Single(player => player.slot == 0 && player.active != 0);

@@ -110,7 +110,16 @@ ROOTED_CLASS5_PRESENTATION_BY_AUTHORED_SUBTYPE = {
         },
     },
     4: {0: {"family": "archer", "base_tmap": 8, "render_mode": 20}},
-    9: {220: LEVEL2_FOLDED_ROOTED_CLASS5_PRESENTATION_PARAMETERS[220]},
+    # Model 9 resets on particle 220, then the source action scheduler selects
+    # particle 201 for ordinary movement (`sub_20F20`) and particle 202 while
+    # reacting to another entity (`sub_20EC0`).  Both poses are reachable from
+    # every rooted subtype-9 row even when neither is present in the reset
+    # entity census.
+    9: {
+        201: {"family": "model9-movement", "base_tmap": 110, "render_mode": 20},
+        202: {"family": "model9-reaction", "base_tmap": 113, "render_mode": 20},
+        220: LEVEL2_FOLDED_ROOTED_CLASS5_PRESENTATION_PARAMETERS[220],
+    },
     14: {219: LEVEL2_FOLDED_ROOTED_CLASS5_PRESENTATION_PARAMETERS[219]},
 }
 OBJECTIVE_INDEX_BASES = (

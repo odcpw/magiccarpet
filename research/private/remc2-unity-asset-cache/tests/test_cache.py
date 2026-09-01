@@ -1897,13 +1897,14 @@ class CampaignDayMaterialTests(unittest.TestCase):
         )
         self.assertEqual(manifest["schema"], cache.DAY_MATERIAL_SCHEMA)
         self.assertEqual(manifest["profile"]["name"], "day-material")
-        self.assertEqual(len(manifest["outputs"]), 321)
+        self.assertEqual(len(manifest["outputs"]), 333)
         descriptor = json.loads(
             (self.first / "materials/descriptor.json").read_text()
         )
         self.assertEqual(descriptor["schema"], cache.DAY_MATERIAL_DESCRIPTOR_SCHEMA)
-        self.assertEqual(len(descriptor["tmaps0"]["selectors"]), 156)
+        self.assertEqual(len(descriptor["tmaps0"]["selectors"]), 162)
         self.assertTrue(set(range(14, 30)).issubset(descriptor["tmaps0"]["selectors"]))
+        self.assertTrue(set(range(110, 116)).issubset(descriptor["tmaps0"]["selectors"]))
         self.assertTrue({152, 153, 154}.issubset(descriptor["tmaps0"]["selectors"]))
         self.assertTrue(
             {138, 139, 140}.isdisjoint(descriptor["tmaps0"]["selectors"])
@@ -1920,6 +1921,18 @@ class CampaignDayMaterialTests(unittest.TestCase):
         with self.assertRaisesRegex(cache.CacheError, "missing or extra files"):
             cache.validate_campaign_day_material_cache(self.first)
         extra.unlink()
+
+    def test_neutral_cache_rejects_missing_model9_runtime_selector(self) -> None:
+        selector = self.first / "terrain/tmaps0/112.indices.u8"
+        selector.rename(selector.with_suffix(".missing"))
+        try:
+            with self.assertRaisesRegex(
+                cache.CacheError,
+                "output missing or truncated: terrain/tmaps0/112.indices.u8",
+            ):
+                cache.validate_campaign_day_material_cache(self.first)
+        finally:
+            selector.with_suffix(".missing").rename(selector)
 
 
 class CampaignDayGameplayAggregateTests(unittest.TestCase):
@@ -1953,7 +1966,9 @@ class CampaignDayGameplayAggregateTests(unittest.TestCase):
         self.assertEqual(manifest["profile"]["external_level"], 3)
         self.assertEqual(manifest["profile"]["internal_level"], 2)
         self.assertEqual(set(manifest["components"]), {"material", "gameplay", "audio"})
-        self.assertEqual(len(manifest["outputs"]), 644)
+        # GOLDEN-CHANGE: six source-owned model-9 TMAP selectors add twelve
+        # decoded material outputs and six closure-bound gameplay outputs.
+        self.assertEqual(len(manifest["outputs"]), 662)
         self.assertEqual(
             manifest["presentation_scope"]["audio"],
             "materialized_from_source_qualified_level3_occurrences",
@@ -2021,8 +2036,10 @@ class CampaignDayGameplayAggregateTests(unittest.TestCase):
         )
         self.assertEqual(descriptor["excluded"], excluded)
         self.assertEqual(len(scene), 174)
-        self.assertEqual(len(dynamic), 46)
-        self.assertEqual(len(selected), 209)
+        # GOLDEN-CHANGE: model-9 particles 201/202 contribute the six exact
+        # movement/reaction TMAP rows selected by their source render modes.
+        self.assertEqual(len(dynamic), 52)
+        self.assertEqual(len(selected), 215)
         self.assertEqual(descriptor["source_sets"]["day_hud"]["output_count"], 75)
         self.assertEqual(
             manifest["bindings"]["campaign_package_sha256"],
@@ -2030,7 +2047,7 @@ class CampaignDayGameplayAggregateTests(unittest.TestCase):
         )
         self.assertEqual(
             manifest["bindings"]["level_asset_closure_sha256"],
-            "67dea39e111fd8c6bdfb16867d0d5fcdb6424943bdaf6290e8247e59bd3c926d",
+            "d6e909d65437a37fed699429efa968175f39d6253c350537a1c82ce9729d5871",
         )
 
     def test_tamper_symlink_and_campaign_package_mismatch_fail_closed(self) -> None:

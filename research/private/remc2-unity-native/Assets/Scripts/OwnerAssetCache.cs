@@ -89,33 +89,33 @@ namespace MagicCarpet.Native
         private const string Level3MaterialDescriptorSchema = "mc2-day-materials/v1";
         private const string Level3AudioSchema = "mc2-day-audio-cache/v1";
         private const string Level3AggregateManifestHash =
-            "ae770ca7f0dc28bebc8c47f049b79ef9df023af2adb81c91b45c378ceec654c4";
+            "7b9e05306f9dc6777c82928bbcb5231e853125c97cc75265f85e844fb9e1a2b1";
         private const string Level3AggregateContentHash =
-            "74008ec454d0ddbba8cef39a15402f72273e35de9eadedbe4a61ee3108d6569a";
+            "a6f7d5c63d8d2612df166ca75034fa0ceb325439ae489245cf9122864765fbf9";
         private const string Level3MaterialManifestHash =
-            "04ff8787ebac24d60ebb7e8764a8ca5ab05df6b5d492b14921e65b7523b69cdc";
+            "d82a3f077f34d61a14296239d5847da20d42ec01a4eb2ba20b5ef5d8359f8af5";
         private const string Level3MaterialContentHash =
-            "b4007617309530d4e4018733e318aba5b9e6f6812f531e037e45f708650ee7ea";
+            "a77943b57429c00993331b53d8397cf146ac8fb68a1df26d1be3d7eb4dfda52e";
         private const string Level3GameplayManifestHash =
-            "08ffc1879154d2468107e1211b45982017baa1dd65313bd22ec8009a2032bd14";
+            "d1d20c8d08349f9187bba7337b7730ec08098d36301abb295ac87bbe72ad9950";
         private const string Level3GameplayContentHash =
-            "6934968cfa3f64d62024ce7789bfde21e11d0feb2487fb187a3c457258fdb546";
+            "ef3a90f368c4b2fc86e604da8b674cea3c97119520ed523971a50f4a588e6b95";
         private const string Level3AudioManifestHash =
-            "d7b556a1d63c2c576915f2b54747a4f4e9807f962eb183ae38a92f5070dab059";
+            "838dd5365d2484443f5f685535da7a6249614e923712d1ffd43d7545d0428cc3";
         private const string Level3AudioContentHash =
-            "e7ca74c6f1faf57fd271efd5356eb72da7bc5a729d134252987b00fd5894c287";
+            "ec30b1d61cbbf206f89716c9f981906fda839eef5efc4f2e1588cb6b3222a335";
         private const string Level3AudioDenominatorHash =
             "a885675828a35203e1941fc24d8d060d8b732753f7ac295988b36a2ec327512c";
         private const string Level3MaterialDescriptorHash =
-            "1d4980361223aab9681f8514af607c3cf03529e50d3e67469a8d114a34cc35fa";
+            "a76360e28bbd7ec66ac738ff40a9f1f568f7327e16cb4e759435bfc2ac9f9230";
         private const string Level3GameplayDescriptorHash =
-            "30d0a6c698209b3d022822015802bde002f8662ac645a47313eaac8aec6c47d6";
+            "794e3c4714319deb9d566d3832a39ead0c50f6fa116e91b8151232648ac57435";
         private const string Level3OwnerExportPackageHash =
             "0d10845690d7c9753246c633be771e54f3d6a481940af3f5fb33b909e0241a73";
         private const string Level3CampaignPackageHash =
             "6f17fe1c33c5852796b08acba2c44e5073939b947975b4f3b330d2c45b62d18d";
         private const string Level3ClosureHash =
-            "67dea39e111fd8c6bdfb16867d0d5fcdb6424943bdaf6290e8247e59bd3c926d";
+            "d6e909d65437a37fed699429efa968175f39d6253c350537a1c82ce9729d5871";
 
         [Serializable]
         private sealed class Manifest
@@ -689,7 +689,7 @@ namespace MagicCarpet.Native
                 "exact Level 3 aggregate component set");
             RequireLevel2(
                 manifest.cache_content_sha256 == Level3AggregateContentHash &&
-                manifest.outputs != null && manifest.outputs.Length == 644,
+                manifest.outputs != null && manifest.outputs.Length == 662,
                 "exact Level 3 aggregate content identity and output count");
 
             var aggregateRows = ValidateLevel2OutputRows(
@@ -705,7 +705,7 @@ namespace MagicCarpet.Native
                 Level3MaterialSchema,
                 Level3MaterialManifestHash,
                 Level3MaterialContentHash,
-                321,
+                333,
                 aggregateRows);
             var gameplayRows = ValidateLevel3Component(
                 root,
@@ -714,7 +714,7 @@ namespace MagicCarpet.Native
                 Level3GameplaySchema,
                 Level3GameplayManifestHash,
                 Level3GameplayContentHash,
-                285,
+                291,
                 aggregateRows);
             ValidateLevel3Component(
                 root,
@@ -822,8 +822,8 @@ namespace MagicCarpet.Native
                 descriptor.tmaps0.palette_asset_id == "owner_data:DATA/PALD-0.DAT" &&
                 descriptor.tmaps0.selectors != null &&
                 descriptor.tmaps0.textures != null &&
-                descriptor.tmaps0.selectors.Length == 156 &&
-                descriptor.tmaps0.textures.Length == 156,
+                descriptor.tmaps0.selectors.Length == 162 &&
+                descriptor.tmaps0.textures.Length == 162,
                 "Level 3 material selector census");
             var selectors = new HashSet<int>();
             foreach (var texture in descriptor.tmaps0.textures)
@@ -842,7 +842,8 @@ namespace MagicCarpet.Native
                     "Level 3 material texture membership and bounds");
             }
             RequireLevel2(
-                selectors.SetEquals(descriptor.tmaps0.selectors),
+                selectors.SetEquals(descriptor.tmaps0.selectors) &&
+                new[] { 110, 111, 112, 113, 114, 115 }.All(selectors.Contains),
                 "Level 3 material texture/selector equality");
             return descriptor;
         }
