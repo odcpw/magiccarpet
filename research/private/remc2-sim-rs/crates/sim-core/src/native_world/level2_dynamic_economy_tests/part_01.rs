@@ -691,7 +691,9 @@
                 .find(|sphere| sphere.source_entity_index == slot)
                 .expect("guidance candidate remains represented");
             sphere.player_entity_index = source_id_entity_index.wrapping_add(1);
-            sphere.velocity_x = 0;
+            // Vertical settling does not imply horizontal rest on sloped
+            // terrain; Possession must use the sphere's current position.
+            sphere.velocity_x = 32;
             sphere.velocity_y = 0;
             sphere.vertical_velocity = 0;
         }
