@@ -773,6 +773,87 @@ fn level_two_day_bee_l2_06_terminal_selector2_defers_action20_until_next_callbac
 }
 
 #[test]
+fn level_two_bee_action17_terrain_death_enters_uncredited_action20_on_following_callback() {
+    let inspection =
+        NativeWorld::inspect_level2(level_two_fixture_path()).expect("qualified Level 2 package");
+    let mut session = inspection
+        .level2_reset_session()
+        .expect("Level 2 action-17 terrain-death session");
+    let terrain = session.canonical_terrain().clone();
+    // `sub_1F660 -> sub_1BF90` has the same entry-dead contract for an
+    // ordinary action-17 Bee. With no pending mailbox it first clears the
+    // prior applied-attacker word; terrain failure then leaves action 17 for
+    // this callback, and the following visit selects uncredited action 20.
+    let action17_source = session
+        .economy_mut()
+        .allocate_authored_bee(210, Position::default(), None, 3_000, &terrain)
+        .expect("authored action-17 Bee");
+    let action17_slot = action17_source.source_entity_index;
+    let mut action17 = action17_source;
+    action17.position = Position {
+        x: 0x2080,
+        y: 0x1080,
+        z: 0,
+    };
+    action17.yaw = 0;
+    action17.roll = 0;
+    action17.actual_speed = 512;
+    action17.action = 17;
+    action17.source_byte_3e = 1;
+    action17.source_byte_39 = 0;
+    action17.control_flags &=
+        !(LEVEL2_BEE_MOVEMENT_SKIP_BIT | LEVEL2_BEE_OBSTRUCTION_BIT);
+    action17.pending_damage = 250;
+    action17.pending_attacker_entity_index = 0;
+    action17.damage_attacker_entity_index = session.state.entity_index;
+    action17.kill_credit_entity_index = session.state.entity_index;
+    assert!(session.economy_mut().replace_authored_bee_for_test(action17));
+
+    for y in 0..=u8::MAX {
+        for x in 0..=u8::MAX {
+            session.canonical_terrain_mut().planes.ground_heights[terrain_index(x, y)] =
+                if x & 1 == 0 { 0 } else { u8::MAX };
+        }
+    }
+
+    session.step_outer_turn(PlayerCommand::default(), 0);
+    let action17_helper_terminal = session
+        .economy()
+        .bee_creatures()
+        .iter()
+        .find(|source| source.source_entity_index == action17_slot)
+        .copied()
+        .expect("movement-terminal action-17 Bee");
+    assert_eq!(
+        (
+            action17_helper_terminal.action,
+            action17_helper_terminal.life,
+            action17_helper_terminal.pending_attacker_entity_index,
+            action17_helper_terminal.damage_attacker_entity_index,
+        ),
+        (17, -1, 0, 0)
+    );
+
+    session.step_outer_turn(PlayerCommand::default(), 0);
+    let action17_entry_terminal = session
+        .economy()
+        .bee_creatures()
+        .iter()
+        .find(|source| source.source_entity_index == action17_slot)
+        .copied()
+        .expect("entry-terminal action-17 Bee");
+    assert_eq!(
+        (
+            action17_entry_terminal.action,
+            action17_entry_terminal.life,
+            action17_entry_terminal.damage_attacker_entity_index,
+            action17_entry_terminal.kill_credit_entity_index,
+        ),
+        (20, -1, 0, 0)
+    );
+}
+
+#[test]
 fn level_two_bee_action17_moves_before_acquisition_rng() {
     let inspection =
         NativeWorld::inspect_level2(level_two_fixture_path()).expect("qualified Level 2 package");

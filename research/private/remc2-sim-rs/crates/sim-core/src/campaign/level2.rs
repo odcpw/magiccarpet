@@ -17632,7 +17632,8 @@ impl Level2ResetSession {
                     } else {
                         Vec::new()
                     };
-                    let acquired_target = if source_before.action == 17 {
+                    let action17_entry_dead = source_before.action == 17 && source_before.life < 0;
+                    let acquired_target = if source_before.action == 17 && !action17_entry_dead {
                         let terrain = &self.session.state.live.terrain;
                         self.session.state.live.economy.acquire_authored_bee_target(
                             source_slot,
@@ -17683,6 +17684,7 @@ impl Level2ResetSession {
                             target,
                             &peers,
                             &class3_candidates,
+                            action17_entry_dead,
                             terrain,
                         );
                     if let Some(sound) = outcome.sound {

@@ -6360,7 +6360,7 @@ pub(crate) mod tests {
                 .find(|bee| bee.authored_index() == Some(authored_index))
                 .copied()
                 .expect("production Bee remains before its public Fireball callback");
-            if bee.action == 17 {
+            if bee.action == 17 && bee.active && bee.drawing_enabled && bee.life >= 0 {
                 return bee;
             }
             assert!(
@@ -6434,6 +6434,553 @@ pub(crate) mod tests {
         }
         panic!(
             "one ordinary semantic Fireball did not reach Bee {authored_index}'s source mailbox"
+        );
+    }
+
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    struct BeeFireballDamageReceipt {
+        authored_index: u16,
+        source_slot: u16,
+        generation: u32,
+        life_before: i16,
+        life_after: i16,
+    }
+
+    fn real_level_two_new_event_replaceable_slots_for_test(
+        economy: &crate::native_world::Level2EconomyState,
+    ) -> BTreeSet<u16> {
+        const SOURCE_REPLACEABLE_FLAG: u32 = 0x0002_0000;
+
+        let mut slots = BTreeSet::new();
+        macro_rules! collect_flagged {
+            ($rows:expr) => {
+                slots.extend(
+                    $rows
+                        .iter()
+                        .filter(|row| {
+                            row.active && row.control_flags & SOURCE_REPLACEABLE_FLAG != 0
+                        })
+                        .map(|row| row.source_entity_index),
+                );
+            };
+        }
+        collect_flagged!(economy.spheres());
+        collect_flagged!(economy.death_bursts());
+        collect_flagged!(economy.authored_model1());
+        collect_flagged!(economy.model59_smoke_children());
+        collect_flagged!(economy.authored_model5_water_splashes());
+        collect_flagged!(economy.authored_model13());
+        collect_flagged!(economy.authored_model6());
+        collect_flagged!(economy.model13_spawned_children());
+        collect_flagged!(economy.model17_spawned_children());
+        collect_flagged!(economy.model76_tail_spawns());
+        slots.extend(
+            economy
+                .castle_children()
+                .iter()
+                .filter(|child| {
+                    child.active
+                        && child.source_class == 5
+                        && child.model == 15
+                        && child.control_flags & SOURCE_REPLACEABLE_FLAG != 0
+                })
+                .map(|child| child.source_entity_index),
+        );
+        slots
+    }
+
+    fn fire_real_player_fireball_at_bee_swarm_for_test(
+        session: &mut GameSession<Mc2CampaignBackend>,
+        requested_authored_index: u16,
+        exact_package_rows: &[u16],
+    ) -> Vec<BeeFireballDamageReceipt> {
+        // A class-10/model-0 impact remains in the source arena for its
+        // authored eight-life callback tail.  Do not pile another cast onto
+        // an occupied projectile/effect arena: ordinary no-input turns own
+        // its expiry, following-pass reclaim, and player mana recharge.
+        for _ in 0..=24 {
+            let compatibility = session.backend().campaign.level2_compatibility();
+            let economy = compatibility.economy();
+            let player_slot = compatibility.state.entity_index;
+            let has_player_projectile = economy
+                .fireball_projectiles()
+                .iter()
+                .any(|projectile| projectile.owner_entity_index == player_slot);
+            let has_player_impact = economy.model17_spawned_children().iter().any(|impact| {
+                impact.source_class == 10
+                    && impact.model == 0
+                    && impact.parent_entity_id == player_slot
+            });
+            if !has_player_projectile && !has_player_impact {
+                break;
+            }
+            session
+                .step(guard(session), GameCommand::default())
+                .unwrap();
+        }
+        let mut stable_aimed_bee = None;
+        for _ in 0..exact_package_rows.len() {
+            let current_row = session
+                .backend()
+                .campaign
+                .level2_compatibility()
+                .economy()
+                .bee_creatures()
+                .iter()
+                .filter(|bee| bee.active && bee.drawing_enabled && bee.life >= 0)
+                .filter_map(|bee| {
+                    bee.authored_index()
+                        .filter(|row| exact_package_rows.contains(row))
+                })
+                .min();
+            let Some(current_row) = current_row else {
+                break;
+            };
+            let _converged = drive_real_bee_to_fireball_action_for_test(session, current_row);
+            stable_aimed_bee = session
+                .backend()
+                .campaign
+                .level2_compatibility()
+                .economy()
+                .bee_creatures()
+                .iter()
+                .find(|bee| {
+                    bee.active
+                        && bee.drawing_enabled
+                        && bee.life >= 0
+                        && bee.authored_index() == Some(current_row)
+                })
+                .copied();
+            if stable_aimed_bee.is_some() {
+                break;
+            }
+        }
+        let aimed_bee = stable_aimed_bee.unwrap_or_else(|| {
+            panic!(
+                "no stable current package Bee remains after requested row {requested_authored_index}"
+            )
+        });
+        let aimed_authored_index = aimed_bee
+            .authored_index()
+            .expect("stable package Bee retains its authored row");
+        let (attacker, before, projectile_slots_before, impact_occurrences_before) = {
+            let compatibility = session.backend().campaign.level2_compatibility();
+            let economy = compatibility.economy();
+            let shared = compatibility.shared_spells();
+            let player = shared.local_player();
+            let holder_slot = player.enabled_spell_holders[0];
+            let holder = shared
+                .pickups()
+                .iter()
+                .chain(shared.holders())
+                .chain(shared.dynamic_pickups())
+                .find(|holder| holder.index == holder_slot)
+                .expect("local player retains the acquired Fireball holder");
+            assert!(holder.active);
+            assert_eq!((holder.class, holder.model, holder.action), (15, 0, 0));
+            assert_eq!(
+                holder.source_spell_parent_entity_index(),
+                player.entity_index
+            );
+            assert!((0..=2).contains(&holder.level_gate));
+            assert!(shared.player_mana() >= holder.max_mana);
+            let replaceable_slots = real_level_two_new_event_replaceable_slots_for_test(economy);
+            assert!(
+                economy.free_slot_count() > 0 || !replaceable_slots.is_empty(),
+                "NewEvent admission requires an ordinary free row or a current source-replaceable row: live={:?}",
+                economy.live_arena_slots()
+            );
+            assert!(
+                economy
+                    .fireball_projectiles()
+                    .iter()
+                    .all(|projectile| projectile.owner_entity_index != player.entity_index)
+            );
+            assert!(
+                economy
+                    .model17_spawned_children()
+                    .iter()
+                    .all(|impact| impact.parent_entity_id != player.entity_index)
+            );
+            let before = economy
+                .bee_creatures()
+                .iter()
+                .filter(|bee| {
+                    bee.active
+                        && bee.drawing_enabled
+                        && bee.life >= 0
+                        && bee
+                            .authored_index()
+                            .is_some_and(|row| exact_package_rows.contains(&row))
+                })
+                .map(|bee| {
+                    (
+                        bee.authored_index().expect("filtered package Bee row"),
+                        bee.source_entity_index,
+                        economy.slot_generation(bee.source_entity_index),
+                        bee.life,
+                    )
+                })
+                .collect::<Vec<_>>();
+            (
+                compatibility.state.entity_index,
+                before,
+                economy
+                    .fireball_projectiles()
+                    .iter()
+                    .map(|projectile| projectile.source_entity_index)
+                    .collect::<BTreeSet<_>>(),
+                economy
+                    .model17_spawned_children()
+                    .iter()
+                    .map(|impact| {
+                        (
+                            impact.source_entity_index,
+                            economy.slot_generation(impact.source_entity_index),
+                        )
+                    })
+                    .collect::<BTreeSet<_>>(),
+            )
+        };
+        assert!(before.iter().any(|(row, slot, generation, life)| {
+            *row == aimed_authored_index
+                && *slot == aimed_bee.source_entity_index
+                && *generation
+                    == session
+                        .backend()
+                        .campaign
+                        .level2_compatibility()
+                        .economy()
+                        .slot_generation(*slot)
+                && *life == aimed_bee.life
+        }));
+
+        aim_real_player_fireball_at_bee_for_test(session, aimed_bee);
+        session
+            .step(
+                guard(session),
+                GameCommand {
+                    select_spell: Some(SemanticId::parse("spell.fireball").unwrap()),
+                    cast_selected: true,
+                    ..GameCommand::default()
+                },
+            )
+            .unwrap();
+
+        let mut projectile_slot = None;
+        let mut saw_class10_impact = false;
+        let mut saw_completed_impact_callback = false;
+        for _ in 0..=24 {
+            let compatibility = session.backend().campaign.level2_compatibility();
+            let economy = compatibility.economy();
+            projectile_slot = projectile_slot.or_else(|| {
+                economy
+                    .fireball_projectiles()
+                    .iter()
+                    .find(|projectile| {
+                        !projectile_slots_before.contains(&projectile.source_entity_index)
+                            && projectile.owner_entity_index == attacker
+                            && projectile.source_subspell_index
+                                == crate::level1_mission::FIREBALL_PAYLOAD as u16
+                    })
+                    .map(|projectile| projectile.source_entity_index)
+            });
+            let completed_impact_callback = economy
+                .model17_spawned_children()
+                .iter()
+                .find(|impact| {
+                    !impact_occurrences_before.contains(&(
+                        impact.source_entity_index,
+                        economy.slot_generation(impact.source_entity_index),
+                    )) && impact.source_class == 10
+                        && impact.model == 0
+                        && impact.parent_entity_id == attacker
+                        && impact.subspell_index == crate::level1_mission::FIREBALL_PAYLOAD as u16
+                        && projectile_slot.is_none_or(|projectile_slot| {
+                            impact.parent_entity_index == projectile_slot
+                        })
+                })
+                .map(|impact| {
+                    projectile_slot = Some(impact.parent_entity_index);
+                    saw_class10_impact = true;
+                    impact.control_flags & 2 != 0
+                })
+                .unwrap_or(false);
+            let recipients = before
+                .iter()
+                .filter_map(|&(row, source_slot, generation, life_before)| {
+                    economy
+                        .bee_creatures()
+                        .iter()
+                        .find(|bee| {
+                            bee.authored_index() == Some(row)
+                                && bee.source_entity_index == source_slot
+                                && economy.slot_generation(source_slot) == generation
+                        })
+                        .filter(|bee| {
+                            bee.life == life_before.wrapping_sub(250)
+                                && bee.damage_attacker_entity_index == attacker
+                        })
+                        .map(|bee| BeeFireballDamageReceipt {
+                            authored_index: row,
+                            source_slot,
+                            generation,
+                            life_before,
+                            life_after: bee.life,
+                        })
+                })
+                .collect::<Vec<_>>();
+            if !recipients.is_empty() {
+                // Under NewEvent's zero-free replacement path the impact can
+                // apply this exact mailbox damage and be overwritten before
+                // the multi-pass observer sees its typed row.  The public
+                // activation plus the player-owned payload projectile (or an
+                // observed impact's parent slot) and generation-qualified
+                // recipient delta are the durable source identities.
+                assert!(projectile_slot.is_some());
+                return recipients;
+            }
+            if completed_impact_callback {
+                if saw_completed_impact_callback {
+                    return Vec::new();
+                }
+                saw_completed_impact_callback = true;
+            }
+            session
+                .step(guard(session), GameCommand::default())
+                .unwrap();
+        }
+        let current = session
+            .backend()
+            .campaign
+            .level2_compatibility()
+            .economy()
+            .bee_creatures()
+            .iter()
+            .filter_map(|bee| {
+                bee.authored_index()
+                    .filter(|row| exact_package_rows.contains(row))
+                    .map(|row| (row, bee.source_entity_index, bee.life, bee.action))
+            })
+            .collect::<Vec<_>>();
+        panic!(
+            "ordinary Fireball aimed at Bee {aimed_authored_index} did not damage the current package swarm: projectile={projectile_slot:?}, impact={saw_class10_impact}, before={before:?}, current={current:?}"
+        );
+    }
+
+    #[test]
+    fn campaign_backend_public_fireballs_track_real_level_two_moving_bee_swarm_recipient() {
+        const BEE_ROWS: [u16; 9] = [210, 211, 212, 229, 230, 231, 236, 237, 257];
+
+        let root = descriptor_fixture_path();
+        let definition = load_mc2_campaign(&root, &default_catalog().unwrap()).unwrap();
+        let mut session = GameSession::open(
+            &Mc2CampaignAdapter,
+            Arc::new(definition),
+            75,
+            Mc2CampaignInputs::new(&root),
+        )
+        .unwrap();
+        session
+            .backend_mut()
+            .campaign
+            .level2_compatibility_mut()
+            .activate_authored_group_prerequisite_for_test(4)
+            .unwrap();
+        session
+            .backend_mut()
+            .campaign
+            .level2_compatibility_mut()
+            .activate_authored_group_prerequisite_for_test(21)
+            .unwrap();
+        session
+            .backend_mut()
+            .campaign
+            .level2_compatibility_mut()
+            .activate_authored_group_prerequisite_for_test(17)
+            .unwrap();
+        assert_eq!(
+            session
+                .backend()
+                .campaign
+                .level2_compatibility()
+                .economy()
+                .bee_creatures()
+                .iter()
+                .filter_map(|bee| bee.authored_index())
+                .collect::<BTreeSet<_>>(),
+            BTreeSet::from(BEE_ROWS)
+        );
+
+        let mut terminal = BTreeSet::new();
+        let mut exact_damage = 0;
+        let first_receipts =
+            fire_real_player_fireball_at_bee_swarm_for_test(&mut session, BEE_ROWS[0], &BEE_ROWS);
+        for receipt in first_receipts {
+            assert_eq!(receipt.life_after, receipt.life_before.wrapping_sub(250));
+            exact_damage += receipt.life_before - receipt.life_after;
+            if receipt.life_after < 0 {
+                terminal.insert((receipt.authored_index, receipt.source_slot));
+            }
+        }
+        let first_impact_occurrences = {
+            let economy = session.backend().campaign.level2_compatibility().economy();
+            economy
+                .model17_spawned_children()
+                .iter()
+                .map(|impact| {
+                    (
+                        impact.source_entity_index,
+                        economy.slot_generation(impact.source_entity_index),
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        assert!(!first_impact_occurrences.is_empty());
+
+        let second_receipts =
+            fire_real_player_fireball_at_bee_swarm_for_test(&mut session, BEE_ROWS[0], &BEE_ROWS);
+        for receipt in second_receipts {
+            assert_eq!(receipt.life_after, receipt.life_before.wrapping_sub(250));
+            exact_damage += receipt.life_before - receipt.life_after;
+            if receipt.life_after < 0 {
+                terminal.insert((receipt.authored_index, receipt.source_slot));
+            }
+        }
+        let economy = session.backend().campaign.level2_compatibility().economy();
+        assert!(first_impact_occurrences.iter().all(|&(slot, generation)| {
+            economy.model17_spawned_children().iter().all(|impact| {
+                impact.source_entity_index != slot || economy.slot_generation(slot) != generation
+            })
+        }));
+
+        for _ in 2..16 {
+            for receipt in fire_real_player_fireball_at_bee_swarm_for_test(
+                &mut session,
+                BEE_ROWS[0],
+                &BEE_ROWS,
+            ) {
+                assert_eq!(receipt.life_after, receipt.life_before.wrapping_sub(250));
+                exact_damage += receipt.life_before - receipt.life_after;
+                if receipt.life_after < 0 {
+                    terminal.insert((receipt.authored_index, receipt.source_slot));
+                }
+            }
+            if !terminal.is_empty() {
+                break;
+            }
+        }
+        assert!(!terminal.is_empty());
+        assert_eq!(exact_damage % 250, 0);
+
+        for _ in 0..24 {
+            let live_rows = session
+                .backend()
+                .campaign
+                .level2_compatibility()
+                .economy()
+                .bee_creatures()
+                .iter()
+                .filter_map(|bee| bee.authored_index())
+                .collect::<BTreeSet<_>>();
+            if terminal.iter().all(|(row, _)| !live_rows.contains(row)) {
+                break;
+            }
+            session
+                .step(guard(&session), GameCommand::default())
+                .unwrap();
+        }
+        assert!(
+            session
+                .backend()
+                .campaign
+                .level2_compatibility()
+                .economy()
+                .bee_creatures()
+                .iter()
+                .all(|bee| !terminal
+                    .iter()
+                    .any(|(row, _)| bee.authored_index() == Some(*row)))
+        );
+        assert!(
+            session
+                .backend()
+                .campaign
+                .level2_compatibility()
+                .economy()
+                .events()
+                .iter()
+                .any(|event| matches!(
+                    event,
+                    crate::native_world::Level2EconomyEvent::DeathBurstSpawned {
+                        parent_entity_index,
+                        ..
+                    } if terminal.iter().any(|(_, source_slot)| source_slot == parent_entity_index)
+                ))
+        );
+
+        let mut saw_miss = false;
+        let mut saw_later_hit = false;
+        for _ in 0..BEE_ROWS.len() * 16 {
+            let aimed_row = session
+                .backend()
+                .campaign
+                .level2_compatibility()
+                .economy()
+                .bee_creatures()
+                .iter()
+                .filter(|bee| bee.active && bee.drawing_enabled && bee.life >= 0)
+                .filter_map(|bee| bee.authored_index().filter(|row| BEE_ROWS.contains(row)))
+                .min()
+                .expect("moving-swarm miss discriminator retains a live package Bee");
+            let receipts =
+                fire_real_player_fireball_at_bee_swarm_for_test(&mut session, aimed_row, &BEE_ROWS);
+            if receipts.is_empty() {
+                saw_miss = true;
+            } else {
+                for receipt in receipts {
+                    assert_eq!(receipt.life_after, receipt.life_before.wrapping_sub(250));
+                }
+                if saw_miss {
+                    saw_later_hit = true;
+                    break;
+                }
+            }
+        }
+        let census = session
+            .backend()
+            .campaign
+            .level2_compatibility()
+            .economy()
+            .bee_creatures()
+            .iter()
+            .filter_map(|bee| {
+                bee.authored_index()
+                    .filter(|row| BEE_ROWS.contains(row))
+                    .map(|row| (row, bee.source_entity_index, bee.life, bee.action))
+            })
+            .collect::<Vec<_>>();
+        let economy = session.backend().campaign.level2_compatibility().economy();
+        let canonical_slots = economy
+            .live_arena_slots()
+            .into_iter()
+            .collect::<BTreeMap<_, _>>();
+        for bee in economy
+            .bee_creatures()
+            .iter()
+            .filter(|bee| bee.active && bee.drawing_enabled)
+        {
+            assert_eq!(
+                canonical_slots.get(&bee.source_entity_index),
+                Some(&crate::native_world::Level2DynamicArenaKind::BeeCreature),
+                "every live typed Bee must remain the canonical current occupant of its numeric source slot: bee={bee:?}, generation={}, occupant={:?}",
+                economy.slot_generation(bee.source_entity_index),
+                canonical_slots.get(&bee.source_entity_index),
+            );
+        }
+        assert!(
+            saw_miss && saw_later_hit,
+            "an ordinary moving-swarm miss must be followed by a later exact package-Bee hit: miss={saw_miss}, later_hit={saw_later_hit}, census={census:?}"
         );
     }
 
@@ -7019,11 +7566,16 @@ pub(crate) mod tests {
             );
         }
 
-        // Subsequent pulses enter at the already-proven class-10-to-mailbox
-        // boundary. Ordinary Bee callbacks still own damage, death phases,
+        // Subsequent public casts retain their source-derived aim, while the
+        // real class-10 overlap decides which current package Bee receives
+        // each pulse. Ordinary Bee callbacks still own damage, death phases,
         // hide, following-pass reclaim, allocator retry, and objective census.
         let mut reclaimed_rows = BTreeSet::new();
         let mut terminal_rows = BTreeSet::new();
+        let mut retired_rows = BTreeSet::new();
+        let mut hit_casts = 1_usize;
+        let mut missed_casts = 0_usize;
+        let mut recipient_hits = 1_usize;
         for _ in 0..ALL_PACKAGE_BEE_ROWS.len() {
             if session
                 .backend()
@@ -7045,7 +7597,11 @@ pub(crate) mod tests {
                     .economy()
                     .bee_creatures()
                     .iter()
-                    .filter_map(|bee| bee.authored_index())
+                    .filter(|bee| bee.active && bee.drawing_enabled && bee.life >= 0)
+                    .filter_map(|bee| {
+                        bee.authored_index()
+                            .filter(|row| ALL_PACKAGE_BEE_ROWS.contains(row))
+                    })
                     .min();
                 if next_bee.is_some()
                     || session
@@ -7063,76 +7619,141 @@ pub(crate) mod tests {
                     .step(guard(&session), GameCommand::default())
                     .unwrap();
             }
+            if next_bee.is_none() && BTreeSet::from(PLAGUE_BEE_ROWS).is_subset(&retired_rows) {
+                // The final Bee can be physically reclaimed before the
+                // following objective-service pass observes the empty
+                // package census.  Advance only that established death-tail
+                // bound, checking the selector before every ordinary step so
+                // the next objective stage cannot be consumed here.
+                for _ in 0..24 {
+                    if session
+                        .backend()
+                        .campaign
+                        .level2_compatibility()
+                        .runtime()
+                        .objectives[0]
+                        .stage_selectors[2]
+                        == 2
+                    {
+                        break;
+                    }
+                    next_bee = session
+                        .backend()
+                        .campaign
+                        .level2_compatibility()
+                        .economy()
+                        .bee_creatures()
+                        .iter()
+                        .filter(|bee| bee.active && bee.drawing_enabled && bee.life >= 0)
+                        .filter_map(|bee| {
+                            bee.authored_index()
+                                .filter(|row| ALL_PACKAGE_BEE_ROWS.contains(row))
+                        })
+                        .min();
+                    if next_bee.is_some() {
+                        break;
+                    }
+                    session
+                        .step(guard(&session), GameCommand::default())
+                        .unwrap();
+                }
+                if session
+                    .backend()
+                    .campaign
+                    .level2_compatibility()
+                    .runtime()
+                    .objectives[0]
+                    .stage_selectors[2]
+                    == 2
+                {
+                    break;
+                }
+            }
             let Some(authored_index) = next_bee else {
                 break;
             };
             assert!(ALL_PACKAGE_BEE_ROWS.contains(&authored_index));
             for _pulse in 0..16 {
-                let bee = session
+                let receipts = fire_real_player_fireball_at_bee_swarm_for_test(
+                    &mut session,
+                    authored_index,
+                    &ALL_PACKAGE_BEE_ROWS,
+                );
+                if receipts.is_empty() {
+                    missed_casts += 1;
+                } else {
+                    hit_casts += 1;
+                    recipient_hits += receipts.len();
+                }
+                for receipt in receipts {
+                    assert!(ALL_PACKAGE_BEE_ROWS.contains(&receipt.authored_index));
+                    assert_eq!(receipt.life_after, receipt.life_before.wrapping_sub(250));
+                    if receipt.life_after < 0 {
+                        terminal_rows.insert(receipt.authored_index);
+                        retired_rows.insert(receipt.authored_index);
+                    }
+                }
+                let requested_is_current = session
                     .backend()
                     .campaign
                     .level2_compatibility()
                     .economy()
                     .bee_creatures()
                     .iter()
-                    .find(|bee| bee.authored_index() == Some(authored_index))
-                    .copied()
-                    .expect("package Bee remains live until its lethal mailbox callback");
-                let life_before = bee.life;
-                let attacker = session
+                    .any(|bee| {
+                        bee.authored_index() == Some(authored_index)
+                            && bee.active
+                            && bee.drawing_enabled
+                            && bee.life >= 0
+                    });
+                if terminal_rows.contains(&authored_index) || !requested_is_current {
+                    break;
+                }
+                if session
                     .backend()
                     .campaign
                     .level2_compatibility()
-                    .state
-                    .entity_index;
-                assert!(
-                    session
-                        .backend_mut()
-                        .campaign
-                        .level2_compatibility_mut()
-                        .economy_mut()
-                        .stage_bee_mailbox_damage_for_test(bee.source_entity_index, attacker, 250,)
-                );
-                let mut damaged = None;
-                for _ in 0..4 {
-                    session
-                        .step(guard(&session), GameCommand::default())
-                        .unwrap();
-                    let current = session
-                        .backend()
-                        .campaign
-                        .level2_compatibility()
-                        .economy()
-                        .bee_creatures()
-                        .iter()
-                        .find(|candidate| candidate.authored_index() == Some(authored_index))
-                        .copied()
-                        .expect("the staged Fireball pulse is consumed before Bee reclaim");
-                    if current.life == life_before.wrapping_sub(250) {
-                        damaged = Some(current);
-                        break;
-                    }
-                }
-                let damaged = damaged.unwrap_or_else(|| {
-                    let current = session
-                        .backend()
-                        .campaign
-                        .level2_compatibility()
-                        .economy()
-                        .bee_creatures()
-                        .iter()
-                        .find(|candidate| candidate.authored_index() == Some(authored_index))
-                        .copied();
-                    panic!(
-                        "the accepted Fireball pulse reaches Bee {authored_index}'s callback: before={bee:?}; current={current:?}"
-                    )
-                });
-                assert_eq!(damaged.damage_attacker_entity_index, attacker);
-                if damaged.life < 0 {
-                    assert_eq!(damaged.action, 20);
-                    terminal_rows.insert(authored_index);
+                    .runtime()
+                    .objectives[0]
+                    .stage_selectors[2]
+                    == 2
+                {
                     break;
                 }
+            }
+            let census = session
+                .backend()
+                .campaign
+                .level2_compatibility()
+                .economy()
+                .bee_creatures()
+                .iter()
+                .filter_map(|bee| {
+                    bee.authored_index()
+                        .filter(|row| ALL_PACKAGE_BEE_ROWS.contains(row))
+                        .map(|row| {
+                            (
+                                row,
+                                bee.source_entity_index,
+                                bee.life,
+                                bee.action,
+                                bee.active,
+                                bee.drawing_enabled,
+                            )
+                        })
+                })
+                .collect::<Vec<_>>();
+            let requested_is_current = census.iter().any(
+                |&(row, _source_slot, life, _action, active, drawing_enabled)| {
+                    row == authored_index && active && drawing_enabled && life >= 0
+                },
+            );
+            assert!(
+                terminal_rows.contains(&authored_index) || !requested_is_current,
+                "source-guided public casts exhausted the existing 16-attempt budget while Bee {authored_index} remained current: hit_casts={hit_casts}, missed_casts={missed_casts}, recipient_hits={recipient_hits}, census={census:?}"
+            );
+            if !requested_is_current {
+                retired_rows.insert(authored_index);
             }
 
             let mut objective_completed = false;
@@ -7187,10 +7808,9 @@ pub(crate) mod tests {
             }
         }
 
-        assert_eq!(
-            terminal_rows,
-            BTreeSet::from(PLAGUE_BEE_ROWS),
-            "all six production plague Bees reach their ordinary lethal callback"
+        assert!(
+            BTreeSet::from(PLAGUE_BEE_ROWS).is_subset(&retired_rows),
+            "all six production plague Bees retire from the authoritative live census through ordinary combat/death: retired={retired_rows:?}, terminal={terminal_rows:?}"
         );
         assert!(
             BTreeSet::from([229, 230, 231, 236, 237]).is_subset(&reclaimed_rows),
@@ -7204,7 +7824,7 @@ pub(crate) mod tests {
             .filter(|bee| bee.active && bee.drawing_enabled)
             .filter_map(|bee| bee.authored_index())
             .collect::<BTreeSet<_>>();
-        assert!(BTreeSet::from(PLAGUE_BEE_ROWS).is_disjoint(&live_bee_rows));
+        assert!(BTreeSet::from(ALL_PACKAGE_BEE_ROWS).is_disjoint(&live_bee_rows));
         assert!(
             compatibility.economy().authored_model45().is_empty(),
             "the real group-8 vault rows reach ordinary hide and following-pass reclaim before their final absence objective"

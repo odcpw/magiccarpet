@@ -2591,9 +2591,16 @@ impl Level2EconomyState {
         target_position: Option<Position>,
         terrain: &SessionTerrain,
     ) -> bool {
+        let action17_entry_dead = self.bee_creatures.iter().any(|source| {
+            source.active
+                && source.source_entity_index == source_slot
+                && source.action == 17
+                && source.life < 0
+        });
         self.step_authored_bee_slot_with_target(
             source_slot,
             target_position.map(|position| (position, 0, true)),
+            action17_entry_dead,
             terrain,
         )
         .live
@@ -2603,9 +2610,17 @@ impl Level2EconomyState {
         &mut self,
         source_slot: u16,
         target: Option<(Position, i16, bool)>,
+        action17_entry_dead: bool,
         terrain: &SessionTerrain,
     ) -> AuthoredBeeStepOutcome {
-        self.step_authored_bee_slot_with_target_and_peers(source_slot, target, &[], &[], terrain)
+        self.step_authored_bee_slot_with_target_and_peers(
+            source_slot,
+            target,
+            &[],
+            &[],
+            action17_entry_dead,
+            terrain,
+        )
     }
 
     pub(super) fn step_authored_bee_slot_with_target_and_peers(
@@ -2614,6 +2629,7 @@ impl Level2EconomyState {
         target: Option<(Position, i16, bool)>,
         peers: &[(u16, Position)],
         class3_candidates: &[(u16, Position, u32)],
+        action17_entry_dead: bool,
         terrain: &SessionTerrain,
     ) -> AuthoredBeeStepOutcome {
         let Some(source_index) = self
@@ -2633,6 +2649,33 @@ impl Level2EconomyState {
             .consume_authored_bee_damage_mailbox(&mut source)
             .is_some()
         {
+            source.source_byte_3e = source.source_byte_3e.wrapping_add(1);
+            source.phase = source.phase.wrapping_add(1);
+            self.source_rng.insert(source_slot, source.entity_rng);
+            self.bee_creatures[source_index] = source;
+            let live = self
+                .map_chains
+                .sync_entity(RenderableMapSeed {
+                    entity_index: source_slot,
+                    active: source.active,
+                    x: source.position.x,
+                    y: source.position.y,
+                })
+                .is_ok();
+            return AuthoredBeeStepOutcome { live, sound };
+        }
+        // `sub_1BF90` clears word_0x26 when no damage mailbox is pending,
+        // then tests the life value captured at callback entry. A Bee killed
+        // by the prior action-17 movement prelude therefore enters action 20
+        // on this following visit without inheriting an older attacker's
+        // credit. The separate entry flag preserves the source distinction
+        // from a movement failure produced later in this same callback.
+        if source.action == 17 {
+            source.damage_attacker_entity_index = 0;
+        }
+        if action17_entry_dead {
+            source.kill_credit_entity_index = source.damage_attacker_entity_index;
+            source.action = 20;
             source.source_byte_3e = source.source_byte_3e.wrapping_add(1);
             source.phase = source.phase.wrapping_add(1);
             self.source_rng.insert(source_slot, source.entity_rng);
