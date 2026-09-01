@@ -1,6 +1,11 @@
 use super::*;
 
 impl Level2SharedSpellResetSession {
+    #[cfg(test)]
+    pub(crate) fn player_life_regen_for_test(&self) -> i32 {
+        self.player_life_regen
+    }
+
     /// Rehydrate the source class-15/player carriers selected by a campaign
     /// descriptor. Missing holder relations remain source nulls (index zero);
     /// no fixed Level-2 slot, allocator, presentation row or RNG draw is used.

@@ -319,7 +319,7 @@ compiled_registry! {
         (PlayerFlight, 3, [2, 3, 12]);
         (CastleRoot, 3, [4, 5, 6]);
         (ManaCarrier, 3, [9]);
-        (DragonFamily, 5, [1, 2, 4, 5]);
+        (DragonFamily, 5, [1, 2, 3, 4, 5]);
         (GoatFamily, 5, [9, 10, 11, 12, 13, 14, 15]);
         (BeeFamily, 5, [16, 17, 18, 19, 20, 21, 22, 23]);
         (MultipartFamily, 5, [25, 26, 27, 28, 29, 30, 31]);
@@ -619,7 +619,7 @@ mod tests {
         for (class, actions, handler) in [
             (3_u16, &[2_u16, 3, 12][..], "player-flight"),
             (3, &[4, 6][..], "castle-root"),
-            (5, &[1, 2, 4, 5][..], "dragon-family"),
+            (5, &[1, 2, 3, 4, 5][..], "dragon-family"),
             (
                 5,
                 &[16, 17, 18, 19, 20, 21, 22, 23][..],
@@ -691,7 +691,7 @@ mod tests {
         assert_eq!(registry["action_dispatch_sites"][0], "ApplyEvents");
         assert_eq!(registry["action_dispatch_sites"][1], "UpdateEntities");
         assert_eq!(registry["constructor_dispatch_site"], "Constructor");
-        assert_eq!(CAMPAIGN_BEHAVIOR_REGISTRY.entries().len(), 384);
+        assert_eq!(CAMPAIGN_BEHAVIOR_REGISTRY.entries().len(), 386);
         validate_against_source(CAMPAIGN_BEHAVIOR_REGISTRY.entries(), &source_keys)
             .expect("compiled entries retain exact pinned sites and selector shapes");
 
@@ -765,7 +765,7 @@ mod tests {
         }
         assert_eq!(expected_handlers.len(), 315);
         expected_handlers.extend(supplemental_handlers);
-        assert_eq!(expected_handlers.len(), 384);
+        assert_eq!(expected_handlers.len(), 386);
 
         for entry in CAMPAIGN_BEHAVIOR_REGISTRY.entries() {
             assert_eq!(

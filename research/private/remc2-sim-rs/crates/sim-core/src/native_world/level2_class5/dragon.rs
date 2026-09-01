@@ -11,6 +11,7 @@ use crate::goat::GoatPlayerTarget;
 pub(crate) const DRAGON_MODEL: u8 = 0;
 pub(crate) const DRAGON_ROAM_ACTION: u8 = 1;
 pub(crate) const DRAGON_ATTACK_ACTION: u8 = 2;
+pub(crate) const DRAGON_LINK_ACTION: u8 = 3;
 pub(crate) const DRAGON_PRE_KILL_ACTION: u8 = 4;
 pub(crate) const DRAGON_KILL_ACTION: u8 = 5;
 pub(crate) const DRAGON_PART_ACTION: u8 = 232;
@@ -469,9 +470,12 @@ impl Level2EconomyState {
                         target.position,
                     ))
                     .expect("Dragon target heading fits i16");
-                    if let Some(peer) =
-                        first_close_dragon(source, frozen_model0_slots, &self.authored_class5)
-                    {
+                    if let Some(peer) = first_close_dragon(
+                        source,
+                        frozen_model0_slots,
+                        &self.authored_class5,
+                        DRAGON_RENDER_SPEED / 2,
+                    ) {
                         source.roll = i16::try_from(crate::heading_for_positions(
                             peer.position,
                             source.position,
@@ -526,6 +530,148 @@ impl Level2EconomyState {
             live,
             fireball: if live { fireball } else { None },
         })
+    }
+
+    /// Run `sub_1EFD0 -> sub_1C560(..., 0)`: follow the Dragon root in the
+    /// source `word_0x32` relation, inherit its target/action at descriptor
+    /// cadence, and preserve the common motion and vertical tails.
+    pub(crate) fn step_authored_dragon_link_slot(
+        &mut self,
+        source_slot: u16,
+        frozen_model0_slots: &[u16],
+        terrain: &SessionTerrain,
+    ) -> std::result::Result<bool, String> {
+        let Some(source_index) = self.authored_class5.iter().position(|source| {
+            source.active
+                && source.source_entity_index == source_slot
+                && source.model == DRAGON_MODEL
+                && source.action == DRAGON_LINK_ACTION
+        }) else {
+            return Ok(false);
+        };
+        let state_index = self
+            .authored_dragons
+            .iter()
+            .position(|state| state.source_entity_index == source_slot)
+            .ok_or_else(|| format!("Dragon source slot {source_slot} has no runtime sidecar"))?;
+        let runtime_index = self
+            .authored_class5_runtime
+            .iter()
+            .position(|runtime| runtime.source_entity_index == source_slot)
+            .ok_or_else(|| format!("Dragon source slot {source_slot} has no class-5 runtime"))?;
+
+        let mut source = self.authored_class5[source_index];
+        let mut state = self.authored_dragons[state_index];
+        let mut runtime = self.authored_class5_runtime[runtime_index];
+        let peer = self.authored_class5.iter().copied().find(|peer| {
+            peer.source_entity_index == state.linked_entity_index
+                && peer.source_entity_index != source_slot
+                && peer.active
+                && peer.drawing_enabled
+                && peer.life >= 0
+                && peer.model == DRAGON_MODEL
+        });
+
+        if consume_dragon_damage(
+            &mut source,
+            &mut runtime,
+            &self.authored_dragon_parts,
+            terrain,
+        ) {
+            if let Some(peer) = peer
+                && let Some(peer_index) = self
+                    .authored_class5
+                    .iter()
+                    .position(|candidate| candidate.source_entity_index == peer.source_entity_index)
+            {
+                self.authored_class5[peer_index].word_0x96_150 = source.word_0x26;
+                self.authored_class5[peer_index].action = DRAGON_ATTACK_ACTION;
+                if let Some(peer_state) = self
+                    .authored_dragons
+                    .iter_mut()
+                    .find(|candidate| candidate.source_entity_index == peer.source_entity_index)
+                {
+                    peer_state.linked_entity_index = 0;
+                }
+            }
+            state.linked_entity_index = 0;
+        } else {
+            step_dragon_motion(&mut source, &mut state, terrain);
+            if let Some(peer) = peer {
+                if source.source_byte_3e % DRAGON_DESCRIPTOR_CADENCE == 0 {
+                    match peer.action {
+                        0 | DRAGON_ROAM_ACTION => {}
+                        DRAGON_ATTACK_ACTION => {
+                            source.word_0x96_150 = peer.word_0x96_150;
+                            state.linked_entity_index = 0;
+                            source.action = DRAGON_ATTACK_ACTION;
+                        }
+                        DRAGON_LINK_ACTION => {
+                            state.linked_entity_index = self
+                                .authored_dragons
+                                .iter()
+                                .find(|candidate| {
+                                    candidate.source_entity_index == peer.source_entity_index
+                                })
+                                .map_or(0, |candidate| candidate.linked_entity_index);
+                        }
+                        _ => {
+                            state.linked_entity_index = 0;
+                            source.action = DRAGON_ROAM_ACTION;
+                        }
+                    }
+                    if source.action == DRAGON_LINK_ACTION {
+                        let heading_target = self
+                            .authored_class5
+                            .iter()
+                            .find(|candidate| {
+                                candidate.active
+                                    && candidate.source_entity_index == state.linked_entity_index
+                            })
+                            .copied();
+                        if let Some(heading_target) = heading_target {
+                            source.roll = i16::try_from(crate::heading_for_positions(
+                                source.position,
+                                heading_target.position,
+                            ))
+                            .expect("Dragon peer heading fits i16");
+                            if let Some(close_peer) = first_close_dragon(
+                                source,
+                                frozen_model0_slots,
+                                &self.authored_class5,
+                                256,
+                            ) {
+                                source.roll = i16::try_from(crate::heading_for_positions(
+                                    close_peer.position,
+                                    source.position,
+                                ))
+                                .expect("Dragon separation heading fits i16");
+                            }
+                            source.actual_speed =
+                                peer.maximum_speed.wrapping_add(peer.actual_speed);
+                        }
+                    }
+                }
+            } else {
+                state.linked_entity_index = 0;
+                source.action = DRAGON_ROAM_ACTION;
+            }
+        }
+
+        step_dragon_tails(&mut source, state, terrain);
+        self.source_rng.insert(source_slot, source.entity_rng);
+        self.authored_class5[source_index] = source;
+        self.authored_class5_runtime[runtime_index] = runtime;
+        self.authored_dragons[state_index] = state;
+        Ok(self
+            .map_chains
+            .sync_entity(RenderableMapSeed {
+                entity_index: source_slot,
+                active: source.active,
+                x: source.position.x,
+                y: source.position.y,
+            })
+            .is_ok())
     }
 
     #[cfg(test)]
@@ -869,6 +1015,7 @@ fn first_close_dragon(
     source: Level2AuthoredClass5Source,
     frozen_model0_slots: &[u16],
     roots: &[Level2AuthoredClass5Source],
+    separation: i16,
 ) -> Option<Level2AuthoredClass5Source> {
     frozen_model0_slots
         .iter()
@@ -886,7 +1033,7 @@ fn first_close_dragon(
                             .cast_signed(),
                     )
                     .abs()
-                        < i32::from(DRAGON_RENDER_SPEED / 2)
+                        < i32::from(separation)
                     && i32::from(
                         peer.position
                             .y
@@ -894,7 +1041,7 @@ fn first_close_dragon(
                             .cast_signed(),
                     )
                     .abs()
-                        < i32::from(DRAGON_RENDER_SPEED / 2)
+                        < i32::from(separation)
             })
         })
         .copied()

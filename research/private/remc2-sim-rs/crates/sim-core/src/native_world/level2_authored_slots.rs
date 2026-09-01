@@ -553,6 +553,12 @@ impl Level2EconomyState {
                     .map(|projectile| projectile.source_entity_index),
             )
             .chain(
+                self.castle_projectiles
+                    .iter()
+                    .filter(|projectile| !projectile.active && projectile.drawing_disabled)
+                    .map(|projectile| projectile.source_entity_index),
+            )
+            .chain(
                 self.death_bursts
                     .iter()
                     .filter(|burst| !burst.active)

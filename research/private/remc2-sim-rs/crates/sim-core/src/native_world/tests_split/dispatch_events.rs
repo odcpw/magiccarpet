@@ -5917,6 +5917,27 @@ fn level_two_fireball_collision_constructs_distinct_one_shot_impact() {
             .pending_damage,
         250
     );
+
+    let mut tail_visits = 0;
+    while economy
+        .model17_spawned_children
+        .iter()
+        .any(|impact| impact.source_entity_index == impact_slot && impact.active)
+    {
+        let tail = economy.step_model17_spawned_child_slot(impact_slot, &terrain);
+        assert!(!tail.first_impact && !tail.damage_pulse);
+        tail_visits += 1;
+        assert!(tail_visits <= 8, "the source impact tail is bounded");
+    }
+    assert_eq!(tail_visits, 8, "life 6 reaches the source -2 sentinel");
+    economy.reclaim_inactive_slots();
+    assert!(
+        economy
+            .model17_spawned_children
+            .iter()
+            .all(|impact| impact.source_entity_index != impact_slot),
+        "the following source boundary reclaims the expired impact"
+    );
 }
 
 #[test]

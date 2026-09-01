@@ -5179,6 +5179,20 @@ impl Level2ResetSession {
         self.session.state.live.core.state.tick
     }
 
+    #[cfg(test)]
+    pub(crate) fn canonical_player_life_for_test(&self) -> i32 {
+        self.session.state.live.player_life
+    }
+
+    #[cfg(test)]
+    pub(crate) fn player_life_regen_for_test(&self) -> i32 {
+        self.session
+            .state
+            .live
+            .shared_spells
+            .player_life_regen_for_test()
+    }
+
     #[must_use]
     pub fn semantic_level_definition(&self) -> Option<&crate::level_definition::LevelDefinition> {
         self.session.definition.semantic_level()
@@ -12728,6 +12742,9 @@ impl Level2ResetSession {
                                 .player_castle_shift_aabb_overlap(player)
                         });
                     if player_action_at_visit == 0 {
+                        if castle_shift_overlap {
+                            self.redirect_level2_player_damage_to_castle();
+                        }
                         if let Some((damage, attacker, lethal)) =
                             self.consume_level2_player_damage()
                         {
@@ -12824,6 +12841,7 @@ impl Level2ResetSession {
                         // source visit can observe a stale pre-upkeep row.
                         let player_after_upkeep =
                             self.session.state.live.shared_spells.player_entity.clone();
+                        self.session.state.live.player_life = player_after_upkeep.life;
                         let numeric_player = &mut self.session.state.live.economy.entities
                             [usize::from(player_after_upkeep.index)];
                         numeric_player.set_life(player_after_upkeep.life);
@@ -13290,6 +13308,16 @@ impl Level2ResetSession {
                         }
                         step.live
                     }
+                    level2_class5::dragon::DRAGON_LINK_ACTION => self
+                        .session
+                        .state
+                        .live
+                        .economy
+                        .step_authored_dragon_link_slot(
+                            source_slot,
+                            frozen_model0_slots,
+                            terrain,
+                        )?,
                     _ => {
                         return Err(format!(
                             "Dragon source slot {source_slot} reached unimplemented action {action}"
@@ -18924,6 +18952,58 @@ impl Level2ResetSession {
             .then_some((damage, attacker, lethal))
     }
 
+    /// `AddPlayer03_00_5E010` protects an overlapping player by forwarding
+    /// the current damage mailbox to the owned Castle before the ordinary
+    /// player-damage callback. The payload remains as the source's ownerless
+    /// mailbox value; only its attacker relation is consumed by the transfer.
+    fn redirect_level2_player_damage_to_castle(&mut self) -> bool {
+        let player_entity_index = self.session.state.live.core.state.entity_index;
+        let castle_slot = self.session.state.live.economy.player_castle_entity_index();
+        if castle_slot == 0 {
+            return false;
+        }
+        let (damage, attacker) = {
+            let player =
+                &self.session.state.live.economy.entities[usize::from(player_entity_index)];
+            (
+                i32::from_le_bytes(
+                    player.record[98..102]
+                        .try_into()
+                        .expect("player damage mailbox bytes"),
+                ),
+                u16::from_le_bytes(
+                    player.record[102..104]
+                        .try_into()
+                        .expect("player attacker mailbox bytes"),
+                ),
+            )
+        };
+        if damage <= 0 || attacker == 0 {
+            return false;
+        }
+        if !self
+            .session
+            .state
+            .live
+            .economy
+            .submit_damage(castle_slot, damage, attacker)
+        {
+            return false;
+        }
+
+        let player =
+            &mut self.session.state.live.economy.entities[usize::from(player_entity_index)];
+        player.record[102..104].copy_from_slice(&0_u16.to_le_bytes());
+        self.session.state.live.player_pending_damage = damage;
+        self.session.state.live.player_pending_attacker = 0;
+        self.session
+            .state
+            .live
+            .shared_spells
+            .set_player_entity_damage_mailbox(damage, 0);
+        true
+    }
+
     /// Release the remote AI player's live spell holders at the grounded
     /// `sub_5E310` death boundary. The numeric rows and the qualified player
     /// record are the only authorities for Nyphur's holders; the local-player
@@ -21365,6 +21445,545 @@ mod tests {
                 baseline_player.record_bytes()
             );
         }
+    }
+
+    #[test]
+    fn level_three_player_upkeep_syncs_canonical_life_before_one_fireball_damage() {
+        const DRAGON_SLOT: u16 = 119;
+        const DRAGON_FIREBALL_DAMAGE: u16 = 500;
+
+        let package = level_three_descriptor_fixture_path();
+        let mut campaign = CampaignSession::open(&package, CampaignSelection::LEVEL3)
+            .expect("qualified Level 3 descriptor opens");
+        let player_entity_index = campaign
+            .level2_compatibility()
+            .session
+            .state
+            .live
+            .core
+            .state
+            .entity_index;
+        let player_position = campaign
+            .level2_compatibility()
+            .session
+            .state
+            .live
+            .core
+            .state
+            .position;
+        {
+            let live = &mut campaign.level2_compatibility_mut().session.state.live;
+            live.player_life = 2_000;
+            live.shared_spells.set_player_entity_life(2_000);
+            live.economy.entities[usize::from(player_entity_index)].set_life(2_000);
+        }
+
+        // The first source visit selects the outdoor max_life/2000 upkeep;
+        // the following visit applies that exact five-point rate.
+        let _ = campaign.step(PlayerCommand::default(), 0);
+        let _ = campaign.step(PlayerCommand::default(), 0);
+        let live = &campaign.level2_compatibility().session.state.live;
+        assert_eq!(
+            (
+                live.player_life,
+                live.shared_spells.player_entity.life,
+                live.economy.entities[usize::from(player_entity_index)].life,
+            ),
+            (2_005, 2_005, 2_005),
+            "source upkeep must publish the single player life to every damage carrier"
+        );
+
+        campaign
+            .level2_compatibility_mut()
+            .apply_level2_class10_model0_damage(level2_dynamic_economy::Level2Class10Model0Step {
+                live: true,
+                first_impact: true,
+                damage_pulse: true,
+                owner_entity_index: DRAGON_SLOT,
+                payload: DRAGON_FIREBALL_DAMAGE,
+                position: player_position,
+            });
+        let player = &campaign
+            .level2_compatibility()
+            .session
+            .state
+            .live
+            .economy
+            .entities[usize::from(player_entity_index)];
+        assert_eq!(
+            (
+                player.source_upkeep_payload(),
+                player.source_upkeep_word_62()
+            ),
+            (i32::from(DRAGON_FIREBALL_DAMAGE), DRAGON_SLOT)
+        );
+
+        let events_before = campaign
+            .level2_compatibility()
+            .session
+            .state
+            .live
+            .economy
+            .events
+            .len();
+        let _ = campaign.step(PlayerCommand::default(), 0);
+        let live = &campaign.level2_compatibility().session.state.live;
+        assert_eq!(
+            (
+                live.player_life,
+                live.shared_spells.player_entity.life,
+                live.economy.entities[usize::from(player_entity_index)].life,
+            ),
+            (1_510, 1_510, 1_510),
+            "one 500 pulse is followed by the source outdoor five-point upkeep"
+        );
+        assert_eq!(
+            live.economy.events[events_before..]
+                .iter()
+                .filter(|event| matches!(
+                    event,
+                    Level2EconomyEvent::DamageApplied {
+                        target_entity_index,
+                        attacker_entity_index: DRAGON_SLOT,
+                        damage: 500,
+                        lethal: false,
+                    } if *target_entity_index == player_entity_index
+                ))
+                .count(),
+            1
+        );
+
+        let mut protected = CampaignSession::open(&package, CampaignSelection::LEVEL3)
+            .expect("qualified Level 3 Castle-protection descriptor opens");
+        let protected_player = protected
+            .level2_compatibility()
+            .session
+            .state
+            .live
+            .core
+            .state
+            .entity_index;
+        let protected_terrain = protected
+            .level2_compatibility()
+            .session
+            .state
+            .live
+            .terrain
+            .clone();
+        let protected_position = {
+            let live = &mut protected.level2_compatibility_mut().session.state.live;
+            let castle_slot = live
+                .economy
+                .build_castle(
+                    live.core.state.position,
+                    protected_player,
+                    &protected_terrain,
+                )
+                .expect("focused Castle protection root");
+            let castle = live.economy.castle.as_mut().expect("focused Castle root");
+            assert_eq!(castle.source_entity_index, castle_slot);
+            castle.shift_yaw = -8_192;
+            castle.shift_pitch = 1_664;
+            castle.shift_roll = 1_664;
+            castle.shift_fov = 0x4000;
+            crate::Position {
+                x: castle.position.x,
+                y: castle.position.y,
+                z: castle.position.z.wrapping_add(1_000),
+            }
+        };
+        {
+            let live = &mut protected.level2_compatibility_mut().session.state.live;
+            live.core.state.position = protected_position;
+            let set_player = |entity: &mut EntitySnapshot| {
+                entity.record[86..88].copy_from_slice(&100_i16.to_le_bytes());
+                entity.record[88..90].copy_from_slice(&121_i16.to_le_bytes());
+                entity.record[90..92].copy_from_slice(&121_i16.to_le_bytes());
+                entity.record[92..94].copy_from_slice(&100_i16.to_le_bytes());
+                entity.set_position(protected_position);
+            };
+            set_player(&mut live.shared_spells.player_entity);
+            live.shared_spells.player_entities[0] = live.shared_spells.player_entity.clone();
+            set_player(&mut live.economy.entities[usize::from(protected_player)]);
+        }
+        let _ = protected.step(PlayerCommand::default(), 0);
+        {
+            let live = &mut protected.level2_compatibility_mut().session.state.live;
+            assert!(
+                live.economy
+                    .player_castle_shift_aabb_overlap(&live.shared_spells.player_entity)
+            );
+            assert_eq!(
+                live.shared_spells.player_life_regen,
+                live.shared_spells.player_entity.max_life / 250
+            );
+            live.player_life = 2_000;
+            live.shared_spells.set_player_entity_life(2_000);
+            live.economy.entities[usize::from(protected_player)].set_life(2_000);
+        }
+        protected
+            .level2_compatibility_mut()
+            .apply_level2_class10_model0_damage(level2_dynamic_economy::Level2Class10Model0Step {
+                live: true,
+                first_impact: true,
+                damage_pulse: true,
+                owner_entity_index: DRAGON_SLOT,
+                payload: DRAGON_FIREBALL_DAMAGE,
+                position: protected_position,
+            });
+        let protected_events_before = protected
+            .level2_compatibility()
+            .session
+            .state
+            .live
+            .economy
+            .events
+            .len();
+        let _ = protected.step(PlayerCommand::default(), 0);
+        let live = &protected.level2_compatibility().session.state.live;
+        let castle_slot = live.economy.player_castle_entity_index();
+        assert_eq!(
+            (
+                live.player_life,
+                live.shared_spells.player_entity.life,
+                live.economy.entities[usize::from(protected_player)].life,
+            ),
+            (2_040, 2_040, 2_040),
+            "an overlapping Castle receives the hostile mailbox before player upkeep"
+        );
+        assert_eq!(
+            live.economy.events[protected_events_before..]
+                .iter()
+                .filter(|event| matches!(
+                    event,
+                    Level2EconomyEvent::DamageApplied {
+                        target_entity_index,
+                        attacker_entity_index: DRAGON_SLOT,
+                        ..
+                    } if *target_entity_index == protected_player
+                ))
+                .count(),
+            0,
+            "Castle overlap must suppress the player damage consumer"
+        );
+        assert!(
+            live.economy.events[protected_events_before..]
+                .iter()
+                .any(|event| matches!(
+                    event,
+                    Level2EconomyEvent::DamageApplied {
+                        target_entity_index,
+                        attacker_entity_index: DRAGON_SLOT,
+                        damage,
+                        lethal: false,
+                    } if *target_entity_index == castle_slot && *damage >= 500
+                )),
+            "the transferred hostile mailbox must reach the Castle damage consumer"
+        );
+    }
+
+    #[test]
+    fn level_three_dragon_link_selector_follows_peer_then_inherits_attack() {
+        let package = level_three_descriptor_fixture_path();
+        let mut campaign = CampaignSession::open(&package, CampaignSelection::LEVEL3)
+            .expect("qualified Level 3 descriptor opens");
+        let player_entity_index = campaign
+            .level2_compatibility()
+            .session
+            .state
+            .live
+            .core
+            .state
+            .entity_index;
+
+        let skeleton_slots = campaign
+            .level2_compatibility()
+            .session
+            .state
+            .live
+            .economy
+            .entities
+            .iter()
+            .filter(|entity| entity.active && entity.class == 5 && entity.model == 9)
+            .map(|entity| entity.index)
+            .collect::<Vec<_>>();
+        assert_eq!(skeleton_slots.len(), 11);
+        for source_slot in skeleton_slots {
+            campaign
+                .level2_compatibility_mut()
+                .session
+                .state
+                .live
+                .economy
+                .entities[usize::from(source_slot)]
+            .disable_drawing();
+        }
+        let _ = campaign.step(PlayerCommand::default(), 0);
+        let _ = campaign.step(PlayerCommand::default(), 0);
+
+        let mut dragon_slots = campaign
+            .level2_compatibility()
+            .session
+            .state
+            .live
+            .economy
+            .economy
+            .authored_class5()
+            .iter()
+            .filter(|source| source.active && source.model == level2_class5::dragon::DRAGON_MODEL)
+            .map(|source| source.source_entity_index)
+            .collect::<Vec<_>>();
+        dragon_slots.sort_unstable();
+        assert_eq!(dragon_slots.len(), 2);
+        let follower_slot = dragon_slots[0];
+        let peer_slot = dragon_slots[1];
+
+        let terrain = campaign
+            .level2_compatibility()
+            .session
+            .state
+            .live
+            .terrain
+            .clone();
+        let mut follower_position = Position {
+            x: (79_u16 << 8).wrapping_add(128),
+            y: (143_u16 << 8).wrapping_add(128),
+            z: 0,
+        };
+        follower_position.z = terrain.ground_height(follower_position);
+        let mut peer_position = follower_position;
+        peer_position.x = peer_position.x.wrapping_add(512);
+        peer_position.z = terrain.ground_height(peer_position);
+        let peer_heading = i16::try_from(crate::heading_for_positions(
+            follower_position,
+            peer_position,
+        ))
+        .expect("Dragon peer heading fits i16");
+        {
+            let mut economy = campaign.level2_compatibility_mut().economy_mut();
+            assert!(economy.stage_authored_dragon_attack_prerequisite_for_test(
+                follower_slot,
+                follower_position,
+                30,
+            ));
+            assert!(economy.stage_authored_dragon_attack_prerequisite_for_test(
+                peer_slot,
+                peer_position,
+                1,
+            ));
+        }
+        {
+            let mut economy = campaign.level2_compatibility_mut().economy_mut();
+            let follower = economy
+                .authored_class5
+                .iter_mut()
+                .find(|source| source.source_entity_index == follower_slot)
+                .expect("mutable follower Dragon");
+            follower.action = level2_class5::dragon::DRAGON_ROAM_ACTION;
+            follower.yaw = peer_heading;
+            follower.roll = peer_heading;
+            let peer = economy
+                .authored_class5
+                .iter_mut()
+                .find(|source| source.source_entity_index == peer_slot)
+                .expect("mutable peer Dragon");
+            peer.action = level2_class5::dragon::DRAGON_ROAM_ACTION;
+            economy
+                .authored_dragons
+                .iter_mut()
+                .find(|state| state.source_entity_index == follower_slot)
+                .expect("follower Dragon sidecar")
+                .linked_entity_index = 0;
+        }
+
+        let _ = campaign.step(PlayerCommand::default(), 0);
+        let live = &campaign.level2_compatibility().session.state.live;
+        assert!(
+            campaign
+                .level2_compatibility()
+                .dispatch_events()
+                .iter()
+                .all(|event| !matches!(event, Level2DispatchEvent::Error { .. }))
+        );
+        let follower = live
+            .economy
+            .economy
+            .authored_class5()
+            .iter()
+            .find(|source| source.source_entity_index == follower_slot)
+            .expect("linked follower remains live");
+        let follower_link = live
+            .economy
+            .economy
+            .authored_dragons()
+            .iter()
+            .find(|state| state.source_entity_index == follower_slot)
+            .expect("linked follower sidecar")
+            .linked_entity_index;
+        assert_eq!(
+            (
+                follower.action,
+                follower.source_byte_3e,
+                follower_link,
+                follower.actual_speed,
+            ),
+            (
+                level2_class5::dragon::DRAGON_LINK_ACTION,
+                31,
+                peer_slot,
+                level2_class5::dragon::DRAGON_ACTUAL_SPEED,
+            )
+        );
+
+        let (follower_before, peer_before) = {
+            let economy = &live.economy.economy;
+            let follower = economy
+                .authored_class5()
+                .iter()
+                .find(|source| source.source_entity_index == follower_slot)
+                .copied()
+                .expect("follower before linked cadence");
+            let peer = economy
+                .authored_class5()
+                .iter()
+                .find(|source| source.source_entity_index == peer_slot)
+                .copied()
+                .expect("peer before linked cadence");
+            (follower, peer)
+        };
+        {
+            let mut economy = campaign.level2_compatibility_mut().economy_mut();
+            let follower = economy
+                .authored_class5
+                .iter_mut()
+                .find(|source| source.source_entity_index == follower_slot)
+                .expect("mutable linked follower");
+            follower.action = level2_class5::dragon::DRAGON_LINK_ACTION;
+            follower.source_byte_3e = 60;
+            let peer = economy
+                .authored_class5
+                .iter_mut()
+                .find(|source| source.source_entity_index == peer_slot)
+                .expect("mutable followed peer");
+            peer.action = level2_class5::dragon::DRAGON_ROAM_ACTION;
+            peer.source_byte_3e = 1;
+            economy
+                .authored_dragons
+                .iter_mut()
+                .find(|state| state.source_entity_index == follower_slot)
+                .expect("follower Dragon sidecar")
+                .linked_entity_index = peer_slot;
+        }
+        let follower_motion = crate::ground_creature_motion::step_ground_creature_motion(
+            follower_before.position,
+            follower_before.yaw,
+            follower_before.roll,
+            follower_before.actual_speed,
+            &terrain,
+            crate::ground_creature_motion::GroundCreatureMotionConfig {
+                ground_clearance: 0,
+                descent: -4,
+                turn_limit: 34,
+                terrain_mask: u32::MAX,
+                maximum_tile_slope: 30,
+            },
+        );
+        let expected_roll = i16::try_from(crate::heading_for_positions(
+            follower_motion.position,
+            peer_before.position,
+        ))
+        .expect("Dragon peer heading fits i16");
+        let _ = campaign.step(PlayerCommand::default(), 0);
+        let live = &campaign.level2_compatibility().session.state.live;
+        let follower = live
+            .economy
+            .economy
+            .authored_class5()
+            .iter()
+            .find(|source| source.source_entity_index == follower_slot)
+            .expect("cadence-following Dragon remains live");
+        let follower_link = live
+            .economy
+            .economy
+            .authored_dragons()
+            .iter()
+            .find(|state| state.source_entity_index == follower_slot)
+            .expect("cadence-following Dragon sidecar")
+            .linked_entity_index;
+        assert_eq!(
+            (
+                follower.action,
+                follower.source_byte_3e,
+                follower_link,
+                follower.roll,
+                follower.actual_speed,
+            ),
+            (
+                level2_class5::dragon::DRAGON_LINK_ACTION,
+                61,
+                peer_slot,
+                expected_roll,
+                peer_before
+                    .maximum_speed
+                    .wrapping_add(peer_before.actual_speed),
+            )
+        );
+
+        {
+            let mut economy = campaign.level2_compatibility_mut().economy_mut();
+            let follower = economy
+                .authored_class5
+                .iter_mut()
+                .find(|source| source.source_entity_index == follower_slot)
+                .expect("mutable linked follower");
+            follower.action = level2_class5::dragon::DRAGON_LINK_ACTION;
+            follower.source_byte_3e = 90;
+            let peer = economy
+                .authored_class5
+                .iter_mut()
+                .find(|source| source.source_entity_index == peer_slot)
+                .expect("mutable attacking peer");
+            peer.action = level2_class5::dragon::DRAGON_ATTACK_ACTION;
+            peer.word_0x96_150 = player_entity_index;
+            peer.source_byte_3e = 1;
+            economy
+                .authored_dragons
+                .iter_mut()
+                .find(|state| state.source_entity_index == follower_slot)
+                .expect("follower Dragon sidecar")
+                .linked_entity_index = peer_slot;
+        }
+        let _ = campaign.step(PlayerCommand::default(), 0);
+        let live = &campaign.level2_compatibility().session.state.live;
+        let follower = live
+            .economy
+            .economy
+            .authored_class5()
+            .iter()
+            .find(|source| source.source_entity_index == follower_slot)
+            .expect("attack-inheriting follower remains live");
+        let follower_link = live
+            .economy
+            .economy
+            .authored_dragons()
+            .iter()
+            .find(|state| state.source_entity_index == follower_slot)
+            .expect("attack-inheriting follower sidecar")
+            .linked_entity_index;
+        assert_eq!(
+            (
+                follower.action,
+                follower.word_0x96_150,
+                follower.source_byte_3e,
+                follower_link,
+            ),
+            (
+                level2_class5::dragon::DRAGON_ATTACK_ACTION,
+                player_entity_index,
+                91,
+                0,
+            )
+        );
     }
 
     #[test]

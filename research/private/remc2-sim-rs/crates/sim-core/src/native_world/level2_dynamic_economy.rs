@@ -902,6 +902,44 @@ impl Level2EconomyState {
                         })
                 }));
             }
+            if model == level2_class5::dragon::DRAGON_MODEL {
+                bucket.extend(self.authored_class5.iter().filter_map(|source| {
+                    let render = self
+                        .authored_dragons
+                        .iter()
+                        .find(|render| render.source_entity_index == source.source_entity_index)?;
+                    (source.active
+                        && source.drawing_enabled
+                        && source.life >= 0
+                        && source.model == model
+                        && render.control_flags & 8 != 0
+                        && render.control_flags & ENTITY_DRAW_DISABLED_BIT == 0
+                        && self.map_chains.is_linked(source.source_entity_index))
+                    .then_some(Level2FireballGuidanceTarget {
+                        source_slot: source.source_entity_index,
+                        source_id: source.source_entity_index,
+                        top_position: Position {
+                            z: source.position.z.wrapping_add(render.render_yaw),
+                            ..source.position
+                        },
+                    })
+                }));
+                bucket.extend(self.authored_dragon_parts.iter().filter_map(|part| {
+                    (part.active
+                        && part.drawing_enabled
+                        && part.life >= 0
+                        && part.model == model
+                        && self.map_chains.is_linked(part.source_entity_index))
+                    .then_some(Level2FireballGuidanceTarget {
+                        source_slot: part.source_entity_index,
+                        source_id: part.entity_id,
+                        top_position: Position {
+                            z: part.position.z.wrapping_add(part.render_yaw),
+                            ..part.position
+                        },
+                    })
+                }));
+            }
             bucket.sort_unstable_by_key(|target| target.source_slot);
             targets.extend(bucket);
         }
@@ -969,6 +1007,41 @@ impl Level2EconomyState {
                 half_width: source.shift_rot_x,
                 vertical_offset: 0,
                 half_height: source.shift_rot_y,
+            })
+        }));
+        targets.extend(self.authored_class5.iter().filter_map(|source| {
+            let render = self
+                .authored_dragons
+                .iter()
+                .find(|render| render.source_entity_index == source.source_entity_index)?;
+            (source.active
+                && source.drawing_enabled
+                && source.life >= 0
+                && source.model == level2_class5::dragon::DRAGON_MODEL
+                && render.control_flags & 8 != 0
+                && render.control_flags & ENTITY_DRAW_DISABLED_BIT == 0
+                && self.map_chains.is_linked(source.source_entity_index))
+            .then_some(Level2FireballCollisionTarget {
+                source_slot: source.source_entity_index,
+                source_id: source.source_entity_index,
+                position: source.position,
+                half_width: render.render_pitch,
+                vertical_offset: render.render_yaw,
+                half_height: render.render_fov,
+            })
+        }));
+        targets.extend(self.authored_dragon_parts.iter().filter_map(|part| {
+            (part.active
+                && part.drawing_enabled
+                && part.life >= 0
+                && self.map_chains.is_linked(part.source_entity_index))
+            .then_some(Level2FireballCollisionTarget {
+                source_slot: part.source_entity_index,
+                source_id: part.entity_id,
+                position: part.position,
+                half_width: part.render_pitch,
+                vertical_offset: part.render_yaw,
+                half_height: part.render_fov,
             })
         }));
         if let Some(castle) = self.castle.filter(|castle| {

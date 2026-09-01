@@ -4732,6 +4732,151 @@
     }
 
     #[test]
+    fn level_two_fireball_target_census_includes_only_live_map_linked_dragon_rows() {
+        let mut session = level_two_possession_lifecycle_session();
+        let terrain = session.terrain.clone();
+        let mut position = Position {
+            x: 80_u16 << 8,
+            y: 80_u16 << 8,
+            z: 0,
+        };
+        position.z = terrain.ground_height(position);
+        let root = session
+            .economy_mut()
+            .allocate_authored_dragon(141, position, 4_000, &terrain)
+            .expect("source arena admits one typed Dragon chain");
+        let root_slot = root.source_entity_index;
+        let part_slots = session
+            .economy()
+            .authored_dragon_parts()
+            .iter()
+            .filter(|part| part.entity_id == root_slot)
+            .map(|part| part.source_entity_index)
+            .collect::<Vec<_>>();
+        assert_eq!(part_slots.len(), 16);
+        let expected = std::iter::once(root_slot)
+            .chain(part_slots.iter().copied())
+            .collect::<BTreeSet<_>>();
+        let imported = session.economy.entities.to_vec();
+        let guidance_targets = session.economy().fireball_guidance_targets(&imported);
+        let collision_targets = session.economy().fireball_collision_targets(&imported);
+        let guidance = guidance_targets
+            .iter()
+            .filter(|target| expected.contains(&target.source_slot))
+            .map(|target| target.source_slot)
+            .collect::<BTreeSet<_>>();
+        let collision = collision_targets
+            .iter()
+            .filter(|target| expected.contains(&target.source_slot))
+            .map(|target| target.source_slot)
+            .collect::<BTreeSet<_>>();
+        assert_eq!(guidance, expected);
+        assert_eq!(collision, expected);
+        let root_render = session
+            .economy()
+            .authored_dragons()
+            .iter()
+            .find(|render| render.source_entity_index == root_slot)
+            .copied()
+            .unwrap();
+        assert_eq!(
+            guidance_targets
+                .iter()
+                .find(|target| target.source_slot == root_slot)
+                .copied(),
+            Some(Level2FireballGuidanceTarget {
+                source_slot: root_slot,
+                source_id: root_slot,
+                top_position: Position {
+                    z: root.position.z.wrapping_add(root_render.render_yaw),
+                    ..root.position
+                },
+            })
+        );
+        assert_eq!(
+            collision_targets
+                .iter()
+                .find(|target| target.source_slot == root_slot)
+                .copied(),
+            Some(Level2FireballCollisionTarget {
+                source_slot: root_slot,
+                source_id: root_slot,
+                position: root.position,
+                half_width: root_render.render_pitch,
+                vertical_offset: root_render.render_yaw,
+                half_height: root_render.render_fov,
+            })
+        );
+        let first_part = session
+            .economy()
+            .authored_dragon_parts()
+            .iter()
+            .find(|part| part.source_entity_index == part_slots[0])
+            .copied()
+            .unwrap();
+        assert_eq!(
+            collision_targets
+                .iter()
+                .find(|target| target.source_slot == first_part.source_entity_index)
+                .copied(),
+            Some(Level2FireballCollisionTarget {
+                source_slot: first_part.source_entity_index,
+                source_id: root_slot,
+                position: first_part.position,
+                half_width: first_part.render_pitch,
+                vertical_offset: first_part.render_yaw,
+                half_height: first_part.render_fov,
+            })
+        );
+
+        let inactive_part = part_slots[0];
+        let unlinked_part = part_slots[1];
+        let hidden_part = part_slots[2];
+        {
+            let mut economy = session.economy_mut();
+            economy
+                .authored_dragon_parts
+                .iter_mut()
+                .find(|part| part.source_entity_index == inactive_part)
+                .expect("first Dragon part")
+                .active = false;
+            economy
+                .authored_dragon_parts
+                .iter_mut()
+                .find(|part| part.source_entity_index == hidden_part)
+                .expect("third Dragon part")
+                .drawing_enabled = false;
+            economy
+                .map_chains
+                .sync_entity(RenderableMapSeed {
+                    entity_index: unlinked_part,
+                    active: false,
+                    x: position.x,
+                    y: position.y,
+                })
+                .expect("second Dragon part unlinks from the source map");
+        }
+        let guidance = session
+            .economy()
+            .fireball_guidance_targets(&imported)
+            .into_iter()
+            .map(|target| target.source_slot)
+            .collect::<BTreeSet<_>>();
+        let collision = session
+            .economy()
+            .fireball_collision_targets(&imported)
+            .into_iter()
+            .map(|target| target.source_slot)
+            .collect::<BTreeSet<_>>();
+        assert!(!guidance.contains(&inactive_part));
+        assert!(!guidance.contains(&unlinked_part));
+        assert!(!guidance.contains(&hidden_part));
+        assert!(!collision.contains(&inactive_part));
+        assert!(!collision.contains(&unlinked_part));
+        assert!(!collision.contains(&hidden_part));
+    }
+
+    #[test]
     fn level_two_mana_sphere_fade_hides_then_reclaims_through_production_scheduler() {
         let mut session = level_two_possession_lifecycle_session();
         let sphere = session
@@ -4780,4 +4925,41 @@
             .iter()
             .all(|sphere| sphere.source_entity_index != slot));
         assert!(session.economy().free_slots.contains(&slot));
+    }
+    #[test]
+    fn level_two_free_arena_rebuild_keeps_hidden_castle_flyer_reserved_until_reclaim() {
+        let mut session = level_two_possession_lifecycle_session();
+        let reserved_slot = session
+            .economy()
+            .free_slots
+            .last()
+            .copied()
+            .expect("qualified reset exposes an ordinary free slot");
+        session.economy_mut().free_slots = vec![reserved_slot];
+        let position = session.state.position;
+        let owner = session.state.entity_index;
+        let flyer_slot = session
+            .economy_mut()
+            .spawn_castle_projectile(position, owner, 0, 0, 0, 0)
+            .expect("ordinary Castle flyer allocation");
+        assert_eq!(flyer_slot, reserved_slot);
+        session
+            .economy_mut()
+            .disable_castle_projectile(flyer_slot, false);
+
+        session
+            .economy_mut()
+            .rebuild_free_arena(&[reserved_slot]);
+        assert!(
+            !session.economy().free_slots.contains(&reserved_slot),
+            "sub_49F90 must not publish the hidden-but-reserved fixed Castle row as class zero"
+        );
+
+        session
+            .economy_mut()
+            .reclaim_hidden_castle_rows_at_source_boundary();
+        assert!(
+            session.economy().free_slots.contains(&reserved_slot),
+            "the following-pass hidden-row sweep owns the Castle flyer release"
+        );
     }
