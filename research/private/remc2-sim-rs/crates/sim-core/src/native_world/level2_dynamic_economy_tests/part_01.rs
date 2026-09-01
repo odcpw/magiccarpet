@@ -1470,6 +1470,17 @@
             .any(|effect| effect.source_entity_index == effect_slot));
 
         session.step_outer_turn(PlayerCommand::default(), 0);
+        assert_ne!(
+            session
+                .economy()
+                .spheres()
+                .iter()
+                .find(|sphere| sphere.source_entity_index == sphere_slot)
+                .expect("same-pass handoff retains the hidden source row")
+                .vertical_velocity,
+            0,
+            "the ordinary sphere callback advances vertical physics before the handoff"
+        );
         let events = session.economy().events();
         let claim_index = events
             .iter()
