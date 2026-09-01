@@ -8024,7 +8024,6 @@ pub(crate) mod tests {
                             && !sphere.pending_delete
                             && sphere.owner_entity_index == 0
                             && sphere.player_entity_index == 0
-                            && sphere.vertical_velocity == 0
                     })
                     .map(|sphere| sphere.source_entity_index);
                 if settled.is_none() {
@@ -14608,7 +14607,16 @@ pub(crate) mod tests {
         const CASTLE_FAMILY: u8 = 2;
         const GROUP_SIX_ROWS: &[u16] = &[108, 134, 135, 154, 189, 193];
 
+        #[derive(Clone, Copy, Debug)]
+        struct SphereOccurrence {
+            slot: u16,
+            generation: u32,
+            producer_slot: u16,
+            mana: i32,
+        }
+
         let castle_id = SemanticId::parse("spell.castle").unwrap();
+        let fireball_id = SemanticId::parse("spell.fireball").unwrap();
         let possession_id = SemanticId::parse("spell.possession").unwrap();
         let player_entity = session
             .backend()
@@ -14644,22 +14652,197 @@ pub(crate) mod tests {
                 z: compatibility.state.position.z,
             }
         };
-        let claim_real_sphere = |session: &mut GameSession<Mc2CampaignBackend>,
-                                 sphere_slot: u16| {
-            for _ in 0..128 {
-                let settled = session
+        let new_sphere_occurrence = |session: &GameSession<Mc2CampaignBackend>,
+                                     event_start: usize,
+                                     producer_slot: u16,
+                                     expected_mana: i32| {
+            let economy = session.backend().campaign.level2_compatibility().economy();
+            economy.events()[event_start..]
+                .iter()
+                .find_map(|event| match event {
+                    crate::native_world::Level2EconomyEvent::ManaSphereSpawned {
+                        sphere_id,
+                        source_entity_index,
+                        mana,
+                    } if *source_entity_index == producer_slot && *mana == expected_mana => {
+                        let slot = u16::try_from(*sphere_id).ok()?;
+                        let sphere = economy.spheres().iter().find(|sphere| {
+                            sphere.active
+                                && !sphere.pending_delete
+                                && sphere.source_entity_index == slot
+                                && sphere.id == *sphere_id
+                                && sphere.mana == *mana
+                        })?;
+                        Some(SphereOccurrence {
+                            slot,
+                            generation: economy.slot_generation(slot),
+                            producer_slot,
+                            mana: sphere.mana,
+                        })
+                    }
+                    _ => None,
+                })
+        };
+        let kill_archer_with_fireballs =
+            |session: &mut GameSession<Mc2CampaignBackend>, source_slot: u16| {
+                let event_start = session
                     .backend()
                     .campaign
                     .level2_compatibility()
                     .economy()
+                    .events()
+                    .len();
+                for _ in 0..16 {
+                    let archer = session
+                        .backend()
+                        .campaign
+                        .level2_compatibility()
+                        .economy()
+                        .authored_class5()
+                        .iter()
+                        .find(|source| source.source_entity_index == source_slot)
+                        .copied();
+                    let Some(archer) = archer else {
+                        break;
+                    };
+                    if archer.life < 0 {
+                        break;
+                    }
+                    for _ in 0..640 {
+                        let compatibility = session.backend().campaign.level2_compatibility();
+                        let archer = compatibility
+                            .economy()
+                            .authored_class5()
+                            .iter()
+                            .find(|source| source.source_entity_index == source_slot)
+                            .copied()
+                            .expect("package Archer remains live while approaching");
+                        let state = compatibility.state;
+                        let dx = i32::from(
+                            archer
+                                .position
+                                .x
+                                .wrapping_sub(state.position.x)
+                                .cast_signed(),
+                        );
+                        let dy = i32::from(
+                            archer
+                                .position
+                                .y
+                                .wrapping_sub(state.position.y)
+                                .cast_signed(),
+                        );
+                        if crate::legacy_sqrt(
+                            dx.wrapping_mul(dx)
+                                .wrapping_add(dy.wrapping_mul(dy))
+                                .cast_unsigned(),
+                        ) <= 3_500
+                        {
+                            break;
+                        }
+                        let desired = i16::try_from(crate::heading_for_positions(
+                            state.position,
+                            archer.position,
+                        ))
+                        .expect("source heading is 11-bit");
+                        let correction = crate::turn_toward(state.yaw, desired, 127);
+                        session
+                            .step(
+                                guard(session),
+                                GameCommand {
+                                    longitudinal: LongitudinalControl::Accelerate,
+                                    roll_axis: correction.clamp(-24, 24) as i8,
+                                    pitch_axis: -127,
+                                    ..GameCommand::default()
+                                },
+                            )
+                            .unwrap();
+                    }
+                    let (aim_yaw, aim_pitch, state_yaw, display_pitch) = {
+                        let compatibility = session.backend().campaign.level2_compatibility();
+                        let archer = compatibility
+                            .economy()
+                            .authored_class5()
+                            .iter()
+                            .find(|source| source.source_entity_index == source_slot)
+                            .copied()
+                            .expect("package Archer remains live before Fireball cast");
+                        let state = compatibility.state;
+                        let direction_bits =
+                            compatibility.shared_spells().player_entity().control_flags & 0x0300;
+                        let mut launch = state.position;
+                        let hand_yaw = if direction_bits & 0x0100 != 0 {
+                            Some(state.yaw.wrapping_sub(512))
+                        } else if direction_bits & 0x0200 != 0 {
+                            Some(state.yaw.wrapping_add(512))
+                        } else {
+                            None
+                        };
+                        if let Some(hand_yaw) = hand_yaw {
+                            crate::move_entity(&mut launch, hand_yaw, 0, 256);
+                            if crate::FlightWorld::ground_height(
+                                compatibility.canonical_terrain(),
+                                launch,
+                            ) > launch.z
+                            {
+                                launch = state.position;
+                            }
+                        }
+                        launch.z = launch.z.wrapping_add(state.entity_fov);
+                        let mut target = archer.position;
+                        target.z = target.z.wrapping_sub(
+                            crate::level1_mission::FIREBALL_COLLISION_VERTICAL_OFFSET,
+                        );
+                        let (yaw, pitch) =
+                            crate::level1_mission::projectile_guidance_angles(launch, target);
+                        (yaw, pitch, state.yaw, state.display_pitch)
+                    };
+                    session
+                        .step(
+                            guard(session),
+                            GameCommand {
+                                select_spell: Some(fireball_id.clone()),
+                                cast_selected: true,
+                                look_yaw: aim_yaw.wrapping_sub(state_yaw),
+                                look_pitch: aim_pitch.wrapping_sub(display_pitch),
+                                ..GameCommand::default()
+                            },
+                        )
+                        .unwrap();
+                    for _ in 0..48 {
+                        if let Some(occurrence) =
+                            new_sphere_occurrence(session, event_start, source_slot, 500)
+                        {
+                            return occurrence;
+                        }
+                        session
+                            .step(guard(session), GameCommand::default())
+                            .unwrap();
+                    }
+                }
+                panic!("ordinary commanded Fireballs did not kill Archer slot {source_slot}");
+            };
+        let claim_real_sphere = |session: &mut GameSession<Mc2CampaignBackend>,
+                                 mut occurrence: SphereOccurrence,
+                                 reselect_current_neutral: bool| {
+            let mut sphere_slot = occurrence.slot;
+            for _ in 0..128 {
+                let economy = session.backend().campaign.level2_compatibility().economy();
+                assert_eq!(
+                    economy.slot_generation(sphere_slot),
+                    occurrence.generation,
+                    "sphere slot {sphere_slot} was reused after producer {}",
+                    occurrence.producer_slot
+                );
+                let settled = economy
                     .spheres()
                     .iter()
-                    .find(|sphere| sphere.source_entity_index == sphere_slot)
-                    .is_some_and(|sphere| {
-                        sphere.velocity_x == 0
-                            && sphere.velocity_y == 0
-                            && sphere.vertical_velocity == 0
-                    });
+                    .find(|sphere| {
+                        sphere.source_entity_index == sphere_slot
+                            && sphere.id == u32::from(sphere_slot)
+                            && sphere.mana == occurrence.mana
+                    })
+                    .is_some_and(|sphere| sphere.vertical_velocity == 0);
                 if settled {
                     break;
                 }
@@ -14667,30 +14850,13 @@ pub(crate) mod tests {
                     .step(guard(session), GameCommand::default())
                     .unwrap();
             }
-            let (sphere_position, target_top) = {
-                let compatibility = session.backend().campaign.level2_compatibility();
-                let sphere = compatibility
-                    .economy()
-                    .spheres()
-                    .iter()
-                    .find(|sphere| sphere.source_entity_index == sphere_slot)
-                    .filter(|sphere| {
-                        sphere.active
-                            && !sphere.pending_delete
-                            && sphere.owner_entity_index == 0
-                            && sphere.player_entity_index == 0
-                            && sphere.velocity_x == 0
-                            && sphere.velocity_y == 0
-                            && sphere.vertical_velocity == 0
-                    })
-                    .expect("real death sphere settles while still neutral");
-                (
-                    sphere.position,
-                    compatibility
-                        .possession_guidance_target_top_for_test(sphere_slot)
-                        .expect("death sphere has an exact source guidance top"),
-                )
-            };
+            let event_start = session
+                .backend()
+                .campaign
+                .level2_compatibility()
+                .economy()
+                .events()
+                .len();
             let (player_yaw, player_fov) = {
                 let state = session.backend().campaign.level2_compatibility().state;
                 (state.yaw, state.entity_fov)
@@ -14704,6 +14870,59 @@ pub(crate) mod tests {
                     },
                 )
                 .unwrap();
+            if reselect_current_neutral {
+                let economy = session.backend().campaign.level2_compatibility().economy();
+                let mut neutral = economy
+                    .spheres()
+                    .iter()
+                    .filter(|sphere| {
+                        sphere.active
+                            && !sphere.pending_delete
+                            && sphere.owner_entity_index == 0
+                            && sphere.player_entity_index == 0
+                    })
+                    .copied()
+                    .collect::<Vec<_>>();
+                neutral.sort_unstable_by_key(|sphere| sphere.source_entity_index);
+                let sphere = *neutral
+                    .first()
+                    .expect("one current neutral sphere remains before cast");
+                sphere_slot = sphere.source_entity_index;
+                occurrence = SphereOccurrence {
+                    slot: sphere_slot,
+                    generation: economy.slot_generation(sphere_slot),
+                    producer_slot: occurrence.producer_slot,
+                    mana: sphere.mana,
+                };
+            }
+            let (sphere_position, target_top) = {
+                let compatibility = session.backend().campaign.level2_compatibility();
+                assert_eq!(
+                    compatibility.economy().slot_generation(sphere_slot),
+                    occurrence.generation,
+                    "the cast boundary must retain the selected current occupant"
+                );
+                let sphere = compatibility
+                    .economy()
+                    .spheres()
+                    .iter()
+                    .find(|sphere| sphere.source_entity_index == sphere_slot)
+                    .filter(|sphere| {
+                        sphere.active
+                            && !sphere.pending_delete
+                            && sphere.id == u32::from(sphere_slot)
+                            && sphere.mana == occurrence.mana
+                            && sphere.owner_entity_index == 0
+                            && sphere.player_entity_index == 0
+                    })
+                    .expect("current death-sphere carrier remains neutral before cast");
+                (
+                    sphere.position,
+                    compatibility
+                        .possession_guidance_target_top_for_test(sphere_slot)
+                        .expect("current death sphere has an exact source guidance top"),
+                )
+            };
             let mut possession_cast_position = sphere_position;
             crate::move_entity(
                 &mut possession_cast_position,
@@ -14736,15 +14955,85 @@ pub(crate) mod tests {
                 let economy = session.backend().campaign.level2_compatibility().economy();
                 saw_projectile |= !economy.possession_projectiles().is_empty();
                 saw_effect |= !economy.possession_effects().is_empty();
-                claimed_slot = economy
+                let live_claim = economy
                     .spheres()
                     .iter()
                     .find(|sphere| {
                         sphere.active
                             && !sphere.pending_delete
+                            && sphere.source_entity_index == sphere_slot
                             && sphere.owner_entity_index == player_entity
                     })
                     .map(|sphere| sphere.source_entity_index);
+                let new_events = &economy.events()[event_start..];
+                let claim_index = new_events.iter().position(|event| {
+                    matches!(
+                        event,
+                        crate::native_world::Level2EconomyEvent::ManaSphereClaimed {
+                            sphere_id,
+                            owner_entity_index,
+                        } if *sphere_id == u32::from(sphere_slot)
+                            && *owner_entity_index == player_entity
+                    )
+                });
+                let handoff = claim_index.and_then(|claim_index| {
+                    new_events
+                        .iter()
+                        .enumerate()
+                        .skip(claim_index + 1)
+                        .find_map(|(_, event)| {
+                            match event {
+                            crate::native_world::Level2EconomyEvent::ManaSphereCollected {
+                                sphere_id,
+                                carrier_id,
+                                mana,
+                            } if *sphere_id == u32::from(sphere_slot)
+                                && *mana == occurrence.mana => {
+                                let castle = economy
+                                    .castle()
+                                    .filter(|castle| {
+                                        u32::from(castle.source_entity_index) == *carrier_id
+                                            && castle.mana >= occurrence.mana
+                                    })
+                                        .expect(
+                                            "same-pass root handoff is carried by the live Castle",
+                                        );
+                                    Some(castle.source_entity_index)
+                                }
+                                crate::native_world::Level2EconomyEvent::CastleDefenderCollectedSphere {
+                                defender_slot,
+                                sphere_id,
+                                mana,
+                            } if *sphere_id == u32::from(sphere_slot)
+                                && *mana == occurrence.mana => {
+                                    let child = economy
+                                        .castle_children()
+                                        .iter()
+                                        .find(|child| {
+                                            child.active
+                                                && child.source_entity_index == *defender_slot
+                                                && child.source_class == 3
+                                                && child.model == 3
+                                                && child.action == 9
+                                                && child.player_entity_index == player_entity
+                                                && child.mana >= occurrence.mana
+                                        })
+                                        .expect(
+                                            "same-pass defender handoff retains owner and mana",
+                                        );
+                                    Some(child.source_entity_index)
+                                }
+                                _ => None,
+                            }
+                        })
+                });
+                if claim_index.is_some() && (live_claim.is_some() || handoff.is_some()) {
+                    assert!(
+                        economy.carriers().is_empty(),
+                        "stage one must not recreate the removed duplicate mana carrier"
+                    );
+                    claimed_slot = Some(sphere_slot);
+                }
                 if claimed_slot.is_some() {
                     break;
                 }
@@ -14760,22 +15049,24 @@ pub(crate) mod tests {
                         .campaign
                         .level2_compatibility()
                         .economy()
-                        .spheres()
+                        .events()
                 )
             });
-            assert_eq!(
-                session
-                    .backend()
-                    .campaign
-                    .level2_compatibility()
-                    .economy()
-                    .spheres()
-                    .iter()
-                    .find(|sphere| sphere.source_entity_index == claimed_slot)
-                    .map(|sphere| (sphere.owner_entity_index, sphere.player_entity_index)),
-                Some((player_entity, player_entity)),
-                "ordinary Possession synchronizes the claimed sphere's semantic owner and raw player relation"
-            );
+            if let Some(sphere) = session
+                .backend()
+                .campaign
+                .level2_compatibility()
+                .economy()
+                .spheres()
+                .iter()
+                .find(|sphere| sphere.source_entity_index == claimed_slot)
+            {
+                assert_eq!(
+                    (sphere.owner_entity_index, sphere.player_entity_index),
+                    (player_entity, player_entity),
+                    "ordinary Possession synchronizes the claimed sphere's semantic owner and raw player relation"
+                );
+            }
             for _ in 0..32 {
                 let economy = session.backend().campaign.level2_compatibility().economy();
                 if economy.possession_projectiles().is_empty()
@@ -14793,7 +15084,7 @@ pub(crate) mod tests {
                     && economy.possession_effects().is_empty(),
                 "Possession projectile/effect cleanup must finish before the next target"
             );
-            claimed_slot
+            occurrence
         };
 
         for stage_index in 0..=1 {
@@ -14904,56 +15195,9 @@ pub(crate) mod tests {
             .collect::<Vec<_>>();
         assert_eq!(archers.len(), ARCHER_ROWS.len());
         let first_archer = archers.first().expect("one package Archer");
-        assert!(
-            session
-                .backend_mut()
-                .campaign
-                .level2_compatibility_mut()
-                .economy_mut()
-                .stage_archer_mailbox_damage_for_test(
-                    first_archer.source_entity_index,
-                    player_entity,
-                    first_archer.max_life.saturating_add(1),
-                )
-        );
-        let mut mana_sphere_slots = Vec::new();
-        for _ in 0..24 {
-            session
-                .step(guard(&session), GameCommand::default())
-                .unwrap();
-            mana_sphere_slots = session
-                .backend()
-                .campaign
-                .level2_compatibility()
-                .economy()
-                .events()
-                .iter()
-                .filter_map(|event| match event {
-                    crate::native_world::Level2EconomyEvent::ManaSphereSpawned {
-                        sphere_id,
-                        source_entity_index,
-                        mana: 500,
-                        ..
-                    } if archers
-                        .iter()
-                        .any(|archer| archer.source_entity_index == *source_entity_index) =>
-                    {
-                        u16::try_from(*sphere_id).ok()
-                    }
-                    _ => None,
-                })
-                .collect();
-            mana_sphere_slots.sort_unstable();
-            mana_sphere_slots.dedup();
-            if mana_sphere_slots.len() == 1 {
-                break;
-            }
-        }
-        assert_eq!(
-            mana_sphere_slots.len(),
-            1,
-            "the first package Archer death produces one real model-39 row"
-        );
+        let first_archer_sphere =
+            kill_archer_with_fireballs(&mut session, first_archer.source_entity_index);
+        let mut mana_sphere_slots = vec![first_archer_sphere.slot];
         session
             .step(guard(&session), GameCommand::default())
             .unwrap();
@@ -15114,131 +15358,128 @@ pub(crate) mod tests {
             castle_slot
         );
 
-        let deposit_claimed_sphere = |session: &mut GameSession<Mc2CampaignBackend>,
-                                      sphere_slot: u16,
-                                      expected_mana: i32,
-                                      expected_global: i32| {
-            let (sphere_position, castle_position) = {
-                let economy = session.backend().campaign.level2_compatibility().economy();
-                (
-                    economy
+        let deposit_claimed_sphere =
+            |session: &mut GameSession<Mc2CampaignBackend>,
+             occurrence: SphereOccurrence,
+             expected_mana: i32,
+             expected_global: Option<i32>| {
+                let sphere_slot = occurrence.slot;
+                let positions = {
+                    let economy = session.backend().campaign.level2_compatibility().economy();
+                    let castle = economy
+                        .castle()
+                        .expect("Castle remains live before mana collection");
+                    if castle.mana == expected_mana
+                        && !economy.spheres().iter().any(|sphere| {
+                            sphere.source_entity_index == sphere_slot
+                                && sphere.active
+                                && !sphere.pending_delete
+                        })
+                    {
+                        None
+                    } else {
+                        let source_position = economy
                         .spheres()
                         .iter()
                         .find(|sphere| sphere.source_entity_index == sphere_slot)
-                        .expect("claimed sphere remains live before Castle upkeep")
-                        .position,
-                    economy
-                        .castle()
-                        .expect("Castle remains live before mana collection")
-                        .position,
-                )
-            };
-            let dx = i32::from(
-                sphere_position
-                    .x
-                    .wrapping_sub(castle_position.x)
-                    .cast_signed(),
-            );
-            let dy = i32::from(
-                sphere_position
-                    .y
-                    .wrapping_sub(castle_position.y)
-                    .cast_signed(),
-            );
-            let distance = crate::legacy_sqrt(
-                dx.wrapping_mul(dx)
-                    .wrapping_add(dy.wrapping_mul(dy))
-                    .cast_unsigned(),
-            );
-            let bound = usize::try_from(distance.saturating_mul(2) / 48)
-                .unwrap_or(usize::MAX)
-                .saturating_add(192);
-            for _ in 0..bound {
-                let economy = session.backend().campaign.level2_compatibility().economy();
-                let deposited = economy
-                    .castle()
-                    .is_some_and(|castle| castle.mana == expected_mana);
-                let reclaimed = !economy.spheres().iter().any(|sphere| {
-                    sphere.source_entity_index == sphere_slot
-                        && sphere.active
-                        && !sphere.pending_delete
-                });
-                if deposited && reclaimed {
-                    break;
+                        .map(|sphere| sphere.position)
+                        .or_else(|| {
+                            economy.events().iter().rev().find_map(|event| match event {
+                                crate::native_world::Level2EconomyEvent::CastleDefenderCollectedSphere {
+                                    defender_slot,
+                                    sphere_id,
+                                    mana,
+                                } if *sphere_id == u32::from(sphere_slot)
+                                    && *mana == occurrence.mana => economy
+                                    .castle_children()
+                                    .iter()
+                                    .find(|child| child.source_entity_index == *defender_slot)
+                                    .map(|child| child.position),
+                                _ => None,
+                            })
+                        })
+                        .expect("claimed sphere or its defender carrier remains live before deposit");
+                        Some((source_position, castle.position))
+                    }
+                };
+                if let Some((sphere_position, castle_position)) = positions {
+                    let dx = i32::from(
+                        sphere_position
+                            .x
+                            .wrapping_sub(castle_position.x)
+                            .cast_signed(),
+                    );
+                    let dy = i32::from(
+                        sphere_position
+                            .y
+                            .wrapping_sub(castle_position.y)
+                            .cast_signed(),
+                    );
+                    let distance = crate::legacy_sqrt(
+                        dx.wrapping_mul(dx)
+                            .wrapping_add(dy.wrapping_mul(dy))
+                            .cast_unsigned(),
+                    );
+                    let bound = usize::try_from(distance.saturating_mul(2) / 48)
+                        .unwrap_or(usize::MAX)
+                        .saturating_add(192);
+                    for _ in 0..bound {
+                        let economy = session.backend().campaign.level2_compatibility().economy();
+                        let deposited = economy
+                            .castle()
+                            .is_some_and(|castle| castle.mana == expected_mana);
+                        let reclaimed = !economy.spheres().iter().any(|sphere| {
+                            sphere.source_entity_index == sphere_slot
+                                && economy.slot_generation(sphere_slot) == occurrence.generation
+                                && sphere.active
+                                && !sphere.pending_delete
+                        });
+                        if deposited && reclaimed {
+                            break;
+                        }
+                        session
+                            .step(guard(session), GameCommand::default())
+                            .unwrap();
+                    }
                 }
-                session
-                    .step(guard(session), GameCommand::default())
-                    .unwrap();
-            }
-            let economy = session.backend().campaign.level2_compatibility().economy();
-            assert_eq!(
-                economy.castle().map(|castle| castle.mana),
-                Some(expected_mana),
-                "claimed sphere {sphere_slot} must deposit exactly once"
-            );
-            assert_eq!(
-                economy.owner_mana_global(),
-                expected_global,
-                "sphere-to-Castle transfer must conserve the live denominator"
-            );
-            assert!(
-                !economy.spheres().iter().any(|sphere| {
-                    sphere.source_entity_index == sphere_slot
-                        && sphere.active
-                        && !sphere.pending_delete
-                }),
-                "deposited sphere {sphere_slot} must finish ordinary reclaim"
-            );
-        };
+                let economy = session.backend().campaign.level2_compatibility().economy();
+                assert_eq!(
+                    economy.castle().map(|castle| castle.mana),
+                    Some(expected_mana),
+                    "claimed sphere {sphere_slot} must deposit exactly once"
+                );
+                if let Some(expected_global) = expected_global {
+                    assert_eq!(
+                        economy.owner_mana_global(),
+                        expected_global,
+                        "sphere-to-Castle transfer must conserve the live denominator"
+                    );
+                }
+                assert!(
+                    !economy.spheres().iter().any(|sphere| {
+                        sphere.source_entity_index == sphere_slot
+                            && economy.slot_generation(sphere_slot) == occurrence.generation
+                            && sphere.active
+                            && !sphere.pending_delete
+                    }),
+                    "deposited sphere {sphere_slot} must finish ordinary reclaim"
+                );
+            };
 
         let mut expected_castle_mana = 0;
-        let first_sphere = *mana_sphere_slots.first().expect("first Archer sphere");
-        let claimed_slot = claim_real_sphere(&mut session, first_sphere);
-        assert_eq!(claimed_slot, first_sphere);
-        expected_castle_mana += 500;
-        deposit_claimed_sphere(&mut session, claimed_slot, expected_castle_mana, 20_077);
+        let claimed_occurrence = claim_real_sphere(&mut session, first_archer_sphere, false);
+        assert_eq!(claimed_occurrence.slot, first_archer_sphere.slot);
+        expected_castle_mana += first_archer_sphere.mana;
+        deposit_claimed_sphere(
+            &mut session,
+            first_archer_sphere,
+            expected_castle_mana,
+            Some(20_077),
+        );
 
         for (archer_index, archer) in archers.iter().skip(1).enumerate() {
-            assert!(
-                session
-                    .backend_mut()
-                    .campaign
-                    .level2_compatibility_mut()
-                    .economy_mut()
-                    .stage_archer_mailbox_damage_for_test(
-                        archer.source_entity_index,
-                        player_entity,
-                        archer.max_life.saturating_add(1),
-                    )
-            );
-            let mut sphere_slot = None;
-            for _ in 0..24 {
-                session
-                    .step(guard(&session), GameCommand::default())
-                    .unwrap();
-                sphere_slot = session
-                    .backend()
-                    .campaign
-                    .level2_compatibility()
-                    .economy()
-                    .events()
-                    .iter()
-                    .find_map(|event| match event {
-                        crate::native_world::Level2EconomyEvent::ManaSphereSpawned {
-                            sphere_id,
-                            source_entity_index,
-                            mana: 500,
-                            ..
-                        } if *source_entity_index == archer.source_entity_index => {
-                            u16::try_from(*sphere_id).ok()
-                        }
-                        _ => None,
-                    });
-                if sphere_slot.is_some() {
-                    break;
-                }
-            }
-            let sphere_slot = sphere_slot.expect("typed Archer death produces 500-mana model39");
+            let occurrence = kill_archer_with_fireballs(&mut session, archer.source_entity_index);
+            let sphere_slot = occurrence.slot;
             session
                 .step(guard(&session), GameCommand::default())
                 .unwrap();
@@ -15254,19 +15495,19 @@ pub(crate) mod tests {
                 expected_global,
                 "each Archer sphere adds one exact 500-mana row"
             );
-            let claimed_slot = claim_real_sphere(&mut session, sphere_slot);
+            let claimed_occurrence = claim_real_sphere(&mut session, occurrence, false);
             assert_eq!(
-                claimed_slot, sphere_slot,
+                claimed_occurrence.slot, sphere_slot,
                 "sequential Archer death leaves one neutral sphere target"
             );
-            expected_castle_mana += 500;
+            expected_castle_mana += occurrence.mana;
             deposit_claimed_sphere(
                 &mut session,
-                claimed_slot,
+                occurrence,
                 expected_castle_mana,
-                expected_global,
+                Some(expected_global),
             );
-            mana_sphere_slots.push(claimed_slot);
+            mana_sphere_slots.push(claimed_occurrence.slot);
         }
         assert_eq!(mana_sphere_slots.len(), ARCHER_ROWS.len());
         assert_eq!(expected_castle_mana, 2_000);
@@ -15279,6 +15520,50 @@ pub(crate) mod tests {
                 .owner_mana_global(),
             21_577
         );
+
+        let goat_source_slots = session
+            .backend()
+            .campaign
+            .level2_compatibility()
+            .goats()
+            .iter()
+            .filter(|goat| goat.mana == 300)
+            .map(|goat| goat.entity_index)
+            .collect::<BTreeSet<_>>();
+        let mut goat_event_cursor = session
+            .backend()
+            .campaign
+            .level2_compatibility()
+            .economy()
+            .events()
+            .len();
+        let mut seen_goat_occurrences = BTreeSet::new();
+        let capture_goat_occurrences =
+            |session: &GameSession<Mc2CampaignBackend>,
+             event_cursor: &mut usize,
+             seen: &mut BTreeSet<(usize, u16, u16)>| {
+                let economy = session.backend().campaign.level2_compatibility().economy();
+                let event_end = economy.events().len();
+                for (offset, event) in economy.events()[*event_cursor..event_end]
+                    .iter()
+                    .enumerate()
+                {
+                    let crate::native_world::Level2EconomyEvent::ManaSphereSpawned {
+                        sphere_id,
+                        source_entity_index,
+                        mana: 300,
+                    } = *event
+                    else {
+                        continue;
+                    };
+                    if !goat_source_slots.contains(&source_entity_index) {
+                        continue;
+                    }
+                    let slot = u16::try_from(sphere_id).expect("Goat sphere id fits its slot");
+                    assert!(seen.insert((*event_cursor + offset, source_entity_index, slot)));
+                }
+                *event_cursor = event_end;
+            };
 
         for _ in 0..24 {
             if session
@@ -15295,6 +15580,7 @@ pub(crate) mod tests {
             session
                 .step(guard(&session), GameCommand::default())
                 .unwrap();
+            capture_goat_occurrences(&session, &mut goat_event_cursor, &mut seen_goat_occurrences);
         }
         let row190_slot = session
             .backend()
@@ -15318,12 +15604,10 @@ pub(crate) mod tests {
             "row 190 waits on the package Castle-mana objective"
         );
 
-        // Five reset-live Goats are the smallest additional real package
-        // producer set that can cross the exact 15% integer threshold. At
-        // each turn choose the closest live row whose exact production
-        // class-10 overlap set contains only that Goat. This keeps the real
-        // damage pulse and source row order while preserving one neutral
-        // sphere at a time for the ordinary Possession/carrier lifecycle.
+        // Consume every current package Goat death occurrence in source event
+        // order. Background package combat may kill another Goat while a
+        // prior sphere is being claimed or carried, so a fixed pulse count is
+        // not the authoritative chronology.
         let castle_position = session
             .backend()
             .campaign
@@ -15332,8 +15616,132 @@ pub(crate) mod tests {
             .castle()
             .expect("the ordinary Castle root remains live")
             .position;
-        let mut goat_sphere_slots = Vec::new();
-        for goat_index in 0..5 {
+        let mut deposited_goat_mana = 0_i32;
+        loop {
+            capture_goat_occurrences(&session, &mut goat_event_cursor, &mut seen_goat_occurrences);
+            let distinct_deaths = i32::try_from(seen_goat_occurrences.len())
+                .expect("package Goat occurrence census fits i32");
+            let undeposited_goat_mana = 300 * distinct_deaths - deposited_goat_mana;
+            if undeposited_goat_mana != 0 {
+                let mut occurrence = None;
+                for _ in 0..128 {
+                    let economy = session.backend().campaign.level2_compatibility().economy();
+                    let current_undeposited_goat_mana = 300
+                        * i32::try_from(seen_goat_occurrences.len())
+                            .expect("package Goat occurrence census fits i32")
+                        - deposited_goat_mana;
+                    let mut neutral = economy
+                        .spheres()
+                        .iter()
+                        .filter(|sphere| {
+                            sphere.active
+                                && !sphere.pending_delete
+                                && sphere.owner_entity_index == 0
+                                && sphere.player_entity_index == 0
+                        })
+                        .copied()
+                        .collect::<Vec<_>>();
+                    neutral.sort_unstable_by_key(|sphere| sphere.source_entity_index);
+                    assert_eq!(
+                        neutral.iter().map(|sphere| sphere.mana).sum::<i32>(),
+                        current_undeposited_goat_mana,
+                        "the current neutral census must conserve all undeposited Goat receipts"
+                    );
+                    let sphere = *neutral
+                        .first()
+                        .expect("undeposited Goat mana has one current neutral carrier");
+                    if sphere.vertical_velocity == 0 {
+                        occurrence = Some(SphereOccurrence {
+                            slot: sphere.source_entity_index,
+                            generation: economy.slot_generation(sphere.source_entity_index),
+                            producer_slot: 0,
+                            mana: sphere.mana,
+                        });
+                        break;
+                    }
+                    session
+                        .step(guard(&session), GameCommand::default())
+                        .unwrap();
+                    capture_goat_occurrences(
+                        &session,
+                        &mut goat_event_cursor,
+                        &mut seen_goat_occurrences,
+                    );
+                }
+                let occurrence =
+                    occurrence.expect("a current neutral Goat bundle settles after merge/reclaim");
+                let economy = session.backend().campaign.level2_compatibility().economy();
+                assert_eq!(
+                    economy.slot_generation(occurrence.slot),
+                    occurrence.generation,
+                    "queued Goat occurrence must still name its current occupant"
+                );
+                assert!(economy.spheres().iter().any(|sphere| {
+                    sphere.active
+                        && !sphere.pending_delete
+                        && sphere.source_entity_index == occurrence.slot
+                        && sphere.id == u32::from(occurrence.slot)
+                        && sphere.mana == occurrence.mana
+                        && sphere.owner_entity_index == 0
+                        && sphere.player_entity_index == 0
+                }));
+                let occurrence = claim_real_sphere(&mut session, occurrence, true);
+                capture_goat_occurrences(
+                    &session,
+                    &mut goat_event_cursor,
+                    &mut seen_goat_occurrences,
+                );
+                expected_castle_mana += occurrence.mana;
+                deposit_claimed_sphere(&mut session, occurrence, expected_castle_mana, None);
+                capture_goat_occurrences(
+                    &session,
+                    &mut goat_event_cursor,
+                    &mut seen_goat_occurrences,
+                );
+                deposited_goat_mana += occurrence.mana;
+                let distinct_deaths = i32::try_from(seen_goat_occurrences.len())
+                    .expect("package Goat occurrence census fits i32");
+                let economy = session.backend().campaign.level2_compatibility().economy();
+                assert_eq!(
+                    economy.owner_mana_global(),
+                    21_577 + 300 * distinct_deaths,
+                    "each distinct package Goat death adds one exact 300-mana row"
+                );
+                assert_eq!(
+                    economy.castle().map(|castle| castle.mana),
+                    Some(2_000 + deposited_goat_mana),
+                    "each current Goat bundle deposits its exact merged payload once"
+                );
+                continue;
+            }
+
+            let (selector, percent) = {
+                let compatibility = session.backend().campaign.level2_compatibility();
+                let economy = compatibility.economy();
+                (
+                    compatibility.runtime().objectives[0].stage_selectors[3],
+                    100_i32
+                        * economy
+                            .owner_mana_aggregate(player_entity)
+                            .saturating_add(economy.castle().expect("Castle remains live").mana)
+                        / economy.owner_mana_global(),
+                )
+            };
+            if selector == 2 {
+                break;
+            }
+            if !matches!(percent, 0..=14) {
+                session
+                    .step(guard(&session), GameCommand::default())
+                    .unwrap();
+                capture_goat_occurrences(
+                    &session,
+                    &mut goat_event_cursor,
+                    &mut seen_goat_occurrences,
+                );
+                continue;
+            }
+
             let goat = {
                 let compatibility = session.backend().campaign.level2_compatibility();
                 let mut candidates = compatibility
@@ -15392,6 +15800,13 @@ pub(crate) mod tests {
                 [goat.entity_index],
                 "the real class-10 pulse must target exactly the selected Goat"
             );
+            let event_start = session
+                .backend()
+                .campaign
+                .level2_compatibility()
+                .economy()
+                .events()
+                .len();
             for _ in 0..2 {
                 session
                     .backend_mut()
@@ -15399,111 +15814,82 @@ pub(crate) mod tests {
                     .level2_compatibility_mut()
                     .apply_fireball_impact_to_firefly_for_test(goat.position, player_entity, 500);
             }
-            let mut sphere_slot = None;
             for _ in 0..32 {
                 session
                     .step(guard(&session), GameCommand::default())
                     .unwrap();
-                sphere_slot = session
-                    .backend()
-                    .campaign
-                    .level2_compatibility()
-                    .economy()
-                    .events()
+                capture_goat_occurrences(
+                    &session,
+                    &mut goat_event_cursor,
+                    &mut seen_goat_occurrences,
+                );
+                if seen_goat_occurrences
                     .iter()
-                    .find_map(|event| match event {
-                        crate::native_world::Level2EconomyEvent::ManaSphereSpawned {
-                            sphere_id,
-                            source_entity_index,
-                            mana: 300,
-                            ..
-                        } if *source_entity_index == goat.entity_index => {
-                            u16::try_from(*sphere_id).ok()
-                        }
-                        _ => None,
-                    });
-                if sphere_slot.is_some() {
+                    .any(|(_, source_slot, _)| *source_slot == goat.entity_index)
+                {
                     break;
                 }
             }
-            let sphere_slot = sphere_slot.expect("typed Goat death produces 300-mana model39");
-            session
-                .step(guard(&session), GameCommand::default())
-                .unwrap();
-            let expected_global =
-                21_577 + 300 * i32::try_from(goat_index + 1).expect("five Goat rows fit i32");
-            assert_eq!(
+            assert!(
                 session
                     .backend()
                     .campaign
                     .level2_compatibility()
                     .economy()
-                    .owner_mana_global(),
-                expected_global,
-                "each Goat sphere adds one exact 300-mana row"
-            );
-            let claimed_slot = claim_real_sphere(&mut session, sphere_slot);
-            assert_eq!(
-                claimed_slot, sphere_slot,
-                "sequential Goat production leaves one neutral sphere target"
-            );
-            expected_castle_mana += 300;
-            deposit_claimed_sphere(
-                &mut session,
-                claimed_slot,
-                expected_castle_mana,
-                expected_global,
-            );
-            goat_sphere_slots.push(claimed_slot);
-            assert!(
-                !session
-                    .backend()
-                    .campaign
-                    .level2_compatibility()
-                    .economy()
-                    .spheres()
+                    .events()[event_start..]
                     .iter()
-                    .any(|sphere| {
-                        sphere.active
-                            && !sphere.pending_delete
-                            && sphere.owner_entity_index == 0
-                            && sphere.player_entity_index == 0
-                    }),
-                "each Goat deposit must leave no unexpected neutral sphere"
+                    .any(|event| matches!(
+                        event,
+                        crate::native_world::Level2EconomyEvent::ManaSphereSpawned {
+                            source_entity_index,
+                            mana: 300,
+                            ..
+                        } if *source_entity_index == goat.entity_index
+                    )),
+                "isolated package Goat pulse must produce one queued occurrence"
             );
         }
-        assert_eq!(goat_sphere_slots.len(), 5);
-        for _ in 0..4 {
-            if session
-                .backend()
-                .campaign
-                .level2_compatibility()
-                .runtime()
-                .objectives[0]
-                .stage_selectors[3]
-                == 2
-            {
-                break;
-            }
-            session
-                .step(guard(&session), GameCommand::default())
-                .unwrap();
-        }
+        capture_goat_occurrences(&session, &mut goat_event_cursor, &mut seen_goat_occurrences);
         let economy = session.backend().campaign.level2_compatibility().economy();
+        assert!(!economy.spheres().iter().any(|sphere| {
+            sphere.active
+                && !sphere.pending_delete
+                && sphere.owner_entity_index == 0
+                && sphere.player_entity_index == 0
+        }));
+        let distinct_deaths =
+            i32::try_from(seen_goat_occurrences.len()).expect("Goat death census fits i32");
         assert_eq!(
             economy.castle().map(|castle| castle.mana),
-            Some(3_500),
-            "all four Archer and five Goat payloads must be deposited"
+            Some(2_000 + deposited_goat_mana),
+            "every current Goat occurrence must be deposited"
         );
-        assert_eq!(economy.owner_mana_global(), 23_077);
+        assert_eq!(deposited_goat_mana, 300 * distinct_deaths);
+        assert_eq!(economy.owner_mana_global(), 21_577 + 300 * distinct_deaths);
+        let exact_percent =
+            100_i32 * (2_000 + deposited_goat_mana) / (21_577 + 300 * distinct_deaths);
         assert_eq!(
             100_i32
                 * economy
                     .owner_mana_aggregate(player_entity)
                     .saturating_add(economy.castle().expect("Castle remains live").mana)
                 / economy.owner_mana_global(),
-            15,
-            "3,500 / 23,077 must cross the exact integer objective threshold"
+            exact_percent,
+            "the source objective quotient must use the exact live census"
+        );
+        assert_eq!(
+            session
+                .backend()
+                .campaign
+                .level2_compatibility()
+                .runtime()
+                .objectives[0]
+                .stage_selectors[3],
+            match exact_percent {
+                0..=14 => 1,
+                _ => 2,
+            },
+            "the package selector must follow the exact integer threshold"
         );
         assert_eq!(
             session
