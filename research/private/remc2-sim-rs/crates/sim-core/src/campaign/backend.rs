@@ -18059,21 +18059,18 @@ pub(crate) mod tests {
         );
         let authored_frame_zero = session.snapshot().value;
 
-        for _ in 0..32 {
-            if session
-                .backend()
-                .campaign
-                .level2_compatibility()
-                .economy()
-                .authored_class5()
-                .iter()
-                .any(|source| source.authored_index == 101)
-            {
-                break;
-            }
+        // These root/body rows are already imported at reset; they have no
+        // authored-class5 allocation receipt to wait for. Observe four ordinary
+        // scheduler visits on the relocated family itself. Four visits also
+        // cover the action-232 child's phase & 3 predecessor-copy cadence.
+        for visit in 1_u8..=4 {
             session
                 .step(guard(&session), GameCommand::default())
                 .unwrap();
+            for (authored, visited) in authored_family.iter().zip(family(&session)) {
+                assert_eq!(visited.index, authored.index);
+                assert_eq!(visited.phase, authored.phase.wrapping_add(visit));
+            }
         }
         let visited_family = family(&session);
         assert_ne!(visited_family[0].position, authored_family[0].position);
