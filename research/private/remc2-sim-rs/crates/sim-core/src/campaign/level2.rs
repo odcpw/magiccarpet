@@ -5246,6 +5246,32 @@ impl Level2ResetSession {
                 })
             })
             .collect::<Vec<_>>();
+        // Authored spell pickups own live shared-spell records in arena
+        // slots; the imported table is shadowed above. Use their constructor
+        // particle and current source hide flags through acquisition/reclaim.
+        candidates.extend(
+            self.shared_spells()
+                .dynamic_pickups()
+                .iter()
+                .filter(|entity| {
+                    entity.active
+                        && entity.class == 15
+                        && !entity.drawing_disabled()
+                        && entity.control_flags & 0x21 == 0
+                        && dynamic_slots.contains(&entity.index)
+                })
+                .filter_map(|entity| {
+                    entity.particle_parameter_index.map(|particle| {
+                        (
+                            entity.index,
+                            entity.source_id,
+                            particle,
+                            entity.yaw,
+                            entity.position,
+                        )
+                    })
+                }),
+        );
         candidates.extend(
             self.economy()
                 .authored_class5()
@@ -12811,19 +12837,25 @@ impl Level2ResetSession {
                 .ok_or_else(|| {
                     format!("item source slot {source_slot} has no live class-14 carrier")
                 })?;
+            // Validate the package-bound item before selecting by its mutable
+            // raw model: an ExperienceScroll cannot become an ExitPortal.
+            let item_kind = self.item_kind_for_source_slot(source_slot);
+            if item_kind.is_some() || source.model == 5 {
+                validate_semantic_item_dispatch(
+                    source_slot,
+                    item_kind,
+                    source.model,
+                    source.action,
+                    visit.handler,
+                )?;
+            }
             match source.model {
                 3 => validate_semantic_scenery_dispatch(
                     source_slot,
                     self.scenery_kind_for_source_slot(source_slot),
                     visit.handler,
                 )?,
-                5 => validate_semantic_item_dispatch(
-                    source_slot,
-                    self.item_kind_for_source_slot(source_slot),
-                    source.model,
-                    source.action,
-                    visit.handler,
-                )?,
+                5 => {}
                 model => {
                     return Err(format!(
                         "class-14 source slot {source_slot} has unsupported model {model}"
