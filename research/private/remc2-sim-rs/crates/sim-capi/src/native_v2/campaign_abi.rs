@@ -4835,8 +4835,9 @@ mod castle_worldfeed_tests {
     #[test]
     fn real_level_two_public_castle_flyer_worldfeed_hides_after_landing_and_reset() {
         let generated = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../generated");
-        let replay = fs::read(generated.join("opened-l2-block32-castle-boot-v5-20261005.json"))
-            .expect("fresh exact owner Level 2 entry replay");
+        let replay =
+            fs::read(generated.join("opened-l2-block32-castle-boot-f1fd3b5-20261005.json"))
+                .expect("fresh exact owner Level 2 entry replay");
         let packages = serde_json::to_vec(&serde_json::json!({
             "request_contract": "carpet-flight-installed-package-set-bootstrap/v1",
             "packages": [

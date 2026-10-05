@@ -24,9 +24,9 @@ case "${1:-}" in
       # Rust-generated entry saves retain one neutral opening turn. Level 3
       # also carries the four earlier spells for independent owner-local play.
       if [ "$entry_level" = 3 ]; then
-        entry_replay="$generated/opened-l3-block32-castle-boot-v5-20261005.json"
+        entry_replay="$generated/opened-l3-block32-castle-boot-f1fd3b5-20261005.json"
       else
-        entry_replay="$generated/opened-l2-block32-castle-boot-v5-20261005.json"
+        entry_replay="$generated/opened-l2-block32-castle-boot-f1fd3b5-20261005.json"
       fi
       if [ ! -f "$entry_replay" ]; then
         echo "Missing owner-level entry replay: $entry_replay" >&2

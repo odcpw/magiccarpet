@@ -18,7 +18,7 @@ namespace MagicCarpet.Native.Tests
             var activeBefore = NativeSession.ActiveSessionCount;
             var generated = Path.Combine(PrivateRoot, "generated");
             var entry = Path.Combine(generated,
-                $"opened-l{externalLevel}-block32-castle-boot-v5-20261005.json");
+                $"opened-l{externalLevel}-block32-castle-boot-f1fd3b5-20261005.json");
             Assert.That(File.Exists(entry), Is.True, "exact Rust-generated current player entry");
             var root = new GameObject($"current Level {externalLevel} objective instruction");
             root.SetActive(false);
