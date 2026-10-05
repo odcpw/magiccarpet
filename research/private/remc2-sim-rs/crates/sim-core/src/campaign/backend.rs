@@ -5381,6 +5381,175 @@ pub(crate) mod tests {
         // by ordinary casts and travel through the production scheduler.
     }
 
+    fn level_one_firefly_intercept_position_for_test(
+        from: crate::Position,
+        target: crate::Position,
+        velocity: (i16, i16),
+        cruise_speed: u32,
+    ) -> crate::Position {
+        // Reconsider the nearest toroidal image at each future turn. A lead
+        // across 65535 -> 0 must not become an unwrapped long-way pursuit.
+        for turns in 1_i32..=640 {
+            let future = crate::Position {
+                x: target
+                    .x
+                    .wrapping_add_signed((i32::from(velocity.0) * turns) as i16),
+                y: target
+                    .y
+                    .wrapping_add_signed((i32::from(velocity.1) * turns) as i16),
+                z: target.z,
+            };
+            let dx = i32::from(future.x.wrapping_sub(from.x).cast_signed());
+            let dy = i32::from(future.y.wrapping_sub(from.y).cast_signed());
+            let distance = crate::legacy_sqrt(
+                dx.wrapping_mul(dx)
+                    .wrapping_add(dy.wrapping_mul(dy))
+                    .cast_unsigned(),
+            );
+            if distance <= cruise_speed.saturating_mul(turns as u32) {
+                return future;
+            }
+        }
+        target
+    }
+
+    fn level_one_firefly_pursuit_command_for_test(
+        compatibility: &crate::native_world::Level2ResetSession,
+        tuning: crate::FlightTuning,
+        target: crate::native_world::Level2AuthoredClass5Source,
+        previous_target_position: Option<crate::Position>,
+    ) -> GameCommand {
+        let state = compatibility.state;
+        let terrain = compatibility.canonical_terrain();
+        let profile = compatibility.profile();
+        let ground = i32::from(terrain.ground_height(state.position));
+        let desired_height = (ground + i32::from(profile.ground_clearance))
+            .max(i32::from(target.position.z) + i32::from(profile.ground_clearance));
+        let mut motion = state;
+        // This is exactly the ordinary Accelerate + Positive strafe decoder.
+        crate::decode_movement_with_tuning(0b1001, &mut motion, tuning);
+        motion.actual_speed = crate::step_speed_without_target_clamp(
+            motion.actual_speed,
+            motion.target_speed,
+            tuning.forward_acceleration,
+        );
+        let mut best_pitch = None;
+        for axis in -127_i16..=127 {
+            let mut candidate = motion;
+            candidate.pitch_accumulator =
+                candidate
+                    .pitch_accumulator
+                    .wrapping_add(crate::modified_control_delta(
+                        &candidate,
+                        crate::derive_input_delta(axis as i8, candidate.pitch_accumulator),
+                    ));
+            // Use the source's terrain-relative pitch, including its retained
+            // effective pitch when the signed accumulator is zero.
+            crate::update_terrain_relative_pitch(&mut candidate, profile, terrain);
+            let mut vertical = crate::Position {
+                x: 0,
+                y: 0,
+                z: state.position.z,
+            };
+            crate::move_entity(
+                &mut vertical,
+                0,
+                candidate.effective_pitch,
+                crate::modified_translation_speed(&candidate, candidate.actual_speed),
+            );
+            let mut height = i32::from(vertical.z);
+            let floor = ground + i32::from(profile.ground_clearance);
+            if height > floor {
+                height += i32::from(profile.passive_vertical_step);
+            }
+            height = height.max(floor);
+            let score = (
+                (height - desired_height).unsigned_abs(),
+                candidate.pitch_accumulator.unsigned_abs(),
+                axis.unsigned_abs(),
+            );
+            if best_pitch
+                .as_ref()
+                .is_none_or(|(best_score, _, _)| score < *best_score)
+            {
+                best_pitch = Some((score, axis as i8, candidate));
+            }
+        }
+        let (_, pitch_axis, motion) = best_pitch.expect("bounded source pitch-axis forecast");
+        let origin = crate::Position { x: 0, y: 0, z: 0 };
+        let mut velocity_vector = origin;
+        crate::move_entity(
+            &mut velocity_vector,
+            0,
+            motion.effective_pitch,
+            crate::modified_translation_speed(&motion, motion.actual_speed),
+        );
+        crate::move_entity(
+            &mut velocity_vector,
+            512,
+            0,
+            crate::modified_translation_speed(&motion, motion.strafe_speed),
+        );
+        let drift = crate::heading_for_positions(origin, velocity_vector) as i16;
+        let velocity = if let Some(previous) = previous_target_position {
+            (
+                target.position.x.wrapping_sub(previous.x).cast_signed(),
+                target.position.y.wrapping_sub(previous.y).cast_signed(),
+            )
+        } else {
+            let mut next = target.position;
+            crate::move_entity(&mut next, target.yaw, 0, target.actual_speed);
+            (
+                next.x.wrapping_sub(target.position.x).cast_signed(),
+                next.y.wrapping_sub(target.position.y).cast_signed(),
+            )
+        };
+        let cruise_speed = crate::legacy_sqrt(
+            (i32::from(tuning.max_forward_speed).pow(2)
+                + i32::from(crate::SOURCE_STRAFE_MAXIMUM).pow(2)) as u32,
+        );
+        let lead = level_one_firefly_intercept_position_for_test(
+            state.position,
+            target.position,
+            velocity,
+            cruise_speed,
+        );
+        let desired = (crate::heading_for_positions(state.position, lead) as i16)
+            .wrapping_sub(drift)
+            & 0x07ff;
+        let turn = i32::from(crate::turn_toward(state.yaw, desired, 24));
+        GameCommand {
+            longitudinal: LongitudinalControl::Accelerate,
+            lateral: LateralControl::Positive,
+            roll_axis: ((32 * turn - 3 * i32::from(state.roll_accumulator)) / 2).clamp(-127, 127)
+                as i8,
+            pitch_axis,
+            ..GameCommand::default()
+        }
+    }
+
+    #[test]
+    fn campaign_backend_firefly_lead_uses_wrapped_future_position() {
+        let from = crate::Position {
+            x: 65_000,
+            y: 10_000,
+            z: 256,
+        };
+        let target = crate::Position {
+            x: 65_500,
+            y: 10_000,
+            z: 51,
+        };
+        let lead = level_one_firefly_intercept_position_for_test(from, target, (84, 0), 113);
+        assert_eq!(lead, crate::Position { x: 1_476, ..target });
+        assert_eq!(lead.x.wrapping_sub(from.x).cast_signed(), 2_012);
+        assert_eq!(crate::heading_for_positions(from, lead), 512);
+        assert_eq!(
+            level_one_firefly_intercept_position_for_test(from, target, (0, 0), 113),
+            target
+        );
+    }
+
     pub(crate) fn complete_real_level_one_firefly_objective_to_exit_group(
         mut session: &mut GameSession<Mc2CampaignBackend>,
         stage_earlier_objectives_after_kills: bool,
@@ -5617,6 +5786,148 @@ pub(crate) mod tests {
             }
         }
 
+        fn public_firefly_firing_state(
+            session: &GameSession<Mc2CampaignBackend>,
+            source_slot: u16,
+        ) -> String {
+            let compatibility = session.backend().campaign.level2_compatibility();
+            let shared = compatibility.shared_spells();
+            let player = shared.player_entity();
+            let local = shared.local_player();
+            let economy = compatibility.economy();
+            let holder_slot = local.enabled_spell_holders[0];
+            let holder = shared
+                .pickups()
+                .iter()
+                .chain(shared.holders())
+                .chain(shared.dynamic_pickups())
+                .find(|holder| holder.index == holder_slot)
+                .map(|holder| {
+                    (
+                        (
+                            holder.index,
+                            holder.active,
+                            holder.class,
+                            holder.model,
+                            holder.action,
+                            holder.life,
+                        ),
+                        (
+                            holder.active_value,
+                            holder.activation_value,
+                            holder.level_gate,
+                            holder.subspell_index,
+                        ),
+                        (
+                            holder.mana,
+                            holder.max_mana,
+                            holder.mana_regen,
+                            holder.mana_cost,
+                            holder.source_spell_parent_entity_index(),
+                        ),
+                        i16::from_le_bytes(holder.record_bytes()[164..166].try_into().unwrap()),
+                    )
+                });
+            let target = firefly(session, source_slot);
+            let target_state = target.map(|row| {
+                (
+                    row.authored_index,
+                    row.source_entity_index,
+                    economy.slot_generation(source_slot),
+                    5_u8,
+                    row.model,
+                    row.action,
+                    row.life,
+                    row.position,
+                    row.phase,
+                    row.active,
+                    row.drawing_enabled,
+                )
+            });
+            let raw_target = compatibility
+                .entities()
+                .get(usize::from(source_slot))
+                .map(|row| {
+                    (
+                        row.index,
+                        row.active,
+                        row.class,
+                        row.model,
+                        row.action,
+                        row.life,
+                        row.position,
+                    )
+                });
+            let raw_player = compatibility
+                .entities()
+                .get(usize::from(player.index))
+                .map(|row| {
+                    (
+                        row.index,
+                        row.active,
+                        row.class,
+                        row.action,
+                        row.life,
+                        row.mana,
+                        row.max_mana,
+                        row.mana_regen,
+                        row.control_flags,
+                    )
+                });
+            let distance = target
+                .map(|row| crate::distance_3d_wrapped(compatibility.state.position, row.position));
+            let auxiliary = shared.beyond_sight_auxiliary();
+            let castle = economy.castle().map(|row| {
+                (
+                    row.source_entity_index,
+                    row.active,
+                    row.action,
+                    row.build_state,
+                    row.level,
+                    row.mana,
+                    row.owner_entity_index,
+                    row.position,
+                )
+            });
+            format!(
+                "tick={}; target={target_state:?}; raw_target={raw_target:?}; distance3d={distance:?}; player=(slot {},action {},life {},mana {},max {},regen {},flags {:#x}); raw_player={raw_player:?}; enabled_fireball_holder={holder_slot},holder={holder:?}; selected_ui={},selected_tier={}; hands=({},{},{},{}); a4=({},{},{}); flight={:?}; owned_castle={}; castle={castle:?}; castle_overlap={}; owned_fireball_count={}; player_impact_count={}",
+                session.identity().tick,
+                player.index,
+                player.action,
+                player.life,
+                player.mana,
+                player.max_mana,
+                player.mana_regen,
+                player.control_flags,
+                local.selected_spell_ui_index,
+                local.selected_subspell_index,
+                local.left_spell_slot_raw,
+                local.left_subspell_index,
+                local.right_spell_slot_raw,
+                local.right_subspell_index,
+                auxiliary.next_entity,
+                auxiliary.entity_index2,
+                local
+                    .type_str_164_auxiliary()
+                    .map_or(0, |carrier| carrier.byte_0x154_340),
+                compatibility.state,
+                economy.player_castle_entity_index(),
+                economy.player_castle_shift_aabb_overlap(player),
+                economy
+                    .fireball_projectiles()
+                    .iter()
+                    .filter(|row| row.owner_entity_index == player.index)
+                    .count(),
+                economy
+                    .model17_spawned_children()
+                    .iter()
+                    .filter(|row| row.source_class == 10
+                        && row.model == 0
+                        && row.parent_entity_id == player.index)
+                    .count(),
+            )
+        }
+
         fn cast_once(
             session: &mut GameSession<Mc2CampaignBackend>,
             target_slot: u16,
@@ -5656,7 +5967,12 @@ pub(crate) mod tests {
                     saw_reclaimed,
                 );
             }
+            let firing_start = public_firefly_firing_state(session, target_slot);
+            let mut closest_planar_distance = u32::MAX;
+            let mut firing_envelope_turns = 0_usize;
+            let mut public_forecast_rejections = 0_usize;
             let mut aimed_command = None;
+            let mut previous_target_position = None;
             for _ in 0..640 {
                 let Some(target) = firefly(session, target_slot).filter(|source| source.life >= 0)
                 else {
@@ -5686,37 +6002,28 @@ pub(crate) mod tests {
                 // units per pass. Keep the public firing envelope outside
                 // that close-range approach; the ordinary forecast must still
                 // prove an exact hit before the driver fires.
-                if distance <= 3_072
-                    && let Some(command) = public_firefly_cast_command(session, target_slot)
-                {
-                    aimed_command = Some(command);
-                    break;
+                closest_planar_distance = closest_planar_distance.min(distance);
+                if distance <= 3_072 {
+                    firing_envelope_turns += 1;
+                    if let Some(command) = public_firefly_cast_command(session, target_slot) {
+                        aimed_command = Some(command);
+                        break;
+                    }
+                    public_forecast_rejections += 1;
                 }
-                let heading = crate::heading_for_positions(state.position, target.position) as i16;
-                let heading_error = crate::turn_toward(state.yaw, heading, 1024);
-                let brake = if state.target_speed > 0 {
-                    LongitudinalControl::Decelerate
-                } else if state.target_speed < 0 {
-                    LongitudinalControl::Accelerate
-                } else {
-                    LongitudinalControl::Coast
-                };
                 let flight = if distance <= 3_072 {
-                    // A blocked or not-yet-ready shot is a retreat turn,
-                    // never permission to close into the charge envelope.
+                    // Preserve the verified-shot gate and its existing evasive
+                    // fallback while the ordinary source forecast is blocked.
                     public_firefly_wait_command(session.backend().campaign.level2_compatibility())
                 } else {
-                    GameCommand {
-                        longitudinal: if heading_error.abs() < 128 {
-                            LongitudinalControl::Accelerate
-                        } else {
-                            brake
-                        },
-                        roll_axis: public_firefly_roll_axis(state, heading),
-                        pitch_axis: -127,
-                        ..GameCommand::default()
-                    }
+                    level_one_firefly_pursuit_command_for_test(
+                        session.backend().campaign.level2_compatibility(),
+                        session.backend().flight_binding.tuning(),
+                        target,
+                        previous_target_position,
+                    )
                 };
+                previous_target_position = Some(target.position);
                 session.step(guard(session), flight).unwrap();
                 observe_lifecycle(
                     session,
@@ -5728,9 +6035,12 @@ pub(crate) mod tests {
                     saw_reclaimed,
                 );
             }
-            let command = aimed_command.expect(
-                "ordinary flight reaches a verified public Firefly firing solution within 640 turns",
-            );
+            let command = aimed_command.unwrap_or_else(|| {
+                let firing_end = public_firefly_firing_state(session, target_slot);
+                panic!(
+                    "ordinary flight reaches a verified public Firefly firing solution within 640 turns; target_slot={target_slot}; closest_planar_distance={closest_planar_distance}; firing_envelope_turns={firing_envelope_turns}; public_forecast_rejections={public_forecast_rejections}; start=[{firing_start}]; end=[{firing_end}]"
+                );
+            });
             let before = targets
                 .iter()
                 .filter_map(|(_, source_slot)| {
