@@ -13114,21 +13114,22 @@ impl Level2ResetSession {
                                 .player_castle_shift_aabb_overlap(player)
                         });
                     if player_action_at_visit == 0 {
-                        if castle_shift_overlap {
-                            self.redirect_level2_player_damage_to_castle();
-                        }
-                        if let Some((damage, attacker, lethal)) =
-                            self.consume_level2_player_damage()
-                        {
-                            lethal_at_visit = lethal;
-                            self.session.state.live.economy.events.push(
-                                Level2EconomyEvent::DamageApplied {
-                                    target_entity_index: player_entity_index,
-                                    attacker_entity_index: attacker,
-                                    damage,
-                                    lethal,
-                                },
-                            );
+                        let protected =
+                            self.step_level2_player_castle_protection(castle_shift_overlap);
+                        if !protected {
+                            if let Some((damage, attacker, lethal)) =
+                                self.consume_level2_player_damage()
+                            {
+                                lethal_at_visit = lethal;
+                                self.session.state.live.economy.events.push(
+                                    Level2EconomyEvent::DamageApplied {
+                                        target_entity_index: player_entity_index,
+                                        attacker_entity_index: attacker,
+                                        damage,
+                                        lethal,
+                                    },
+                                );
+                            }
                         }
                     }
                     self.append_new_economy_events(pass, source_slot);
@@ -19769,10 +19770,9 @@ impl Level2ResetSession {
             .then_some((damage, attacker, lethal))
     }
 
-    /// `AddPlayer03_00_5E010` protects an overlapping player by forwarding
-    /// the current damage mailbox to the owned Castle before the ordinary
-    /// player-damage callback. The payload remains as the source's ownerless
-    /// mailbox value; only its attacker relation is consumed by the transfer.
+    /// Forward `AddPlayer03_00_5E010`'s current mailbox to the owned Castle.
+    /// The immediately following word159 protection branch owns the full
+    /// source mailbox clear; this transfer must not leave an ownerless residue.
     fn redirect_level2_player_damage_to_castle(&mut self) -> bool {
         let player_entity_index = self.session.state.live.core.state.entity_index;
         let castle_slot = self.session.state.live.economy.player_castle_entity_index();
@@ -19808,17 +19808,57 @@ impl Level2ResetSession {
             return false;
         }
 
-        let player =
-            &mut self.session.state.live.economy.entities[usize::from(player_entity_index)];
-        player.record[102..104].copy_from_slice(&0_u16.to_le_bytes());
-        self.session.state.live.player_pending_damage = damage;
-        self.session.state.live.player_pending_attacker = 0;
-        self.session
-            .state
-            .live
-            .shared_spells
-            .set_player_entity_damage_mailbox(damage, 0);
         true
+    }
+
+    /// Execute the source Castle protection prefix before the player body.
+    /// Overlap refreshes word159 even without incoming damage. Its nonzero
+    /// branch clears all 36 mailbox bytes, decrements once and skips sub5EFA0;
+    /// the retained one visit also protects the first callback after departure.
+    fn step_level2_player_castle_protection(&mut self, castle_overlap: bool) -> bool {
+        let mut counter = u16::from_le_bytes(
+            self.session.state.live.shared_spells.local_player.record[345..347]
+                .try_into()
+                .expect("qualified local player word159"),
+        );
+        if castle_overlap {
+            self.redirect_level2_player_damage_to_castle();
+            counter = 2;
+        }
+        let protected = counter != 0;
+        if protected {
+            let live = &mut self.session.state.live;
+            let player_entity_index = live.core.state.entity_index;
+            live.economy.entities[usize::from(player_entity_index)].clear_source_upkeep_mailbox();
+            live.shared_spells
+                .player_entity
+                .clear_source_upkeep_mailbox();
+            for entity in &mut live.shared_spells.player_entities {
+                if entity.index == player_entity_index {
+                    entity.clear_source_upkeep_mailbox();
+                }
+            }
+            live.player_pending_damage = 0;
+            live.player_pending_attacker = 0;
+            counter = counter.wrapping_sub(1);
+        }
+        let live = &mut self.session.state.live;
+        let player_entity_index = live.core.state.entity_index;
+        let bytes = counter.to_le_bytes();
+        live.shared_spells.local_player.record[345..347].copy_from_slice(&bytes);
+        for player in &mut live.shared_spells.players {
+            if player.entity_index == player_entity_index {
+                player.record[345..347].copy_from_slice(&bytes);
+            }
+        }
+        // The shared player record is also written by real spell callbacks;
+        // publish this same source counter to the canonical level player row.
+        for player in &mut live.core.players {
+            if player.entity_index == player_entity_index {
+                player.record[345..347].copy_from_slice(&bytes);
+            }
+        }
+        protected
     }
 
     /// Release the remote AI player's live spell holders at the grounded
@@ -20668,6 +20708,275 @@ impl Level2ResetSession {
 mod tests {
     use super::*;
     use crate::campaign::{CampaignSession, spec::CampaignSelection};
+
+    #[test]
+    fn qualified_castle_protection_clears_each_mailbox_and_one_departure_visit() {
+        fn assert_protected_projection(campaign: &CampaignSession, counter: u16) {
+            let live = &campaign.level2_compatibility().session.state.live;
+            let player_slot = live.core.state.entity_index;
+            for entity in [
+                &live.economy.entities[usize::from(player_slot)],
+                &live.shared_spells.player_entity,
+            ] {
+                assert_eq!(
+                    &entity.record[98..134],
+                    &[0; 36],
+                    "the source memset clears all 36 bytes, including ownerless damage"
+                );
+            }
+            for entity in &live.shared_spells.player_entities {
+                if entity.index == player_slot {
+                    assert_eq!(&entity.record[98..134], &[0; 36]);
+                }
+            }
+            assert_eq!(
+                (live.player_pending_damage, live.player_pending_attacker),
+                (0, 0)
+            );
+            assert_eq!(
+                &live.shared_spells.local_player.record[345..347],
+                &counter.to_le_bytes()
+            );
+            for player in live
+                .shared_spells
+                .players
+                .iter()
+                .chain(live.core.players.iter())
+            {
+                if player.entity_index == player_slot {
+                    assert_eq!(
+                        &player.record[345..347],
+                        &counter.to_le_bytes(),
+                        "one pre-body decrement is published to every player projection"
+                    );
+                }
+            }
+            assert_eq!(
+                live.shared_spells.player_life_regen_cooldown, 0,
+                "the protected branch must skip the normal damage consumer"
+            );
+        }
+        fn move_player(campaign: &mut CampaignSession, position: Position) {
+            let live = &mut campaign.level2_compatibility_mut().session.state.live;
+            let player_slot = live.core.state.entity_index;
+            live.core.state.position = position;
+            live.economy.entities[usize::from(player_slot)].set_position(position);
+            live.shared_spells.player_entity.set_position(position);
+            for entity in &mut live.shared_spells.player_entities {
+                if entity.index == player_slot {
+                    entity.set_position(position);
+                }
+            }
+        }
+        let package = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../generated/mc-cf02-campaign-package-v2-b/qualified-level2");
+        let mut campaign = CampaignSession::open(&package, CampaignSelection::LEVEL2)
+            .expect("qualified Castle protection campaign opens");
+        let terrain = campaign
+            .level2_compatibility()
+            .session
+            .state
+            .live
+            .terrain
+            .clone();
+        let (player_slot, attacker, castle_slot, protected_position, player_life) = {
+            let live = &mut campaign.level2_compatibility_mut().session.state.live;
+            let player_slot = live.core.state.entity_index;
+            let attacker = live
+                .core
+                .players
+                .iter()
+                .find(|player| player.is_ai)
+                .expect("real qualified hostile player carrier")
+                .entity_index;
+            assert_ne!(attacker, player_slot);
+            let castle_slot = live
+                .economy
+                .build_castle(live.core.state.position, player_slot, &terrain)
+                .expect("ordinary qualified Castle constructor");
+            let castle = live.economy.castle.as_mut().expect("owned Castle root");
+            assert_eq!(castle.source_entity_index, castle_slot);
+            castle.shift_yaw = -8_192;
+            castle.shift_pitch = 1_664;
+            castle.shift_roll = 1_664;
+            castle.shift_fov = 0x4000;
+            let position = Position {
+                x: castle.position.x,
+                y: castle.position.y,
+                z: castle.position.z.wrapping_add(1_000),
+            };
+            for entity in [
+                &mut live.economy.entities[usize::from(player_slot)],
+                &mut live.shared_spells.player_entity,
+            ] {
+                entity.record[86..88].copy_from_slice(&100_i16.to_le_bytes());
+                entity.record[88..90].copy_from_slice(&121_i16.to_le_bytes());
+                entity.record[90..92].copy_from_slice(&121_i16.to_le_bytes());
+                entity.record[92..94].copy_from_slice(&100_i16.to_le_bytes());
+            }
+            live.shared_spells.player_entities[0] = live.shared_spells.player_entity.clone();
+            (
+                player_slot,
+                attacker,
+                castle_slot,
+                position,
+                live.player_life,
+            )
+        };
+        move_player(&mut campaign, protected_position);
+        assert!(
+            campaign
+                .level2_compatibility()
+                .economy()
+                .player_castle_shift_aabb_overlap(
+                    &campaign
+                        .level2_compatibility()
+                        .session
+                        .state
+                        .live
+                        .shared_spells
+                        .player_entity
+                )
+        );
+        // A zero-damage visit still refreshes 2 and consumes exactly one visit.
+        let _ = campaign.step(PlayerCommand::default(), 0);
+        assert_protected_projection(&campaign, 1);
+        let castle_life = campaign
+            .level2_compatibility()
+            .economy()
+            .castle
+            .unwrap()
+            .life;
+        let castle_generation = campaign
+            .level2_compatibility()
+            .economy()
+            .slot_generation(castle_slot);
+        let events_before = campaign.level2_compatibility().economy().events().len();
+        for hit in 1..=2 {
+            {
+                let live = &mut campaign.level2_compatibility_mut().session.state.live;
+                // Distinguish the source full-struct memset from payload/attacker-only clears.
+                live.economy.entities[usize::from(player_slot)].record[104..134].fill(0x5a);
+                live.shared_spells.player_entity.record[104..134].fill(0x5a);
+                for entity in &mut live.shared_spells.player_entities {
+                    if entity.index == player_slot {
+                        entity.record[104..134].fill(0x5a);
+                    }
+                }
+            }
+            campaign
+                .level2_compatibility_mut()
+                .queue_level2_player_contact_damage(200, attacker);
+            assert_eq!(
+                campaign.level2_compatibility().entities()[usize::from(player_slot)]
+                    .source_upkeep_payload(),
+                200,
+                "the next real contact starts with a cleared ownerless payload"
+            );
+            let _ = campaign.step(PlayerCommand::default(), 0);
+            assert_protected_projection(&campaign, 1);
+            let live = &campaign.level2_compatibility().session.state.live;
+            assert_eq!(live.player_life, player_life);
+            assert_eq!(
+                live.economy.castle.unwrap().life,
+                castle_life - hit * 200,
+                "two contact producers must transfer 200 each, never 200 then 400"
+            );
+            assert_eq!(live.economy.slot_generation(castle_slot), castle_generation);
+        }
+        let away = Position {
+            x: protected_position.x.wrapping_add(0x4000),
+            y: protected_position.y,
+            z: protected_position.z,
+        };
+        move_player(&mut campaign, away);
+        assert!(
+            !campaign
+                .level2_compatibility()
+                .economy()
+                .player_castle_shift_aabb_overlap(
+                    &campaign
+                        .level2_compatibility()
+                        .session
+                        .state
+                        .live
+                        .shared_spells
+                        .player_entity
+                )
+        );
+        campaign
+            .level2_compatibility_mut()
+            .queue_level2_player_contact_damage(200, attacker);
+        let _ = campaign.step(PlayerCommand::default(), 0);
+        assert_protected_projection(&campaign, 0);
+        assert_eq!(
+            campaign
+                .level2_compatibility()
+                .session
+                .state
+                .live
+                .player_life,
+            player_life,
+            "the first callback after departure consumes the remaining protected visit"
+        );
+        assert_eq!(
+            campaign
+                .level2_compatibility()
+                .economy()
+                .castle
+                .unwrap()
+                .life,
+            castle_life - 400
+        );
+        campaign
+            .level2_compatibility_mut()
+            .queue_level2_player_contact_damage(200, attacker);
+        let _ = campaign.step(PlayerCommand::default(), 0);
+        let live = &campaign.level2_compatibility().session.state.live;
+        assert_eq!(
+            live.player_life,
+            player_life - 200,
+            "the next unprotected visit reaches the ordinary damage consumer"
+        );
+        assert_eq!(live.shared_spells.player_life_regen_cooldown, 15);
+        assert_eq!(
+            (
+                live.economy.entities[usize::from(player_slot)].source_upkeep_payload(),
+                live.economy.entities[usize::from(player_slot)].source_upkeep_word_62()
+            ),
+            (200, 0),
+            "normal source damage retains its ownerless residue; contact accumulation is unchanged"
+        );
+        let damage: Vec<_> = live.economy.events[events_before..]
+            .iter()
+            .filter_map(|event| {
+                if let Level2EconomyEvent::DamageApplied {
+                    target_entity_index,
+                    attacker_entity_index,
+                    damage,
+                    lethal,
+                } = event
+                {
+                    (*attacker_entity_index == attacker).then_some((
+                        *target_entity_index,
+                        *damage,
+                        *lethal,
+                    ))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        assert_eq!(
+            damage,
+            vec![
+                (castle_slot, 200, false),
+                (castle_slot, 200, false),
+                (player_slot, 200, false)
+            ],
+            "protected transfer and normal damage are separate source visits"
+        );
+    }
 
     #[test]
     fn qualified_player_hit_suppresses_sixteen_upkeep_visits_then_regenerates() {

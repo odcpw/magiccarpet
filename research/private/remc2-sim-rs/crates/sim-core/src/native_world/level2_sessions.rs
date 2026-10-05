@@ -2058,25 +2058,13 @@ impl Level2SharedSpellResetSession {
                 }
             }
         }
-        for player in &mut self.players {
-            if player.entity_index == player_entity_index {
-                let mut word_159 = u16::from_le_bytes(
-                    player.record[345..347]
-                        .try_into()
-                        .expect("qualified player word159 field"),
-                );
-                if castle_overlap_active {
-                    word_159 = 2;
-                }
-                // `AddPlayer03_00_5E010` refreshes this latch only from the
-                // Castle overlap predicate, then performs the ordinary
-                // same-tick countdown. The independent recharge boost never
-                // writes it.
-                word_159 = word_159.saturating_sub(1);
-                player.record[345..347].copy_from_slice(&word_159.to_le_bytes());
-                if player.slot == self.local_player.slot {
-                    self.local_player = player.clone();
-                }
+        // The ordinary local-player source dispatch already owns word159's
+        // Castle protection, full-mailbox clear and same-visit countdown.
+        // Life/mana upkeep must not decrement that authoritative counter twice.
+        // Preserve the existing publication of the other linked-player fields.
+        for player in &self.players {
+            if player.entity_index == player_entity_index && player.slot == self.local_player.slot {
+                self.local_player = player.clone();
             }
         }
         self.caster.mana = mana;
