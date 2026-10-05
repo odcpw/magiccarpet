@@ -9338,14 +9338,7 @@ pub(crate) mod tests {
             // recensus surviving original occurrences; no new hit is claimed.
             return Vec::new();
         };
-        let (
-            attacker,
-            direction_bits,
-            player_state,
-            before,
-            projectile_occurrences_before,
-            impact_occurrences_before,
-        ) = {
+        let (attacker, before, projectile_occurrences_before, impact_occurrences_before) = {
             let compatibility = session.backend().campaign.level2_compatibility();
             let shared = compatibility.shared_spells();
             let player = shared.local_player();
@@ -9394,8 +9387,6 @@ pub(crate) mod tests {
                 .collect::<Vec<_>>();
             (
                 compatibility.state.entity_index,
-                shared.player_entity().control_flags & 0x0300,
-                compatibility.state,
                 before,
                 compatibility
                     .economy()
@@ -9434,50 +9425,68 @@ pub(crate) mod tests {
                 .1
         );
 
-        let collision = aimed.collision_target();
-        let mut predicted_target = crate::Position {
-            z: aimed
+        // Public selected casting installs the left-hand bit regardless of
+        // incoming flags. Forecast the actual Coast body callback: its BODY
+        // yaw owns the256 launch displacement, independently of spell look.
+        let forecast_command = GameCommand {
+            select_spell: Some(SemanticId::parse("spell.fireball").unwrap()),
+            ..GameCommand::default()
+        };
+        let mut cast_forecast = session.backend().campaign.clone();
+        cast_forecast.step_with_tuning(
+            session
+                .backend()
+                .campaign_player_command(&forecast_command)
+                .unwrap(),
+            CAMPAIGN_SPEED_INDEX,
+            session.backend().flight_binding.tuning(),
+        );
+        let forecast = cast_forecast.level2_compatibility();
+        let cast_state = forecast.state;
+        let Some(scheduled_target) =
+            forecast
+                .entities()
+                .get(usize::from(source_slot))
+                .filter(|source| {
+                    source.active
+                        && source.index == source_slot
+                        && source.class == 5
+                        && source.model == 9
+                        && source.life >= 0
+                        && forecast.economy().slot_generation(source_slot)
+                            == observed_actions[&source_slot].generation
+                })
+        else {
+            return Vec::new();
+        };
+        let collision = scheduled_target.collision_target();
+        let predicted_target = crate::Position {
+            z: scheduled_target
                 .position
                 .z
                 .wrapping_add(collision.collision_vertical_offset)
                 .wrapping_sub(crate::level1_mission::FIREBALL_COLLISION_VERTICAL_OFFSET),
-            ..aimed.position
+            ..scheduled_target.position
         };
+        let mut launch_position = cast_state.position;
         crate::move_entity(
-            &mut predicted_target,
-            aimed.yaw,
-            aimed.pitch,
-            aimed.actual_speed,
+            &mut launch_position,
+            cast_state.yaw.wrapping_sub(512),
+            0,
+            256,
         );
-        let mut launch_position = player_state.position;
-        let provisional_launch = crate::Position {
-            z: launch_position.z.wrapping_add(player_state.entity_fov),
-            ..launch_position
-        };
-        let provisional =
-            crate::level1_mission::projectile_guidance_angles(provisional_launch, predicted_target);
-        let hand_yaw = if direction_bits & 0x0100 != 0 {
-            Some(provisional.0.wrapping_sub(512))
-        } else if direction_bits & 0x0200 != 0 {
-            Some(provisional.0.wrapping_add(512))
-        } else {
-            None
-        };
-        if let Some(hand_yaw) = hand_yaw {
-            crate::move_entity(&mut launch_position, hand_yaw, 0, 256);
-            if crate::FlightWorld::ground_height(
-                session
-                    .backend()
-                    .campaign
-                    .level2_compatibility()
-                    .canonical_terrain(),
-                launch_position,
-            ) > launch_position.z
-            {
-                launch_position = player_state.position;
-            }
+        if crate::FlightWorld::ground_height(
+            session
+                .backend()
+                .campaign
+                .level2_compatibility()
+                .canonical_terrain(),
+            launch_position,
+        ) > launch_position.z
+        {
+            launch_position = cast_state.position;
         }
-        launch_position.z = launch_position.z.wrapping_add(player_state.entity_fov);
+        launch_position.z = launch_position.z.wrapping_add(cast_state.entity_fov);
         let (aim_yaw, aim_pitch) =
             crate::level1_mission::projectile_guidance_angles(launch_position, predicted_target);
         step_real_level_three_skeleton_route_for_test(
@@ -9485,8 +9494,8 @@ pub(crate) mod tests {
             GameCommand {
                 select_spell: Some(SemanticId::parse("spell.fireball").unwrap()),
                 cast_selected: true,
-                look_yaw: aim_yaw.wrapping_sub(player_state.yaw),
-                look_pitch: aim_pitch.wrapping_sub(player_state.display_pitch),
+                look_yaw: aim_yaw.wrapping_sub(cast_state.yaw),
+                look_pitch: aim_pitch.wrapping_sub(cast_state.display_pitch),
                 ..GameCommand::default()
             },
             observed_actions,
