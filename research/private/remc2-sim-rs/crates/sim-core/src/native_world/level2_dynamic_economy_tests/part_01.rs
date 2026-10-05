@@ -81,14 +81,29 @@
                 .find(|sphere| sphere.source_entity_index == target.source_entity_index)
                 .expect("source predicate target row")
                 .player_entity_index = source_id_entity_index;
+            let excluded_target = *economy
+                .spheres
+                .iter()
+                .find(|sphere| sphere.source_entity_index == target.source_entity_index)
+                .expect("source predicate target row remains live");
             assert!(
                 level2_first_possession_target_sphere_slot(
                     &economy.map_chains,
-                    &economy.spheres,
+                    std::slice::from_ref(&excluded_target),
                     projectile,
                 )
                 .is_none(),
                 "the raw playerEntityIndex relation, not owner equality, excludes the target"
+            );
+            // sub_108B0 continues to other eligible map-chain occupants;
+            // excluding this target does not exclude neighboring spheres.
+            assert_ne!(
+                level2_first_possession_target_sphere_slot(
+                    &economy.map_chains,
+                    &economy.spheres,
+                    projectile,
+                ),
+                Some(target.source_entity_index)
             );
             economy
                 .spheres
@@ -143,12 +158,145 @@
         );
         assert!(session.economy().possession_effects().is_empty());
 
+        // The next rounded map-cell scan can still admit this or another
+        // authored sphere. Freeing arena capacity therefore legitimately
+        // completes the contact retry; a snapped position does not establish
+        // the no-target lifetime branch for the complete sphere roster.
+        let mut next_probe = retry;
+        let ground = session
+            .canonical_terrain()
+            .ground_height(next_probe.position);
+        if ground > next_probe.position.z {
+            next_probe.position.z = ground;
+        }
+        if let Some(ceiling) = session
+            .canonical_terrain()
+            .ceiling_height(next_probe.position)
+        {
+            let limit = ceiling.wrapping_sub(POSSESSION_PROJECTILE_COLLISION_HALF_HEIGHT);
+            if limit < next_probe.position.z {
+                next_probe.position.z = limit;
+            }
+        }
+        let retry_target = {
+            let economy = session.economy();
+            let slot = level2_first_possession_target_sphere_slot(
+                &economy.map_chains,
+                &economy.spheres,
+                next_probe,
+            )
+            .expect("the complete source map scan retains an eligible retry contact");
+            *economy
+                .spheres()
+                .iter()
+                .find(|sphere| sphere.source_entity_index == slot)
+                .unwrap()
+        };
+        let mut contact_retry = session.clone();
+        contact_retry.economy_mut().free_slots = free_after_flyer.clone();
+        assert!(
+            !contact_retry
+                .economy_mut()
+                .step_possession_projectile_slot(projectile_slot),
+            "the actual admitted retry retires only after model12 allocation succeeds"
+        );
+        let completed = contact_retry
+            .economy()
+            .possession_projectiles()
+            .iter()
+            .find(|projectile| projectile.source_entity_index == projectile_slot)
+            .copied()
+            .unwrap();
+        assert!(!completed.active);
+        assert_eq!(completed.life, life_before_contact);
+        let impact = contact_retry
+            .economy()
+            .possession_effects()
+            .iter()
+            .find(|effect| effect.projectile_entity_index == projectile_slot)
+            .copied()
+            .unwrap();
+        assert_eq!(impact.source_id_entity_index, source_id_entity_index);
+        assert_eq!(
+            impact.position,
+            Position {
+                z: retry_target
+                    .position
+                    .z
+                    .wrapping_add(POSSESSION_TARGET_Z_SHIFT),
+                ..retry_target.position
+            }
+        );
+        assert!(
+            contact_retry
+                .economy()
+                .map_chains()
+                .is_linked(projectile_slot)
+        );
+        assert!(
+            !contact_retry
+                .economy()
+                .free_slots
+                .contains(&projectile_slot)
+        );
+
+        // Establish a genuine full-roster no-target negative separately:
+        // source word94 equality excludes every sphere, while all geometry,
+        // health, ownership, arena generations and RNG remain untouched.
+        let sphere_fixture = session.economy().spheres().to_vec();
+        let generations = sphere_fixture
+            .iter()
+            .map(|sphere| {
+                (
+                    sphere.source_entity_index,
+                    session
+                        .economy()
+                        .slot_generation(sphere.source_entity_index),
+                )
+            })
+            .collect::<Vec<_>>();
+        let rng = session.economy().source_rng.clone();
+        for sphere in &mut session.economy_mut().spheres {
+            sphere.player_entity_index = source_id_entity_index;
+        }
+        {
+            let economy = session.economy();
+            for (before, after) in sphere_fixture.iter().zip(economy.spheres()) {
+                assert_eq!(
+                    (
+                        after.position,
+                        after.life,
+                        after.mana,
+                        after.owner_entity_index
+                    ),
+                    (
+                        before.position,
+                        before.life,
+                        before.mana,
+                        before.owner_entity_index
+                    )
+                );
+            }
+            for (slot, generation) in generations {
+                assert_eq!(economy.slot_generation(slot), generation);
+            }
+            assert_eq!(economy.source_rng, rng);
+            assert!(
+                level2_first_possession_target_sphere_slot(
+                    &economy.map_chains,
+                    &economy.spheres,
+                    next_probe,
+                )
+                .is_none(),
+                "the complete authored roster now satisfies the raw-relation exclusion"
+            );
+        }
         session.economy_mut().free_slots = free_after_flyer;
         assert!(
             session
                 .economy_mut()
                 .step_possession_projectile_slot(projectile_slot),
-            "the next ordinary callback is not forced to re-hit a target after its snapped map-cell position changes"
+            "the next ordinary callback takes the established no-target branch"
         );
         let ordinary_next_callback = session
             .economy()
