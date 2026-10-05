@@ -7300,6 +7300,425 @@ pub(crate) mod tests {
         );
     }
 
+    fn real_level_two_castle_launch_snapshot_for_test(
+        session: &GameSession<Mc2CampaignBackend>,
+        boundary: &str,
+    ) -> String {
+        let compatibility = session.backend().campaign.level2_compatibility();
+        let shared = compatibility.shared_spells();
+        let player = shared.player_entity();
+        let local = shared.local_player();
+        let holder = shared
+            .pickups()
+            .iter()
+            .chain(shared.holders())
+            .chain(shared.dynamic_pickups())
+            .find(|holder| holder.index == local.enabled_spell_holders[2]);
+        let numeric_player = &compatibility.entities()[usize::from(player.index)];
+        let state = compatibility.state;
+        let auxiliary = shared.beyond_sight_auxiliary();
+        // Forecast only the source constructor fields for discrimination;
+        // the actual public request and flyer callback remain authoritative.
+        let mut left_launch = state.position;
+        crate::move_entity(&mut left_launch, state.yaw.wrapping_sub(512), 0, 256);
+        let ground = compatibility.canonical_terrain().ground_height(left_launch);
+        let rollback = ground > left_launch.z;
+        if rollback {
+            left_launch = state.position;
+        }
+        left_launch.z = left_launch.z.wrapping_add(state.entity_fov);
+        let mut axis = state.position;
+        crate::move_entity(
+            &mut axis,
+            state.yaw.wrapping_add(auxiliary.next_entity),
+            0,
+            4_096,
+        );
+        axis.z = compatibility.canonical_terrain().ground_height(axis);
+        let holder_state = holder.map(|holder| {
+            (
+                (
+                    holder.index,
+                    holder.active,
+                    holder.class,
+                    holder.model,
+                    holder.action,
+                    holder.life,
+                ),
+                (
+                    holder.active_value,
+                    holder.activation_value,
+                    holder.level_gate,
+                    holder.subspell_index,
+                ),
+                (
+                    holder.mana,
+                    holder.max_mana,
+                    holder.mana_regen,
+                    holder.source_spell_parent_entity_index(),
+                ),
+            )
+        });
+        let castle = compatibility.economy().castle().map(|castle| {
+            (
+                castle.source_entity_index,
+                castle.active,
+                castle.action,
+                castle.build_state,
+                castle.level,
+                castle.mana,
+                castle.owner_entity_index,
+                castle.position,
+            )
+        });
+        let seeds = compatibility
+            .entities()
+            .iter()
+            .filter(|row| row.active && row.class == 3 && row.model == 2)
+            .map(|row| {
+                (
+                    row.index,
+                    row.action,
+                    row.life,
+                    row.position,
+                    row.control_flags,
+                )
+            })
+            .collect::<Vec<_>>();
+        format!(
+            "boundary={boundary}; tick={}; selected={:?}; hands=({},{},{},{}) selected_ui={}; player=(slot {},action {},life {},mana {},max {},regen {},flags {:#x}); numeric_player=(action {},life {},mana {},regen {},flags {:#x}); holder={holder_state:?}; flight=(pos {:?},yaw {},pitch {},speed {},fov {}); a4=({},{},{}); left_launch={left_launch:?},ground={ground},rollback={rollback},admitted={}; axis={axis:?}; footprint1={}; active_numeric={}; rng={}; flyers={:?}; owned_castle={}; castle={castle:?}; seeds={seeds:?}",
+            session.identity().tick,
+            session.backend().semantic_spell_state_for_test().unwrap().1,
+            local.left_spell_slot_raw,
+            local.left_subspell_index,
+            local.right_spell_slot_raw,
+            local.right_subspell_index,
+            local.selected_spell_ui_index,
+            player.index,
+            player.action,
+            player.life,
+            player.mana,
+            player.max_mana,
+            player.mana_regen,
+            player.control_flags,
+            numeric_player.action,
+            numeric_player.life,
+            numeric_player.mana,
+            numeric_player.mana_regen,
+            numeric_player.control_flags,
+            state.position,
+            state.yaw,
+            state.display_pitch,
+            state.actual_speed,
+            state.entity_fov,
+            auxiliary.next_entity,
+            auxiliary.entity_index2,
+            local
+                .type_str_164_auxiliary()
+                .map_or(0, |carrier| carrier.byte_0x154_340),
+            compatibility.castle_projectile_site_admitted_for_test(left_launch),
+            compatibility.economy().has_castle_stage_footprint(1),
+            compatibility
+                .entities()
+                .iter()
+                .filter(|row| row.active)
+                .count(),
+            compatibility.source_global_rng(),
+            compatibility.economy().castle_projectiles(),
+            compatibility.economy().player_castle_entity_index(),
+        )
+    }
+
+    fn build_real_level_two_castle_for_test(
+        session: &mut GameSession<Mc2CampaignBackend>,
+    ) -> (u16, crate::Position) {
+        let acquired = session.backend().semantic_spell_state_for_test().unwrap().0;
+        assert!(acquired.contains(&SpellKind::Castle));
+        assert!(acquired.contains(&SpellKind::Possession));
+        let player_slot = session
+            .backend()
+            .campaign
+            .level2_compatibility()
+            .state
+            .entity_index;
+        for _ in 0..64 {
+            let state = session.backend().campaign.level2_compatibility().state;
+            if state.target_speed == 0 && state.actual_speed == 0 {
+                break;
+            }
+            session
+                .step(
+                    guard(session),
+                    GameCommand {
+                        longitudinal: if state.target_speed > 0 {
+                            LongitudinalControl::Decelerate
+                        } else if state.target_speed < 0 {
+                            LongitudinalControl::Accelerate
+                        } else {
+                            LongitudinalControl::Coast
+                        },
+                        ..GameCommand::default()
+                    },
+                )
+                .unwrap();
+        }
+        let state = session.backend().campaign.level2_compatibility().state;
+        assert_eq!((state.target_speed, state.actual_speed), (0, 0));
+
+        // The imported row-11 overlap is the ordinary producer for the
+        // group-1 authored model-39/512-mana spheres. No allocator is called.
+        let switch_position = {
+            let compatibility = session.backend().campaign.level2_compatibility();
+            let mut position = compatibility
+                .mission()
+                .authored_features()
+                .iter()
+                .find(|feature| feature.index == 11)
+                .expect("the real Level 2 row-11 mana producer remains in the package")
+                .world_position(0);
+            position.z = compatibility
+                .canonical_terrain()
+                .ground_height(position)
+                .wrapping_add(256);
+            position
+        };
+        session
+            .step(
+                guard(session),
+                GameCommand {
+                    select_spell: Some(SemanticId::parse("spell.castle").unwrap()),
+                    ..GameCommand::default()
+                },
+            )
+            .unwrap();
+        // Use the existing test's placement boundary, but admit the actual
+        // selected-left launch and let the real flyer construct the root.
+        let cast_site = {
+            let compatibility = session.backend().campaign.level2_compatibility();
+            (16_u8..240)
+                .flat_map(|y| (16_u8..240).map(move |x| (x, y)))
+                .filter_map(|(x, y)| {
+                    let mut origin = crate::Position {
+                        x: (u16::from(x) << 8) + 128,
+                        y: (u16::from(y) << 8) + 128,
+                        z: 0,
+                    };
+                    origin.z = compatibility
+                        .canonical_terrain()
+                        .ground_height(origin)
+                        .wrapping_add(256);
+                    let launch = crate::Position {
+                        z: origin.z.wrapping_add(compatibility.state.entity_fov),
+                        ..origin
+                    };
+                    compatibility
+                        .castle_projectile_site_admitted_for_test(launch)
+                        .then_some(origin)
+                })
+                .min_by_key(|origin| crate::distance_3d_wrapped(*origin, switch_position))
+                .expect("the real Level 2 terrain admits a Castle near the mana producer")
+        };
+        let mut player_position = cast_site;
+        crate::move_entity(&mut player_position, 512, 0, 256);
+        let compatibility = session.backend_mut().campaign.level2_compatibility_mut();
+        compatibility
+            .set_level2_entity_position(player_slot, player_position)
+            .unwrap();
+        compatibility.set_level2_player_aim_for_test(0, 0);
+        assert_real_level_two_spell_cost_ready_for_test(session, 2);
+        let mut castle_trace = vec![real_level_two_castle_launch_snapshot_for_test(
+            session,
+            "before_request",
+        )];
+        session
+            .step(
+                guard(session),
+                GameCommand {
+                    cast_selected: true,
+                    ..GameCommand::default()
+                },
+            )
+            .unwrap();
+        castle_trace.push(real_level_two_castle_launch_snapshot_for_test(
+            session,
+            "after_request",
+        ));
+        let mut saw_castle_projectile = false;
+        for turn in 0..64 {
+            let compatibility = session.backend().campaign.level2_compatibility();
+            saw_castle_projectile |= compatibility.dispatch_events().iter().any(|event| {
+                matches!(
+                    event,
+                    Level2DispatchEvent::DynamicArena {
+                        kind: crate::native_world::Level2DynamicArenaKind::CastleProjectile,
+                        ..
+                    }
+                )
+            });
+            if compatibility.economy().castle().is_some_and(|castle| {
+                castle.active
+                    && castle.level == 1
+                    && compatibility.economy().player_castle_entity_index()
+                        == castle.source_entity_index
+            }) {
+                break;
+            }
+            session
+                .step(guard(session), GameCommand::default())
+                .unwrap();
+            if matches!(turn, 0 | 1 | 3 | 15 | 63) {
+                castle_trace.push(real_level_two_castle_launch_snapshot_for_test(
+                    session,
+                    &format!("after_wait_{}", turn + 1),
+                ));
+            }
+        }
+        assert!(
+            saw_castle_projectile,
+            "semantic Castle must use its real source flyer: {castle_trace:#?}"
+        );
+        assert!(
+            session
+                .backend()
+                .campaign
+                .level2_compatibility()
+                .economy()
+                .castle()
+                .is_some_and(|castle| castle.active && castle.level == 1)
+        );
+        // The reset budget admits Castle first (1000), then its real owned
+        // shift overlap recharges the player for Possession (100). Source
+        // AddPlayer03_00 selects this rate even before the first deposit.
+        recharge_real_level_two_owned_castle_mana_for_test(session);
+        (player_slot, switch_position)
+    }
+
+    fn assert_real_level_two_spell_cost_ready_for_test(
+        session: &GameSession<Mc2CampaignBackend>,
+        family: usize,
+    ) {
+        let compatibility = session.backend().campaign.level2_compatibility();
+        let shared = compatibility.shared_spells();
+        let holder_slot = shared.local_player().enabled_spell_holders[family];
+        let holder = shared
+            .pickups()
+            .iter()
+            .chain(shared.holders())
+            .chain(shared.dynamic_pickups())
+            .find(|holder| holder.index == holder_slot)
+            .expect("the selected real starting holder remains addressable");
+        let player = shared.player_entity();
+        assert!(holder.active && holder.class == 15 && usize::from(holder.model) == family);
+        assert_eq!(holder.source_spell_parent_entity_index(), player.index);
+        assert!(player.life >= 0);
+        assert!(
+            player.mana >= holder.max_mana,
+            "the public request must satisfy its actual fresh source cost: family={family}, mana={}, cost={}, max={}, regen={}",
+            player.mana,
+            holder.max_mana,
+            player.max_mana,
+            player.mana_regen,
+        );
+    }
+
+    fn recharge_real_level_two_owned_castle_mana_for_test(
+        session: &mut GameSession<Mc2CampaignBackend>,
+    ) {
+        let (player_slot, castle_position) = {
+            let compatibility = session.backend().campaign.level2_compatibility();
+            let castle = compatibility
+                .economy()
+                .castle()
+                .expect("the real recharge Castle remains live");
+            assert!(castle.active);
+            assert_eq!(
+                compatibility.economy().player_castle_entity_index(),
+                castle.source_entity_index
+            );
+            (compatibility.state.entity_index, castle.position)
+        };
+        session
+            .backend_mut()
+            .campaign
+            .level2_compatibility_mut()
+            .set_level2_entity_position(player_slot, castle_position)
+            .unwrap();
+        let mut saw_castle_rate = false;
+        for _ in 0..64 {
+            let compatibility = session.backend().campaign.level2_compatibility();
+            let player = compatibility.shared_spells().player_entity();
+            assert!(
+                player.life >= 0,
+                "ordinary Castle recharge must keep the player alive"
+            );
+            assert!(
+                compatibility
+                    .economy()
+                    .player_castle_shift_aabb_overlap(player),
+                "ordinary recharge must remain in the real owned Castle shift overlap"
+            );
+            saw_castle_rate |= player.mana_regen == (player.max_mana / 200).max(1_000);
+            if player.mana == player.max_mana && saw_castle_rate {
+                break;
+            }
+            session
+                .step(guard(session), GameCommand::default())
+                .unwrap();
+        }
+        assert!(
+            saw_castle_rate,
+            "only observed Castle-rate upkeep completes recharge"
+        );
+        let compatibility = session.backend().campaign.level2_compatibility();
+        let player = compatibility.shared_spells().player_entity();
+        assert!(
+            compatibility
+                .economy()
+                .player_castle_shift_aabb_overlap(player),
+            "only the real Castle shift overlap admits this recharge boundary"
+        );
+        assert_eq!(
+            player.mana, player.max_mana,
+            "ordinary Castle upkeep must replenish mana before the next public combat cast"
+        );
+    }
+
+    #[test]
+    fn campaign_backend_real_level_two_starting_castle_builds_and_survives_reset() {
+        let root = descriptor_fixture_path();
+        let definition = load_mc2_campaign(&root, &default_catalog().unwrap()).unwrap();
+        let mut session = GameSession::open(
+            &Mc2CampaignAdapter,
+            Arc::new(definition),
+            74,
+            Mc2CampaignInputs::new(&root),
+        )
+        .unwrap();
+        for attempt in 0..2 {
+            let compatibility = session.backend().campaign.level2_compatibility();
+            for stage in 1..=3 {
+                assert!(compatibility.economy().has_castle_stage_footprint(stage));
+            }
+            assert!(compatibility.economy().castle().is_none());
+            let player = compatibility.shared_spells().player_entity();
+            assert_eq!((player.mana, player.max_mana), (1_000, 1_000));
+            build_real_level_two_castle_for_test(&mut session);
+            let compatibility = session.backend().campaign.level2_compatibility();
+            let castle = compatibility.economy().castle().unwrap();
+            assert!(castle.active && castle.level == 1);
+            assert_eq!(castle.mana, 0);
+            assert_eq!(
+                compatibility.economy().player_castle_entity_index(),
+                castle.source_entity_index
+            );
+            let player = compatibility.shared_spells().player_entity();
+            assert_eq!((player.mana, player.max_mana), (1_000, 1_000));
+            if attempt == 0 {
+                session.reset(guard(&session)).unwrap();
+            }
+        }
+    }
+
     pub(crate) fn drive_real_level_two_to_final_vault_objective_for_test(
         session: &mut GameSession<Mc2CampaignBackend>,
     ) {

@@ -3924,6 +3924,46 @@ impl NativeWorldInspection {
             .mission_content_template_from_definition(definition)?
             .session();
         let mut session = self.build_campaign_reset_session(definition, mission)?;
+        // Every campaign boot path needs the same Castle construction data.
+        // The qualified Day capability bundle takes a different reset builder
+        // from descriptor-only worlds, so bind missing footprints here before
+        // exposing either session or sealing its replay/reset baseline.
+        let shared = session.shared_spells();
+        let castle_holder_slot = shared.local_player().enabled_spell_holders[2];
+        let has_starting_castle = shared
+            .pickups()
+            .iter()
+            .chain(shared.holders())
+            .chain(shared.dynamic_pickups())
+            .any(|holder| {
+                holder.index == castle_holder_slot
+                    && holder.active
+                    && holder.class == 15
+                    && holder.model == CASTLE_SPELL_FAMILY
+                    && holder.source_spell_parent_entity_index()
+                        == shared.local_player().entity_index
+            });
+        if (definition
+            .level_definition()
+            .spell_kinds()
+            .any(|kind| kind == SpellKind::Castle)
+            || has_starting_castle)
+            && !session.economy().has_castle_stage_footprint(1)
+        {
+            for (stage, footprint) in campaign_castle_stage_footprints()? {
+                if !session.economy().has_castle_stage_footprint(stage)
+                    && !session
+                        .source_arena_mut()
+                        .economy
+                        .set_castle_stage_footprint(stage, footprint)
+                {
+                    return Err(NativeWorldError::new(format!(
+                        "qualified campaign Castle stage-{stage} footprint was rejected"
+                    )));
+                }
+            }
+            session.session.rebase();
+        }
         session.bind_semantic_level_definition(crate::campaign::state::SemanticLevelBindings {
             level: definition.level_definition().clone(),
             authored_creature_kinds: definition.creature_bindings().clone(),
