@@ -5292,7 +5292,9 @@ impl Level2EconomyState {
                     source_subspell_index: 0,
                     yaw: 0,
                     roll: 0,
-                    visual_index: 0,
+                    // sub_4ABA0's class-3/model-3 constructor selects the
+                    // balloon particle before sub_5FF50 applies owner color.
+                    visual_index: crate::level1_mission::MANA_CARRIER_RENDER_INDEX,
                     control_flags: 0,
                     chain_previous_slot: 0,
                     chain_next_slot: 0,

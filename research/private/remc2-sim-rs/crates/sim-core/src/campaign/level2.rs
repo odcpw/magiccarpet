@@ -5347,6 +5347,56 @@ impl Level2ResetSession {
         );
         // NewAdd0A0C's Possession mailbox effect deliberately has hide bit 1;
         // it is not a visible explosion, even while its ownership pulse lives.
+        // SetManaSphereColorAndRot_36920 reads the raw player relation, not
+        // the semantic ownership projection. TransformPlayerColorIndex's
+        // offline permutation applies to both spheres and Castle balloons.
+        let source_owner_color = |relation: u16| -> Result<Option<u16>> {
+            self.players()
+                .iter()
+                .find(|player| relation != 0 && player.entity_index == relation)
+                .map(|player| {
+                    [0_u16, 1, 4, 3, 2, 5, 7, 6]
+                        .get(usize::from(player.player_color_index()))
+                        .copied()
+                        .ok_or_else(|| {
+                            NativeWorldError::new("campaign owner color is out of bounds")
+                        })
+                })
+                .transpose()
+        };
+        for sphere in self.economy().spheres().iter().filter(|sphere| {
+            sphere.active
+                && !sphere.pending_delete
+                && sphere.control_flags & (ENTITY_DRAW_DISABLED_BIT | 0x21) == 0
+        }) {
+            let color_base =
+                source_owner_color(sphere.player_entity_index)?.map_or(52, |color| 105 + 8 * color);
+            candidates.push((
+                sphere.source_entity_index,
+                sphere.source_entity_index,
+                color_base
+                    + u16::from(crate::level1_mission::mana_sphere_size_ordinal(sphere.mana)),
+                sphere.yaw,
+                sphere.position,
+            ));
+        }
+        for balloon in self.economy().castle_children().iter().filter(|child| {
+            child.active
+                && !child.drawing_disabled()
+                && child.control_flags & 0x21 == 0
+                && (child.source_class, child.model, child.action) == (3, 3, 9)
+        }) {
+            let owner_color = source_owner_color(balloon.id_entity_index)?.ok_or_else(|| {
+                NativeWorldError::new("campaign Castle balloon has no qualified player color")
+            })?;
+            candidates.push((
+                balloon.source_entity_index,
+                balloon.id_entity_index,
+                balloon.visual_index + owner_color,
+                balloon.yaw.cast_signed(),
+                balloon.position,
+            ));
+        }
         candidates.sort_unstable_by_key(|(slot, ..)| *slot);
         candidates
             .into_iter()

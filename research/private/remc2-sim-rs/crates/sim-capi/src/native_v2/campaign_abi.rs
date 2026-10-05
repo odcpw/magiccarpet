@@ -2993,7 +2993,7 @@ pub extern "C" fn mc_native_campaign_entities_copy(
                         }
                         rows[slot] = campaign_live_class5_entity_snapshot(source);
                     }
-                    let spell_rows =
+                    let live_rows =
                         reset
                             .economy()
                             .fireball_projectiles()
@@ -3053,7 +3053,54 @@ pub extern "C" fn mc_native_campaign_entities_copy(
                                         0,
                                     )
                                 },
-                            ));
+                            ))
+                            .chain(reset.economy().spheres().iter().map(|source| {
+                                (
+                                    source.source_entity_index,
+                                    source.source_entity_index,
+                                    source.active
+                                        && !source.pending_delete
+                                        && source.control_flags & (0x0000_0400 | 0x21) == 0,
+                                    10,
+                                    39,
+                                    41,
+                                    source.phase,
+                                    source.position,
+                                    source.yaw,
+                                    0,
+                                    0,
+                                    // This carrier stores component velocities,
+                                    // not a live actSpeed word. Pose is authoritative.
+                                    0,
+                                )
+                            }))
+                            .chain(
+                                reset
+                                    .economy()
+                                    .castle_children()
+                                    .iter()
+                                    .filter(|source| {
+                                        (source.source_class, source.model, source.action)
+                                            == (3, 3, 9)
+                                    })
+                                    .map(|source| {
+                                        (
+                                            source.source_entity_index,
+                                            source.id_entity_index,
+                                            source.active
+                                                && source.control_flags & (0x0000_0400 | 0x21) == 0,
+                                            source.source_class,
+                                            source.model,
+                                            source.action,
+                                            source.source_byte_3e,
+                                            source.position,
+                                            source.yaw.cast_signed(),
+                                            0,
+                                            0,
+                                            source.speed,
+                                        )
+                                    }),
+                            );
                     for (
                         index,
                         source_id,
@@ -3067,14 +3114,14 @@ pub extern "C" fn mc_native_campaign_entities_copy(
                         pitch,
                         fov,
                         actual_speed,
-                    ) in spell_rows
+                    ) in live_rows
                     {
                         let slot = usize::from(index);
                         if slot >= rows.len() || !occupied.insert(index) {
                             return Err(AbiError::new(
                                 MC_STATUS_VALIDATION_FAILED,
                                 format!(
-                                    "campaign live spell source slot {index} is invalid or duplicated"
+                                    "campaign live source slot {index} is invalid or duplicated"
                                 ),
                             ));
                         }

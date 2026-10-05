@@ -5035,7 +5035,7 @@ pub(crate) mod tests {
         }
 
         fn aim_player_at_firefly(session: &mut GameSession<Mc2CampaignBackend>, source_slot: u16) {
-            let (target, player_slot, player_fov) = {
+            let (target, player_slot, player_fov, aim_yaw_offset) = {
                 let compatibility = session.backend().campaign.level2_compatibility();
                 (
                     compatibility
@@ -5047,15 +5047,12 @@ pub(crate) mod tests {
                         .expect("real package Firefly remains live before the cast"),
                     compatibility.state.entity_index,
                     compatibility.state.entity_fov,
+                    compatibility
+                        .shared_spells()
+                        .beyond_sight_auxiliary()
+                        .next_entity,
                 )
             };
-            let mut predicted_target = target.position;
-            crate::move_entity(
-                &mut predicted_target,
-                target.yaw,
-                target.pitch,
-                target.actual_speed,
-            );
             let mut player_position = target.position;
             crate::move_entity(
                 &mut player_position,
@@ -5072,11 +5069,43 @@ pub(crate) mod tests {
                 player_position,
             )
             .wrapping_add(256);
+
+            // Predict the ordinary scheduler's stage/attack callback, rather
+            // than moving the pre-callback heading directly. The positioned
+            // incoming-combat boundary skips only the player's flight once.
+            let mut forecast = session.backend().campaign.clone();
+            let compatibility = forecast.level2_compatibility_mut();
+            compatibility
+                .set_level2_entity_position(player_slot, player_position)
+                .expect("forecast retains the real player map carrier");
+            compatibility.set_level2_player_aim_for_test(0, 0);
+            forecast.step_with_tuning(
+                campaign_player_command(&GameCommand::default()),
+                CAMPAIGN_SPEED_INDEX,
+                session.backend().flight_binding.tuning(),
+            );
+            let mut target_top = forecast
+                .level2_compatibility()
+                .economy()
+                .authored_class5()
+                .iter()
+                .find(|source| source.source_entity_index == source_slot)
+                .expect("ordinary forecast retains the living Firefly")
+                .position;
+            target_top.z = target_top
+                .z
+                .wrapping_sub(crate::level1_mission::FIREBALL_COLLISION_VERTICAL_OFFSET);
             let mut launch_position = player_position;
             launch_position.z = launch_position.z.wrapping_add(player_fov);
-            let target_top = predicted_target;
             let (yaw, pitch) =
                 crate::level1_mission::projectile_guidance_angles(launch_position, target_top);
+
+            // cast_left publishes direction 0x0100 at the player callback;
+            // the holder then launches 256 units at player yaw - 512. Invert
+            // that displacement so its real launch starts at the aimed point.
+            // The auxiliary changes projectile aim, not the parent hand yaw.
+            let hand_yaw = yaw.wrapping_sub(aim_yaw_offset).wrapping_sub(512);
+            crate::move_entity(&mut player_position, hand_yaw.wrapping_add(1_024), 0, 256);
             let compatibility = session.backend_mut().campaign.level2_compatibility_mut();
             compatibility
                 .set_level2_entity_position(player_slot, player_position)
@@ -21164,6 +21193,23 @@ pub(crate) mod tests {
             (0, 0, 0),
             "focused possession geometry starts from an ordinarily settled death sphere"
         );
+        let compatibility = session.backend().campaign.level2_compatibility();
+        let before_poll = compatibility.state_hash();
+        let neutral = compatibility.campaign_entity_presentations(0).unwrap();
+        let neutral = neutral
+            .iter()
+            .find(|row| row.entity_index == target_slot)
+            .unwrap();
+        assert_eq!(
+            (neutral.render_parameter_index, neutral.base_tmap),
+            (53, 58)
+        );
+        assert_eq!(neutral.position, target_position);
+        assert_eq!(
+            compatibility.state_hash(),
+            before_poll,
+            "sprite polling is observational"
+        );
         session
             .backend_mut()
             .campaign
@@ -21190,7 +21236,7 @@ pub(crate) mod tests {
             1,
             "semantic Possession selection must reach source UI family one"
         );
-        let (sphere_position, target_top, player_yaw, player_fov) = {
+        let (sphere_position, target_top, player_yaw, player_fov, aim_yaw_offset) = {
             let compatibility = session.backend().campaign.level2_compatibility();
             (
                 compatibility
@@ -21205,6 +21251,10 @@ pub(crate) mod tests {
                     .expect("death sphere has an exact source guidance top"),
                 compatibility.state.yaw,
                 compatibility.state.entity_fov,
+                compatibility
+                    .shared_spells()
+                    .beyond_sight_auxiliary()
+                    .next_entity,
             )
         };
         let mut target_position = sphere_position;
@@ -21218,6 +21268,11 @@ pub(crate) mod tests {
         launch_position.z = launch_position.z.wrapping_add(player_fov);
         let (launch_yaw, launch_pitch) =
             crate::level1_mission::projectile_guidance_angles(launch_position, target_top);
+        // cast_selected overwrites the parent's direction bits with 0x0100.
+        // Invert the ordinary holder's left-hand displacement, retaining the
+        // sphere-guidance top and the real projectile/effect claim lifecycle.
+        let hand_yaw = launch_yaw.wrapping_sub(aim_yaw_offset).wrapping_sub(512);
+        crate::move_entity(&mut target_position, hand_yaw.wrapping_add(1_024), 0, 256);
         let compatibility = session.backend_mut().campaign.level2_compatibility_mut();
         compatibility
             .set_level2_entity_position(player_entity, target_position)
@@ -21299,8 +21354,18 @@ pub(crate) mod tests {
                 .iter()
                 .find(|sphere| sphere.source_entity_index == target_slot)
                 .map(|sphere| (sphere.owner_entity_index, sphere.player_entity_index)),
-            Some((player_entity, 0)),
-            "the selected real sphere must consume the Possession mailbox"
+            Some((player_entity, player_entity)),
+            "the selected real sphere must publish the claimed source player relation"
+        );
+        let compatibility = session.backend().campaign.level2_compatibility();
+        let claimed = compatibility.campaign_entity_presentations(0).unwrap();
+        let claimed = claimed
+            .iter()
+            .find(|row| row.entity_index == claimed_slot)
+            .unwrap();
+        assert_eq!(
+            (claimed.render_parameter_index, claimed.base_tmap),
+            (106, 67)
         );
 
         // This focused producer isolation stages only the already-tested
@@ -21341,36 +21406,58 @@ pub(crate) mod tests {
         let mut targeted = false;
         let mut collected = false;
         let mut deposited = 0;
+        let mut saw_balloon_sprite = false;
         for _ in 0..128 {
-            let economy = session.backend().campaign.level2_compatibility().economy();
-            if let Some(carrier) = economy
-                .carriers()
-                .iter()
-                .find(|carrier| carrier.active && carrier.owner_entity_index == player_entity)
-            {
+            let compatibility = session.backend().campaign.level2_compatibility();
+            let economy = compatibility.economy();
+            if let Some(carrier) = economy.castle_children().iter().find(|carrier| {
+                carrier.active
+                    && carrier.source_class == 3
+                    && carrier.model == 3
+                    && carrier.action == 9
+                    && carrier.id_entity_index == player_entity
+            }) {
                 carrier_slot = Some(carrier.source_entity_index);
-                targeted |= carrier.target_sphere_id == u32::from(claimed_slot);
+                targeted |= carrier.target_sphere_slot == claimed_slot;
+                let sprites = compatibility.campaign_entity_presentations(0).unwrap();
+                let sprite = sprites
+                    .iter()
+                    .find(|row| row.entity_index == carrier.source_entity_index)
+                    .expect("ordinary Castle upkeep balloon reaches the shared sprite selector");
+                assert_eq!(
+                    (
+                        sprite.render_parameter_index,
+                        sprite.base_tmap,
+                        sprite.render_mode
+                    ),
+                    (169, 88, 0)
+                );
+                assert_eq!(sprite.source_id, player_entity);
+                assert_eq!(sprite.position, carrier.position);
+                saw_balloon_sprite = true;
             }
             collected |= economy.events().iter().any(|event| {
                 matches!(
                     event,
-                    crate::native_world::Level2EconomyEvent::ManaSphereCollected {
+                    crate::native_world::Level2EconomyEvent::CastleDefenderCollectedSphere {
                         sphere_id,
-                        carrier_id,
+                        defender_slot,
                         ..
                     } if *sphere_id == u32::from(claimed_slot)
-                        && Some(u16::try_from(*carrier_id).unwrap()) == carrier_slot
+                        && Some(*defender_slot) == carrier_slot
                 )
             });
             deposited = economy
                 .events()
                 .iter()
                 .filter_map(|event| match event {
-                    crate::native_world::Level2EconomyEvent::ManaCarrierArrived {
+                    crate::native_world::Level2EconomyEvent::CastleDefenderArrived {
+                        defender_slot,
                         castle_id,
                         mana,
-                        ..
-                    } if *castle_id == castle_slot => Some(*mana),
+                    } if *castle_id == castle_slot && Some(*defender_slot) == carrier_slot => {
+                        Some(*mana)
+                    }
                     _ => None,
                 })
                 .sum();
@@ -21397,7 +21484,7 @@ pub(crate) mod tests {
                 .campaign
                 .level2_compatibility()
                 .economy()
-                .carriers(),
+                .castle_children(),
             session
                 .backend()
                 .campaign
@@ -21422,6 +21509,18 @@ pub(crate) mod tests {
                 .rev()
                 .take(16)
                 .collect::<Vec<_>>()
+        );
+        assert!(saw_balloon_sprite);
+        assert!(
+            session
+                .backend()
+                .campaign
+                .level2_compatibility()
+                .campaign_entity_presentations(0)
+                .unwrap()
+                .iter()
+                .all(|row| row.entity_index != claimed_slot),
+            "a collected/reclaimed sphere cannot remain visible"
         );
         assert!(
             deposited > 0,

@@ -49,6 +49,177 @@ fn campaign_entity_projection_follows_live_player_and_reset() {
 }
 
 #[test]
+fn campaign_native_projection_copies_live_sphere_and_castle_balloon_and_clears_on_reset() {
+    let handle = open_level2_campaign_handle();
+    // Isolate the native projection using the production death-sphere and
+    // Castle constructors. The core Possession test proves the upstream kill,
+    // claim, upkeep, collection and deposit lifecycle through ordinary turns.
+    let (sphere_slot, player_slot, camera) = with_campaign_session_mut(handle, |record| {
+        let CampaignSessionKind::Level2 { reset, .. } = &mut record.kind else {
+            unreachable!()
+        };
+        let player = reset.players()[0].entity_index;
+        let mut sphere_position = reset.state.position;
+        sphere_position.y = sphere_position.y.wrapping_sub(2_048);
+        let terrain = reset.canonical_terrain().clone();
+        let sphere_slot = reset
+            .economy_mut()
+            .spawn_mana_sphere_from_death(player, sphere_position, 0, 17, 500, player, &terrain)
+            .expect("production sphere allocation") as u16;
+        let mut castle_position = sphere_position;
+        castle_position.x = castle_position.x.wrapping_add(2_304);
+        reset
+            .economy_mut()
+            .build_castle(castle_position, player, &terrain)
+            .expect("production stage-one Castle allocation");
+        Ok((sphere_slot, player, reset.state.position))
+    })
+    .unwrap();
+    let (step, _) = step_level2_campaign_public(
+        handle,
+        McCampaignStepInputV2 {
+            abi_version: MC_NATIVE_ABI_VERSION,
+            struct_size: struct_size::<McCampaignStepInputV2>(),
+            generation: 0,
+            command: valid_command(),
+            player_slot: 0,
+            player_x: camera.x,
+            player_y: camera.y,
+            player_z: camera.z,
+            ..McCampaignStepInputV2::default()
+        },
+    );
+    let (sphere, balloon, before_hash) = with_campaign_session(handle, |record| {
+        let CampaignSessionKind::Level2 { reset, .. } = &record.kind else {
+            unreachable!()
+        };
+        let sphere = *reset
+            .economy()
+            .spheres()
+            .iter()
+            .find(|row| row.source_entity_index == sphere_slot)
+            .unwrap();
+        let balloon = *reset
+            .economy()
+            .castle_children()
+            .iter()
+            .find(|row| row.active && (row.source_class, row.model, row.action) == (3, 3, 9))
+            .expect("ordinary upkeep creates the live balloon");
+        Ok((sphere, balloon, reset.state_hash()))
+    })
+    .unwrap();
+    let entities = campaign_entities_public(handle);
+    let sphere_row = entities[usize::from(sphere_slot)];
+    assert_eq!(
+        (
+            sphere_row.authority,
+            sphere_row.active,
+            sphere_row.class_id,
+            sphere_row.model,
+            sphere_row.action
+        ),
+        (MC_AUTHORITY_CAMPAIGN_LIVE, 1, 10, 39, 41)
+    );
+    assert_eq!(
+        (
+            sphere_row.source_id,
+            sphere_row.x,
+            sphere_row.y,
+            sphere_row.z,
+            sphere_row.yaw
+        ),
+        (
+            sphere_slot,
+            sphere.position.x,
+            sphere.position.y,
+            sphere.position.z,
+            sphere.yaw
+        )
+    );
+    let balloon_row = entities[usize::from(balloon.source_entity_index)];
+    assert_eq!(
+        (
+            balloon_row.authority,
+            balloon_row.active,
+            balloon_row.class_id,
+            balloon_row.model,
+            balloon_row.action
+        ),
+        (MC_AUTHORITY_CAMPAIGN_LIVE, 1, 3, 3, 9)
+    );
+    assert_eq!(
+        (
+            balloon_row.source_id,
+            balloon_row.x,
+            balloon_row.y,
+            balloon_row.z,
+            balloon_row.actual_speed
+        ),
+        (
+            player_slot,
+            balloon.position.x,
+            balloon.position.y,
+            balloon.position.z,
+            balloon.speed
+        )
+    );
+    let mut sprites = vec![McCampaignEntityPresentationV2::default(); 1_000];
+    let mut written = 0;
+    assert_eq!(
+        mc_native_campaign_entity_presentations_copy(
+            handle,
+            0,
+            step.revision,
+            0,
+            sprites.as_mut_ptr(),
+            sprites.len() as u32,
+            struct_size::<McCampaignEntityPresentationV2>(),
+            &raw mut written,
+        ),
+        MC_STATUS_OK,
+        "{}",
+        LAST_ERROR.with(|value| value.borrow().clone())
+    );
+    let sprites = &sprites[..written as usize];
+    let sphere_sprite = sprites
+        .iter()
+        .find(|row| row.entity_index == sphere_slot)
+        .expect("sphere reaches the native visible selector");
+    assert_eq!(sphere_sprite.render_parameter_index, 106);
+    let balloon_sprite = sprites
+        .iter()
+        .find(|row| row.entity_index == balloon.source_entity_index)
+        .expect("Castle balloon reaches the native visible selector");
+    assert_eq!(
+        (
+            balloon_sprite.render_parameter_index,
+            balloon_sprite.base_tmap
+        ),
+        (169, 88)
+    );
+    with_campaign_session(handle, |record| {
+        let CampaignSessionKind::Level2 { reset, .. } = &record.kind else {
+            unreachable!()
+        };
+        assert_eq!(
+            reset.state_hash(),
+            before_hash,
+            "native presentation reads are observational"
+        );
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(mc_native_campaign_session_reset(handle), MC_STATUS_OK);
+    let reset_entities = campaign_entities_public(handle);
+    assert_eq!(reset_entities[usize::from(sphere_slot)].active, 0);
+    assert_eq!(
+        reset_entities[usize::from(balloon.source_entity_index)].active,
+        0
+    );
+    assert_eq!(mc_native_campaign_session_destroy(handle), MC_STATUS_OK);
+}
+
+#[test]
 fn layouts_and_versions_are_stable() {
     assert_eq!(mc_native_abi_version(), 2);
     assert_eq!(size_of::<McWorldInfoV2>(), 72);
