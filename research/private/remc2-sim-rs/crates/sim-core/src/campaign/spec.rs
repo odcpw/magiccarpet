@@ -966,7 +966,10 @@ impl CampaignDefinition {
             &reset_sources["runtime"],
             &files,
             "campaign_spec.reset_sources.runtime",
-            Some("mc2-runtime-state/v1"),
+            Some(match members["runtime.bin"].get(4..6) {
+                Some([2, 0]) => "mc2-runtime-state/v2",
+                _ => "mc2-runtime-state/v1",
+            }),
             None,
             None,
             ValidationStage::TypedMembers,
@@ -1708,15 +1711,22 @@ impl CampaignDefinition {
     /// distinct.
     pub(crate) fn owner_export_package_sha256(&self) -> Result<String> {
         let mut identity = Vec::new();
+        // The validated v2 Day recipe is emitted with the corrected owner
+        // export. Its building-parameter member belongs to that export's hash.
+        // Historical recipes injected this member only into the campaign and
+        // must retain their original owner identity.
+        let corrected_day_export = self.campaign_spec.presentation_recipe.block_bank == "BLOCK32";
         for (name, expected_sha256) in &self.member_hashes {
             if matches!(
                 name.as_str(),
-                "building-parameters.bin"
-                    | "campaign-definition.json"
+                "campaign-definition.json"
                     | "fireball-projectile-base.indexed-sprite.json"
                     | "fireball-projectile-fade.indexed-sprite.json"
                     | "owner-manifest.json"
             ) {
+                continue;
+            }
+            if name == "building-parameters.bin" && !corrected_day_export {
                 continue;
             }
             let bytes = self.read_member(name)?;
@@ -2619,9 +2629,9 @@ fn validate_runtime(bytes: &[u8]) -> Result<u16> {
         "runtime player count",
         ValidationStage::TypedMembers,
     )?;
-    if bytes.len() != 2_754
+    let version = read_u16(bytes, 4, "runtime version", ValidationStage::TypedMembers)?;
+    if !matches!((version, bytes.len()), (1, 2_754) | (2, 2_783))
         || bytes.get(..4) != Some(b"MCR1")
-        || read_u16(bytes, 4, "runtime version", ValidationStage::TypedMembers)? != 1
         || read_u16(bytes, 6, "runtime reserved", ValidationStage::TypedMembers)? != 0
         || read_u16(
             bytes,
@@ -2992,25 +3002,36 @@ fn validate_presentation(
     members: &BTreeMap<String, Vec<u8>>,
     selection: CampaignSelection,
 ) -> Result<PresentationRecipe> {
+    let corrected_blocks = value.get("schema").is_some();
+    let mut keys = vec![
+        "block_bank",
+        "cursor",
+        "map_type",
+        "member",
+        "palette",
+        "resolved_files",
+        "sky_bank",
+        "sound_bank",
+        "sprite_bank",
+        "terrain_bank",
+        "terrain_graphics_flag_2",
+        "terrain_graphics_flags",
+        "texture_size",
+        "vga_resolution_selector",
+        "web_bank",
+    ];
+    if corrected_blocks {
+        keys.push("schema");
+        require_string_eq(
+            &value["schema"],
+            "mc2-presentation-recipe/v2",
+            "presentation_recipe.schema",
+            ValidationStage::TypedMembers,
+        )?;
+    }
     let object = exact_object(
         value,
-        &[
-            "block_bank",
-            "cursor",
-            "map_type",
-            "member",
-            "palette",
-            "resolved_files",
-            "sky_bank",
-            "sound_bank",
-            "sprite_bank",
-            "terrain_bank",
-            "terrain_graphics_flag_2",
-            "terrain_graphics_flags",
-            "texture_size",
-            "vga_resolution_selector",
-            "web_bank",
-        ],
+        &keys,
         "presentation_recipe",
         ValidationStage::TypedMembers,
     )?;
@@ -3034,7 +3055,14 @@ fn validate_presentation(
             ("web_bank", "MWEBN0-0"),
         ],
         CampaignSelection::LEVEL2 | CampaignSelection::LEVEL3 => [
-            ("block_bank", "BL32N0-0"),
+            (
+                "block_bank",
+                if corrected_blocks {
+                    "BLOCK32"
+                } else {
+                    "BL32N0-0"
+                },
+            ),
             ("map_type", "Day"),
             ("palette", "PALD-0"),
             ("sky_bank", "SKYD0-0"),
@@ -3125,7 +3153,14 @@ fn validate_presentation(
             ("web_bank", "owner:CD_Files/DATA/MWEBN0-0.DAT"),
         ],
         CampaignSelection::LEVEL2 | CampaignSelection::LEVEL3 => [
-            ("block_bank", "owner:CD_Files/DATA/BL32N0-0.DAT"),
+            (
+                "block_bank",
+                if corrected_blocks {
+                    "owner:CD_Files/DATA/BLOCK32.DAT"
+                } else {
+                    "owner:CD_Files/DATA/BL32N0-0.DAT"
+                },
+            ),
             ("building_bank", "owner:CD_Files/DATA/BUILD0-0.DAT"),
             ("font_bank", "owner:CD_Files/DATA/FONT1.DAT"),
             ("language", "owner:CD_Files/LANGUAGE/L1.TXT"),
@@ -3769,6 +3804,26 @@ fn parse_behavior_requirements(value: &Value) -> Result<Vec<BehaviorRequirement>
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn runtime_constructor_counter_version_requires_exact_extent() {
+        let mut bytes = vec![0_u8; 2_754];
+        bytes[..4].copy_from_slice(b"MCR1");
+        bytes[4] = 1;
+        bytes[18] = 1;
+        assert!(super::validate_runtime(&bytes).is_ok());
+        bytes[4] = 2;
+        assert!(super::validate_runtime(&bytes).is_err());
+        bytes.extend(0_u8..29);
+        assert!(super::validate_runtime(&bytes).is_ok());
+        bytes[4] = 1;
+        assert!(super::validate_runtime(&bytes).is_err());
+        bytes[4] = 3;
+        assert!(super::validate_runtime(&bytes).is_err());
+        bytes[4] = 2;
+        bytes.push(0);
+        assert!(super::validate_runtime(&bytes).is_err());
+    }
+
     use super::{
         AUTHORED_RECORD_BYTES, AUTHORED_RECORD_COUNT, AUTHORED_RECORD_OFFSET,
         AUTHORED_STAGE_OFFSET, AuthoredBehaviorRow, CampaignDefinition, CampaignSelection,

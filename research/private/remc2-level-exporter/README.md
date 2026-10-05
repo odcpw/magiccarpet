@@ -1,5 +1,20 @@
 # Private remc2 owner-level exporter
 
+### Campaign runtime counters (GOLDEN-CHANGE, approved 2026-09-10)
+
+New `--campaign-package` exports use `mc2-runtime-state/v2`: the existing
+2,754-byte runtime layout keeps every offset, its component version becomes 2,
+and 29 raw `D41A0_0.array_0x10` bytes are appended from the same frame-zero
+capture. These are constructor counters, not a count inferred from live actors.
+Rust initializes its implemented creature and castle-auxiliary constructor
+phases from this data. The runtime member hash binds the counters into package
+identity and reset receipts; ordinary session reset restores their initial state.
+
+Legacy runtime v1 remains readable with its historical zero initialization and
+does not establish exact constructor-counter parity. Non-campaign owner exports
+retain v1 to preserve existing compatibility captures. Version/extent and typed
+schema mismatches must fail; no old goldens are regenerated to bless new behavior.
+
 This directory contains a private preservation tool for a lawfully owned copy of
 Magic Carpet 2. It initializes an owner-data level through the stock remc2
 program path and exports a deterministic, pointer-free scene package. The

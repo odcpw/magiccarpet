@@ -78,6 +78,8 @@ SCHEMA = "mc2-owner-unity-asset-cache/v1"
 LEVEL2_MATERIAL_SCHEMA = "mc2-level2-day-material-cache/v1"
 DAY_MATERIAL_SCHEMA = "mc2-day-material-cache/v1"
 DAY_MATERIAL_DESCRIPTOR_SCHEMA = "mc2-day-materials/v1"
+DAY_MATERIAL_SCHEMA_V2 = "mc2-day-material-cache/v2"
+DAY_MATERIAL_DESCRIPTOR_SCHEMA_V2 = "mc2-day-materials/v2"
 LEVEL2_GAMEPLAY_SCHEMA = "mc2-level2-day-gameplay-cache/v1"
 LEVEL2_DAY_HUD_SCHEMA = "mc2-level2-day-hud/v1"
 LEVEL2_AUDIO_SCHEMA = "mc2-level2-day-audio-cache/v1"
@@ -86,6 +88,12 @@ LEVEL2_AGGREGATE_SCHEMA = "mc2-level2-day-owner-cache/v1"
 CAMPAIGN_DAY_GAMEPLAY_SCHEMA = "mc2-day-gameplay-cache/v1"
 CAMPAIGN_DAY_GAMEPLAY_DESCRIPTOR_SCHEMA = "mc2-day-gameplay/v1"
 CAMPAIGN_DAY_AGGREGATE_SCHEMA = "mc2-day-owner-cache/v1"
+CAMPAIGN_DAY_AGGREGATE_SCHEMA_V2 = "mc2-day-owner-cache/v2"
+DAY_MATERIAL_SCHEMA_V3 = "mc2-day-material-cache/v3"
+DAY_MATERIAL_DESCRIPTOR_SCHEMA_V3 = "mc2-day-materials/v3"
+CAMPAIGN_DAY_AGGREGATE_SCHEMA_V3 = "mc2-day-owner-cache/v3"
+# DrawMinimapEntities_B: castle 58 + source player color, player 66 + color.
+DAY_MINIMAP_SYMBOL_SELECTORS = tuple(range(58, 74))
 LEVEL2_DAY_HUD_BITMAP_SELECTORS = (
     1,
     2,
@@ -847,7 +855,7 @@ def exporter_layout_evidence(source_path: Path = EXPORTER_SOURCE) -> dict[str, A
     except (OSError, UnicodeDecodeError) as error:
         raise CacheError(f"cannot read exporter source: {error}") from error
 
-    signature = "Bytes capture_runtime(json& layout)"
+    signature = "Bytes capture_runtime(json& layout, bool include_constructor_counters)"
     start = source.find(signature)
     if start < 0:
         raise CacheError("qualified exporter runtime schema is missing capture_runtime")
@@ -869,7 +877,7 @@ def exporter_layout_evidence(source_path: Path = EXPORTER_SOURCE) -> dict[str, A
     runtime_source = source[start:end]
     required_markers = (
         'result.magic("MCR1");',
-        "result.u16(1);",
+        "result.u16(include_constructor_counters ? 2 : 1);",
         "result.u32(D41A0_0.dword_0x4);",
         "result.u8(D41A0_0.m_GameSettings.m_Graphics.m_wReflections);",
         "result.u8(D41A0_0.m_GameSettings.str_0x2196.flat_0x2199);",
@@ -4705,6 +4713,8 @@ def _day_material_profile(
             f"{profile_label} material profile requires players component v4/663"
         )
     selectors = package.get("presentation_dependencies")
+    corrected_blocks = isinstance(selectors, dict) and selectors.get("block_bank") == "BLOCK32"
+    block_bank = "BLOCK32" if corrected_blocks else "BL32N0-0"
     expected = {
         "map_type": "Day",
         "vga_resolution_selector": 1,
@@ -4714,7 +4724,7 @@ def _day_material_profile(
         "terrain_bank": "TMAPS0-0",
         "sprite_bank": "MSPRD0-0",
         "web_bank": "MWEBD0-0",
-        "block_bank": "BL32N0-0",
+        "block_bank": block_bank,
         "palette": "PALD-0",
         "sky_bank": "SKYD0-0",
         "sound_bank": 1,
@@ -4729,7 +4739,7 @@ def _day_material_profile(
         "terrain_bank": "owner:GAME/NETHERW/CDATA/TMAPS0-0.DAT",
         "sprite_bank": "owner:CD_Files/DATA/MSPRD0-0.DAT",
         "web_bank": "owner:CD_Files/DATA/MWEBD0-0.DAT",
-        "block_bank": "owner:CD_Files/DATA/BL32N0-0.DAT",
+        "block_bank": f"owner:CD_Files/DATA/{block_bank}.DAT",
         "palette": "owner:CD_Files/DATA/PALD-0.DAT",
         "sky_bank": "owner:CD_Files/DATA/SKYD0-0.DAT",
         "building_bank": "owner:CD_Files/DATA/BUILD0-0.DAT",
@@ -4936,12 +4946,14 @@ def _campaign_day_material_profile(
 
 
 def _level2_owner_sources(
-    owner_root: Path, catalog_rows: dict[str, Any]
+    owner_root: Path, catalog_rows: dict[str, Any], *, block_bank: str = "BL32N0-0"
 ) -> dict[str, bytes]:
     """Verify and read all base Day banks against the catalogue hashes."""
     owner_root = owner_root.expanduser().resolve()
     source_bytes: dict[str, bytes] = {}
     for relative in LEVEL2_DAY_SOURCE_PATHS:
+        if relative == "DATA/BL32N0-0.DAT":
+            relative = f"DATA/{block_bank}.DAT"
         path = confined_source(owner_root, relative)
         data = path.read_bytes()
         row = catalog_rows.get(relative)
@@ -7379,11 +7391,14 @@ def validate_day_aggregate_cache(
 def _campaign_day_aggregate_output_rows(
     stage: Path,
     child_manifests: dict[str, dict[str, Any]],
+    *,
+    corrected_blocks: bool = False,
+    minimap_symbols: bool = False,
 ) -> tuple[list[dict[str, Any]], dict[str, dict[str, Any]]]:
     outputs: list[dict[str, Any]] = []
     components: dict[str, dict[str, Any]] = {}
     schemas = {
-        "material": DAY_MATERIAL_SCHEMA,
+        "material": DAY_MATERIAL_SCHEMA_V3 if minimap_symbols else DAY_MATERIAL_SCHEMA_V2 if corrected_blocks else DAY_MATERIAL_SCHEMA,
         "gameplay": CAMPAIGN_DAY_GAMEPLAY_SCHEMA,
         "audio": CAMPAIGN_DAY_AUDIO_SCHEMA,
     }
@@ -7445,6 +7460,8 @@ def build_campaign_day_aggregate_cache(
     closure_path: Path,
     catalog_path: Path,
     output: Path,
+    *,
+    minimap_symbols: bool = False,
 ) -> dict[str, Any]:
     """Compose the sealed campaign-bound Day presentation cache."""
     output = validate_output_path(output)
@@ -7468,6 +7485,7 @@ def build_campaign_day_aggregate_cache(
                 closure_path,
                 catalog_path,
                 component_root / "material",
+                minimap_symbols=minimap_symbols,
             ),
             "gameplay": build_campaign_day_gameplay_cache(
                 owner_root,
@@ -7486,9 +7504,12 @@ def build_campaign_day_aggregate_cache(
                 component_root / "audio",
             ),
         }
-        outputs, components = _campaign_day_aggregate_output_rows(stage, children)
+        corrected_blocks = profile["selectors"]["block_bank"] == "BLOCK32"
+        outputs, components = _campaign_day_aggregate_output_rows(
+            stage, children, corrected_blocks=corrected_blocks, minimap_symbols=minimap_symbols
+        )
         manifest: dict[str, Any] = {
-            "schema": CAMPAIGN_DAY_AGGREGATE_SCHEMA,
+            "schema": CAMPAIGN_DAY_AGGREGATE_SCHEMA_V3 if minimap_symbols else CAMPAIGN_DAY_AGGREGATE_SCHEMA_V2 if corrected_blocks else CAMPAIGN_DAY_AGGREGATE_SCHEMA,
             "generator": {"name": "build_cache.py", "version": GENERATOR_VERSION},
             "profile": profile,
             "bindings": _campaign_day_bindings(profile),
@@ -7546,7 +7567,13 @@ def validate_campaign_day_aggregate_cache(
     claim = unsigned.pop("manifest_payload_sha256", None)
     if sha256_bytes(canonical_json(unsigned)) != claim:
         raise CacheError("campaign Day aggregate manifest metadata hash mismatch")
-    if manifest.get("schema") != CAMPAIGN_DAY_AGGREGATE_SCHEMA:
+    # GOLDEN-CHANGE: approved Day bank correction has its own aggregate version.
+    corrected_blocks = profile["selectors"]["block_bank"] == "BLOCK32"
+    minimap_symbols = manifest.get("schema") == CAMPAIGN_DAY_AGGREGATE_SCHEMA_V3
+    if minimap_symbols and not corrected_blocks:
+        raise CacheError("Day minimap symbols require the corrected Day bank")
+    expected_schema = CAMPAIGN_DAY_AGGREGATE_SCHEMA_V3 if minimap_symbols else CAMPAIGN_DAY_AGGREGATE_SCHEMA_V2 if corrected_blocks else CAMPAIGN_DAY_AGGREGATE_SCHEMA
+    if manifest.get("schema") != expected_schema:
         raise CacheError("unsupported campaign Day aggregate schema")
     if manifest.get("profile") != profile or manifest.get("bindings") != _campaign_day_bindings(profile):
         raise CacheError("campaign Day aggregate package binding mismatch")
@@ -7610,11 +7637,16 @@ def validate_campaign_day_aggregate_cache(
         f"owner_data:{relative}"
         for relative in (*LEVEL2_DAY_SOURCE_PATHS, *LEVEL2_GAMEPLAY_SOURCE_PATHS, *LEVEL2_AUDIO_SOURCE_PATHS)
     )
+    if corrected_blocks:
+        allowed_source_ids.discard("owner_data:DATA/BL32N0-0.DAT")
+        allowed_source_ids.add("owner_data:DATA/BLOCK32.DAT")
     expected_paths: set[str] = set()
     output_by_path = {row["path"]: row for row in outputs}
     for name in ("material", "gameplay", "audio"):
         root = cache_dir / "components" / name
         child = validators[name](root)
+        if name == "material" and (child.get("schema") == DAY_MATERIAL_SCHEMA_V3) != minimap_symbols:
+            raise CacheError("Day aggregate/minimap material version mismatch")
         metadata = components[name]
         expected_child_bindings = dict(manifest["bindings"])
         if name == "audio":
@@ -7623,6 +7655,7 @@ def validate_campaign_day_aggregate_cache(
         child_manifest_path = root / "manifest.json"
         if (
             metadata.get("manifest_path") != manifest_relative
+            or metadata.get("schema") != child.get("schema")
             or metadata.get("manifest_sha256") != sha256_file(child_manifest_path)
             or metadata.get("cache_content_sha256") != child.get("cache_content_sha256")
             or metadata.get("output_count") != len(child.get("outputs", []))
@@ -7811,7 +7844,9 @@ def validate_campaign_day_material_cache(
     unsigned.pop("manifest_payload_sha256", None)
     if sha256_bytes(canonical_json(unsigned)) != claim:
         raise CacheError("Day material manifest metadata hash mismatch")
-    if manifest.get("schema") != DAY_MATERIAL_SCHEMA:
+    minimap_symbols = manifest.get("schema") == DAY_MATERIAL_SCHEMA_V3
+    corrected_blocks = minimap_symbols or manifest.get("schema") == DAY_MATERIAL_SCHEMA_V2
+    if manifest.get("schema") not in (DAY_MATERIAL_SCHEMA, DAY_MATERIAL_SCHEMA_V2, DAY_MATERIAL_SCHEMA_V3):
         raise CacheError("unsupported Day material cache schema")
     profile = manifest.get("profile", {})
     external = profile.get("external_level")
@@ -7836,7 +7871,7 @@ def validate_campaign_day_material_cache(
         "terrain_bank": "TMAPS0-0",
         "sprite_bank": "MSPRD0-0",
         "web_bank": "MWEBD0-0",
-        "block_bank": "BL32N0-0",
+        "block_bank": "BLOCK32" if corrected_blocks else "BL32N0-0",
         "palette": "PALD-0",
         "sky_bank": "SKYD0-0",
     }:
@@ -7890,7 +7925,7 @@ def validate_campaign_day_material_cache(
 
     descriptor = load_json(cache_dir / "materials/descriptor.json")
     if (
-        descriptor.get("schema") != DAY_MATERIAL_DESCRIPTOR_SCHEMA
+        descriptor.get("schema") != (DAY_MATERIAL_DESCRIPTOR_SCHEMA_V3 if minimap_symbols else DAY_MATERIAL_DESCRIPTOR_SCHEMA_V2 if corrected_blocks else DAY_MATERIAL_DESCRIPTOR_SCHEMA)
         or descriptor.get("profile") != profile
     ):
         raise CacheError("Day material descriptor identity mismatch")
@@ -7898,12 +7933,50 @@ def validate_campaign_day_material_cache(
         "palette": ("entries", 256),
         "tablesd": ("bytes", 83456),
         "clrd": ("entries", 4096),
-        "bl32n": ("tile_count", 152),
+        ("blocks" if corrected_blocks else "bl32n"): ("tile_count", 152),
         "skyd": ("width", 256),
     }.items():
         value = descriptor.get(key)
         if not isinstance(value, dict) or value.get(expected[0]) != expected[1]:
             raise CacheError(f"Day material descriptor bounds changed: {key}")
+    if corrected_blocks:
+        blocks = descriptor["blocks"]
+        by_path = {row["path"]: row for row in outputs}
+        for field, path, kind in (
+            ("atlas_path", "terrain/block32.atlas.indices.u8", "indexed_atlas_u8"),
+            ("path", "terrain/block32.indices.u8", "indexed_tile_bank_u8"),
+        ):
+            row = by_path.get(path, {})
+            if (blocks.get(field) != path or row.get("kind") != kind
+                or row.get("bytes") != 152 * 32 * 32
+                or row.get("source_asset_ids") != ["owner_data:DATA/BLOCK32.DAT"]):
+                raise CacheError("Day v2 terrain bank must be source-bound BLOCK32")
+    if minimap_symbols:
+        symbols = descriptor.get("minimap_symbols", {})
+        rows = symbols.get("symbols", [])
+        if (symbols.get("schema") != "mc2-minimap-symbols/v1"
+            or symbols.get("bank") != "MSPRD0-0"
+            or symbols.get("palette_asset_id") != "owner_data:DATA/PALD-0.DAT"
+            or symbols.get("selectors") != list(DAY_MINIMAP_SYMBOL_SELECTORS)
+            or [row.get("selector") for row in rows] != list(DAY_MINIMAP_SYMBOL_SELECTORS)):
+            raise CacheError("Day minimap symbol census changed")
+        ledger = {row["path"]: row for row in outputs}
+        for symbol in rows:
+            selector = symbol["selector"]
+            if (not isinstance(symbol.get("width"), int) or not isinstance(symbol.get("height"), int)
+                or symbol["width"] <= 0 or symbol["height"] <= 0
+                or symbol.get("source_asset_id") != f"owner_data:DATA/MSPRD0-0.DAT#{selector}"):
+                raise CacheError("Day minimap symbol source or bounds changed")
+            for field in ("indices", "mask"):
+                path = f"minimap/msprd0-0/{selector:03d}.{field}.u8"
+                row = ledger.get(path, {})
+                if (symbol.get(f"{field}_path") != path
+                    or row.get("bytes") != symbol["width"] * symbol["height"]
+                    or row.get("sha256") != symbol.get(f"{field}_sha256")
+                    or row.get("source_asset_ids") != ["owner_data:DATA/MSPRD0-0.DAT", "owner_data:DATA/MSPRD0-0.TAB", "owner_data:DATA/PALD-0.DAT"]):
+                    raise CacheError("Day minimap symbol output binding changed")
+                if field == "mask" and any(value not in (0, 1) for value in (cache_dir / path).read_bytes()):
+                    raise CacheError("Day minimap symbol mask is not binary")
     tmap = descriptor.get("tmaps0")
     selectors = tmap.get("selectors") if isinstance(tmap, dict) else None
     textures = tmap.get("textures") if isinstance(tmap, dict) else None
@@ -7939,6 +8012,7 @@ def _build_profiled_day_material_cache(
     stage_prefix: str,
     manifest_bindings: dict[str, Any],
     validator: Any,
+    minimap_symbols: bool = False,
 ) -> dict[str, Any]:
     """Materialize one already-validated Day base-material profile.
 
@@ -7952,7 +8026,11 @@ def _build_profiled_day_material_cache(
     file_rows = {
         path: row for path, row in catalog_rows.items() if isinstance(row, dict) and "sha256" in row
     }
-    source_bytes = _level2_owner_sources(owner_root, file_rows)
+    block_bank = profile["selectors"]["block_bank"]
+    corrected_blocks = block_bank == "BLOCK32"
+    block_asset = f"owner_data:DATA/{block_bank}.DAT"
+    block_stem = "block32" if corrected_blocks else "bl32n"
+    source_bytes = _level2_owner_sources(owner_root, file_rows, block_bank=block_bank)
     selectors = _level2_tmap_selectors(closure)
     stage = Path(tempfile.mkdtemp(prefix=stage_prefix, dir=output.parent))
     try:
@@ -8002,7 +8080,7 @@ def _build_profiled_day_material_cache(
             kind="indexed_image_u8", source_asset_ids=["owner_data:DATA/SKYD0-0.DAT"],
             extra={"width": 256, "height": 256, "palette_asset_id": "owner_data:DATA/PALD-0.DAT"},
         )
-        bl32 = source_bytes["DATA/BL32N0-0.DAT"]
+        bl32 = source_bytes[f"DATA/{block_bank}.DAT"]
         if len(bl32) != 152 * BL32_TILE_BYTES:
             raise CacheError("Level 2 BL32N bank must contain exactly 152 32x32 tiles")
         tiles = bytearray()
@@ -8013,13 +8091,13 @@ def _build_profiled_day_material_cache(
                 start = (y + row) * BL32_ATLAS_WIDTH + x
                 tiles.extend(bl32[start:start + BL32_TILE_SIDE])
         atlas_output = write_output(
-            stage, outputs, "terrain/bl32n.atlas.indices.u8", bl32,
-            kind="indexed_atlas_u8", source_asset_ids=["owner_data:DATA/BL32N0-0.DAT"],
+            stage, outputs, f"terrain/{block_stem}.atlas.indices.u8", bl32,
+            kind="indexed_atlas_u8", source_asset_ids=[block_asset],
             extra={"width": 256, "height": 608, "tile_width": 32, "tile_height": 32, "tile_columns": 8, "tile_count": 152, "palette_asset_id": "owner_data:DATA/PALD-0.DAT"},
         )
         tiles_output = write_output(
-            stage, outputs, "terrain/bl32n.indices.u8", bytes(tiles),
-            kind="indexed_tile_bank_u8", source_asset_ids=["owner_data:DATA/BL32N0-0.DAT"],
+            stage, outputs, f"terrain/{block_stem}.indices.u8", bytes(tiles),
+            kind="indexed_tile_bank_u8", source_asset_ids=[block_asset],
             extra={"tile_width": 32, "tile_height": 32, "tile_count": 152, "palette_asset_id": "owner_data:DATA/PALD-0.DAT"},
         )
         tmap_dat = source_bytes["DATA/TMAPS0-0.DAT"]
@@ -8076,15 +8154,17 @@ def _build_profiled_day_material_cache(
             "palette": {"path": palette_output["path"], "rgb8_path": rgb8_output["path"], "entries": 256, "channel_bits": 6, "conversion": "channel_u8 = channel_rgb6 * 4"},
             "tablesd": {"path": tables_output["path"], "shade_lut_path": shade_output["path"], "bytes": len(tablesd), "entries": 65536, "shade_lut_entries": 65536},
             "clrd": {"path": clrd_output["path"], "entries": 4096},
-            "bl32n": {"path": tiles_output["path"], "atlas_path": atlas_output["path"], "tile_count": 152, "tile_width": 32, "tile_height": 32, "atlas_width": 256, "atlas_height": 608, "palette_asset_id": "owner_data:DATA/PALD-0.DAT"},
+            ("blocks" if corrected_blocks else "bl32n"): {"path": tiles_output["path"], "atlas_path": atlas_output["path"], "tile_count": 152, "tile_width": 32, "tile_height": 32, "atlas_width": 256, "atlas_height": 608, "palette_asset_id": "owner_data:DATA/PALD-0.DAT"},
             "skyd": {"path": sky_output["path"], "width": 256, "height": 256, "palette_asset_id": "owner_data:DATA/PALD-0.DAT"},
             "tmaps0": {"selectors": selectors, "textures": tmap_rows, "bank": "TMAPS0-0", "palette_asset_id": "owner_data:DATA/PALD-0.DAT", "decoder": decoder_identity},
             "world_sprite_root": {"asset_id": "owner_data:DATA/MSPRD0-0.DAT", "path": "DATA/MSPRD0-0.DAT", "status": "bound_root_not_materialized"},
             "world_web_root": {"asset_id": "owner_data:DATA/MWEBD0-0.DAT", "path": "DATA/MWEBD0-0.DAT", "status": "bound_root_not_materialized"},
             "gpu_ready": {"indexed_format": "R8_UNORM", "filter": "nearest", "row_order": "top_to_bottom", "origin": "top_left", "palette_lookup": "PALD"},
         }
+        if minimap_symbols:
+            descriptor["minimap_symbols"] = _build_day_minimap_symbols(stage, outputs, source_bytes, catalog_rows)
         descriptor_bytes = canonical_json(descriptor)
-        write_output(stage, outputs, "materials/descriptor.json", descriptor_bytes, kind="canonical_json_day_material_descriptor", source_asset_ids=["owner_data:DATA/PALD-0.DAT", "owner_data:DATA/TABLESD.DAT", "owner_data:DATA/CLRD-0.DAT", "owner_data:DATA/BL32N0-0.DAT", "owner_data:DATA/SKYD0-0.DAT"])
+        write_output(stage, outputs, "materials/descriptor.json", descriptor_bytes, kind="canonical_json_day_material_descriptor", source_asset_ids=["owner_data:DATA/PALD-0.DAT", "owner_data:DATA/TABLESD.DAT", "owner_data:DATA/CLRD-0.DAT", block_asset, "owner_data:DATA/SKYD0-0.DAT"])
         manifest = {"schema": manifest_schema, "generator": {"name": "build_cache.py", "version": GENERATOR_VERSION}, "profile": profile, "bindings": manifest_bindings, "outputs": outputs, "cache_content_sha256": _level2_cache_identity(outputs)}
         manifest["manifest_payload_sha256"] = sha256_bytes(canonical_json(manifest))
         (stage / "manifest.json").write_bytes(canonical_json(manifest))
@@ -8137,12 +8217,16 @@ def build_campaign_day_material_cache(
     closure_path: Path,
     catalog_path: Path,
     output: Path,
+    *,
+    minimap_symbols: bool = False,
 ) -> dict[str, Any]:
     """Build the additive neutral Day component for a campaign descriptor."""
     resolved = _campaign_day_material_profile(
         owner_export_dir, campaign_package_dir, closure_path, catalog_path
     )
     profile, campaign, closure, catalog_rows, _ = resolved
+    if minimap_symbols and profile["selectors"]["block_bank"] != "BLOCK32":
+        raise CacheError("Day minimap symbols require the corrected Day bank")
     bundle = (profile, campaign, closure, catalog_rows)
     bindings = {
         "level_export_package_sha256": profile["package_sha256"],
@@ -8157,8 +8241,9 @@ def build_campaign_day_material_cache(
         owner_root,
         output,
         profile_bundle=bundle,
-        manifest_schema=DAY_MATERIAL_SCHEMA,
-        descriptor_schema=DAY_MATERIAL_DESCRIPTOR_SCHEMA,
+        manifest_schema=(DAY_MATERIAL_SCHEMA_V3 if minimap_symbols else DAY_MATERIAL_SCHEMA_V2 if profile["selectors"]["block_bank"] == "BLOCK32" else DAY_MATERIAL_SCHEMA),
+        descriptor_schema=(DAY_MATERIAL_DESCRIPTOR_SCHEMA_V3 if minimap_symbols else DAY_MATERIAL_DESCRIPTOR_SCHEMA_V2 if profile["selectors"]["block_bank"] == "BLOCK32" else DAY_MATERIAL_DESCRIPTOR_SCHEMA),
+        minimap_symbols=minimap_symbols,
         stage_prefix=".campaign-day-material-",
         manifest_bindings=bindings,
         validator=lambda stage: validate_campaign_day_material_cache(
@@ -8168,6 +8253,38 @@ def build_campaign_day_material_cache(
             profile["closure_sha256"],
         ),
     )
+
+
+def _build_day_minimap_symbols(
+    stage: Path, outputs: list[dict[str, Any]], source_bytes: dict[str, bytes],
+    catalog_rows: dict[str, Any],
+) -> dict[str, Any]:
+    """Decode the original color-indexed castle/player map symbols, not world sprites."""
+    decoder = load_proven_decoder()
+    data = source_bytes["DATA/MSPRD0-0.DAT"]
+    records = bitmap_records(source_bytes["DATA/MSPRD0-0.TAB"])
+    rows = []
+    sources = ["owner_data:DATA/MSPRD0-0.DAT", "owner_data:DATA/MSPRD0-0.TAB", "owner_data:DATA/PALD-0.DAT"]
+    for selector in DAY_MINIMAP_SYMBOL_SELECTORS:
+        asset_id = f"owner_data:DATA/MSPRD0-0.DAT#{selector}"
+        entry = catalog_rows.get(asset_id)
+        if not isinstance(entry, dict):
+            raise CacheError(f"Day minimap symbol absent from owner catalog: {asset_id}")
+        pixels, mask, width, height, _ = _level2_decode_indexed_catalog_entry(
+            data, records, selector, entry, decoder, "Day minimap symbol")
+        row = {"selector": selector, "width": width, "height": height,
+               "source_asset_id": asset_id}
+        for field, payload, kind in (("indices", pixels, "indexed_minimap_symbol_u8"),
+                                     ("mask", mask, "minimap_symbol_mask_u8")):
+            relative = f"minimap/msprd0-0/{selector:03d}.{field}.u8"
+            output = write_output(stage, outputs, relative, payload, kind=kind,
+                source_asset_ids=sources, extra={"selector": selector, "width": width, "height": height})
+            row[f"{field}_path"] = relative
+            row[f"{field}_sha256"] = output["sha256"]
+        rows.append(row)
+    return {"schema": "mc2-minimap-symbols/v1", "bank": "MSPRD0-0",
+            "palette_asset_id": sources[2], "selectors": list(DAY_MINIMAP_SYMBOL_SELECTORS),
+            "symbols": rows}
 
 
 def build_cache(
@@ -10980,6 +11097,7 @@ def parse_args() -> argparse.Namespace:
     build_campaign_aggregate.add_argument("--closure", type=Path, default=DEFAULT_CAMPAIGN_DAY_CLOSURE)
     build_campaign_aggregate.add_argument("--catalog", type=Path, default=DEFAULT_CATALOG)
     build_campaign_aggregate.add_argument("--output", type=Path, default=DEFAULT_CAMPAIGN_DAY_AGGREGATE_OUTPUT)
+    build_campaign_aggregate.add_argument("--minimap-symbols", action="store_true")
     build_gameplay = subparsers.add_parser("build-day-gameplay")
     build_gameplay.add_argument("--owner-root", type=Path, default=DEFAULT_OWNER)
     build_gameplay.add_argument("--package", type=Path, default=DEFAULT_LEVEL2_PACKAGE)
@@ -11119,6 +11237,7 @@ def main() -> int:
                 args.closure,
                 args.catalog,
                 args.output,
+                minimap_symbols=args.minimap_symbols,
             )
             print(
                 f"cache={args.output} outputs={len(manifest['outputs'])} "

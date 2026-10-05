@@ -35,6 +35,17 @@ LEVEL3_EXPORT = (
 
 
 class RealmMatrixTests(unittest.TestCase):
+    def test_corrected_day_selector_requires_matching_source_file(self) -> None:
+        manifest = json.loads((LEVEL2_EXPORT / "manifest.json").read_text())
+        selectors = manifest["presentation_dependencies"]
+        selectors["block_bank"] = "BLOCK32"
+        selectors["resolved_files"]["block_bank"] = "owner:CD_Files/DATA/BLOCK32.DAT"
+        args = dict(external_level=2, internal_level=1, profile_label="Day bank regression")
+        self.assertEqual(closure._expected_day_selectors(manifest, **args)["block_bank"], "BLOCK32")
+        selectors["resolved_files"]["block_bank"] = "owner:CD_Files/DATA/BL32N0-0.DAT"
+        with self.assertRaises(closure.ClosureError):
+            closure._expected_day_selectors(manifest, **args)
+
     def test_all_owner_resolution_realm_and_fog_variants(self) -> None:
         for map_type in range(3):
             for resolution in (1, 8):
@@ -654,6 +665,15 @@ class Level2ClosureContractTests(unittest.TestCase):
 
 
 class CampaignDayMaterialClosureTests(unittest.TestCase):
+    def test_spell_constructor_assets_follow_package_present_holders(self) -> None:
+        self.assertEqual(closure.spell_constructor_particles([]), {})
+        self.assertEqual(closure.spell_constructor_particles([1]), {1: (209, 41)})
+        document = closure.build_campaign_day_material_closure(LEVEL2_EXPORT, CATALOG, OWNER)
+        edges = [row for row in document["edges"]
+                 if row["from"].startswith("spell_constructor[0].particle[340]")]
+        self.assertTrue(edges, "the real package's Fireball holder roots its flyer texture")
+        self.assertTrue(any(row["to"] == "owner_data:DATA/TMAPS0-0.DAT#463" for row in edges))
+
     def test_level3_day_material_closure_is_package_bound_and_repeatable(self) -> None:
         first = closure.build_campaign_day_material_closure(
             LEVEL3_EXPORT, CATALOG, OWNER
@@ -664,9 +684,10 @@ class CampaignDayMaterialClosureTests(unittest.TestCase):
         self.assertEqual(closure.canonical_json(first), closure.canonical_json(second))
         self.assertEqual(
             first["closure_sha256"],
-            # GOLDEN-CHANGE: subtype-9's source-owned particles 201/202 add
-            # exact TMAP allocation groups 110..115 to the dynamic closure.
-            "d6e909d65437a37fed699429efa968175f39d6253c350537a1c82ce9729d5871",
+            # GOLDEN-CHANGE (owner approved): package-present spell and
+            # Dragon/Worm/Firefly constructors root their flyer/impact assets.
+            # This asset dependency receipt does not change replay goldens.
+            "4e163da84756d9c22cd255f5af08df4672498f65753ba5ada773b904880dd918",
         )
         self.assertEqual(
             first["profile"],
@@ -713,7 +734,8 @@ class CampaignDayMaterialClosureTests(unittest.TestCase):
             for row in partition["assets"]
             if row["asset_id"].startswith("owner_data:DATA/TMAPS0-0.DAT#")
         }
-        self.assertEqual(len(tmap_selectors), 162)
+        self.assertEqual(len(tmap_selectors), 163)
+        self.assertIn(463, tmap_selectors)  # Source Fireball constructor texture.
         self.assertTrue(set(range(14, 30)).issubset(tmap_selectors))
         self.assertTrue(set(range(110, 116)).issubset(tmap_selectors))
         self.assertTrue({152, 153, 154}.issubset(tmap_selectors))

@@ -18,6 +18,7 @@ from verify_package import (
     _campaign_decode_behavior_rows,
     _campaign_decode_collision,
     _campaign_required_behaviors,
+    _campaign_validate_presentation,
     verify,
 )
 
@@ -156,6 +157,23 @@ def test_campaign_package_twins_are_byte_identical(campaign_twins: tuple[Path, P
     assert (first / "campaign-definition.json").read_bytes() == (
         second / "campaign-definition.json"
     ).read_bytes()
+
+
+@pytest.mark.parametrize("fixture_name", ["campaign_twins", "level3_campaign_twins"])
+def test_day_campaign_exports_source_selected_block_bank(request, fixture_name: str) -> None:
+    package = request.getfixturevalue(fixture_name)[0]
+    definition = json.loads((package / "campaign-definition.json").read_text(encoding="utf-8"))
+    recipe = definition["campaign_spec"]["presentation_recipe"]
+    assert recipe["schema"] == "mc2-presentation-recipe/v2"
+    assert recipe["block_bank"] == "BLOCK32"
+    assert recipe["resolved_files"]["block_bank"] == "owner:CD_Files/DATA/BLOCK32.DAT"
+    assert recipe["block_bank"] != "BL32N0-0", "Night indices cannot use the Day palette"
+    verify(package)
+    manifest = json.loads((package / "manifest.json").read_text(encoding="utf-8"))
+    recipe["block_bank"] = "BL32N0-0"
+    recipe["resolved_files"]["block_bank"] = "owner:CD_Files/DATA/BL32N0-0.DAT"
+    with pytest.raises(AssertionError, match="block_bank"):
+        _campaign_validate_presentation(recipe, manifest["files"])
 
 
 def test_level_two_v2_binds_the_standing_objective_to_owner_building_parameters(
@@ -474,7 +492,7 @@ def level1_campaign_exports() -> tuple[Path, Path, Path]:
         shutil.rmtree(scratch)
 
 
-def test_cf15_level1_campaign_wraps_exact_owner_export(
+def test_cf15_level1_campaign_preserves_owner_export_except_versioned_runtime_counters(
     level1_campaign_exports: tuple[Path, Path, Path],
 ) -> None:
     ordinary, first, second = level1_campaign_exports
@@ -487,7 +505,25 @@ def test_cf15_level1_campaign_wraps_exact_owner_export(
     owner = json.loads(owner_manifest_bytes)
     definition = json.loads((first / "campaign-definition.json").read_text(encoding="utf-8"))
 
-    assert owner_manifest_bytes == (ordinary / "manifest.json").read_bytes()
+    # GOLDEN-CHANGE: only runtime v2 and its bound layout/hash metadata differ.
+    # All other captured bytes and manifest fields remain exactly identical.
+    ordinary_manifest = json.loads((ordinary / "manifest.json").read_bytes())
+    expected_owner = json.loads(json.dumps(ordinary_manifest))
+    runtime = (first / "runtime.bin").read_bytes()
+    ordinary_runtime = (ordinary / "runtime.bin").read_bytes()
+    assert len(runtime) == 2783 and len(ordinary_runtime) == 2754
+    assert runtime[:4] == ordinary_runtime[:4] == b"MCR1"
+    assert runtime[4:6] == b"\x02\x00" and ordinary_runtime[4:6] == b"\x01\x00"
+    assert runtime[6:2754] == ordinary_runtime[6:]
+    expected_owner["files"]["runtime.bin"] = {
+        "bytes": 2783, "sha256": hashlib.sha256(runtime).hexdigest(),
+    }
+    expected_owner["record_layouts"]["runtime"]["bytes"] = 2783
+    expected_owner["record_layouts"]["runtime"]["constructor_counters"] = {
+        "offset": 2754, "count": 29, "record_bytes": 1,
+    }
+    expected_owner["package_sha256"] = package_identity(expected_owner["files"])
+    assert owner == expected_owner
     assert owner["schema"] == "mc2-owner-level-export/v3"
     assert owner["level"] == {
         "external": 1,
@@ -501,7 +537,8 @@ def test_cf15_level1_campaign_wraps_exact_owner_export(
     assert "collision_masks" not in owner
 
     for name in owner["files"]:
-        assert (first / name).read_bytes() == (ordinary / name).read_bytes()
+        if name != "runtime.bin":
+            assert (first / name).read_bytes() == (ordinary / name).read_bytes()
     assert owner["package_sha256"] == package_identity(owner["files"])
 
     assert set(outer) == {
@@ -618,6 +655,29 @@ def level3_campaign_twins() -> tuple[Path, Path]:
         shutil.rmtree(scratch)
 
 
+@pytest.mark.parametrize("mutation", ["truncated", "extra", "old_version", "unknown_version", "wrong_schema"])
+def test_runtime_constructor_counter_contract_rejects_malformed_records(
+    level3_campaign_twins: tuple[Path, Path], tmp_path: Path, mutation: str,
+) -> None:
+    package = tmp_path / "package"
+    shutil.copytree(level3_campaign_twins[0], package)
+    runtime = bytearray((package / "runtime.bin").read_bytes())
+    assert len(runtime) == 2783 and runtime[4] == 2
+    if mutation == "truncated":
+        runtime.pop()
+    elif mutation == "extra":
+        runtime.append(0)
+    elif mutation == "old_version":
+        runtime[4] = 1
+    elif mutation == "unknown_version":
+        runtime[4] = 3
+    rewrite_member(package, "runtime.bin", bytes(runtime))
+    if mutation == "wrong_schema":
+        rewrite_definition(package, lambda definition: definition["campaign_spec"]["reset_sources"]["runtime"].update(schema="mc2-runtime-state/v1"))
+    with pytest.raises(AssertionError):
+        verify(package)
+
+
 def test_cf14_level3_campaign_package_uses_shared_schema(level3_campaign_twins: tuple[Path, Path]) -> None:
     first, second = level3_campaign_twins
     verify(first)
@@ -633,6 +693,10 @@ def test_cf14_level3_campaign_package_uses_shared_schema(level3_campaign_twins: 
     definition = json.loads((first / "campaign-definition.json").read_text(encoding="utf-8"))
     assert definition["schema"] == "mc2-campaign-definition/v1"
     assert definition["identity"] == {"external_level": 3, "internal_level": 2, "map_type_id": 0}
+    runtime = (first / "runtime.bin").read_bytes()
+    assert (struct.unpack_from("<H", runtime, 4)[0], len(runtime)) == (2, 2783)
+    assert definition["campaign_spec"]["reset_sources"]["runtime"]["schema"] == "mc2-runtime-state/v2"
+    assert runtime[2754 + 9] != 0, "source reset constructed Skeletons before capture"
     assert len(definition["campaign_spec"]["objectives"]) == 5
     live_pairs = sorted(
         (row["selector"]["class"], row["selector"]["action"])

@@ -349,6 +349,25 @@ involution, and reset/replay stability.
 
 ## Run the viewer
 
+Campaign menu / loading-screen UI:
+
+```bash
+sh ./run-campaign.sh
+```
+
+This uses the original validated indexed loading artwork with functional Unity
+buttons. Escape/P opens the paused menu; Resume, Save, Restart Level, Main Menu
+and Quit dispatch to the existing Rust runtime. New Game visibly passes through
+Loading; Continue remains subject to Rust's real exit-completion check, not just
+the objective counter. Button artwork/layout is not yet an original-menu port.
+`MC_CAMPAIGN_SAVE` selects a save file (default: ignored `generated/campaign-save.json`).
+Each run prints its separate log directory. `MC_CAMPAIGN_REPLAY` optionally starts
+a saved game directly rather than the main menu.
+
+Important: the campaign runtime's Level 1 world/HUD presentation is still
+incomplete. This UI addition does **not** connect the legacy playable Level 1
+viewer below to Level 2 or establish a complete Level 1→2 playthrough.
+
 The owner-local launcher supplies the qualified package, closure, and external
 asset-cache paths:
 
@@ -358,6 +377,33 @@ asset-cache paths:
 
 Set `MC_FULLSCREEN=1` for fullscreen, or override `MC_WIDTH` and `MC_HEIGHT`.
 Additional Unity/player arguments are passed through.
+
+The shared `run-player.sh` launcher selects Unity's native Wayland backend when
+`WAYLAND_DISPLAY` is set, avoiding the observed X11 window-event startup stall
+under KWin Wayland. It leaves X11 sessions unchanged. Set
+`MC_WINDOW_BACKEND=default` to retain Unity's own selection, or `wayland` to
+request Wayland explicitly. Other campaign invocations can use
+`sh ./run-player.sh <player arguments>` without changing their package inputs.
+
+The corrected Day campaign uses the spell-complete v3 caches below. Run from
+this Unity project directory. This replay enters Level 2 directly for play/debug;
+it is not evidence of completing the preceding campaign objectives.
+
+```bash
+sh ./run-player.sh -mc-game-runtime \
+  -mc-runtime-package ../generated/mc-cf15-level1-package-v3-current \
+  -mc-runtime-package ../generated/level2-day-block32-campaign-v2 \
+  -mc-runtime-owner-cache ../generated/level2-day-spell-owner-cache-v3/components/material \
+  -mc-runtime-presentation-cache ../generated/level2-day-spell-owner-cache-v3 \
+  -mc-runtime-package ../generated/level3-day-block32-campaign-recipe-v2 \
+  -mc-runtime-owner-cache ../generated/level3-day-spell-owner-cache-v3/components/material \
+  -mc-runtime-presentation-cache ../generated/level3-day-spell-owner-cache-v3 \
+  -mc-runtime-replay-load ../generated/opened-l2-block32-replay-v5.json \
+  -screen-fullscreen 0 -screen-width 1600 -screen-height 900
+```
+
+Historical minimap-only caches remain readable, but lack Fireball texture 463;
+use the spell-complete caches with the current projectile presentation code.
 
 The equivalent explicit invocation is:
 

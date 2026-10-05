@@ -220,7 +220,7 @@ namespace MagicCarpet.Native
             internal int Status { get; }
 
             internal TransitionException(string operation, int status)
-                : base($"{operation} failed with native status {status}")
+                : base($"{operation} failed with native status {status}: {NativeSession.ReadLastError()}")
             {
                 Status = status;
             }
@@ -399,6 +399,17 @@ namespace MagicCarpet.Native
 
         internal Identity RestartNewGame()
         {
+            var loading = BeginRestartNewGame();
+            var playing = OpenLevel();
+            if (ParseCounter(playing.generation, "generation") !=
+                    checked(ParseCounter(loading.generation, "generation") + 1) ||
+                !SameRuntimeFlow(loading.pending_definition.runtime_flow, playing.active_runtime_flow))
+                throw new InvalidOperationException("restart did not open the resolver-owned entry session");
+            return playing;
+        }
+
+        internal Identity BeginRestartNewGame()
+        {
             if (Current?.mode != TitleMode ||
                 HasDefinitionIdentityData(Current.pending_definition) ||
                 HasSessionIdentityData(Current.session) ||
@@ -425,17 +436,7 @@ namespace MagicCarpet.Native
                 throw new InvalidOperationException(
                     "restart did not enter the resolver-owned entry Loading state");
             }
-            var playing = OpenLevel();
-            if (ParseCounter(playing.generation, "generation") !=
-                    checked(beforeRuntimeGeneration + 2) ||
-                !SameRuntimeFlow(
-                    loading.pending_definition.runtime_flow,
-                    playing.active_runtime_flow))
-            {
-                throw new InvalidOperationException(
-                    "restart did not open the resolver-owned entry session");
-            }
-            return playing;
+            return loading;
         }
 
         internal Identity Pause()

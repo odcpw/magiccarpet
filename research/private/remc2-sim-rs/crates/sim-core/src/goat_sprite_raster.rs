@@ -437,6 +437,42 @@ fn project_source_sprite(
     )
 }
 
+/// Shared source near-plane/range admission, before selector rasterization.
+/// Returns lateral distance, forward depth and squared planar distance.
+pub fn source_sprite_view(
+    render_x: u16,
+    render_y: u16,
+    camera_yaw: i16,
+    entity_x: u16,
+    entity_y: u16,
+    render_cutoff_squared: u32,
+) -> Result<(i32, i32, u32), Mode20SpriteReject> {
+    let yaw = usize::try_from(i32::from(camera_yaw) & 0x07ff).unwrap();
+    let sin_yaw = SIN_16_16[yaw];
+    let cos_yaw = SIN_16_16[512 + yaw];
+    let dx = i32::from(entity_x.wrapping_sub(render_x).cast_signed());
+    let dy = i32::from(render_y.wrapping_sub(entity_y).cast_signed());
+    let forward_depth = sin_yaw
+        .wrapping_mul(dx)
+        .wrapping_add(cos_yaw.wrapping_mul(dy))
+        >> 16;
+    if forward_depth <= 64 {
+        return Err(Mode20SpriteReject::BehindObjectNearPlane);
+    }
+    let lateral = cos_yaw
+        .wrapping_mul(dx)
+        .wrapping_sub(sin_yaw.wrapping_mul(dy))
+        >> 16;
+    let distance_squared = lateral
+        .wrapping_mul(lateral)
+        .wrapping_add(forward_depth.wrapping_mul(forward_depth))
+        .cast_unsigned();
+    if distance_squared >= render_cutoff_squared {
+        return Err(Mode20SpriteReject::BeyondRenderCutoff);
+    }
+    Ok((lateral, forward_depth, distance_squared))
+}
+
 fn project_source_sprite_with_limits(
     selector_mode: SourceSpriteSelectorMode,
     definition: Mode20SpriteDefinition,
@@ -455,30 +491,14 @@ fn project_source_sprite_with_limits(
         return Err(Mode20SpriteReject::NonPositiveProjection);
     }
 
-    let yaw =
-        usize::try_from(i32::from(camera.yaw) & 0x07ff).expect("masked source yaw fits usize");
-    let sin_yaw = SIN_16_16[yaw];
-    let cos_yaw = SIN_16_16[512 + yaw];
-    let dx = i32::from(entity.x.wrapping_sub(camera.render_x).cast_signed());
-    let dy = i32::from(camera.render_y.wrapping_sub(entity.y).cast_signed());
-    let forward_depth = sin_yaw
-        .wrapping_mul(dx)
-        .wrapping_add(cos_yaw.wrapping_mul(dy))
-        >> 16;
-    if forward_depth <= 64 {
-        return Err(Mode20SpriteReject::BehindObjectNearPlane);
-    }
-    let lateral = cos_yaw
-        .wrapping_mul(dx)
-        .wrapping_sub(sin_yaw.wrapping_mul(dy))
-        >> 16;
-    let distance_squared = lateral
-        .wrapping_mul(lateral)
-        .wrapping_add(forward_depth.wrapping_mul(forward_depth))
-        .cast_unsigned();
-    if distance_squared >= limits.render_cutoff_squared {
-        return Err(Mode20SpriteReject::BeyondRenderCutoff);
-    }
+    let (lateral, forward_depth, distance_squared) = source_sprite_view(
+        camera.render_x,
+        camera.render_y,
+        camera.yaw,
+        entity.x,
+        entity.y,
+        limits.render_cutoff_squared,
+    )?;
 
     let brightness = if distance_squared <= limits.fog_start_squared {
         0x2000

@@ -8,6 +8,131 @@ namespace MagicCarpet.Native.Tests
 {
     public sealed class GameRuntimeEditModeTests
     {
+        [Test]
+        public void CampaignMenuUsesRustPauseSaveTitleAndVisibleNewGameLoading()
+        {
+            var before = NativeSession.ActiveSessionCount;
+            var root = new GameObject("Campaign menu production actions");
+            root.SetActive(false);
+            var runtime = root.AddComponent<MagicCarpetRuntime>();
+            var save = Path.Combine(Path.GetTempPath(), $"mc-menu-{Guid.NewGuid():N}.json");
+            try
+            {
+                var args = RuntimeArguments(LevelThreePackage, LevelOnePackage, LevelTwoPackage);
+                Array.Resize(ref args, args.Length + 4);
+                args[args.Length - 4] = "-mc-runtime-loading-cache";
+                args[args.Length - 3] = LevelOneOwnerCache;
+                args[args.Length - 2] = "-mc-runtime-replay-save";
+                args[args.Length - 1] = save;
+                runtime.QualificationInitializeGameRuntimeProductionFromArguments(args);
+                var runtimeId = runtime.GameRuntimeProductionIdentity.runtime_id;
+                Assert.That(runtime.ExecuteGameRuntimeMenuAction(CampaignMenuPresenter.Action.NewGame), Is.False);
+                runtime.QualificationApplyGameRuntimeProductionInput(true, false);
+                runtime.QualificationDriveGameRuntimeFrames(1);
+                var pausedFrame = runtime.GameRuntimeProductionCampaignSnapshot;
+                runtime.QualificationDriveGameRuntimeFrames(2);
+                // remc2 paused outer frames service bookkeeping (and change
+                // the full hash), but must not advance gameplay tick or pose.
+                Assert.That(runtime.GameRuntimeProductionCampaignSnapshot.identity.tick, Is.EqualTo(pausedFrame.identity.tick));
+                Assert.That(JsonUtility.ToJson(runtime.GameRuntimeProductionCampaignSnapshot.value.player_pose),
+                    Is.EqualTo(JsonUtility.ToJson(pausedFrame.value.player_pose)));
+                var paused = runtime.GameRuntimeProductionCampaignSnapshot.value.state_hash;
+                Assert.That(runtime.ExecuteGameRuntimeMenuAction(CampaignMenuPresenter.Action.Continue), Is.False,
+                    "UI cannot advance an unfinished level");
+                Assert.That(runtime.ExecuteGameRuntimeMenuAction(CampaignMenuPresenter.Action.Save), Is.True);
+                Assert.That(new FileInfo(save).Length, Is.GreaterThan(0));
+                Assert.That(runtime.GameRuntimeProductionIdentity.mode, Is.EqualTo(GameRuntimeTransport.PausedMode));
+                Assert.That(runtime.ExecuteGameRuntimeMenuAction(CampaignMenuPresenter.Action.Title), Is.True);
+                Assert.That(runtime.GameRuntimeProductionIdentity.mode, Is.EqualTo(GameRuntimeTransport.TitleMode));
+                Assert.That(runtime.ExecuteGameRuntimeMenuAction(CampaignMenuPresenter.Action.NewGame), Is.True);
+                Assert.That(runtime.GameRuntimeLoadingPresentationVisible, Is.True);
+                Assert.That(runtime.GameRuntimeProductionIdentity.mode, Is.EqualTo(GameRuntimeTransport.LoadingMode));
+                Assert.That(runtime.ExecuteGameRuntimeMenuAction(CampaignMenuPresenter.Action.NewGame), Is.False,
+                    "double clicks cannot issue another New Game while loading");
+                runtime.QualificationDriveGameRuntimeFrames(1);
+                Assert.That(runtime.GameRuntimeProductionIdentity.mode, Is.EqualTo(GameRuntimeTransport.LoadingMode));
+                runtime.QualificationObserveGameRuntimeLoadingPresentationFrame();
+                runtime.QualificationDriveGameRuntimeFrames(1);
+                Assert.That(runtime.GameRuntimeProductionIdentity.mode, Is.EqualTo(GameRuntimeTransport.PlayingMode));
+                Assert.That(runtime.GameRuntimeProductionIdentity.runtime_id, Is.EqualTo(runtimeId));
+                Assert.That(runtime.GameRuntimeLoadingPresentationVisible, Is.False);
+                runtime.QualificationApplyGameRuntimeProductionInput(true, false);
+                Assert.That(runtime.ExecuteGameRuntimeMenuAction(CampaignMenuPresenter.Action.Title), Is.True);
+                Assert.That(runtime.ExecuteGameRuntimeMenuAction(CampaignMenuPresenter.Action.Load), Is.True);
+                Assert.That(runtime.GameRuntimeProductionIdentity.mode, Is.EqualTo(GameRuntimeTransport.PausedMode));
+                Assert.That(runtime.GameRuntimeProductionCampaignSnapshot.value.state_hash, Is.EqualTo(paused));
+                Assert.That(runtime.ExecuteGameRuntimeMenuAction(CampaignMenuPresenter.Action.Resume), Is.True);
+                Assert.That(runtime.GameRuntimeProductionIdentity.mode, Is.EqualTo(GameRuntimeTransport.PlayingMode));
+            }
+            finally
+            {
+                runtime.QualificationDisposeGameRuntimeProduction();
+                UnityEngine.Object.DestroyImmediate(root);
+                if (File.Exists(save)) File.Delete(save);
+            }
+            Assert.That(NativeSession.ActiveSessionCount, Is.EqualTo(before));
+        }
+
+        [Serializable]
+        private sealed class RecordedCastInput
+        {
+            public bool cast_left;
+            public bool cast_right;
+        }
+
+        [Serializable]
+        private sealed class RecordedInputOperation
+        {
+            public string operation;
+            public RecordedCastInput command;
+        }
+
+        [Serializable]
+        private sealed class RecordedInputReplay
+        {
+            public RecordedInputOperation[] operations;
+        }
+
+        [Test]
+        public void ProductionCampaignForwardsBothSpellHandsOnceAndClearsPausedInput()
+        {
+            var root = new GameObject("campaign two-hand input");
+            root.SetActive(false);
+            var runtime = root.AddComponent<MagicCarpetRuntime>();
+            try
+            {
+                runtime.QualificationInitializeGameRuntimeProductionFromArguments(
+                    RuntimeArguments(LevelThreePackage, LevelOnePackage, LevelTwoPackage));
+                runtime.QualificationApplyGameRuntimeProductionInput(false, false, true);
+                runtime.QualificationDriveGameRuntimeFrames(1);
+                runtime.QualificationDriveGameRuntimeFrames(1);
+                runtime.QualificationApplyGameRuntimeProductionInput(false, true, false);
+                runtime.QualificationDriveGameRuntimeFrames(1);
+                runtime.QualificationApplyGameRuntimeProductionInput(true, true, true);
+                runtime.QualificationApplyGameRuntimeProductionInput(false, true, true);
+                runtime.QualificationApplyGameRuntimeProductionInput(true, true, true);
+                runtime.QualificationDriveGameRuntimeFrames(1);
+                var replay = JsonUtility.FromJson<RecordedInputReplay>(Encoding.UTF8.GetString(
+                    runtime.QualificationSaveGameRuntimeProductionReplay()));
+                Assert.That(replay.operations, Has.Length.EqualTo(4));
+                foreach (var operation in replay.operations)
+                    Assert.That(operation.operation, Is.EqualTo("step"));
+                Assert.That(replay.operations[0].command.cast_right, Is.True);
+                Assert.That(replay.operations[0].command.cast_left, Is.False);
+                Assert.That(replay.operations[1].command.cast_right, Is.False, "one-shot latch");
+                Assert.That(replay.operations[1].command.cast_left, Is.False);
+                Assert.That(replay.operations[2].command.cast_left, Is.True);
+                Assert.That(replay.operations[2].command.cast_right, Is.False);
+                Assert.That(replay.operations[3].command.cast_left, Is.False, "pause clears input");
+                Assert.That(replay.operations[3].command.cast_right, Is.False);
+            }
+            finally
+            {
+                runtime.QualificationDisposeNativeOwners();
+                UnityEngine.Object.DestroyImmediate(root);
+            }
+        }
+
         private static string PrivateRoot =>
             Path.GetFullPath(Path.Combine(Application.dataPath, "../.."));
 
@@ -170,6 +295,9 @@ namespace MagicCarpet.Native.Tests
             else
             {
                 Assert.That(runtime.GameRuntimeLevel3PresentationReady, Is.True);
+                Assert.That(runtime.Level2ProductionDayHudPresenterReady, Is.True,
+                    "Level 3 consumes the shared drawable Day HUD, not just cached textures");
+                Assert.That(runtime.QualificationHasMaterializedLevel2DayHudSprite(1), Is.True);
             }
         }
 
@@ -593,6 +721,7 @@ namespace MagicCarpet.Native.Tests
                 Assert.That(stepped.session.generation, Is.EqualTo(opened.session.generation));
                 Assert.That(ulong.Parse(stepped.session.tick), Is.EqualTo(tick + 1));
                 Assert.That(runtime.GameRuntimeLevel3PresentationTick, Is.EqualTo(tick + 1));
+                Assert.That(runtime.Level2ProductionDayHudPresenterReady, Is.True);
 
                 var paused = runtime.QualificationPauseGameRuntimeProduction();
                 runtime.QualificationDriveGameRuntimeFrames(1);
@@ -984,6 +1113,36 @@ namespace MagicCarpet.Native.Tests
                 Assert.That(runtime.GameRuntimeProductionIdentity.session.tick,
                     Is.EqualTo("1"));
 
+                runtime.QualificationApplyGameRuntimeProductionInput(true, false);
+                var beforePausedReset = runtime.GameRuntimeProductionIdentity;
+                Assert.That(beforePausedReset.mode,
+                    Is.EqualTo(GameRuntimeTransport.PausedMode));
+                Assert.That(
+                    runtime.QualificationDispatchGameRuntimePublicControlInput(
+                        resetPressed: true,
+                        quitPressed: false),
+                    Is.False);
+                var afterPausedReset = runtime.GameRuntimeProductionIdentity;
+                Assert.That(afterPausedReset.runtime_id,
+                    Is.EqualTo(beforePausedReset.runtime_id));
+                Assert.That(afterPausedReset.mode,
+                    Is.EqualTo(GameRuntimeTransport.PausedMode),
+                    "R resets through Rust while preserving the paused user mode");
+                Assert.That(afterPausedReset.session.tick, Is.EqualTo("0"));
+                Assert.That(ulong.Parse(afterPausedReset.session.generation),
+                    Is.GreaterThan(ulong.Parse(beforePausedReset.session.generation)));
+                Assert.That(
+                    runtime.GameRuntimeProductionCampaignSnapshot.identity.generation,
+                    Is.EqualTo(afterPausedReset.session.generation));
+                AssertPlayableLevelPresentation(runtime, externalLevel);
+                runtime.QualificationDriveGameRuntimeFrames(1);
+                Assert.That(runtime.GameRuntimeProductionIdentity.session.tick,
+                    Is.EqualTo("0"), "reset does not accidentally resume gameplay");
+                runtime.QualificationApplyGameRuntimeProductionInput(true, false);
+                runtime.QualificationDriveGameRuntimeFrames(1);
+                Assert.That(runtime.GameRuntimeProductionIdentity.session.tick,
+                    Is.EqualTo("1"), "P resumes the freshly reset Rust session");
+
                 var beforeQuit = runtime.GameRuntimeProductionIdentity;
                 Assert.That(
                     runtime.QualificationDispatchGameRuntimePublicControlInput(
@@ -1202,10 +1361,24 @@ namespace MagicCarpet.Native.Tests
                     Is.Not.EqualTo(preServicePausedSnapshot.value.state_hash),
                     "the save boundary includes one serviced Rust Paused frame");
                 source.QualificationRequestGameRuntimeProductionReplaySave();
+                source.QualificationRequestGameRuntimeProductionReplaySave(false);
+                source.QualificationRequestGameRuntimeProductionReplaySave(false);
+                Assert.That(File.Exists(replayPath), Is.False,
+                    "render-frame input only queues the save until a fixed step");
                 source.QualificationDriveGameRuntimeFrames(1);
                 Assert.That(File.Exists(replayPath), Is.True);
                 Assert.That(new FileInfo(replayPath).Length, Is.GreaterThan(0));
                 Assert.That(source.GameRuntimeProductionIdentity.session.tick, Is.EqualTo("3"));
+                var savedBytes = File.ReadAllBytes(replayPath);
+                source.QualificationDriveGameRuntimeFrames(2);
+                Assert.That(File.ReadAllBytes(replayPath), Is.EqualTo(savedBytes),
+                    "later fixed steps must not repeat the consumed save edge");
+                source.QualificationResumeGameRuntimeProduction();
+                source.QualificationRequestGameRuntimeProductionReplaySave();
+                source.QualificationResetGameRuntimeProduction();
+                source.QualificationDriveGameRuntimeFrames(1);
+                Assert.That(File.ReadAllBytes(replayPath), Is.EqualTo(savedBytes),
+                    "reset discards a pending save from the previous generation");
             }
             finally
             {

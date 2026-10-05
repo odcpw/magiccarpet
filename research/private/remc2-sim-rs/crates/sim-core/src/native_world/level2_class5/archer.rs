@@ -34,10 +34,8 @@ pub(crate) const ARCHER_DESCRIPTOR_HALF_ANGLE: i16 = 0x0200;
 pub(crate) const ARCHER_PARTICLE_INDEX: u16 = 0;
 pub(crate) const ARCHER_SHIFT_ROT_X: i16 = 128;
 pub(crate) const ARCHER_SHIFT_ROT_Y: i16 = 256;
-pub(crate) const ARCHER_POSE_YAW: i16 = 125;
-pub(crate) const ARCHER_POSE_PITCH: i16 = 66;
-pub(crate) const ARCHER_POSE_ROLL: i16 = 66;
-pub(crate) const ARCHER_POSE_FOV: i16 = 125;
+// Particle-0 collision extent, not the Archer's body orientation.
+pub(crate) const ARCHER_COLLISION_VERTICAL_OFFSET: i16 = 125;
 
 pub(crate) const ARCHER_CHILD_SOURCE_CLASS: u8 = 9;
 pub(crate) const ARCHER_CHILD_MODEL: u8 = 13;
@@ -95,8 +93,8 @@ pub(crate) struct ArcherConstructorPayload {
 
 /// Reproduce the ordered writes in `AddArchers_4BA10` after `NewEvent_4A050`.
 /// `initial_rng` is the value installed by `NewEvent`; the constructor's one
-/// LCG draw is retained even though `SetEntityIndexAndRot(0)` overwrites the
-/// random orientation with particle row 0's fixed pose.
+/// LCG draw supplies the body orientation. `SetEntityIndexAndRot(0)` writes
+/// the separate array_0x52 collision dimensions, not these body angles.
 #[must_use]
 pub(crate) fn archer_constructor_payload(
     source_entity_index: u16,
@@ -107,6 +105,7 @@ pub(crate) fn archer_constructor_payload(
     max_life: i32,
 ) -> ArcherConstructorPayload {
     let entity_rng = level2_next_rng16(initial_rng);
+    let orientation = (entity_rng & 0x7ff) as i16 - 1;
     let source_byte_39 = ARCHER_DESCRIPTOR_CADENCE
         .wrapping_sub(source_byte_3e % ARCHER_DESCRIPTOR_CADENCE)
         .wrapping_add(4);
@@ -133,10 +132,10 @@ pub(crate) fn archer_constructor_payload(
         xtype: 3,
         source_byte_3e,
         particle_index: ARCHER_PARTICLE_INDEX,
-        yaw: ARCHER_POSE_YAW,
-        pitch: ARCHER_POSE_PITCH,
-        roll: ARCHER_POSE_ROLL,
-        fov: ARCHER_POSE_FOV,
+        yaw: orientation,
+        pitch: orientation,
+        roll: orientation,
+        fov: 0,
         shift_rot_x: ARCHER_SHIFT_ROT_X,
         shift_rot_y: ARCHER_SHIFT_ROT_Y,
         position,
@@ -194,7 +193,6 @@ impl Level2EconomyState {
     fn commit_class9_model13_child(
         &mut self,
         request: ArcherChildRequest,
-        linked_parent_index: Option<usize>,
         castle_auxiliary_tail: bool,
     ) -> Option<ArcherChildPacket> {
         let state_before = self.clone();
@@ -236,12 +234,9 @@ impl Level2EconomyState {
         // class-9/model-13 constructor writes its own fields. Keep a reused
         // arena slot from leaking the prior occupant's owner into this child.
         self.source_owner.insert(source_entity_index, 0);
-        let next_entity_index = linked_parent_index
-            .map(|parent_index| self.authored_class5_archer[parent_index].word_0x34)
-            .unwrap_or(0);
-        if let Some(parent_index) = linked_parent_index {
-            self.authored_class5_archer[parent_index].word_0x34 = source_entity_index;
-        }
+        // AddEvent09_0D + sub_1CCE0 retain the NewEvent-cleared word 0x34.
+        // An arrow is an independent projectile, not an Archer body part:
+        // linking it here makes sub_1FAA0 copy its lifetime into parent life.
         self.authored_class5_archer_children
             .push(Level2AuthoredClass5ArcherChild {
                 source_entity_index: packet.source_entity_index,
@@ -251,7 +246,7 @@ impl Level2EconomyState {
                 parent_entity_id: packet.parent_entity_id,
                 slot_generation: self.slot_generation(source_entity_index),
                 word_0x32: 0,
-                word_0x34: next_entity_index,
+                word_0x34: 0,
                 word_0x24: 0,
                 pending_word_0x62: 0,
                 word_0x26: 0,
@@ -865,7 +860,7 @@ pub(crate) fn step_archer_action34(
                 parent_word_0x96: source.word_0x96_150,
                 parent_roll: source.roll,
                 parent_position: source.position,
-                parent_fov: source.fov,
+                parent_fov: source.shift_rot_y,
                 target_entity_index: target.entity_index,
                 target_class: target.class,
                 target_model: target.model,
@@ -1122,23 +1117,23 @@ impl Level2EconomyState {
         &mut self,
         request: ArcherChildRequest,
     ) -> Option<ArcherChildPacket> {
-        let parent_index = self.authored_class5_archer.iter().position(|state| {
+        self.authored_class5_archer.iter().find(|state| {
             state.source_entity_index == request.parent_entity_index
                 && self.authored_class5.iter().any(|source| {
                     source.active && source.source_entity_index == state.source_entity_index
                 })
         })?;
-        self.commit_class9_model13_child(request, Some(parent_index), false)
+        self.commit_class9_model13_child(request, false)
     }
 
     /// Commit the same `IfSubtypeCallCreatingManaSphere(..., 9, 13)` product
-    /// without the Archer-only word-0x34 chain writes. Castle auxiliary action
+    /// with the Castle-specific constructor tail. Castle auxiliary action
     /// 122 sets only id, aim, target, xtype/xsubtype and the raised Z position.
     pub(crate) fn allocate_castle_auxiliary_projectile_packet(
         &mut self,
         request: ArcherChildRequest,
     ) -> Option<ArcherChildPacket> {
-        self.commit_class9_model13_child(request, None, true)
+        self.commit_class9_model13_child(request, true)
     }
 }
 
@@ -1282,32 +1277,181 @@ impl Level2EconomyState {
         }
     }
 
-    /// Visit a retained class-9/model-13 child from the same live source
-    /// cursor. Its source movement uses the constructor's signed pitch and
-    /// the shared terrain/map projection. Action 37 is not a class-9 table
-    /// callback and is handled by the scheduler's invalid-selector branch.
-    pub(crate) fn step_authored_class5_archer_child_slot(
+    /// Class/model, protection flags and mana at the current source visit.
+    /// Resolve typed live carriers before the imported reset rows.
+    fn archer_arrow_target_properties(
+        &self,
+        slot: u16,
+        imported: &[EntitySnapshot],
+    ) -> Option<(u8, u8, u32, i32)> {
+        if let Some(part) = self
+            .authored_dragon_parts
+            .iter()
+            .find(|row| row.source_entity_index == slot)
+        {
+            return Some((5, part.model, 8, part.mana));
+        }
+        if let Some(root) = self
+            .authored_class5
+            .iter()
+            .find(|row| row.source_entity_index == slot)
+        {
+            let flags = self
+                .authored_dragons
+                .iter()
+                .find(|row| row.source_entity_index == slot)
+                .map_or(8, |row| row.control_flags);
+            return Some((5, root.model, flags, root.mana));
+        }
+        if let Some(bee) = self
+            .bee_creatures
+            .iter()
+            .find(|row| row.source_entity_index == slot)
+        {
+            return Some((bee.source_class, bee.model, bee.control_flags, bee.mana));
+        }
+        if let Some(castle) = self.castle.filter(|row| row.source_entity_index == slot) {
+            return Some((3, 2, castle.control_flags, castle.mana));
+        }
+        imported
+            .get(usize::from(slot))
+            .filter(|row| row.active)
+            .map(|row| (row.class, row.model, row.control_flags, row.mana))
+    }
+
+    /// AddArcherArrow_672E0 on the shared source cursor. A hidden arrow is
+    /// reclaimed only at the following source boundary. The third return
+    /// value requests the reflector's source family-8 experience award.
+    pub(in crate::native_world) fn step_authored_class5_archer_child_slot(
         &mut self,
         source_slot: u16,
         terrain: &SessionTerrain,
-    ) -> bool {
+        imported_entities: &[EntitySnapshot],
+    ) -> (
+        bool,
+        Option<level2_dynamic_economy::Level2Class10Model0Step>,
+        Option<u16>,
+    ) {
         let Some(child_index) = self
             .authored_class5_archer_children
             .iter()
             .position(|child| child.active && child.source_entity_index == source_slot)
         else {
-            return false;
+            return (false, None, None);
         };
         let state_before = self.clone();
         let mut child = self.authored_class5_archer_children[child_index];
+        let mut damage = None;
+        let mut reflection = None;
         if child.action == ARCHER_CHILD_ACTION {
-            crate::move_entity(
-                &mut child.position,
-                child.yaw,
-                child.pitch,
-                child.actual_speed,
-            );
-            child.position.z = terrain.ground_height(child.position);
+            // AddArcherArrow_672E0 draws from the global stream exactly once.
+            if child.control_flags & 2 == 0 {
+                self.advance_global_rng();
+                let rng = self.global_rng;
+                mark_source_audio_call(SourceAudioCallTag::ArcherArrowLaunch);
+                self.prepare_sound(source_slot, source_slot, -1, ((rng & 1) + 33) as u16);
+                child.control_flags |= 2;
+            }
+            let mut predicted = child.position;
+            crate::move_entity(&mut predicted, child.yaw, child.pitch, child.actual_speed);
+            // sub_10780 searches at the current position, not the prediction.
+            let targets = self.fireball_collision_targets(imported_entities);
+            let hit = source_map_search_slots(
+                &self.map_chains,
+                child.position,
+                &source_search_offsets(0),
+            )
+            .into_iter()
+            .find_map(|slot| {
+                targets.iter().find(|target| {
+                    target.source_slot == slot
+                        && target.source_id != child.entity_id
+                        && self
+                            .archer_arrow_target_properties(slot, imported_entities)
+                            .is_some_and(|(class, model, _, _)| {
+                                child.xtype == u8::MAX
+                                    || (child.xtype == class
+                                        && (child.xsubtype == u8::MAX || child.xsubtype == model))
+                            })
+                        && crate::level1_mission::source_entities_overlap(
+                            child.position,
+                            0,
+                            30,
+                            60,
+                            target.position,
+                            target.half_width,
+                            target.vertical_offset,
+                            target.half_height,
+                        )
+                })
+            })
+            .copied();
+            // The post-decrement is conditional on terrain admission in source.
+            let mut advances = false;
+            if terrain.ground_height(predicted) <= predicted.z {
+                let life = child.life;
+                child.life = child.life.wrapping_sub(1);
+                advances = life != 0 && hit.is_none();
+            }
+            if advances {
+                child.position = predicted;
+            } else if let Some(target) = hit.filter(|target| {
+                self.archer_arrow_target_properties(target.source_slot, imported_entities)
+                    .is_some_and(|(_, _, flags, mana)| flags & 0x8010 != 0 && mana >= 0)
+            }) {
+                // NewEvent/AddEvent09_0D leave mana zero: reflection costs
+                // zero, but still awards experience and prepares sound 28.
+                let (_, _, flags, _) = self
+                    .archer_arrow_target_properties(target.source_slot, imported_entities)
+                    .unwrap();
+                self.prepare_sound(source_slot, target.source_slot, -1, 28);
+                reflection = Some(target.source_slot);
+                child.roll = child.yaw.wrapping_add(1024) & 2047;
+                child.pitch = child.pitch.wrapping_neg() & 2047;
+                child.fov = child.pitch;
+                if flags & 0x10 != 0 {
+                    child.yaw = child.roll;
+                    child.subspell_index = child.subspell_index.wrapping_mul(2);
+                } else {
+                    child.entity_rng = level2_next_rng16(child.entity_rng);
+                    child.yaw = child
+                        .roll
+                        .wrapping_add((child.entity_rng % 45) as i16)
+                        .wrapping_sub(22);
+                }
+                child.word_0x96 = child.entity_id;
+                if let Some((class, model, _, _)) =
+                    self.archer_arrow_target_properties(child.entity_id, imported_entities)
+                {
+                    child.xtype = class;
+                    child.xsubtype = model;
+                }
+                child.entity_id = target.source_id;
+                child.life = child.max_life;
+                child.position = target.position;
+                child.position.z = child.position.z.wrapping_add(target.half_height);
+            } else {
+                if let Some(target) = hit {
+                    child.position = target.position;
+                    // sub_65580 temporarily shifts the hit to its collision centre.
+                    let model = self
+                        .archer_arrow_target_properties(target.source_slot, imported_entities)
+                        .map(|(_, model, _, _)| model);
+                    if model != Some(2) {
+                        child.position.z = child.position.z.wrapping_add(target.vertical_offset);
+                    }
+                }
+                damage = Some(level2_dynamic_economy::Level2Class10Model0Step {
+                    live: true,
+                    first_impact: true,
+                    damage_pulse: true,
+                    owner_entity_index: child.entity_id,
+                    payload: child.subspell_index,
+                    position: child.position,
+                });
+                child.drawing_enabled = false;
+                child.control_flags |= ENTITY_DRAW_DISABLED_BIT;
+            }
         }
         child.source_byte_3e = child.source_byte_3e.wrapping_add(1);
         child.phase = child.phase.wrapping_add(1);
@@ -1324,9 +1468,9 @@ impl Level2EconomyState {
             .is_err()
         {
             *self = state_before;
-            return false;
+            return (false, None, None);
         }
-        true
+        (true, damage, reflection)
     }
 }
 
@@ -1353,6 +1497,213 @@ mod tests {
             fallback_entities: &[],
             peers: &[],
         }
+    }
+
+    #[test]
+    fn archer_arrow_flies_expires_then_reclaims_at_the_following_source_boundary() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path()).unwrap();
+        let session = inspection.level2_reset_session().unwrap();
+        let terrain = session.canonical_terrain();
+        let mut economy = session.economy().clone();
+        let position = Position {
+            z: 20_000,
+            ..archer_position()
+        };
+        let parent = economy
+            .allocate_authored_archer(232, position, terrain)
+            .unwrap();
+        let packet = economy
+            .allocate_archer_child_packet(ArcherChildRequest {
+                parent_entity_index: parent.source_entity_index,
+                parent_entity_id: parent.source_entity_index,
+                parent_word_0x96: 1,
+                parent_roll: 0,
+                parent_position: position,
+                parent_fov: 0,
+                target_entity_index: 1,
+                target_class: 3,
+                target_model: 0,
+                target_position: Position {
+                    y: position.y.wrapping_sub(5000),
+                    ..position
+                },
+            })
+            .unwrap();
+        let slot = packet.source_entity_index;
+        let rng = economy.global_rng;
+        let mut expected = packet.position;
+        for remaining in (0..13).rev() {
+            crate::move_entity(&mut expected, packet.yaw, packet.pitch, packet.actual_speed);
+            let (live, damage, reflection) =
+                economy.step_authored_class5_archer_child_slot(slot, terrain, &[]);
+            assert!(reflection.is_none());
+            assert!(live && damage.is_none());
+            let child = economy.authored_class5_archer_children[0];
+            assert_eq!(
+                child.position, expected,
+                "arrow keeps its ballistic altitude"
+            );
+            assert_eq!(child.life, remaining);
+            assert!(child.drawing_enabled);
+            assert_eq!(
+                economy.global_rng,
+                level2_next_rng32(rng),
+                "launch sound draws once"
+            );
+        }
+        let (live, damage, reflection) =
+            economy.step_authored_class5_archer_child_slot(slot, terrain, &[]);
+        assert!(reflection.is_none());
+        let damage = damage.expect("zero lifetime emits sub_10C80 even without a direct target");
+        assert!(live);
+        assert_eq!(
+            (damage.position, damage.payload, damage.owner_entity_index),
+            (expected, 250, parent.source_entity_index)
+        );
+        let child = economy.authored_class5_archer_children[0];
+        assert_eq!(child.life, -1);
+        assert!(child.active && !child.drawing_enabled);
+        assert!(
+            economy.map_chains.is_linked(slot),
+            "same-pass hide retains allocation"
+        );
+        assert_eq!(economy.events.iter().filter(|event| matches!(event, Level2EconomyEvent::PreparedSound { source_entity_index, sound_id: 33 | 34, .. } if *source_entity_index == slot)).count(), 1);
+        economy.reclaim_hidden_archer_rows_at_source_boundary();
+        assert!(economy.authored_class5_archer_children.is_empty());
+        assert!(!economy.map_chains.is_linked(slot));
+        assert!(economy.free_slots.contains(&slot));
+        assert_eq!(economy.authored_class5[0].life, 1000);
+    }
+
+    #[test]
+    fn archer_arrow_current_position_hit_type_filter_and_reflection() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path()).unwrap();
+        let session = inspection.level2_reset_session().unwrap();
+        let terrain = session.canonical_terrain();
+        let mut economy = session.economy().clone();
+        let mut imported = session.entities().to_vec();
+        let target_slot = session.state.entity_index;
+        for target in &mut imported {
+            target.active = target.index == target_slot;
+        }
+        let target = &mut imported[usize::from(target_slot)];
+        target.position = Position {
+            z: 20_000,
+            ..archer_position()
+        };
+        target.control_flags = 8;
+        target.mana = 1000;
+        let target_position = target.position;
+        let target_height = target.array_fov();
+        let position = Position {
+            z: target.position.z.wrapping_add(target.array_yaw()),
+            ..target.position
+        };
+        economy
+            .map_chains
+            .sync_entity(RenderableMapSeed {
+                entity_index: target_slot,
+                active: true,
+                x: position.x,
+                y: position.y,
+            })
+            .unwrap();
+        let parent = economy
+            .allocate_authored_archer(232, position, terrain)
+            .unwrap();
+        let packet = economy
+            .allocate_archer_child_packet(ArcherChildRequest {
+                parent_entity_index: parent.source_entity_index,
+                parent_entity_id: parent.source_entity_index,
+                parent_word_0x96: target_slot,
+                parent_roll: 0,
+                parent_position: position,
+                parent_fov: 0,
+                target_entity_index: target_slot,
+                target_class: 3,
+                target_model: 0,
+                target_position: Position {
+                    y: position.y.wrapping_sub(5000),
+                    ..position
+                },
+            })
+            .unwrap();
+        let slot = packet.source_entity_index;
+        let baseline = economy.clone();
+        let (live, damage, reflection) =
+            economy.step_authored_class5_archer_child_slot(slot, terrain, &imported);
+        assert!(live && reflection.is_none());
+        let damage = damage.expect("current-position overlap is hit before movement");
+        assert_eq!((damage.position, damage.payload), (position, 250));
+        assert!(!economy.authored_class5_archer_children[0].drawing_enabled);
+
+        let mut wrong_type = baseline.clone();
+        wrong_type.authored_class5_archer_children[0].xtype = 5;
+        let (_, damage, reflection) =
+            wrong_type.step_authored_class5_archer_child_slot(slot, terrain, &imported);
+        assert!(
+            damage.is_none() && reflection.is_none(),
+            "sub_10780 must reject the wrong class even at the same position"
+        );
+        assert!(wrong_type.authored_class5_archer_children[0].drawing_enabled);
+
+        imported[usize::from(target_slot)].control_flags |= 0x10;
+        let mut reflected = baseline.clone();
+        let (_, damage, reflection) =
+            reflected.step_authored_class5_archer_child_slot(slot, terrain, &imported);
+        assert!(damage.is_none());
+        assert_eq!(reflection, Some(target_slot));
+        let arrow = reflected.authored_class5_archer_children[0];
+        assert_eq!(
+            (
+                arrow.entity_id,
+                arrow.word_0x96,
+                arrow.xtype,
+                arrow.xsubtype
+            ),
+            (target_slot, parent.source_entity_index, 5, ARCHER_MODEL)
+        );
+        assert_eq!(
+            (arrow.life, arrow.subspell_index, arrow.yaw),
+            (13, 500, packet.yaw.wrapping_add(1024) & 2047)
+        );
+        assert_eq!(
+            arrow.entity_rng, packet.entity_rng,
+            "strong reflection does not draw entity RNG"
+        );
+        assert_eq!(
+            arrow.position.z,
+            target_position.z.wrapping_add(target_height)
+        );
+        assert!(arrow.drawing_enabled);
+
+        imported[usize::from(target_slot)].control_flags = 8 | 0x8000;
+        let mut deflected = baseline.clone();
+        let (_, damage, reflection) =
+            deflected.step_authored_class5_archer_child_slot(slot, terrain, &imported);
+        assert!(damage.is_none() && reflection.is_some());
+        let arrow = deflected.authored_class5_archer_children[0];
+        assert_eq!(arrow.entity_rng, level2_next_rng16(packet.entity_rng));
+        assert_eq!(arrow.subspell_index, 250);
+        assert_eq!(
+            arrow.yaw,
+            arrow
+                .roll
+                .wrapping_add((arrow.entity_rng % 45) as i16)
+                .wrapping_sub(22)
+        );
+
+        let mut buried = baseline;
+        let child = &mut buried.authored_class5_archer_children[0];
+        child.position.z = -1000;
+        child.pitch = 0;
+        let (_, damage, reflection) =
+            buried.step_authored_class5_archer_child_slot(slot, terrain, &[]);
+        assert!(damage.is_some() && reflection.is_none());
+        assert_eq!(
+            buried.authored_class5_archer_children[0].life, 13,
+            "terrain collision does not post-decrement lifetime"
+        );
     }
 
     #[test]
@@ -1413,8 +1764,18 @@ mod tests {
         assert_eq!(payload.particle_index, 0);
         assert_eq!(
             (payload.yaw, payload.pitch, payload.roll, payload.fov),
-            (125, 66, 66, 125)
+            (661, 661, 661, 0)
         );
+        let other = archer_constructor_payload(slot, 0, 232, 3, archer_position(), ARCHER_MAX_LIFE);
+        assert_eq!(
+            (other.yaw, other.pitch, other.roll, other.fov),
+            (1246, 1246, 1246, 0)
+        );
+        assert_ne!(
+            payload.yaw, other.yaw,
+            "particle dimensions must not erase seeded facing"
+        );
+        assert_eq!((other.shift_rot_x, other.shift_rot_y), (128, 256));
         assert_eq!((payload.shift_rot_x, payload.shift_rot_y), (128, 256));
         assert!(payload.active && payload.drawing_enabled);
     }
@@ -1455,16 +1816,56 @@ mod tests {
                 && source.max_mana == ARCHER_MAX_MANA
                 && source.subspell_index == ARCHER_SUBSPELL_INDEX
                 && source.particle_index == ARCHER_PARTICLE_INDEX
-                && source.yaw == ARCHER_POSE_YAW
-                && source.pitch == ARCHER_POSE_PITCH
-                && source.roll == ARCHER_POSE_ROLL
-                && source.fov == ARCHER_POSE_FOV
+                && source.yaw == (source.entity_rng & 0x7ff) as i16 - 1
+                && source.pitch == source.yaw
+                && source.roll == source.yaw
+                && source.fov == 0
                 && source.shift_rot_x == ARCHER_SHIFT_ROT_X
                 && source.shift_rot_y == ARCHER_SHIFT_ROT_Y
                 && source.active
                 && source.drawing_enabled
         }));
         assert_eq!(session.economy().authored_class5_runtime().len(), 4);
+        let collision_targets = session.economy().fireball_collision_targets(&[]);
+        let collision = collision_targets
+            .iter()
+            .find(|target| target.source_slot == rows[0].source_entity_index)
+            .unwrap();
+        assert_eq!(
+            (
+                collision.half_width,
+                collision.vertical_offset,
+                collision.half_height
+            ),
+            (128, 125, 256)
+        );
+        let upper_hit = Position {
+            z: collision.position.z + 380,
+            ..collision.position
+        };
+        assert!(crate::level1_mission::source_entities_overlap(
+            upper_hit,
+            1,
+            0,
+            1,
+            collision.position,
+            collision.half_width,
+            collision.vertical_offset,
+            collision.half_height,
+        ));
+        assert!(!crate::level1_mission::source_entities_overlap(
+            Position {
+                z: upper_hit.z + 2,
+                ..upper_hit
+            },
+            1,
+            0,
+            1,
+            collision.position,
+            collision.half_width,
+            collision.vertical_offset,
+            collision.half_height,
+        ));
         assert!(
             session
                 .economy()
@@ -1569,10 +1970,7 @@ mod tests {
         assert_eq!(child.word_0x96, request.parent_word_0x96);
         assert_eq!((child.xtype, child.xsubtype), (target.class, target.model));
         assert_eq!(child.fov, ARCHER_CHILD_PARTICLE_FOV);
-        assert_eq!(
-            child.position.z,
-            attack_source.position.z + attack_source.fov / 2
-        );
+        assert_eq!(child.position.z, attack_source.position.z + 128);
         assert!(child.active && child.drawing_enabled);
 
         // A full source arena must refuse the child before touching source

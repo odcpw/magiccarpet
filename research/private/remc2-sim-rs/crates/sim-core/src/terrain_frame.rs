@@ -17,7 +17,7 @@ use crate::{
         DOLMEN_LOGICAL_HEIGHT, DOLMEN_RENDER_MODE, DOLMEN_RENDER_PARAMETER_INDEX, DOLMEN_SELECTOR,
         FrozenActorTmapBank, VillagerTmapClocks, villager_selector_mask,
     },
-    goat::{GOAT_RENDER_PARAMETER_INDEX, GoatState},
+    goat::{GOAT_CLASS, GOAT_MODEL, GOAT_RENDER_PARAMETER_INDEX, GoatState},
     goat_draw_admission::outdoor_billboard_tile,
     goat_sprite_raster::{
         Mode20SpriteCamera, Mode20SpriteDefinition, Mode20SpriteEntity, Mode20SpriteRasterStats,
@@ -66,8 +66,10 @@ use crate::{
         WATER_SPLASH_RENDER_INDEX, ground_fire_presentation, impact_is_presentational,
         mana_sphere_size_ordinal,
     },
-    mode5_raster::{Mode5Vertex, rasterize_mode5_triangle_from_atlas},
-    mode26_raster::{NIGHT_TABLES_BYTES, rasterize_mode26_triangle_from_atlas_into_framebuffer},
+    mode5_raster::{Mode5Vertex, rasterize_mode5_triangle_from_tile_atlas},
+    mode26_raster::{
+        NIGHT_TABLES_BYTES, rasterize_mode26_triangle_from_tile_atlas_into_framebuffer,
+    },
     native_world::ParticleParameter,
     renderable_map_chain::RenderableMapChains,
     source_sprite_tmap::{
@@ -1232,11 +1234,14 @@ fn raster_world_chain(
             .map_err(TerrainFrameError)?;
             continue;
         }
-        if let Some(goat) = world_resources
-            .goats
-            .iter()
-            .find(|goat| goat.entity_index == entity_index)
-        {
+        if let Some(goat) = world_resources.goats.iter().find(|goat| {
+            // A reclaimed goat remains in the family snapshot while its
+            // numeric slot may now hold a spell or another creature.
+            // Select by the authoritative occupant, not slot identity alone.
+            goat.entity_index == entity_index
+                && source_slot.class == GOAT_CLASS
+                && source_slot.model == GOAT_MODEL
+        }) {
             if !goat.active || goat.render_parameter_index != GOAT_RENDER_PARAMETER_INDEX {
                 continue;
             }
@@ -3146,7 +3151,7 @@ fn raster_submission(
     let texture_base = terrain_texture_base(submission.texture_index)?;
     match submission.raster_selector {
         MODE5_TERRAIN_SELECTOR => {
-            let pixels = rasterize_mode5_triangle_from_atlas(
+            let pixels = rasterize_mode5_triangle_from_tile_atlas(
                 vertices,
                 LEVEL1_VIEW_WIDTH as i32,
                 LEVEL1_VIEW_HEIGHT as i32,
@@ -3177,7 +3182,7 @@ fn raster_submission(
                     "mode 26 is valid only for the Level 1 primary terrain pass".to_owned(),
                 ));
             }
-            let pixels = rasterize_mode26_triangle_from_atlas_into_framebuffer(
+            let pixels = rasterize_mode26_triangle_from_tile_atlas_into_framebuffer(
                 vertices,
                 LEVEL1_VIEW_WIDTH as i32,
                 LEVEL1_VIEW_HEIGHT as i32,

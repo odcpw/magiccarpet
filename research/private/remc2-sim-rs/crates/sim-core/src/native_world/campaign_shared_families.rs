@@ -138,6 +138,109 @@ pub(super) fn construct_stone_source(
     }
 }
 
+/// Lossless `sub_4BBB0` row, after NewEvent and before its placement probe.
+pub(super) fn construct_skeleton_source(
+    source_slot: u16,
+    initial_rng: u16,
+    position: Position,
+    phase: u8,
+    scan_period: u16,
+    particle_pose: ParticlePose,
+) -> EntitySnapshot {
+    let entity_rng = next_source_rng16(initial_rng);
+    let angle = (entity_rng % 0x832) as i16 - 1;
+    let control_flags = CONTROL_MAP_LINKED_BIT | 8;
+    let mut record = vec![0_u8; 176].into_boxed_slice();
+    record[0..2].copy_from_slice(&source_slot.to_le_bytes());
+    record[2] = 1;
+    record[8..12].copy_from_slice(&1000_i32.to_le_bytes());
+    record[12..16].copy_from_slice(&1000_i32.to_le_bytes());
+    record[16..20].copy_from_slice(&control_flags.to_le_bytes());
+    record[20..24].copy_from_slice(&16_i32.to_le_bytes());
+    record[24..26].copy_from_slice(&entity_rng.to_le_bytes());
+    record[30..32].copy_from_slice(&source_slot.to_le_bytes());
+    record[32..34].copy_from_slice(&angle.to_le_bytes());
+    record[34..36].copy_from_slice(&angle.to_le_bytes());
+    record[36..38].copy_from_slice(&angle.to_le_bytes());
+    record[46..48].copy_from_slice(&500_u16.to_le_bytes());
+    record[60] = 1;
+    record[61] = (scan_period - u16::from(phase) % scan_period).wrapping_add(4) as u8;
+    record[66] = phase;
+    record[67] = 5;
+    record[68] = 9;
+    record[69] = 3;
+    record[70] = 255;
+    record[71] = 10;
+    record[73] = 72;
+    record[80..82].copy_from_slice(&position.x.to_le_bytes());
+    record[82..84].copy_from_slice(&position.y.to_le_bytes());
+    record[84..86].copy_from_slice(&position.z.to_le_bytes());
+    record[86..88].copy_from_slice(&particle_pose.array_yaw.to_le_bytes());
+    for offset in [88, 90, 92] {
+        record[offset..offset + 2].copy_from_slice(&128_i16.to_le_bytes());
+    }
+    record[94..96].copy_from_slice(&220_u16.to_le_bytes());
+    record[97] = particle_pose.animation_limit;
+    record[134..136].copy_from_slice(&20_i16.to_le_bytes());
+    record[136..138].copy_from_slice(&20_i16.to_le_bytes());
+    record[148..152].copy_from_slice(&500_i32.to_le_bytes());
+    record[164..168].copy_from_slice(&81_u32.to_le_bytes());
+    record[168] = 2;
+    record[172..176].copy_from_slice(&1_u32.to_le_bytes());
+    EntitySnapshot {
+        index: source_slot,
+        source_id: source_slot,
+        authority: EntityAuthority::FrozenObserved,
+        active: true,
+        max_life: 1000,
+        life: 1000,
+        next_relation: None,
+        class: 5,
+        model: 9,
+        control_flags,
+        entity_rng,
+        action: 72,
+        action_marker: 0,
+        level_gate: 0,
+        position,
+        yaw: angle,
+        pitch: angle,
+        fov: 0,
+        phase,
+        subspell_index: 500,
+        byte_3b: 0,
+        byte_3c: 0,
+        font_type_index: 0,
+        active_value: 0,
+        activation_value: 0,
+        mana_regen: 0,
+        actual_speed: 20,
+        max_mana: 0,
+        mana_cost: 0,
+        mana: 500,
+        particle_parameter_index: Some(220),
+        parameter_relation: Some(80),
+        special_relation: EntitySpecialRelation::GlobalSpecialState,
+        record,
+    }
+}
+
+/// `sub_102D0(..., 1)` visits only the origin for the constructor's 128-unit
+/// half extents. Its movement-only slope test must not reject placement.
+pub(super) fn skeleton_placement_blocked<W: FlightWorld>(
+    world: &W,
+    position: Position,
+    material_mask: u32,
+    ground_clearance: i16,
+) -> bool {
+    world.material_mask(position) & !material_mask != 0
+        || world.cave_collision_blocked(position)
+        || world.ceiling_height(position).is_some_and(|ceiling| {
+            i32::from(world.ground_height(position)) + 128 + i32::from(ground_clearance)
+                > i32::from(ceiling)
+        })
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct CampaignSharedFamilyError {
     pub source_slot: u16,
@@ -403,9 +506,20 @@ pub(super) struct Model9ReactionCandidate {
     pub position: Position,
 }
 
+/// Read-only attacker identity at the callback's source-cursor boundary.
+/// Dynamic creature rows need not exist in the imported reset table.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct Model9DamageTarget {
+    pub source_slot: u16,
+    pub source_id: u16,
+    pub class: u8,
+    pub model: u8,
+}
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(super) struct Model9ReactionOutcome {
     pub prey_to_consume: Option<u16>,
+    pub inherit_identity: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -455,7 +569,7 @@ fn settle_model9_after_damage<W: FlightWorld>(entity: &mut EntitySnapshot, world
 
 fn apply_model9_reaction_pose(
     entity: &mut EntitySnapshot,
-    target: &EntitySnapshot,
+    target: Model9DamageTarget,
     reaction_pose: ParticlePose,
 ) {
     if entity.source_id == target.source_id {
@@ -479,6 +593,7 @@ fn consume_model9_damage<W: FlightWorld>(
     entity: &mut EntitySnapshot,
     world: &W,
     entities: &[EntitySnapshot],
+    dynamic_targets: &[Model9DamageTarget],
     reaction_pose: ParticlePose,
 ) -> std::result::Result<Option<Model9DamageTransition>, Model9Action79Error> {
     let mut damage_owner = entity.source_upkeep_word_62();
@@ -538,9 +653,21 @@ fn consume_model9_damage<W: FlightWorld>(
         settle_model9_after_damage(entity, world);
     }
     if matches!(transition, Some(Model9DamageTransition::Reaction { .. })) {
-        let target = entities
-            .get(usize::from(damage_owner))
-            .filter(|target| target.active && target.index == damage_owner)
+        let target = dynamic_targets
+            .iter()
+            .copied()
+            .find(|target| target.source_slot == damage_owner)
+            .or_else(|| {
+                entities
+                    .get(usize::from(damage_owner))
+                    .filter(|target| target.active && target.index == damage_owner)
+                    .map(|target| Model9DamageTarget {
+                        source_slot: target.index,
+                        source_id: target.source_id,
+                        class: target.class,
+                        model: target.model,
+                    })
+            })
             .ok_or(Model9Action79Error::InvalidDamageTarget {
                 source_slot: entity.index,
                 target_slot: damage_owner,
@@ -672,6 +799,7 @@ pub(super) fn step_model9_action79<W: FlightWorld>(
     world: &W,
     stage_target: Position,
     entities: &[EntitySnapshot],
+    dynamic_targets: &[Model9DamageTarget],
     reaction_pose: ParticlePose,
 ) -> std::result::Result<Model9Action79Outcome, Model9Action79Error> {
     require_selector(
@@ -679,7 +807,8 @@ pub(super) fn step_model9_action79<W: FlightWorld>(
         (MODEL9_CLASS, MODEL9_MODEL, MODEL9_ACTION_RAW_MOVEMENT),
     )?;
 
-    if let Some(damage_transition) = consume_model9_damage(entity, world, entities, reaction_pose)?
+    if let Some(damage_transition) =
+        consume_model9_damage(entity, world, entities, dynamic_targets, reaction_pose)?
     {
         return Ok(Model9Action79Outcome {
             damage_transition: Some(damage_transition),
@@ -744,21 +873,181 @@ pub(super) fn step_model9_action79<W: FlightWorld>(
     Ok(outcome)
 }
 
-/// Port remc2 `sub_20940` through its frozen model-list selection. Creature
-/// replacement remains an effect intent so the campaign adapter can keep the
-/// source row unchanged when the corresponding constructor is not admitted.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct Model9ScanTarget {
+    pub identity: Model9DamageTarget,
+    pub position: Position,
+    pub half_width: i16,
+    pub control_flags: u32,
+}
+
+/// `sub_203D0`: the ordinary post-constructor movement and acquisition pass.
+/// Target rows are observations in frozen class-list order, never new authority.
+pub(super) fn step_model9_action73<W: FlightWorld>(
+    entity: &mut EntitySnapshot,
+    world: &W,
+    entities: &[EntitySnapshot],
+    dynamic_targets: &[Model9DamageTarget],
+    movement_pose: ParticlePose,
+    reaction_pose: ParticlePose,
+    scan_period: u16,
+    awareness_radius: i32,
+    sight_angle: u16,
+    targets: &[Model9ScanTarget],
+) -> std::result::Result<Model9ReactionOutcome, Model9Action79Error> {
+    require_selector(entity, (5, 9, 73))?;
+    let timer = entity.source_dword_10();
+    if timer > 0 {
+        entity.set_source_dword_10(timer - 1);
+        if timer == 1 {
+            entity.particle_parameter_index = Some(201);
+            entity.record[94..96].copy_from_slice(&201_u16.to_le_bytes());
+            entity.record[96] = 0;
+            entity.record[97] = movement_pose.animation_limit;
+            entity.record[86..88].copy_from_slice(&movement_pose.array_yaw.to_le_bytes());
+            entity.record[88..90].copy_from_slice(&movement_pose.array_pitch.to_le_bytes());
+            entity.record[90..92].copy_from_slice(&movement_pose.array_roll.to_le_bytes());
+            entity.record[92..94].copy_from_slice(&movement_pose.array_fov.to_le_bytes());
+            entity.level_gate = 1;
+            entity.record[74] = 1;
+        }
+    }
+    if entity.record[74] != 0 {
+        if entity.record[74] != 1 {
+            return Ok(Model9ReactionOutcome::default());
+        }
+        let candidates = targets
+            .iter()
+            .filter(|target| {
+                target.identity.class == 5
+                    && target.identity.model
+                        == [4, 12, 13][usize::from((u16::from(entity.phase) / scan_period) % 3)]
+            })
+            .map(|target| Model9ReactionCandidate {
+                source_slot: target.identity.source_slot,
+                position: target.position,
+            })
+            .collect::<Vec<_>>();
+        // The source invokes sub_20940 without changing the outer action.
+        return step_model9_action74(
+            entity,
+            world,
+            entities,
+            dynamic_targets,
+            movement_pose,
+            reaction_pose,
+            scan_period,
+            awareness_radius,
+            &candidates,
+        );
+    }
+    if entity.record[61] != 0 {
+        entity.set_source_dword_10(400);
+    }
+    if consume_model9_damage(entity, world, entities, dynamic_targets, reaction_pose)?.is_some() {
+        return Ok(Model9ReactionOutcome::default());
+    }
+    step_model9_source_movement(entity, world)?;
+    if u16::from(entity.phase) % scan_period != 0 {
+        return Ok(Model9ReactionOutcome::default());
+    }
+    let distance2 = |position: Position| {
+        let dx = i32::from(position.x.wrapping_sub(entity.position.x) as i16);
+        let dy = i32::from(position.y.wrapping_sub(entity.position.y) as i16);
+        dx.wrapping_mul(dx).wrapping_add(dy.wrapping_mul(dy)) as u32
+    };
+    let nearest = |predicate: &dyn Fn(&Model9ScanTarget) -> bool| {
+        let mut selected = None;
+        let mut best = u32::MAX;
+        for target in targets {
+            let squared = distance2(target.position);
+            if predicate(target) && squared < best {
+                best = squared;
+                selected = Some(*target);
+            }
+        }
+        selected
+    };
+    let opponent = nearest(&|target| {
+        target.identity.class == 3
+            && target.identity.model == 2
+            && target.identity.source_id != entity.source_id
+    });
+    let awareness_squared = awareness_radius.wrapping_mul(awareness_radius) as u32;
+    let cone = if entity.record[61] != 0 {
+        nearest(&|target| {
+            let heading = crate::heading_for_positions(entity.position, target.position) as i16;
+            let delta = (i32::from(heading) - i32::from(entity.yaw)) & 2047;
+            target.identity.class == 3
+                && target.identity.source_id != entity.source_id
+                && target.control_flags & 0x20 == 0
+                && distance2(target.position) <= awareness_squared
+                && delta.min(2048 - delta) < i32::from(sight_angle)
+        })
+    } else {
+        None
+    };
+    let model = [4, 12, 13][usize::from((u16::from(entity.phase) / scan_period) % 3)];
+    let prey = nearest(&|target| {
+        target.identity.class == 5
+            && target.identity.model == model
+            && distance2(target.position) <= awareness_squared
+    });
+    let distance3 = |position: Position| {
+        let dz = i32::from(position.z.wrapping_sub(entity.position.z));
+        distance2(position).wrapping_add(dz.wrapping_mul(dz) as u32)
+    };
+    let opponent_in_reach = opponent.filter(|target| {
+        let reach = awareness_radius.wrapping_add(i32::from(target.half_width)) as u32;
+        u64::from(distance3(target.position)) < u64::from(reach + 1).pow(2)
+    });
+    let prey_in_reach = prey.filter(|target| distance3(target.position) < 1537_u32.pow(2));
+    if let Some(opponent) = opponent {
+        entity.set_source_roll(
+            crate::heading_for_positions(entity.position, opponent.position) as i16,
+        );
+    } else {
+        let first = next_source_rng16(entity.entity_rng);
+        let second = next_source_rng16(first);
+        entity.set_entity_rng(second);
+        let sign = 2 * (i32::from(first % 157) / 79) - 1;
+        entity.set_source_roll(
+            ((i32::from(entity.source_roll()) + sign * (i32::from(second & 255) + 85)) & 2047)
+                as i16,
+        );
+    }
+    if let Some(target) = opponent_in_reach.or(cone) {
+        entity.record[154..156].copy_from_slice(&target.identity.source_slot.to_le_bytes());
+        entity.set_source_action(74);
+        apply_model9_reaction_pose(entity, target.identity, reaction_pose);
+        return Ok(Model9ReactionOutcome::default());
+    }
+    Ok(Model9ReactionOutcome {
+        prey_to_consume: prey_in_reach.map(|target| target.identity.source_slot),
+        inherit_identity: false,
+    })
+}
+
+/// Port remc2 `sub_20940` through its frozen model-list selection. The caller
+/// commits the hide/allocation effect through the shared source arena.
 pub(super) fn step_model9_action74<W: FlightWorld>(
     entity: &mut EntitySnapshot,
     world: &W,
     entities: &[EntitySnapshot],
+    dynamic_targets: &[Model9DamageTarget],
     movement_pose: ParticlePose,
     reaction_pose: ParticlePose,
     scan_period: u16,
     awareness_radius: i32,
     candidates: &[Model9ReactionCandidate],
 ) -> std::result::Result<Model9ReactionOutcome, Model9Action79Error> {
-    require_selector(entity, (MODEL9_CLASS, MODEL9_MODEL, MODEL9_ACTION_REACTION))?;
-    if consume_model9_damage(entity, world, entities, reaction_pose)?.is_some() {
+    let callback_action = if entity.action == 73 && entity.record[74] == 1 {
+        73
+    } else {
+        MODEL9_ACTION_REACTION
+    };
+    require_selector(entity, (MODEL9_CLASS, MODEL9_MODEL, callback_action))?;
+    if consume_model9_damage(entity, world, entities, dynamic_targets, reaction_pose)?.is_some() {
         return Ok(Model9ReactionOutcome::default());
     }
 
@@ -812,7 +1101,10 @@ pub(super) fn step_model9_action74<W: FlightWorld>(
         // every squared distance below 1537^2 is admitted.
         (squared < 1_537_u32.pow(2)).then_some(candidate.source_slot)
     });
-    Ok(Model9ReactionOutcome { prey_to_consume })
+    Ok(Model9ReactionOutcome {
+        prey_to_consume,
+        inherit_identity: true,
+    })
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1105,6 +1397,116 @@ mod tests {
     }
 
     #[test]
+    fn skeleton_constructor_enters_player_scan_without_confusing_bees_with_players() {
+        let pose = ParticlePose {
+            animation_limit: 9,
+            array_yaw: 62,
+            array_pitch: 74,
+            array_roll: 74,
+            array_fov: 128,
+        };
+        let position = Position {
+            x: 8000,
+            y: 8000,
+            z: 256,
+        };
+        let mut source = construct_skeleton_source(7, 0x1357, position, 0, 30, pose);
+        let rng = 0x1357_u16.wrapping_mul(9377).wrapping_add(9439);
+        let angle = (rng % 0x832) as i16 - 1;
+        assert_eq!(
+            (
+                source.entity_rng,
+                source.yaw,
+                source.pitch,
+                source.source_roll(),
+                source.fov
+            ),
+            (rng, angle, angle, angle, 0)
+        );
+        assert_eq!(
+            (
+                source.life,
+                source.mana,
+                source.control_flags,
+                source.record[61]
+            ),
+            (1000, 500, 12, 34)
+        );
+        assert_eq!((source.array_pitch(), source.array_fov()), (128, 128));
+        for _ in 0..17 {
+            step_model9_action72(&mut source, pose).unwrap();
+        }
+        assert_eq!((source.action, source.source_dword_10()), (73, 400));
+        let target = Model9ScanTarget {
+            identity: Model9DamageTarget {
+                source_slot: 8,
+                source_id: 8,
+                class: 5,
+                model: 2,
+            },
+            position: Position {
+                x: 8100,
+                ..position
+            },
+            half_width: 128,
+            control_flags: 8,
+        };
+        let mut negative = source.clone();
+        let outcome = step_model9_action73(
+            &mut negative,
+            &Model9World,
+            &[],
+            &[],
+            pose,
+            pose,
+            30,
+            2000,
+            1024,
+            &[target],
+        )
+        .unwrap();
+        assert_eq!(
+            negative.action, 73,
+            "a model-2 Bee is not a class-3 opponent"
+        );
+        assert_eq!(outcome.prey_to_consume, None);
+        assert_ne!(negative.position, position);
+        let player_target = Model9ScanTarget {
+            identity: Model9DamageTarget {
+                class: 3,
+                ..target.identity
+            },
+            ..target
+        };
+        step_model9_action73(
+            &mut source,
+            &Model9World,
+            &[],
+            &[],
+            pose,
+            pose,
+            30,
+            2000,
+            1024,
+            &[player_target],
+        )
+        .unwrap();
+        assert_eq!(
+            (
+                source.action,
+                source.actual_speed,
+                source.record[69],
+                source.record[70]
+            ),
+            (74, 0, 3, 2)
+        );
+        assert_eq!(
+            u16::from_le_bytes([source.record[154], source.record[155]]),
+            8
+        );
+    }
+
+    #[test]
     fn model9_action79_moves_then_peer_overwrites_jitter_without_phase_or_global_rng() {
         let mut source = entity(MODEL9_CLASS, MODEL9_MODEL, MODEL9_ACTION_RAW_MOVEMENT);
         source.set_phase(0);
@@ -1147,6 +1549,7 @@ mod tests {
                 z: moved.z,
             },
             &entities,
+            &[],
             ParticlePose {
                 animation_limit: 1,
                 array_yaw: 0,
@@ -1180,6 +1583,7 @@ mod tests {
             &Model9World,
             Position { x: 0, y: 0, z: 0 },
             &entities,
+            &[],
             ParticlePose {
                 animation_limit: 1,
                 array_yaw: 0,

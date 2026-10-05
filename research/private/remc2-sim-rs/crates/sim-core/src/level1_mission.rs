@@ -1670,7 +1670,7 @@ fn level1_castle_rope_pixels_for_view(
         y: end_y.cast_unsigned(),
         z: 0,
     };
-    let distance = legacy_minimap_distance(start, end);
+    let distance = minimap_objective_distance(start, end);
     let heading =
         i16::try_from(heading_for_positions(start, end)).expect("screen heading fits i16");
     let mut pixels = Vec::new();
@@ -1721,7 +1721,7 @@ impl Default for Level1MinimapMarks {
     }
 }
 
-fn legacy_minimap_distance(from: Position, to: Position) -> u32 {
+pub fn minimap_objective_distance(from: Position, to: Position) -> u32 {
     let dx = i32::from(to.x.wrapping_sub(from.x).cast_signed());
     let dy = i32::from(to.y.wrapping_sub(from.y).cast_signed());
     legacy_sqrt(
@@ -1729,6 +1729,60 @@ fn legacy_minimap_distance(from: Position, to: Position) -> u32 {
             .expect("wrapped X square fits u32")
             .wrapping_add(u32::try_from(dy * dy).expect("wrapped Y square fits u32")),
     )
+}
+
+/// Source objective-arrow geometry shared by campaign and retained mission views.
+/// Coordinates remain in the caller's map space; no state or RNG is advanced.
+pub fn minimap_objective_arrow(
+    player: &FlightState,
+    target: Position,
+    width: i32,
+    height: i32,
+    scaling: i32,
+) -> [i16; 14] {
+    let distance = minimap_objective_distance(player.position, target);
+    let heading = i16::try_from(heading_for_positions(player.position, target))
+        .expect("legacy heading fits i16");
+    let mut arrow_distance = i32::try_from(distance).expect("wrapped XY distance fits i32") - 512;
+    if arrow_distance > 15_872 {
+        arrow_distance = 15_872;
+    }
+    let mut anchor = player.position;
+    move_entity(
+        &mut anchor,
+        heading,
+        0,
+        i16::try_from(arrow_distance).expect("clamped arrow distance fits i16"),
+    );
+    let (anchor_x, anchor_y) = level1_minimap_project_rect(player, anchor, width, height, scaling);
+    let relative = usize::from(heading.wrapping_sub(player.yaw).cast_unsigned() & 0x07ff);
+    let sine = i64::from(SIN_16_16[relative]);
+    let cosine = i64::from(SIN_16_16[relative + 512]);
+    const BASE: [(i16, i16); 7] = [
+        (0, 0),
+        (9, 13),
+        (-9, 13),
+        (4, 13),
+        (4, 23),
+        (-4, 23),
+        (-4, 13),
+    ];
+    let mut arrow_xy = [0; 14];
+    for (ordinal, (base_x, base_y)) in BASE.into_iter().enumerate() {
+        let (rotated_x, rotated_y) = if ordinal == 0 {
+            (0_i64, 0_i64)
+        } else {
+            let scaled_x = i64::from(base_x) * 16;
+            let scaled_y = i64::from(base_y) * 16;
+            (
+                (cosine * scaled_x - sine * scaled_y) >> 20,
+                (cosine * scaled_y + sine * scaled_x) >> 20,
+            )
+        };
+        arrow_xy[ordinal * 2] = anchor_x.wrapping_add(rotated_x as i16);
+        arrow_xy[ordinal * 2 + 1] = anchor_y.wrapping_add(rotated_y as i16);
+    }
+    arrow_xy
 }
 
 pub fn level1_minimap_project(
@@ -3663,6 +3717,7 @@ impl Level1SourceEntityView {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Level1SourceEffect {
+    HouseLifecycle(HouseStepEvent),
     SyncResidentProjection {
         source_entity_index: u16,
         position: Position,
@@ -4146,6 +4201,17 @@ impl SourceOccupant {
     }
 
     fn dynamic_shape_matches(self, record: Level1ResetSourceSlot) -> bool {
+        if matches!(self, Self::Possession(_)) {
+            return record.class == POSSESSION_PROJECTILE_CLASS
+                && matches!(
+                    (record.model, record.action),
+                    (POSSESSION_PROJECTILE_MODEL, POSSESSION_PROJECTILE_ACTION)
+                        | (
+                            POSSESSION_STRONG_PROJECTILE_MODEL,
+                            POSSESSION_STRONG_PROJECTILE_ACTION
+                        )
+                );
+        }
         let Some((class, model, action)) = self.dynamic_shape() else {
             return true;
         };
@@ -7760,6 +7826,7 @@ impl Level1MissionState {
                 self.source_map_chains.sync_entity(seed)?;
                 Ok(Some(seed))
             }
+            Level1SourceEffect::HouseLifecycle(_) => Ok(None),
             Level1SourceEffect::MissionSound {
                 #[cfg(test)]
                 audio_site,
@@ -8333,7 +8400,7 @@ impl Level1MissionState {
                 actors.sort_by_key(|actor| actor.source_entity_index);
                 for actor in actors {
                     targets.push((actor.position, RED, ENTITY_HELP));
-                    let distance = legacy_minimap_distance(player.position, actor.position);
+                    let distance = minimap_objective_distance(player.position, actor.position);
                     if distance < nearest_distance {
                         nearest_distance = distance;
                         arrow_target = Some(actor.position);
@@ -8368,49 +8435,7 @@ impl Level1MissionState {
         result.mark_count = u8::try_from(targets.len()).expect("Level 1 mark extent fits u8");
 
         if let Some(target) = arrow_target {
-            let distance = legacy_minimap_distance(player.position, target);
-            let heading = i16::try_from(heading_for_positions(player.position, target))
-                .expect("legacy heading fits i16");
-            let mut arrow_distance =
-                i32::try_from(distance).expect("wrapped XY distance fits i32") - 512;
-            if arrow_distance > 15_872 {
-                arrow_distance = 15_872;
-            }
-            let mut anchor = player.position;
-            move_entity(
-                &mut anchor,
-                heading,
-                0,
-                i16::try_from(arrow_distance).expect("clamped arrow distance fits i16"),
-            );
-            let (anchor_x, anchor_y) =
-                level1_minimap_project_rect(player, anchor, width, height, scaling);
-            let relative = usize::from(heading.wrapping_sub(player.yaw).cast_unsigned() & 0x07ff);
-            let sine = i64::from(SIN_16_16[relative]);
-            let cosine = i64::from(SIN_16_16[relative + 512]);
-            const BASE: [(i16, i16); 7] = [
-                (0, 0),
-                (9, 13),
-                (-9, 13),
-                (4, 13),
-                (4, 23),
-                (-4, 23),
-                (-4, 13),
-            ];
-            for (ordinal, (base_x, base_y)) in BASE.into_iter().enumerate() {
-                let (rotated_x, rotated_y) = if ordinal == 0 {
-                    (0_i64, 0_i64)
-                } else {
-                    let scaled_x = i64::from(base_x) * 16;
-                    let scaled_y = i64::from(base_y) * 16;
-                    (
-                        (cosine * scaled_x - sine * scaled_y) >> 20,
-                        (cosine * scaled_y + sine * scaled_x) >> 20,
-                    )
-                };
-                result.arrow_xy[ordinal * 2] = anchor_x.wrapping_add(rotated_x as i16);
-                result.arrow_xy[ordinal * 2 + 1] = anchor_y.wrapping_add(rotated_y as i16);
-            }
+            result.arrow_xy = minimap_objective_arrow(player, target, width, height, scaling);
             result.arrow_valid = true;
             result.arrow_visible = player.tick & 0x40 != 0 && ((player.tick / 6) & 1) != 0;
         }
@@ -12529,6 +12554,7 @@ impl Level1MissionState {
                     current_source_views,
                     source_slot,
                     authored_index,
+                    &mut source_effects,
                 );
                 true
             }
@@ -12917,6 +12943,7 @@ impl Level1MissionState {
         source_views: &[Level1SourceEntityView],
         source_slot: u16,
         authored_index: u16,
+        source_effects: &mut Vec<Level1SourceEffect>,
     ) {
         if self
             .actors
@@ -12930,6 +12957,21 @@ impl Level1MissionState {
         let slot_index = usize::from(source_slot);
         if let Some(mut house) = self.authored_houses[slot_index].take() {
             let events = house.step_source_action(world);
+            // Authored construction uses the same terrain consumer as reset
+            // buildings. Do not discard its passes after advancing the timer.
+            source_effects.extend(
+                events
+                    .iter()
+                    .copied()
+                    .filter(|event| {
+                        matches!(
+                            event,
+                            HouseStepEvent::ConstructionPass { .. }
+                                | HouseStepEvent::ConstructionCompleted { .. }
+                        )
+                    })
+                    .map(Level1SourceEffect::HouseLifecycle),
+            );
             let remove = events
                 .iter()
                 .any(|event| matches!(event, HouseStepEvent::RemoveFootprint { .. }));
@@ -13879,6 +13921,12 @@ impl Level1MissionState {
         }
         let actor = self.actors[actor_index];
         let family = actor.model;
+        if pickup_tick && self.has_spell_family(family) {
+            // The local-player scan also hides other world jars of a spell
+            // already owned, even when the player is nowhere near that jar.
+            self.source_slots[usize::from(source_slot)].control_flags |= 1;
+            self.actors[actor_index].visible = false;
+        }
         let eligible_player = self
             .targeting_source_lists
             .players()
@@ -13920,6 +13968,9 @@ impl Level1MissionState {
             *actor
         };
         self.spell_acquisition_order.push(source_slot);
+        // `sub_68FF0` retains the picked-up entity as a holder, with byte
+        // 0x0c bit zero set. The minimap consumes this same source flag.
+        self.source_slots[usize::from(source_slot)].control_flags |= 1;
         if let Some(hand_override) = self.spell_pickup_hand_overrides.remove(&source_slot) {
             self.spell_acquisition_hand_overrides
                 .insert(source_slot, hand_override);
@@ -18079,7 +18130,11 @@ impl Level1MissionState {
     }
 
     fn step_castle_construction_slot(&mut self, player: &FlightState, source_slot: u16) {
-        let (child_id, child_position) = {
+        let restoration = self
+            .castle_construction
+            .as_ref()
+            .is_none_or(|child| child.source_entity_index != source_slot);
+        let (child_id, child_position, child_stage) = {
             let child = self
                 .castle_construction
                 .as_mut()
@@ -18099,9 +18154,16 @@ impl Level1MissionState {
             if child.timer > 0 {
                 child.timer -= 1;
                 if child.timer == 0 {
-                    // `sub_60480` clears byte_0x3B, selecting the short -1 tail.
-                    child.timer = -1;
-                } else {
+                    // Restoration constructors retain byte_0x3B; ordinary
+                    // castle construction clears it in `sub_60480`.
+                    child.timer = if restoration && child.constructor_latch != 0 {
+                        -25
+                    } else {
+                        -1
+                    };
+                } else if child.stage != 0 {
+                    // BUILD 0 has zero width/height. Applying the stage-one
+                    // footprint here would build a phantom castle at (0, 0).
                     self.castle_terrain_updates
                         .push(CastleTerrainUpdate::ConstructionPass {
                             position: child.position,
@@ -18115,13 +18177,15 @@ impl Level1MissionState {
                 return;
             }
             child.active = false;
-            (child.id, child.position)
+            (child.id, child.position, child.stage)
         };
         self.castle_build_state = 2;
-        self.castle_terrain_updates
-            .push(CastleTerrainUpdate::ConstructionCompleted {
-                position: child_position,
-            });
+        if child_stage != 0 {
+            self.castle_terrain_updates
+                .push(CastleTerrainUpdate::ConstructionCompleted {
+                    position: child_position,
+                });
+        }
         self.source_pool
             .disable_occupant(SourceOccupant::CastleConstruction(child_id));
         self.source_slots[usize::from(source_slot)].control_flags |= SOURCE_DISABLED_FLAG;

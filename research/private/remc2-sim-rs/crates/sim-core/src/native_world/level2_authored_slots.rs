@@ -41,6 +41,7 @@ impl Level2EconomyState {
             player_spell_slot_2,
             global_rng,
             BTreeMap::new(),
+            None,
         )
     }
 
@@ -53,7 +54,11 @@ impl Level2EconomyState {
         player_spell_slot_2: u16,
         global_rng: u32,
         castle_stage_footprints: BTreeMap<u8, CastleBuildFootprint>,
+        constructor_counters: Option<&[u8; 29]>,
     ) -> Result<Self> {
+        // Legacy captures retain their old initialization; v2 captures supply
+        // the actual remc2 reset state rather than inferring it from live rows.
+        let counters = constructor_counters.copied().unwrap_or([0; 29]);
         let mut free_slots = entities
             .iter()
             .filter(|entity| !entity.active && entity.index != 0)
@@ -165,6 +170,8 @@ impl Level2EconomyState {
 
             source_owner,
 
+            converted_skeleton_origins: BTreeMap::new(),
+
             authored_house_record_by_source: BTreeMap::new(),
 
             owner_class,
@@ -198,7 +205,7 @@ impl Level2EconomyState {
 
             bee_creatures: Vec::new(),
 
-            bee_model2_constructor_phase: 0,
+            bee_model2_constructor_phase: counters[2],
 
             authored_bee_kill_census: BTreeMap::new(),
 
@@ -261,21 +268,21 @@ impl Level2EconomyState {
 
             house_residents: Vec::new(),
 
-            class5_model0_constructor_phase: 0,
+            class5_model0_constructor_phase: counters[0],
 
-            class5_model1_constructor_phase: 0,
+            class5_model1_constructor_phase: counters[1],
 
-            class5_model3_constructor_phase: 0,
+            class5_model3_constructor_phase: counters[3],
 
-            class5_model9_constructor_phase: 0,
+            class5_model9_constructor_phase: counters[9],
 
-            class5_model14_constructor_phase: 0,
+            class5_model14_constructor_phase: counters[14],
 
-            class5_model4_constructor_phase: 0,
+            class5_model4_constructor_phase: counters[4],
 
-            class5_model19_constructor_phase: 0,
+            class5_model19_constructor_phase: counters[19],
 
-            castle_auxiliary_constructor_phase: 0,
+            castle_auxiliary_constructor_phase: counters[15],
 
             class14_model3_handle: 0,
 
@@ -385,6 +392,7 @@ impl Level2EconomyState {
 
     pub(super) fn allocate_slot(&mut self) -> Option<u16> {
         if let Some(slot) = self.free_slots.pop() {
+            self.converted_skeleton_origins.remove(&slot);
             // `NewEvent` overwrites the fixed source record at this slot.
             self.possession_guidance_stale_records.remove(&slot);
             self.source_phase_sidecars.remove(&slot);
@@ -498,6 +506,7 @@ impl Level2EconomyState {
         if slot == 0 {
             return;
         }
+        self.converted_skeleton_origins.remove(&slot);
         let _ = self.map_chains.sync_entity(RenderableMapSeed {
             entity_index: slot,
             active: false,
@@ -6952,6 +6961,14 @@ impl Level2EconomyState {
         for (slot, owner) in &self.source_owner {
             hasher.update(slot.to_le_bytes());
             hasher.update(owner.to_le_bytes());
+        }
+        if !self.converted_skeleton_origins.is_empty() {
+            hasher.update(b"converted-skeleton-origins-v1");
+            hasher.update((self.converted_skeleton_origins.len() as u32).to_le_bytes());
+            for (slot, producer) in &self.converted_skeleton_origins {
+                hasher.update(slot.to_le_bytes());
+                hasher.update(producer.to_le_bytes());
+            }
         }
         hasher.update(b"authored-house-record-by-source-v1");
         for (slot, authored_record) in &self.authored_house_record_by_source {

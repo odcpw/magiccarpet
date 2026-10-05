@@ -1571,6 +1571,89 @@ fn level2_campaign_public_family0_fireball_allocates_and_dispatches_projectile()
 }
 
 #[test]
+fn campaign_spell_sprites_follow_public_cast_movement_impact_and_reclaim() {
+    for family in [0, 1] {
+        let handle = open_level2_campaign_handle();
+        let mut input = McCampaignStepInputV2 {
+            abi_version: MC_NATIVE_ABI_VERSION,
+            struct_size: struct_size::<McCampaignStepInputV2>(),
+            command: McCommandV2 { flags: 0x40, requested_spell: family, ..valid_command() },
+            player_x: 384, player_y: 62_080, player_z: 8_000,
+            ..McCampaignStepInputV2::default()
+        };
+        let mut first_position = None;
+        let mut moved = false;
+        let mut visible = false;
+        let mut impact_seen = false;
+        let mut reclaimed = false;
+        for _ in 0..40 {
+            let (snapshot, _) = step_level2_campaign_public(handle, input);
+            input.command = valid_command();
+            let entities = campaign_entities_public(handle);
+            let (tick, expected, hidden_pulses, hash_before) = with_campaign_session(handle, |session| {
+                let CampaignSessionKind::Level2 { reset, .. } = &session.kind else { unreachable!() };
+                let mut expected = Vec::new();
+                for source in reset.economy().fireball_projectiles() {
+                    expected.push((source.source_entity_index, source.position,
+                        source.active && !source.drawing_disabled && source.control_flags & 0x21 == 0, 340_u16));
+                }
+                for source in reset.economy().possession_projectiles() {
+                    expected.push((source.source_entity_index, source.position, source.active, 209));
+                }
+                for source in reset.economy().model17_spawned_children() {
+                    expected.push((source.source_entity_index, source.position,
+                        source.active && source.control_flags & 0x21 == 0, 7));
+                }
+                let hidden = reset.economy().possession_effects().iter()
+                    .map(|source| source.source_entity_index).collect::<Vec<_>>();
+                let hash = reset.campaign_state_hash();
+                let selectors = reset.campaign_entity_presentations(0).unwrap();
+                for (slot, position, drawable, particle) in &expected {
+                    let row = selectors.iter().find(|row| row.entity_index == *slot);
+                    assert_eq!(row.is_some(), *drawable, "source slot {slot}, particle {particle}");
+                    if let Some(row) = row {
+                        assert_eq!((row.position, row.render_parameter_index), (*position, *particle));
+                    }
+                }
+                for slot in &hidden {
+                    assert!(selectors.iter().all(|row| row.entity_index != *slot),
+                        "the ownership mailbox pulse remains source-hidden");
+                }
+                assert_eq!(reset.campaign_state_hash(), hash, "selector polling is observational");
+                Ok((reset.campaign_tick(), expected, hidden, hash))
+            }).unwrap();
+            let mut sprites = vec![McCampaignEntityPresentationV2::default(); entities.len()];
+            let mut written = 0;
+            assert_eq!(mc_native_campaign_entity_presentations_copy(handle,
+                snapshot.generation, tick, 0, sprites.as_mut_ptr(), sprites.len() as u32,
+                struct_size::<McCampaignEntityPresentationV2>(), &raw mut written), MC_STATUS_OK);
+            sprites.truncate(written as usize);
+            for (slot, position, drawable, particle) in &expected {
+                let entity = &entities[usize::from(*slot)];
+                assert_eq!(entity.authority, MC_AUTHORITY_CAMPAIGN_LIVE);
+                assert_eq!((entity.x, entity.y, entity.z), (position.x, position.y, position.z));
+                if *drawable { assert_eq!(entity.active, 1); }
+                if *particle == 7 { impact_seen = true; }
+                else if *drawable {
+                    let first = first_position.get_or_insert(*position);
+                    moved |= *first != *position;
+                    visible |= sprites.iter().any(|sprite| sprite.entity_index == *slot);
+                }
+            }
+            reclaimed |= first_position.is_some() && expected.is_empty() && hidden_pulses.is_empty();
+            with_campaign_session(handle, |session| {
+                let CampaignSessionKind::Level2 { reset, .. } = &session.kind else { unreachable!() };
+                assert_eq!(reset.campaign_state_hash(), hash_before, "ABI polling is observational");
+                Ok(())
+            }).unwrap();
+        }
+        assert!(first_position.is_some() && moved && visible && reclaimed, "family {family} must render a moving flyer and reclaim it");
+        if family == 0 { assert!(impact_seen, "Fireball expiry constructs its real impact"); }
+        assert_eq!(mc_native_campaign_session_destroy(handle), MC_STATUS_OK);
+    }
+}
+
+#[test]
 fn level2_campaign_common_entities_project_remaining_live_class5_rows() {
     let handle = open_level2_campaign_handle_with_asset_cache(&qualified_level2_day_owner_cache());
     with_campaign_session_mut(handle, |session| {

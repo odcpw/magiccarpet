@@ -2941,6 +2941,9 @@ pub struct Level2EconomyState {
 
     source_owner: BTreeMap<u16, u16>,
 
+    /// Historical producer of a Skeleton created by creature conversion.
+    pub(crate) converted_skeleton_origins: BTreeMap<u16, u16>,
+
     /// Private identity for authored class-10/model-45 Houses that occupy a
     /// shared numeric slot while their typed live state resides in
     /// `HouseFamily`. The authored record remains inside the MC2 adapter.
@@ -4605,7 +4608,7 @@ impl NativeWorld {
             .collect::<Vec<_>>();
         let (closure_sha256, mut asset_refs) =
             parse_closure(closure_path, &package_sha256, &manifest_bytes, &members)?;
-        let cache_assets = match owner_cache {
+        let mut cache_assets = match owner_cache {
             Some(cache_path) => append_level_one_cache_assets(
                 cache_path,
                 &package_sha256,
@@ -4614,6 +4617,12 @@ impl NativeWorld {
             )?,
             None => LevelOneCacheAssets::default(),
         };
+        // The source-qualified authored footprint is simulation data, also
+        // needed by headless sessions that do not load presentation assets.
+        cache_assets.house_build_footprints.insert(
+            AUTHORED_HOUSE_BUILDING_INDEX,
+            qualified_level_one_authored_house_footprint()?,
+        );
         let mut level1_mission =
             Level1MissionTemplate::decode_with_source_slots_and_placement_blockers(
                 authored,
@@ -5148,7 +5157,12 @@ pub fn apply_level1_source_effects(
     live_world: &mut LiveWorldState,
     effects: &[Level1SourceEffect],
 ) -> std::result::Result<Vec<RenderableMapSeed>, String> {
-    if effects.is_empty() {
+    // Construction is consumed by the session's terrain owner before this
+    // entity-effect transaction. Avoid cloning the entire arena for it.
+    if effects
+        .iter()
+        .all(|effect| matches!(effect, Level1SourceEffect::HouseLifecycle(_)))
+    {
         return Ok(Vec::new());
     }
 
@@ -5637,11 +5651,6 @@ impl NativeSession<'_> {
         self.mission.sync_collected_spell_holders(&mut self.context);
         self.mission
             .sync_speed_holder_projection(&mut self.state, &mut self.context);
-        let mut holders_before = self
-            .context
-            .spell_fire
-            .as_ref()
-            .map_or_else(Vec::new, |fire| fire.holders.clone());
         self.context.events.clear();
         let latched_command =
             latch_command_with_context(&mut self.state, command, &mut self.context);
@@ -5807,6 +5816,12 @@ impl NativeSession<'_> {
                 let (fireball_activated, possession_activated, castle_cast_yaw) = if source_slot
                     == self.state.entity_index
                 {
+                    self.mission.sync_collected_spell_holders(&mut self.context);
+                    let holders_before = self
+                        .context
+                        .spell_fire
+                        .as_ref()
+                        .map_or_else(Vec::new, |fire| fire.holders.clone());
                     self.mission
                         .prepare_player_action_before_flight(&mut self.state);
                     let pass_evidence = if self.mission.exit_sequence_owns_player_action() {
@@ -5867,11 +5882,6 @@ impl NativeSession<'_> {
                     let castle = activated_model(CASTLE_SPELL_FAMILY);
                     self.mission
                         .capture_spell_holder_active_values(&self.context);
-                    holders_before = self
-                        .context
-                        .spell_fire
-                        .as_ref()
-                        .map_or_else(Vec::new, |fire| fire.holders.clone());
                     (fireball, possession, castle.then_some(self.state.yaw))
                 } else {
                     (false, false, None)
@@ -5899,6 +5909,16 @@ impl NativeSession<'_> {
                 );
                 self.mission
                     .apply_pending_player_transients(&mut self.state);
+                let authored_house_events = source_effects
+                    .iter()
+                    .filter_map(|effect| match effect {
+                        Level1SourceEffect::HouseLifecycle(event) => Some(*event),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>();
+                assert!(
+                    self.process_house_events(&authored_house_events, &frozen_house_source_views)
+                );
                 apply_level1_source_effects(
                     &mut self.mission,
                     &mut self.live_world,
@@ -6083,6 +6103,11 @@ impl NativeSession<'_> {
                             collision_half_width,
                             collision_half_depth,
                             |index| {
+                                // BUILD TAB row zero is the empty (0, 0)
+                                // castle footprint used by players without a castle.
+                                if index == 0 {
+                                    return Some((0, 0));
+                                }
                                 self.world
                                     .house_build_footprint(index)
                                     .map(|value| (value.width, value.height))
@@ -7695,9 +7720,9 @@ fn parse_players(
 
 #[allow(clippy::too_many_lines)]
 fn parse_runtime(bytes: &[u8]) -> Result<RuntimeSnapshot> {
-    if bytes.len() != RUNTIME_BYTES
+    let version = read_u16(bytes, 4, "runtime version")?;
+    if !matches!((version, bytes.len()), (1, RUNTIME_BYTES) | (2, 2_783))
         || bytes.get(..4) != Some(b"MCR1")
-        || read_u16(bytes, 4, "runtime version")? != 1
         || read_u16(bytes, 6, "runtime reserved")? != 0
     {
         return Err(NativeWorldError::new(
@@ -9609,6 +9634,10 @@ fn append_level_one_cache_assets(
             .map_err(NativeWorldError::new)?;
         house_build_footprints.insert(build_index, footprint);
     }
+
+    // Construction completion also looks up an overlapping player's current
+    // castle dimensions through this BUILD table.
+    house_build_footprints.insert(1, castle_stage_one_footprint.clone());
 
     let sound_bytes = load_output(sound_path)?;
     let sound: Value = serde_json::from_slice(&sound_bytes)

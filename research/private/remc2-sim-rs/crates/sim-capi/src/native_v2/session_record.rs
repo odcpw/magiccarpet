@@ -831,7 +831,14 @@ impl SessionRecord {
             .dynamic_residents()
             .copied()
             .collect::<Vec<_>>();
-        render_level1_world_frame(
+        // Selector feedback must traverse the same complete source sprite
+        // contract as presentation. The bounded legacy compositor cannot
+        // render transient death bursts created during combat.
+        let dispositions = self.source_sprite_dispositions()?;
+        let source_bank = self.world.source_sprite_tmap_bank().ok_or_else(|| {
+            unavailable("world frame unavailable without qualified source sprite TMAP bank")
+        })?;
+        render_level1_source_world_frame(
             Level1TerrainFrameCamera {
                 render_x: camera.x.wrapping_add(slope.offset_x.cast_unsigned()),
                 render_y: camera.y.wrapping_add(slope.offset_y.cast_unsigned()),
@@ -891,6 +898,10 @@ impl SessionRecord {
                 source_slots: self.mission.source_slots(),
                 night: self.world.metadata().map_type == sim_core::native_world::MapType::Night,
             },
+            SourceSpriteWorldResources {
+                dispositions: &dispositions,
+                tmap_bank: source_bank,
+            },
         )
         .map_err(|error| AbiError::new(MC_STATUS_VALIDATION_FAILED, error.to_string()))
     }
@@ -938,7 +949,7 @@ impl SessionRecord {
                 })?;
             let route = if entity.authority == EntityAuthority::GoatLive {
                 if (source.class, source.model) != (GOAT_CLASS, GOAT_MODEL)
-                    || !matches!(source.action, 9 | 12 | 13 | 14 | GOAT_PATROL_ACTION)
+                    || !matches!(source.action, 9..=14 | GOAT_PATROL_ACTION)
                 {
                     return Err(AbiError::new(
                         MC_STATUS_VALIDATION_FAILED,
@@ -2611,11 +2622,6 @@ impl SessionRecord {
         self.mission.sync_collected_spell_holders(&mut self.context);
         self.mission
             .sync_speed_holder_projection(&mut self.state, &mut self.context);
-        let holders_before = self
-            .context
-            .spell_fire
-            .as_ref()
-            .map_or_else(Vec::new, |fire| fire.holders.clone());
         self.context.events.clear();
         let world = Arc::clone(&self.world);
         let player_control_flags = world
@@ -2772,6 +2778,15 @@ impl SessionRecord {
             let (fireball_activated, possession_activated, castle_cast_yaw) = if source_slot
                 == self.state.entity_index
             {
+                // Earlier source slots may have ended a spell (for example
+                // a rejected Castle projectile). Observe those writes before
+                // the player fires or captures holder state again.
+                self.mission.sync_collected_spell_holders(&mut self.context);
+                let holders_before = self
+                    .context
+                    .spell_fire
+                    .as_ref()
+                    .map_or_else(Vec::new, |fire| fire.holders.clone());
                 self.mission
                     .prepare_player_action_before_flight(&mut self.state);
                 evidence = if self.mission.exit_sequence_owns_player_action() {
@@ -2938,6 +2953,16 @@ impl SessionRecord {
             );
             self.mission
                 .apply_pending_player_transients(&mut self.state);
+            let authored_house_events = source_effects
+                .iter()
+                .filter_map(|effect| match effect {
+                    sim_core::level1_mission::Level1SourceEffect::HouseLifecycle(event) => {
+                        Some(*event)
+                    }
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            self.apply_house_event_side_effects(&authored_house_events, &frozen_house_source_views);
             for seed in apply_level1_source_effects(
                 &mut self.mission,
                 &mut self.live_world,
@@ -3168,6 +3193,10 @@ impl SessionRecord {
                             collision_half_width,
                             collision_half_depth,
                             |index| {
+                                // Source BUILD TAB row zero is an empty castle.
+                                if index == 0 {
+                                    return Some((0, 0));
+                                }
                                 self.world
                                     .house_build_footprint(index)
                                     .map(|value| (value.width, value.height))
@@ -4520,6 +4549,11 @@ impl SessionRecord {
                 // slot internally, but must not replace that presentation key
                 // in the shared C ABI row.
                 record.entity_index = u16::try_from(splash_id).unwrap_or(u16::MAX);
+                // Spatial preparation above still uses the source slot. The
+                // transport sidecar must identify the same presentation event.
+                if let Some(command) = self.audio_commands.get_mut(&record.sequence) {
+                    command.entity_index = record.entity_index;
+                }
                 record
             }
             Level1MissionEvent::ActorDamaged {

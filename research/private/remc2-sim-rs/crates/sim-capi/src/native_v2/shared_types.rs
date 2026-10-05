@@ -1019,7 +1019,10 @@ pub struct McCampaignMinimapEntityV2 {
     pub reserved: [u32; 3],
 }
 
-/// One source-ordered objective/entity mark admitted to the Level 2 minimap.
+/// Campaign minimap command: kind 2 rectangle, kind 3 arrow-outline vertex.
+/// An arrow has seven consecutive rows, joined and closed. Source order remains
+/// strictly increasing across all commands.
+/// Coordinates use the existing 128-unit map space; visibility is Rust-owned.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct McCampaignMinimapMarkV2 {

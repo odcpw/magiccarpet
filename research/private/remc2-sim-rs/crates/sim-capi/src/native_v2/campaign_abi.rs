@@ -2960,10 +2960,8 @@ pub extern "C" fn mc_native_campaign_entities_copy(
                     .iter()
                     .map(campaign_entity_snapshot)
                     .collect::<Vec<_>>(),
-                CampaignSessionKind::Level2 {
-                    inspection, reset, ..
-                } => {
-                    let mut rows = inspection
+                CampaignSessionKind::Level2 { reset, .. } => {
+                    let mut rows = reset
                         .entities()
                         .iter()
                         .map(campaign_entity_snapshot)
@@ -2994,6 +2992,114 @@ pub extern "C" fn mc_native_campaign_entities_copy(
                             ));
                         }
                         rows[slot] = campaign_live_class5_entity_snapshot(source);
+                    }
+                    let spell_rows =
+                        reset
+                            .economy()
+                            .fireball_projectiles()
+                            .iter()
+                            .map(|source| {
+                                (
+                                    source.source_entity_index,
+                                    source.owner_entity_index,
+                                    source.active && !source.drawing_disabled,
+                                    source.source_class,
+                                    source.source_model,
+                                    source.action,
+                                    source.phase,
+                                    source.position,
+                                    source.yaw,
+                                    source.pitch,
+                                    source.fov,
+                                    source.actual_speed,
+                                )
+                            })
+                            .chain(
+                                reset
+                                    .economy()
+                                    .possession_projectiles()
+                                    .iter()
+                                    .map(|source| {
+                                        (
+                                            source.source_entity_index,
+                                            source.source_id_entity_index,
+                                            source.active,
+                                            source.source_class,
+                                            source.source_model,
+                                            source.action,
+                                            source.phase,
+                                            source.position,
+                                            source.yaw,
+                                            source.pitch,
+                                            source.fov,
+                                            source.actual_speed,
+                                        )
+                                    }),
+                            )
+                            .chain(reset.economy().model17_spawned_children().iter().map(
+                                |source| {
+                                    (
+                                        source.source_entity_index,
+                                        source.parent_entity_id,
+                                        source.active,
+                                        source.source_class,
+                                        source.model,
+                                        source.action,
+                                        source.phase,
+                                        source.position,
+                                        source.yaw,
+                                        source.pitch,
+                                        0,
+                                        0,
+                                    )
+                                },
+                            ));
+                    for (
+                        index,
+                        source_id,
+                        active,
+                        class_id,
+                        model,
+                        action,
+                        phase,
+                        position,
+                        yaw,
+                        pitch,
+                        fov,
+                        actual_speed,
+                    ) in spell_rows
+                    {
+                        let slot = usize::from(index);
+                        if slot >= rows.len() || !occupied.insert(index) {
+                            return Err(AbiError::new(
+                                MC_STATUS_VALIDATION_FAILED,
+                                format!(
+                                    "campaign live spell source slot {index} is invalid or duplicated"
+                                ),
+                            ));
+                        }
+                        rows[slot] = McCampaignEntitySnapshotV2 {
+                            abi_version: MC_NATIVE_ABI_VERSION,
+                            struct_size: struct_size::<McCampaignEntitySnapshotV2>(),
+                            entity_index: index,
+                            source_id,
+                            next_relation: u16::MAX,
+                            parameter_relation: u16::MAX,
+                            authority: MC_AUTHORITY_CAMPAIGN_LIVE,
+                            active: u8::from(active),
+                            class_id,
+                            model,
+                            action,
+                            phase,
+                            x: position.x,
+                            y: position.y,
+                            z: position.z,
+                            yaw,
+                            pitch,
+                            fov,
+                            actual_speed,
+                            reserved: [0; 4],
+                        };
                     }
                     rows
                 }
@@ -3074,7 +3180,7 @@ pub extern "C" fn mc_native_campaign_entity_presentations_copy(
                 ));
             }
             let rows = reset
-                .campaign_entity_presentations(camera_yaw)
+                .campaign_visible_entity_presentations(camera_yaw)
                 .map_err(|error| AbiError::new(MC_STATUS_VALIDATION_FAILED, error.to_string()))?;
             let capacity = usize::try_from(capacity).map_err(|_| {
                 AbiError::new(

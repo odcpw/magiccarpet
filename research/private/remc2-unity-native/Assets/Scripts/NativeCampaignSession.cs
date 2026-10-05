@@ -998,6 +998,8 @@ namespace MagicCarpet.Native
             ulong expectedTick)
         {
             var previousOrder = -1;
+            var arrowRemaining = 0;
+            byte arrowVisible = 0, arrowPalette = 0;
             foreach (var row in rows)
             {
                 if (
@@ -1006,7 +1008,7 @@ namespace MagicCarpet.Native
                     row.generation != expectedGeneration ||
                     row.tick != expectedTick ||
                     row.sourceOrder <= previousOrder ||
-                    (row.subjectEntityIndex == 0 && row.kind != 2) ||
+                    (row.subjectEntityIndex == 0 && row.kind != 2 && row.kind != 3) ||
                     row.visible > 1 ||
                     row.kind == 0 ||
                     !AllZero(row.reserved))
@@ -1015,8 +1017,28 @@ namespace MagicCarpet.Native
                         "native Level 2 minimap mark rows are not source-ordered " +
                         "qualified rows");
                 }
+                if (row.kind == 3)
+                {
+                    if (row.subjectEntityIndex != 0 || row.helpSelector != 0)
+                        throw new InvalidOperationException("native map arrow must not impersonate an entity");
+                    if (arrowRemaining == 0)
+                    {
+                        arrowRemaining = 7;
+                        arrowVisible = row.visible;
+                        arrowPalette = row.paletteIndex;
+                    }
+                    else if (row.sourceOrder != previousOrder + 1)
+                        throw new InvalidOperationException("native map arrow vertex order is discontinuous");
+                    if (row.visible != arrowVisible || row.paletteIndex != arrowPalette)
+                        throw new InvalidOperationException("native map arrow vertices disagree");
+                    arrowRemaining--;
+                }
+                else if (arrowRemaining != 0)
+                    throw new InvalidOperationException("native map arrow is incomplete");
                 previousOrder = row.sourceOrder;
             }
+            if (arrowRemaining != 0)
+                throw new InvalidOperationException("native map arrow is incomplete");
         }
 
         internal NativeSim.CampaignObjectiveStageSnapshot ObjectiveStageState(

@@ -8,6 +8,105 @@ namespace MagicCarpet.Native.Tests
 {
     public sealed class NativeCampaignSessionEditModeTests
     {
+        [Test]
+        public void DescriptorCampaignStartupAdmitsParticipantsRatherThanStorageCapacity()
+        {
+            var root = new GameObject("descriptor campaign startup census");
+            root.SetActive(false);
+            var runtime = root.AddComponent<MagicCarpetRuntime>();
+            try
+            {
+                runtime.QualificationInitializeLevel2Production(Level2Package, Level2DayCache);
+                Assert.That(runtime.Level2ProductionStartupReady, Is.True);
+                var info = runtime.Level2ProductionWorldInfo;
+                Assert.That(info.playerCount, Is.EqualTo(2), "local player and Nyphur");
+                Assert.That(info.objectiveCount, Is.EqualTo(5), "semantic mission objectives");
+                Assert.That(runtime.Level2ProductionDayHudPresenterReady, Is.True);
+            }
+            finally
+            {
+                runtime.QualificationDisposeNativeOwners();
+                UnityEngine.Object.DestroyImmediate(root);
+            }
+            Assert.That(NativeCampaignSession.ActiveSessionCount, Is.Zero);
+        }
+
+        [Test]
+        public void OrdinaryCampaignFlightKeepsHudReadableAfterPlayerDeath()
+        {
+            var root = new GameObject("campaign death HUD lifecycle");
+            root.SetActive(false);
+            var runtime = root.AddComponent<MagicCarpetRuntime>();
+            try
+            {
+                runtime.QualificationInitializeLevel2Production(Level2Package, Level2DayCache);
+                var released = false;
+                for (var frame = 0; frame < 1000; frame++)
+                {
+                    runtime.QualificationDriveLevel2Frames(1);
+                    var hud = runtime.Level2ProductionDayHud;
+                    if ((hud.localPlayerControlFlags & 0x20) == 0) continue;
+                    Assert.That(hud.left.holderEntityIndex, Is.Zero);
+                    Assert.That(hud.right.holderEntityIndex, Is.Zero);
+                    Assert.That(hud.left.drawAdmitted, Is.Zero);
+                    Assert.That(hud.right.drawAdmitted, Is.Zero);
+                    runtime.QualificationDriveLevel2Frames(3);
+                    released = true;
+                    break;
+                }
+                Assert.That(released, Is.True, "ordinary flight must reach the observed death boundary");
+            }
+            finally
+            {
+                runtime.QualificationDisposeNativeOwners();
+                UnityEngine.Object.DestroyImmediate(root);
+            }
+            Assert.That(NativeCampaignSession.ActiveSessionCount, Is.Zero);
+        }
+
+        [Test]
+        public void EntitySpriteRequiresCurrentFrameAdmissionAfterSlotReuse()
+        {
+            var root = new GameObject("source-slot presentation lifecycle");
+            try
+            {
+                var marker = root.AddComponent<Level3EntitySurfaceMarker>();
+                var entity = new NativeSim.CampaignEntitySnapshot
+                {
+                    entityIndex = 42, classId = 5, model = 9, active = 1
+                };
+                marker.Bind(entity, 1, 10);
+                var sprite = new NativeSim.CampaignEntityPresentation
+                {
+                    entityIndex = 42, selectedTmap = 110, logicalHeight = 128
+                };
+                var texture = new OwnerAssetCache.Level3Texture { width = 16, height = 16 };
+                marker.BindSprite(sprite, texture, null, null);
+                var renderer = root.GetComponentInChildren<MeshRenderer>();
+                Assert.That(renderer.enabled, Is.True);
+                Assert.That(marker.SpriteReady, Is.True);
+
+                // Still active is not draw admission: hidden entities must not
+                // inherit yesterday's pixels, including on same-slot reuse.
+                entity.classId = 15;
+                entity.model = 2;
+                marker.Bind(entity, 1, 11);
+                Assert.That(renderer.enabled, Is.False);
+                Assert.That(marker.SpriteReady, Is.False);
+                Assert.That(marker.AssetSelector, Is.Zero);
+                sprite.selectedTmap = 111;
+                marker.BindSprite(sprite, texture, null, null);
+                Assert.That(renderer.enabled, Is.True);
+                Assert.That(marker.AssetSelector, Is.EqualTo(111));
+                marker.Bind(entity, 2, 0);
+                Assert.That(renderer.enabled, Is.False, "reset also discards prior admission");
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(root);
+            }
+        }
+
         private static string PrivateRoot =>
             Path.GetFullPath(Path.Combine(Application.dataPath, "../.."));
 
@@ -864,6 +963,32 @@ namespace MagicCarpet.Native.Tests
         }
 
         [Test]
+        public void CorrectedDayOwnerCacheLoadsAlongsideFrozenVersionAndRejectsDowngrade()
+        {
+            var path = Path.Combine(PrivateRoot, "generated/level3-day-block32-owner-cache-v2");
+            var cache = OwnerAssetCache.OpenAndValidateLevel3(path);
+            Assert.That(cache.IsDayAggregate, Is.True);
+            Assert.That(cache.OutputCount, Is.EqualTo(662));
+            Assert.That(cache.Level3Materials.tmaps0.textures.Length, Is.EqualTo(162));
+            Assert.That(OwnerAssetCache.OpenAndValidateLevel3(Level3OwnerCache).OutputCount, Is.EqualTo(662));
+            var temporary = Path.Combine(Path.GetTempPath(), $"mc-day-version-{Guid.NewGuid():N}");
+            Directory.CreateDirectory(temporary);
+            try
+            {
+                File.WriteAllText(Path.Combine(temporary, "manifest.json"),
+                    File.ReadAllText(Path.Combine(path, "manifest.json"))
+                        .Replace("mc2-day-owner-cache/v2", "mc2-day-owner-cache/v1"));
+                var error = Assert.Throws<InvalidDataException>(
+                    () => OwnerAssetCache.OpenAndValidateLevel3(temporary));
+                StringAssert.Contains("manifest identity", error.Message);
+            }
+            finally
+            {
+                Directory.Delete(temporary, true);
+            }
+        }
+
+        [Test]
         public void Level3OwnerCachePresentsLiveWorldAndEntitiesWithExactInterfaceSurfaces()
         {
             var wrongCache = Assert.Throws<InvalidDataException>(
@@ -902,7 +1027,7 @@ namespace MagicCarpet.Native.Tests
             }
 
             var cache = OwnerAssetCache.OpenAndValidateLevel3(Level3OwnerCache);
-            Assert.That(cache.IsLevel3Aggregate, Is.True);
+            Assert.That(cache.IsDayAggregate, Is.True);
             // GOLDEN-CHANGE: particles 201/202 contribute six exact TMAP
             // selectors to both the material and closure-bound gameplay set.
             Assert.That(cache.OutputCount, Is.EqualTo(662));
@@ -914,7 +1039,7 @@ namespace MagicCarpet.Native.Tests
                 cache.Level3Materials.tmaps0.selectors);
 
             var root = new GameObject("Level 3 presentation qualification");
-            Level3PresentationSurface surface = null;
+            DayPresentationSurface surface = null;
             try
             {
                 using (var session = NativeCampaignSession.Open(
@@ -922,10 +1047,34 @@ namespace MagicCarpet.Native.Tests
                            NativeSim.CampaignSelection.Create(3, 2, 0),
                            Level3DayCache))
                 {
-                    surface = new Level3PresentationSurface(root.transform);
+                    surface = new DayPresentationSurface(root.transform);
                     surface.Present(session, cache);
                     Assert.That((surface.Generation, surface.Tick), Is.EqualTo((0ul, 0ul)));
                     Assert.That(surface.WorldReady, Is.True);
+                    Assert.That(surface.FrameCamera, Is.Not.Null,
+                        "an enabled mesh alone is not a visible campaign world");
+                    var world = surface.Root.Find("Level 3 live indexed world");
+                    var lowerLeft = surface.FrameCamera.WorldToViewportPoint(
+                        world.TransformPoint(new Vector3(-0.5f, -0.5f, 0f)));
+                    var upperRight = surface.FrameCamera.WorldToViewportPoint(
+                        world.TransformPoint(new Vector3(0.5f, 0.5f, 0f)));
+                    Assert.That(lowerLeft.x, Is.EqualTo(0f).Within(0.0001f));
+                    Assert.That(lowerLeft.y, Is.EqualTo(0f).Within(0.0001f));
+                    Assert.That(upperRight.x, Is.EqualTo(1f).Within(0.0001f));
+                    Assert.That(upperRight.y, Is.EqualTo(1f).Within(0.0001f));
+                    var view = new EngineSessionTransport.Pose { x = 65530, y = 65530, z = 1000 };
+                    surface.PresentView(view);
+                    var markers = surface.Root.GetComponentsInChildren<Level3EntitySurfaceMarker>();
+                    var spriteMesh = markers.First(row => row.SpriteReady)
+                        .GetComponentInChildren<MeshFilter>().sharedMesh;
+                    Assert.That(spriteMesh.uv[0].y, Is.EqualTo(1f),
+                        "bottom vertices sample the bottom of top-down owner pixels");
+                    Assert.That(spriteMesh.uv[2].y, Is.EqualTo(0f));
+                    var projected = markers.Select(row => row.transform.localPosition).ToArray();
+                    surface.PresentView(view);
+                    CollectionAssert.AreEqual(projected,
+                        markers.Select(row => row.transform.localPosition).ToArray(),
+                        "repeated view projection must not shift the world");
                     Assert.That(surface.FrameHash, Is.Not.Zero);
                     Assert.That(surface.TerrainHash, Is.Not.Zero);
                     Assert.That(surface.EntitySurfaceCount, Is.EqualTo(252));
@@ -1500,6 +1649,89 @@ namespace MagicCarpet.Native.Tests
                 UnityEngine.Object.DestroyImmediate(root);
             }
 
+            Assert.That(NativeCampaignSession.ActiveSessionCount, Is.Zero);
+        }
+
+        [Test]
+        public void DaySpellSpritesUseLiveNativeSlotsAndDisappearAfterReclaim()
+        {
+            var generated = Path.GetFullPath(Path.Combine(Application.dataPath, "../../generated"));
+            var cachePath = Path.Combine(generated, "level2-day-spell-owner-cache-v3");
+            var cache = OwnerAssetCache.OpenAndValidateLevel2(cachePath);
+            var level3CachePath = Path.Combine(generated, "level3-day-spell-owner-cache-v3");
+            Assert.DoesNotThrow(() => OwnerAssetCache.OpenAndValidateLevel3(level3CachePath));
+            Assert.Throws<InvalidDataException>(() => OwnerAssetCache.OpenAndValidateLevel2(level3CachePath));
+            Assert.Throws<InvalidDataException>(() => OwnerAssetCache.OpenAndValidateLevel3(cachePath));
+            Assert.DoesNotThrow(() => OwnerAssetCache.OpenAndValidateLevel2(
+                Path.Combine(generated, "level2-day-minimap-owner-cache-v3")));
+            Assert.DoesNotThrow(() => OwnerAssetCache.OpenAndValidateLevel3(
+                Path.Combine(generated, "level3-day-minimap-owner-cache-v3")));
+            foreach (short family in new short[] { 0, 1 })
+            {
+                var root = new GameObject("Live campaign spell presentation");
+                DayPresentationSurface surface = null;
+                try
+                {
+                    using var session = NativeCampaignSession.Open(
+                        Path.Combine(generated, "level2-day-block32-campaign-v2"),
+                        NativeSim.CampaignSelection.Create(2, 1, 0),
+                        Path.Combine(cachePath, "components/material"));
+                    surface = new DayPresentationSurface(root.transform);
+                    var sawFlyer = false;
+                    var sawImpact = false;
+                    ushort cameraX = 384;
+                    ushort cameraY = 62080;
+                    int? cameraOffsetX = null;
+                    var cameraOffsetY = 0;
+                    // Match the native lifecycle test's bounded window,
+                    // including projectile expiry and the impact's reclaim.
+                    for (var frame = 0; frame < 40; frame++)
+                    {
+                        session.Step(cameraX, cameraY, 8000,
+                            flags: (sbyte)(frame == 0 ? 0x40 : 0),
+                            requestedSpell: frame == 0 ? family : (short)NativeSim.NoRequestedSpell);
+                        surface.Present(session, cache);
+                        var markers = root.GetComponentsInChildren<Level3EntitySurfaceMarker>();
+                        // Keep the ordinary viewer pose behind the flyer. A
+                        // stationary camera correctly loses its distant impact
+                        // to Rust's source draw-distance gate after 13 frames.
+                        var flyer = markers.FirstOrDefault(marker => marker.ClassId == 9 && marker.Model == family);
+                        if (flyer != null)
+                        {
+                            if (!cameraOffsetX.HasValue)
+                            {
+                                cameraOffsetX = cameraX - flyer.SourceX;
+                                cameraOffsetY = cameraY - flyer.SourceY;
+                            }
+                            cameraX = unchecked((ushort)(flyer.SourceX + cameraOffsetX.Value));
+                            cameraY = unchecked((ushort)(flyer.SourceY + cameraOffsetY));
+                        }
+                        foreach (var marker in markers.Where(marker => marker.SpriteReady))
+                        {
+                            var renderer = marker.transform.Find("package sprite").GetComponent<MeshRenderer>();
+                            Assert.That(renderer.enabled, Is.True);
+                            Assert.That(renderer.sharedMaterial.GetTexture("_Indices"), Is.Not.Null);
+                            if (marker.ClassId == 9 && marker.Model == family)
+                            {
+                                sawFlyer = true;
+                                Assert.That(marker.AssetSelector, Is.EqualTo(family == 0 ? 463 : 144));
+                            }
+                            if (marker.ClassId == 10 && marker.Model == 0) sawImpact = true;
+                        }
+                    }
+                    Assert.That(sawFlyer, Is.True, $"family {family} must reach a real Unity sprite");
+                    if (family == 0) Assert.That(sawImpact, Is.True,
+                        "Fireball expiry must reach a visible Unity impact sprite");
+                    Assert.That(root.GetComponentsInChildren<Level3EntitySurfaceMarker>()
+                        .Any(marker => marker.ClassId == 9 && marker.Model == family), Is.False,
+                        "reclaimed projectiles must not leave stale Unity markers");
+                }
+                finally
+                {
+                    surface?.Dispose();
+                    UnityEngine.Object.DestroyImmediate(root);
+                }
+            }
             Assert.That(NativeCampaignSession.ActiveSessionCount, Is.Zero);
         }
 

@@ -1,4 +1,35 @@
 #[test]
+fn campaign_entity_projection_follows_live_player_and_reset() {
+    let handle = open_level2_campaign_handle();
+    let live_player = || {
+        with_campaign_session(handle, |record| {
+            let CampaignSessionKind::Level2 { reset, .. } = &record.kind else { unreachable!() };
+            let slot = reset.players()[0].entity_index;
+            let row = &reset.entities()[usize::from(slot)];
+            Ok((slot, (row.position.x, row.position.y, row.position.z)))
+        }).unwrap()
+    };
+    let copy_player = |slot: u16| {
+        let mut row = McCampaignEntitySnapshotV2::default();
+        let mut written = 0;
+        assert_eq!(mc_native_campaign_entities_copy(handle, u32::from(slot), &raw mut row,
+            1, struct_size::<McCampaignEntitySnapshotV2>(), &raw mut written), MC_STATUS_OK);
+        assert_eq!(written, 1);
+        (row.x, row.y, row.z)
+    };
+    let (slot, initial) = live_player();
+    assert_eq!(copy_player(slot), initial);
+    step_level2_campaign_once(handle, 0);
+    let (_, moved) = live_player();
+    assert_ne!(moved, initial, "the public native turn moved the authoritative player row");
+    assert_eq!(copy_player(slot), moved, "presentation must not copy the immutable package row");
+    assert_eq!(mc_native_campaign_session_reset(handle), MC_STATUS_OK);
+    assert_eq!(live_player().1, initial);
+    assert_eq!(copy_player(slot), initial);
+    assert_eq!(mc_native_campaign_session_destroy(handle), MC_STATUS_OK);
+}
+
+#[test]
 fn layouts_and_versions_are_stable() {
     assert_eq!(mc_native_abi_version(), 2);
     assert_eq!(size_of::<McWorldInfoV2>(), 72);

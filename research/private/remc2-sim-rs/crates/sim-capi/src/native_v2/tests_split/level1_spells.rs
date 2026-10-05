@@ -1001,6 +1001,58 @@ fn top_hud_uses_shared_holder_tier_while_menu_preserves_per_hand_tiers() {
 }
 
 #[test]
+fn castle_holder_reset_is_not_overwritten_by_player_turn() {
+    let handle = open_fixture();
+    let idle = valid_command();
+    let mut snapshot = McSessionSnapshotV2::default();
+    for position in [
+        Position { x: 29_440, y: 54_272, z: 0 },
+        Position { x: 36_000, y: 54_272, z: 4_896 },
+        Position { x: 49_664, y: 54_528, z: 0 },
+    ] {
+        with_session_mut(handle, |session| {
+            session.state.position = position;
+            session.state.actual_speed = 0;
+            Ok(())
+        }).unwrap();
+        for _ in 0..16 {
+            assert_eq!(mc_native_session_step(handle, &raw const idle,
+                &raw mut snapshot, struct_size::<McSessionSnapshotV2>()), MC_STATUS_OK);
+        }
+    }
+    with_session_mut(handle, |session| {
+        assert!(session.mission.has_castle_spell, "ordinary pickup route");
+        session.mission.begin_source_turn();
+        let slot = session.live_world.goats().iter()
+            .find(|goat| goat.entity_index < session.state.entity_index && goat.active)
+            .expect("lower source-slot creature").entity_index;
+        assert!(session.mission.disable_imported_source_slot(slot));
+        session.mission.begin_source_turn();
+        session.state.position = Position { x: 42_213, y: 56_833, z: 256 };
+        session.mission.player_mana = 1_000;
+        assert!(session.mission.cast_initial_castle(&session.terrain, &session.state, 0));
+        let projectile = session.mission.projectiles().iter().find_map(|p| {
+            if let Level1Projectile::CastleBuild(p) = p { Some(p) } else { None }
+        }).unwrap();
+        assert!(projectile.source_entity_index < session.state.entity_index,
+            "projectile {} must end before player {} captures holder state",
+            projectile.source_entity_index, session.state.entity_index);
+        Ok(())
+    }).unwrap();
+    for _ in 0..120 {
+        assert_eq!(mc_native_session_step(handle, &raw const idle,
+            &raw mut snapshot, struct_size::<McSessionSnapshotV2>()), MC_STATUS_OK);
+    }
+    with_session(handle, |session| {
+        assert!(!session.mission.castle_exists, "blocked placement must reject");
+        assert!(!session.mission.projectiles().iter().any(|p| matches!(p, Level1Projectile::CastleBuild(_))));
+        assert_eq!(session.mission.castle_holder_active_value(), 0);
+        Ok(())
+    }).unwrap();
+    assert_eq!(mc_native_session_destroy(handle), MC_STATUS_OK);
+}
+
+#[test]
 fn selected_fireball_retriggers_through_the_public_command_path() {
     let handle = open_fixture();
     let mut snapshot = McSessionSnapshotV2::default();
@@ -1252,6 +1304,23 @@ fn real_level_one_right_hand_possession_claims_and_composites_a_building() {
     assert_eq!(mission.last_possessed_building_owner, snapshot.entity_index);
     assert_eq!(mission.possession_experience, 601);
     assert_eq!(mission.possession_tier, 1);
+    with_session(handle, |session| {
+        let inputs = level1_minimap_entity_inputs(session);
+        let owned = inputs[usize::from(target.entity_index)];
+        assert_eq!(owned.player_link, snapshot.entity_index);
+        assert!(owned.player_link_is_local_player);
+        let command = level1_minimap_entity_command(&session.state, owned).unwrap();
+        assert!(matches!(command.palette_index, 164 | 170));
+        let mut unowned = owned;
+        unowned.player_link = 0;
+        unowned.player_link_is_player = false;
+        unowned.player_link_is_local_player = false;
+        assert_eq!(
+            level1_minimap_entity_command(&session.state, unowned).unwrap().palette_index,
+            215
+        );
+        Ok(())
+    }).unwrap();
     let mut impacts =
         vec![McFireballImpactSnapshotV2::default(); usize::try_from(mission.impact_count).unwrap()];
     let mut impact_written = 0;
@@ -1554,7 +1623,25 @@ fn water_splash_event_preserves_impact_identity_after_audio_sidecar_attachment()
             })?;
         assert_eq!(command.sound_id, WATER_SPLASH_SOUND);
         assert_eq!(command.event_sequence, event.sequence);
-        assert_eq!(command.entity_index, 0);
+        assert_eq!(command.entity_index, event.entity_index);
+        assert_eq!(command.generation, event.generation);
+        assert_eq!(command.state_hash, event.state_hash);
+        assert_eq!(command.asset_ref_index, event.asset_ref_index);
+        assert_eq!(command.player_index, event.player_index);
+        let overflow_event = session.encode_mission_event(
+            Level1MissionEvent::WaterSplashed {
+                splash_id: u32::from(u16::MAX) + 1,
+                projectile_id: 78,
+                position,
+                sound_id: WATER_SPLASH_SOUND,
+            },
+            state_hash(&session.state),
+        );
+        assert_eq!(overflow_event.entity_index, u16::MAX);
+        assert_eq!(
+            session.audio_commands[&overflow_event.sequence].entity_index,
+            overflow_event.entity_index
+        );
         Ok(())
     })
     .expect("water-splash C ABI event");

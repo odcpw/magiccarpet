@@ -17,12 +17,23 @@ namespace MagicCarpet.Native
         internal ulong Tick { get; private set; }
         internal ushort AssetSelector { get; private set; }
         internal bool SpriteReady { get; private set; }
+        internal ushort SourceX { get; private set; }
+        internal ushort SourceY { get; private set; }
+        internal short SourceZ { get; private set; }
 
         internal void Bind(
             NativeSim.CampaignEntitySnapshot row,
             ulong generation,
             ulong tick)
         {
+            // A source slot can remain live while its presentation disappears,
+            // or be reused for another family. Only this frame's Rust draw
+            // admission may enable its sprite; a previous frame is not authority.
+            SpriteReady = false;
+            AssetSelector = 0;
+            var visual = transform.Find("package sprite");
+            if (visual != null)
+                visual.GetComponent<MeshRenderer>().enabled = false;
             EntityIndex = row.entityIndex;
             SourceId = row.sourceId;
             ClassId = row.classId;
@@ -30,6 +41,9 @@ namespace MagicCarpet.Native
             Action = row.action;
             Generation = generation;
             Tick = tick;
+            SourceX = row.x;
+            SourceY = row.y;
+            SourceZ = row.z;
             transform.localPosition = new Vector3(
                 row.x / 64f,
                 row.z / 64f,
@@ -66,11 +80,10 @@ namespace MagicCarpet.Native
     /// <summary>
     /// A package-neutral Level 3 Unity consumer. Rust supplies the live frame,
     /// entity and spell-inventory state; the sealed owner cache supplies only
-    /// validated HUD/spell/minimap pixels. No Level 2 entity selector table is copied here.
-    /// Entity nodes therefore remain typed position/lifecycle bindings until
-    /// Rust exports their semantic presentation asset selector.
+    /// validated HUD/spell/minimap pixels. Rust supplies sprite selectors and
+    /// draw admission; the client only projects the returned pose and pixels.
     /// </summary>
-    internal sealed class Level3PresentationSurface : IDisposable
+    internal sealed class DayPresentationSurface : IDisposable
     {
         private readonly Transform root;
         private readonly Dictionary<ushort, Level3EntitySurfaceMarker> entities = new();
@@ -80,13 +93,28 @@ namespace MagicCarpet.Native
         private readonly Dictionary<int, Material> entityMaterials = new();
         private GameObject worldObject;
         private Mesh worldMesh;
+        private Camera frameCamera;
+        private Camera entityCamera;
+        private const int FrameLayer = 31;
+        private const int EntityLayer = 30;
         private Material worldMaterial;
         private Texture2D worldIndices;
         private Texture2D worldPalette;
         private Texture2D hudPalette;
+        private byte[] minimapTables;
+        private CampaignMinimapOverlay minimapOverlay;
+        private readonly byte[] presentedIndices = new byte[320 * 200];
+        private readonly Dictionary<int, MinimapSymbolPixels> minimapSymbols = new();
+        internal sealed class MinimapSymbolPixels
+        {
+            internal int Width;
+            internal int Height;
+            internal byte[] Indices;
+            internal byte[] Mask;
+        }
         private bool disposed;
 
-        internal Level3PresentationSurface(Transform parent = null)
+        internal DayPresentationSurface(Transform parent = null)
         {
             root = new GameObject("Level 3 Rust presentation surface").transform;
             if (parent != null) root.SetParent(parent, false);
@@ -98,7 +126,9 @@ namespace MagicCarpet.Native
         internal ulong FrameHash { get; private set; }
         internal ulong TerrainHash { get; private set; }
         internal bool WorldReady => worldObject != null &&
-                                    worldObject.GetComponent<MeshRenderer>()?.enabled == true;
+                                    worldObject.GetComponent<MeshRenderer>()?.enabled == true &&
+                                    frameCamera != null;
+        internal Camera FrameCamera => frameCamera;
         internal bool HudReady { get; private set; }
         internal bool MinimapPanelReady { get; private set; }
         internal bool LiveMinimapReady { get; private set; }
@@ -109,17 +139,17 @@ namespace MagicCarpet.Native
         internal int LiveSpellSurfaceCount { get; private set; }
         internal string CacheContentHash { get; private set; }
 
-        internal void Present(NativeCampaignSession session, OwnerAssetCache cache)
+        internal void Present(NativeCampaignSession session, OwnerAssetCache cache, short cameraYaw = 0)
         {
-            if (disposed) throw new ObjectDisposedException(nameof(Level3PresentationSurface));
+            if (disposed) throw new ObjectDisposedException(nameof(DayPresentationSurface));
             if (session == null) throw new ArgumentNullException(nameof(session));
-            if (cache == null || !cache.IsLevel3Aggregate)
-                throw new InvalidOperationException("Level 3 presentation requires the qualified Level 3 aggregate");
+            if (cache == null || !cache.IsDayAggregate)
+                throw new InvalidOperationException("Day presentation requires a qualified Day aggregate");
             var selection = session.Selection;
-            if (selection.externalLevel != 3 ||
-                selection.internalLevel != 2 ||
+            if (selection.externalLevel != cache.Level3Materials.profile.external_level ||
+                selection.internalLevel != cache.Level3Materials.profile.internal_level ||
                 selection.mapType != 0)
-                throw new InvalidOperationException("Level 3 presentation/session selection mismatch");
+                throw new InvalidOperationException("Day presentation/session selection mismatch");
 
             var generation = session.Generation;
             var tick = session.Tick;
@@ -130,13 +160,31 @@ namespace MagicCarpet.Native
             var minimap = session.MinimapState(tick);
             var minimapEntities = session.MinimapEntities(tick, minimap);
             var minimapMarks = session.MinimapMarks(tick, minimap);
-            var entityPresentations = session.EntityPresentations(0);
+            var entityPresentations = session.EntityPresentations(cameraYaw);
             if (frame.generation != generation || frame.tick != tick ||
                 terrain.generation != generation ||
                 terrain.tick != tick)
                 throw new InvalidOperationException("Level 3 presentation generation/tick mismatch");
 
-            EnsureWorld(session.DayIndexedFrameIndices, session.DayIndexedFramePalette);
+            minimapTables ??= cache.ReadLevel3MaterialOutput("palette/tablesd.u8");
+            if (minimapSymbols.Count == 0 && cache.Level3Materials.minimap_symbols != null)
+            {
+                foreach (var symbol in cache.Level3Materials.minimap_symbols.symbols)
+                    minimapSymbols.Add(symbol.selector, new MinimapSymbolPixels {
+                        Width = symbol.width, Height = symbol.height,
+                        Indices = cache.ReadLevel3MaterialOutput(symbol.indices_path),
+                        Mask = cache.ReadLevel3MaterialOutput(symbol.mask_path)
+                    });
+            }
+            Buffer.BlockCopy(session.DayIndexedFrameIndices, 0, presentedIndices, 0, presentedIndices.Length);
+            MaterializeMinimapPixels(presentedIndices, minimapEntities, minimapTables, generation, tick, minimapSymbols);
+            MaterializeMinimapMarks(presentedIndices, minimapMarks, minimapTables, generation, tick);
+            EnsureWorld(presentedIndices, session.DayIndexedFramePalette);
+            if (cache.Level3Materials.minimap_symbols != null)
+            {
+                minimapOverlay ??= root.gameObject.AddComponent<CampaignMinimapOverlay>();
+                minimapOverlay.Present(presentedIndices, session.DayIndexedFramePalette, minimapTables);
+            }
             MaterializeHud(cache, hud);
             LiveMinimapReady = minimap.entityCount == (uint)minimapEntities.Length &&
                                minimap.markCount == (uint)minimapMarks.Length;
@@ -149,6 +197,126 @@ namespace MagicCarpet.Native
             CacheContentHash = cache.ContentHash;
         }
 
+        // Rust supplies visibility, source order, positions, colors and command
+        // kinds. This is only the indexed-pixel consumer, matching
+        // presentation_bridge::push_minimap_entities; no Unity classification.
+        internal static int MaterializeMinimapPixels(
+            byte[] frame, NativeSim.CampaignMinimapEntity[] commands,
+            byte[] tables, ulong generation, ulong tick,
+            IReadOnlyDictionary<int, MinimapSymbolPixels> symbols = null)
+        {
+            if (frame.Length != 320 * 200 || tables.Length != 83456)
+                throw new InvalidOperationException("Campaign minimap pixel inputs have invalid extents");
+            var written = 0;
+            foreach (var command in commands)
+            {
+                if (command.generation != generation || command.tick != tick)
+                    throw new InvalidOperationException("Campaign minimap command is from another revision");
+                if (command.visible == 0) continue;
+                MinimapSymbolPixels symbol = null;
+                if (command.kind == 2 && (symbols == null || !symbols.TryGetValue(command.selector, out symbol))) continue;
+                if (command.kind != 1 && command.kind != 2 && command.kind != 3)
+                    throw new InvalidOperationException("Unknown campaign minimap pixel command");
+                var left = command.x / 2;
+                var top = command.y / 2;
+                var size = command.kind == 3 ? 1 : (Math.Max(1, (int)command.size) + 1) / 2;
+                var width = symbol?.Width ?? size;
+                var height = symbol?.Height ?? size;
+                if (symbol != null)
+                {
+                    if (width <= 0 || height <= 0 || symbol.Indices.Length != width * height || symbol.Mask.Length != width * height)
+                        throw new InvalidOperationException("Campaign minimap symbol extent mismatch");
+                    if (command.anchor == 3) left -= width / 2;
+                    if (command.anchor == 2 || command.anchor == 3) top -= height;
+                }
+                for (var dy = 0; dy < height; dy++)
+                for (var dx = 0; dx < width; dx++)
+                {
+                    var source = dy * width + dx;
+                    if (symbol != null && symbol.Mask[source] == 0) continue;
+                    var x = left + dx;
+                    var y = top + dy;
+                    if (x < 0 || x >= 64 || y < 0 || y >= 64) continue;
+                    var sourceY = y * 2;
+                    var phase = sourceY < 64 ? 63 - sourceY : sourceY - 64;
+                    var halfSpan = (64 * tables[0x14300 + phase * 4]) >> 8;
+                    if (x * 2 < 64 - halfSpan || x * 2 >= 64 + halfSpan) continue;
+                    var offset = y * 320 + x;
+                    frame[offset] = command.kind == 3
+                        ? tables[0x4000 + (frame[offset] << 8) + command.paletteIndex]
+                        : symbol != null ? symbol.Indices[source] : command.paletteIndex;
+                    written++;
+                }
+            }
+            return written;
+        }
+
+        internal static int MaterializeMinimapMarks(byte[] frame,
+            NativeSim.CampaignMinimapMark[] marks, byte[] tables, ulong generation, ulong tick)
+        {
+            if (frame.Length != 320 * 200 || tables.Length != 83456)
+                throw new InvalidOperationException("Campaign minimap mark inputs have invalid extents");
+            var written = 0;
+            for (var ordinal = 0; ordinal < marks.Length; ordinal++)
+            {
+                var mark = marks[ordinal];
+                if (mark.generation != generation || mark.tick != tick)
+                    throw new InvalidOperationException("Campaign minimap mark is from another revision");
+                if (mark.kind == 3)
+                {
+                    if (ordinal + 7 > marks.Length)
+                        throw new InvalidOperationException("Campaign minimap arrow is incomplete");
+                    for (var vertex = 0; vertex < 7; vertex++)
+                    {
+                        var row = marks[ordinal + vertex];
+                        if (row.kind != 3 || row.sourceOrder != mark.sourceOrder + vertex || row.generation != generation ||
+                            row.tick != tick || row.visible != mark.visible || row.paletteIndex != mark.paletteIndex)
+                            throw new InvalidOperationException("Campaign minimap arrow vertices disagree");
+                    }
+                    if (mark.visible != 0)
+                    {
+                        var pixels = new byte[64 * 64];
+                        var mask = new bool[64 * 64];
+                        for (var vertex = 0; vertex < 7; vertex++)
+                        {
+                            var from = marks[ordinal + vertex];
+                            var to = marks[ordinal + (vertex + 1) % 7];
+                            MagicCarpetRuntime.DrawOwnerMinimapLine(pixels, mask, 64,
+                                from.x / 2, from.y / 2, to.x / 2, to.y / 2, mark.paletteIndex);
+                        }
+                        for (var pixel = 0; pixel < pixels.Length; pixel++)
+                        {
+                            if (!mask[pixel]) continue;
+                            frame[(pixel / 64) * 320 + pixel % 64] = pixels[pixel];
+                            written++;
+                        }
+                    }
+                    ordinal += 6;
+                    continue;
+                }
+                if (mark.visible == 0) continue; // Rust owns the original pulse cadence.
+                if (mark.kind != 2)
+                    throw new InvalidOperationException("Unknown campaign minimap mark command");
+                var x = mark.x / 2;
+                var y = mark.y / 2;
+                // DrawObjectiveRectangle_64CE0: three-pixel interior margin,
+                // then a 3x3 outline (the center remains terrain/entity pixels).
+                if (y < 3 || y >= 61 || x < 3 || x >= 61) continue;
+                var sourceY = y * 2;
+                var phase = sourceY < 64 ? 63 - sourceY : sourceY - 64;
+                var halfSpan = (32 * tables[0x14300 + phase * 4]) >> 8;
+                if (x < 32 - halfSpan + 3 || x >= 32 + halfSpan - 3) continue;
+                for (var dy = -1; dy <= 1; dy++)
+                for (var dx = -1; dx <= 1; dx++)
+                {
+                    if (dx == 0 && dy == 0) continue;
+                    frame[(y + dy) * 320 + x + dx] = mark.paletteIndex;
+                    written++;
+                }
+            }
+            return written;
+        }
+
         private void EnsureWorld(byte[] indices, byte[] palette)
         {
             if (indices == null || indices.Length != NativeSim.DayIndexedFrameIndexBytes ||
@@ -159,9 +327,18 @@ namespace MagicCarpet.Native
                 var shader = Resources.Load<Shader>("TerrainIndexedFrame");
                 if (shader == null) throw new InvalidOperationException("indexed world shader is missing");
                 worldObject = new GameObject("Level 3 live indexed world");
+                worldObject.layer = FrameLayer;
                 worldObject.transform.SetParent(root, false);
+                worldObject.transform.localScale = new Vector3(3.2f, 2f, 1f);
                 var filter = worldObject.AddComponent<MeshFilter>();
                 worldMesh = CreateQuad();
+                // Both native frames and decoded owner TMAPs are top-down.
+                // Unity's bottom-up UV convention must not invert either.
+                worldMesh.uv = new[]
+                {
+                    new Vector2(0f, 1f), new Vector2(1f, 1f),
+                    new Vector2(0f, 0f), new Vector2(1f, 0f)
+                };
                 filter.sharedMesh = worldMesh;
                 var renderer = worldObject.AddComponent<MeshRenderer>();
                 renderer.shadowCastingMode = ShadowCastingMode.Off;
@@ -186,12 +363,85 @@ namespace MagicCarpet.Native
                 worldMaterial.SetTexture("_Coverage", Texture2D.whiteTexture);
                 worldMaterial.SetTexture("_Palette", worldPalette);
                 renderer.sharedMaterial = worldMaterial;
+                frameCamera = new GameObject("Campaign indexed frame camera").AddComponent<Camera>();
+                frameCamera.transform.SetParent(root, false);
+                frameCamera.transform.localPosition = new Vector3(0f, 0f, -1f);
+                frameCamera.orthographic = true;
+                frameCamera.orthographicSize = 1f;
+                frameCamera.aspect = 1.6f;
+                frameCamera.nearClipPlane = 0.01f;
+                frameCamera.farClipPlane = 10f;
+                frameCamera.clearFlags = CameraClearFlags.SolidColor;
+                frameCamera.backgroundColor = Color.black;
+                frameCamera.cullingMask = 1 << FrameLayer;
+                frameCamera.depth = -100f;
+                frameCamera.enabled = !Application.isBatchMode;
+                entityCamera = new GameObject("Campaign sprite camera").AddComponent<Camera>();
+                entityCamera.transform.SetParent(root, false);
+                entityCamera.nearClipPlane = 0.035f;
+                entityCamera.farClipPlane = 1800f;
+                entityCamera.fieldOfView = Level1ExitPresentationMath.UnityVerticalFov(128);
+                entityCamera.clearFlags = CameraClearFlags.Depth;
+                entityCamera.cullingMask = 1 << EntityLayer;
+                entityCamera.depth = -99f;
+                entityCamera.enabled = false;
             }
             worldIndices.LoadRawTextureData(indices);
             worldIndices.Apply(false, false);
             worldPalette.LoadRawTextureData(palette);
             worldPalette.Apply(false, false);
             worldObject.GetComponent<MeshRenderer>().enabled = true;
+        }
+
+        internal void PresentView(EngineSessionTransport.Pose pose)
+        {
+            if (pose == null || entityCamera == null)
+                throw new InvalidOperationException("campaign view requires a current Rust player pose");
+            var rect = Level1ExitPresentationMath.SourceDisplayRect(Screen.width, Screen.height);
+            frameCamera.rect = rect;
+            entityCamera.rect = rect;
+            // Source yaw zero looks toward decreasing map Y, with increasing
+            // map X to the right (classic_hd_terrain::terrain_tile_for).
+            // Pitch is a screen offset, not a rotation of the world camera.
+            var rotation = Quaternion.Euler(0f, pose.yaw * (360f / 2048f), 0f);
+            entityCamera.transform.localPosition = new Vector3(0f, pose.z / 64f, 0f);
+            entityCamera.transform.localRotation = rotation;
+            entityCamera.projectionMatrix = SourceSpriteProjection(
+                pose.display_pitch, pose.roll, entityCamera.nearClipPlane, entityCamera.farClipPlane);
+            foreach (var marker in entities.Values)
+            {
+                // Always project immutable copied coordinates, so repeated
+                // presentation cannot accumulate a camera-relative offset.
+                var x = ((marker.SourceX - pose.x + 32768) & 65535) - 32768;
+                var y = ((marker.SourceY - pose.y + 32768) & 65535) - 32768;
+                marker.transform.localPosition = new Vector3(x / 64f, marker.SourceZ / 64f, -y / 64f);
+                marker.transform.localRotation = rotation;
+            }
+            entityCamera.enabled = !Application.isBatchMode;
+        }
+
+        internal static Matrix4x4 SourceSpriteProjection(short pitch, short roll, float near, float far)
+        {
+            // GameRenderHD::DrawTerrainAndParticles_3C080 and Rust
+            // ClassicHdProjection: project into 320x200 first; the complete
+            // image is then stretched to the common 4:3 display rectangle.
+            const float width = 320f, height = 200f;
+            const int scale = 7 * 377 * 128 >> 11;
+            var offset = (pitch * 320) >> 8;
+            var angle = (roll & 2047) * (2f * Mathf.PI / 2048f);
+            var sin = Mathf.Sin(angle);
+            var cos = Mathf.Cos(angle);
+            var matrix = new Matrix4x4();
+            matrix.m00 = 2f * scale * cos / width;
+            matrix.m01 = -2f * scale * sin / width;
+            matrix.m02 = 2f * offset * sin / width;
+            matrix.m10 = 2f * scale * sin / height;
+            matrix.m11 = 2f * scale * cos / height;
+            matrix.m12 = -2f * offset * cos / height;
+            matrix.m22 = -(far + near) / (far - near);
+            matrix.m23 = -2f * far * near / (far - near);
+            matrix.m32 = -1f;
+            return matrix;
         }
 
         private void MaterializeHud(
@@ -284,6 +534,7 @@ namespace MagicCarpet.Native
                 if (!entities.TryGetValue(row.entityIndex, out var marker))
                 {
                     var node = new GameObject($"Level 3 entity {row.entityIndex:D3}");
+                    node.layer = EntityLayer;
                     node.transform.SetParent(root, false);
                     marker = node.AddComponent<Level3EntitySurfaceMarker>();
                     entities.Add(row.entityIndex, marker);
@@ -306,6 +557,7 @@ namespace MagicCarpet.Native
                     texture,
                     worldMesh,
                     EnsureEntityMaterial(cache, texture));
+                marker.transform.Find("package sprite").gameObject.layer = EntityLayer;
             }
             var live = new HashSet<ushort>(rows.Where(row => row.active != 0)
                 .Select(row => row.entityIndex));

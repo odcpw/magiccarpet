@@ -3810,6 +3810,31 @@ namespace MagicCarpet.Native.Tests
         }
 
         [Test]
+        public void LiveFixedUpdateAdvancesExactlyOneSimulationTurn()
+        {
+            var root = new GameObject("live fixed-step cadence");
+            root.SetActive(false);
+            try
+            {
+                var runtime = root.AddComponent<MagicCarpetRuntime>();
+                runtime.QualificationInitializeExactPresentation(
+                    PackagePath, ClosurePath, QualifiedAssetCachePath);
+                var before = runtime.QualificationNativeTick;
+                var fixedUpdate = typeof(MagicCarpetRuntime).GetMethod(
+                    "FixedUpdate", BindingFlags.NonPublic | BindingFlags.Instance);
+                Assert.That(fixedUpdate, Is.Not.Null);
+                fixedUpdate.Invoke(runtime, null);
+                Assert.That(runtime.QualificationNativeTick, Is.EqualTo(before + 1));
+                fixedUpdate.Invoke(runtime, null);
+                Assert.That(runtime.QualificationNativeTick, Is.EqualTo(before + 2));
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(root);
+            }
+        }
+
+        [Test]
         public void LiveSimulationUsesTheRemc2DefaultThirtyHertzCadence()
         {
             Assert.That(

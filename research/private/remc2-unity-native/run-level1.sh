@@ -4,7 +4,7 @@ set -eu
 script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
 project_root=$(CDPATH= cd -- "$script_dir/../../.." && pwd -P)
 
-exec "$script_dir/Builds/Linux/MagicCarpetNative.x86_64" \
+exec sh "$script_dir/run-player.sh" \
   -mc-qualified \
   -screen-fullscreen "${MC_FULLSCREEN:-0}" \
   -screen-width "${MC_WIDTH:-1600}" \

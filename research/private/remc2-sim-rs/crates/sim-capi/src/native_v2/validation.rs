@@ -1424,6 +1424,19 @@ pub(super) fn level1_minimap_entity_inputs(
             actor.stage_var_2,
         );
     }
+    // House-spawned residents occupy recycled source slots. Their reset
+    // coordinates belong to the previous occupant (or an empty slot), not
+    // to the creature currently presented by the world renderer.
+    for resident in session.mission.dynamic_residents() {
+        resolve(
+            resident.source_entity_index,
+            resident.position,
+            resident.source_id,
+            resident.owner_entity_index,
+            0,
+            resident.stage_var_2,
+        );
+    }
     for segment in session.mission.multipart_segments() {
         resolve(
             segment.source_entity_index,
@@ -1538,6 +1551,17 @@ pub(super) fn level1_minimap_entity_inputs(
                 construction.parent_entity_index,
                 0,
             );
+        }
+    }
+    // Houses retain their reset source ID, but possession changes their
+    // live player-link ownership. Do not colour them from reset bytes.
+    for building in session.mission.possessed_buildings() {
+        if building.active {
+            let input = &mut inputs[usize::from(building.entity_index)];
+            input.position = building.position;
+            input.player_link = building.owner_entity_index;
+            input.player_link_is_player = relation_is_player(building.owner_entity_index);
+            input.player_link_is_local_player = building.owner_entity_index == local_player;
         }
     }
     inputs

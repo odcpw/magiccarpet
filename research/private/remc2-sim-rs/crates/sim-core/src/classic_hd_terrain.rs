@@ -784,7 +784,9 @@ fn normalize_distance(value: u32, factor: u64) -> u32 {
 }
 
 fn sky_byte(value: i32) -> u8 {
-    (value >> 8) as u8
+    // DrawSky_40950 reads BYTE2 of its 16.16 accumulators, not
+    // the upper byte of the fractional component (BYTE1).
+    (value >> 16) as u8
 }
 
 fn sky_index(v: u8, u: u8, bank: ClassicHdSkyBank) -> usize {
@@ -932,6 +934,29 @@ mod tests {
             render_classic_hd_sky(&profile, camera, &sky, ClassicHdSkyBank::Base256).unwrap(),
             draw_level1_sky(camera, &sky).unwrap()
         );
+    }
+
+    #[test]
+    fn patterned_sky_uses_source_integer_coordinate_byte() {
+        assert_eq!(sky_byte(0x0012_3456), 0x12);
+        assert_eq!(sky_byte(-0x0001_0000), 255);
+        let profile = ClassicHdRenderProfile::compatibility_320x200();
+        let sky: Vec<u8> = (0..LEVEL1_SKY_BYTES)
+            .map(|index| ((index >> 8) ^ (index & 255)) as u8)
+            .collect();
+        for (yaw, pitch, roll) in [(0, 0, 0), (173, 29, 11), (2047, -83, 1999)] {
+            let camera = Level1TerrainFrameCamera {
+                yaw,
+                pitch,
+                roll,
+                ..camera()
+            };
+            assert_eq!(
+                render_classic_hd_sky(&profile, camera, &sky, ClassicHdSkyBank::Base256).unwrap(),
+                draw_level1_sky(camera, &sky).unwrap(),
+                "nonuniform pixels must match the source-qualified sky path"
+            );
+        }
     }
 
     #[test]

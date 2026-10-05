@@ -85,8 +85,8 @@ class SemanticIdentityTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="exporter-schema-test.") as root:
             path = Path(root) / "exporter_main.cpp"
             source = cache.EXPORTER_SOURCE.read_bytes()
-            original = b'result.magic("MCR1");\n    result.u16(1);'
-            replacement = b'result.magic("MCR1");\n    result.u16(2);'
+            original = b'result.magic("MCR1");\n    result.u16(include_constructor_counters ? 2 : 1);'
+            replacement = b'result.magic("MCR1");\n    result.u16(include_constructor_counters ? 2 : 2);'
             self.assertEqual(source.count(original), 1)
             path.write_bytes(source.replace(original, replacement))
 
@@ -1851,6 +1851,42 @@ class Level2DayMaterialTests(unittest.TestCase):
             cache.validate_day_material_cache(self.first)
         path.unlink()
         path.write_bytes(original)
+
+
+class CorrectedDayMaterialTests(unittest.TestCase):
+    def test_v2_aggregate_binds_corrected_material_and_rejects_version_downgrade(self) -> None:
+        source = cache.GENERATED / "level3-day-block32-owner-cache-v2"
+        inputs = {
+            "owner_export_dir": cache.GENERATED / "level3-day-block32-owner-v2",
+            "campaign_package_dir": cache.GENERATED / "level3-day-block32-campaign-recipe-v2",
+            "closure_path": cache.GENERATED / "day-material-v2.j6oRrc/closure-runtime-v2.json",
+        }
+        manifest = cache.validate_campaign_day_aggregate_cache(source, **inputs)
+        self.assertEqual(manifest["schema"], cache.CAMPAIGN_DAY_AGGREGATE_SCHEMA_V2)
+        self.assertEqual(manifest["components"]["material"]["schema"], cache.DAY_MATERIAL_SCHEMA_V2)
+        with tempfile.TemporaryDirectory(prefix="day-aggregate-v2-negative.", dir=cache.GENERATED) as directory:
+            target = Path(directory) / "cache"
+            shutil.copytree(source, target)
+            manifest["schema"] = cache.CAMPAIGN_DAY_AGGREGATE_SCHEMA
+            manifest.pop("manifest_payload_sha256")
+            manifest["manifest_payload_sha256"] = cache.sha256_bytes(cache.canonical_json(manifest))
+            (target / "manifest.json").write_bytes(cache.canonical_json(manifest))
+            with self.assertRaisesRegex(cache.CacheError, "unsupported campaign Day aggregate schema"):
+                cache.validate_campaign_day_aggregate_cache(target, **inputs)
+
+    def test_v2_requires_day_bank_even_after_manifest_rehash(self) -> None:
+        source = cache.GENERATED / "level3-day-block32-material-cache-v2"
+        manifest = cache.validate_campaign_day_material_cache(source)
+        self.assertEqual(manifest["schema"], cache.DAY_MATERIAL_SCHEMA_V2)
+        with tempfile.TemporaryDirectory(prefix="day-v2-negative.") as directory:
+            target = Path(directory) / "cache"
+            shutil.copytree(source, target)
+            manifest["profile"]["selectors"]["block_bank"] = "BL32N0-0"
+            manifest.pop("manifest_payload_sha256")
+            manifest["manifest_payload_sha256"] = cache.sha256_bytes(cache.canonical_json(manifest))
+            (target / "manifest.json").write_bytes(cache.canonical_json(manifest))
+            with self.assertRaisesRegex(cache.CacheError, "selector identity"):
+                cache.validate_campaign_day_material_cache(target)
 
 
 class CampaignDayMaterialTests(unittest.TestCase):

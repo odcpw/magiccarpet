@@ -28,6 +28,10 @@ const MATERIAL_SCHEMA: &str = "mc2-level2-day-material-cache/v1";
 const MATERIAL_DESCRIPTOR_SCHEMA: &str = "mc2-level2-day-materials/v1";
 const NEUTRAL_MATERIAL_SCHEMA: &str = "mc2-day-material-cache/v1";
 const NEUTRAL_MATERIAL_DESCRIPTOR_SCHEMA: &str = "mc2-day-materials/v1";
+const NEUTRAL_MATERIAL_SCHEMA_V2: &str = "mc2-day-material-cache/v2";
+const NEUTRAL_MATERIAL_DESCRIPTOR_SCHEMA_V2: &str = "mc2-day-materials/v2";
+const NEUTRAL_MATERIAL_SCHEMA_V3: &str = "mc2-day-material-cache/v3";
+const NEUTRAL_MATERIAL_DESCRIPTOR_SCHEMA_V3: &str = "mc2-day-materials/v3";
 const MATERIAL_GENERATOR: &str = "build_cache.py";
 const MATERIAL_PROFILE_NAME: &str = "level2-day";
 const MATERIAL_PACKAGE_LEVEL: u64 = 2;
@@ -119,6 +123,7 @@ struct OutputRecord {
 /// Decoded owner products needed by the Day indexed world pass.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DayIndexedFrameAssets {
+    source_minimap: bool,
     profile: DayIndexedProfile,
     package_sha256: String,
     campaign_package_sha256: Option<String>,
@@ -169,9 +174,20 @@ impl DayIndexedFrameAssets {
             ));
         }
         let schema = string_field(manifest_object, "schema", "material manifest")?;
+        let corrected_blocks = matches!(
+            schema,
+            NEUTRAL_MATERIAL_SCHEMA_V2 | NEUTRAL_MATERIAL_SCHEMA_V3
+        );
+        let block_asset = if corrected_blocks {
+            "owner_data:DATA/BLOCK32.DAT"
+        } else {
+            "owner_data:DATA/BL32N0-0.DAT"
+        };
         let neutral_dialect = match schema {
             MATERIAL_SCHEMA => false,
-            NEUTRAL_MATERIAL_SCHEMA => true,
+            NEUTRAL_MATERIAL_SCHEMA | NEUTRAL_MATERIAL_SCHEMA_V2 | NEUTRAL_MATERIAL_SCHEMA_V3 => {
+                true
+            }
             _ => {
                 return Err(DayIndexedFrameError::new(
                     "unsupported Day material cache schema",
@@ -193,7 +209,7 @@ impl DayIndexedFrameAssets {
         let historical_v4_profile = historical_v4_profile_json();
         let qualified_v5 = !neutral_dialect && profile_value == &expected_profile;
         let profile = if neutral_dialect {
-            validate_neutral_profile(profile_object)?
+            validate_neutral_profile(profile_object, corrected_blocks)?
         } else {
             if !qualified_v5 && profile_value != &historical_v4_profile {
                 return Err(DayIndexedFrameError::new(
@@ -359,14 +375,18 @@ impl DayIndexedFrameAssets {
                 "owner_data:DATA/PALD-0.DAT",
                 "owner_data:DATA/TABLESD.DAT",
                 "owner_data:DATA/CLRD-0.DAT",
-                "owner_data:DATA/BL32N0-0.DAT",
+                block_asset,
                 "owner_data:DATA/SKYD0-0.DAT",
             ],
         )?;
         validate_descriptor(
             &descriptor_bytes,
             profile_value,
-            if neutral_dialect {
+            if schema == NEUTRAL_MATERIAL_SCHEMA_V3 {
+                NEUTRAL_MATERIAL_DESCRIPTOR_SCHEMA_V3
+            } else if corrected_blocks {
+                NEUTRAL_MATERIAL_DESCRIPTOR_SCHEMA_V2
+            } else if neutral_dialect {
                 NEUTRAL_MATERIAL_DESCRIPTOR_SCHEMA
             } else {
                 MATERIAL_DESCRIPTOR_SCHEMA
@@ -400,21 +420,30 @@ impl DayIndexedFrameAssets {
         let terrain_atlas = read_output(
             cache_dir,
             &outputs,
-            TERRAIN_ATLAS_PATH,
+            if corrected_blocks {
+                "terrain/block32.atlas.indices.u8"
+            } else {
+                TERRAIN_ATLAS_PATH
+            },
             "indexed_atlas_u8",
             TERRAIN_ATLAS_BYTES,
-            &["owner_data:DATA/BL32N0-0.DAT"],
+            &[block_asset],
         )?;
         let _ = read_output(
             cache_dir,
             &outputs,
-            TERRAIN_TILES_PATH,
+            if corrected_blocks {
+                "terrain/block32.indices.u8"
+            } else {
+                TERRAIN_TILES_PATH
+            },
             "indexed_tile_bank_u8",
             TERRAIN_TILE_BANK_BYTES,
-            &["owner_data:DATA/BL32N0-0.DAT"],
+            &[block_asset],
         )?;
 
         Ok(Self {
+            source_minimap: corrected_blocks,
             profile,
             package_sha256,
             campaign_package_sha256,
@@ -658,6 +687,19 @@ pub fn render_level2_day_indexed_frame(
             "Day indexed frame hash does not match its output bytes",
         ));
     }
+    // The approved v2 presentation enables the source map layer. Retained v1
+    // material captures keep their terrain-only contract.
+    if assets.source_minimap {
+        draw_minimap_terrain(
+            &mut indices,
+            usize::from(DAY_FRAME_WIDTH),
+            camera,
+            &planes.terrain_types,
+            &planes.shading,
+            assets.tablesd(),
+        );
+    }
+    let index_hash = byte_hash(&indices);
     Ok(DayIndexedFrame {
         profile: assets.profile(),
         generation,
@@ -666,12 +708,52 @@ pub fn render_level2_day_indexed_frame(
         height: DAY_FRAME_HEIGHT,
         indices,
         palette_rgb8: assets.palette_rgb8().to_vec(),
-        index_hash: identity.index_hash,
+        index_hash,
         terrain_input_hash: terrain.input_hash,
         terrain_command_hash: terrain.command_hash,
         cache_content_sha256: assets.cache_content_sha256.clone(),
         package_sha256: assets.package_sha256.clone(),
     })
+}
+
+/// Source `GameUI.cpp::sub_63670_draw_minimap_a`, non-cave opaque branch.
+/// The 128-source-pixel map is sampled onto the fixed 320x200 presentation.
+/// All world coordinates wrap through BYTE1 exactly as the source map index.
+fn draw_minimap_terrain(
+    target: &mut [u8],
+    stride: usize,
+    camera: Level1TerrainFrameCamera,
+    terrain_types: &[u8],
+    shading: &[u8],
+    tables: &[u8],
+) {
+    const SOURCE_SIDE: i32 = 128;
+    const SIDE: usize = 64;
+    let angle = usize::from(camera.yaw.cast_unsigned() & 0x7ff);
+    let sin = ((256_i64 * i64::from(crate::SIN_16_16[angle])) >> 16) as i32;
+    let cos = ((256_i64 * i64::from(crate::SIN_16_16[angle + 512])) >> 16) as i32;
+    let origin_x = i32::from(camera.render_x) - SOURCE_SIDE * (cos - sin) / 2;
+    let origin_y = i32::from(camera.render_y) - SOURCE_SIDE * (cos + sin) / 2;
+    for y in 0..SIDE {
+        let source_y = (y * 2) as i32;
+        let phase = if source_y < 64 {
+            63 - source_y
+        } else {
+            source_y - 64
+        };
+        let half_span = (64 * i32::from(tables[0x14300 + (phase as usize * 4)])) >> 8;
+        for x in 0..SIDE {
+            let source_x = (x * 2) as i32;
+            if source_x < 64 - half_span || source_x >= 64 + half_span {
+                continue;
+            }
+            let world_x = origin_x - source_y * sin + source_x * cos;
+            let world_y = origin_y + source_y * cos + source_x * sin;
+            let tile = (((world_y >> 8) & 255) * 256 + ((world_x >> 8) & 255)) as usize;
+            let base = usize::from(tables[0x14000 + usize::from(terrain_types[tile])]);
+            target[y * stride + x] = tables[(usize::from(shading[tile]) << 8) + base];
+        }
+    }
 }
 
 fn validate_day_route(
@@ -778,7 +860,18 @@ fn validate_descriptor(
         TABLESD_SHADE_LUT_BYTES as u64,
         "material descriptor TABLESD",
     )?;
-    let bl32n = object_field(object, "bl32n", "material descriptor")?;
+    let bl32n = object_field(
+        object,
+        if matches!(
+            descriptor_schema,
+            NEUTRAL_MATERIAL_DESCRIPTOR_SCHEMA_V2 | NEUTRAL_MATERIAL_DESCRIPTOR_SCHEMA_V3
+        ) {
+            "blocks"
+        } else {
+            "bl32n"
+        },
+        "material descriptor",
+    )?;
     require_u64(bl32n, "tile_count", 152, "material descriptor BL32N")?;
     require_u64(bl32n, "tile_width", 32, "material descriptor BL32N")?;
     require_u64(bl32n, "tile_height", 32, "material descriptor BL32N")?;
@@ -1018,6 +1111,7 @@ fn historical_v4_profile_json() -> Value {
 
 fn validate_neutral_profile(
     profile: &serde_json::Map<String, Value>,
+    corrected_blocks: bool,
 ) -> Result<DayIndexedProfile, DayIndexedFrameError> {
     if string_field(profile, "name", "material profile")? != "day-material"
         || string_field(profile, "spec_commit", "material profile")? != REMC2_SPEC_COMMIT
@@ -1058,7 +1152,10 @@ fn validate_neutral_profile(
         ));
     }
     let selectors = object_field(profile, "selectors", "material profile")?;
-    let expected = qualified_profile_json();
+    let mut expected = qualified_profile_json();
+    if corrected_blocks {
+        expected["selectors"]["block_bank"] = Value::String("BLOCK32".to_owned());
+    }
     if selectors
         != object_field(
             object(&expected, "qualified profile")?,
@@ -1318,6 +1415,137 @@ mod tests {
                 .as_bytes(),
         );
         object.insert("manifest_payload_sha256".to_owned(), Value::String(claim));
+    }
+
+    #[test]
+    fn corrected_level_two_owner_identity_includes_its_building_parameters() {
+        let campaign = crate::campaign::CampaignSession::open(
+            generated_path("level2-day-block32-campaign-v2"),
+            crate::campaign::spec::CampaignSelection::LEVEL2,
+        )
+        .expect("corrected Level 2 campaign opens");
+        let assets = DayIndexedFrameAssets::load(generated_path(
+            "level2-day-minimap-owner-cache-v3/components/material",
+        ))
+        .expect("the matching owner cache opens");
+        let manifest: Value = serde_json::from_slice(
+            &fs::read(generated_path("level2-day-block32-owner-v2/manifest.json")).unwrap(),
+        )
+        .unwrap();
+        assert!(manifest["files"].get("building-parameters.bin").is_some());
+        assert_eq!(
+            campaign.inspection().package_sha256(),
+            manifest["package_sha256"].as_str().unwrap()
+        );
+        assert_eq!(
+            assets.package_sha256(),
+            campaign.inspection().package_sha256()
+        );
+        let frame = render_level2_day_indexed_frame(
+            campaign.inspection(),
+            campaign.level2_compatibility(),
+            &assets,
+            0,
+        )
+        .expect("cache binding and real terrain render accept the exact owner identity");
+        assert!(frame.indices.iter().any(|pixel| *pixel != 0));
+    }
+
+    #[test]
+    fn day_v3_symbol_cache_preserves_the_qualified_day_frame() {
+        let previous =
+            DayIndexedFrameAssets::load(generated_path("level3-day-block32-material-cache-v2"))
+                .expect("qualified Day v2 cache");
+        let current = DayIndexedFrameAssets::load(generated_path(
+            "level3-day-minimap-owner-cache-v3/components/material",
+        ))
+        .expect("Day v3 material component consumed by the Unity symbol presenter");
+        let campaign = crate::campaign::CampaignSession::open(
+            generated_path("level3-day-block32-campaign-recipe-v2"),
+            crate::campaign::spec::CampaignSelection::LEVEL3,
+        )
+        .expect("real corrected Day campaign");
+        let before = campaign.state_hash();
+        let render = |assets| {
+            render_level2_day_indexed_frame(
+                campaign.inspection(),
+                campaign.level2_compatibility(),
+                assets,
+                0,
+            )
+            .unwrap()
+        };
+        let old_frame = render(&previous);
+        let frame = render(&current);
+        assert_eq!(frame.indices, old_frame.indices);
+        assert_eq!(current.palette_rgb8(), previous.palette_rgb8());
+        assert!(current.source_minimap);
+        assert_eq!(campaign.state_hash(), before);
+    }
+
+    #[test]
+    fn day_v2_material_loads_source_day_bank_and_rejects_night_selector() {
+        let cache = generated_path("level3-day-block32-material-cache-v2");
+        let mut assets = DayIndexedFrameAssets::load(&cache).expect("qualified Day v2 cache");
+        let source = generated_path("../remc2-native-runtime/CD_Files/DATA/BLOCK32.DAT");
+        assert_eq!(assets.terrain_atlas(), fs::read(source).unwrap());
+        let night = generated_path("../remc2-native-runtime/CD_Files/DATA/BL32N0-0.DAT");
+        assert_ne!(assets.terrain_atlas(), fs::read(night).unwrap());
+        let campaign = crate::campaign::CampaignSession::open(
+            generated_path("level3-day-block32-campaign-recipe-v2"),
+            crate::campaign::spec::CampaignSelection::LEVEL3,
+        )
+        .expect("corrected campaign recipe opens through the shared authority");
+        let before = campaign.state_hash();
+        let frame = render_level2_day_indexed_frame(
+            campaign.inspection(),
+            campaign.level2_compatibility(),
+            &assets,
+            0,
+        )
+        .expect("corrected Day assets render the real campaign terrain");
+        assert_eq!(frame.indices.len(), 320 * 200);
+        assert!(frame.indices.iter().any(|index| *index != 0));
+        let session = campaign.level2_compatibility();
+        let planes = session.canonical_terrain().planes();
+        let position = session.state.position;
+        let tile = usize::from(position.y >> 8) * 256 + usize::from(position.x >> 8);
+        let base = assets.tablesd()[0x14000 + usize::from(planes.terrain_types[tile])];
+        assert_eq!(
+            frame.indices[32 * 320 + 32],
+            assets.tablesd()[(usize::from(planes.shading[tile]) << 8) + usize::from(base)],
+            "map center samples the authoritative player's terrain tile"
+        );
+        assets.source_minimap = false;
+        let terrain_only =
+            render_level2_day_indexed_frame(campaign.inspection(), session, &assets, 0).unwrap();
+        assert_eq!(
+            frame.indices[0], terrain_only.indices[0],
+            "aperture clips the corner"
+        );
+        assert_eq!(
+            &frame.indices[64 * 320..],
+            &terrain_only.indices[64 * 320..]
+        );
+        assert_ne!(
+            frame.indices, terrain_only.indices,
+            "map pixels reach the real frame"
+        );
+        assert_eq!(
+            campaign.state_hash(),
+            before,
+            "presentation is observational"
+        );
+        let mut manifest: Value =
+            serde_json::from_slice(&fs::read(cache.join("manifest.json")).unwrap()).unwrap();
+        assert_eq!(manifest["schema"], NEUTRAL_MATERIAL_SCHEMA_V2);
+        let profile = manifest["profile"].as_object_mut().unwrap();
+        validate_neutral_profile(profile, true).expect("Day v2 profile accepted");
+        profile.get_mut("selectors").unwrap()["block_bank"] = Value::String("BL32N0-0".to_owned());
+        assert!(
+            validate_neutral_profile(profile, true).is_err(),
+            "v2 cannot relabel Night indices as Day"
+        );
     }
 
     #[test]

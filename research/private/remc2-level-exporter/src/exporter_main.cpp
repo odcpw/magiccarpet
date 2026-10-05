@@ -1208,10 +1208,10 @@ Bytes capture_players(bool include_level_two_carriers, std::uint16_t& record_siz
     return result;
 }
 
-Bytes capture_runtime(json& layout) {
+Bytes capture_runtime(json& layout, bool include_constructor_counters) {
     Bytes result;
     result.magic("MCR1");
-    result.u16(1);
+    result.u16(include_constructor_counters ? 2 : 1);
     result.u16(0);
     result.u32(D41A0_0.dword_0x4);
     result.u32(D41A0_0.rand_0x8);
@@ -1394,6 +1394,11 @@ Bytes capture_runtime(json& layout) {
         result.u16(player_input.entityIndex2_0x6E3E_word8);
     }
     const std::size_t player_inputs_end = result.data.size();
+    if (include_constructor_counters) {
+        // GOLDEN-CHANGE: approved private campaign runtime v2 extension.
+        // Preserve the exact reset-time counters, including failed constructors.
+        for (const auto counter : D41A0_0.array_0x10) result.u8(counter);
+    }
     const std::size_t stage_count =
         sizeof(D41A0_0.stages_0x3654C) / sizeof(D41A0_0.stages_0x3654C[0]);
     const std::size_t objective_count =
@@ -1443,6 +1448,9 @@ Bytes capture_runtime(json& layout) {
             player_input_count)},
         {"bytes", result.data.size()}
     };
+    if (include_constructor_counters) {
+        layout["constructor_counters"] = section(player_inputs_end, result.data.size(), 29);
+    }
     return result;
 }
 
@@ -1632,6 +1640,13 @@ json make_owner_sources(
         "memimages/regressions/sequence-002285FF-002DC4E0.bin",
         "regression-config.json"
     };
+    if (map_profile.id == 0) {
+        candidates.push_back("CD_Files/DATA/BLOCK16.DAT");
+        candidates.push_back("CD_Files/DATA/BLOCK32.DAT");
+    } else if (map_profile.id == 2) {
+        candidates.push_back("CD_Files/DATA/BL16C0-0.DAT");
+        candidates.push_back("CD_Files/DATA/BL32C0-0.DAT");
+    }
     if (include_collision_masks) {
         candidates.push_back("CD_Files/DATA/MSPRD0-0.DAT");
         candidates.push_back("CD_Files/DATA/MSPRD0-0.TAB");
@@ -2144,7 +2159,7 @@ canonical_json build_campaign_definition(
                 {"feature_boundary", feature_boundary},
                 {"players", reset_players},
                 {"runtime", typed_campaign_member(
-                    file_manifest, "runtime.bin", "mc2-runtime-state/v1")},
+                    file_manifest, "runtime.bin", "mc2-runtime-state/v2")},
                 {"terrain", typed_campaign_member(
                     file_manifest, "terrain.bin", "mc2-terrain/v1")}
             }}
@@ -2582,7 +2597,9 @@ int run(const Arguments& arguments) {
             "local player ambient-distance fields differ from preserved DOS frames 0..19");
     }
     json runtime_layout;
-    Bytes runtime = capture_runtime(runtime_layout);
+    // The Day owner export and campaign envelope must bind the same source
+    // constructor counters; retain only the frozen legacy Level 1 dialect.
+    Bytes runtime = capture_runtime(runtime_layout, arguments.campaign_package || !level_one);
     Bytes presentation = capture_presentation();
     std::vector<std::uint8_t> fireball_projectile_asset;
     std::vector<std::uint8_t> fireball_projectile_fade_asset;
@@ -2734,6 +2751,13 @@ int run(const Arguments& arguments) {
         x_WORD_180660_VGA_type_resolution == 1 ? medium_sprite_bank_name : high_sprite_bank_name;
     const std::string web_bank_name =
         x_WORD_180660_VGA_type_resolution == 1 ? medium_web_bank_name : high_web_bank_name;
+    // GOLDEN-CHANGE (Oliver approved): sub_54660 selects BLOCK for Day,
+    // BL..C for Cave, and only Night uses the N/F terrain flag variant.
+    const std::string block_bank_name = map_profile.id == 0
+        ? "BLOCK" + std::to_string(x_BYTE_D41B5_texture_size)
+        : std::string("BL") + std::to_string(x_BYTE_D41B5_texture_size) +
+            (map_profile.id == 2 ? "C0-0" :
+                ((D41A0_0.terrain_2FECE.byte_0x2FED2 & 2) ? "F0-0" : "N0-0"));
 
     json manifest = {
         {"schema", level_one ? "mc2-owner-level-export/v3" : "mc2-owner-level-export/v5"},
@@ -3080,9 +3104,7 @@ int run(const Arguments& arguments) {
             {"terrain_bank", terrain_bank_name},
             {"sprite_bank", sprite_bank_name},
             {"web_bank", web_bank_name},
-            {"block_bank",
-                std::string("BL") + std::to_string(x_BYTE_D41B5_texture_size) +
-                ((D41A0_0.terrain_2FECE.byte_0x2FED2 & 2) ? "F0-0" : "N0-0")},
+            {"block_bank", block_bank_name},
             {"palette",
                 (D41A0_0.terrain_2FECE.byte_0x2FED2 & 2) ? "PALF-0" : palette_bank_name},
             {"sky_bank", x_BYTE_D41B5_texture_size == 32 ? sky_bank_name : ""},
@@ -3109,12 +3131,8 @@ int run(const Arguments& arguments) {
                         web_bank_name + ".DAT")},
                 {"block_bank", resolved_owner_asset(
                     owner_root,
-                    std::string("GAME/NETHERW/CDATA/BL") +
-                        std::to_string(x_BYTE_D41B5_texture_size) +
-                        ((D41A0_0.terrain_2FECE.byte_0x2FED2 & 2) ? "F0-0.DAT" : "N0-0.DAT"),
-                    std::string("CD_Files/DATA/BL") +
-                        std::to_string(x_BYTE_D41B5_texture_size) +
-                        ((D41A0_0.terrain_2FECE.byte_0x2FED2 & 2) ? "F0-0.DAT" : "N0-0.DAT"))},
+                    std::string("GAME/NETHERW/CDATA/") + block_bank_name + ".DAT",
+                    std::string("CD_Files/DATA/") + block_bank_name + ".DAT")},
                 {"palette", resolved_owner_asset(
                     owner_root,
                     std::string("GAME/NETHERW/CDATA/") +
@@ -3256,6 +3274,7 @@ int run(const Arguments& arguments) {
         {"package_sha256", package_hash.finish()}
     };
     if (!level_one) {
+        manifest["presentation_dependencies"]["schema"] = "mc2-presentation-recipe/v2";
         manifest["record_layouts"]["player"]["type_str_164_auxiliary"] =
             type_str_164_auxiliary_layout();
         manifest["reference"]["type_str_164_auxiliary"] =

@@ -374,6 +374,7 @@ def parse_entities(path: Path) -> dict[str, Any]:
         raise ClosureError("entities.bin length does not match its declared records")
     particle_parameters: set[int] = set()
     build_indices: set[int] = set()
+    spell_families: set[int] = set()
     for index in range(count):
         record = data[12 + index * record_size : 12 + (index + 1) * record_size]
         if record[ENTITY_ACTIVE_OFFSET] == 0:
@@ -381,6 +382,8 @@ def parse_entities(path: Path) -> dict[str, Any]:
         particle_parameters.add(
             struct.unpack_from("<H", record, ENTITY_PARTICLE_PARAMETER_OFFSET)[0]
         )
+        if record[ENTITY_CLASS_OFFSET] == 15:
+            spell_families.add(record[ENTITY_MODEL_OFFSET])
         if (
             record[ENTITY_CLASS_OFFSET] == BUILD_ENTITY_CLASS
             and record[ENTITY_MODEL_OFFSET] == BUILD_ENTITY_MODEL
@@ -389,7 +392,20 @@ def parse_entities(path: Path) -> dict[str, Any]:
     return {
         "active_particle_parameters": sorted(particle_parameters),
         "active_build_indices": sorted(build_indices),
+        "active_spell_families": sorted(spell_families),
     }
+
+
+def spell_constructor_particles(families: Iterable[int]) -> dict[int, tuple[int, ...]]:
+    """Source constructors reachable from package-present spell holders.
+
+    Holder sprites are not their spawned flyers/impacts. These source particle
+    identities are shared across levels; texture identities come from the
+    package's presentation table, never a fallback image or another level.
+    """
+    constructors = {0: (340, 7), 1: (209, 41), 2: (18,)}
+    return {family: constructors[family] for family in sorted(set(families))
+            if family in constructors}
 
 
 def parse_build_footprints(owner_root: Path, indices: Iterable[int]) -> list[dict[str, Any]]:
@@ -976,14 +992,21 @@ def _expected_day_selectors(
             f"{profile_label} export is bound to an unknown remc2 specification"
         )
     selectors = manifest.get("presentation_dependencies")
+    # GOLDEN-CHANGE: retain the historical tuple for old exports; corrected
+    # exports name the bank actually selected by sub_54660 for Day maps.
+    expected_selectors = DAY_PRESENTATION_SELECTOR_IDENTITY
+    expected_files = DAY_RESOLVED_OWNER_FILES
+    if isinstance(selectors, dict) and selectors.get("block_bank") == "BLOCK32":
+        expected_selectors = {**expected_selectors, "block_bank": "BLOCK32"}
+        expected_files = {**expected_files, "block_bank": "owner:CD_Files/DATA/BLOCK32.DAT"}
     if not isinstance(selectors, dict) or any(
         selectors.get(field) != value
-        for field, value in DAY_PRESENTATION_SELECTOR_IDENTITY.items()
+        for field, value in expected_selectors.items()
     ):
         raise ClosureError(
             f"{profile_label} presentation selector identity is not the qualified Day tuple"
         )
-    if selectors.get("resolved_files") != DAY_RESOLVED_OWNER_FILES:
+    if selectors.get("resolved_files") != expected_files:
         raise ClosureError(
             f"{profile_label} resolved owner-file selector map is not qualified"
         )
@@ -1057,6 +1080,7 @@ def _build_day_closure(
     profile_label: str,
     edge_namespace: str,
     folded_parameters: dict[int, dict[str, Any]],
+    constructor_parameters: dict[str, tuple[int, ...]] | None = None,
 ) -> dict[str, Any]:
     """Build one package-bound Day closure without inventing a frame trace.
 
@@ -1190,6 +1214,21 @@ def _build_day_closure(
                     "EventsFunctions.cpp:33751-34135; GameRenderOriginal.cpp render-mode dispatch",
                 )
             )
+    for producer, parameters in (constructor_parameters or {}).items():
+        for parameter_index in parameters:
+            parameter = presentation["particles"][parameter_index]
+            base, mode = parameter["base_tmap"], parameter["render_mode"]
+            members = catalog.tmap_group(base)
+            choices = render_choice_candidates(base, mode, [row["index"] for row in members])
+            for choice in choices:
+                asset = catalog.tmap_asset(catalog.tmaps[choice])
+                dynamic_assets.append(asset)
+                edges.append(edge(
+                    f"{producer}.particle[{parameter_index}]",
+                    asset["asset_id"], "package-present spell flyer/impact constructor",
+                    f"presentation.bin.particles[{parameter_index}]", "proven",
+                    "EventsFunctions.cpp:34729-34786,34963-34986,35332-35354,35574-35597",
+                ))
     footprints = parse_build_footprints(owner_root, entities["active_build_indices"])
     scene_assets.extend(footprints)
     for asset in footprints:
@@ -1413,6 +1452,20 @@ def build_campaign_day_material_closure(
     internal_level = level.get("internal")
     if not isinstance(external_level, int) or not isinstance(internal_level, int):
         raise ClosureError("campaign Day closure level identity is malformed")
+    entities = parse_entities(export_dir / "entities.bin")
+    constructors = {
+        f"spell_constructor[{family}]": parameters
+        for family, parameters in spell_constructor_particles(entities["active_spell_families"]).items()
+    }
+    # The same Fireball constructor is reached by Dragons, multipart Worms,
+    # and Fireflies, including roots which have not spawned at frame zero.
+    authored = (export_dir / "authored-level.bin").read_bytes()
+    if len(authored) != 0x6604:
+        raise ClosureError("authored-level.bin identity/layout changed")
+    for index in range(1200):
+        class_id, subtype = struct.unpack_from("<Hh", authored, 1091 + index * 20)
+        if class_id == 5 and subtype in {0, 3, 19}:
+            constructors[f"creature_projectile_constructor[{subtype}]"] = (340, 7)
     return _build_day_closure(
         export_dir,
         catalog_path,
@@ -1425,6 +1478,7 @@ def build_campaign_day_material_closure(
         folded_parameters=rooted_class5_presentation_parameters(
             export_dir / "authored-level.bin"
         ),
+        constructor_parameters=constructors,
     )
 
 

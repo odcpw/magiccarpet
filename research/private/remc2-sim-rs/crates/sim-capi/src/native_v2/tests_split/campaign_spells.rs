@@ -1262,8 +1262,7 @@ fn level2_campaign_public_possession_reset_replays_hash_without_cross_session_le
 
 #[test]
 fn level2_campaign_step_projects_family12_source_slot38() {
-    let level2_package = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../../generated/l2-debug3.fJ3PaM/level2");
+    let level2_package = qualified_level2_campaign_package();
     let package = level2_package.to_string_lossy();
     let selection = McCampaignSelectionV2 {
         abi_version: MC_NATIVE_ABI_VERSION,
@@ -1579,8 +1578,7 @@ fn level2_campaign_step_projects_family12_source_slot38() {
 
 #[test]
 fn level2_campaign_minimap_is_source_ordered_visibility_bound_and_replay_safe() {
-    let level2_package = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../../generated/l2-debug3.fJ3PaM/level2");
+    let level2_package = qualified_level2_campaign_package();
     let package = level2_package.to_string_lossy();
     let selection = McCampaignSelectionV2 {
         abi_version: MC_NATIVE_ABI_VERSION,
@@ -1629,7 +1627,8 @@ fn level2_campaign_minimap_is_source_ordered_visibility_bound_and_replay_safe() 
     );
     assert_eq!(initial_state.visibility_flags, 2);
     assert!(initial_state.entity_count > 0);
-    assert_eq!(initial_state.mark_count, 1);
+    // Approved native arrow contract: one objective outline plus seven vertices.
+    assert_eq!(initial_state.mark_count, 8);
 
     let (local_player_slot, local_objective, live_player) =
         with_campaign_session(handle, |session| {
@@ -1739,6 +1738,7 @@ fn level2_campaign_minimap_is_source_ordered_visibility_bound_and_replay_safe() 
         MC_STATUS_OK
     );
     assert_eq!(initial_mark_count, initial_state.mark_count);
+    assert!(initial_marks[1..].iter().all(|mark| mark.kind == 3));
     assert_eq!(initial_marks[0].subject_entity_index, 0);
     assert_eq!(initial_marks[0].kind, 2);
     assert_eq!(
@@ -1912,7 +1912,7 @@ fn level2_campaign_minimap_is_source_ordered_visibility_bound_and_replay_safe() 
         MC_STATUS_OK
     );
     assert_eq!(acquired_state.visibility_flags, 6);
-    assert_eq!(acquired_state.mark_count, 1);
+    assert_eq!(acquired_state.mark_count, 8);
     let mut acquired_entities =
         vec![McCampaignMinimapEntityV2::default(); acquired_state.entity_count as usize];
     let mut acquired_entity_count = 0;
@@ -1992,6 +1992,7 @@ fn level2_campaign_minimap_is_source_ordered_visibility_bound_and_replay_safe() 
         MC_STATUS_OK
     );
     assert_eq!(acquired_mark_count, acquired_state.mark_count);
+    assert!(acquired_marks[1..].iter().all(|mark| mark.kind == 3 && mark.visible == 0));
     assert_eq!(acquired_marks[0].subject_entity_index, 0);
     assert_eq!(acquired_marks[0].kind, 2);
     assert_eq!(

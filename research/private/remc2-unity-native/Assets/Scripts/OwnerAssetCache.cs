@@ -117,6 +117,33 @@ namespace MagicCarpet.Native
         private const string Level3ClosureHash =
             "d6e909d65437a37fed699429efa968175f39d6253c350537a1c82ce9729d5871";
 
+        // GOLDEN-CHANGE: owner-approved BLOCK32 correction. Retain the exact v1
+        // receipts; v2 is a separately qualified package, never a relaxed hash check.
+        private static string DayReceipt(string legacy, bool correctedBlocks, bool minimapSymbols = false)
+        {
+            if (!correctedBlocks) return legacy;
+            switch (legacy)
+            {
+                case Level3AggregateSchema: return minimapSymbols ? "mc2-day-owner-cache/v3" : "mc2-day-owner-cache/v2";
+                case Level3MaterialSchema: return minimapSymbols ? "mc2-day-material-cache/v3" : "mc2-day-material-cache/v2";
+                case Level3MaterialDescriptorSchema: return minimapSymbols ? "mc2-day-materials/v3" : "mc2-day-materials/v2";
+                case Level3AggregateManifestHash: return minimapSymbols ? "3a4f6e113ecd8bf489f5f1ca8ba636f7e065b6166253b11c38444fac5617539a" : "f3ea4eaea129be68d83964994c39689a01173b815a0bdaafa5960f11ed1a3f3b";
+                case Level3AggregateContentHash: return minimapSymbols ? "baf1873a409a2a27460810027dfd181eb85bcfd53e8fad40e0b1207f690462a8" : "d6bbe896a44340cfedbcdd1c910d291afbe111678c18a10971b93c8eb9907205";
+                case Level3MaterialManifestHash: return minimapSymbols ? "7f52802eab3ac2eaf2197eef0781c42781cac1befc16508bc7eacd154bd2d17e" : "dfdd8bfb83dfd6d2fc07fcb345a857d7e03db0cf82227a5d935342eee9642f4c";
+                case Level3MaterialContentHash: return minimapSymbols ? "916c2ad2fdbd10eff88e94a78a8c694554c88dda64d69fa84d6c766627e4edb4" : "9dbcdd2f0a2ee9a6c2826b3bd0442d79c921accd06d5ab6f1d903ac34eb9f858";
+                case Level3GameplayManifestHash: return "a53a9c874d4d16e7a1fe7944db3f4f4e3d9c12bdf71bf1f30fe5f543c7599aef";
+                case Level3GameplayContentHash: return "a71f75d185702471866dfb0db24c89bd6e766786e10a62556273171ec4d60f5b";
+                case Level3AudioManifestHash: return "6f566e814a9be2d96639c8fc2e50b183289783ec6f0cc8ba400bca5a824d66b0";
+                case Level3AudioContentHash: return "ef4536670fa76cbf4a5dde7c6244255266a020dc02a4c4fe4f62ac62da17f633";
+                case Level3MaterialDescriptorHash: return minimapSymbols ? "c161eee61a31e6ab5f418dd1de92ea1c8fbc1f80790b7657ecbe25cb3e4fc894" : "e521aefffba8e1a82a7b74e929f1dcd1ed869cdb771622faccc13fa36b7575d7";
+                case Level3GameplayDescriptorHash: return "076730c183f3dd4af9177085512b95bad98481c897f0daf37de8db5cf42b533f";
+                case Level3OwnerExportPackageHash: return "10ce9fa050f915829507b4daa571f01f7e3f9b88512e3ec37f4e35791755bf8a";
+                case Level3CampaignPackageHash: return "57b030e7feccadb834142229d0c6d267234214bad94b40d74655adca2718d6ea";
+                case Level3ClosureHash: return "db2ba138f36bd2cec82c5ef1d7f2c8e6ce7207815ab8ec8c1e4fb6067029b885";
+                default: throw new InvalidOperationException("Unknown Day qualification receipt");
+            }
+        }
+
         [Serializable]
         private sealed class Manifest
         {
@@ -330,6 +357,30 @@ namespace MagicCarpet.Native
             public Level2Profile profile;
             public Level3Palette palette;
             public Level3TextureBank tmaps0;
+            public MinimapSymbolBank minimap_symbols;
+        }
+
+        [Serializable]
+        internal sealed class MinimapSymbolBank
+        {
+            public string schema;
+            public string bank;
+            public string palette_asset_id;
+            public int[] selectors;
+            public MinimapSymbol[] symbols;
+        }
+
+        [Serializable]
+        internal sealed class MinimapSymbol
+        {
+            public int selector;
+            public int width;
+            public int height;
+            public string source_asset_id;
+            public string indices_path;
+            public string mask_path;
+            public string indices_sha256;
+            public string mask_sha256;
         }
 
         [Serializable]
@@ -436,7 +487,7 @@ namespace MagicCarpet.Native
         public int OutputCount { get; }
         internal Level2DayHudDescriptor DayHud { get; }
         internal Level3MaterialDescriptor Level3Materials { get; }
-        internal bool IsLevel3Aggregate { get; }
+        internal bool IsDayAggregate { get; }
         private readonly HashSet<string> approvedPaths;
 
         private OwnerAssetCache(
@@ -453,7 +504,7 @@ namespace MagicCarpet.Native
             OutputCount = outputCount;
             DayHud = dayHud;
             Level3Materials = level3Materials;
-            IsLevel3Aggregate = isLevel3Aggregate;
+            IsDayAggregate = isLevel3Aggregate;
             this.approvedPaths = approvedPaths;
         }
 
@@ -483,7 +534,7 @@ namespace MagicCarpet.Native
 
         internal byte[] ReadLevel3GameplayOutput(string relative)
         {
-            if (!IsLevel3Aggregate)
+            if (!IsDayAggregate)
                 throw new InvalidDataException("cache is not the qualified Level 3 aggregate");
             var canonical = relative?.Replace(Path.DirectorySeparatorChar, '/');
             ValidateLevel2RelativePath(canonical, "Level 3 gameplay output path");
@@ -496,7 +547,7 @@ namespace MagicCarpet.Native
 
         internal byte[] ReadLevel3MaterialOutput(string relative)
         {
-            if (!IsLevel3Aggregate)
+            if (!IsDayAggregate)
                 throw new InvalidDataException("cache is not the qualified Level 3 aggregate");
             var canonical = relative?.Replace(Path.DirectorySeparatorChar, '/');
             ValidateLevel2RelativePath(canonical, "Level 3 material output path");
@@ -618,6 +669,8 @@ namespace MagicCarpet.Native
             RequireLevel2File(manifestPath, "aggregate manifest");
             var manifestText = File.ReadAllText(manifestPath);
             var manifest = JsonUtility.FromJson<Level2AggregateManifest>(manifestText);
+            if (manifest?.schema == "mc2-day-owner-cache/v3")
+                return OpenAndValidateDayV3(root, 2);
             RequireLevel2(manifest != null, "Level 2 aggregate manifest parses");
             RequireLevel2(
                 manifest.schema == "mc2-level2-day-owner-cache/v1",
@@ -671,16 +724,20 @@ namespace MagicCarpet.Native
             RequireLevel2Directory(root, "Level 3 aggregate root");
             var manifestPath = ConfinedPath(root, "manifest.json");
             RequireLevel2File(manifestPath, "Level 3 aggregate manifest");
-            RequireLevel2(
-                Sha256File(manifestPath) == Level3AggregateManifestHash,
-                "exact Level 3 aggregate manifest identity");
             var manifest = JsonUtility.FromJson<Level2AggregateManifest>(
                 File.ReadAllText(manifestPath));
+            if (manifest?.schema == "mc2-day-owner-cache/v3")
+                return OpenAndValidateDayV3(root, 3);
+            var minimapSymbols = manifest != null && manifest.schema == "mc2-day-owner-cache/v3";
+            var correctedBlocks = minimapSymbols || manifest != null && manifest.schema == "mc2-day-owner-cache/v2";
             RequireLevel2(
-                manifest != null && manifest.schema == Level3AggregateSchema,
+                Sha256File(manifestPath) == DayReceipt(Level3AggregateManifestHash, correctedBlocks, minimapSymbols),
+                "exact Level 3 aggregate manifest identity");
+            RequireLevel2(
+                manifest != null && manifest.schema == DayReceipt(Level3AggregateSchema, correctedBlocks, minimapSymbols),
                 "Level 3 aggregate schema");
-            ValidateLevel3Profile(manifest.profile, "Level 3 aggregate profile");
-            ValidateLevel3Bindings(manifest.bindings, "Level 3 aggregate bindings");
+            ValidateLevel3Profile(manifest.profile, "Level 3 aggregate profile", correctedBlocks);
+            ValidateLevel3Bindings(manifest.bindings, "Level 3 aggregate bindings", correctedBlocks: correctedBlocks);
             RequireLevel2(
                 manifest.components != null &&
                 manifest.components.material != null &&
@@ -688,53 +745,124 @@ namespace MagicCarpet.Native
                 manifest.components.audio != null,
                 "exact Level 3 aggregate component set");
             RequireLevel2(
-                manifest.cache_content_sha256 == Level3AggregateContentHash &&
-                manifest.outputs != null && manifest.outputs.Length == 662,
+                manifest.cache_content_sha256 == DayReceipt(Level3AggregateContentHash, correctedBlocks, minimapSymbols) &&
+                manifest.outputs != null && manifest.outputs.Length == (minimapSymbols ? 694 : 662),
                 "exact Level 3 aggregate content identity and output count");
 
             var aggregateRows = ValidateLevel2OutputRows(
                 root,
                 manifest.outputs,
-                Level3AggregateContentHash,
+                DayReceipt(Level3AggregateContentHash, correctedBlocks, minimapSymbols),
                 "Level 3 aggregate",
                 true);
             ValidateLevel3Component(
                 root,
                 "material",
                 manifest.components.material,
-                Level3MaterialSchema,
-                Level3MaterialManifestHash,
-                Level3MaterialContentHash,
-                333,
-                aggregateRows);
+                DayReceipt(Level3MaterialSchema, correctedBlocks, minimapSymbols),
+                DayReceipt(Level3MaterialManifestHash, correctedBlocks, minimapSymbols),
+                DayReceipt(Level3MaterialContentHash, correctedBlocks, minimapSymbols),
+                minimapSymbols ? 365 : 333,
+                aggregateRows, correctedBlocks);
             var gameplayRows = ValidateLevel3Component(
                 root,
                 "gameplay",
                 manifest.components.gameplay,
                 Level3GameplaySchema,
-                Level3GameplayManifestHash,
-                Level3GameplayContentHash,
+                DayReceipt(Level3GameplayManifestHash, correctedBlocks),
+                DayReceipt(Level3GameplayContentHash, correctedBlocks),
                 291,
-                aggregateRows);
+                aggregateRows, correctedBlocks);
             ValidateLevel3Component(
                 root,
                 "audio",
                 manifest.components.audio,
                 Level3AudioSchema,
-                Level3AudioManifestHash,
-                Level3AudioContentHash,
+                DayReceipt(Level3AudioManifestHash, correctedBlocks),
+                DayReceipt(Level3AudioContentHash, correctedBlocks),
                 35,
-                aggregateRows);
-            var materials = ValidateLevel3MaterialDescriptor(root, aggregateRows);
-            var hud = ValidateLevel3GameplayDescriptor(root, gameplayRows);
+                aggregateRows, correctedBlocks);
+            var materials = ValidateLevel3MaterialDescriptor(root, aggregateRows, correctedBlocks, minimapSymbols);
+            var hud = ValidateLevel3GameplayDescriptor(root, gameplayRows, correctedBlocks);
             return new OwnerAssetCache(
                 root,
-                Level3AggregateContentHash,
+                DayReceipt(Level3AggregateContentHash, correctedBlocks, minimapSymbols),
                 aggregateRows.Count,
                 new HashSet<string>(aggregateRows.Keys, StringComparer.Ordinal),
                 hud,
                 materials,
                 true);
+        }
+
+        // One v3 reader for both qualified Day packages. The exact root receipt
+        // authenticates child receipts; all child files and ledger links are
+        // still checked. No client-derived gameplay or level-specific decoding.
+        private static OwnerAssetCache OpenAndValidateDayV3(string root, int externalLevel)
+        {
+            var expectedHash = externalLevel == 2
+                ? "37aae643c40dbf41d51d79778b04ce6db398bb84e6a95f5fd9b4a6a307eaf5ff"
+                : externalLevel == 3
+                    ? "3a4f6e113ecd8bf489f5f1ca8ba636f7e065b6166253b11c38444fac5617539a"
+                    : throw new InvalidOperationException("Unqualified Day package");
+            var path = ConfinedPath(root, "manifest.json");
+            // GOLDEN-CHANGE (owner approved): source-rooted spell/creature
+            // constructors add TMAP 463. Keep the previous qualified receipts;
+            // neither gameplay/replay goldens nor child-file checks change.
+            var spellCompleteHash = externalLevel == 2
+                ? "698567ad73184b44db05c85ce72238b951f294590b591168d179c2758da7c91b"
+                : "0d19967b7964f0f97705ae4b69fd160de7586605f0d15e795197bc30ea1b4be6";
+            var actualHash = Sha256File(path);
+            var spellComplete = actualHash == spellCompleteHash;
+            RequireLevel2(actualHash == expectedHash || spellComplete, "exact Day v3 aggregate identity");
+            var manifest = JsonUtility.FromJson<Level2AggregateManifest>(File.ReadAllText(path));
+            RequireLevel2(manifest.schema == "mc2-day-owner-cache/v3" &&
+                manifest.profile.external_level == externalLevel &&
+                manifest.profile.internal_level == externalLevel - 1 &&
+                manifest.profile.map_type.id == 0 && manifest.profile.selectors.block_bank == "BLOCK32",
+                "Day v3 package and corrected bank binding");
+            var rows = ValidateLevel2OutputRows(root, manifest.outputs,
+                manifest.cache_content_sha256, "Day v3 aggregate", true);
+            Dictionary<string, Level2Output> gameplayRows = null;
+            foreach (var name in new[] { "material", "gameplay", "audio" })
+            {
+                var summary = name == "material" ? manifest.components.material
+                    : name == "gameplay" ? manifest.components.gameplay : manifest.components.audio;
+                var relative = $"components/{name}/manifest.json";
+                RequireLevel2(summary != null && summary.manifest_path == relative &&
+                    Sha256File(ConfinedPath(root, relative)) == summary.manifest_sha256,
+                    $"Day v3 {name} manifest receipt");
+                var child = JsonUtility.FromJson<Level2ComponentManifest>(File.ReadAllText(ConfinedPath(root, relative)));
+                RequireLevel2(child.schema == summary.schema &&
+                    child.cache_content_sha256 == summary.cache_content_sha256 &&
+                    child.outputs.Length == summary.output_count &&
+                    JsonUtility.ToJson(child.profile) == JsonUtility.ToJson(manifest.profile),
+                    $"Day v3 {name} profile and content binding");
+                var childRows = ValidateLevel2OutputRows(ConfinedPath(root, $"components/{name}"),
+                    child.outputs, summary.cache_content_sha256, $"Day v3 {name}", false);
+                foreach (var pair in childRows)
+                    RequireLevel2(rows.TryGetValue($"components/{name}/{pair.Key}", out var aggregate) &&
+                        aggregate.component == name && aggregate.bytes == pair.Value.bytes &&
+                        aggregate.sha256 == pair.Value.sha256, $"Day v3 {name} output membership");
+                if (name == "gameplay") gameplayRows = childRows;
+            }
+            var materialPath = "components/material/materials/descriptor.json";
+            RequireLevel2(rows.ContainsKey(materialPath), "Day v3 material descriptor membership");
+            var material = JsonUtility.FromJson<Level3MaterialDescriptor>(File.ReadAllText(ConfinedPath(root, materialPath)));
+            RequireLevel2(material.schema == "mc2-day-materials/v3" &&
+                JsonUtility.ToJson(material.profile) == JsonUtility.ToJson(manifest.profile),
+                "Day v3 material descriptor identity");
+            ValidateDayMaterialContents(material, rows, true,
+                (externalLevel == 2 ? 156 : 162) + (spellComplete ? 1 : 0));
+            const string gameplayPath = "gameplay/descriptor.json";
+            RequireLevel2(gameplayRows.ContainsKey(gameplayPath), "Day v3 gameplay descriptor membership");
+            var gameplay = JsonUtility.FromJson<Level2GameplayDescriptor>(File.ReadAllText(
+                ConfinedPath(root, $"components/gameplay/{gameplayPath}")));
+            RequireLevel2(gameplay.schema == Level3GameplayDescriptorSchema &&
+                JsonUtility.ToJson(gameplay.profile) == JsonUtility.ToJson(manifest.profile),
+                "Day v3 gameplay descriptor identity");
+            var hud = ValidateDayGameplayContents(gameplay, gameplayRows);
+            return new OwnerAssetCache(root, manifest.cache_content_sha256, rows.Count,
+                new HashSet<string>(rows.Keys, StringComparer.Ordinal), hud, material, true);
         }
 
         private static Dictionary<string, Level2Output> ValidateLevel3Component(
@@ -745,7 +873,8 @@ namespace MagicCarpet.Native
             string expectedManifestHash,
             string expectedContentHash,
             int expectedOutputCount,
-            Dictionary<string, Level2Output> aggregateRows)
+            Dictionary<string, Level2Output> aggregateRows,
+            bool correctedBlocks)
         {
             var manifestRelative = $"components/{name}/manifest.json";
             RequireLevel2(
@@ -768,11 +897,11 @@ namespace MagicCarpet.Native
             RequireLevel2(
                 child != null && child.schema == expectedSchema,
                 $"Level 3 {name} child schema");
-            ValidateLevel3Profile(child.profile, $"Level 3 {name} child profile");
+            ValidateLevel3Profile(child.profile, $"Level 3 {name} child profile", correctedBlocks);
             ValidateLevel3Bindings(
                 child.bindings,
                 $"Level 3 {name} child bindings",
-                name == "audio");
+                name == "audio", correctedBlocks);
             RequireLevel2(
                 child.cache_content_sha256 == expectedContentHash &&
                 child.outputs != null && child.outputs.Length == expectedOutputCount,
@@ -798,21 +927,29 @@ namespace MagicCarpet.Native
 
         private static Level3MaterialDescriptor ValidateLevel3MaterialDescriptor(
             string root,
-            Dictionary<string, Level2Output> aggregateRows)
+            Dictionary<string, Level2Output> aggregateRows,
+            bool correctedBlocks, bool minimapSymbols)
         {
             const string relative = "materials/descriptor.json";
             var aggregateRelative = $"components/material/{relative}";
             RequireLevel2(
                 aggregateRows.TryGetValue(aggregateRelative, out var row) &&
-                row.sha256 == Level3MaterialDescriptorHash,
+                row.sha256 == DayReceipt(Level3MaterialDescriptorHash, correctedBlocks, minimapSymbols),
                 "exact Level 3 material descriptor receipt");
             var descriptor = JsonUtility.FromJson<Level3MaterialDescriptor>(
                 File.ReadAllText(ConfinedPath(root, aggregateRelative)));
             RequireLevel2(
                 descriptor != null &&
-                descriptor.schema == Level3MaterialDescriptorSchema,
+                descriptor.schema == DayReceipt(Level3MaterialDescriptorSchema, correctedBlocks, minimapSymbols),
                 "Level 3 material descriptor schema");
-            ValidateLevel3Profile(descriptor.profile, "Level 3 material descriptor profile");
+            ValidateLevel3Profile(descriptor.profile, "Level 3 material descriptor profile", correctedBlocks);
+            return ValidateDayMaterialContents(descriptor, aggregateRows, minimapSymbols, 162);
+        }
+
+        private static Level3MaterialDescriptor ValidateDayMaterialContents(
+            Level3MaterialDescriptor descriptor, Dictionary<string, Level2Output> aggregateRows,
+            bool minimapSymbols, int textureCount)
+        {
             RequireLevel2(
                 descriptor.palette != null &&
                 descriptor.palette.entries == 256 &&
@@ -822,8 +959,8 @@ namespace MagicCarpet.Native
                 descriptor.tmaps0.palette_asset_id == "owner_data:DATA/PALD-0.DAT" &&
                 descriptor.tmaps0.selectors != null &&
                 descriptor.tmaps0.textures != null &&
-                descriptor.tmaps0.selectors.Length == 162 &&
-                descriptor.tmaps0.textures.Length == 162,
+                descriptor.tmaps0.selectors.Length == textureCount &&
+                descriptor.tmaps0.textures.Length == textureCount,
                 "Level 3 material selector census");
             var selectors = new HashSet<int>();
             foreach (var texture in descriptor.tmaps0.textures)
@@ -845,24 +982,57 @@ namespace MagicCarpet.Native
                 selectors.SetEquals(descriptor.tmaps0.selectors) &&
                 new[] { 110, 111, 112, 113, 114, 115 }.All(selectors.Contains),
                 "Level 3 material texture/selector equality");
+            if (minimapSymbols)
+            {
+                var bank = descriptor.minimap_symbols;
+                RequireLevel2(bank != null && bank.schema == "mc2-minimap-symbols/v1" &&
+                    bank.bank == "MSPRD0-0" && bank.palette_asset_id == "owner_data:DATA/PALD-0.DAT" &&
+                    bank.selectors != null && bank.selectors.SequenceEqual(Enumerable.Range(58, 16)) &&
+                    bank.symbols != null && bank.symbols.Length == 16,
+                    "original Day minimap symbol census");
+                for (var index = 0; index < bank.symbols.Length; index++)
+                {
+                    var symbol = bank.symbols[index];
+                    RequireLevel2(symbol != null && symbol.selector == 58 + index &&
+                        symbol.width > 0 && symbol.height > 0 &&
+                        symbol.source_asset_id == $"owner_data:DATA/MSPRD0-0.DAT#{symbol.selector}",
+                        "Day minimap symbol source and bounds");
+                    foreach (var field in new[] { "indices", "mask" })
+                    {
+                        var relativePath = $"minimap/msprd0-0/{symbol.selector:000}.{field}.u8";
+                        RequireLevel2((field == "indices" ? symbol.indices_path : symbol.mask_path) == relativePath &&
+                            aggregateRows.TryGetValue($"components/material/{relativePath}", out var output) &&
+                            output.bytes == symbol.width * symbol.height &&
+                            output.sha256 == (field == "indices" ? symbol.indices_sha256 : symbol.mask_sha256),
+                            "Day minimap symbol output binding");
+                    }
+                }
+            }
             return descriptor;
         }
 
         private static Level2DayHudDescriptor ValidateLevel3GameplayDescriptor(
             string root,
-            Dictionary<string, Level2Output> gameplayRows)
+            Dictionary<string, Level2Output> gameplayRows,
+            bool correctedBlocks)
         {
             const string relative = "gameplay/descriptor.json";
             RequireLevel2(
                 gameplayRows.TryGetValue(relative, out var row) &&
-                row.sha256 == Level3GameplayDescriptorHash,
+                row.sha256 == DayReceipt(Level3GameplayDescriptorHash, correctedBlocks),
                 "exact Level 3 gameplay descriptor receipt");
             var descriptor = JsonUtility.FromJson<Level2GameplayDescriptor>(
                 File.ReadAllText(ConfinedPath(root, $"components/gameplay/{relative}")));
             RequireLevel2(
                 descriptor != null && descriptor.schema == Level3GameplayDescriptorSchema,
                 "Level 3 gameplay descriptor schema");
-            ValidateLevel3Profile(descriptor.profile, "Level 3 gameplay descriptor profile");
+            ValidateLevel3Profile(descriptor.profile, "Level 3 gameplay descriptor profile", correctedBlocks);
+            return ValidateDayGameplayContents(descriptor, gameplayRows);
+        }
+
+        private static Level2DayHudDescriptor ValidateDayGameplayContents(
+            Level2GameplayDescriptor descriptor, Dictionary<string, Level2Output> gameplayRows)
+        {
             var hud = descriptor.hud;
             RequireLevel2(
                 hud != null &&
@@ -894,7 +1064,7 @@ namespace MagicCarpet.Native
             return hud;
         }
 
-        private static void ValidateLevel3Profile(Level2Profile profile, string description)
+        private static void ValidateLevel3Profile(Level2Profile profile, string description, bool correctedBlocks = false)
         {
             RequireLevel2(
                 profile != null &&
@@ -904,10 +1074,10 @@ namespace MagicCarpet.Native
                 profile.map_type != null &&
                 profile.map_type.id == 0 &&
                 profile.map_type.name == "Day" &&
-                profile.package_sha256 == Level3OwnerExportPackageHash &&
-                profile.owner_export_package_sha256 == Level3OwnerExportPackageHash &&
-                profile.campaign_package_sha256 == Level3CampaignPackageHash &&
-                profile.closure_sha256 == Level3ClosureHash &&
+                profile.package_sha256 == DayReceipt(Level3OwnerExportPackageHash, correctedBlocks) &&
+                profile.owner_export_package_sha256 == DayReceipt(Level3OwnerExportPackageHash, correctedBlocks) &&
+                profile.campaign_package_sha256 == DayReceipt(Level3CampaignPackageHash, correctedBlocks) &&
+                profile.closure_sha256 == DayReceipt(Level3ClosureHash, correctedBlocks) &&
                 profile.catalog_sha256 == Level2CatalogHash &&
                 profile.catalog_file_sha256 == Level2CatalogFileHash &&
                 profile.spec_commit == PinnedRemc2Commit &&
@@ -926,7 +1096,7 @@ namespace MagicCarpet.Native
                 profile.selectors.terrain_bank == "TMAPS0-0" &&
                 profile.selectors.sprite_bank == "MSPRD0-0" &&
                 profile.selectors.web_bank == "MWEBD0-0" &&
-                profile.selectors.block_bank == "BL32N0-0" &&
+                profile.selectors.block_bank == (correctedBlocks ? "BLOCK32" : "BL32N0-0") &&
                 profile.selectors.palette == "PALD-0" &&
                 profile.selectors.sky_bank == "SKYD0-0",
                 description);
@@ -935,13 +1105,14 @@ namespace MagicCarpet.Native
         private static void ValidateLevel3Bindings(
             Level2Bindings bindings,
             string description,
-            bool audio = false)
+            bool audio = false,
+            bool correctedBlocks = false)
         {
             RequireLevel2(
                 bindings != null &&
-                bindings.level_export_package_sha256 == Level3OwnerExportPackageHash &&
-                bindings.campaign_package_sha256 == Level3CampaignPackageHash &&
-                bindings.level_asset_closure_sha256 == Level3ClosureHash &&
+                bindings.level_export_package_sha256 == DayReceipt(Level3OwnerExportPackageHash, correctedBlocks) &&
+                bindings.campaign_package_sha256 == DayReceipt(Level3CampaignPackageHash, correctedBlocks) &&
+                bindings.level_asset_closure_sha256 == DayReceipt(Level3ClosureHash, correctedBlocks) &&
                 bindings.owner_catalog_sha256 == Level2CatalogHash &&
                 bindings.owner_catalog_file_sha256 == Level2CatalogFileHash &&
                 bindings.owner_manifest_schema == Level2OwnerManifestSchema &&

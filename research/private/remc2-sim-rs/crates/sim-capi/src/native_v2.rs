@@ -163,7 +163,6 @@ use sim_core::{
         Level1TerrainFrameCamera, Level1TerrainFrameResources, Level1WorldFrameResources,
         raster_level1_source_world_sprites, render_level1_source_world_frame,
         render_level1_source_world_map_frame_composed, render_level1_terrain_frame,
-        render_level1_world_frame,
     },
     terrain_grid::{OUTDOOR_GRID_VERTICES, OutdoorGridInput, outdoor_grid},
     terrain_presentation::outdoor_terrain_pnt5,

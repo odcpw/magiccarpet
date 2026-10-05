@@ -428,7 +428,7 @@ namespace MagicCarpet.Native
             int qualificationFailAfterSoundRows = -1)
         {
             Require(
-                cache != null && cache.IsLevel3Aggregate,
+                cache != null && cache.IsDayAggregate,
                 "qualified Level 3 aggregate owner cache");
             const string component = "components/audio/";
             var descriptor = JsonUtility.FromJson<CampaignDayAudioDescriptor>(

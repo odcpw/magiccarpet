@@ -35,10 +35,12 @@ pinned remc2 + owner data
   -> Unity desktop presentation
 ```
 
-This route contains substantial working Level 1 behavior and incomplete Level
-2 work. It does not yet contain the neutral package definition, complete
-semantic authoring transaction, custom package proof, current VR runtime,
-voxel/city/water capabilities or a released commercial game.
+This route contains neutral package definitions, semantic authoring operations,
+three-level Rust/Unity entry and presentation, and substantial Level 1/2
+gameplay coverage. Level 3 public-command completion and uninterrupted campaign
+qualification remain incomplete. Focused tests with staged entry or damage
+state do not establish complete mission playability or remc2 parity. VR,
+voxel/city/water capabilities and commercial release remain later work.
 
 ## Repository map
 

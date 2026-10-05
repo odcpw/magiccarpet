@@ -1,4 +1,237 @@
 #[test]
+fn exit_trigger_reveals_and_renders_portal() {
+    use sim_core::level1_mission::Level1ActorKind;
+    let handle = open_fixture_with_owner_cache_and_terrain_frame_assets();
+    with_session_mut(handle, |session| {
+        // Begin at the mission-complete boundary; leave group activation,
+        // proximity dispatch and presentation to the production scheduler.
+        session.mission.level_completed = true;
+        session.mission.current_stage = 5;
+        for _ in 0..16 {
+            session.step(PlayerCommand::default());
+        }
+        let target = session
+            .mission
+            .actors()
+            .iter()
+            .find(|a| a.kind == Level1ActorKind::ExitTarget && a.active)
+            .copied()
+            .expect("exit group activated");
+        assert!(!target.visible, "source portal starts hidden");
+        let trigger = session
+            .mission
+            .actors()
+            .iter()
+            .find(|a| a.kind == Level1ActorKind::ExitSwitch && a.active)
+            .copied()
+            .unwrap();
+        for _ in 0..16 {
+            session.state.position = trigger.position;
+            session.state.actual_speed = 0;
+            session.step(PlayerCommand::default());
+            if session.mission.exit_sequence_active {
+                break;
+            }
+        }
+        assert!(session.mission.exit_sequence_active);
+        let portal = session
+            .mission
+            .actors()
+            .iter()
+            .find(|a| a.kind == Level1ActorKind::ExitTarget && a.active)
+            .copied()
+            .unwrap();
+        assert!(portal.visible);
+        session.sync_supported_renderable_records().unwrap();
+        assert!(
+            session
+                .renderable_map_chains
+                .entity_chain(
+                    portal.position.x.to_be_bytes()[0],
+                    portal.position.y.to_be_bytes()[0]
+                )
+                .contains(&portal.source_entity_index),
+            "exit reveal updates the production map chain"
+        );
+        // Isolate its draw so nearby scrolls cannot satisfy the pixel assertion.
+        session.renderable_map_chains = RenderableMapChains::empty();
+        session
+            .renderable_map_chains
+            .sync_entity(RenderableMapSeed {
+                entity_index: portal.source_entity_index,
+                active: true,
+                x: portal.position.x,
+                y: portal.position.y,
+            })
+            .unwrap();
+        session.camera_history.x = portal.position.x;
+        session.camera_history.y = portal.position.y.wrapping_add(1024);
+        session.camera_history.z = portal.position.z.wrapping_add(350);
+        let mut visible = false;
+        for yaw in [0, 512, 1024, 1536] {
+            session.camera_history.yaw = yaw;
+            visible |= session
+                .world_frame()?
+                .objective_prop_raster_stats
+                .framebuffer_writes
+                > 0;
+        }
+        assert!(visible, "revealed exit must reach the world compositor");
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(mc_native_session_destroy(handle), MC_STATUS_OK);
+}
+
+#[test]
+fn collected_spell_holder_disappears_from_minimap() {
+    let handle = open_fixture_with_owner_cache();
+    with_session_mut(handle, |session| {
+        for position in [
+            Position {
+                x: 29_440,
+                y: 54_272,
+                z: 0,
+            },
+            Position {
+                x: 36_000,
+                y: 54_272,
+                z: 4896,
+            },
+        ] {
+            session.state.position = position;
+            for _ in 0..16 {
+                session.step(PlayerCommand::default());
+            }
+        }
+        let jar = session
+            .mission
+            .actors()
+            .iter()
+            .find(|actor| {
+                actor.kind == sim_core::level1_mission::Level1ActorKind::CastleSpellJar
+                    && actor.active
+                    && !actor.collected
+            })
+            .copied()
+            .expect("ordinary beacon activates castle jar");
+        assert!(
+            sim_core::level1_mission::level1_minimap_entity_command(
+                &session.state,
+                level1_minimap_entity_inputs(session)[usize::from(jar.source_entity_index)]
+            )
+            .is_some(),
+            "uncollected spell has a map marker"
+        );
+        for _ in 0..16 {
+            session.state.position = jar.position;
+            session.state.actual_speed = 0;
+            session.step(PlayerCommand::default());
+        }
+        assert!(session.mission.has_castle_spell);
+        let input = level1_minimap_entity_inputs(session)[usize::from(jar.source_entity_index)];
+        assert!(input.active, "pickup retains the inventory holder");
+        assert_ne!(input.control_flags & 1, 0, "source pickup hides its holder");
+        assert!(
+            sim_core::level1_mission::level1_minimap_entity_command(&session.state, input)
+                .is_none()
+        );
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(mc_native_session_destroy(handle), MC_STATUS_OK);
+}
+
+#[test]
+fn beacon_to_archers_trigger_builds_rising_terrain() {
+    let handle = open_fixture_with_owner_cache_and_terrain_frame_assets();
+    let world = presentation_test_world();
+    let mut direct = world.session();
+    with_session_mut(handle, |session| {
+        let before = session.terrain.planes().ground_heights.to_vec();
+        assert_eq!(session.mission.authored_houses().count(), 0);
+        // Owner feature 4 is the ordinary proximity switch on the route.
+        // Keep the player over it while its source-phase gate is visited.
+        for _ in 0..48 {
+            session.state.position = Position {
+                x: 165 * 256,
+                y: 211 * 256,
+                z: 1500,
+            };
+            direct.state.position = session.state.position;
+            direct.step(PlayerCommand::default());
+            session.step(PlayerCommand::default());
+            assert_eq!(
+                session.terrain.planes().ground_heights,
+                direct.terrain.planes().ground_heights,
+                "direct and player sessions apply the same construction passes"
+            );
+        }
+        let houses = session.mission.authored_houses().collect::<Vec<_>>();
+        assert_eq!(
+            houses.len(),
+            12,
+            "the actual group-13 trigger constructed all twelve structures"
+        );
+        assert!(
+            houses
+                .iter()
+                .all(|house| house.action == sim_core::house::HOUSE_LIVE_ACTION)
+        );
+        let after = &session.terrain.planes().ground_heights;
+        assert!(
+            (202..=222).any(|y| (153..=176).any(|x| {
+                let index = y * 256 + x;
+                after[index] > before[index]
+            })),
+            "construction must raise real terrain, not merely count down or spawn explosions"
+        );
+        assert_eq!(after[0], before[0], "unrelated terrain is unchanged");
+        session.camera_history.x = 165 * 256;
+        session.camera_history.y = 212 * 256;
+        session.camera_history.z = 1500;
+        for yaw in [0, 512, 1024, 1536] {
+            session.camera_history.yaw = yaw;
+            session
+                .world_frame()
+                .expect("raised terrain renders through the real owner assets");
+        }
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(mc_native_session_destroy(handle), MC_STATUS_OK);
+}
+
+#[test]
+fn house_archer_minimap_uses_live_position_not_recycled_slot_reset_position() {
+    let handle = open_fixture();
+    with_session_mut(handle, |session| {
+        let position = Position {
+            x: 50_685,
+            y: 56_148,
+            z: 382,
+        };
+        let slot = session
+            .mission
+            .spawn_house_resident(position, 4, 33, 0)
+            .expect("house archer constructor")
+            .expect("free source slot");
+        assert_ne!(
+            session.world.entities()[usize::from(slot)].position,
+            position
+        );
+        let inputs = level1_minimap_entity_inputs(session);
+        let input = inputs[usize::from(slot)];
+        assert!(input.active);
+        assert_eq!((input.class, input.model, input.action), (5, 4, 33));
+        assert_eq!(input.position, position);
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(mc_native_session_destroy(handle), MC_STATUS_OK);
+}
+
+#[test]
 fn package_m_world_reset_and_copy_surfaces_are_exact() {
     let handle = open_fixture();
     assert_ne!(handle, 0);
@@ -4243,4 +4476,162 @@ fn unique_suffix() -> u128 {
         .duration_since(std::time::UNIX_EPOCH)
         .expect("time after epoch")
         .as_nanos()
+}
+#[test]
+fn live_selector_feedback_renders_player_death_burst() {
+    let handle = open_fixture_with_terrain_frame_assets();
+    let (player, damage) = with_session(handle, |session| {
+        Ok((
+            session.state.entity_index,
+            session.mission.player_max_life + 1,
+        ))
+    })
+    .unwrap();
+    assert_eq!(
+        mc_native_level1_player_inject_damage_for_qualification(handle, damage, player),
+        MC_STATUS_OK
+    );
+    let command = valid_command();
+    let mut snapshot = McSessionSnapshotV2::default();
+    let mut saw_burst = false;
+    for _ in 0..4 {
+        assert_eq!(
+            mc_native_session_step(
+                handle,
+                &raw const command,
+                &raw mut snapshot,
+                struct_size::<McSessionSnapshotV2>(),
+            ),
+            MC_STATUS_OK
+        );
+        with_session(handle, |session| {
+            saw_burst |= !session.mission.death_bursts().is_empty();
+            session.world_frame()?;
+            Ok(())
+        })
+        .unwrap();
+    }
+    assert!(
+        saw_burst,
+        "production lethal damage emits a rendered death burst"
+    );
+    assert_eq!(mc_native_session_destroy(handle), MC_STATUS_OK);
+}
+
+#[test]
+fn recycled_goat_slot_renders_its_new_archer_occupant() {
+    let handle = open_fixture_with_terrain_frame_assets();
+    with_session_mut(handle, |session| {
+        let slot = session.live_world.goats()[0].entity_index;
+        assert!(session.mission.disable_imported_source_slot(slot));
+        session.mission.begin_source_turn();
+        let position = Position {
+            x: 30_000,
+            y: 30_000,
+            z: 10_000,
+        };
+        let resident = session
+            .mission
+            .spawn_house_resident(position, 4, 33, 0)
+            .unwrap()
+            .unwrap();
+        assert_eq!(resident, slot);
+        // Imported family projections retain their old numeric slot after
+        // recycling. The authoritative source row now belongs to an archer.
+        session.sync_supported_renderable_records().unwrap();
+        session.camera_history.x = position.x;
+        session.camera_history.y = position.y.wrapping_add(1_024);
+        session.camera_history.z = position.z;
+        let mut saw_archer = false;
+        for yaw in [0, 512, 1_024, 1_536] {
+            session.camera_history.yaw = yaw;
+            let frame = session.world_frame()?;
+            saw_archer |=
+                frame.archer_selector_mask != 0 && frame.archer_raster_stats.framebuffer_writes > 0;
+        }
+        assert!(saw_archer, "recycled slot must reach the archer compositor");
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(mc_native_session_destroy(handle), MC_STATUS_OK);
+}
+
+#[test]
+fn recycled_goat_slots_render_fireball_and_possession() {
+    for possession in [false, true] {
+        let handle = open_fixture_with_terrain_frame_assets();
+        with_session_mut(handle, |session| {
+            let slot = session.live_world.goats()[0].entity_index;
+            assert!(session.mission.disable_imported_source_slot(slot));
+            session.mission.begin_source_turn();
+            session.state.position = Position {
+                x: 30_000,
+                y: 30_000,
+                z: 10_000,
+            };
+            let spawned = if possession {
+                session.mission.spawn_possession(&session.state)
+            } else {
+                session.mission.spawn_fireball(&session.state)
+            };
+            assert!(spawned);
+            let projectile = &session.mission.projectiles()[0];
+            assert_eq!(projectile.source_entity_index(), slot);
+            let position = projectile.position();
+            session.sync_supported_renderable_records().unwrap();
+            session.camera_history.x = position.x;
+            session.camera_history.y = position.y.wrapping_add(1_024);
+            session.camera_history.z = position.z;
+            let mut saw_projectile = false;
+            for yaw in [0, 512, 1_024, 1_536] {
+                session.camera_history.yaw = yaw;
+                let frame = session.world_frame()?;
+                let attempted = if possession {
+                    frame.possession_draw_attempted
+                } else {
+                    frame.fireball_draw_attempted
+                };
+                saw_projectile |= attempted && frame.combat_raster_stats.framebuffer_writes > 0;
+            }
+            assert!(
+                saw_projectile,
+                "new spell must reach compositor (possession={possession})"
+            );
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(mc_native_session_destroy(handle), MC_STATUS_OK);
+    }
+}
+
+#[test]
+fn goat_render_contract_accepts_all_dispatched_actions_and_rejects_unknown_action() {
+    let handle = open_fixture();
+    with_session_mut(handle, |session| {
+        let slot = session.live_world.goats()[0].entity_index;
+        let source = session.mission.source_slots()[usize::from(slot)];
+        for action in 9..=15 {
+            session.mission.sync_imported_source_slot(
+                slot,
+                true,
+                action,
+                source.phase,
+                source.entity_rng,
+                source.control_flags,
+            );
+            session.source_sprite_dispositions()?;
+        }
+        session.mission.sync_imported_source_slot(
+            slot,
+            true,
+            16,
+            source.phase,
+            source.entity_rng,
+            source.control_flags,
+        );
+        assert!(session.source_sprite_dispositions().is_err());
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(mc_native_session_destroy(handle), MC_STATUS_OK);
 }

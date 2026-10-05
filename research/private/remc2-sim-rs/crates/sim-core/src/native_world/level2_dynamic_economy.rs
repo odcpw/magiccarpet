@@ -950,7 +950,7 @@ impl Level2EconomyState {
     /// Level-2 route exercises imported class-3 rows, typed Bee rows, and the
     /// typed Castle root; all retain the source low-byte collision flag and
     /// fixed slot identity used by the map chain.
-    fn fireball_collision_targets(
+    pub(super) fn fireball_collision_targets(
         &self,
         imported_entities: &[EntitySnapshot],
     ) -> Vec<Level2FireballCollisionTarget> {
@@ -1005,7 +1005,11 @@ impl Level2EconomyState {
                 source_id: source.source_entity_index,
                 position: source.position,
                 half_width: source.shift_rot_x,
-                vertical_offset: 0,
+                vertical_offset: if source.model == level2_class5::archer::ARCHER_MODEL {
+                    level2_class5::archer::ARCHER_COLLISION_VERTICAL_OFFSET
+                } else {
+                    0
+                },
                 half_height: source.shift_rot_y,
             })
         }));
@@ -2050,7 +2054,7 @@ impl Level2EconomyState {
         child.particle_index = 0;
         child.shift_rot_x = 0;
         child.shift_rot_y = 0;
-        child.fov = level2_class5::archer::ARCHER_POSE_FOV;
+        child.fov = level2_class5::archer::ARCHER_COLLISION_VERTICAL_OFFSET;
     }
 
     fn finish_castle_auxiliary_source_visit(&mut self, source_slot: u16) -> bool {

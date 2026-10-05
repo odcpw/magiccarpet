@@ -2066,9 +2066,15 @@ impl IndexedOverlayAssets {
     }
 
     fn validate_text(&self, text: &[u8]) -> Result<(), IndexedOverlayError> {
-        for byte in text {
-            if self.glyphs.get(usize::from(*byte)).is_none() {
-                return Err(IndexedOverlayError(format!("FONT1 glyph {byte} missing")));
+        for byte in text.iter().take_while(|byte| **byte != 0) {
+            let index = match *byte {
+                b'\r' => continue,
+                b'\t' | b' ' => 33,
+                b'\n' => 34,
+                byte => usize::from(byte) + 1,
+            };
+            if self.glyphs.get(index).is_none() {
+                return Err(IndexedOverlayError(format!("FONT1 glyph {index} missing")));
             }
         }
         Ok(())
@@ -2103,14 +2109,30 @@ impl IndexedOverlayAssets {
         indices: &mut [u8],
         provenance: &mut [u8],
         mut x: i32,
-        y: i32,
+        mut y: i32,
         text: &[u8],
         colour: u8,
     ) -> Result<u32, IndexedOverlayError> {
         self.validate_text(text)?;
         let mut writes = 0_u32;
-        for byte in text {
-            let glyph = self.glyphs[usize::from(*byte)];
+        let origin_x = x;
+        for byte in text.iter().take_while(|byte| **byte != 0) {
+            // remc2 sub_6F940 indexes FONT1 at character + 1. TAB rows
+            // already include the advance; there is no extra pixel gap.
+            match *byte {
+                b'\r' => continue,
+                b'\n' => {
+                    x = origin_x;
+                    y += i32::from(self.glyphs[34].height);
+                    continue;
+                }
+                b'\t' | b' ' => {
+                    x += i32::from(self.glyphs[33].width);
+                    continue;
+                }
+                _ => {}
+            }
+            let glyph = self.glyphs[usize::from(*byte) + 1];
             let offset = usize::try_from(glyph.offset).expect("glyph offset fits usize");
             let width = usize::from(glyph.width);
             for row in 0..usize::from(glyph.height) {
@@ -2126,7 +2148,7 @@ impl IndexedOverlayAssets {
                     }
                 }
             }
-            x += i32::from(glyph.width) + 1;
+            x += i32::from(glyph.width);
         }
         Ok(writes)
     }
@@ -3019,6 +3041,38 @@ mod tests {
         )
         .expect("manifest/hash-qualified interim presentation cache");
         root
+    }
+
+    #[test]
+    fn text_uses_source_character_plus_one_and_exact_glyph_advance() {
+        let assets = IndexedOverlayAssets::load(cache_root()).unwrap();
+        let mut pixels = vec![0; 320 * 200];
+        let mut provenance = vec![0; pixels.len()];
+        assets
+            .draw_text(&mut pixels, &mut provenance, 0, 0, b"AA\0B", 19)
+            .unwrap();
+        let glyph = assets.glyphs[usize::from(b'A') + 1];
+        let width = usize::from(glyph.width);
+        let mut expected = vec![0; pixels.len()];
+        for origin in [0, width] {
+            for row in 0..usize::from(glyph.height) {
+                for col in 0..width {
+                    if assets.font_masks[glyph.offset as usize + row * width + col] != 0 {
+                        expected[row * 320 + origin + col] = 19;
+                    }
+                }
+            }
+        }
+        assert!(expected.iter().any(|pixel| *pixel == 19));
+        assert_eq!(pixels, expected);
+        let previous = assets.glyphs[usize::from(b'A')];
+        assert_ne!(
+            &assets.font_masks
+                [glyph.offset as usize..glyph.offset as usize + usize::from(glyph.length)],
+            &assets.font_masks
+                [previous.offset as usize..previous.offset as usize + usize::from(previous.length)],
+            "adjacent glyphs discriminate the incorrect direct-ASCII lookup"
+        );
     }
 
     #[test]

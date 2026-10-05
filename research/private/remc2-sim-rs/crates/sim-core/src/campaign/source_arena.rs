@@ -57,6 +57,9 @@ pub(crate) enum CreatureRootOrigin {
     HouseSpawn {
         house_slot: u16,
     },
+    CreatureConversion {
+        producer_slot: u16,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -277,6 +280,20 @@ impl SourceArena {
             generation: self.economy.slot_generation(source_slot),
         };
         if source.class == 5
+            && source.model == 9
+            && self
+                .economy
+                .converted_skeleton_origins
+                .contains_key(&source_slot)
+        {
+            return self.creature_runtime_identity_inner(
+                source_slot,
+                initial_bindings,
+                &BTreeMap::new(),
+                false,
+            );
+        }
+        if source.class == 5
             && matches!(source.action, 29 | 232)
             && !initial_bindings.contains_key(&source_slot)
         {
@@ -432,6 +449,20 @@ impl SourceArena {
             return None;
         }
         if source.class == 5
+            && source.model == 9
+            && let Some(&producer_slot) = self.economy.converted_skeleton_origins.get(&source_slot)
+        {
+            return Some(CreatureRuntimeIdentity {
+                handle,
+                kind: CreatureKind::Skeleton,
+                root_slot: source_slot,
+                role: CreatureRuntimeRole::Root,
+                origin: CreatureRootOrigin::CreatureConversion { producer_slot },
+                raw_model: Some(9),
+                living: !source.drawing_disabled() && source.life >= 0,
+            });
+        }
+        if source.class == 5
             && matches!(source.action, 29 | 232)
             && !initial_bindings.contains_key(&source_slot)
         {
@@ -563,6 +594,15 @@ impl SourceArena {
     /// the following UpdateEntities prologue.
     #[must_use]
     pub(crate) fn rebuilt_model45_building_selectors(&self) -> Vec<u8> {
+        self.live_model45_buildings()
+            .into_iter()
+            .map(|(_, selector, _)| selector)
+            .collect()
+    }
+
+    /// One observational view across imported and dynamically allocated
+    /// building carriers. Dynamic slot occupants shadow stale imported rows.
+    pub(crate) fn live_model45_buildings(&self) -> Vec<(u16, u8, Position)> {
         let dynamic_slots = self
             .economy
             .live_arena_slots()
@@ -578,17 +618,23 @@ impl SourceArena {
                     && entity.class == 10
                     && entity.model == 45
             })
-            .map(|entity| (entity.index, entity.record_bytes()[74]))
+            .map(|entity| (entity.index, entity.record_bytes()[74], entity.position))
             .chain(
                 self.economy
                     .authored_model45()
                     .iter()
                     .filter(|source| source.active)
-                    .map(|source| (source.source_entity_index, source.byte_0x46)),
+                    .map(|source| {
+                        (
+                            source.source_entity_index,
+                            source.byte_0x46,
+                            source.position,
+                        )
+                    }),
             )
             .collect::<Vec<_>>();
-        rows.sort_unstable_by_key(|(source_slot, _)| *source_slot);
-        rows.into_iter().map(|(_, selector)| selector).collect()
+        rows.sort_unstable_by_key(|(source_slot, _, _)| *source_slot);
+        rows
     }
 
     /// Rebuild remc2's source-ordered class-5 model lists from every live

@@ -2183,6 +2183,10 @@ fn hex_digest(bytes: [u8; 32]) -> String {
 }
 
 #[cfg(test)]
+#[path = "backend/l3_public_combat.rs"]
+pub(crate) mod l3_public_combat;
+
+#[cfg(test)]
 pub(crate) mod tests {
     use super::*;
     use crate::FlightWorld;
@@ -2209,7 +2213,7 @@ pub(crate) mod tests {
         reissue_at_revision, with_level_definition, with_replacement,
     };
     use std::{
-        collections::BTreeSet,
+        collections::{BTreeMap, BTreeSet, VecDeque},
         path::PathBuf,
         sync::Arc,
         time::{SystemTime, UNIX_EPOCH},
@@ -2225,7 +2229,7 @@ pub(crate) mod tests {
         )
     }
 
-    fn level_three_descriptor_fixture_path() -> PathBuf {
+    pub(super) fn level_three_descriptor_fixture_path() -> PathBuf {
         std::env::var_os("MC_CAMPAIGN_PACKAGE_LEVEL3_V1").map_or_else(
             || {
                 PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -3761,7 +3765,7 @@ pub(crate) mod tests {
         // and client presentation.
     }
 
-    fn guard(session: &GameSession<Mc2CampaignBackend>) -> SessionGuard {
+    pub(super) fn guard(session: &GameSession<Mc2CampaignBackend>) -> SessionGuard {
         let identity = session.identity();
         SessionGuard {
             session_id: identity.session_id,
@@ -5348,8 +5352,19 @@ pub(crate) mod tests {
                 .copied()
         }
 
-        fn aim_player_at_firefly(session: &mut GameSession<Mc2CampaignBackend>, source_slot: u16) {
-            let (target, player_slot, player_fov) = {
+        fn public_firefly_cast_command(
+            session: &GameSession<Mc2CampaignBackend>,
+            source_slot: u16,
+        ) -> GameCommand {
+            // The holder launches after the player's movement in this pass.
+            // Forecast that public no-input movement, not the pre-step pose.
+            let mut forecast = session.backend().campaign.clone();
+            forecast.step_with_tuning(
+                campaign_player_command(&GameCommand::default()),
+                CAMPAIGN_SPEED_INDEX,
+                session.backend().flight_binding.tuning(),
+            );
+            let (target, state, direction_bits) = {
                 let compatibility = session.backend().campaign.level2_compatibility();
                 (
                     compatibility
@@ -5359,44 +5374,64 @@ pub(crate) mod tests {
                         .find(|source| source.source_entity_index == source_slot)
                         .copied()
                         .expect("real package Firefly remains live before the cast"),
-                    compatibility.state.entity_index,
-                    compatibility.state.entity_fov,
+                    forecast.level2_compatibility().state,
+                    compatibility.shared_spells().player_entity().control_flags & 0x0300,
                 )
             };
-            let mut predicted_target = target.position;
-            crate::move_entity(
-                &mut predicted_target,
-                target.yaw,
-                target.pitch,
-                target.actual_speed,
-            );
-            let mut player_position = target.position;
-            crate::move_entity(
-                &mut player_position,
-                target.yaw.wrapping_add(1_024) & 0x07ff,
-                0,
-                384_i16.saturating_sub(target.actual_speed.max(0)),
-            );
-            player_position.z = crate::FlightWorld::ground_height(
-                session
-                    .backend()
-                    .campaign
-                    .level2_compatibility()
-                    .canonical_terrain(),
-                player_position,
-            )
-            .wrapping_add(256);
-            let mut launch_position = player_position;
-            launch_position.z = launch_position.z.wrapping_add(player_fov);
+            let flight_turns = crate::distance_3d_wrapped(state.position, target.position)
+                .div_ceil(384)
+                .clamp(1, 8);
+            for _ in 1..flight_turns {
+                forecast.step_with_tuning(
+                    campaign_player_command(&GameCommand::default()),
+                    CAMPAIGN_SPEED_INDEX,
+                    session.backend().flight_binding.tuning(),
+                );
+            }
+            let mut predicted_target = forecast
+                .level2_compatibility()
+                .economy()
+                .authored_class5()
+                .iter()
+                .find(|source| source.source_entity_index == source_slot)
+                .map_or(target.position, |source| source.position);
+            predicted_target.z = predicted_target
+                .z
+                .wrapping_sub(crate::level1_mission::FIREBALL_COLLISION_VERTICAL_OFFSET);
+            let mut launch_position = state.position;
+            let hand_yaw = if direction_bits & 0x0100 != 0 {
+                Some(state.yaw.wrapping_sub(512))
+            } else if direction_bits & 0x0200 != 0 {
+                Some(state.yaw.wrapping_add(512))
+            } else {
+                None
+            };
+            if let Some(hand_yaw) = hand_yaw {
+                crate::move_entity(&mut launch_position, hand_yaw, 0, 256);
+                if crate::FlightWorld::ground_height(
+                    session
+                        .backend()
+                        .campaign
+                        .level2_compatibility()
+                        .canonical_terrain(),
+                    launch_position,
+                ) > launch_position.z
+                {
+                    launch_position = state.position;
+                }
+            }
+            launch_position.z = launch_position.z.wrapping_add(state.entity_fov);
             let (yaw, pitch) = crate::level1_mission::projectile_guidance_angles(
                 launch_position,
                 predicted_target,
             );
-            let compatibility = session.backend_mut().campaign.level2_compatibility_mut();
-            compatibility
-                .set_level2_entity_position(player_slot, player_position)
-                .expect("position the real player at the proven incoming-combat boundary");
-            compatibility.set_level2_player_aim_for_test(yaw, pitch);
+            GameCommand {
+                select_spell: Some(SemanticId::parse("spell.fireball").unwrap()),
+                cast_selected: true,
+                look_yaw: yaw.wrapping_sub(state.yaw),
+                look_pitch: pitch.wrapping_sub(state.display_pitch),
+                ..GameCommand::default()
+            }
         }
 
         fn observe_lifecycle(
@@ -5408,6 +5443,13 @@ pub(crate) mod tests {
             saw_death_callback: &mut BTreeSet<u16>,
             saw_reclaimed: &mut BTreeSet<u16>,
         ) {
+            let compatibility = session.backend().campaign.level2_compatibility();
+            let player = compatibility.shared_spells().player_entity();
+            assert!(player.life >= 0, "Firefly driver died at tick {}: flight={:?}; damage={:?}",
+                session.identity().tick, compatibility.state,
+                compatibility.economy().events().iter().rev().filter(|event| matches!(event,
+                    crate::native_world::Level2EconomyEvent::DamageApplied { target_entity_index, .. }
+                    if *target_entity_index == player.index)).take(8).collect::<Vec<_>>());
             for event in session
                 .backend()
                 .campaign
@@ -5454,66 +5496,28 @@ pub(crate) mod tests {
         fn cast_once(
             session: &mut GameSession<Mc2CampaignBackend>,
             target_slot: u16,
-            safe_position: crate::Position,
             targets: &[(u16, u16)],
             saw_pre_kill: &mut BTreeSet<u16>,
             saw_kill: &mut BTreeSet<u16>,
             saw_hidden: &mut BTreeSet<u16>,
             saw_death_callback: &mut BTreeSet<u16>,
             saw_reclaimed: &mut BTreeSet<u16>,
-        ) -> Option<(u16, i32, i32)> {
-            let before = targets
-                .iter()
-                .filter_map(|(_, source_slot)| {
-                    firefly(session, *source_slot)
-                        .filter(|source| source.life >= 0)
-                        .map(|source| (*source_slot, source.life))
-                })
-                .collect::<Vec<_>>();
-            aim_player_at_firefly(session, target_slot);
-            session
-                .step(
-                    guard(session),
-                    GameCommand {
-                        select_spell: Some(SemanticId::parse("spell.fireball").unwrap()),
-                        cast_selected: true,
-                        ..GameCommand::default()
-                    },
-                )
-                .unwrap();
-            observe_lifecycle(
-                session,
-                targets,
-                saw_pre_kill,
-                saw_kill,
-                saw_hidden,
-                saw_death_callback,
-                saw_reclaimed,
-            );
-            for _ in 0..12 {
-                let changed = before
+        ) -> Vec<(u16, i32, i32)> {
+            for _ in 0..=24 {
+                let compatibility = session.backend().campaign.level2_compatibility();
+                let player = compatibility.state.entity_index;
+                let economy = compatibility.economy();
+                if !economy
+                    .fireball_projectiles()
                     .iter()
-                    .filter_map(|(source_slot, life)| {
-                        firefly(session, *source_slot)
-                            .filter(|source| source.life != *life)
-                            .map(|source| (*source_slot, *life, source.life))
+                    .any(|projectile| projectile.owner_entity_index == player)
+                    && !economy.model17_spawned_children().iter().any(|impact| {
+                        impact.source_class == 10
+                            && impact.model == 0
+                            && impact.parent_entity_id == player
                     })
-                    .collect::<Vec<_>>();
-                if !changed.is_empty() {
-                    assert_eq!(changed.len(), 1, "one Fireball has one collision target");
-                    let player_slot = session
-                        .backend()
-                        .campaign
-                        .level2_compatibility()
-                        .state
-                        .entity_index;
-                    session
-                        .backend_mut()
-                        .campaign
-                        .level2_compatibility_mut()
-                        .set_level2_entity_position(player_slot, safe_position)
-                        .expect("retreat the real player to the Level-1 start between casts");
-                    return changed.into_iter().next();
+                {
+                    break;
                 }
                 session
                     .step(guard(session), GameCommand::default())
@@ -5528,27 +5532,129 @@ pub(crate) mod tests {
                     saw_reclaimed,
                 );
             }
-            let player_slot = session
-                .backend()
-                .campaign
-                .level2_compatibility()
-                .state
-                .entity_index;
-            session
-                .backend_mut()
-                .campaign
-                .level2_compatibility_mut()
-                .set_level2_entity_position(player_slot, safe_position)
-                .expect("retreat the real player after a missed cast");
-            None
+            let mut in_range = false;
+            for _ in 0..640 {
+                let Some(target) = firefly(session, target_slot).filter(|source| source.life >= 0)
+                else {
+                    return Vec::new();
+                };
+                let state = session.backend().campaign.level2_compatibility().state;
+                let dx = i32::from(
+                    target
+                        .position
+                        .x
+                        .wrapping_sub(state.position.x)
+                        .cast_signed(),
+                );
+                let dy = i32::from(
+                    target
+                        .position
+                        .y
+                        .wrapping_sub(state.position.y)
+                        .cast_signed(),
+                );
+                let distance = crate::legacy_sqrt(
+                    dx.wrapping_mul(dx)
+                        .wrapping_add(dy.wrapping_mul(dy))
+                        .cast_unsigned(),
+                );
+                if distance <= 900 {
+                    in_range = true;
+                    break;
+                }
+                let heading = crate::heading_for_positions(state.position, target.position) as i16;
+                let heading_error = crate::turn_toward(state.yaw, heading, 1024);
+                let brake = if state.target_speed > 0 {
+                    LongitudinalControl::Decelerate
+                } else if state.target_speed < 0 {
+                    LongitudinalControl::Accelerate
+                } else {
+                    LongitudinalControl::Coast
+                };
+                session
+                    .step(
+                        guard(session),
+                        GameCommand {
+                            longitudinal: if heading_error.abs() < 128 {
+                                LongitudinalControl::Accelerate
+                            } else {
+                                brake
+                            },
+                            roll_axis: heading_error.clamp(-24, 24) as i8,
+                            pitch_axis: -127,
+                            ..GameCommand::default()
+                        },
+                    )
+                    .unwrap();
+                observe_lifecycle(
+                    session,
+                    targets,
+                    saw_pre_kill,
+                    saw_kill,
+                    saw_hidden,
+                    saw_death_callback,
+                    saw_reclaimed,
+                );
+            }
+            assert!(
+                in_range,
+                "ordinary flight reaches Firefly source {target_slot}"
+            );
+            let before = targets
+                .iter()
+                .filter_map(|(_, source_slot)| {
+                    firefly(session, *source_slot)
+                        .filter(|source| source.life >= 0)
+                        .map(|source| (*source_slot, source.life))
+                })
+                .collect::<Vec<_>>();
+            let command = public_firefly_cast_command(session, target_slot);
+            session.step(guard(session), command).unwrap_or_else(|error| {
+                let state = session.backend().campaign.level2_compatibility();
+                panic!("Firefly cast rejected at tick {}: {error:?}; flight={:?}; life={}; holders={:?}",
+                    session.identity().tick, state.state, state.shared_spells().player_entity().life,
+                    state.shared_spells().local_player().enabled_spell_holders);
+            });
+            observe_lifecycle(
+                session,
+                targets,
+                saw_pre_kill,
+                saw_kill,
+                saw_hidden,
+                saw_death_callback,
+                saw_reclaimed,
+            );
+            for _ in 0..24 {
+                let changed = before
+                    .iter()
+                    .filter_map(|(source_slot, life)| {
+                        firefly(session, *source_slot)
+                            .filter(|source| source.life != *life)
+                            .map(|source| (*source_slot, *life, source.life))
+                    })
+                    .collect::<Vec<_>>();
+                if !changed.is_empty() {
+                    // The projectile collides once, but its model-0 impact
+                    // submits damage to every overlapping Firefly. Retain
+                    // each exact recipient rather than dropping all but one.
+                    return changed;
+                }
+                session
+                    .step(guard(session), GameCommand::default())
+                    .unwrap();
+                observe_lifecycle(
+                    session,
+                    targets,
+                    saw_pre_kill,
+                    saw_kill,
+                    saw_hidden,
+                    saw_death_callback,
+                    saw_reclaimed,
+                );
+            }
+            Vec::new()
         }
 
-        let safe_position = session
-            .backend()
-            .campaign
-            .level2_compatibility()
-            .state
-            .position;
         let compatibility = session.backend().campaign.level2_compatibility();
         assert!(compatibility.dispatch_events().iter().any(|event| matches!(
             event,
@@ -5576,17 +5682,32 @@ pub(crate) mod tests {
         let mut saw_reclaimed = BTreeSet::new();
         let mut exact_impacts = 0;
         for attempt in 0..64 {
-            let Some(target_slot) = targets.iter().find_map(|(_, source_slot)| {
-                firefly(&session, *source_slot)
-                    .filter(|source| source.life >= 0)
-                    .map(|_| *source_slot)
-            }) else {
+            let player_position = session
+                .backend()
+                .campaign
+                .level2_compatibility()
+                .state
+                .position;
+            let Some(target_slot) = targets
+                .iter()
+                .filter_map(|(_, source_slot)| {
+                    firefly(&session, *source_slot)
+                        .filter(|source| source.life >= 0)
+                        .map(|source| {
+                            (
+                                *source_slot,
+                                crate::distance_3d_wrapped(player_position, source.position),
+                            )
+                        })
+                })
+                .min_by_key(|(slot, distance)| (*distance, *slot))
+                .map(|(slot, _)| slot)
+            else {
                 break;
             };
-            if let Some((damaged_slot, before, after)) = cast_once(
+            for (damaged_slot, before, after) in cast_once(
                 &mut session,
                 target_slot,
-                safe_position,
                 &targets,
                 &mut saw_pre_kill,
                 &mut saw_kill,
@@ -5600,6 +5721,10 @@ pub(crate) mod tests {
                     "attempt {attempt}: actual map-order collision target {damaged_slot} receives the exact authoritative payload"
                 );
                 exact_impacts += 1;
+                eprintln!(
+                    "Firefly public impact {exact_impacts}: tick={} source={damaged_slot} life={after}",
+                    session.identity().tick
+                );
                 session
                     .step(guard(&session), GameCommand::default())
                     .unwrap();
@@ -5660,7 +5785,7 @@ pub(crate) mod tests {
             session.backend().campaign.level2_compatibility().entities()[usize::from(player_slot)]
                 .life
                 >= 0,
-            "the position-only combat harness must leave the objective owner alive"
+            "public-command Firefly combat must leave the objective owner alive"
         );
 
         if stage_earlier_objectives_after_kills {
@@ -6182,6 +6307,67 @@ pub(crate) mod tests {
 
         session.reset(guard(&session)).unwrap();
         assert_eq!(session.snapshot().value.player_vitals, initial);
+    }
+
+    #[test]
+    fn campaign_castle_charge_survives_following_player_movement_and_upkeep() {
+        let root = level_one_descriptor_fixture_path();
+        let definition = load_mc2_campaign(&root, &default_catalog().unwrap()).unwrap();
+        let mut session = GameSession::open(
+            &Mc2CampaignAdapter,
+            Arc::new(definition),
+            67,
+            Mc2CampaignInputs::new(&root),
+        )
+        .unwrap();
+        // This focused charge boundary supplies the already-acquired spell;
+        // the command, holder callback and following player visit are real.
+        session
+            .backend_mut()
+            .campaign
+            .level2_compatibility_mut()
+            .apply_carried_spell_families(&[0, 2], Some(2))
+            .unwrap();
+        let shared = session
+            .backend()
+            .campaign
+            .level2_compatibility()
+            .shared_spells();
+        let holder_slot = shared.local_player().enabled_spell_holders[2];
+        let holder = shared
+            .pickups()
+            .iter()
+            .chain(shared.holders())
+            .chain(shared.dynamic_pickups())
+            .find(|holder| holder.index == holder_slot)
+            .unwrap();
+        let cost = holder.max_mana;
+        let before = shared.player_mana();
+        assert!(cost > 0 && cost <= before);
+        session
+            .step(
+                guard(&session),
+                GameCommand {
+                    select_spell: Some(SemanticId::parse("spell.castle").unwrap()),
+                    cast_selected: true,
+                    ..GameCommand::default()
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            session
+                .backend()
+                .campaign
+                .level2_compatibility()
+                .shared_spells()
+                .player_entity()
+                .mana_regen,
+            -cost
+        );
+        session
+            .step(guard(&session), GameCommand::default())
+            .unwrap();
+        assert_eq!(session.snapshot().value.player_vitals.mana, before - cost);
     }
 
     #[test]
@@ -8442,9 +8628,16 @@ pub(crate) mod tests {
         // public route consumes the acquired family-0 holder carried across
         // the real campaign transition.
 
-        let (sphere_count_before, economy_event_start) = {
+        let (sphere_mana_before, economy_event_start) = {
             let economy = session.backend().campaign.level2_compatibility().economy();
-            (economy.spheres().len(), economy.events().len())
+            (
+                economy
+                    .spheres()
+                    .iter()
+                    .map(|sphere| sphere.mana)
+                    .sum::<i32>(),
+                economy.events().len(),
+            )
         };
         let mut hit_count = 0_usize;
         let mut miss_count = 0_usize;
@@ -8546,13 +8739,29 @@ pub(crate) mod tests {
 
         let economy = session.backend().campaign.level2_compatibility().economy();
         assert_eq!(
-            economy.spheres().len(),
-            sphere_count_before + skeleton_slots.len()
-        );
-        assert!(
-            economy.spheres()[sphere_count_before..]
+            economy
+                .spheres()
                 .iter()
-                .all(|sphere| sphere.mana == 500)
+                .map(|sphere| sphere.mana)
+                .sum::<i32>(),
+            sphere_mana_before + 500 * i32::try_from(skeleton_slots.len()).unwrap(),
+            "source-authored sphere merges must conserve all 11 Skeleton mana outputs"
+        );
+        let sphere_sources = economy.events()[economy_event_start..]
+            .iter()
+            .filter_map(|event| match event {
+                crate::native_world::Level2EconomyEvent::ManaSphereSpawned {
+                    source_entity_index,
+                    mana: 500,
+                    ..
+                } if skeleton_slots.contains(source_entity_index) => Some(*source_entity_index),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(sphere_sources.len(), skeleton_slots.len());
+        assert_eq!(
+            sphere_sources.into_iter().collect::<BTreeSet<_>>(),
+            skeleton_slots.iter().copied().collect::<BTreeSet<_>>()
         );
         let burst_sources = economy.events()[economy_event_start..]
             .iter()
@@ -8608,15 +8817,1777 @@ pub(crate) mod tests {
         );
     }
 
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    struct DragonFireballTarget {
+        source_slot: u16,
+        generation: u32,
+        root_slot: u16,
+        life: i32,
+        attacker: u16,
+        position: crate::Position,
+        half_width: i16,
+        vertical_offset: i16,
+        half_height: i16,
+    }
+
+    #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+    enum DragonDamageAttribution {
+        Player,
+        Dragon(u16),
+    }
+
+    fn level_three_direct_dragon_damage_attribution_for_test(
+        prior: DragonFireballTarget,
+        current: DragonFireballTarget,
+        current_targets: &[DragonFireballTarget],
+        player: u16,
+        corroborated_player_recipients: &BTreeSet<(u16, u32)>,
+    ) -> Option<DragonDamageAttribution> {
+        if current.life == prior.life - crate::level1_mission::FIREBALL_PAYLOAD
+            && current.attacker == player
+            && (current.source_slot != current.root_slot
+                || corroborated_player_recipients
+                    .contains(&(current.source_slot, current.generation)))
+        {
+            return Some(DragonDamageAttribution::Player);
+        }
+        let attacker_is_live_dragon_root = current_targets.iter().any(|target| {
+            target.source_slot == current.attacker
+                && target.source_slot == target.root_slot
+                && target.life >= 0
+        });
+        (current.life == prior.life - 500 && current.attacker != 0 && attacker_is_live_dragon_root)
+            .then_some(DragonDamageAttribution::Dragon(current.attacker))
+    }
+
+    fn level_three_dragon_fireball_targets(
+        session: &GameSession<Mc2CampaignBackend>,
+    ) -> Vec<DragonFireballTarget> {
+        level_three_dragon_fireball_targets_from_economy(
+            session.backend().campaign.level2_compatibility().economy(),
+        )
+    }
+
+    fn level_three_dragon_fireball_targets_from_economy(
+        economy: &crate::native_world::Level2EconomyState,
+    ) -> Vec<DragonFireballTarget> {
+        let mut targets = economy
+            .authored_class5()
+            .iter()
+            .filter(|root| root.active && root.drawing_enabled && root.life >= 0 && root.model == 0)
+            .filter_map(|root| {
+                let render = economy
+                    .authored_dragons()
+                    .iter()
+                    .find(|render| render.source_entity_index == root.source_entity_index)?;
+                Some(DragonFireballTarget {
+                    source_slot: root.source_entity_index,
+                    generation: economy.slot_generation(root.source_entity_index),
+                    root_slot: root.source_entity_index,
+                    life: root.life,
+                    attacker: if root.word_0x26 != 0 {
+                        root.word_0x26
+                    } else {
+                        root.word_0x96_150
+                    },
+                    position: root.position,
+                    half_width: render.render_pitch,
+                    vertical_offset: render.render_yaw,
+                    half_height: render.render_fov,
+                })
+            })
+            .collect::<Vec<_>>();
+        targets.extend(economy.authored_dragon_parts().iter().filter_map(|part| {
+            (part.active && part.drawing_enabled && part.life >= 0).then_some(
+                DragonFireballTarget {
+                    source_slot: part.source_entity_index,
+                    generation: economy.slot_generation(part.source_entity_index),
+                    root_slot: part.entity_id,
+                    life: part.life,
+                    attacker: part.word_0x26,
+                    position: part.position,
+                    half_width: part.render_pitch,
+                    vertical_offset: part.render_yaw,
+                    half_height: part.render_fov,
+                },
+            )
+        }));
+        targets.sort_unstable_by_key(|target| target.source_slot);
+        targets
+    }
+
+    fn level_three_dragon_targets_at_impact(
+        targets: &[DragonFireballTarget],
+        impact: crate::Position,
+    ) -> Vec<DragonFireballTarget> {
+        targets
+            .iter()
+            .copied()
+            .filter(|target| {
+                crate::level1_mission::source_entities_overlap(
+                    impact,
+                    48,
+                    50,
+                    50,
+                    target.position,
+                    target.half_width,
+                    target.vertical_offset,
+                    target.half_height,
+                )
+            })
+            .collect()
+    }
+
+    fn nearest_level_three_dragon_target_for_test(
+        session: &GameSession<Mc2CampaignBackend>,
+        desired_root: Option<u16>,
+    ) -> Option<DragonFireballTarget> {
+        let targets = level_three_dragon_fireball_targets(session);
+        let player = session
+            .backend()
+            .campaign
+            .level2_compatibility()
+            .state
+            .position;
+        targets
+            .iter()
+            .copied()
+            .filter(|target| {
+                target.source_slot != target.root_slot && target.source_slot > target.root_slot
+            })
+            .filter(|target| desired_root.is_none_or(|root| target.root_slot == root))
+            .min_by_key(|target| {
+                let dx = i64::from(i32::from(
+                    target.position.x.wrapping_sub(player.x).cast_signed(),
+                ));
+                let dy = i64::from(i32::from(
+                    target.position.y.wrapping_sub(player.y).cast_signed(),
+                ));
+                dx * dx + dy * dy
+            })
+    }
+
+    #[derive(Debug, Eq, PartialEq)]
+    enum DragonFireballCastOutcome {
+        AllocationRace,
+        Miss,
+        Damage(Vec<SkeletonFireballDamageReceipt>),
+    }
+
+    fn settle_level_three_dragon_damage_for_test(session: &mut GameSession<Mc2CampaignBackend>) {
+        let player = session
+            .backend()
+            .campaign
+            .level2_compatibility()
+            .state
+            .entity_index;
+        let mut history = Vec::new();
+        for _ in 0..=16 {
+            let economy = session.backend().campaign.level2_compatibility().economy();
+            let pending_roots = economy
+                .authored_class5()
+                .iter()
+                .filter(|root| {
+                    root.active
+                        && root.model == 0
+                        && root.life >= 0
+                        && root.pending_word_0x62 == player
+                })
+                .map(|root| root.source_entity_index)
+                .collect::<BTreeSet<_>>();
+            let pending_parts = economy
+                .authored_dragon_parts()
+                .iter()
+                .filter(|part| part.active && part.life >= 0 && part.pending_word_0x62 == player)
+                .map(|part| part.source_entity_index)
+                .collect::<BTreeSet<_>>();
+            let unsettled_roots = economy
+                .authored_class5()
+                .iter()
+                .filter(|root| root.active && root.model == 0 && root.life >= 0)
+                .filter(|root| {
+                    economy.authored_dragon_parts().iter().any(|part| {
+                        part.active
+                            && part.entity_id == root.source_entity_index
+                            && part.life < root.life
+                    })
+                })
+                .map(|root| root.source_entity_index)
+                .collect::<BTreeSet<_>>();
+            history.push(
+                economy
+                    .authored_class5()
+                    .iter()
+                    .filter(|root| root.active && root.model == 0)
+                    .map(|root| (root.source_entity_index, root.action, root.life))
+                    .collect::<Vec<_>>(),
+            );
+            if pending_roots.is_empty() && pending_parts.is_empty() && unsettled_roots.is_empty() {
+                return;
+            }
+            session
+                .step(guard(session), GameCommand::default())
+                .unwrap();
+        }
+        panic!("Dragon damage did not settle across its 16-part source chain: {history:?}");
+    }
+
+    const DRAGON_FIREBALL_TRAVEL_RANGE: u32 = 0x2000;
+
+    fn level_three_source_safe_flight_command(
+        state: crate::FlightState,
+        desired: i16,
+        stop: bool,
+    ) -> GameCommand {
+        let correction = crate::turn_toward(state.yaw, desired, 127);
+        let aligned = correction.unsigned_abs() <= 24;
+        let brake = if state.target_speed < 0 {
+            LongitudinalControl::Accelerate
+        } else if state.target_speed > 0 {
+            LongitudinalControl::Decelerate
+        } else {
+            LongitudinalControl::Coast
+        };
+        let moving = state.target_speed != 0 || state.actual_speed != 0;
+        let (longitudinal, roll_axis) = if stop || !aligned {
+            if moving {
+                (brake, 0)
+            } else {
+                (LongitudinalControl::Coast, correction.clamp(-24, 24) as i8)
+            }
+        } else if state.target_speed < 0 || state.actual_speed < 0 {
+            (brake, 0)
+        } else {
+            (
+                LongitudinalControl::Accelerate,
+                correction.clamp(-24, 24) as i8,
+            )
+        };
+        GameCommand {
+            longitudinal,
+            roll_axis,
+            ..GameCommand::default()
+        }
+    }
+
+    fn level_three_dragon_retreat_command(
+        session: &GameSession<Mc2CampaignBackend>,
+        retreat_heading: i16,
+    ) -> GameCommand {
+        let state = session.backend().campaign.level2_compatibility().state;
+        level_three_source_safe_flight_command(state, retreat_heading, false)
+    }
+
+    fn level_three_initial_dragon_retreat_heading(
+        session: &GameSession<Mc2CampaignBackend>,
+    ) -> i16 {
+        let state = session.backend().campaign.level2_compatibility().state;
+        level_three_dragon_fireball_targets(session)
+            .into_iter()
+            .filter(|target| target.source_slot == target.root_slot)
+            .min_by_key(|target| {
+                let dx = i32::from(
+                    target
+                        .position
+                        .x
+                        .wrapping_sub(state.position.x)
+                        .cast_signed(),
+                );
+                let dy = i32::from(
+                    target
+                        .position
+                        .y
+                        .wrapping_sub(state.position.y)
+                        .cast_signed(),
+                );
+                dx.wrapping_mul(dx).wrapping_add(dy.wrapping_mul(dy))
+            })
+            .map(|root| {
+                i16::try_from(crate::heading_for_positions(root.position, state.position))
+                    .expect("source heading is 11-bit")
+            })
+            .unwrap_or(state.yaw)
+    }
+
+    fn level_three_dragon_survival_snapshot_for_test(
+        session: &GameSession<Mc2CampaignBackend>,
+        phase: &str,
+        public_requests: usize,
+    ) -> String {
+        let compatibility = session.backend().campaign.level2_compatibility();
+        let economy = compatibility.economy();
+        let player = compatibility.shared_spells().player_entity();
+        let raw_player =
+            &compatibility.session.state.live.economy.entities[usize::from(player.index)];
+        let raw_record = raw_player.record_bytes();
+        let player_mailbox = (
+            i32::from_le_bytes(raw_record[98..102].try_into().unwrap()),
+            u16::from_le_bytes(raw_record[102..104].try_into().unwrap()),
+        );
+        let distance = |from: crate::Position, to: crate::Position| {
+            let dx = i32::from(to.x.wrapping_sub(from.x).cast_signed());
+            let dy = i32::from(to.y.wrapping_sub(from.y).cast_signed());
+            crate::legacy_sqrt(
+                dx.wrapping_mul(dx)
+                    .wrapping_add(dy.wrapping_mul(dy))
+                    .cast_unsigned(),
+            )
+        };
+        let dragon_slots = economy
+            .authored_dragons()
+            .iter()
+            .map(|dragon| dragon.source_entity_index)
+            .collect::<BTreeSet<_>>();
+        let hostile_owner_slots = dragon_slots
+            .iter()
+            .copied()
+            .chain(level_three_imported_worm_attackers_for_test(compatibility))
+            .collect::<BTreeSet<_>>();
+        let roots = economy
+            .authored_class5()
+            .iter()
+            .filter(|root| root.active && root.model == 0)
+            .map(|root| {
+                (
+                    root.source_entity_index,
+                    economy.slot_generation(root.source_entity_index),
+                    root.action,
+                    root.life,
+                    root.word_0x96_150,
+                    distance(player.position, root.position),
+                )
+            })
+            .collect::<Vec<_>>();
+        let hostile_projectiles = economy
+            .fireball_projectiles()
+            .iter()
+            .filter(|projectile| {
+                projectile.active
+                    && projectile.owner_entity_index != player.index
+                    && hostile_owner_slots.contains(&projectile.owner_entity_index)
+            })
+            .map(|projectile| {
+                (
+                    projectile.source_entity_index,
+                    economy.slot_generation(projectile.source_entity_index),
+                    projectile.owner_entity_index,
+                    projectile.position,
+                    projectile.life,
+                )
+            })
+            .collect::<Vec<_>>();
+        let hostile_impacts = economy
+            .model17_spawned_children()
+            .iter()
+            .filter(|impact| {
+                impact.active
+                    && impact.source_class == 10
+                    && impact.model == 0
+                    && impact.parent_entity_id != player.index
+                    && hostile_owner_slots.contains(&impact.parent_entity_id)
+            })
+            .map(|impact| {
+                (
+                    impact.source_entity_index,
+                    economy.slot_generation(impact.source_entity_index),
+                    impact.parent_entity_id,
+                    impact.position,
+                    impact.life,
+                )
+            })
+            .collect::<Vec<_>>();
+        let castle = economy.castle().map(|castle| {
+            (
+                castle.source_entity_index,
+                castle.position,
+                distance(player.position, castle.position),
+                economy.player_castle_shift_aabb_overlap(player),
+            )
+        });
+        format!(
+            "{phase}: requests={public_requests} player=(life={},mailbox={player_mailbox:?},pos={:?},yaw={},roll={},speed=({},{})) castle={castle:?} roots={roots:?} hostile_projectiles={hostile_projectiles:?} hostile_impacts={hostile_impacts:?}",
+            player.life,
+            player.position,
+            compatibility.state.yaw,
+            compatibility.state.roll_accumulator,
+            compatibility.state.target_speed,
+            compatibility.state.actual_speed,
+        )
+    }
+
+    fn level_three_castle_healing_snapshot_for_test(
+        session: &GameSession<Mc2CampaignBackend>,
+        turn: usize,
+    ) -> String {
+        let compatibility = session.backend().campaign.level2_compatibility();
+        let shared = compatibility.shared_spells();
+        let player = shared.player_entity();
+        let numeric = &compatibility.entities()[usize::from(player.index)];
+        let raw = numeric.record_bytes();
+        let mailbox = (
+            i32::from_le_bytes(raw[98..102].try_into().unwrap()),
+            u16::from_le_bytes(raw[102..104].try_into().unwrap()),
+        );
+        let castle = compatibility.economy().castle().map(|castle| {
+            (
+                castle.source_entity_index,
+                castle.position,
+                castle.level,
+                castle.action,
+                castle.mana,
+                castle.mana_capacity,
+                castle.active,
+            )
+        });
+        let player_damage_events = compatibility
+            .economy()
+            .events()
+            .iter()
+            .filter(|event| {
+                matches!(
+                    event,
+                    crate::native_world::Level2EconomyEvent::DamageApplied {
+                        target_entity_index,
+                        ..
+                    } if *target_entity_index == player.index
+                )
+            })
+            .count();
+        format!(
+            "turn={turn} life=(shared {},canonical {},numeric {}) regen={} mailbox={mailbox:?} pos={:?} speed=({},{}) overlap={} castle={castle:?} player_damage_events={player_damage_events}",
+            player.life,
+            compatibility.canonical_player_life_for_test(),
+            numeric.life,
+            compatibility.player_life_regen_for_test(),
+            player.position,
+            compatibility.state.target_speed,
+            compatibility.state.actual_speed,
+            compatibility
+                .economy()
+                .player_castle_shift_aabb_overlap(player),
+        )
+    }
+
+    fn retreat_beyond_level_three_dragon_fireballs_for_test(
+        session: &mut GameSession<Mc2CampaignBackend>,
+        fireball_holder: u16,
+        chronology: &mut Vec<String>,
+        public_requests: usize,
+    ) {
+        let initial_root = level_three_dragon_fireball_targets(session)
+            .into_iter()
+            .filter(|target| target.source_slot == target.root_slot)
+            .min_by_key(|root| {
+                let player = session
+                    .backend()
+                    .campaign
+                    .level2_compatibility()
+                    .state
+                    .position;
+                let dx = i32::from(root.position.x.wrapping_sub(player.x).cast_signed());
+                let dy = i32::from(root.position.y.wrapping_sub(player.y).cast_signed());
+                dx.wrapping_mul(dx).wrapping_add(dy.wrapping_mul(dy))
+            });
+        let player_position = session
+            .backend()
+            .campaign
+            .level2_compatibility()
+            .state
+            .position;
+        let initial_separation = initial_root
+            .map(|root| {
+                let dx = i32::from(
+                    root.position
+                        .x
+                        .wrapping_sub(player_position.x)
+                        .cast_signed(),
+                );
+                let dy = i32::from(
+                    root.position
+                        .y
+                        .wrapping_sub(player_position.y)
+                        .cast_signed(),
+                );
+                crate::legacy_sqrt(
+                    dx.wrapping_mul(dx)
+                        .wrapping_add(dy.wrapping_mul(dy))
+                        .cast_unsigned(),
+                )
+            })
+            .unwrap_or(crate::level1_mission::PROJECTILE_ACQUISITION_RANGE);
+        let retreat_bound = level_three_dragon_retreat_bound(initial_separation);
+        chronology.push(level_three_dragon_survival_snapshot_for_test(
+            session,
+            "retreat.begin",
+            public_requests,
+        ));
+        let mut prior_signature = None;
+        for turn in 0..=retreat_bound {
+            let compatibility = session.backend().campaign.level2_compatibility();
+            let player = compatibility.state.entity_index;
+            let player_entity = compatibility.shared_spells().player_entity();
+            let signature = (
+                player_entity.life,
+                compatibility
+                    .economy()
+                    .fireball_projectiles()
+                    .iter()
+                    .filter(|projectile| {
+                        projectile.active && projectile.owner_entity_index != player
+                    })
+                    .count(),
+                compatibility
+                    .economy()
+                    .model17_spawned_children()
+                    .iter()
+                    .filter(|impact| impact.active && impact.parent_entity_id != player)
+                    .count(),
+            );
+            if prior_signature != Some(signature) {
+                chronology.push(level_three_dragon_survival_snapshot_for_test(
+                    session,
+                    &format!("retreat.turn.{turn}"),
+                    public_requests,
+                ));
+                prior_signature = Some(signature);
+            }
+            assert!(
+                player_entity.life >= 0,
+                "Dragon retreat must keep the player alive: chronology={chronology:#?}"
+            );
+            assert_eq!(
+                compatibility
+                    .shared_spells()
+                    .local_player()
+                    .enabled_spell_holders[0],
+                fireball_holder,
+                "Dragon retreat must retain the carried Fireball holder"
+            );
+            let roots = level_three_dragon_fireball_targets(session)
+                .into_iter()
+                .filter(|target| target.source_slot == target.root_slot)
+                .collect::<Vec<_>>();
+            let outside_source_range = roots.iter().all(|root| {
+                let dx = i32::from(
+                    root.position
+                        .x
+                        .wrapping_sub(compatibility.state.position.x)
+                        .cast_signed(),
+                );
+                let dy = i32::from(
+                    root.position
+                        .y
+                        .wrapping_sub(compatibility.state.position.y)
+                        .cast_signed(),
+                );
+                crate::legacy_sqrt(
+                    dx.wrapping_mul(dx)
+                        .wrapping_add(dy.wrapping_mul(dy))
+                        .cast_unsigned(),
+                ) > crate::level1_mission::PROJECTILE_ACQUISITION_RANGE
+            });
+            let dragon_slots = compatibility
+                .economy()
+                .authored_dragons()
+                .iter()
+                .map(|dragon| dragon.source_entity_index)
+                .collect::<BTreeSet<_>>();
+            let hostile_owner_slots = dragon_slots
+                .iter()
+                .copied()
+                .chain(level_three_imported_worm_attackers_for_test(compatibility))
+                .collect::<BTreeSet<_>>();
+            let hostile_projectile =
+                compatibility
+                    .economy()
+                    .fireball_projectiles()
+                    .iter()
+                    .any(|projectile| {
+                        projectile.active
+                            && projectile.owner_entity_index != player
+                            && hostile_owner_slots.contains(&projectile.owner_entity_index)
+                    });
+            let hostile_impact = compatibility
+                .economy()
+                .model17_spawned_children()
+                .iter()
+                .any(|impact| {
+                    impact.active
+                        && impact.source_class == 10
+                        && impact.model == 0
+                        && impact.parent_entity_id != player
+                        && hostile_owner_slots.contains(&impact.parent_entity_id)
+                });
+            let dragon_still_targets_player =
+                compatibility
+                    .economy()
+                    .authored_class5()
+                    .iter()
+                    .any(|root| {
+                        root.active
+                            && root.model == 0
+                            && root.action == 2
+                            && root.word_0x96_150 == player
+                    });
+            if outside_source_range
+                && !dragon_still_targets_player
+                && !hostile_projectile
+                && !hostile_impact
+            {
+                chronology.push(level_three_dragon_survival_snapshot_for_test(
+                    session,
+                    "retreat.clear",
+                    public_requests,
+                ));
+                return;
+            }
+            let (_, command) = level_three_public_high_speed_retreat_command_for_test(session)
+                .unwrap_or_else(|| {
+                    let compatibility = session.backend().campaign.level2_compatibility();
+                    panic!(
+                        "exact public retreat stencil exposes no safe progressing command: state={:#?} mailbox={:?} at_rest_lookahead={} candidates={:#?} chronology={chronology:#?}",
+                        compatibility.state,
+                        level_three_player_raw_mailbox_for_test(compatibility),
+                        level_three_public_at_rest_retreat_turn_for_test(session).is_some(),
+                        level_three_public_retreat_candidate_census_for_test(session),
+                    )
+                });
+            step_level_three_public_macro_command(session, command);
+        }
+        let compatibility = session.backend().campaign.level2_compatibility();
+        panic!(
+            "ordinary retreat did not clear the authored Dragon aggro/transient state: player={:?} life={} yaw={} roll={} roots={:?} projectiles={:?} impacts={:?}",
+            compatibility.state.position,
+            compatibility.shared_spells().player_entity().life,
+            compatibility.state.yaw,
+            compatibility.state.roll_accumulator,
+            level_three_dragon_fireball_targets(session)
+                .into_iter()
+                .filter(|target| target.source_slot == target.root_slot)
+                .map(|target| (target.source_slot, target.position))
+                .collect::<Vec<_>>(),
+            compatibility
+                .economy()
+                .fireball_projectiles()
+                .iter()
+                .map(|projectile| (
+                    projectile.source_entity_index,
+                    projectile.owner_entity_index,
+                    projectile.position,
+                    projectile.life,
+                ))
+                .collect::<Vec<_>>(),
+            compatibility
+                .economy()
+                .model17_spawned_children()
+                .iter()
+                .filter(|impact| impact.source_class == 10 && impact.model == 0)
+                .map(|impact| (
+                    impact.source_entity_index,
+                    impact.parent_entity_id,
+                    impact.position,
+                    impact.active,
+                ))
+                .collect::<Vec<_>>(),
+        );
+    }
+
+    fn level_three_dragon_retreat_bound(initial_separation: u32) -> usize {
+        const DRAGON_PURSUIT_SPEED: u32 = 30;
+        const PLAYER_OUTWARD_SPEED: u32 = crate::SPEED_LIMIT as u32;
+        const PLAYER_ACCELERATION: u32 = crate::SPEED_STEP as u32;
+        const REVERSE_BRAKE_TURNS: u32 = PLAYER_OUTWARD_SPEED / PLAYER_ACCELERATION;
+
+        // Five zero-axis braking commands reduce every public-reachable roll
+        // accumulator to at most 61 in magnitude.  In the worst opposing case
+        // the fixed-heading turn spends three callbacks unwinding it (five
+        // angle units backward), then advances 12, 21, 27, 32: 1+2+3+4 angle
+        // units.  It is thereafter at least 32, yielding at least four angle
+        // units per pass through the `/ 8` yaw update.
+        const TURN_RAMP_TURNS: u32 = 7;
+        const TURN_RAMP_BACKTRACK: u32 = 5;
+        const TURN_RAMP_ANGLE: u32 = 10;
+        const MIN_TURN_AFTER_RAMP: u32 = 4;
+        const HALF_TURN: u32 = 1_024;
+        const TURN_TURNS: u32 = TURN_RAMP_TURNS
+            + (HALF_TURN + TURN_RAMP_BACKTRACK - TURN_RAMP_ANGLE).div_ceil(MIN_TURN_AFTER_RAMP);
+
+        // Once aligned, the player reaches 16/32/48/64/80 while the Dragon
+        // remains at its authored 30.  Charge the exact acceleration deficit
+        // against the later steady 50-unit relative gain.
+        const ACCELERATION_DEFICIT: u32 = (PLAYER_OUTWARD_SPEED - PLAYER_ACCELERATION)
+            + (PLAYER_OUTWARD_SPEED - 2 * PLAYER_ACCELERATION)
+            + (PLAYER_OUTWARD_SPEED - 3 * PLAYER_ACCELERATION)
+            + (PLAYER_OUTWARD_SPEED - 4 * PLAYER_ACCELERATION);
+        const REVERSE_BRAKING_TRAVEL: u32 = (PLAYER_OUTWARD_SPEED - PLAYER_ACCELERATION)
+            + (PLAYER_OUTWARD_SPEED - 2 * PLAYER_ACCELERATION)
+            + (PLAYER_OUTWARD_SPEED - 3 * PLAYER_ACCELERATION)
+            + (PLAYER_OUTWARD_SPEED - 4 * PLAYER_ACCELERATION);
+        const RELATIVE_OUTWARD_SPEED: u32 = PLAYER_OUTWARD_SPEED - DRAGON_PURSUIT_SPEED;
+        const HOSTILE_TRANSIENT_TAIL: u32 = 22 + 10 + 1;
+
+        let source_range = u32::from(crate::level1_mission::PROJECTILE_ACQUISITION_RANGE) + 1;
+        let missing_separation = source_range.saturating_sub(initial_separation);
+        let turn_loss = DRAGON_PURSUIT_SPEED * (REVERSE_BRAKE_TURNS + TURN_TURNS);
+        let closure_turns =
+            (missing_separation + turn_loss + REVERSE_BRAKING_TRAVEL + ACCELERATION_DEFICIT)
+                .div_ceil(RELATIVE_OUTWARD_SPEED);
+        usize::try_from(REVERSE_BRAKE_TURNS + TURN_TURNS + closure_turns + HOSTILE_TRANSIENT_TAIL)
+            .expect("source-derived Dragon retreat bound fits usize")
+    }
+
+    fn recover_at_real_level_three_castle_for_test(
+        session: &mut GameSession<Mc2CampaignBackend>,
+        fireball_holder: u16,
+        chronology: &mut Vec<String>,
+        public_requests: usize,
+    ) {
+        retreat_beyond_level_three_dragon_fireballs_for_test(
+            session,
+            fireball_holder,
+            chronology,
+            public_requests,
+        );
+        {
+            let compatibility = session.backend().campaign.level2_compatibility();
+            let castle = compatibility
+                .economy()
+                .castle()
+                .expect("public Level 3 Castle remains live before recovery");
+            let roots = level_three_dragon_fireball_targets(session)
+                .into_iter()
+                .filter(|target| target.source_slot == target.root_slot)
+                .map(|target| target.position)
+                .collect::<Vec<_>>();
+            assert!(
+                level_three_castle_healing_footprint_outside_dragon_range_for_test(
+                    castle.position,
+                    &roots,
+                ),
+                "Dragon recovery requires the pre-cast paired escape to leave the Castle safe"
+            );
+        }
+        let max_life = session
+            .backend()
+            .campaign
+            .level2_compatibility()
+            .shared_spells()
+            .player_entity()
+            .max_life;
+        if session
+            .backend()
+            .campaign
+            .level2_compatibility()
+            .shared_spells()
+            .player_entity()
+            .life
+            == max_life
+        {
+            chronology.push(level_three_dragon_survival_snapshot_for_test(
+                session,
+                "recovery.already_full",
+                public_requests,
+            ));
+            return;
+        }
+
+        chronology.push(level_three_dragon_survival_snapshot_for_test(
+            session,
+            "recovery.begin",
+            public_requests,
+        ));
+        const ROUTE_CLEARANCE: u32 = crate::level1_mission::PROJECTILE_ACQUISITION_RANGE + 512;
+        let (mut recovery_waypoints, recovery_edges) = level_three_castle_recovery_route_for_test(
+            session,
+            ROUTE_CLEARANCE,
+        )
+        .expect(
+            "source-resolved Level 3 terrain retains a Dragon-safe route back to the live Castle",
+        );
+        let root_count = session
+            .backend()
+            .campaign
+            .level2_compatibility()
+            .economy()
+            .authored_class5()
+            .iter()
+            .filter(|root| root.active && root.model == 0)
+            .count()
+            .max(1);
+        let recovery_budget = recovery_edges
+            .saturating_mul(24)
+            .saturating_add(recovery_waypoints.len().saturating_mul(8))
+            .saturating_add(256)
+            .saturating_add(
+                root_count
+                    .saturating_mul(level_three_dragon_retreat_bound(0))
+                    .saturating_mul(2),
+            );
+        let mut waypoint_index = 0_usize;
+        let mut reached_castle = false;
+        let mut prior_life = None;
+        for turn in 0..recovery_budget {
+            let compatibility = session.backend().campaign.level2_compatibility();
+            let player = compatibility.shared_spells().player_entity();
+            if prior_life != Some(player.life) {
+                chronology.push(level_three_dragon_survival_snapshot_for_test(
+                    session,
+                    &format!("recovery.turn.{turn}"),
+                    public_requests,
+                ));
+                prior_life = Some(player.life);
+            }
+            assert!(
+                player.life >= 0,
+                "Castle recovery must keep the player alive: chronology={chronology:#?}"
+            );
+            assert_eq!(
+                compatibility
+                    .shared_spells()
+                    .local_player()
+                    .enabled_spell_holders[0],
+                fireball_holder
+            );
+            assert!(
+                compatibility.economy().castle().is_some_and(|castle| {
+                    castle.active
+                        && compatibility.economy().player_castle_entity_index()
+                            == castle.source_entity_index
+                }),
+                "public Level 3 Castle remains live for player recovery"
+            );
+            let castle_overlap = compatibility
+                .economy()
+                .player_castle_shift_aabb_overlap(player);
+            let state = compatibility.state;
+            if castle_overlap && state.target_speed == 0 && state.actual_speed == 0 {
+                reached_castle = true;
+                break;
+            }
+
+            let roots = level_three_dragon_fireball_targets(session)
+                .into_iter()
+                .filter(|target| target.source_slot == target.root_slot)
+                .map(|target| target.position)
+                .collect::<Vec<_>>();
+            let castle_position = compatibility
+                .economy()
+                .castle()
+                .expect("live Castle was validated above")
+                .position;
+            let castle_safe = level_three_castle_healing_footprint_outside_dragon_range_for_test(
+                castle_position,
+                &roots,
+            );
+            let player_clear = level_three_position_outside_dragon_clearance_for_test(
+                state.position,
+                &roots,
+                ROUTE_CLEARANCE,
+            );
+            let latched = compatibility
+                .economy()
+                .authored_class5()
+                .iter()
+                .any(|root| {
+                    root.active
+                        && root.model == 0
+                        && root.action == 2
+                        && root.word_0x96_150 == state.entity_index
+                });
+            let route_stays_clear = recovery_waypoints[waypoint_index..].iter().all(|waypoint| {
+                level_three_position_outside_dragon_clearance_for_test(
+                    *waypoint,
+                    &roots,
+                    ROUTE_CLEARANCE,
+                )
+            });
+            if !castle_safe || !player_clear || latched {
+                panic!(
+                    "paired Dragon escape lost its Castle-safe recovery invariant: chronology={chronology:#?}"
+                );
+            }
+            if !route_stays_clear {
+                let (waypoints, _) =
+                    level_three_castle_recovery_route_for_test(session, ROUTE_CLEARANCE)
+                        .expect("moving guardians leave a replanned safe route back to the Castle");
+                recovery_waypoints = waypoints;
+                waypoint_index = 0;
+                continue;
+            }
+            let waypoint = recovery_waypoints[waypoint_index];
+            let dx = i32::from(waypoint.x.wrapping_sub(state.position.x).cast_signed());
+            let dy = i32::from(waypoint.y.wrapping_sub(state.position.y).cast_signed());
+            let distance = crate::legacy_sqrt(
+                dx.wrapping_mul(dx)
+                    .wrapping_add(dy.wrapping_mul(dy))
+                    .cast_unsigned(),
+            );
+            let final_waypoint = waypoint_index + 1 == recovery_waypoints.len();
+            if !final_waypoint
+                && distance <= 384
+                && state.target_speed == 0
+                && state.actual_speed == 0
+            {
+                waypoint_index += 1;
+                continue;
+            }
+            let desired = i16::try_from(crate::heading_for_positions(state.position, waypoint))
+                .expect("source heading is 11-bit");
+            session
+                .step(
+                    guard(session),
+                    level_three_source_safe_flight_command(
+                        state,
+                        desired,
+                        castle_overlap || (!final_waypoint && distance <= 384),
+                    ),
+                )
+                .unwrap();
+        }
+        assert!(
+            reached_castle,
+            "ordinary public flight must return to the live Castle"
+        );
+
+        session
+            .step(guard(session), GameCommand::default())
+            .unwrap();
+        let seeded_life = session
+            .backend()
+            .campaign
+            .level2_compatibility()
+            .shared_spells()
+            .player_entity()
+            .life;
+        session
+            .step(guard(session), GameCommand::default())
+            .unwrap();
+        let compatibility = session.backend().campaign.level2_compatibility();
+        let regen = max_life / 250;
+        assert_eq!(
+            compatibility.shared_spells().player_entity().life,
+            seeded_life.wrapping_add(regen).min(max_life),
+            "Castle overlap must seed exact max_life/250 upkeep"
+        );
+
+        let healing_bound = usize::try_from(max_life / regen).unwrap_or_default() + 2;
+        let mut healing_trace = Vec::with_capacity(healing_bound + 1);
+        for turn in 0..healing_bound {
+            healing_trace.push(level_three_castle_healing_snapshot_for_test(session, turn));
+            let compatibility = session.backend().campaign.level2_compatibility();
+            let player = compatibility.shared_spells().player_entity();
+            if player.life == max_life {
+                assert_eq!(
+                    compatibility
+                        .shared_spells()
+                        .local_player()
+                        .enabled_spell_holders[0],
+                    fireball_holder
+                );
+                assert_ne!(
+                    compatibility
+                        .shared_spells()
+                        .local_player()
+                        .enabled_spell_holders[2],
+                    0
+                );
+                return;
+            }
+            assert!(
+                compatibility
+                    .economy()
+                    .player_castle_shift_aabb_overlap(player),
+                "ordinary Castle healing must retain the source shift-AABB overlap"
+            );
+            session
+                .step(guard(session), GameCommand::default())
+                .unwrap();
+        }
+        healing_trace.push(level_three_castle_healing_snapshot_for_test(
+            session,
+            healing_bound,
+        ));
+        panic!(
+            "ordinary Castle upkeep did not restore the player to exact max life: {healing_trace:#?}"
+        );
+    }
+
+    fn fire_real_player_fireball_at_level_three_dragon_for_test(
+        session: &mut GameSession<Mc2CampaignBackend>,
+        desired_root: Option<u16>,
+    ) -> DragonFireballCastOutcome {
+        let mut public_requests = 0_usize;
+        let mut chronology = vec![level_three_dragon_survival_snapshot_for_test(
+            session,
+            "exchange.start",
+            public_requests,
+        )];
+        let (holder_index, holder_cadence) = {
+            let compatibility = session.backend().campaign.level2_compatibility();
+            let player = compatibility.shared_spells().local_player();
+            let holder_index = player.enabled_spell_holders[0];
+            let holder = compatibility
+                .shared_spells()
+                .pickups()
+                .iter()
+                .chain(compatibility.shared_spells().holders())
+                .chain(compatibility.shared_spells().dynamic_pickups())
+                .find(|holder| holder.index == holder_index)
+                .expect("carried family-0 holder remains addressable");
+            (
+                holder_index,
+                usize::from(holder.activation_value).saturating_add(2),
+            )
+        };
+        let ready_bound = 24_usize.max(holder_cadence);
+        let mut holder_ready = false;
+        for _ in 0..=ready_bound {
+            let compatibility = session.backend().campaign.level2_compatibility();
+            let player = compatibility.state.entity_index;
+            let has_projectile = compatibility
+                .economy()
+                .fireball_projectiles()
+                .iter()
+                .any(|projectile| projectile.active && projectile.owner_entity_index == player);
+            let has_impact = compatibility
+                .economy()
+                .model17_spawned_children()
+                .iter()
+                .any(|impact| {
+                    impact.active
+                        && impact.source_class == 10
+                        && impact.model == 0
+                        && impact.parent_entity_id == player
+                });
+            let holder = compatibility
+                .shared_spells()
+                .pickups()
+                .iter()
+                .chain(compatibility.shared_spells().holders())
+                .chain(compatibility.shared_spells().dynamic_pickups())
+                .find(|holder| holder.index == holder_index)
+                .expect("carried family-0 holder remains present through its cadence");
+            let ready = holder.active
+                && holder.class == 15
+                && holder.model == 0
+                && holder.action == 0
+                && holder.source_spell_parent_entity_index() == compatibility.state.entity_index
+                && holder.active_value == 0
+                && (0..=2).contains(&holder.level_gate)
+                && compatibility.shared_spells().player_mana() >= holder.mana_cost;
+            if !has_projectile && !has_impact && ready {
+                holder_ready = true;
+                break;
+            }
+            session
+                .step(guard(session), GameCommand::default())
+                .unwrap();
+        }
+        if !holder_ready {
+            let compatibility = session.backend().campaign.level2_compatibility();
+            let shared = compatibility.shared_spells();
+            let player = shared.local_player();
+            let holder = shared
+                .pickups()
+                .iter()
+                .chain(shared.holders())
+                .chain(shared.dynamic_pickups())
+                .find(|holder| holder.index == holder_index)
+                .expect("carried family-0 holder remains present after cadence failure");
+            let player_entity = shared.player_entity();
+            let castle_mana = compatibility
+                .economy()
+                .castle()
+                .filter(|castle| {
+                    castle.active
+                        && compatibility.economy().player_castle_entity_index()
+                            == castle.source_entity_index
+                })
+                .map(|castle| castle.mana);
+            let player_projectiles = compatibility
+                .economy()
+                .fireball_projectiles()
+                .iter()
+                .filter(|projectile| {
+                    projectile.active && projectile.owner_entity_index == player_entity.index
+                })
+                .map(|projectile| {
+                    (
+                        projectile.source_entity_index,
+                        compatibility
+                            .economy()
+                            .slot_generation(projectile.source_entity_index),
+                        projectile.life,
+                        projectile.position,
+                        projectile.target_source_entity_index,
+                        projectile.acquisition_attempted,
+                    )
+                })
+                .collect::<Vec<_>>();
+            let projectile_slots = player_projectiles
+                .iter()
+                .map(|projectile| projectile.0)
+                .collect::<BTreeSet<_>>();
+            let current_kinds = compatibility
+                .economy()
+                .live_arena_slots()
+                .into_iter()
+                .filter(|(slot, _)| projectile_slots.contains(slot))
+                .collect::<Vec<_>>();
+            let dragon_roots = compatibility
+                .economy()
+                .authored_class5()
+                .iter()
+                .filter(|root| projectile_slots.contains(&root.source_entity_index))
+                .map(|root| {
+                    (
+                        root.source_entity_index,
+                        root.active,
+                        root.drawing_enabled,
+                        root.action,
+                        root.life,
+                    )
+                })
+                .collect::<Vec<_>>();
+            let dragon_parts = compatibility
+                .economy()
+                .authored_dragon_parts()
+                .iter()
+                .filter(|part| projectile_slots.contains(&part.source_entity_index))
+                .map(|part| {
+                    (
+                        part.source_entity_index,
+                        part.entity_id,
+                        part.active,
+                        part.drawing_enabled,
+                        part.action,
+                        part.life,
+                    )
+                })
+                .collect::<Vec<_>>();
+            panic!(
+                "carried Fireball holder did not reach its source-ready cadence: \
+                 holder=(slot {}, active {}, class {}, model {}, action {}, active_value {}, \
+                 activation_value {}, parent {}, gate {}, cost {}), player=(entity {}, life {}, \
+                 mana {}, mana_regen {}, enabled {:?}), castle_mana={castle_mana:?}, \
+                 free_slots={}, replaceable_slots={:?}, player_projectiles={player_projectiles:?}, \
+                 current_kinds={current_kinds:?}, dragon_roots={dragon_roots:?}, \
+                 dragon_parts={dragon_parts:?}, player_impacts={}",
+                holder.index,
+                holder.active,
+                holder.class,
+                holder.model,
+                holder.action,
+                holder.active_value,
+                holder.activation_value,
+                holder.source_spell_parent_entity_index(),
+                holder.level_gate,
+                holder.mana_cost,
+                player_entity.index,
+                player_entity.life,
+                player_entity.mana,
+                player_entity.mana_regen,
+                player.enabled_spell_holders,
+                compatibility.economy().free_slot_count(),
+                real_level_two_new_event_replaceable_slots_for_test(compatibility.economy()),
+                compatibility
+                    .economy()
+                    .model17_spawned_children()
+                    .iter()
+                    .filter(|impact| {
+                        impact.active
+                            && impact.source_class == 10
+                            && impact.model == 0
+                            && impact.parent_entity_id == player_entity.index
+                    })
+                    .count(),
+            );
+        }
+        settle_level_three_dragon_damage_for_test(session);
+        let mut aimed = None;
+        for _ in 0..640 {
+            let Some((target, _, gap)) = level_three_dragon_launch_gap_for_test(
+                session.backend().campaign.level2_compatibility(),
+                desired_root,
+            ) else {
+                if desired_root.is_some() {
+                    return DragonFireballCastOutcome::Miss;
+                }
+                panic!("current Dragon chain exposes no map-linked body row");
+            };
+            if gap == 0 {
+                normalize_level_three_public_macro_to_rest(session);
+                if let Some((settled_target, _, 0)) = level_three_dragon_launch_gap_for_test(
+                    session.backend().campaign.level2_compatibility(),
+                    desired_root,
+                ) {
+                    aimed = Some(settled_target);
+                    break;
+                }
+                continue;
+            }
+            let (_, command) = level_three_public_high_speed_pursuit_command_for_test(
+                session,
+                desired_root,
+            )
+            .unwrap_or_else(|| {
+                let state = session.backend().campaign.level2_compatibility().state;
+                panic!(
+                    "exact public high-speed controller exposes no safe progressing command to Dragon target {:?} from {:?}",
+                    (target.source_slot, target.generation, target.position),
+                    state.position,
+                )
+            });
+            step_level_three_public_macro_command(session, command);
+        }
+        let aimed = aimed.unwrap_or_else(|| {
+            let compatibility = session.backend().campaign.level2_compatibility();
+            panic!(
+                "ordinary player flight reaches one real Dragon body row: desired_root={desired_root:?} player=(position {:?}, life {}, speed ({},{})) roots={:?}",
+                compatibility.state.position,
+                compatibility.shared_spells().player_entity().life,
+                compatibility.state.target_speed,
+                compatibility.state.actual_speed,
+                level_three_dragon_fireball_targets(session)
+                    .into_iter()
+                    .filter(|target| target.source_slot == target.root_slot)
+                    .map(|target| (target.source_slot, target.position, target.life))
+                    .collect::<Vec<_>>(),
+            )
+        });
+        // Fireball aim is carried by the public look deltas independently of flight heading.
+        // Face away before casting so retreat can accelerate immediately instead of spending
+        // the projectile lifetime turning at rest inside the Dragon acquisition envelope.
+        let retreat_heading = level_three_initial_dragon_retreat_heading(session);
+        turn_level_three_public_macro_to_heading(session, retreat_heading);
+        let aimed = level_three_dragon_fireball_targets(session)
+            .into_iter()
+            .find(|current| {
+                current.source_slot == aimed.source_slot && current.generation == aimed.generation
+            })
+            .or_else(|| nearest_level_three_dragon_target_for_test(session, desired_root))
+            .expect("one current Dragon body remains after the public pre-cast turn");
+        let (
+            player,
+            direction_bits,
+            player_state,
+            mut before,
+            projectile_occurrences_before,
+            impact_occurrences_before,
+        ) = {
+            let compatibility = session.backend().campaign.level2_compatibility();
+            let shared = compatibility.shared_spells();
+            let player = shared.local_player();
+            let holder_slot = player.enabled_spell_holders[0];
+            let holder = shared
+                .pickups()
+                .iter()
+                .chain(shared.holders())
+                .chain(shared.dynamic_pickups())
+                .find(|holder| holder.index == holder_slot)
+                .expect("incoming campaign state retains the carried Fireball holder");
+            assert!(holder.active);
+            assert_eq!((holder.class, holder.model, holder.action), (15, 0, 0));
+            assert_eq!(
+                holder.source_spell_parent_entity_index(),
+                player.entity_index
+            );
+            (
+                compatibility.state.entity_index,
+                shared.player_entity().control_flags & 0x0300,
+                compatibility.state,
+                level_three_dragon_fireball_targets(session),
+                compatibility
+                    .economy()
+                    .fireball_projectiles()
+                    .iter()
+                    .map(|projectile| {
+                        (
+                            projectile.source_entity_index,
+                            compatibility
+                                .economy()
+                                .slot_generation(projectile.source_entity_index),
+                        )
+                    })
+                    .collect::<BTreeSet<_>>(),
+                compatibility
+                    .economy()
+                    .model17_spawned_children()
+                    .iter()
+                    .map(|impact| {
+                        (
+                            impact.source_entity_index,
+                            compatibility
+                                .economy()
+                                .slot_generation(impact.source_entity_index),
+                        )
+                    })
+                    .collect::<BTreeSet<_>>(),
+            )
+        };
+        let aimed = before
+            .iter()
+            .find(|target| target.source_slot == aimed.source_slot)
+            .copied()
+            .expect("aimed Dragon occurrence remains current at the cast boundary");
+        let target_position = crate::Position {
+            z: aimed.position.z.wrapping_add(aimed.vertical_offset),
+            ..aimed.position
+        };
+        let mut launch_position = player_state.position;
+        let provisional_launch = crate::Position {
+            z: launch_position.z.wrapping_add(player_state.entity_fov),
+            ..launch_position
+        };
+        let provisional =
+            crate::level1_mission::projectile_guidance_angles(provisional_launch, target_position);
+        let hand_yaw = if direction_bits & 0x0100 != 0 {
+            Some(provisional.0.wrapping_sub(512))
+        } else if direction_bits & 0x0200 != 0 {
+            Some(provisional.0.wrapping_add(512))
+        } else {
+            None
+        };
+        if let Some(hand_yaw) = hand_yaw {
+            crate::move_entity(&mut launch_position, hand_yaw, 0, 256);
+            if crate::FlightWorld::ground_height(
+                session
+                    .backend()
+                    .campaign
+                    .level2_compatibility()
+                    .canonical_terrain(),
+                launch_position,
+            ) > launch_position.z
+            {
+                launch_position = player_state.position;
+            }
+        }
+        launch_position.z = launch_position.z.wrapping_add(player_state.entity_fov);
+        let (aim_yaw, aim_pitch) =
+            crate::level1_mission::projectile_guidance_angles(launch_position, target_position);
+        let activation_cursor = session.snapshot().value.effect_head;
+        session
+            .step(
+                guard(session),
+                GameCommand {
+                    select_spell: Some(SemanticId::parse("spell.fireball").unwrap()),
+                    cast_selected: true,
+                    look_yaw: aim_yaw.wrapping_sub(player_state.yaw),
+                    look_pitch: aim_pitch.wrapping_sub(player_state.display_pitch),
+                    ..GameCommand::default()
+                },
+            )
+            .unwrap();
+        public_requests += 1;
+        chronology.push(level_three_dragon_survival_snapshot_for_test(
+            session,
+            "cast.requested",
+            public_requests,
+        ));
+        let activation_events = session
+            .events_after(guard(session), activation_cursor, usize::MAX)
+            .unwrap();
+        assert!(
+            activation_events
+                .value
+                .events
+                .iter()
+                .any(|event| { event.event_id.as_str() == "spell.activation_requested" })
+        );
+
+        let mut launched_projectile_slots = BTreeSet::new();
+        let mut saw_projectile = false;
+        let mut saw_impact = false;
+        let mut impact_position = None;
+        let mut impact_overlap_recipients = BTreeSet::new();
+        let mut impact_mailbox_recipients = BTreeSet::new();
+        let retreat_heading = level_three_initial_dragon_retreat_heading(session);
+        for _ in 0..=24 {
+            let compatibility = session.backend().campaign.level2_compatibility();
+            let economy = compatibility.economy();
+            launched_projectile_slots.extend(
+                compatibility
+                    .effect_journal()
+                    .records()
+                    .iter()
+                    .filter(|record| record.sequence >= activation_cursor)
+                    .filter_map(|record| match record.effect {
+                        CampaignEffect::Flight(FlightEvent::PrepareSound {
+                            audio_site: crate::MissionAudioSite::FireballLaunch,
+                            entity_index,
+                            ..
+                        }) => Some(entity_index),
+                        _ => None,
+                    }),
+            );
+            saw_projectile |= economy.fireball_projectiles().iter().any(|projectile| {
+                projectile.owner_entity_index == player
+                    && projectile.source_subspell_index
+                        == crate::level1_mission::FIREBALL_PAYLOAD as u16
+                    && launched_projectile_slots.contains(&projectile.source_entity_index)
+                    && !projectile_occurrences_before.contains(&(
+                        projectile.source_entity_index,
+                        economy.slot_generation(projectile.source_entity_index),
+                    ))
+            });
+            if let Some(impact) = economy.model17_spawned_children().iter().find(|impact| {
+                impact.source_class == 10
+                    && impact.model == 0
+                    && launched_projectile_slots.contains(&impact.parent_entity_index)
+                    && impact.parent_entity_id == player
+                    && impact.subspell_index == crate::level1_mission::FIREBALL_PAYLOAD as u16
+                    && !impact_occurrences_before.contains(&(
+                        impact.source_entity_index,
+                        economy.slot_generation(impact.source_entity_index),
+                    ))
+            }) {
+                saw_projectile = true;
+                saw_impact = true;
+                impact_position = Some(impact.position);
+                let boundary_targets = level_three_dragon_fireball_targets(session);
+                impact_overlap_recipients.extend(
+                    level_three_dragon_targets_at_impact(&boundary_targets, impact.position)
+                        .into_iter()
+                        .map(|target| (target.source_slot, target.generation)),
+                );
+                impact_mailbox_recipients.extend(
+                    economy
+                        .authored_class5()
+                        .iter()
+                        .filter(|root| {
+                            root.active
+                                && root.model == 0
+                                && root.pending_word_0x62 == player
+                                && economy.authored_class5_runtime().iter().any(|runtime| {
+                                    runtime.source_entity_index == root.source_entity_index
+                                        && runtime.pending_damage
+                                            == crate::level1_mission::FIREBALL_PAYLOAD
+                                })
+                        })
+                        .map(|root| {
+                            (
+                                root.source_entity_index,
+                                economy.slot_generation(root.source_entity_index),
+                            )
+                        }),
+                );
+                impact_mailbox_recipients.extend(
+                    economy
+                        .authored_dragon_parts()
+                        .iter()
+                        .filter(|part| {
+                            part.active
+                                && part.pending_word_0x62 == player
+                                && part.pending_damage == crate::level1_mission::FIREBALL_PAYLOAD
+                        })
+                        .map(|part| {
+                            (
+                                part.source_entity_index,
+                                economy.slot_generation(part.source_entity_index),
+                            )
+                        }),
+                );
+            }
+            let after = level_three_dragon_fireball_targets(session);
+            let changed = before
+                .iter()
+                .filter_map(|prior| {
+                    let current = after.iter().find(|current| {
+                        current.source_slot == prior.source_slot
+                            && current.generation == prior.generation
+                    })?;
+                    (current.life != prior.life).then_some((*prior, *current))
+                })
+                .collect::<Vec<_>>();
+            if !changed.is_empty() {
+                let corroborated_recipients = impact_overlap_recipients
+                    .iter()
+                    .copied()
+                    .chain(impact_mailbox_recipients.iter().copied())
+                    .collect::<BTreeSet<_>>();
+                let attributed = changed
+                    .iter()
+                    .filter_map(|(prior, current)| {
+                        level_three_direct_dragon_damage_attribution_for_test(
+                            *prior,
+                            *current,
+                            &after,
+                            player,
+                            &corroborated_recipients,
+                        )
+                        .map(|attribution| (*prior, *current, attribution))
+                    })
+                    .collect::<Vec<_>>();
+                let direct_occurrences = attributed
+                    .iter()
+                    .map(|(_, current, _)| (current.source_slot, current.generation))
+                    .collect::<BTreeSet<_>>();
+                let directly_hit_part_roots = attributed
+                    .iter()
+                    .filter(|(_, current, _)| current.source_slot != current.root_slot)
+                    .map(|(_, current, attribution)| (current.root_slot, *attribution))
+                    .collect::<BTreeSet<_>>();
+                for (_, current) in &changed {
+                    if direct_occurrences.contains(&(current.source_slot, current.generation)) {
+                        continue;
+                    }
+                    assert_eq!(
+                        current.source_slot, current.root_slot,
+                        "only a linked root adoption may accompany exact attributed Dragon damage: changed={changed:?} attributed={attributed:?}"
+                    );
+                    let minimum_child = after
+                        .iter()
+                        .filter(|child| {
+                            child.source_slot != child.root_slot
+                                && child.root_slot == current.root_slot
+                        })
+                        .min_by_key(|child| child.life)
+                        .expect("a propagated Dragon root retains current body rows");
+                    let root_attribution = if minimum_child.attacker == player {
+                        DragonDamageAttribution::Player
+                    } else {
+                        DragonDamageAttribution::Dragon(minimum_child.attacker)
+                    };
+                    assert!(
+                        directly_hit_part_roots.contains(&(current.root_slot, root_attribution)),
+                        "root adoption must derive from one exactly attributed current body row: changed={changed:?} attributed={attributed:?}"
+                    );
+                    assert_eq!(
+                        (current.life, current.attacker),
+                        (minimum_child.life, minimum_child.attacker)
+                    );
+                }
+                let directly_changed = attributed
+                    .into_iter()
+                    .filter_map(|(prior, current, attribution)| {
+                        (attribution == DragonDamageAttribution::Player).then_some((prior, current))
+                    })
+                    .collect::<Vec<_>>();
+                if directly_changed.is_empty() {
+                    before = after;
+                    let command = level_three_dragon_retreat_command(session, retreat_heading);
+                    session.step(guard(session), command).unwrap();
+                    continue;
+                }
+                impact_position.unwrap_or_else(|| {
+                    panic!(
+                        "player Dragon delta preceded observed player class-10: launches={launched_projectile_slots:?} changed={changed:?} impacts={:?}",
+                        economy
+                            .model17_spawned_children()
+                            .iter()
+                            .map(|impact| (
+                                impact.source_entity_index,
+                                impact.parent_entity_index,
+                                impact.parent_entity_id,
+                                impact.position,
+                                impact.active,
+                            ))
+                            .collect::<Vec<_>>()
+                    )
+                });
+                assert!(saw_projectile);
+                assert!(saw_impact);
+                let outcome = DragonFireballCastOutcome::Damage(
+                    directly_changed
+                        .into_iter()
+                        .map(|(prior, current)| SkeletonFireballDamageReceipt {
+                            source_slot: current.source_slot,
+                            life_before: prior.life,
+                            life_after: current.life,
+                        })
+                        .collect(),
+                );
+                chronology.push(level_three_dragon_survival_snapshot_for_test(
+                    session,
+                    "impact.damage_receipt",
+                    public_requests,
+                ));
+                retreat_beyond_level_three_dragon_fireballs_for_test(
+                    session,
+                    holder_index,
+                    &mut chronology,
+                    public_requests,
+                );
+                return outcome;
+            }
+            let command = level_three_dragon_retreat_command(session, retreat_heading);
+            session.step(guard(session), command).unwrap();
+        }
+        if !saw_projectile {
+            assert!(!saw_impact);
+            retreat_beyond_level_three_dragon_fireballs_for_test(
+                session,
+                holder_index,
+                &mut chronology,
+                public_requests,
+            );
+            return DragonFireballCastOutcome::AllocationRace;
+        }
+        retreat_beyond_level_three_dragon_fireballs_for_test(
+            session,
+            holder_index,
+            &mut chronology,
+            public_requests,
+        );
+        DragonFireballCastOutcome::Miss
+    }
+
+    #[test]
+    fn campaign_backend_carried_fireball_hits_one_real_level_three_dragon_row_through_public_command()
+     {
+        let root = level_three_descriptor_fixture_path();
+        let catalog = default_catalog().unwrap();
+        let definition = Arc::new(load_mc2_campaign(&root, &catalog).unwrap());
+        let mut session = GameSession::open(
+            &Mc2CampaignAdapter,
+            definition,
+            65,
+            Mc2CampaignInputs::new(&root),
+        )
+        .unwrap();
+        let compatibility = session.backend_mut().campaign.level2_compatibility_mut();
+        compatibility
+            .apply_carried_spell_families(&[0, 2], Some(0))
+            .unwrap();
+        build_real_level_three_carried_castle_for_test(&mut session);
+        session
+            .backend_mut()
+            .campaign
+            .level2_compatibility_mut()
+            .activate_authored_group_prerequisite_for_test(1)
+            .unwrap();
+        assert_eq!(level_three_dragon_fireball_targets(&session).len(), 34);
+
+        let root_slot = level_three_dragon_fireball_targets(&session)
+            .into_iter()
+            .filter(|target| target.source_slot == target.root_slot)
+            .min_by_key(|target| target.source_slot)
+            .expect("one real guardian root remains current")
+            .source_slot;
+        let holder = session
+            .backend()
+            .campaign
+            .level2_compatibility()
+            .shared_spells()
+            .local_player()
+            .enabled_spell_holders[0];
+        let mut receipt = None;
+        for _ in 0..4 {
+            let outcome = fire_real_player_fireball_at_level_three_dragon_for_test(
+                &mut session,
+                Some(root_slot),
+            );
+            if let DragonFireballCastOutcome::Damage(receipts) = outcome {
+                receipt = Some(receipts);
+                break;
+            }
+        }
+        let receipt = receipt.expect("one public carried Fireball reaches a real Dragon row");
+        assert!(!receipt.is_empty());
+        assert!(receipt.iter().all(|receipt| {
+            receipt.life_after
+                == receipt
+                    .life_before
+                    .wrapping_sub(crate::level1_mission::FIREBALL_PAYLOAD)
+        }));
+        let compatibility = session.backend().campaign.level2_compatibility();
+        assert!(compatibility.shared_spells().player_entity().life >= 0);
+        assert_eq!(
+            compatibility
+                .shared_spells()
+                .local_player()
+                .enabled_spell_holders[0],
+            holder
+        );
+        assert!(compatibility.economy().player_death_markers().is_empty());
+
+        let mut successful_casts = 1_usize;
+        for _ in 1..(17 * 4) {
+            let root_is_terminal = session
+                .backend()
+                .campaign
+                .level2_compatibility()
+                .economy()
+                .authored_class5()
+                .iter()
+                .find(|root| root.source_entity_index == root_slot)
+                .is_none_or(|root| root.life < 0 || matches!(root.action, 4 | 5));
+            if root_is_terminal {
+                break;
+            }
+            if let DragonFireballCastOutcome::Damage(receipts) =
+                fire_real_player_fireball_at_level_three_dragon_for_test(
+                    &mut session,
+                    Some(root_slot),
+                )
+            {
+                successful_casts += 1;
+                assert!(!receipts.is_empty());
+                assert!(receipts.iter().all(|receipt| {
+                    receipt.life_after
+                        == receipt
+                            .life_before
+                            .wrapping_sub(crate::level1_mission::FIREBALL_PAYLOAD)
+                }));
+            }
+            let compatibility = session.backend().campaign.level2_compatibility();
+            assert!(compatibility.shared_spells().player_entity().life >= 0);
+            assert_eq!(
+                compatibility
+                    .shared_spells()
+                    .local_player()
+                    .enabled_spell_holders[0],
+                holder
+            );
+            assert!(compatibility.economy().player_death_markers().is_empty());
+        }
+        let terminal_root = session
+            .backend()
+            .campaign
+            .level2_compatibility()
+            .economy()
+            .authored_class5()
+            .iter()
+            .find(|root| root.source_entity_index == root_slot)
+            .copied();
+        assert!(
+            terminal_root.is_none_or(|root| root.life < 0 || matches!(root.action, 4 | 5)),
+            "exact public command macros exhausted the source hit budget before one guardian root became terminal: successful_casts={successful_casts} root={terminal_root:?}"
+        );
+        assert!(successful_casts >= 17);
+    }
+
+    /// Resume one bounded public-command exchange after the production replay
+    /// loader has verified a retained failure state. This is diagnostic only;
+    /// the complete guardian driver still owns objective/death/reclaim proof.
+    pub(crate) fn continue_guardian_public_exchange_for_test(
+        session: &mut GameSession<Mc2CampaignBackend>,
+    ) -> bool {
+        let root_slot = level_three_dragon_fireball_targets(session)
+            .into_iter()
+            .filter(|target| target.source_slot == target.root_slot && target.life >= 0)
+            .min_by_key(|target| target.source_slot)
+            .expect("retained guardian failure has a current living root")
+            .source_slot;
+        let outcome =
+            fire_real_player_fireball_at_level_three_dragon_for_test(session, Some(root_slot));
+        eprintln!(
+            "replayed guardian exchange: root={root_slot} tick={} outcome={outcome:?}",
+            session.identity().tick,
+        );
+        matches!(outcome, DragonFireballCastOutcome::Damage(_))
+    }
+
     pub(crate) fn drive_real_level_three_guardian_dragons_to_reveal_entrance_for_test(
         session: &mut GameSession<Mc2CampaignBackend>,
     ) {
         const DRAGON_AUTHORED_ROWS: [u16; 2] = [141, 142];
-        const DRAGON_DAMAGE: i32 = 4_500;
         const DRAGON_MODEL: u8 = 0;
         const DRAGON_PART_COUNT: usize = 16;
         const DRAGON_PRE_KILL_ACTION: u8 = 4;
         const DRAGON_KILL_ACTION: u8 = 5;
+        const REQUIRED_PUBLIC_HITS: usize = 17;
+        const MAX_PUBLIC_CASTS_PER_DRAGON: usize = REQUIRED_PUBLIC_HITS * 4;
 
         if session
             .backend()
@@ -8629,7 +10600,7 @@ pub(crate) mod tests {
         {
             drive_real_level_three_skeleton_horde_to_guardian_dragons_for_test(session);
         }
-
+        build_real_level_three_carried_castle_for_test(session);
         let dragons_already_materialized = session
             .backend()
             .campaign
@@ -8704,32 +10675,87 @@ pub(crate) mod tests {
         assert_eq!(expected_death_sources.len(), 34);
 
         let event_count_before = compatibility.economy().events().len();
-        let attacker = compatibility.state.entity_index;
+        let mut actual_damage_sources = BTreeSet::new();
         for (dragon_index, root_slot) in dragon_source_slots.iter().copied().enumerate() {
-            let body_slot = session
+            let mut observed_root_actions = BTreeSet::new();
+            let mut root_damage_sources = BTreeSet::new();
+            for cast_index in 0..MAX_PUBLIC_CASTS_PER_DRAGON {
+                let root_is_terminal = session
+                    .backend()
+                    .campaign
+                    .level2_compatibility()
+                    .economy()
+                    .authored_class5()
+                    .iter()
+                    .find(|source| source.source_entity_index == root_slot)
+                    .is_none_or(|root| {
+                        root.life < 0
+                            || matches!(root.action, DRAGON_PRE_KILL_ACTION | DRAGON_KILL_ACTION)
+                    });
+                if root_is_terminal {
+                    break;
+                }
+                eprintln!(
+                    "guardian exchange start: root={root_slot} cast={cast_index} tick={} roots={:?}",
+                    session.identity().tick,
+                    level_three_dragon_fireball_targets(session)
+                        .into_iter()
+                        .filter(|target| target.source_slot == target.root_slot)
+                        .map(|target| (
+                            target.source_slot,
+                            target.generation,
+                            target.life,
+                            target.position
+                        ))
+                        .collect::<Vec<_>>()
+                );
+                let exchange_started = std::time::Instant::now();
+                let outcome = fire_real_player_fireball_at_level_three_dragon_for_test(
+                    session,
+                    Some(root_slot),
+                );
+                eprintln!(
+                    "guardian exchange complete: root={root_slot} cast={cast_index} tick={} elapsed={:?} outcome={outcome:?}",
+                    session.identity().tick,
+                    exchange_started.elapsed(),
+                );
+                let receipts = match outcome {
+                    DragonFireballCastOutcome::AllocationRace | DragonFireballCastOutcome::Miss => {
+                        continue;
+                    }
+                    DragonFireballCastOutcome::Damage(receipts) => receipts,
+                };
+                assert!(receipts.iter().all(|receipt| {
+                    expected_death_sources.contains(&receipt.source_slot)
+                        && receipt.life_after
+                            == receipt
+                                .life_before
+                                .wrapping_sub(crate::level1_mission::FIREBALL_PAYLOAD)
+                }));
+                for receipt in receipts {
+                    root_damage_sources.insert(receipt.source_slot);
+                    actual_damage_sources.insert(receipt.source_slot);
+                }
+            }
+            assert!(
+                !root_damage_sources.is_empty(),
+                "public Fireballs never reached Dragon root {root_slot} or its body"
+            );
+            let terminal_root = session
                 .backend()
                 .campaign
                 .level2_compatibility()
                 .economy()
-                .authored_dragon_parts()
+                .authored_class5()
                 .iter()
-                .find(|part| part.entity_id == root_slot)
-                .expect("the package Dragon retains its sixteen-row body")
-                .source_entity_index;
-            // This is the disclosed boundary after a class-10 Fireball pulse
-            // has reached one real body row. Dragon callbacks remain the sole
-            // authority for damage, root propagation, death, outputs, and
-            // source-boundary reclaim.
-            assert!(
-                session
-                    .backend_mut()
-                    .campaign
-                    .level2_compatibility_mut()
-                    .economy_mut()
-                    .stage_dragon_mailbox_damage_for_test(body_slot, attacker, DRAGON_DAMAGE,)
-            );
-
-            let mut observed_root_actions = BTreeSet::new();
+                .find(|source| source.source_entity_index == root_slot)
+                .copied();
+            assert!(terminal_root.is_none_or(|root| {
+                root.life < 0 || matches!(root.action, DRAGON_PRE_KILL_ACTION | DRAGON_KILL_ACTION)
+            }));
+            if let Some(root) = terminal_root {
+                observed_root_actions.insert(root.action);
+            }
             // A transition-carried holder changes the free-stack slots used
             // by this multipart allocation. Allow both the root/body death
             // cadence and the following source-boundary reclaim to complete.
@@ -8798,7 +10824,35 @@ pub(crate) mod tests {
                     1
                 }
             );
+            if dragon_index + 1 < dragon_source_slots.len() {
+                let fireball_holder = session
+                    .backend()
+                    .campaign
+                    .level2_compatibility()
+                    .shared_spells()
+                    .local_player()
+                    .enabled_spell_holders[0];
+                let mut recovery_chronology = vec![level_three_dragon_survival_snapshot_for_test(
+                    session,
+                    "root_milestone.recovery.begin",
+                    0,
+                )];
+                recover_at_real_level_three_castle_for_test(
+                    session,
+                    fireball_holder,
+                    &mut recovery_chronology,
+                    0,
+                );
+                let player = session
+                    .backend()
+                    .campaign
+                    .level2_compatibility()
+                    .shared_spells()
+                    .player_entity();
+                assert_eq!(player.life, player.max_life);
+            }
         }
+        assert!(actual_damage_sources.is_subset(&expected_death_sources));
 
         let compatibility = session.backend().campaign.level2_compatibility();
         let economy = compatibility.economy();
@@ -8872,6 +10926,7 @@ pub(crate) mod tests {
         let terrain = compatibility.canonical_terrain();
         let cast_yaw = compatibility.state.yaw;
         let entity_fov = compatibility.state.entity_fov;
+        let direction_bits = compatibility.shared_spells().player_entity().control_flags & 0x0300;
         (16_u8..240)
             .flat_map(|y| (16_u8..240).map(move |x| (x, y)))
             .filter_map(|(x, y)| {
@@ -8882,9 +10937,18 @@ pub(crate) mod tests {
                 };
                 position.z = terrain.ground_height(position).wrapping_add(256);
                 let mut launch_position = position;
-                crate::move_entity(&mut launch_position, cast_yaw.wrapping_sub(512), 0, 256);
-                if terrain.ground_height(launch_position) > launch_position.z {
-                    launch_position = position;
+                let hand_yaw = if direction_bits & 0x0100 != 0 {
+                    Some(cast_yaw.wrapping_sub(512))
+                } else if direction_bits & 0x0200 != 0 {
+                    Some(cast_yaw.wrapping_add(512))
+                } else {
+                    None
+                };
+                if let Some(hand_yaw) = hand_yaw {
+                    crate::move_entity(&mut launch_position, hand_yaw, 0, 256);
+                    if terrain.ground_height(launch_position) > launch_position.z {
+                        launch_position = position;
+                    }
                 }
                 launch_position.z = launch_position.z.wrapping_add(entity_fov);
                 compatibility
@@ -8894,41 +10958,253 @@ pub(crate) mod tests {
             .collect()
     }
 
-    fn nearest_level_three_castle_site_for_test(
+    fn level_three_guardian_spawn_positions_for_test(
+        session: &GameSession<Mc2CampaignBackend>,
+    ) -> Vec<crate::Position> {
+        let compatibility = session.backend().campaign.level2_compatibility();
+        let level = compatibility
+            .semantic_level_definition()
+            .expect("qualified Level 3 retains its semantic definition");
+        let terrain = compatibility.canonical_terrain();
+        ["creature.dragon.at_79_143", "creature.dragon.at_141_144"]
+            .into_iter()
+            .map(|id| {
+                let id = sim_definition::adapter::stable_entity_id(id).unwrap();
+                let tile = level
+                    .entity(&id)
+                    .expect("qualified Level 3 retains both guardian roots")
+                    .position();
+                let mut position = crate::Position {
+                    x: (tile.x << 8).wrapping_add(128),
+                    y: (tile.y << 8).wrapping_add(128),
+                    z: 0,
+                };
+                position.z = terrain.ground_height(position);
+                position
+            })
+            .collect()
+    }
+
+    fn level_three_position_outside_dragon_range_for_test(
+        position: crate::Position,
+        roots: &[crate::Position],
+    ) -> bool {
+        level_three_position_outside_dragon_clearance_for_test(
+            position,
+            roots,
+            crate::level1_mission::PROJECTILE_ACQUISITION_RANGE,
+        )
+    }
+
+    fn level_three_position_outside_dragon_clearance_for_test(
+        position: crate::Position,
+        roots: &[crate::Position],
+        clearance: u32,
+    ) -> bool {
+        roots.iter().all(|root| {
+            let dx = i32::from(root.x.wrapping_sub(position.x).cast_signed());
+            let dy = i32::from(root.y.wrapping_sub(position.y).cast_signed());
+            crate::legacy_sqrt(
+                dx.wrapping_mul(dx)
+                    .wrapping_add(dy.wrapping_mul(dy))
+                    .cast_unsigned(),
+            ) > clearance
+        })
+    }
+
+    fn level_three_castle_healing_footprint_outside_dragon_range_for_test(
+        site: crate::Position,
+        roots: &[crate::Position],
+    ) -> bool {
+        let half_x = i32::from(crate::level1_mission::CASTLE_STAGE_ONE_COLLISION_HALF_WIDTH);
+        let half_y = i32::from(crate::level1_mission::CASTLE_STAGE_ONE_PLACEMENT_HALF_Y);
+        roots.iter().all(|root| {
+            let dx = i32::from(root.x.wrapping_sub(site.x).cast_signed())
+                .unsigned_abs()
+                .saturating_sub(half_x.cast_unsigned());
+            let dy = i32::from(root.y.wrapping_sub(site.y).cast_signed())
+                .unsigned_abs()
+                .saturating_sub(half_y.cast_unsigned());
+            crate::legacy_sqrt(dx.wrapping_mul(dx).wrapping_add(dy.wrapping_mul(dy)))
+                > crate::level1_mission::PROJECTILE_ACQUISITION_RANGE
+        })
+    }
+
+    fn level_three_source_route_to_sites_for_test(
         session: &GameSession<Mc2CampaignBackend>,
         origin: crate::Position,
-    ) -> crate::Position {
-        valid_level_three_castle_sites_for_test(session)
+        sites: Vec<crate::Position>,
+        dragon_centers: &[crate::Position],
+        dragon_clearance: u32,
+    ) -> Option<(Vec<crate::Position>, usize, i16)> {
+        const MAP_SIDE: usize = 256;
+        let compatibility = session.backend().campaign.level2_compatibility();
+        let terrain = compatibility.canonical_terrain();
+        let player = compatibility.state;
+        let profile = compatibility.profile();
+        let tile_index = |x: u8, y: u8| usize::from(y) * MAP_SIDE + usize::from(x);
+        let source_destination = |from: crate::Position, proposed: crate::Position| {
+            let mut probe = player;
+            probe.position = from;
+            match crate::resolve_legacy_movement(&mut probe, from, proposed, profile, terrain) {
+                crate::MovementResolution::Accept(position)
+                | crate::MovementResolution::Redirect(position) => Some(position),
+                crate::MovementResolution::Reject | crate::MovementResolution::RejectAndStop => {
+                    None
+                }
+            }
+        };
+
+        let mut destination_sites = vec![None; MAP_SIDE * MAP_SIDE];
+        for site in sites {
+            let x = site.x.to_be_bytes()[0];
+            let y = site.y.to_be_bytes()[0];
+            if level_three_position_outside_dragon_clearance_for_test(
+                site,
+                dragon_centers,
+                dragon_clearance,
+            ) {
+                destination_sites[tile_index(x, y)] = Some(site);
+            }
+        }
+
+        let start_x = origin.x.to_be_bytes()[0];
+        let start_y = origin.y.to_be_bytes()[0];
+        let start = tile_index(start_x, start_y);
+        let mut predecessor = vec![usize::MAX; MAP_SIDE * MAP_SIDE];
+        let mut committed_positions = vec![None; MAP_SIDE * MAP_SIDE];
+        predecessor[start] = start;
+        committed_positions[start] = Some(origin);
+        let mut queue = VecDeque::from([start]);
+        let mut destination = None;
+        while let Some(current) = queue.pop_front() {
+            if destination_sites[current].is_some() {
+                destination = Some(current);
+                break;
+            }
+            let from = committed_positions[current].unwrap();
+            for heading in [0_i16, 256, 512, 768, 1_024, 1_280, 1_536, 1_792] {
+                let mut proposed = from;
+                crate::move_entity(&mut proposed, heading, 0, 256);
+                let Some(committed) = source_destination(from, proposed) else {
+                    continue;
+                };
+                if !level_three_position_outside_dragon_clearance_for_test(
+                    committed,
+                    dragon_centers,
+                    dragon_clearance,
+                ) {
+                    continue;
+                }
+                let next_x = usize::from(committed.x.to_be_bytes()[0]);
+                let next_y = usize::from(committed.y.to_be_bytes()[0]);
+                if !(16..240).contains(&next_x) || !(16..240).contains(&next_y) {
+                    continue;
+                }
+                let next = next_y * MAP_SIDE + next_x;
+                if predecessor[next] != usize::MAX {
+                    continue;
+                }
+                predecessor[next] = current;
+                committed_positions[next] = Some(committed);
+                queue.push_back(next);
+            }
+        }
+        let destination = destination?;
+        let mut path = vec![destination];
+        while *path.last().unwrap() != start {
+            path.push(predecessor[*path.last().unwrap()]);
+        }
+        path.reverse();
+        let edge_count = path.len().saturating_sub(1);
+        let mut waypoints = Vec::new();
+        for index in 1..path.len().saturating_sub(1) {
+            let previous = committed_positions[path[index - 1]].unwrap();
+            let current = committed_positions[path[index]].unwrap();
+            let next = committed_positions[path[index + 1]].unwrap();
+            if crate::heading_for_positions(previous, current)
+                != crate::heading_for_positions(current, next)
+            {
+                waypoints.push(current);
+            }
+        }
+        waypoints.push(destination_sites[destination].unwrap());
+        Some((waypoints, edge_count, player.yaw))
+    }
+
+    fn level_three_castle_recovery_route_for_test(
+        session: &GameSession<Mc2CampaignBackend>,
+        clearance: u32,
+    ) -> Option<(Vec<crate::Position>, usize)> {
+        let compatibility = session.backend().campaign.level2_compatibility();
+        let castle = compatibility.economy().castle().filter(|castle| {
+            castle.active
+                && compatibility.economy().player_castle_entity_index()
+                    == castle.source_entity_index
+        })?;
+        let roots = level_three_dragon_fireball_targets(session)
             .into_iter()
-            .min_by_key(|site| {
-                let dx = i64::from(i32::from(site.x) - i32::from(origin.x));
-                let dy = i64::from(i32::from(site.y) - i32::from(origin.y));
-                dx * dx + dy * dy
+            .filter(|target| target.source_slot == target.root_slot)
+            .map(|target| target.position)
+            .collect::<Vec<_>>();
+        level_three_source_route_to_sites_for_test(
+            session,
+            compatibility.state.position,
+            vec![castle.position],
+            &roots,
+            clearance,
+        )
+        .map(|(waypoints, edges, _)| (waypoints, edges))
+    }
+
+    fn level_three_castle_route_in_current_component_for_test(
+        session: &GameSession<Mc2CampaignBackend>,
+        origin: crate::Position,
+    ) -> (Vec<crate::Position>, usize, i16) {
+        let guardian_spawns = level_three_guardian_spawn_positions_for_test(session);
+        let safe_sites = valid_level_three_castle_sites_for_test(session)
+            .into_iter()
+            .filter(|site| {
+                level_three_castle_healing_footprint_outside_dragon_range_for_test(
+                    *site,
+                    &guardian_spawns,
+                )
             })
-            .expect("qualified Level 3 terrain contains a valid carried-Castle footprint")
+            .collect();
+        level_three_source_route_to_sites_for_test(
+            session,
+            origin,
+            safe_sites,
+            &guardian_spawns,
+            crate::level1_mission::PROJECTILE_ACQUISITION_RANGE,
+        )
+        .expect(
+                "qualified Level 3 terrain contains a source-connected, guardian-safe admitted Castle footprint",
+            )
     }
 
     pub(crate) fn build_real_level_three_carried_castle_for_test(
         session: &mut GameSession<Mc2CampaignBackend>,
     ) -> u16 {
-        let (player_entity, castle_cast_aim, cast_site) = {
-            let compatibility = session.backend().campaign.level2_compatibility();
-            let cast_site =
-                nearest_level_three_castle_site_for_test(session, compatibility.state.position);
-            (
-                compatibility.state.entity_index,
-                (compatibility.state.yaw, compatibility.state.display_pitch),
-                cast_site,
-            )
-        };
-        session
-            .backend_mut()
+        if let Some(castle) = session
+            .backend()
             .campaign
-            .level2_compatibility_mut()
-            .set_level2_entity_position(player_entity, cast_site)
-            .unwrap();
-        let compatibility = session.backend_mut().campaign.level2_compatibility_mut();
-        compatibility.set_level2_player_aim_for_test(castle_cast_aim.0, castle_cast_aim.1);
+            .level2_compatibility()
+            .economy()
+            .castle()
+            .filter(|castle| {
+                castle.active
+                    && session
+                        .backend()
+                        .campaign
+                        .level2_compatibility()
+                        .economy()
+                        .player_castle_entity_index()
+                        == castle.source_entity_index
+            })
+        {
+            return castle.source_entity_index;
+        }
 
         session
             .step(
@@ -8939,6 +11215,137 @@ pub(crate) mod tests {
                 },
             )
             .unwrap();
+        let mut reached_admitted_site = false;
+        let (waypoints, route_edges, admitted_yaw) = {
+            let compatibility = session.backend().campaign.level2_compatibility();
+            level_three_castle_route_in_current_component_for_test(
+                session,
+                compatibility.state.position,
+            )
+        };
+        let mut waypoint_index = 0;
+        let command_budget = route_edges
+            .saturating_mul(24)
+            .saturating_add(waypoints.len().saturating_mul(8))
+            .saturating_add(256);
+        for _ in 0..command_budget {
+            let compatibility = session.backend().campaign.level2_compatibility();
+            let state = compatibility.state;
+            let direction_bits =
+                compatibility.shared_spells().player_entity().control_flags & 0x0300;
+            let hand_yaw = if direction_bits & 0x0100 != 0 {
+                Some(state.yaw.wrapping_sub(512))
+            } else if direction_bits & 0x0200 != 0 {
+                Some(state.yaw.wrapping_add(512))
+            } else {
+                None
+            };
+            let mut launch_position = state.position;
+            if let Some(hand_yaw) = hand_yaw {
+                crate::move_entity(&mut launch_position, hand_yaw, 0, 256);
+                if compatibility
+                    .canonical_terrain()
+                    .ground_height(launch_position)
+                    > launch_position.z
+                {
+                    launch_position = state.position;
+                }
+            }
+            launch_position.z = launch_position.z.wrapping_add(state.entity_fov);
+            let cast_site = waypoints[waypoint_index];
+            let dx = i32::from(cast_site.x.wrapping_sub(state.position.x).cast_signed());
+            let dy = i32::from(cast_site.y.wrapping_sub(state.position.y).cast_signed());
+            let distance = crate::legacy_sqrt(
+                dx.wrapping_mul(dx)
+                    .wrapping_add(dy.wrapping_mul(dy))
+                    .cast_unsigned(),
+            );
+            let final_waypoint = waypoint_index + 1 == waypoints.len();
+            if !final_waypoint
+                && distance <= 384
+                && state.target_speed == 0
+                && state.actual_speed == 0
+            {
+                waypoint_index = (waypoint_index + 1).min(waypoints.len() - 1);
+                continue;
+            }
+            if final_waypoint
+                && distance <= 384
+                && compatibility.castle_projectile_site_admitted_for_test(launch_position)
+            {
+                reached_admitted_site = true;
+                break;
+            }
+            let desired = if final_waypoint
+                && distance <= 96
+                && state.target_speed == 0
+                && state.actual_speed == 0
+            {
+                admitted_yaw
+            } else {
+                i16::try_from(crate::heading_for_positions(state.position, cast_site))
+                    .expect("source heading is 11-bit")
+            };
+            let correction = crate::turn_toward(state.yaw, desired, 127);
+            session
+                .step(
+                    guard(session),
+                    GameCommand {
+                        longitudinal: if final_waypoint
+                            && distance <= 96
+                            && state.target_speed == 0
+                            && state.actual_speed == 0
+                        {
+                            LongitudinalControl::Coast
+                        } else if correction.unsigned_abs() > 24
+                            || ((final_waypoint && distance <= 96)
+                                || (!final_waypoint && distance <= 768))
+                                && (state.target_speed != 0 || state.actual_speed != 0)
+                        {
+                            LongitudinalControl::Decelerate
+                        } else {
+                            LongitudinalControl::Accelerate
+                        },
+                        roll_axis: correction.clamp(-24, 24) as i8,
+                        pitch_axis: -127,
+                        ..GameCommand::default()
+                    },
+                )
+                .unwrap();
+        }
+        let final_compatibility = session.backend().campaign.level2_compatibility();
+        let final_state = final_compatibility.state;
+        let final_site = waypoints[waypoint_index];
+        let final_dx = i32::from(
+            final_site
+                .x
+                .wrapping_sub(final_state.position.x)
+                .cast_signed(),
+        );
+        let final_dy = i32::from(
+            final_site
+                .y
+                .wrapping_sub(final_state.position.y)
+                .cast_signed(),
+        );
+        assert!(
+            reached_admitted_site,
+            "ordinary public flight must reach a production-admitted Castle footprint: \
+             waypoint={waypoint_index}/{} route_edges={route_edges} position={:?} site={final_site:?} \
+             distance={} yaw={} admitted_yaw={} speed=({}, {})",
+            waypoints.len(),
+            final_state.position,
+            crate::legacy_sqrt(
+                final_dx
+                    .wrapping_mul(final_dx)
+                    .wrapping_add(final_dy.wrapping_mul(final_dy))
+                    .cast_unsigned(),
+            ),
+            final_state.yaw,
+            admitted_yaw,
+            final_state.target_speed,
+            final_state.actual_speed,
+        );
         session
             .step(
                 guard(session),
@@ -8986,6 +11393,3380 @@ pub(crate) mod tests {
         castle.source_entity_index
     }
 
+    fn level_three_public_macro_state_is_unmodified(state: crate::FlightState) -> bool {
+        state.strafe_speed == 0
+            && state.recoil_speed == 0
+            && state.impulse_x == 0
+            && state.impulse_y == 0
+            && state.impulse_z == 0
+            && state.speed_modifier == 0
+            && state.speed_modifier_counter == 0
+            && state.immobilize_counter == 0
+            && state.immobilize_subcounter == 0
+            && state.tether_target_index == 0
+            && state.tether_holder_index == 0
+            && state.speed_spell_holder_index == 0
+            && !state.recovery_latch
+            && !state.skip_flight_once
+    }
+
+    fn predict_level_three_public_macro_command_from_state(
+        session: &GameSession<Mc2CampaignBackend>,
+        mut predicted: crate::FlightState,
+        command: &GameCommand,
+    ) -> (crate::FlightState, crate::StepEvidence) {
+        let compatibility = session.backend().campaign.level2_compatibility();
+        assert!(
+            level_three_public_macro_state_is_unmodified(predicted),
+            "public command-macro prediction rejects modifiers, impulses, tether, and redirect-origin state: {predicted:?}"
+        );
+        let mut context = crate::FlightContext::default();
+        let latched = crate::latch_command(&mut predicted, campaign_player_command(command));
+        let evidence = crate::step_entity_pass_with_context_and_tuning(
+            &mut predicted,
+            latched,
+            compatibility.profile(),
+            compatibility.canonical_terrain(),
+            &mut context,
+            session.backend().flight_binding.tuning(),
+        );
+        (predicted, evidence)
+    }
+
+    fn step_level_three_public_macro_command(
+        session: &mut GameSession<Mc2CampaignBackend>,
+        command: GameCommand,
+    ) -> crate::StepEvidence {
+        let before = session.backend().campaign.level2_compatibility().state;
+        assert!(level_three_public_macro_state_is_unmodified(before));
+        let mut predicted_campaign = session.backend().campaign.clone();
+        let evidence = predicted_campaign.step_with_tuning(
+            campaign_player_command(&command),
+            CAMPAIGN_SPEED_INDEX,
+            session.backend().flight_binding.tuning(),
+        );
+        assert!(
+            !predicted_campaign.events().iter().any(|event| matches!(
+                event,
+                crate::native_world::Level2DispatchEvent::Error { .. }
+            )),
+            "public command-macro prediction must remain source-dispatch valid"
+        );
+        let predicted = predicted_campaign.level2_compatibility().state;
+        let predicted_hash = predicted_campaign.state_hash();
+        let evidence = evidence
+            .into_iter()
+            .next()
+            .expect("one public command advances the local player callback");
+        session.step(guard(session), command).unwrap();
+        let actual = session.backend().campaign.level2_compatibility().state;
+        assert_eq!(
+            actual, predicted,
+            "public GameSession step diverged from its exact command-macro prediction"
+        );
+        assert_eq!(
+            session.backend().campaign.state_hash(),
+            predicted_hash,
+            "public GameSession state diverged from the exact production campaign clone"
+        );
+        evidence
+    }
+
+    fn level_three_dragon_launch_gap_for_test(
+        compatibility: &crate::native_world::Level2ResetSession,
+        desired_root: Option<u16>,
+    ) -> Option<(DragonFireballTarget, u32, u32)> {
+        let state = compatibility.state;
+        let target = level_three_dragon_fireball_targets_from_economy(compatibility.economy())
+            .into_iter()
+            .filter(|target| {
+                target.source_slot != target.root_slot && target.source_slot > target.root_slot
+            })
+            .filter(|target| desired_root.is_none_or(|root| target.root_slot == root))
+            .min_by_key(|target| {
+                let dx = i64::from(i32::from(
+                    target
+                        .position
+                        .x
+                        .wrapping_sub(state.position.x)
+                        .cast_signed(),
+                ));
+                let dy = i64::from(i32::from(
+                    target
+                        .position
+                        .y
+                        .wrapping_sub(state.position.y)
+                        .cast_signed(),
+                ));
+                dx * dx + dy * dy
+            })?;
+        let dx = i32::from(
+            target
+                .position
+                .x
+                .wrapping_sub(state.position.x)
+                .cast_signed(),
+        );
+        let dy = i32::from(
+            target
+                .position
+                .y
+                .wrapping_sub(state.position.y)
+                .cast_signed(),
+        );
+        let distance = crate::legacy_sqrt(
+            dx.wrapping_mul(dx)
+                .wrapping_add(dy.wrapping_mul(dy))
+                .cast_unsigned(),
+        );
+        let target_extent = u32::from(
+            target
+                .half_width
+                .unsigned_abs()
+                .max(target.half_height.unsigned_abs()),
+        );
+        let launch_band = crate::level1_mission::PROJECTILE_ACQUISITION_RANGE
+            .saturating_sub(u32::from(state.actual_speed.unsigned_abs()))
+            .saturating_sub(target_extent)
+            .saturating_sub(256);
+        Some((target, distance, distance.saturating_sub(launch_band)))
+    }
+
+    type LevelThreePublicPursuitScore = (u32, u32, u32, u32, u32, u32);
+    type LevelThreePublicRetreatScore = (std::cmp::Reverse<u32>, u32, u32, u32, u32, u32, u32);
+
+    fn level_three_source_pursuit_roll_from_compatibility_for_test(
+        compatibility: &crate::native_world::Level2ResetSession,
+        desired_root: Option<u16>,
+    ) -> Option<i8> {
+        let (target, _, _) = level_three_dragon_launch_gap_for_test(compatibility, desired_root)?;
+        let desired_heading =
+            crate::heading_for_positions(compatibility.state.position, target.position) as i16;
+        Some(crate::turn_toward(compatibility.state.yaw, desired_heading, 127) as i8)
+    }
+
+    fn level_three_source_pursuit_roll_for_test(
+        session: &GameSession<Mc2CampaignBackend>,
+        desired_root: Option<u16>,
+    ) -> Option<i8> {
+        level_three_source_pursuit_roll_from_compatibility_for_test(
+            session.backend().campaign.level2_compatibility(),
+            desired_root,
+        )
+    }
+
+    fn level_three_source_pursuit_roll_stencil_for_test(center: i8) -> Vec<i8> {
+        let mut stencil = BTreeSet::new();
+        for offset in [0_i16, -16, 16, -32, 32, -64, 64] {
+            stencil.insert((i16::from(center) + offset).clamp(-127, 127) as i8);
+        }
+        stencil.insert(0);
+        stencil.insert(-127);
+        stencil.insert(127);
+        stencil.into_iter().collect()
+    }
+
+    fn level_three_public_high_speed_pursuit_candidate_for_test(
+        session: &GameSession<Mc2CampaignBackend>,
+        desired_root: Option<u16>,
+        roll_axis: i8,
+    ) -> Option<(LevelThreePublicPursuitScore, GameCommand)> {
+        let before = session.backend().campaign.level2_compatibility();
+        let before_life = before.shared_spells().player_entity().life;
+        let command = GameCommand {
+            longitudinal: LongitudinalControl::Accelerate,
+            roll_axis,
+            ..GameCommand::default()
+        };
+        let mut predicted = session.backend().campaign.clone();
+        let evidence = predicted.step_with_tuning(
+            campaign_player_command(&command),
+            CAMPAIGN_SPEED_INDEX,
+            session.backend().flight_binding.tuning(),
+        );
+        if predicted.events().iter().any(|event| {
+            matches!(
+                event,
+                crate::native_world::Level2DispatchEvent::Error { .. }
+            )
+        }) {
+            return None;
+        }
+        let evidence = evidence.into_iter().next()?;
+        if matches!(
+            evidence.movement_resolution,
+            "skipped" | "rejected" | "rejected-and-stopped" | "recovered-after-reject"
+        ) || (evidence.committed.x, evidence.committed.y)
+            == (evidence.before.x, evidence.before.y)
+        {
+            return None;
+        }
+        let compatibility = predicted.level2_compatibility();
+        if !level_three_public_macro_state_is_unmodified(compatibility.state)
+            || compatibility.shared_spells().player_entity().life < before_life
+        {
+            return None;
+        }
+        let score =
+            level_three_public_pursuit_score_for_test(compatibility, desired_root, roll_axis)?;
+        Some((score, command))
+    }
+
+    fn level_three_public_pursuit_score_for_test(
+        compatibility: &crate::native_world::Level2ResetSession,
+        desired_root: Option<u16>,
+        roll_axis: i8,
+    ) -> Option<LevelThreePublicPursuitScore> {
+        let (target, distance, gap) =
+            level_three_dragon_launch_gap_for_test(compatibility, desired_root)?;
+        let speed_deficit = u32::try_from(
+            i32::from(crate::SPEED_LIMIT)
+                .saturating_sub(i32::from(compatibility.state.actual_speed.max(0))),
+        )
+        .expect("nonnegative source speed deficit fits u32");
+        let desired_heading = i32::from(crate::heading_for_positions(
+            compatibility.state.position,
+            target.position,
+        ));
+        let heading_error = u32::from(
+            crate::angle_distance(i32::from(compatibility.state.yaw), desired_heading)
+                .unsigned_abs(),
+        );
+        Some((
+            gap,
+            speed_deficit,
+            distance,
+            heading_error,
+            u32::from(compatibility.state.roll_accumulator.unsigned_abs()),
+            u32::from(roll_axis.unsigned_abs()),
+        ))
+    }
+
+    fn level_three_public_pursuit_fallback_candidate_for_test(
+        session: &GameSession<Mc2CampaignBackend>,
+        desired_root: Option<u16>,
+        longitudinal: LongitudinalControl,
+        roll_axis: i8,
+    ) -> Option<(LevelThreePublicPursuitScore, GameCommand)> {
+        let before = session.backend().campaign.level2_compatibility();
+        let before_state = before.state;
+        let before_life = before.shared_spells().player_entity().life;
+        let before_holders = before.shared_spells().local_player().enabled_spell_holders;
+        let before_distance = level_three_dragon_launch_gap_for_test(before, desired_root)?.1;
+        let command = GameCommand {
+            longitudinal,
+            roll_axis,
+            ..GameCommand::default()
+        };
+        let mut predicted = session.backend().campaign.clone();
+        let evidence = predicted.step_with_tuning(
+            campaign_player_command(&command),
+            CAMPAIGN_SPEED_INDEX,
+            session.backend().flight_binding.tuning(),
+        );
+        if predicted.events().iter().any(|event| {
+            matches!(
+                event,
+                crate::native_world::Level2DispatchEvent::Error { .. }
+            )
+        }) {
+            return None;
+        }
+        let evidence = evidence.into_iter().next()?;
+        if matches!(
+            evidence.movement_resolution,
+            "skipped" | "recovered-after-reject"
+        ) {
+            return None;
+        }
+        let after = predicted.level2_compatibility();
+        if !level_three_public_macro_state_is_unmodified(after.state)
+            || after.shared_spells().player_entity().life < before_life
+            || after.shared_spells().local_player().enabled_spell_holders != before_holders
+        {
+            return None;
+        }
+        let progressed_xy =
+            (evidence.committed.x, evidence.committed.y) != (evidence.before.x, evidence.before.y);
+        let did_not_cross_target = (before_state.target_speed >= 0
+            && after.state.target_speed >= 0)
+            || (before_state.target_speed <= 0 && after.state.target_speed <= 0);
+        let did_not_cross_actual = (before_state.actual_speed >= 0
+            && after.state.actual_speed >= 0)
+            || (before_state.actual_speed <= 0 && after.state.actual_speed <= 0);
+        let reduced_speed_toward_zero = did_not_cross_target
+            && did_not_cross_actual
+            && after.state.target_speed.unsigned_abs() <= before_state.target_speed.unsigned_abs()
+            && after.state.actual_speed.unsigned_abs() <= before_state.actual_speed.unsigned_abs()
+            && (after.state.target_speed.unsigned_abs() < before_state.target_speed.unsigned_abs()
+                || after.state.actual_speed.unsigned_abs()
+                    < before_state.actual_speed.unsigned_abs());
+        let score = level_three_public_pursuit_score_for_test(after, desired_root, roll_axis)?;
+        if progressed_xy {
+            if score.2 >= before_distance
+                || matches!(
+                    evidence.movement_resolution,
+                    "rejected" | "rejected-and-stopped"
+                )
+            {
+                return None;
+            }
+        } else if !reduced_speed_toward_zero {
+            return None;
+        }
+        Some((score, command))
+    }
+
+    fn level_three_public_at_rest_pursuit_turn_for_test(
+        session: &GameSession<Mc2CampaignBackend>,
+        desired_root: Option<u16>,
+    ) -> Option<(LevelThreePublicPursuitScore, GameCommand)> {
+        const SOURCE_HALF_TURN_BOUND: usize = 7 + (1_024_usize + 5 - 10).div_ceil(4);
+
+        let before = session.backend().campaign.level2_compatibility();
+        if (before.state.target_speed, before.state.actual_speed) != (0, 0) {
+            return None;
+        }
+        let initial_distance = level_three_dragon_launch_gap_for_test(before, desired_root)?.1;
+        let initial_life = before.shared_spells().player_entity().life;
+        let initial_holders = before.shared_spells().local_player().enabled_spell_holders;
+        let center =
+            level_three_source_pursuit_roll_from_compatibility_for_test(before, desired_root)?;
+        let mut sequences = level_three_source_pursuit_roll_stencil_for_test(center)
+            .into_iter()
+            .flat_map(|initial_roll| {
+                [false, true].into_iter().map(move |feedback| {
+                    (initial_roll, feedback, session.backend().campaign.clone())
+                })
+            })
+            .collect::<Vec<_>>();
+        for prefix in 1..=SOURCE_HALF_TURN_BOUND {
+            let mut survivors = Vec::new();
+            let mut successes = Vec::new();
+            for (initial_roll, feedback, mut turn_campaign) in sequences {
+                let turn = turn_campaign.level2_compatibility();
+                let roll_axis = if prefix == 1 || !feedback {
+                    initial_roll
+                } else {
+                    let Some(roll) = level_three_source_pursuit_roll_from_compatibility_for_test(
+                        turn,
+                        desired_root,
+                    ) else {
+                        continue;
+                    };
+                    roll
+                };
+                let turn_command = GameCommand {
+                    longitudinal: LongitudinalControl::Coast,
+                    roll_axis,
+                    ..GameCommand::default()
+                };
+                let turn_evidence = turn_campaign.step_with_tuning(
+                    campaign_player_command(&turn_command),
+                    CAMPAIGN_SPEED_INDEX,
+                    session.backend().flight_binding.tuning(),
+                );
+                if turn_campaign.events().iter().any(|event| {
+                    matches!(
+                        event,
+                        crate::native_world::Level2DispatchEvent::Error { .. }
+                    )
+                }) {
+                    continue;
+                }
+                let Some(turn_evidence) = turn_evidence.into_iter().next() else {
+                    continue;
+                };
+                if matches!(
+                    turn_evidence.movement_resolution,
+                    "skipped" | "recovered-after-reject"
+                ) {
+                    continue;
+                }
+                let turn = turn_campaign.level2_compatibility();
+                if !level_three_public_macro_state_is_unmodified(turn.state)
+                    || turn.shared_spells().player_entity().life < initial_life
+                    || turn.shared_spells().local_player().enabled_spell_holders != initial_holders
+                {
+                    continue;
+                }
+                let Some(accelerate_center) =
+                    level_three_source_pursuit_roll_from_compatibility_for_test(turn, desired_root)
+                else {
+                    continue;
+                };
+                for accelerate_roll in
+                    level_three_source_pursuit_roll_stencil_for_test(accelerate_center)
+                {
+                    let accelerate_command = GameCommand {
+                        longitudinal: LongitudinalControl::Accelerate,
+                        roll_axis: accelerate_roll,
+                        ..GameCommand::default()
+                    };
+                    let mut accelerated_campaign = turn_campaign.clone();
+                    let accelerated_evidence = accelerated_campaign.step_with_tuning(
+                        campaign_player_command(&accelerate_command),
+                        CAMPAIGN_SPEED_INDEX,
+                        session.backend().flight_binding.tuning(),
+                    );
+                    if accelerated_campaign.events().iter().any(|event| {
+                        matches!(
+                            event,
+                            crate::native_world::Level2DispatchEvent::Error { .. }
+                        )
+                    }) {
+                        continue;
+                    }
+                    let Some(accelerated_evidence) = accelerated_evidence.into_iter().next() else {
+                        continue;
+                    };
+                    if matches!(
+                        accelerated_evidence.movement_resolution,
+                        "skipped" | "rejected" | "rejected-and-stopped" | "recovered-after-reject"
+                    ) || (
+                        accelerated_evidence.committed.x,
+                        accelerated_evidence.committed.y,
+                    ) == (accelerated_evidence.before.x, accelerated_evidence.before.y)
+                    {
+                        continue;
+                    }
+                    let accelerated = accelerated_campaign.level2_compatibility();
+                    if !level_three_public_macro_state_is_unmodified(accelerated.state)
+                        || accelerated.shared_spells().player_entity().life < initial_life
+                        || accelerated
+                            .shared_spells()
+                            .local_player()
+                            .enabled_spell_holders
+                            != initial_holders
+                    {
+                        continue;
+                    }
+                    let Some(score) = level_three_public_pursuit_score_for_test(
+                        accelerated,
+                        desired_root,
+                        accelerate_roll,
+                    ) else {
+                        continue;
+                    };
+                    if score.2 < initial_distance {
+                        successes.push((score, initial_roll, feedback));
+                    }
+                }
+                survivors.push((initial_roll, feedback, turn_campaign));
+            }
+            if let Some((score, initial_roll, _)) = successes
+                .into_iter()
+                .min_by_key(|(score, initial_roll, feedback)| (*score, *initial_roll, *feedback))
+            {
+                return Some((
+                    score,
+                    GameCommand {
+                        longitudinal: LongitudinalControl::Coast,
+                        roll_axis: initial_roll,
+                        ..GameCommand::default()
+                    },
+                ));
+            }
+            if survivors.is_empty() {
+                return None;
+            }
+            sequences = survivors;
+        }
+        None
+    }
+
+    fn level_three_public_high_speed_pursuit_command_for_test(
+        session: &GameSession<Mc2CampaignBackend>,
+        desired_root: Option<u16>,
+    ) -> Option<(LevelThreePublicPursuitScore, GameCommand)> {
+        let center = level_three_source_pursuit_roll_for_test(session, desired_root)?;
+        let stencil = level_three_source_pursuit_roll_stencil_for_test(center);
+        if let Some(accelerating) = stencil
+            .iter()
+            .copied()
+            .filter_map(|roll_axis| {
+                level_three_public_high_speed_pursuit_candidate_for_test(
+                    session,
+                    desired_root,
+                    roll_axis,
+                )
+            })
+            .min_by_key(|(score, _)| *score)
+        {
+            return Some(accelerating);
+        }
+        let state = session.backend().campaign.level2_compatibility().state;
+        let signed_brake = if state.target_speed < 0 {
+            LongitudinalControl::Accelerate
+        } else if state.target_speed > 0 {
+            LongitudinalControl::Decelerate
+        } else {
+            LongitudinalControl::Coast
+        };
+        let fallback = [LongitudinalControl::Coast, signed_brake]
+            .into_iter()
+            .flat_map(|longitudinal| {
+                stencil
+                    .iter()
+                    .copied()
+                    .map(move |roll_axis| (longitudinal, roll_axis))
+            })
+            .filter_map(|(longitudinal, roll_axis)| {
+                level_three_public_pursuit_fallback_candidate_for_test(
+                    session,
+                    desired_root,
+                    longitudinal,
+                    roll_axis,
+                )
+            })
+            .min_by_key(|(score, _)| *score);
+        fallback.or_else(|| level_three_public_at_rest_pursuit_turn_for_test(session, desired_root))
+    }
+
+    fn level_three_dragon_retreat_state_for_test(
+        compatibility: &crate::native_world::Level2ResetSession,
+    ) -> Option<(u32, u32, u32)> {
+        let player = compatibility.shared_spells().player_entity();
+        let roots = level_three_dragon_fireball_targets_from_economy(compatibility.economy())
+            .into_iter()
+            .filter(|target| target.source_slot == target.root_slot)
+            .collect::<Vec<_>>();
+        let minimum_root_distance = roots
+            .iter()
+            .map(|root| {
+                let dx = i32::from(
+                    root.position
+                        .x
+                        .wrapping_sub(player.position.x)
+                        .cast_signed(),
+                );
+                let dy = i32::from(
+                    root.position
+                        .y
+                        .wrapping_sub(player.position.y)
+                        .cast_signed(),
+                );
+                crate::legacy_sqrt(
+                    dx.wrapping_mul(dx)
+                        .wrapping_add(dy.wrapping_mul(dy))
+                        .cast_unsigned(),
+                )
+            })
+            .min()?;
+        let dragon_slots = roots
+            .iter()
+            .map(|root| root.source_slot)
+            .collect::<BTreeSet<_>>();
+        let hostile_owner_slots = dragon_slots
+            .iter()
+            .copied()
+            .chain(level_three_imported_worm_attackers_for_test(compatibility))
+            .collect::<BTreeSet<_>>();
+        let player_latches = compatibility
+            .economy()
+            .authored_class5()
+            .iter()
+            .filter(|root| {
+                root.active
+                    && root.model == 0
+                    && root.action == 2
+                    && root.word_0x96_150 == player.index
+            })
+            .count() as u32;
+        let hostile_projectiles = compatibility
+            .economy()
+            .fireball_projectiles()
+            .iter()
+            .filter(|projectile| {
+                projectile.active
+                    && projectile.owner_entity_index != player.index
+                    && hostile_owner_slots.contains(&projectile.owner_entity_index)
+            })
+            .count();
+        let hostile_impacts = compatibility
+            .economy()
+            .model17_spawned_children()
+            .iter()
+            .filter(|impact| {
+                impact.active
+                    && impact.source_class == 10
+                    && impact.model == 0
+                    && impact.parent_entity_id != player.index
+                    && hostile_owner_slots.contains(&impact.parent_entity_id)
+            })
+            .count();
+        Some((
+            minimum_root_distance,
+            player_latches,
+            u32::try_from(hostile_projectiles + hostile_impacts)
+                .expect("bounded Dragon transient census fits u32"),
+        ))
+    }
+
+    fn level_three_public_retreat_score_for_test(
+        compatibility: &crate::native_world::Level2ResetSession,
+        attributed_damage: u32,
+        roll_axis: i8,
+    ) -> Option<LevelThreePublicRetreatScore> {
+        let (minimum_root_distance, player_latches, hostile_transients) =
+            level_three_dragon_retreat_state_for_test(compatibility)?;
+        let speed_deficit = u32::try_from(
+            i32::from(crate::SPEED_LIMIT)
+                .saturating_sub(i32::from(compatibility.state.actual_speed.max(0))),
+        )
+        .expect("nonnegative source speed deficit fits u32");
+        Some((
+            std::cmp::Reverse(minimum_root_distance),
+            attributed_damage,
+            player_latches,
+            hostile_transients,
+            speed_deficit,
+            u32::from(compatibility.state.roll_accumulator.unsigned_abs()),
+            u32::from(roll_axis.unsigned_abs()),
+        ))
+    }
+
+    fn level_three_source_retreat_roll_from_compatibility_for_test(
+        compatibility: &crate::native_world::Level2ResetSession,
+    ) -> Option<i8> {
+        let player = compatibility.state.position;
+        let nearest_root =
+            level_three_dragon_fireball_targets_from_economy(compatibility.economy())
+                .into_iter()
+                .filter(|target| target.source_slot == target.root_slot)
+                .min_by_key(|root| {
+                    let dx = i64::from(i32::from(
+                        root.position.x.wrapping_sub(player.x).cast_signed(),
+                    ));
+                    let dy = i64::from(i32::from(
+                        root.position.y.wrapping_sub(player.y).cast_signed(),
+                    ));
+                    dx * dx + dy * dy
+                })?;
+        let desired_heading = crate::heading_for_positions(nearest_root.position, player) as i16;
+        Some(crate::turn_toward(compatibility.state.yaw, desired_heading, 127) as i8)
+    }
+
+    fn level_three_source_retreat_roll_for_test(
+        session: &GameSession<Mc2CampaignBackend>,
+    ) -> Option<i8> {
+        level_three_source_retreat_roll_from_compatibility_for_test(
+            session.backend().campaign.level2_compatibility(),
+        )
+    }
+
+    fn level_three_source_attributed_retreat_damage_for_test(
+        before: &crate::native_world::Level2ResetSession,
+        after: &crate::native_world::Level2ResetSession,
+    ) -> Option<u32> {
+        let before_life = before.shared_spells().player_entity().life;
+        let before_holders = before.shared_spells().local_player().enabled_spell_holders;
+        if after.shared_spells().player_entity().life <= 0
+            || after.shared_spells().local_player().enabled_spell_holders != before_holders
+        {
+            return None;
+        }
+        let roots = level_three_dragon_fireball_targets_from_economy(before.economy())
+            .into_iter()
+            .filter(|target| target.source_slot == target.root_slot)
+            .map(|root| root.source_slot)
+            .collect::<BTreeSet<_>>();
+        let has_live_chain = |attacker: u16| {
+            before
+                .economy()
+                .fireball_projectiles()
+                .iter()
+                .any(|projectile| projectile.active && projectile.owner_entity_index == attacker)
+                || before
+                    .economy()
+                    .model17_spawned_children()
+                    .iter()
+                    .any(|impact| {
+                        impact.active
+                            && impact.source_class == 10
+                            && impact.model == 0
+                            && impact.parent_entity_id == attacker
+                    })
+        };
+        let generation_qualified_projectiles = [before, after]
+            .into_iter()
+            .flat_map(|compatibility| {
+                compatibility
+                    .economy()
+                    .fireball_projectiles()
+                    .iter()
+                    .map(move |projectile| {
+                        (
+                            projectile.source_entity_index,
+                            compatibility
+                                .economy()
+                                .slot_generation(projectile.source_entity_index),
+                            projectile.owner_entity_index,
+                        )
+                    })
+            })
+            .collect::<BTreeSet<_>>();
+        let dispatched_impacts = after
+            .dispatch_events()
+            .iter()
+            .filter_map(|event| match event {
+                crate::native_world::Level2DispatchEvent::DynamicArena {
+                    source_slot,
+                    kind: crate::native_world::Level2DynamicArenaKind::Model17SpawnedChild,
+                    ..
+                } => Some(*source_slot),
+                _ => None,
+            })
+            .collect::<BTreeSet<_>>();
+        let generation_qualified_impacts = after
+            .economy()
+            .model17_spawned_children()
+            .iter()
+            .filter(|impact| {
+                impact.source_class == 10
+                    && impact.model == 0
+                    && dispatched_impacts.contains(&impact.source_entity_index)
+            })
+            .map(|impact| {
+                (
+                    impact.source_entity_index,
+                    after.economy().slot_generation(impact.source_entity_index),
+                    impact.parent_entity_index,
+                    impact.parent_entity_id,
+                )
+            })
+            .collect::<BTreeSet<_>>();
+        let player = after.shared_spells().player_entity().index;
+        let event_start = before.economy().events().len();
+        let new_effects = level_three_effect_records_after_for_test(
+            before.effect_journal(),
+            after.effect_journal(),
+        )?;
+        let player_damage_events = after.economy().events()[event_start..]
+            .iter()
+            .filter(|event| {
+                matches!(
+                    event,
+                    crate::native_world::Level2EconomyEvent::DamageApplied {
+                        target_entity_index,
+                        damage: 500,
+                        lethal: false,
+                        ..
+                    } if *target_entity_index == player
+                )
+            })
+            .count();
+        let competing_hostile_impacts = [before, after]
+            .into_iter()
+            .flat_map(|compatibility| compatibility.economy().model17_spawned_children())
+            .filter(|impact| {
+                impact.active
+                    && impact.source_class == 10
+                    && impact.model == 0
+                    && roots.contains(&impact.parent_entity_id)
+            })
+            .map(|impact| impact.source_entity_index)
+            .collect::<BTreeSet<_>>();
+        let mut attributed_damage = 0_u32;
+        for event in &after.economy().events()[event_start..] {
+            if let crate::native_world::Level2EconomyEvent::DamageApplied {
+                target_entity_index,
+                attacker_entity_index,
+                damage,
+                lethal,
+            } = event
+                && *target_entity_index == player
+            {
+                let direct_root =
+                    roots.contains(attacker_entity_index) && has_live_chain(*attacker_entity_index);
+                let imported_worm = level_three_imported_worm_attacker_for_test(
+                    before,
+                    *attacker_entity_index,
+                    player,
+                );
+                let impact_root = level_three_generation_qualified_dragon_impact_root_for_test(
+                    *attacker_entity_index,
+                    &roots,
+                    &generation_qualified_impacts,
+                    &generation_qualified_projectiles,
+                );
+                let transient_impact = {
+                    let candidates = before
+                        .economy()
+                        .fireball_projectiles()
+                        .iter()
+                        .filter(|projectile| {
+                            projectile.active
+                                && roots.contains(&projectile.owner_entity_index)
+                                && projectile.target_source_entity_index == player
+                        })
+                        .collect::<Vec<_>>();
+                    let parent_terminal = candidates.first().is_some_and(|projectile| {
+                        !after
+                            .economy()
+                            .fireball_projectiles()
+                            .iter()
+                            .any(|current| {
+                                current.active
+                                    && current.source_entity_index == projectile.source_entity_index
+                                    && after.economy().slot_generation(current.source_entity_index)
+                                        == before
+                                            .economy()
+                                            .slot_generation(projectile.source_entity_index)
+                            })
+                    });
+                    let impact_dispatches = after
+                        .dispatch_events()
+                        .iter()
+                        .filter(|receipt| {
+                            matches!(
+                                receipt,
+                                crate::native_world::Level2DispatchEvent::DynamicArena {
+                                    source_slot,
+                                    kind: crate::native_world::Level2DynamicArenaKind::Model17SpawnedChild,
+                                    ..
+                                } if source_slot == attacker_entity_index
+                            )
+                        })
+                        .count();
+                    let impact_sounds = new_effects
+                        .iter()
+                        .filter(|receipt| {
+                            matches!(
+                                receipt.effect,
+                                crate::campaign::journal::CampaignEffect::Flight(
+                                    FlightEvent::PrepareSound {
+                                        audio_site: crate::MissionAudioSite::FireballImpact,
+                                        entity_index,
+                                        sound_id: 3,
+                                        ..
+                                    }
+                                ) if entity_index == *attacker_entity_index
+                            )
+                        })
+                        .count();
+                    level_three_unique_transient_dragon_impact_for_test(
+                        candidates.len(),
+                        parent_terminal,
+                        impact_dispatches,
+                        impact_sounds,
+                        player_damage_events,
+                        competing_hostile_impacts
+                            .iter()
+                            .filter(|slot| **slot != *attacker_entity_index)
+                            .count(),
+                        before.economy().slot_generation(*attacker_entity_index),
+                        after.economy().slot_generation(*attacker_entity_index),
+                    )
+                };
+                if *lethal
+                    || *damage != 500
+                    || (!direct_root
+                        && impact_root.is_none()
+                        && !transient_impact
+                        && !imported_worm)
+                {
+                    return None;
+                }
+                attributed_damage = attributed_damage.saturating_add(500);
+            }
+        }
+        if after.shared_spells().player_entity().life < before_life && attributed_damage == 0 {
+            return None;
+        }
+        Some(attributed_damage)
+    }
+
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    struct LevelThreeImportedWormAttackerState {
+        slot: u16,
+        source_id: u16,
+        generation: u32,
+        active: bool,
+        map_linked: bool,
+        drawing_disabled: bool,
+        class: u8,
+        model: u8,
+        action: u8,
+        life: i32,
+        target: u16,
+    }
+
+    fn level_three_source_imported_worm_attacker_for_test(
+        state: LevelThreeImportedWormAttackerState,
+        attacker: u16,
+        player: u16,
+    ) -> bool {
+        state.slot == attacker
+            && state.source_id == attacker
+            && state.generation == 0
+            && state.active
+            && state.map_linked
+            && !state.drawing_disabled
+            && state.class == 5
+            && state.model == 3
+            && state.action == 26
+            && state.life >= 0
+            && state.target == player
+    }
+
+    fn level_three_imported_worm_attacker_for_test(
+        compatibility: &crate::native_world::Level2ResetSession,
+        attacker: u16,
+        player: u16,
+    ) -> bool {
+        let economy = compatibility.economy();
+        compatibility
+            .entities()
+            .get(usize::from(attacker))
+            .is_some_and(|source| {
+                level_three_source_imported_worm_attacker_for_test(
+                    LevelThreeImportedWormAttackerState {
+                        slot: source.index,
+                        source_id: source.source_id,
+                        generation: economy.slot_generation(attacker),
+                        active: source.active,
+                        map_linked: economy.map_chains().is_linked(attacker),
+                        drawing_disabled: source.drawing_disabled(),
+                        class: source.class,
+                        model: source.model,
+                        action: source.action,
+                        life: source.life,
+                        target: source.source_word_96(),
+                    },
+                    attacker,
+                    player,
+                )
+            })
+    }
+
+    fn level_three_imported_worm_attackers_for_test(
+        compatibility: &crate::native_world::Level2ResetSession,
+    ) -> BTreeSet<u16> {
+        let player = compatibility.shared_spells().player_entity().index;
+        compatibility
+            .entities()
+            .iter()
+            .filter_map(|source| {
+                level_three_imported_worm_attacker_for_test(compatibility, source.index, player)
+                    .then_some(source.index)
+            })
+            .collect()
+    }
+
+    fn level_three_effect_records_after_for_test(
+        before: &crate::campaign::journal::EffectJournal,
+        after: &crate::campaign::journal::EffectJournal,
+    ) -> Option<Vec<crate::campaign::journal::EffectRecord>> {
+        const PAGE_CAPACITY: usize = 64;
+
+        // A mature campaign journal normally sits at its retained-record cap,
+        // so a vector-length slice cannot identify records appended by one
+        // candidate step. Page from the generation-bound sequence cursor
+        // instead, exhausting exactly the observed number of pending pages.
+        let generation = 0;
+        let mut cursor = before.cursor(generation);
+        let head = after.cursor(generation).next_sequence;
+        let pending = usize::try_from(head.checked_sub(cursor.next_sequence)?).ok()?;
+        let page_count = pending.div_ceil(PAGE_CAPACITY);
+        let mut records = Vec::with_capacity(pending);
+        for _ in 0..page_count {
+            let page = after.page(generation, cursor, PAGE_CAPACITY).ok()?;
+            if page.next_cursor == cursor {
+                return None;
+            }
+            records.extend(page.records);
+            cursor = page.next_cursor;
+        }
+        (cursor.next_sequence == head).then_some(records)
+    }
+
+    fn level_three_generation_qualified_dragon_impact_root_for_test(
+        attacker: u16,
+        live_roots: &BTreeSet<u16>,
+        impacts: &BTreeSet<(u16, u32, u16, u16)>,
+        projectiles: &BTreeSet<(u16, u32, u16)>,
+    ) -> Option<u16> {
+        impacts
+            .iter()
+            .filter(|(impact_slot, _, _, _)| *impact_slot == attacker)
+            .find_map(|(_, _, parent_slot, parent_root)| {
+                live_roots
+                    .contains(parent_root)
+                    .then_some(*parent_root)
+                    .filter(|root| {
+                        projectiles.iter().any(|(projectile_slot, _, owner)| {
+                            projectile_slot == parent_slot && owner == root
+                        })
+                    })
+            })
+    }
+
+    fn level_three_unique_transient_dragon_impact_for_test(
+        parent_candidates: usize,
+        parent_terminal: bool,
+        impact_dispatches: usize,
+        impact_sounds: usize,
+        player_damage_events: usize,
+        competing_hostile_impacts: usize,
+        attacker_generation_before: u32,
+        attacker_generation_after: u32,
+    ) -> bool {
+        parent_candidates == 1
+            && parent_terminal
+            && impact_dispatches == 1
+            && impact_sounds == 1
+            && player_damage_events == 1
+            && competing_hostile_impacts == 0
+            && attacker_generation_after != attacker_generation_before
+    }
+
+    fn level_three_public_high_speed_retreat_candidate_for_test(
+        session: &GameSession<Mc2CampaignBackend>,
+        longitudinal: LongitudinalControl,
+        roll_axis: i8,
+        allow_braking_nonprogress: bool,
+    ) -> Option<(LevelThreePublicRetreatScore, GameCommand)> {
+        let before = session.backend().campaign.level2_compatibility();
+        let before_state = before.state;
+        let command = GameCommand {
+            longitudinal,
+            roll_axis,
+            ..GameCommand::default()
+        };
+        let mut predicted = session.backend().campaign.clone();
+        let evidence = predicted.step_with_tuning(
+            campaign_player_command(&command),
+            CAMPAIGN_SPEED_INDEX,
+            session.backend().flight_binding.tuning(),
+        );
+        if predicted.events().iter().any(|event| {
+            matches!(
+                event,
+                crate::native_world::Level2DispatchEvent::Error { .. }
+            )
+        }) {
+            return None;
+        }
+        let evidence = evidence.into_iter().next()?;
+        if matches!(
+            evidence.movement_resolution,
+            "skipped" | "recovered-after-reject"
+        ) {
+            return None;
+        }
+        let compatibility = predicted.level2_compatibility();
+        let progressed_xy =
+            (evidence.committed.x, evidence.committed.y) != (evidence.before.x, evidence.before.y);
+        let reduced_speed_toward_zero = {
+            let did_not_cross_target = (before_state.target_speed >= 0
+                && compatibility.state.target_speed >= 0)
+                || (before_state.target_speed <= 0 && compatibility.state.target_speed <= 0);
+            let did_not_cross_actual = (before_state.actual_speed >= 0
+                && compatibility.state.actual_speed >= 0)
+                || (before_state.actual_speed <= 0 && compatibility.state.actual_speed <= 0);
+            let target_reduced = compatibility.state.target_speed.unsigned_abs()
+                <= before_state.target_speed.unsigned_abs();
+            let actual_reduced = compatibility.state.actual_speed.unsigned_abs()
+                <= before_state.actual_speed.unsigned_abs();
+            did_not_cross_target
+                && did_not_cross_actual
+                && target_reduced
+                && actual_reduced
+                && (compatibility.state.target_speed.unsigned_abs()
+                    < before_state.target_speed.unsigned_abs()
+                    || compatibility.state.actual_speed.unsigned_abs()
+                        < before_state.actual_speed.unsigned_abs())
+        };
+        if !progressed_xy && !(allow_braking_nonprogress && reduced_speed_toward_zero) {
+            return None;
+        }
+        if !allow_braking_nonprogress
+            && matches!(
+                evidence.movement_resolution,
+                "rejected" | "rejected-and-stopped"
+            )
+        {
+            return None;
+        }
+        if !level_three_public_macro_state_is_unmodified(compatibility.state) {
+            return None;
+        }
+        let attributed_damage =
+            level_three_source_attributed_retreat_damage_for_test(before, compatibility)?;
+        Some((
+            level_three_public_retreat_score_for_test(compatibility, attributed_damage, roll_axis)?,
+            command,
+        ))
+    }
+
+    fn level_three_player_raw_mailbox_for_test(
+        compatibility: &crate::native_world::Level2ResetSession,
+    ) -> (i32, u16) {
+        let player = compatibility.shared_spells().player_entity().index;
+        let raw = compatibility.entities()[usize::from(player)].record_bytes();
+        (
+            i32::from_le_bytes(raw[98..102].try_into().unwrap()),
+            u16::from_le_bytes(raw[102..104].try_into().unwrap()),
+        )
+    }
+
+    fn level_three_public_retreat_candidate_census_for_test(
+        session: &GameSession<Mc2CampaignBackend>,
+    ) -> Vec<String> {
+        let before = session.backend().campaign.level2_compatibility();
+        let before_state = before.state;
+        let center = level_three_source_retreat_roll_for_test(session).unwrap_or(0);
+        let stencil = level_three_source_pursuit_roll_stencil_for_test(center);
+        let signed_brake = if before_state.target_speed < 0 {
+            LongitudinalControl::Accelerate
+        } else if before_state.target_speed > 0 {
+            LongitudinalControl::Decelerate
+        } else {
+            LongitudinalControl::Coast
+        };
+        [LongitudinalControl::Accelerate, LongitudinalControl::Coast, signed_brake]
+            .into_iter()
+            .flat_map(|longitudinal| {
+                stencil
+                    .iter()
+                    .copied()
+                    .map(move |roll_axis| (longitudinal, roll_axis))
+            })
+            .map(|(longitudinal, roll_axis)| {
+                let command = GameCommand {
+                    longitudinal,
+                    roll_axis,
+                    ..GameCommand::default()
+                };
+                let mut predicted = session.backend().campaign.clone();
+                let evidence = predicted.step_with_tuning(
+                    campaign_player_command(&command),
+                    CAMPAIGN_SPEED_INDEX,
+                    session.backend().flight_binding.tuning(),
+                );
+                let dispatch_error = predicted.events().iter().any(|event| {
+                    matches!(
+                        event,
+                        crate::native_world::Level2DispatchEvent::Error { .. }
+                    )
+                });
+                let Some(evidence) = evidence.first() else {
+                    return format!(
+                        "{longitudinal:?}/{roll_axis}: reject=missing-player-evidence dispatch_error={dispatch_error}"
+                    );
+                };
+                let after = predicted.level2_compatibility();
+                let progressed_xy =
+                    (evidence.committed.x, evidence.committed.y) != (evidence.before.x, evidence.before.y);
+                let did_not_cross_target = (before_state.target_speed >= 0
+                    && after.state.target_speed >= 0)
+                    || (before_state.target_speed <= 0 && after.state.target_speed <= 0);
+                let did_not_cross_actual = (before_state.actual_speed >= 0
+                    && after.state.actual_speed >= 0)
+                    || (before_state.actual_speed <= 0 && after.state.actual_speed <= 0);
+                let reduced_speed_toward_zero = did_not_cross_target
+                    && did_not_cross_actual
+                    && after.state.target_speed.unsigned_abs()
+                        <= before_state.target_speed.unsigned_abs()
+                    && after.state.actual_speed.unsigned_abs()
+                        <= before_state.actual_speed.unsigned_abs()
+                    && (after.state.target_speed.unsigned_abs()
+                        < before_state.target_speed.unsigned_abs()
+                        || after.state.actual_speed.unsigned_abs()
+                            < before_state.actual_speed.unsigned_abs());
+                let state_unmodified = level_three_public_macro_state_is_unmodified(after.state);
+                let attributed =
+                    level_three_source_attributed_retreat_damage_for_test(before, after);
+                let score = attributed.and_then(|damage| {
+                    level_three_public_retreat_score_for_test(after, damage, roll_axis)
+                });
+                let mut rejection = Vec::new();
+                if dispatch_error {
+                    rejection.push("dispatch-error");
+                }
+                if matches!(
+                    evidence.movement_resolution,
+                    "skipped" | "recovered-after-reject"
+                ) {
+                    rejection.push("resolution-skip/recovery");
+                }
+                if !progressed_xy && !reduced_speed_toward_zero {
+                    rejection.push("no-progress/no-brake");
+                }
+                if !state_unmodified {
+                    rejection.push("modified-flight-state");
+                }
+                if attributed.is_none() {
+                    rejection.push("unattributed/lethal/holder-loss");
+                }
+                if score.is_none() && attributed.is_some() {
+                    rejection.push("no-live-root-score");
+                }
+                let event_start = before.economy().events().len();
+                let new_damage_events = after
+                    .economy()
+                    .events()
+                    .get(event_start..)
+                    .unwrap_or_default()
+                    .iter()
+                    .filter(|event| {
+                        matches!(
+                            event,
+                            crate::native_world::Level2EconomyEvent::DamageApplied { .. }
+                        )
+                    })
+                    .collect::<Vec<_>>();
+                let dx = i32::from(
+                    evidence
+                        .committed
+                        .x
+                        .wrapping_sub(evidence.before.x)
+                        .cast_signed(),
+                );
+                let dy = i32::from(
+                    evidence
+                        .committed
+                        .y
+                        .wrapping_sub(evidence.before.y)
+                        .cast_signed(),
+                );
+                format!(
+                    "{longitudinal:?}/{roll_axis}: reject={rejection:?} resolution={} delta=({dx},{dy}) speed=({},{}) life={}->{} mailbox={:?}->{:?} attributed={attributed:?} score={score:?} retreat={:?} holders={} dead={} state_unmodified={state_unmodified} state={:#?} damage_events={new_damage_events:?}",
+                    evidence.movement_resolution,
+                    after.state.target_speed,
+                    after.state.actual_speed,
+                    before.shared_spells().player_entity().life,
+                    after.shared_spells().player_entity().life,
+                    level_three_player_raw_mailbox_for_test(before),
+                    level_three_player_raw_mailbox_for_test(after),
+                    level_three_dragon_retreat_state_for_test(after),
+                    after.shared_spells().local_player().enabled_spell_holders
+                        == before.shared_spells().local_player().enabled_spell_holders,
+                    after.shared_spells().player_entity().life <= 0,
+                    after.state,
+                )
+            })
+            .collect()
+    }
+
+    fn level_three_public_at_rest_retreat_turn_for_test(
+        session: &GameSession<Mc2CampaignBackend>,
+    ) -> Option<(LevelThreePublicRetreatScore, GameCommand)> {
+        const SOURCE_HALF_TURN_BOUND: usize = 7 + (1_024_usize + 5 - 10).div_ceil(4);
+        let state = session.backend().campaign.level2_compatibility().state;
+        if (state.target_speed, state.actual_speed) != (0, 0) {
+            return None;
+        }
+        let center = level_three_source_retreat_roll_for_test(session)?;
+        let mut sequences = level_three_source_pursuit_roll_stencil_for_test(center)
+            .into_iter()
+            .flat_map(|initial_roll| {
+                [false, true].into_iter().map(move |feedback| {
+                    (
+                        initial_roll,
+                        feedback,
+                        session.backend().campaign.clone(),
+                        0_u32,
+                    )
+                })
+            })
+            .collect::<Vec<_>>();
+        for prefix in 1..=SOURCE_HALF_TURN_BOUND {
+            let mut survivors = Vec::new();
+            let mut successes = Vec::new();
+            for (initial_roll, feedback, mut turn_campaign, cumulative_damage) in sequences {
+                let roll_axis = if prefix == 1 || !feedback {
+                    initial_roll
+                } else {
+                    let Some(roll) = level_three_source_retreat_roll_from_compatibility_for_test(
+                        turn_campaign.level2_compatibility(),
+                    ) else {
+                        continue;
+                    };
+                    roll
+                };
+                let turn_command = GameCommand {
+                    longitudinal: LongitudinalControl::Coast,
+                    roll_axis,
+                    ..GameCommand::default()
+                };
+                let before_turn = turn_campaign.clone();
+                let turn_evidence = turn_campaign.step_with_tuning(
+                    campaign_player_command(&turn_command),
+                    CAMPAIGN_SPEED_INDEX,
+                    session.backend().flight_binding.tuning(),
+                );
+                if turn_campaign.events().iter().any(|event| {
+                    matches!(
+                        event,
+                        crate::native_world::Level2DispatchEvent::Error { .. }
+                    )
+                }) {
+                    continue;
+                }
+                let Some(turn_evidence) = turn_evidence.into_iter().next() else {
+                    continue;
+                };
+                if matches!(
+                    turn_evidence.movement_resolution,
+                    "skipped" | "recovered-after-reject"
+                ) {
+                    continue;
+                }
+                let turn = turn_campaign.level2_compatibility();
+                if !level_three_public_macro_state_is_unmodified(turn.state) {
+                    continue;
+                }
+                let Some(turn_damage) = level_three_source_attributed_retreat_damage_for_test(
+                    before_turn.level2_compatibility(),
+                    turn,
+                ) else {
+                    continue;
+                };
+                let cumulative_damage = cumulative_damage.saturating_add(turn_damage);
+                let Some(accelerate_center) =
+                    level_three_source_retreat_roll_from_compatibility_for_test(turn)
+                else {
+                    continue;
+                };
+                for accelerate_roll in
+                    level_three_source_pursuit_roll_stencil_for_test(accelerate_center)
+                {
+                    let accelerate_command = GameCommand {
+                        longitudinal: LongitudinalControl::Accelerate,
+                        roll_axis: accelerate_roll,
+                        ..GameCommand::default()
+                    };
+                    let mut accelerate_campaign = turn_campaign.clone();
+                    let accelerate_evidence = accelerate_campaign.step_with_tuning(
+                        campaign_player_command(&accelerate_command),
+                        CAMPAIGN_SPEED_INDEX,
+                        session.backend().flight_binding.tuning(),
+                    );
+                    if accelerate_campaign.events().iter().any(|event| {
+                        matches!(
+                            event,
+                            crate::native_world::Level2DispatchEvent::Error { .. }
+                        )
+                    }) {
+                        continue;
+                    }
+                    let Some(accelerate_evidence) = accelerate_evidence.into_iter().next() else {
+                        continue;
+                    };
+                    if matches!(
+                        accelerate_evidence.movement_resolution,
+                        "skipped" | "rejected" | "rejected-and-stopped" | "recovered-after-reject"
+                    ) || (
+                        accelerate_evidence.committed.x,
+                        accelerate_evidence.committed.y,
+                    ) == (accelerate_evidence.before.x, accelerate_evidence.before.y)
+                    {
+                        continue;
+                    }
+                    let accelerated = accelerate_campaign.level2_compatibility();
+                    if !level_three_public_macro_state_is_unmodified(accelerated.state) {
+                        continue;
+                    }
+                    let Some(accelerate_damage) =
+                        level_three_source_attributed_retreat_damage_for_test(turn, accelerated)
+                    else {
+                        continue;
+                    };
+                    let Some(score) = level_three_public_retreat_score_for_test(
+                        accelerated,
+                        cumulative_damage.saturating_add(accelerate_damage),
+                        accelerate_roll,
+                    ) else {
+                        continue;
+                    };
+                    successes.push((score, initial_roll, feedback));
+                }
+                survivors.push((initial_roll, feedback, turn_campaign, cumulative_damage));
+            }
+            if let Some((score, initial_roll, _)) = successes
+                .into_iter()
+                .min_by_key(|(score, initial_roll, feedback)| (*score, *initial_roll, *feedback))
+            {
+                return Some((
+                    score,
+                    GameCommand {
+                        longitudinal: LongitudinalControl::Coast,
+                        roll_axis: initial_roll,
+                        ..GameCommand::default()
+                    },
+                ));
+            }
+            if survivors.is_empty() {
+                return None;
+            }
+            sequences = survivors;
+        }
+        None
+    }
+
+    fn level_three_public_high_speed_retreat_command_for_test(
+        session: &GameSession<Mc2CampaignBackend>,
+    ) -> Option<(LevelThreePublicRetreatScore, GameCommand)> {
+        let center = level_three_source_retreat_roll_for_test(session)?;
+        let stencil = level_three_source_pursuit_roll_stencil_for_test(center);
+        if let Some(accelerating) = stencil
+            .iter()
+            .copied()
+            .filter_map(|roll_axis| {
+                level_three_public_high_speed_retreat_candidate_for_test(
+                    session,
+                    LongitudinalControl::Accelerate,
+                    roll_axis,
+                    false,
+                )
+            })
+            .min_by_key(|(score, _)| *score)
+        {
+            return Some(accelerating);
+        }
+        let state = session.backend().campaign.level2_compatibility().state;
+        let signed_brake = if state.target_speed < 0 {
+            LongitudinalControl::Accelerate
+        } else if state.target_speed > 0 {
+            LongitudinalControl::Decelerate
+        } else {
+            LongitudinalControl::Coast
+        };
+        let fallback = [LongitudinalControl::Coast, signed_brake]
+            .into_iter()
+            .flat_map(|longitudinal| {
+                stencil
+                    .iter()
+                    .copied()
+                    .map(move |roll_axis| (longitudinal, roll_axis))
+            })
+            .filter_map(|(longitudinal, roll_axis)| {
+                level_three_public_high_speed_retreat_candidate_for_test(
+                    session,
+                    longitudinal,
+                    roll_axis,
+                    true,
+                )
+            })
+            .min_by_key(|(score, _)| *score);
+        fallback.or_else(|| level_three_public_at_rest_retreat_turn_for_test(session))
+    }
+
+    fn step_level_three_public_translation_macro(
+        session: &mut GameSession<Mc2CampaignBackend>,
+        precise: bool,
+    ) -> Vec<(crate::StepEvidence, crate::FlightState)> {
+        let commands = level_three_public_translation_macro_commands(precise);
+        let state = session.backend().campaign.level2_compatibility().state;
+        assert_eq!((state.target_speed, state.actual_speed), (0, 0));
+        commands
+            .into_iter()
+            .map(|command| {
+                let evidence = step_level_three_public_macro_command(session, command);
+                (
+                    evidence,
+                    session.backend().campaign.level2_compatibility().state,
+                )
+            })
+            .collect()
+    }
+
+    fn level_three_public_translation_macro_commands(precise: bool) -> Vec<GameCommand> {
+        let controls: &[LongitudinalControl] = if precise {
+            &[
+                LongitudinalControl::Accelerate,
+                LongitudinalControl::Decelerate,
+            ]
+        } else {
+            &[
+                LongitudinalControl::Accelerate,
+                LongitudinalControl::Accelerate,
+                LongitudinalControl::Decelerate,
+                LongitudinalControl::Decelerate,
+            ]
+        };
+        controls
+            .iter()
+            .map(|longitudinal| GameCommand {
+                longitudinal: *longitudinal,
+                ..GameCommand::default()
+            })
+            .collect()
+    }
+
+    fn level_three_public_macro_sequence_destination_for_test(
+        session: &GameSession<Mc2CampaignBackend>,
+        commands: &[GameCommand],
+    ) -> Option<crate::Position> {
+        let mut candidate = session.backend().campaign.clone();
+        let origin = candidate.level2_compatibility().state.position;
+        for command in commands {
+            if !level_three_public_macro_state_is_unmodified(candidate.level2_compatibility().state)
+            {
+                return None;
+            }
+            let evidence = candidate.step_with_tuning(
+                campaign_player_command(command),
+                CAMPAIGN_SPEED_INDEX,
+                session.backend().flight_binding.tuning(),
+            );
+            if candidate.events().iter().any(|event| {
+                matches!(
+                    event,
+                    crate::native_world::Level2DispatchEvent::Error { .. }
+                )
+            }) {
+                return None;
+            }
+            let evidence = evidence.into_iter().next()?;
+            if matches!(
+                evidence.movement_resolution,
+                "rejected" | "rejected-and-stopped" | "recovered-after-reject"
+            ) || (evidence.movement_resolution == "redirected"
+                && evidence.committed == evidence.before)
+            {
+                return None;
+            }
+        }
+        let completed = candidate.level2_compatibility().state;
+        ((completed.target_speed, completed.actual_speed) == (0, 0) && completed.position != origin)
+            .then_some(completed.position)
+    }
+
+    fn level_three_turn_at_rest_commands_for_test(
+        session: &GameSession<Mc2CampaignBackend>,
+        mut state: crate::FlightState,
+        desired: i16,
+    ) -> Vec<GameCommand> {
+        assert_eq!((state.target_speed, state.actual_speed), (0, 0));
+        let mut commands = Vec::new();
+        for _ in 0..=192 {
+            if crate::turn_toward(state.yaw, desired, 127) == 0
+                && state.roll_accumulator == 0
+                && state.pitch_accumulator == 0
+            {
+                return commands;
+            }
+            let mut best: Option<(
+                (u32, u32, u32, u32),
+                GameCommand,
+                crate::FlightState,
+                crate::StepEvidence,
+            )> = None;
+            for axis in -127_i16..=127 {
+                let command = GameCommand {
+                    longitudinal: LongitudinalControl::Coast,
+                    roll_axis: axis as i8,
+                    ..GameCommand::default()
+                };
+                let (candidate, evidence) =
+                    predict_level_three_public_macro_command_from_state(session, state, &command);
+                let error = u32::from(
+                    crate::angle_distance(i32::from(candidate.yaw), i32::from(desired))
+                        .unsigned_abs(),
+                );
+                let score = (
+                    error
+                        .saturating_mul(16)
+                        .saturating_add(u32::from(candidate.roll_accumulator.unsigned_abs())),
+                    error,
+                    u32::from(candidate.roll_accumulator.unsigned_abs()),
+                    u32::from(axis.unsigned_abs()),
+                );
+                if best
+                    .as_ref()
+                    .is_none_or(|(best_score, ..)| score < *best_score)
+                {
+                    best = Some((score, command, candidate, evidence));
+                }
+            }
+            let (_, command, candidate, evidence) =
+                best.expect("one public Coast+roll command remains available");
+            assert_eq!(
+                (evidence.before.x, evidence.before.y),
+                (evidence.committed.x, evidence.committed.y),
+                "turn-at-rest command must not translate the player"
+            );
+            commands.push(command);
+            state = candidate;
+        }
+        panic!(
+            "public Coast+roll feedback did not settle at heading {desired}: state={state:?} commands={}",
+            commands.len()
+        );
+    }
+
+    fn turn_level_three_public_macro_to_heading(
+        session: &mut GameSession<Mc2CampaignBackend>,
+        desired: i16,
+    ) {
+        let state = session.backend().campaign.level2_compatibility().state;
+        let commands = level_three_turn_at_rest_commands_for_test(session, state, desired);
+        for command in commands {
+            step_level_three_public_macro_command(session, command);
+        }
+        let actual = session.backend().campaign.level2_compatibility().state;
+        assert_eq!(
+            (
+                actual.yaw,
+                actual.roll_accumulator,
+                actual.target_speed,
+                actual.actual_speed
+            ),
+            (desired, 0, 0, 0)
+        );
+    }
+
+    fn normalize_level_three_public_macro_to_rest(session: &mut GameSession<Mc2CampaignBackend>) {
+        for _ in 0..=64 {
+            let state = session.backend().campaign.level2_compatibility().state;
+            assert!(
+                level_three_public_macro_state_is_unmodified(state),
+                "public rest normalization rejects modified motion state: {state:?}"
+            );
+            if state.target_speed == 0 && state.actual_speed == 0 && state.pitch_accumulator == 0 {
+                return;
+            }
+            let longitudinal = if state.target_speed < 0 {
+                LongitudinalControl::Accelerate
+            } else if state.target_speed > 0 {
+                LongitudinalControl::Decelerate
+            } else {
+                LongitudinalControl::Coast
+            };
+            let pitch_feedback = if state.pitch_accumulator > 0 {
+                (-3 * i32::from(state.pitch_accumulator) - 1) / 2
+            } else if state.pitch_accumulator < 0 {
+                (-3 * i32::from(state.pitch_accumulator) + 1) / 2
+            } else {
+                0
+            };
+            step_level_three_public_macro_command(
+                session,
+                GameCommand {
+                    longitudinal,
+                    pitch_axis: i8::try_from(pitch_feedback.clamp(-127, 127))
+                        .expect("clamped pitch feedback fits i8"),
+                    ..GameCommand::default()
+                },
+            );
+        }
+        panic!(
+            "ordinary public Coast/brake feedback did not normalize motion to rest: {:?}",
+            session.backend().campaign.level2_compatibility().state
+        );
+    }
+
+    #[test]
+    fn campaign_backend_level_three_public_translation_macros_match_every_predicted_callback() {
+        let root = level_three_descriptor_fixture_path();
+        let catalog = default_catalog().unwrap();
+        let definition = Arc::new(load_mc2_campaign(&root, &catalog).unwrap());
+        let mut session = GameSession::open(
+            &Mc2CampaignAdapter,
+            definition,
+            67,
+            Mc2CampaignInputs::new(&root),
+        )
+        .unwrap();
+        let initial = session.backend().campaign.level2_compatibility().state;
+        assert!(level_three_public_macro_state_is_unmodified(initial));
+        assert_eq!((initial.target_speed, initial.actual_speed), (0, 0));
+
+        turn_level_three_public_macro_to_heading(&mut session, 512);
+        let turned = session.backend().campaign.level2_compatibility().state;
+        assert_eq!((turned.yaw, turned.roll_accumulator), (512, 0));
+
+        let ordinary = step_level_three_public_translation_macro(&mut session, false);
+        assert_eq!(
+            ordinary
+                .iter()
+                .map(|(evidence, _)| evidence.movement_resolution)
+                .collect::<Vec<_>>(),
+            vec!["accepted"; 4]
+        );
+        assert_eq!(
+            ordinary
+                .iter()
+                .map(|(_, state)| (state.target_speed, state.actual_speed))
+                .collect::<Vec<_>>(),
+            vec![(16, 16), (32, 32), (16, 16), (0, 0)]
+        );
+        let after_ordinary = session.backend().campaign.level2_compatibility().state;
+        assert_eq!(
+            (after_ordinary.target_speed, after_ordinary.actual_speed),
+            (0, 0)
+        );
+        assert_ne!(after_ordinary.position, initial.position);
+
+        let before_precision = after_ordinary.position;
+        let precision = step_level_three_public_translation_macro(&mut session, true);
+        assert_eq!(
+            precision
+                .iter()
+                .map(|(evidence, _)| evidence.movement_resolution)
+                .collect::<Vec<_>>(),
+            vec!["accepted"; 2]
+        );
+        assert_eq!(
+            precision
+                .iter()
+                .map(|(_, state)| (state.target_speed, state.actual_speed))
+                .collect::<Vec<_>>(),
+            vec![(16, 16), (0, 0)]
+        );
+        let after_precision = session.backend().campaign.level2_compatibility().state;
+        assert_eq!(
+            (after_precision.target_speed, after_precision.actual_speed),
+            (0, 0)
+        );
+        assert_ne!(after_precision.position, before_precision);
+    }
+
+    #[test]
+    fn campaign_backend_level_three_public_macro_traverses_prior_stalled_coordinate() {
+        let root = level_three_descriptor_fixture_path();
+        let catalog = default_catalog().unwrap();
+        let definition = Arc::new(load_mc2_campaign(&root, &catalog).unwrap());
+        let mut session = GameSession::open(
+            &Mc2CampaignAdapter,
+            definition,
+            68,
+            Mc2CampaignInputs::new(&root),
+        )
+        .unwrap();
+        let stalled = crate::Position {
+            x: 20_617,
+            y: 36_108,
+            z: 2_769,
+        };
+        let player = session
+            .backend()
+            .campaign
+            .level2_compatibility()
+            .state
+            .entity_index;
+        {
+            let compatibility = session.backend_mut().campaign.level2_compatibility_mut();
+            compatibility
+                .set_level2_entity_position(player, stalled)
+                .unwrap();
+            let state = &mut compatibility.campaign_state_mut().core_mut().state;
+            state.yaw = 2_045;
+            state.roll_accumulator = 28;
+            state.target_speed = 80;
+            state.actual_speed = 80;
+        }
+
+        normalize_level_three_public_macro_to_rest(&mut session);
+        let macro_origin = session
+            .backend()
+            .campaign
+            .level2_compatibility()
+            .state
+            .position;
+        let start = session.backend().campaign.level2_compatibility().state;
+        let mut selected = None;
+        for offset in 0_i16..32 {
+            for signed_offset in [offset, -offset] {
+                if offset == 0 && signed_offset < 0 {
+                    continue;
+                }
+                let desired =
+                    2_045_i16.wrapping_add(signed_offset.wrapping_mul(64)) & crate::ANGLE_MASK;
+                let mut commands =
+                    level_three_turn_at_rest_commands_for_test(&session, start, desired);
+                commands.extend(level_three_public_translation_macro_commands(false));
+                if let Some(destination) =
+                    level_three_public_macro_sequence_destination_for_test(&session, &commands)
+                {
+                    selected = Some((commands, destination));
+                    break;
+                }
+            }
+            if selected.is_some() {
+                break;
+            }
+        }
+        let (commands, predicted_destination) = selected
+            .expect("one exact public command macro traverses the prior stalled coordinate");
+        for command in commands {
+            step_level_three_public_macro_command(&mut session, command);
+        }
+        let completed = session.backend().campaign.level2_compatibility().state;
+        assert_eq!(completed.position, predicted_destination);
+        assert_eq!((completed.target_speed, completed.actual_speed), (0, 0));
+        assert_ne!(completed.position, macro_origin);
+        let traveled = crate::legacy_sqrt(
+            i32::from(
+                completed
+                    .position
+                    .x
+                    .wrapping_sub(macro_origin.x)
+                    .cast_signed(),
+            )
+            .wrapping_pow(2)
+            .wrapping_add(
+                i32::from(
+                    completed
+                        .position
+                        .y
+                        .wrapping_sub(macro_origin.y)
+                        .cast_signed(),
+                )
+                .wrapping_pow(2),
+            )
+            .cast_unsigned(),
+        );
+        assert!(traveled > 0 && traveled <= 64);
+    }
+
+    #[test]
+    fn campaign_backend_level_three_public_high_speed_controller_closes_on_moving_dragon() {
+        let root = level_three_descriptor_fixture_path();
+        let catalog = default_catalog().unwrap();
+        let definition = Arc::new(load_mc2_campaign(&root, &catalog).unwrap());
+        let mut session = GameSession::open(
+            &Mc2CampaignAdapter,
+            definition,
+            69,
+            Mc2CampaignInputs::new(&root),
+        )
+        .unwrap();
+        session
+            .backend_mut()
+            .campaign
+            .level2_compatibility_mut()
+            .activate_authored_group_prerequisite_for_test(1)
+            .unwrap();
+        let root_slot = level_three_dragon_fireball_targets(&session)
+            .into_iter()
+            .filter(|target| target.source_slot == target.root_slot)
+            .min_by_key(|target| target.source_slot)
+            .expect("one qualified guardian Dragon root is active")
+            .source_slot;
+        let player = session
+            .backend()
+            .campaign
+            .level2_compatibility()
+            .state
+            .entity_index;
+        session
+            .backend_mut()
+            .campaign
+            .level2_compatibility_mut()
+            .set_level2_entity_position(
+                player,
+                crate::Position {
+                    x: 14_151,
+                    y: 30_530,
+                    z: 1_440,
+                },
+            )
+            .unwrap();
+        let initial_life = session
+            .backend()
+            .campaign
+            .level2_compatibility()
+            .shared_spells()
+            .player_entity()
+            .life;
+        let initial_root_position = level_three_dragon_fireball_targets(&session)
+            .into_iter()
+            .find(|target| target.source_slot == root_slot)
+            .expect("the selected guardian root remains current")
+            .position;
+        let initial_gap = level_three_dragon_launch_gap_for_test(
+            session.backend().campaign.level2_compatibility(),
+            Some(root_slot),
+        )
+        .expect("one current body belongs to the selected guardian")
+        .2;
+        assert!(initial_gap > 0);
+
+        let mut saw_source_max_speed = false;
+        let mut representative_states = BTreeSet::new();
+        let mut source_center_comparisons = 0_usize;
+        for _ in 0..=640 {
+            let (_, _, gap) = level_three_dragon_launch_gap_for_test(
+                session.backend().campaign.level2_compatibility(),
+                Some(root_slot),
+            )
+            .expect("the moving guardian retains one current body");
+            if gap == 0 {
+                break;
+            }
+            let (chosen_score, command) =
+                level_three_public_high_speed_pursuit_command_for_test(&session, Some(root_slot))
+                    .expect(
+                        "one exact public high-speed command safely closes on the moving guardian",
+                    );
+            let state = session.backend().campaign.level2_compatibility().state;
+            let signature = (state.actual_speed, state.yaw >> 7, gap >> 9);
+            if representative_states.len() < 16 && representative_states.insert(signature) {
+                let source_roll =
+                    level_three_source_pursuit_roll_for_test(&session, Some(root_slot))
+                        .expect("the current guardian exposes its source steering roll");
+                let (source_score, _) =
+                    level_three_public_high_speed_pursuit_candidate_for_test(
+                        &session,
+                        Some(root_slot),
+                        source_roll,
+                    )
+                    .expect(
+                        "the source-centered command remains progressing, non-rejected, and life-preserving across the representative pursuit corpus",
+                    );
+                assert!(
+                    chosen_score <= source_score,
+                    "the bounded source-centered stencil cannot choose a worse production score: chosen={chosen_score:?} source={source_score:?} roll={source_roll} state={state:?}"
+                );
+                source_center_comparisons += 1;
+            }
+            step_level_three_public_macro_command(&mut session, command);
+            saw_source_max_speed |= session
+                .backend()
+                .campaign
+                .level2_compatibility()
+                .state
+                .actual_speed
+                == crate::SPEED_LIMIT;
+        }
+        let compatibility = session.backend().campaign.level2_compatibility();
+        let (_, _, final_gap) =
+            level_three_dragon_launch_gap_for_test(compatibility, Some(root_slot))
+                .expect("the selected guardian retains a current body at closure");
+        assert_eq!(final_gap, 0);
+        assert!(saw_source_max_speed);
+        assert!(
+            source_center_comparisons >= 8,
+            "the exact authored pursuit supplies a bounded representative source-centered corpus"
+        );
+        assert_eq!(
+            compatibility.shared_spells().player_entity().life,
+            initial_life
+        );
+        let current_root_position = level_three_dragon_fireball_targets(&session)
+            .into_iter()
+            .find(|target| target.source_slot == root_slot)
+            .expect("the selected guardian root remains current")
+            .position;
+        assert_ne!(current_root_position, initial_root_position);
+    }
+
+    #[test]
+    fn campaign_backend_level_three_public_pursuit_recovers_prior_slot121_stall() {
+        const TARGET_SLOT: u16 = 121;
+        const TARGET_GENERATION: u32 = 4;
+        const PLAYER_POSITION: crate::Position = crate::Position {
+            x: 61_280,
+            y: 38_657,
+            z: 256,
+        };
+        const TARGET_POSITION: crate::Position = crate::Position {
+            x: 65_226,
+            y: 33_380,
+            z: 1_296,
+        };
+
+        let root = level_three_descriptor_fixture_path();
+        let catalog = default_catalog().unwrap();
+        let definition = Arc::new(load_mc2_campaign(&root, &catalog).unwrap());
+        let mut session = GameSession::open(
+            &Mc2CampaignAdapter,
+            definition,
+            71,
+            Mc2CampaignInputs::new(&root),
+        )
+        .unwrap();
+        session
+            .backend_mut()
+            .campaign
+            .level2_compatibility_mut()
+            .apply_carried_spell_families(&[0, 2], Some(0))
+            .unwrap();
+        drive_real_level_three_skeleton_horde_to_guardian_dragons_for_test(&mut session);
+        build_real_level_three_carried_castle_for_test(&mut session);
+        session
+            .step(guard(&session), GameCommand::default())
+            .unwrap();
+        let player = session
+            .backend()
+            .campaign
+            .level2_compatibility()
+            .state
+            .entity_index;
+        let desired_root = session
+            .backend()
+            .campaign
+            .level2_compatibility()
+            .economy()
+            .authored_dragon_parts()
+            .iter()
+            .find(|part| part.source_entity_index == TARGET_SLOT)
+            .expect("the carried-Castle fixture allocates the observed Dragon part at slot121")
+            .entity_id;
+        assert_eq!(
+            session
+                .backend()
+                .campaign
+                .level2_compatibility()
+                .economy()
+                .slot_generation(TARGET_SLOT),
+            TARGET_GENERATION
+        );
+        assert!(
+            session
+                .backend_mut()
+                .campaign
+                .level2_compatibility_mut()
+                .economy_mut()
+                .stage_dragon_part_position_for_test(TARGET_SLOT, TARGET_POSITION)
+        );
+        session
+            .backend_mut()
+            .campaign
+            .level2_compatibility_mut()
+            .set_level2_entity_position(player, PLAYER_POSITION)
+            .unwrap();
+        {
+            let state = &mut session
+                .backend_mut()
+                .campaign
+                .level2_compatibility_mut()
+                .state;
+            state.yaw = 1_233;
+            state.roll_accumulator = 0;
+            state.target_speed = crate::SPEED_LIMIT;
+            state.actual_speed = crate::SPEED_LIMIT;
+        }
+        let initial = level_three_dragon_launch_gap_for_test(
+            session.backend().campaign.level2_compatibility(),
+            Some(desired_root),
+        )
+        .expect("the exact staged target remains current");
+        assert_eq!(
+            (
+                initial.0.source_slot,
+                initial.0.generation,
+                initial.0.position
+            ),
+            (TARGET_SLOT, TARGET_GENERATION, TARGET_POSITION)
+        );
+        let initial_gap = initial.2;
+        assert!(initial_gap > 0);
+
+        for _ in 0..=640 {
+            let (_, _, gap) = level_three_dragon_launch_gap_for_test(
+                session.backend().campaign.level2_compatibility(),
+                Some(desired_root),
+            )
+            .expect("the moving Dragon retains a current launch target");
+            if gap == 0 {
+                break;
+            }
+            let (_, command) = level_three_public_high_speed_pursuit_command_for_test(
+                &session,
+                Some(desired_root),
+            )
+            .expect("signed braking and bounded turn lookahead recover the observed stall");
+            step_level_three_public_macro_command(&mut session, command);
+        }
+        let final_gap = level_three_dragon_launch_gap_for_test(
+            session.backend().campaign.level2_compatibility(),
+            Some(desired_root),
+        )
+        .expect("the selected Dragon retains a current launch target")
+        .2;
+        assert_eq!(final_gap, 0);
+        assert!(
+            final_gap < initial_gap,
+            "public callbacks must decrease the source launch gap"
+        );
+    }
+
+    #[test]
+    fn campaign_backend_level_three_public_retreat_stencil_clears_close_moving_dragon_and_tail() {
+        let root = level_three_descriptor_fixture_path();
+        let catalog = default_catalog().unwrap();
+        let definition = Arc::new(load_mc2_campaign(&root, &catalog).unwrap());
+        let mut session = GameSession::open(
+            &Mc2CampaignAdapter,
+            definition,
+            69,
+            Mc2CampaignInputs::new(&root),
+        )
+        .unwrap();
+        session
+            .backend_mut()
+            .campaign
+            .level2_compatibility_mut()
+            .activate_authored_group_prerequisite_for_test(1)
+            .unwrap();
+        let player = session
+            .backend()
+            .campaign
+            .level2_compatibility()
+            .state
+            .entity_index;
+        let root = level_three_dragon_fireball_targets(&session)
+            .into_iter()
+            .filter(|target| target.source_slot == target.root_slot)
+            .min_by_key(|target| target.source_slot)
+            .expect("one qualified guardian Dragon root is active");
+        let close_position = crate::Position {
+            x: root.position.x.wrapping_add(568),
+            y: root.position.y.wrapping_sub(524),
+            z: root.position.z.wrapping_sub(1_467),
+        };
+        session
+            .backend_mut()
+            .campaign
+            .level2_compatibility_mut()
+            .set_level2_entity_position(player, close_position)
+            .unwrap();
+        {
+            let state = &mut session
+                .backend_mut()
+                .campaign
+                .level2_compatibility_mut()
+                .state;
+            state.yaw = 68;
+            state.roll_accumulator = -5;
+            state.target_speed = crate::SPEED_LIMIT;
+            state.actual_speed = crate::SPEED_LIMIT;
+        }
+        let initial_life = session
+            .backend()
+            .campaign
+            .level2_compatibility()
+            .shared_spells()
+            .player_entity()
+            .life;
+        let economy_event_start = session
+            .backend()
+            .campaign
+            .level2_compatibility()
+            .economy()
+            .events()
+            .len();
+        let dragon_roots = level_three_dragon_fireball_targets(&session)
+            .into_iter()
+            .filter(|target| target.source_slot == target.root_slot)
+            .map(|target| target.source_slot)
+            .collect::<BTreeSet<_>>();
+        let (initial_separation, _, _) = level_three_dragon_retreat_state_for_test(
+            session.backend().campaign.level2_compatibility(),
+        )
+        .expect("the close Dragon remains current");
+        assert!((700..=850).contains(&initial_separation));
+
+        let mut saw_player_latch = false;
+        let mut saw_hostile_transient = false;
+        let mut saw_source_max_speed = false;
+        let mut minimum_player_life = initial_life;
+        let mut attributed_hit_steps = 0_usize;
+        let mut cleared = false;
+        for turn in 0..=level_three_dragon_retreat_bound(initial_separation) {
+            let (minimum_distance, player_latches, hostile_transients) =
+                level_three_dragon_retreat_state_for_test(
+                    session.backend().campaign.level2_compatibility(),
+                )
+                .expect("the authored moving Dragon remains current through retreat");
+            saw_player_latch |= player_latches != 0;
+            saw_hostile_transient |= hostile_transients != 0;
+            if minimum_distance > crate::level1_mission::PROJECTILE_ACQUISITION_RANGE
+                && player_latches == 0
+                && hostile_transients == 0
+            {
+                cleared = true;
+                break;
+            }
+            let (_, command) = level_three_public_high_speed_retreat_command_for_test(&session)
+                .unwrap_or_else(|| {
+                    let compatibility = session.backend().campaign.level2_compatibility();
+                    let center = level_three_source_retreat_roll_for_test(&session)
+                        .expect("one current root supplies the retreat center");
+                    let candidate_census =
+                        level_three_source_pursuit_roll_stencil_for_test(center)
+                            .into_iter()
+                            .map(|roll_axis| {
+                                let command = GameCommand {
+                                    longitudinal: LongitudinalControl::Accelerate,
+                                    roll_axis,
+                                    ..GameCommand::default()
+                                };
+                                let mut predicted = session.backend().campaign.clone();
+                                let evidence = predicted.step_with_tuning(
+                                    campaign_player_command(&command),
+                                    CAMPAIGN_SPEED_INDEX,
+                                    session.backend().flight_binding.tuning(),
+                                );
+                                let predicted_compatibility = predicted.level2_compatibility();
+                                (
+                                    roll_axis,
+                                    evidence
+                                        .first()
+                                        .map(|evidence| evidence.movement_resolution),
+                                    predicted_compatibility
+                                        .shared_spells()
+                                        .player_entity()
+                                        .life,
+                                    predicted_compatibility.state.position,
+                                    level_three_public_macro_state_is_unmodified(
+                                        predicted_compatibility.state,
+                                    ),
+                                    level_three_dragon_retreat_state_for_test(
+                                        predicted_compatibility,
+                                    ),
+                                )
+                            })
+                            .collect::<Vec<_>>();
+                    panic!(
+                        "the bounded exact public stencil retains one safe retreat command: turn={turn} retreat_state={:?} player=(life {}, position {:?}, yaw {}, roll {}, speed ({},{})) candidates={candidate_census:?}",
+                        level_three_dragon_retreat_state_for_test(compatibility),
+                        compatibility.shared_spells().player_entity().life,
+                        compatibility.state.position,
+                        compatibility.state.yaw,
+                        compatibility.state.roll_accumulator,
+                        compatibility.state.target_speed,
+                        compatibility.state.actual_speed,
+                    )
+                });
+            let before_life = session
+                .backend()
+                .campaign
+                .level2_compatibility()
+                .shared_spells()
+                .player_entity()
+                .life;
+            step_level_three_public_macro_command(&mut session, command);
+            let after_life = session
+                .backend()
+                .campaign
+                .level2_compatibility()
+                .shared_spells()
+                .player_entity()
+                .life;
+            if after_life < before_life {
+                assert_eq!(
+                    after_life,
+                    before_life - 500 + 5,
+                    "every admitted retreat loss is one exact Dragon pulse plus outdoor upkeep"
+                );
+                attributed_hit_steps += 1;
+            }
+            minimum_player_life = minimum_player_life.min(after_life);
+            saw_source_max_speed |= session
+                .backend()
+                .campaign
+                .level2_compatibility()
+                .state
+                .actual_speed
+                == crate::SPEED_LIMIT;
+        }
+        assert!(
+            cleared,
+            "the exact retreat clears range, aggro, and its source tail"
+        );
+        assert!(saw_player_latch || saw_hostile_transient);
+        assert!(saw_source_max_speed);
+        assert!(minimum_player_life > 0);
+        let compatibility = session.backend().campaign.level2_compatibility();
+        let attributed_hits = compatibility.economy().events()[economy_event_start..]
+            .iter()
+            .filter(|event| {
+                matches!(
+                    event,
+                    crate::native_world::Level2EconomyEvent::DamageApplied {
+                        target_entity_index,
+                        attacker_entity_index,
+                        damage: 500,
+                        lethal: false,
+                    } if *target_entity_index == player
+                        && dragon_roots.contains(attacker_entity_index)
+                )
+            })
+            .count();
+        assert!(attributed_hits > 0);
+        assert_eq!(attributed_hits, attributed_hit_steps);
+        assert_eq!(
+            compatibility.shared_spells().player_entity().life > 0,
+            true,
+            "the exact source-attributed hit remains nonlethal through retreat"
+        );
+    }
+
+    #[test]
+    fn campaign_backend_level_three_turn17_map_edge_retreat_candidate_census() {
+        let root = level_three_descriptor_fixture_path();
+        let catalog = default_catalog().unwrap();
+        let definition = Arc::new(load_mc2_campaign(&root, &catalog).unwrap());
+        let mut session = GameSession::open(
+            &Mc2CampaignAdapter,
+            definition,
+            69,
+            Mc2CampaignInputs::new(&root),
+        )
+        .unwrap();
+        session
+            .backend_mut()
+            .campaign
+            .level2_compatibility_mut()
+            .activate_authored_group_prerequisite_for_test(1)
+            .unwrap();
+        let player = session
+            .backend()
+            .campaign
+            .level2_compatibility()
+            .state
+            .entity_index;
+        session
+            .backend_mut()
+            .campaign
+            .level2_compatibility_mut()
+            .set_level2_entity_position(
+                player,
+                crate::Position {
+                    x: 62_994,
+                    y: 36_345,
+                    z: 256,
+                },
+            )
+            .unwrap();
+        {
+            let state = &mut session
+                .backend_mut()
+                .campaign
+                .level2_compatibility_mut()
+                .state;
+            state.yaw = 1_233;
+            state.roll_accumulator = 0;
+            state.target_speed = crate::SPEED_LIMIT;
+            state.actual_speed = crate::SPEED_LIMIT;
+        }
+        let stencil = level_three_source_pursuit_roll_stencil_for_test(0);
+        let mut census = Vec::new();
+        for longitudinal in [
+            LongitudinalControl::Accelerate,
+            LongitudinalControl::Coast,
+            LongitudinalControl::Decelerate,
+        ] {
+            for roll_axis in stencil.iter().copied() {
+                let command = GameCommand {
+                    longitudinal,
+                    roll_axis,
+                    ..GameCommand::default()
+                };
+                let before = session.backend().campaign.level2_compatibility();
+                let before_life = before.shared_spells().player_entity().life;
+                let before_holders = before.shared_spells().local_player().enabled_spell_holders;
+                let mut predicted = session.backend().campaign.clone();
+                let evidence = predicted.step_with_tuning(
+                    campaign_player_command(&command),
+                    CAMPAIGN_SPEED_INDEX,
+                    session.backend().flight_binding.tuning(),
+                );
+                let evidence = evidence.first().expect("one local player movement receipt");
+                let after = predicted.level2_compatibility();
+                let dx = i32::from(
+                    evidence
+                        .committed
+                        .x
+                        .wrapping_sub(evidence.before.x)
+                        .cast_signed(),
+                );
+                let dy = i32::from(
+                    evidence
+                        .committed
+                        .y
+                        .wrapping_sub(evidence.before.y)
+                        .cast_signed(),
+                );
+                let attributed =
+                    level_three_source_attributed_retreat_damage_for_test(before, after);
+                let accepted = level_three_public_high_speed_retreat_candidate_for_test(
+                    &session,
+                    longitudinal,
+                    roll_axis,
+                    true,
+                )
+                .is_some();
+                census.push(format!(
+                    "{longitudinal:?}/{roll_axis}: resolution={} delta=({dx},{dy}) speed=({},{}) life={before_life}->{} attributed={attributed:?} min_root={:?} holders={} dead={} unmodified={} recovery_latch={} accepted={accepted}",
+                    evidence.movement_resolution,
+                    after.state.target_speed,
+                    after.state.actual_speed,
+                    after.shared_spells().player_entity().life,
+                    level_three_dragon_retreat_state_for_test(after),
+                    after.shared_spells().local_player().enabled_spell_holders == before_holders,
+                    after.shared_spells().player_entity().life <= 0,
+                    level_three_public_macro_state_is_unmodified(after.state),
+                    after.state.recovery_latch,
+                ));
+            }
+        }
+        let current_choice = level_three_public_high_speed_retreat_command_for_test(&session);
+        {
+            let state = &mut session
+                .backend_mut()
+                .campaign
+                .level2_compatibility_mut()
+                .state;
+            state.target_speed = 0;
+            state.actual_speed = 0;
+        }
+        let at_rest_lookahead = level_three_public_at_rest_retreat_turn_for_test(&session);
+        eprintln!(
+            "turn17 current_choice={current_choice:?} at_rest_lookahead={at_rest_lookahead:?} census={census:#?}"
+        );
+        assert_eq!(census.len(), 3 * stencil.len());
+    }
+
+    #[test]
+    fn campaign_backend_level_three_dragon_observer_separates_player_and_hostile_deltas() {
+        let target = |source_slot, root_slot, life, attacker| DragonFireballTarget {
+            source_slot,
+            generation: 1,
+            root_slot,
+            life,
+            attacker,
+            position: crate::Position::default(),
+            half_width: 120,
+            vertical_offset: 92,
+            half_height: 92,
+        };
+        let player = 119;
+        let prior_player = target(260, 258, 4_000, 0);
+        let current_player = target(260, 258, 3_750, player);
+        let prior_hostile = target(261, 258, 3_750, 0);
+        let current_hostile = target(261, 258, 3_250, 258);
+        let live_root = target(258, 258, 4_000, 0);
+        let current = vec![live_root, current_player, current_hostile];
+        let corroborated = BTreeSet::new();
+
+        assert_eq!(
+            level_three_direct_dragon_damage_attribution_for_test(
+                prior_player,
+                current_player,
+                &current,
+                player,
+                &corroborated,
+            ),
+            Some(DragonDamageAttribution::Player)
+        );
+        assert_eq!(
+            level_three_direct_dragon_damage_attribution_for_test(
+                prior_hostile,
+                current_hostile,
+                &current,
+                player,
+                &corroborated,
+            ),
+            Some(DragonDamageAttribution::Dragon(258))
+        );
+        assert_eq!(
+            level_three_direct_dragon_damage_attribution_for_test(
+                prior_hostile,
+                target(261, 258, 3_450, 258),
+                &current,
+                player,
+                &corroborated,
+            ),
+            None,
+            "a live Dragon attacker does not explain a non-source payload"
+        );
+        assert_eq!(
+            level_three_direct_dragon_damage_attribution_for_test(
+                prior_hostile,
+                target(261, 258, 3_250, 257),
+                &current,
+                player,
+                &corroborated,
+            ),
+            None,
+            "a 500-point delta from a non-live root remains unexplained"
+        );
+        assert_eq!(
+            level_three_direct_dragon_damage_attribution_for_test(
+                live_root,
+                target(258, 258, 3_750, player),
+                &current,
+                player,
+                &corroborated,
+            ),
+            None,
+            "a player-owned root delta requires the observed class-10 overlap or mailbox"
+        );
+
+        let roots = BTreeSet::from([119_u16]);
+        let projectiles = BTreeSet::from([(148_u16, 6_u32, 119_u16)]);
+        let impact = BTreeSet::from([(298_u16, 7_u32, 148_u16, 119_u16)]);
+        assert_eq!(
+            level_three_generation_qualified_dragon_impact_root_for_test(
+                298,
+                &roots,
+                &impact,
+                &projectiles,
+            ),
+            Some(119),
+            "the current class-10 attacker links through its current class-9 parent to the live root"
+        );
+        assert_eq!(
+            level_three_generation_qualified_dragon_impact_root_for_test(
+                298,
+                &roots,
+                &BTreeSet::from([(298_u16, 7_u32, 149_u16, 119_u16)]),
+                &projectiles,
+            ),
+            None,
+            "an unrelated parent slot cannot attribute the impact"
+        );
+        assert_eq!(
+            level_three_generation_qualified_dragon_impact_root_for_test(
+                298,
+                &roots,
+                &impact,
+                &BTreeSet::from([(148_u16, 6_u32, 273_u16)]),
+            ),
+            None,
+            "a class-9 parent owned by a different root cannot attribute the impact"
+        );
+        assert_eq!(
+            level_three_generation_qualified_dragon_impact_root_for_test(
+                151,
+                &roots,
+                &impact,
+                &projectiles,
+            ),
+            None,
+            "an unrelated impact slot remains rejected"
+        );
+
+        let unique_transient = |parent_candidates,
+                                impact_dispatches,
+                                impact_sounds,
+                                player_damage_events,
+                                competing_hostile_impacts,
+                                generation_after| {
+            level_three_unique_transient_dragon_impact_for_test(
+                parent_candidates,
+                true,
+                impact_dispatches,
+                impact_sounds,
+                player_damage_events,
+                competing_hostile_impacts,
+                7,
+                generation_after,
+            )
+        };
+        assert!(unique_transient(1, 1, 1, 1, 0, 8));
+        assert!(
+            !unique_transient(1, 0, 1, 1, 0, 8),
+            "a missing first-impact dispatch cannot explain transient damage"
+        );
+        assert!(
+            !unique_transient(2, 1, 1, 1, 0, 8),
+            "multiple hostile parent projectiles remain ambiguous"
+        );
+        assert!(
+            !unique_transient(1, 1, 1, 1, 0, 7),
+            "a stale attacker-slot generation remains rejected"
+        );
+        assert!(
+            !unique_transient(1, 1, 1, 1, 1, 8),
+            "a competing hostile impact remains ambiguous"
+        );
+        assert!(
+            !unique_transient(1, 1, 1, 2, 0, 8),
+            "multiple player damage receipts remain ambiguous"
+        );
+        assert!(
+            !level_three_unique_transient_dragon_impact_for_test(1, false, 1, 1, 1, 0, 7, 8),
+            "a nonterminal parent projectile cannot explain a transient impact"
+        );
+    }
+
+    #[test]
+    fn campaign_backend_level_three_imported_worm_damage_requires_current_action26_source() {
+        let valid = LevelThreeImportedWormAttackerState {
+            slot: 150,
+            source_id: 150,
+            generation: 0,
+            active: true,
+            map_linked: true,
+            drawing_disabled: false,
+            class: 5,
+            model: 3,
+            action: 26,
+            life: 7_750,
+            target: 252,
+        };
+        let accepted = |state| level_three_source_imported_worm_attacker_for_test(state, 150, 252);
+        assert!(
+            accepted(valid),
+            "the current fixed package row159/slot150 action-26 Worm can own its exact 500-point Fireball damage"
+        );
+        assert!(!accepted(LevelThreeImportedWormAttackerState {
+            action: 25,
+            ..valid
+        }));
+        assert!(!accepted(LevelThreeImportedWormAttackerState {
+            class: 4,
+            ..valid
+        }));
+        assert!(!accepted(LevelThreeImportedWormAttackerState {
+            model: 2,
+            ..valid
+        }));
+        assert!(!accepted(LevelThreeImportedWormAttackerState {
+            active: false,
+            ..valid
+        }));
+        assert!(!accepted(LevelThreeImportedWormAttackerState {
+            map_linked: false,
+            ..valid
+        }));
+        assert!(!accepted(LevelThreeImportedWormAttackerState {
+            generation: 1,
+            ..valid
+        }));
+        assert!(!accepted(LevelThreeImportedWormAttackerState {
+            target: 251,
+            ..valid
+        }));
+    }
+
+    #[test]
+    fn campaign_backend_level_three_dragon_observer_pages_past_dense_effect_noise() {
+        let before = crate::campaign::journal::EffectJournal::new();
+        let mut after = before.clone();
+        for sequence in 0..65_u32 {
+            after.append_flight(
+                sequence,
+                FlightEvent::PrepareSound {
+                    audio_site: crate::MissionAudioSite::FireballImpact,
+                    entity_index: 149,
+                    player_index: -1,
+                    sound_id: 3,
+                },
+            );
+        }
+        let missing_impact = after.clone();
+        after.append_flight(
+            65,
+            FlightEvent::PrepareSound {
+                audio_site: crate::MissionAudioSite::FireballImpact,
+                entity_index: 298,
+                player_index: -1,
+                sound_id: 3,
+            },
+        );
+
+        let records = level_three_effect_records_after_for_test(&before, &after)
+            .expect("dense retained effects remain exhaustively page-readable");
+        assert_eq!(records.len(), 66);
+        assert_eq!(records.first().map(|record| record.sequence), Some(0));
+        assert_eq!(records.last().map(|record| record.sequence), Some(65));
+        assert_eq!(
+            records
+                .iter()
+                .filter(|record| matches!(
+                    record.effect,
+                    crate::campaign::journal::CampaignEffect::Flight(FlightEvent::PrepareSound {
+                        audio_site: crate::MissionAudioSite::FireballImpact,
+                        entity_index: 298,
+                        sound_id: 3,
+                        ..
+                    })
+                ))
+                .count(),
+            1,
+            "the unique impact after 65 preceding effects must be read from the second page"
+        );
+        assert!(
+            level_three_effect_records_after_for_test(&before, &missing_impact)
+                .expect("dense noise remains page-readable")
+                .iter()
+                .all(|record| !matches!(
+                    record.effect,
+                    crate::campaign::journal::CampaignEffect::Flight(FlightEvent::PrepareSound {
+                        audio_site: crate::MissionAudioSite::FireballImpact,
+                        entity_index: 298,
+                        sound_id: 3,
+                        ..
+                    })
+                )),
+            "dense noise without the exact impact receipt must remain negative"
+        );
+    }
+
+    #[test]
+    fn campaign_backend_level_three_transient_dragon_impact_is_attributed_from_one_numeric_step() {
+        let root = level_three_descriptor_fixture_path();
+        let catalog = default_catalog().unwrap();
+        let definition = Arc::new(load_mc2_campaign(&root, &catalog).unwrap());
+        let mut session = GameSession::open(
+            &Mc2CampaignAdapter,
+            definition,
+            69,
+            Mc2CampaignInputs::new(&root),
+        )
+        .unwrap();
+        session
+            .backend_mut()
+            .campaign
+            .level2_compatibility_mut()
+            .activate_authored_group_prerequisite_for_test(1)
+            .unwrap();
+        let player = session
+            .backend()
+            .campaign
+            .level2_compatibility()
+            .state
+            .entity_index;
+        let skeleton_slots = session
+            .backend()
+            .campaign
+            .level2_compatibility()
+            .entities()
+            .iter()
+            .filter(|entity| {
+                entity.active && entity.index < player && entity.class == 5 && entity.model == 9
+            })
+            .take(2)
+            .map(|entity| entity.index)
+            .collect::<Vec<_>>();
+        assert_eq!(skeleton_slots.len(), 2);
+        for source_slot in &skeleton_slots {
+            session
+                .backend_mut()
+                .campaign
+                .level2_compatibility_mut()
+                .stage_imported_skeleton_fireball_damage_for_test(*source_slot, player, 1_500)
+                .unwrap();
+        }
+        for _ in 0..32 {
+            session
+                .step(guard(&session), GameCommand::default())
+                .unwrap();
+            if skeleton_slots.iter().all(|slot| {
+                !session.backend().campaign.level2_compatibility().entities()[usize::from(*slot)]
+                    .active
+            }) {
+                break;
+            }
+        }
+        assert!(skeleton_slots.iter().all(|slot| {
+            !session.backend().campaign.level2_compatibility().entities()[usize::from(*slot)].active
+        }));
+        let root = level_three_dragon_fireball_targets(&session)
+            .into_iter()
+            .filter(|target| target.source_slot == target.root_slot)
+            .min_by_key(|target| target.source_slot)
+            .expect("one qualified guardian root is active");
+        let root_yaw = session
+            .backend()
+            .campaign
+            .level2_compatibility()
+            .economy()
+            .authored_class5()
+            .iter()
+            .find(|source| source.source_entity_index == root.root_slot)
+            .expect("the selected guardian root retains its source row")
+            .yaw;
+        let mut player_position = root.position;
+        crate::move_entity(&mut player_position, root_yaw, 0, 2_048);
+        session
+            .backend_mut()
+            .campaign
+            .level2_compatibility_mut()
+            .set_level2_entity_position(player, player_position)
+            .unwrap();
+        let reserved_slots = [skeleton_slots[0], skeleton_slots[1]];
+        {
+            let mut economy = session
+                .backend_mut()
+                .campaign
+                .level2_compatibility_mut()
+                .economy_mut();
+            economy.exhaust_new_event_capacity_for_test();
+            assert!(economy.restore_new_event_slot_for_test(reserved_slots[1]));
+            assert!(economy.restore_new_event_slot_for_test(reserved_slots[0]));
+        }
+
+        let mut launched = None;
+        for _ in 0..=64 {
+            session
+                .step(guard(&session), GameCommand::default())
+                .unwrap();
+            launched = session
+                .backend()
+                .campaign
+                .level2_compatibility()
+                .economy()
+                .fireball_projectiles()
+                .iter()
+                .find(|projectile| {
+                    projectile.active
+                        && projectile.owner_entity_index == root.root_slot
+                        && projectile.origin
+                            == crate::native_world::FireballProjectileOrigin::Dragon
+                })
+                .copied();
+            if launched.is_some() {
+                break;
+            }
+        }
+        let projectile = launched.expect("the real Dragon action-2 callback launches class 9");
+        let mut collision_position = projectile.position;
+        for _ in 0..4 {
+            let (_, desired_pitch) = crate::level1_mission::projectile_guidance_angles(
+                projectile.position,
+                collision_position,
+            );
+            let next_pitch = projectile.pitch.wrapping_add(crate::turn_toward(
+                projectile.pitch,
+                desired_pitch,
+                22,
+            )) & crate::ANGLE_MASK;
+            collision_position = projectile.position;
+            crate::move_entity(
+                &mut collision_position,
+                projectile.yaw,
+                next_pitch,
+                projectile.actual_speed,
+            );
+        }
+        session
+            .backend_mut()
+            .campaign
+            .level2_compatibility_mut()
+            .set_level2_entity_position(player, collision_position)
+            .unwrap();
+        {
+            let state = &mut session
+                .backend_mut()
+                .campaign
+                .level2_compatibility_mut()
+                .state;
+            state.target_speed = 0;
+            state.actual_speed = 0;
+            state.strafe_speed = 0;
+            state.recoil_speed = 0;
+            state.impulse_x = 0;
+            state.impulse_y = 0;
+            state.impulse_z = 0;
+            state.skip_flight_once = true;
+        }
+        let before = session.backend().campaign.level2_compatibility().clone();
+        let event_start = before.economy().events().len();
+        let projectile_generation = before
+            .economy()
+            .slot_generation(projectile.source_entity_index);
+        session
+            .step(guard(&session), GameCommand::default())
+            .unwrap();
+        let after = session.backend().campaign.level2_compatibility().clone();
+        let damage = after.economy().events()[event_start..]
+            .iter()
+            .find_map(|event| match event {
+                crate::native_world::Level2EconomyEvent::DamageApplied {
+                    target_entity_index,
+                    attacker_entity_index,
+                    damage: 500,
+                    lethal: false,
+                } if *target_entity_index == player => Some(*attacker_entity_index),
+                _ => None,
+            });
+        if damage.is_none() {
+            eprintln!(
+                "numeric Dragon collision miss: projectile_before={projectile:?} collision_position={collision_position:?} player_before={:?} player_after={:?} projectile_after={:?} impacts={:?} events={:?} dispatch={:?}",
+                before.state.position,
+                after.state.position,
+                after.economy().fireball_projectiles(),
+                after.economy().model17_spawned_children(),
+                &after.economy().events()[event_start..],
+                after.dispatch_events(),
+            );
+        }
+        let damage =
+            damage.expect("the numeric class-10 callback reaches the real player consumer");
+        assert_eq!(damage, root.root_slot);
+        let impact_slot = reserved_slots[1];
+        let impact_dispatches = after
+            .dispatch_events()
+            .iter()
+            .filter(|event| {
+                matches!(
+                    event,
+                    crate::native_world::Level2DispatchEvent::DynamicArena {
+                        source_slot,
+                        kind: crate::native_world::Level2DynamicArenaKind::Model17SpawnedChild,
+                        ..
+                    } if *source_slot == impact_slot
+                )
+            })
+            .count();
+        let stale_economy_sounds = after.economy().events()[event_start..]
+            .iter()
+            .filter(|event| {
+                matches!(
+                    event,
+                    crate::native_world::Level2EconomyEvent::FireSphereCollisionSound {
+                        source_entity_index,
+                        ..
+                    } if *source_entity_index == impact_slot
+                )
+            })
+            .count();
+        let impact_sounds = level_three_effect_records_after_for_test(
+            before.effect_journal(),
+            after.effect_journal(),
+        )
+        .expect("the numeric impact effects remain exhaustively page-readable")
+        .iter()
+        .filter(|record| {
+            matches!(
+                record.effect,
+                crate::campaign::journal::CampaignEffect::Flight(
+                    FlightEvent::PrepareSound {
+                        audio_site: crate::MissionAudioSite::FireballImpact,
+                        entity_index,
+                        sound_id: 3,
+                        ..
+                    }
+                ) if entity_index == impact_slot
+            )
+        })
+        .count();
+        let projectile_current = after
+            .economy()
+            .fireball_projectiles()
+            .iter()
+            .any(|current| {
+                current.active
+                    && current.source_entity_index == projectile.source_entity_index
+                    && after.economy().slot_generation(current.source_entity_index)
+                        == projectile_generation
+            });
+        eprintln!(
+            "transient Dragon impact trace: projectile=(slot={},generation={},target={},life={},phase={}) terminal={} impact=(slot={},generation_before={},generation_after={},dispatches={},sounds={})",
+            projectile.source_entity_index,
+            projectile_generation,
+            projectile.target_source_entity_index,
+            projectile.life,
+            projectile.phase,
+            !projectile_current,
+            impact_slot,
+            before.economy().slot_generation(impact_slot),
+            after.economy().slot_generation(impact_slot),
+            impact_dispatches,
+            impact_sounds,
+        );
+        assert_eq!(impact_dispatches, 1);
+        assert_eq!(
+            stale_economy_sounds, 0,
+            "the class-10 impact audio is a flight journal receipt, not an economy sound event"
+        );
+        assert_eq!(impact_sounds, 1);
+        assert!(level_three_unique_transient_dragon_impact_for_test(
+            1,
+            !projectile_current,
+            impact_dispatches,
+            impact_sounds,
+            1,
+            0,
+            before.economy().slot_generation(impact_slot),
+            after.economy().slot_generation(impact_slot),
+        ));
+        assert_eq!(
+            level_three_source_attributed_retreat_damage_for_test(&before, &after),
+            Some(500),
+            "the real same-step transient impact must satisfy the retreat observer"
+        );
+    }
+
+    #[test]
+    fn campaign_backend_signed_flight_controller_brakes_without_crossing_into_reverse() {
+        let mut state = crate::FlightState::default();
+        state.yaw = 0;
+        state.target_speed = -80;
+        state.actual_speed = -80;
+        let braking_reverse = level_three_source_safe_flight_command(state, 512, false);
+        assert_eq!(
+            braking_reverse.longitudinal,
+            LongitudinalControl::Accelerate
+        );
+        assert_eq!(braking_reverse.roll_axis, 0);
+
+        state.target_speed = 0;
+        state.actual_speed = -16;
+        let settling_reverse = level_three_source_safe_flight_command(state, 512, false);
+        assert_eq!(settling_reverse.longitudinal, LongitudinalControl::Coast);
+        assert_eq!(settling_reverse.roll_axis, 0);
+
+        state.actual_speed = 0;
+        let turning_at_rest = level_three_source_safe_flight_command(state, 512, false);
+        assert_eq!(turning_at_rest.longitudinal, LongitudinalControl::Coast);
+        assert_eq!(turning_at_rest.roll_axis, 24);
+
+        state.yaw = 500;
+        let forward_only_when_aligned = level_three_source_safe_flight_command(state, 512, false);
+        assert_eq!(
+            forward_only_when_aligned.longitudinal,
+            LongitudinalControl::Accelerate
+        );
+        assert_eq!(forward_only_when_aligned.roll_axis, 12);
+
+        state.target_speed = 80;
+        state.actual_speed = 80;
+        let braking_forward = level_three_source_safe_flight_command(state, 0, true);
+        assert_eq!(
+            braking_forward.longitudinal,
+            LongitudinalControl::Decelerate
+        );
+        assert_eq!(braking_forward.roll_axis, 0);
+    }
+
+    #[test]
+    fn campaign_backend_signed_retreat_outruns_a_moving_dragon_with_source_bound() {
+        #[derive(Clone, Copy)]
+        struct OpenWorld;
+
+        impl crate::FlightWorld for OpenWorld {
+            fn ground_height(&self, _position: crate::Position) -> i16 {
+                0
+            }
+
+            fn ceiling_height(&self, _position: crate::Position) -> Option<i16> {
+                None
+            }
+
+            fn material_mask(&self, _position: crate::Position) -> u32 {
+                0
+            }
+
+            fn angle_flags(&self, _tile: crate::Tile) -> u8 {
+                0
+            }
+        }
+
+        fn separation(player: crate::Position, dragon: crate::Position) -> u32 {
+            let dx = i32::from(dragon.x.wrapping_sub(player.x).cast_signed());
+            let dy = i32::from(dragon.y.wrapping_sub(player.y).cast_signed());
+            crate::legacy_sqrt(
+                dx.wrapping_mul(dx)
+                    .wrapping_add(dy.wrapping_mul(dy))
+                    .cast_unsigned(),
+            )
+        }
+
+        fn first_clear_turn(bound: usize) -> Option<usize> {
+            let mut player = crate::FlightState::default();
+            player.position = crate::Position {
+                x: 32_768,
+                y: 32_768,
+                z: 1_280,
+            };
+            player.yaw = 0;
+            player.pitch_accumulator = -254;
+            player.display_pitch = (-254_i16) & crate::ANGLE_MASK;
+            player.roll_accumulator = -254;
+            player.target_speed = -crate::SPEED_LIMIT;
+            player.actual_speed = -crate::SPEED_LIMIT;
+            let mut dragon = crate::Position {
+                x: player.position.x,
+                y: player.position.y.wrapping_sub(883),
+                z: 0,
+            };
+            let retreat_heading =
+                i16::try_from(crate::heading_for_positions(dragon, player.position)).unwrap();
+
+            for turn in 0..=bound {
+                if separation(player.position, dragon)
+                    > crate::level1_mission::PROJECTILE_ACQUISITION_RANGE
+                {
+                    return Some(turn);
+                }
+                let dragon_heading =
+                    i16::try_from(crate::heading_for_positions(dragon, player.position)).unwrap();
+                crate::move_entity(&mut dragon, dragon_heading, 0, 30);
+                let command =
+                    level_three_source_safe_flight_command(player, retreat_heading, false);
+                let latched = crate::latch_command(&mut player, campaign_player_command(&command));
+                crate::step_entity_pass(
+                    &mut player,
+                    latched,
+                    crate::FlightProfile::OUTDOOR,
+                    &OpenWorld,
+                );
+            }
+            None
+        }
+
+        let initial_separation = 883;
+        let old_bound = usize::from(crate::level1_mission::FIREBALL_LIFETIME_TICKS as u16)
+            + usize::try_from(DRAGON_FIREBALL_TRAVEL_RANGE / (80 - 30)).unwrap()
+            + 64;
+        assert_eq!(first_clear_turn(old_bound), None);
+
+        let source_bound = level_three_dragon_retreat_bound(initial_separation);
+        let clear_turn = first_clear_turn(source_bound)
+            .expect("source-derived closure bound outruns the moving Dragon");
+        assert!(clear_turn > old_bound);
+        assert!(clear_turn <= source_bound - (22 + 10 + 1));
+    }
+
+    #[test]
+    fn campaign_backend_level_three_recovery_route_avoids_guardian_acquisition_disks() {
+        let root = level_three_descriptor_fixture_path();
+        let catalog = default_catalog().unwrap();
+        let definition = Arc::new(load_mc2_campaign(&root, &catalog).unwrap());
+        let mut session = GameSession::open(
+            &Mc2CampaignAdapter,
+            definition,
+            66,
+            Mc2CampaignInputs::new(&root),
+        )
+        .unwrap();
+        let guardian_spawns = level_three_guardian_spawn_positions_for_test(&session);
+        let castle = valid_level_three_castle_sites_for_test(&session)
+            .into_iter()
+            .filter(|site| {
+                level_three_castle_healing_footprint_outside_dragon_range_for_test(
+                    *site,
+                    &guardian_spawns,
+                )
+            })
+            .min_by_key(|site| {
+                let dx = i32::from(site.x.wrapping_sub(27_648).cast_signed());
+                let dy = i32::from(site.y.wrapping_sub(53_760).cast_signed());
+                dx.wrapping_mul(dx).wrapping_add(dy.wrapping_mul(dy))
+            })
+            .expect("qualified Level 3 retains a production-admitted safe Castle footprint");
+        assert!(
+            level_three_castle_healing_footprint_outside_dragon_range_for_test(
+                castle,
+                &guardian_spawns,
+            )
+        );
+
+        // Put a trace-shaped recovery endpoint just outside the first root on
+        // the side opposite the Castle.  Both endpoints are safe, but their
+        // old direct chord necessarily crosses the acquisition disk.
+        let first_root = guardian_spawns[0];
+        let away = i16::try_from(crate::heading_for_positions(castle, first_root)).unwrap();
+        let mut origin = first_root;
+        crate::move_entity(
+            &mut origin,
+            away,
+            0,
+            i16::try_from(crate::level1_mission::PROJECTILE_ACQUISITION_RANGE + 768).unwrap(),
+        );
+        origin.z = session
+            .backend()
+            .campaign
+            .level2_compatibility()
+            .canonical_terrain()
+            .ground_height(origin)
+            .wrapping_add(256);
+        assert!(level_three_position_outside_dragon_range_for_test(
+            origin,
+            &guardian_spawns
+        ));
+
+        let direct_heading = i16::try_from(crate::heading_for_positions(origin, castle)).unwrap();
+        let mut direct = origin;
+        let mut direct_enters_guardian_range = false;
+        for _ in 0..128 {
+            crate::move_entity(&mut direct, direct_heading, 0, 256);
+            if !level_three_position_outside_dragon_range_for_test(direct, &guardian_spawns) {
+                direct_enters_guardian_range = true;
+                break;
+            }
+        }
+        assert!(
+            direct_enters_guardian_range,
+            "the old straight recovery chord must reproduce the guardian re-entry"
+        );
+
+        let route_clearance = crate::level1_mission::PROJECTILE_ACQUISITION_RANGE + 512;
+        let (waypoints, _, _) = level_three_source_route_to_sites_for_test(
+            &session,
+            origin,
+            vec![castle],
+            &guardian_spawns,
+            route_clearance,
+        )
+        .expect("the production movement resolver retains a guardian-safe recovery route");
+        let threatened_waypoint = waypoints
+            .iter()
+            .min_by_key(|waypoint| {
+                let dx = i32::from(waypoint.x.wrapping_sub(guardian_spawns[0].x).cast_signed());
+                let dy = i32::from(waypoint.y.wrapping_sub(guardian_spawns[0].y).cast_signed());
+                dx.wrapping_mul(dx).wrapping_add(dy.wrapping_mul(dy))
+            })
+            .copied()
+            .unwrap();
+        let mut moved_roots = guardian_spawns.clone();
+        for _ in 0..level_three_dragon_retreat_bound(0) {
+            if !level_three_position_outside_dragon_clearance_for_test(
+                threatened_waypoint,
+                &moved_roots,
+                route_clearance,
+            ) {
+                break;
+            }
+            let heading = i16::try_from(crate::heading_for_positions(
+                moved_roots[0],
+                threatened_waypoint,
+            ))
+            .unwrap();
+            crate::move_entity(&mut moved_roots[0], heading, 0, 30);
+        }
+        assert!(
+            !level_three_position_outside_dragon_clearance_for_test(
+                threatened_waypoint,
+                &moved_roots,
+                route_clearance,
+            ),
+            "a source-speed moving root must invalidate the stale recovery route"
+        );
+        let (replanned, _, _) = level_three_source_route_to_sites_for_test(
+            &session,
+            origin,
+            vec![castle],
+            &moved_roots,
+            route_clearance,
+        )
+        .expect("current root positions retain a replanned recovery route");
+        assert!(replanned.iter().all(|waypoint| {
+            level_three_position_outside_dragon_clearance_for_test(
+                *waypoint,
+                &moved_roots,
+                route_clearance,
+            )
+        }));
+        let mut cursor = origin;
+        for waypoint in waypoints {
+            let heading = i16::try_from(crate::heading_for_positions(cursor, waypoint)).unwrap();
+            while {
+                let dx = i32::from(waypoint.x.wrapping_sub(cursor.x).cast_signed());
+                let dy = i32::from(waypoint.y.wrapping_sub(cursor.y).cast_signed());
+                crate::legacy_sqrt(
+                    dx.wrapping_mul(dx)
+                        .wrapping_add(dy.wrapping_mul(dy))
+                        .cast_unsigned(),
+                ) > 256
+            } {
+                crate::move_entity(&mut cursor, heading, 0, 256);
+                assert!(
+                    level_three_position_outside_dragon_range_for_test(cursor, &guardian_spawns,),
+                    "every selected recovery segment must remain outside guardian acquisition"
+                );
+            }
+            cursor = waypoint;
+        }
+        assert_eq!((cursor.x, cursor.y), (castle.x, castle.y));
+    }
+
+    #[test]
+    fn campaign_backend_public_castle_build_and_heal_reach_connected_site_after_skeletons() {
+        let root = level_three_descriptor_fixture_path();
+        let catalog = default_catalog().unwrap();
+        let definition = Arc::new(load_mc2_campaign(&root, &catalog).unwrap());
+        let mut session = GameSession::open(
+            &Mc2CampaignAdapter,
+            definition,
+            66,
+            Mc2CampaignInputs::new(&root),
+        )
+        .unwrap();
+        session
+            .backend_mut()
+            .campaign
+            .level2_compatibility_mut()
+            .apply_carried_spell_families(&[0, 2], Some(0))
+            .unwrap();
+        let castle_holder = session
+            .backend()
+            .campaign
+            .level2_compatibility()
+            .shared_spells()
+            .local_player()
+            .enabled_spell_holders[2];
+        assert_ne!(castle_holder, 0);
+
+        drive_real_level_three_skeleton_horde_to_guardian_dragons_for_test(&mut session);
+        assert!(
+            session
+                .backend()
+                .campaign
+                .level2_compatibility()
+                .economy()
+                .castle()
+                .is_none()
+        );
+        let castle = build_real_level_three_carried_castle_for_test(&mut session);
+        let compatibility = session.backend().campaign.level2_compatibility();
+        assert_eq!(compatibility.economy().player_castle_entity_index(), castle);
+        assert_eq!(
+            compatibility
+                .shared_spells()
+                .local_player()
+                .enabled_spell_holders[2],
+            castle_holder
+        );
+        let max_life = compatibility.shared_spells().player_entity().max_life;
+        session
+            .backend_mut()
+            .campaign
+            .level2_compatibility_mut()
+            .activate_authored_group_prerequisite_for_test(1)
+            .unwrap();
+        assert_eq!(level_three_dragon_fireball_targets(&session).len(), 34);
+        let mut saw_damage = false;
+        for _ in 0..4 {
+            if matches!(
+                fire_real_player_fireball_at_level_three_dragon_for_test(&mut session, None),
+                DragonFireballCastOutcome::Damage(_)
+            ) {
+                saw_damage = true;
+                break;
+            }
+        }
+        assert!(
+            saw_damage,
+            "a public Dragon exchange must exercise Castle healing"
+        );
+        let fireball_holder = session
+            .backend()
+            .campaign
+            .level2_compatibility()
+            .shared_spells()
+            .local_player()
+            .enabled_spell_holders[0];
+        let mut chronology = Vec::new();
+        recover_at_real_level_three_castle_for_test(
+            &mut session,
+            fireball_holder,
+            &mut chronology,
+            0,
+        );
+        let compatibility = session.backend().campaign.level2_compatibility();
+        let player = compatibility.shared_spells().player_entity();
+        assert_eq!(player.life, max_life);
+        assert_eq!(
+            compatibility
+                .shared_spells()
+                .local_player()
+                .enabled_spell_holders[2],
+            castle_holder
+        );
+    }
+
     fn activate_and_retire_real_level_three_group_five_archers_for_test(
         session: &mut GameSession<Mc2CampaignBackend>,
     ) {
@@ -8993,22 +14774,6 @@ pub(crate) mod tests {
             166, 167, 168, 169, 170, 171, 172, 173, 174, 175, 176, 177, 178, 179, 180, 181, 182,
             183, 184, 185, 186, 187, 188, 189, 190, 191, 192, 193, 194,
         ];
-        let (player_entity, safe_combat_site) = {
-            let compatibility = session.backend().campaign.level2_compatibility();
-            (
-                compatibility.state.entity_index,
-                valid_level_three_castle_sites_for_test(session)
-                    .into_iter()
-                    .next()
-                    .expect("qualified Level 3 terrain contains a valid combat footprint"),
-            )
-        };
-        session
-            .backend_mut()
-            .campaign
-            .level2_compatibility_mut()
-            .set_level2_entity_position(player_entity, safe_combat_site)
-            .unwrap();
         session
             .step(guard(session), GameCommand::default())
             .unwrap();
@@ -9030,36 +14795,10 @@ pub(crate) mod tests {
             .copied()
             .collect::<Vec<_>>();
         assert_eq!(archers.len(), 18);
-        for archer in &archers {
-            assert!(
-                session
-                    .backend_mut()
-                    .campaign
-                    .level2_compatibility_mut()
-                    .economy_mut()
-                    .stage_archer_mailbox_damage_for_test(
-                        archer.source_entity_index,
-                        player_entity,
-                        archer.max_life.saturating_add(1),
-                    )
-            );
-        }
-        for _ in 0..32 {
-            if session
-                .backend()
-                .campaign
-                .level2_compatibility()
-                .economy()
-                .authored_class5()
-                .iter()
-                .all(|source| !(177..=194).contains(&source.authored_index))
-            {
-                break;
-            }
-            session
-                .step(guard(session), GameCommand::default())
-                .unwrap();
-        }
+        super::l3_public_combat::retire_public_combat_for_test(
+            session,
+            super::l3_public_combat::CombatFamily::Archer,
+        );
         assert!(
             session
                 .backend()

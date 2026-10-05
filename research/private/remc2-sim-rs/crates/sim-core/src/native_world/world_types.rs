@@ -3438,6 +3438,11 @@ impl std::ops::DerefMut for RuntimeSnapshot {
 }
 
 impl RuntimeSnapshot {
+    /// Exact reset-time source counters. Legacy captures did not export them.
+    pub(super) fn constructor_counters(&self) -> Option<&[u8; 29]> {
+        self.bytes.get(RUNTIME_BYTES..)?.try_into().ok()
+    }
+
     #[must_use]
     pub fn bytes(&self) -> &[u8] {
         &self.bytes
@@ -4010,6 +4015,7 @@ impl NativeWorldInspection {
             local_player.enabled_spell_holders[2],
             self.runtime.random_state,
             castle_stage_footprints,
+            self.runtime.constructor_counters(),
         )?;
         let shared_spells = Level2SharedSpellResetSession::from_campaign_parts(
             &self.entities,
@@ -4121,6 +4127,7 @@ impl NativeWorldInspection {
             self.players[0].enabled_spell_holders[2],
             self.runtime.random_state,
             self.level2_castle_stage_footprints.clone(),
+            self.runtime.constructor_counters(),
         )?;
         let wizard = mission
             .wizard_map_settings()

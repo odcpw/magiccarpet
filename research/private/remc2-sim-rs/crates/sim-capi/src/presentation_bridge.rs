@@ -18,9 +18,9 @@ use sim_core::{
         LEVEL1_MINIMAP_ANCHOR_BOTTOM_LEFT, LEVEL1_MINIMAP_COMMAND_BLEND_PIXEL,
         LEVEL1_MINIMAP_COMMAND_DOT, LEVEL1_MINIMAP_COMMAND_SPRITE, Level1MinimapEntityCommand,
         Level1MinimapEntityInput, Level1MinimapMarks, level1_minimap_entity_command,
-        level1_minimap_project,
+        level1_minimap_project, minimap_objective_arrow, minimap_objective_distance,
     },
-    native_world::{Level2ResetSession, TerrainPlanes},
+    native_world::{Level2ResetSession, RuntimeRelation, TerrainPlanes},
 };
 
 /// Source-ordered Level 2 minimap entity presentation row.
@@ -43,7 +43,11 @@ pub(crate) struct Level2MinimapEntity {
     pub visible: u8,
 }
 
-/// Source-ordered Level 2 minimap mark presentation row.
+/// Source-ordered campaign minimap mark presentation row.
+/// Kind 2 is an objective rectangle. Kind 3 is an arrow outline vertex:
+/// seven consecutive rows, joined in row order and closed. Source order remains
+/// strictly increasing across rectangles and vertices.
+/// Both use the existing 128-unit minimap coordinate space.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(crate) struct Level2MinimapMark {
     pub source_order: u16,
@@ -490,7 +494,12 @@ pub(crate) fn campaign_minimap_plan(
         .get(stage_index)
         .ok_or_else(|| "level2 minimap selected objective stage is unavailable".to_owned())?;
     let mut marks = Vec::new();
-    if stage.kind == 5 {
+    if let Some((_, target)) = session.campaign_exit_objective_target() {
+        // Source completion points at the live exit trigger with an arrow
+        // only; it does not surround the portal with an objective rectangle.
+        append_objective_arrow(&mut marks, &session.state, target);
+    }
+    if objective.is_level_end == 0 && stage.kind == 5 {
         let (x, y) = level1_minimap_project(
             &session.state,
             sim_core::Position {
@@ -512,6 +521,103 @@ pub(crate) fn campaign_minimap_plan(
             help_selector: 0x51,
             visible: u8::from(session.state.tick & 3 == 0),
         });
+        append_objective_arrow(
+            &mut marks,
+            &session.state,
+            Position {
+                x: stage.axis_x as u16,
+                y: stage.axis_y as u16,
+                z: 0,
+            },
+        );
+    }
+    if objective.is_level_end == 0 && stage.kind == 7 {
+        let RuntimeRelation::Scalar(model) = stage.relation else {
+            return Err("creature objective has no source model selector".to_owned());
+        };
+        // GameUI's bytearray_38403x[model] is a source-linked class-5 list.
+        // Reconstruct its head from the actual next links, never pool order.
+        let candidates = session
+            .entities()
+            .iter()
+            .filter(|entity| {
+                entity.index != 0
+                    && entity.active
+                    && entity.class == 5
+                    && u32::from(entity.model) == model
+            })
+            .map(|entity| (entity.index, entity))
+            .collect::<std::collections::BTreeMap<_, _>>();
+        let linked = candidates
+            .values()
+            .filter_map(|entity| entity.next_relation)
+            .collect::<std::collections::BTreeSet<_>>();
+        let heads = candidates
+            .keys()
+            .copied()
+            .filter(|index| !linked.contains(index))
+            .collect::<Vec<_>>();
+        if !candidates.is_empty() && heads.len() != 1 {
+            return Err("creature objective source chain has no unique head".to_owned());
+        }
+        let mut current = heads.first().copied().unwrap_or(0);
+        let mut visited = std::collections::BTreeSet::new();
+        let mut nearest = None;
+        let mut nearest_distance = 0x1000000;
+        while current != 0 {
+            if !visited.insert(current) {
+                return Err("creature objective source chain is cyclic".to_owned());
+            }
+            let entity = candidates
+                .get(&current)
+                .ok_or_else(|| "creature objective source link leaves its model list".to_owned())?;
+            current = entity.next_relation.unwrap_or(0);
+            let (x, y) = level1_minimap_project(&session.state, entity.position, 128, 256);
+            marks.push(Level2MinimapMark {
+                source_order: marks.len() as u16,
+                subject_entity_index: entity.index,
+                x,
+                y,
+                palette_index: 123,
+                kind: 2,
+                help_selector: 0x52,
+                visible: u8::from(session.state.tick & 3 == 0),
+            });
+            let distance = minimap_objective_distance(session.state.position, entity.position);
+            if distance < nearest_distance {
+                nearest_distance = distance;
+                nearest = Some(entity.position);
+            }
+        }
+        if let Some(target) = nearest {
+            append_objective_arrow(&mut marks, &session.state, target);
+        }
+    }
+
+    if objective.is_level_end == 0 && stage.kind == 9 {
+        let mut nearest = None;
+        let mut nearest_distance = 0x1000000;
+        for (slot, position) in session.campaign_building_objective_targets(stage_index) {
+            let (x, y) = level1_minimap_project(&session.state, position, 128, 256);
+            marks.push(Level2MinimapMark {
+                source_order: marks.len() as u16,
+                subject_entity_index: slot,
+                x,
+                y,
+                palette_index: 123,
+                kind: 2,
+                help_selector: 0x52,
+                visible: u8::from(session.state.tick & 3 == 0),
+            });
+            let distance = minimap_objective_distance(session.state.position, position);
+            if distance < nearest_distance {
+                nearest_distance = distance;
+                nearest = Some(position);
+            }
+        }
+        if let Some(target) = nearest {
+            append_objective_arrow(&mut marks, &session.state, target);
+        }
     }
 
     let visibility_flags = u32::from(visibility.visible_to_local_player)
@@ -524,6 +630,110 @@ pub(crate) fn campaign_minimap_plan(
         marks,
         visibility_flags,
     })
+}
+
+fn append_objective_arrow(
+    marks: &mut Vec<Level2MinimapMark>,
+    player: &FlightState,
+    target: Position,
+) {
+    let xy = minimap_objective_arrow(player, target, 128, 128, 256);
+    let first_order = marks.last().map_or(0, |mark| mark.source_order + 1);
+    for (order, vertex) in [0, 1, 3, 4, 5, 6, 2].into_iter().enumerate() {
+        marks.push(Level2MinimapMark {
+            source_order: first_order + order as u16,
+            x: xy[vertex * 2],
+            y: xy[vertex * 2 + 1],
+            palette_index: 123, // Qualified Day CLRD[3840].
+            kind: 3,
+            visible: u8::from(player.tick & 0x40 != 0 && (player.tick / 6) & 1 != 0),
+            ..Level2MinimapMark::default()
+        });
+    }
+}
+
+#[test]
+fn campaign_package_objective_emits_shared_arrow_without_advancing_state() {
+    let package = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../../generated/level3-day-block32-campaign-recipe-v2");
+    let mut campaign =
+        sim_core::campaign::CampaignSession::open(package, CampaignSelection::LEVEL3)
+            .expect("qualified corrected Day campaign opens");
+    campaign.step(sim_core::PlayerCommand::default(), 0);
+    let before = campaign.state_hash();
+    let plan = campaign_minimap_plan(campaign.level2_compatibility(), CampaignSelection::LEVEL3)
+        .expect("live campaign minimap plan");
+    let targets = campaign
+        .level2_compatibility()
+        .entities()
+        .iter()
+        .filter(|entity| entity.active && entity.class == 5 && entity.model == 9)
+        .count();
+    assert!(
+        targets > 0,
+        "real package contains the initial creature objective"
+    );
+    assert_eq!(
+        plan.marks.iter().filter(|mark| mark.kind == 2).count(),
+        targets
+    );
+    assert_eq!(plan.marks.iter().filter(|mark| mark.kind == 3).count(), 7);
+    assert!(
+        plan.marks
+            .windows(2)
+            .all(|rows| rows[0].source_order < rows[1].source_order)
+    );
+    assert_eq!(campaign.state_hash(), before);
+    assert!(
+        plan.marks
+            .iter()
+            .filter(|mark| mark.kind == 3)
+            .all(|mark| mark.visible == 0)
+    );
+    while campaign.tick() < 66 {
+        campaign.step(sim_core::PlayerCommand::default(), 0);
+    }
+    let before = campaign.state_hash();
+    let pulsed = campaign_minimap_plan(campaign.level2_compatibility(), CampaignSelection::LEVEL3)
+        .expect("source-linked target remains valid after ordinary actor turns");
+    assert_eq!(
+        pulsed
+            .marks
+            .iter()
+            .filter(|mark| mark.kind == 3 && mark.visible != 0)
+            .count(),
+        7
+    );
+    assert_eq!(campaign.state_hash(), before);
+}
+
+#[test]
+fn objective_arrow_preserves_source_vertex_order_and_native_pulse() {
+    let mut player = FlightState::default();
+    player.tick = 66;
+    let target = Position {
+        x: 4096,
+        y: 2048,
+        z: 0,
+    };
+    let before = player.clone();
+    let xy = minimap_objective_arrow(&player, target, 128, 128, 256);
+    let mut marks = Vec::new();
+    append_objective_arrow(&mut marks, &player, target);
+    assert_eq!(marks.len(), 7);
+    for (order, vertex) in [0, 1, 3, 4, 5, 6, 2].into_iter().enumerate() {
+        assert_eq!(
+            (marks[order].x, marks[order].y),
+            (xy[vertex * 2], xy[vertex * 2 + 1])
+        );
+        assert_eq!(marks[order].source_order, order as u16);
+        assert_eq!(marks[order].visible, 1);
+    }
+    assert_eq!(player, before);
+    player.tick = 64;
+    marks.clear();
+    append_objective_arrow(&mut marks, &player, target);
+    assert!(marks.iter().all(|mark| mark.visible == 0));
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]

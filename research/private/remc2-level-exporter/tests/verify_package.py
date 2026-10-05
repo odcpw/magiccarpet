@@ -1279,7 +1279,8 @@ def verify_binary_structure(package: Path, manifest: dict) -> None:
 
     runtime = (package / "runtime.bin").read_bytes()
     assert runtime[:4] == b"MCR1"
-    assert u16(runtime, 4) == 1
+    runtime_version = u16(runtime, 4)
+    assert (runtime_version, len(runtime)) in {(1, 2754), (2, 2783)}
     assert u16(runtime, 6) == 0
     if external_level == 2:
         local_player_count = u16(runtime, 18)
@@ -1349,7 +1350,13 @@ def verify_binary_structure(package: Path, manifest: dict) -> None:
             == runtime_layout[following]["offset"]
         )
     inputs = runtime_layout["player_inputs"]
-    assert inputs["offset"] + inputs["count"] * inputs["record_bytes"] == len(runtime)
+    assert inputs["offset"] + inputs["count"] * inputs["record_bytes"] == 2754
+    if runtime_version == 2:
+        assert runtime_layout["constructor_counters"] == {
+            "offset": 2754, "count": 29, "record_bytes": 1,
+        }
+    else:
+        assert "constructor_counters" not in runtime_layout
     assert runtime_layout["bytes"] == len(runtime)
 
     stages = runtime_layout["stages"]
@@ -1812,12 +1819,14 @@ def _campaign_validate_reset_members(package: Path, spec: dict, files: dict, pro
         "campaign terrain extent/non-Cave normalization changed",
     )
 
+    runtime = (package / "runtime.bin").read_bytes()
+    runtime_version = u16(runtime, 4)
     runtime_descriptor = _campaign_member_ref(
         spec["reset_sources"]["runtime"], files, "campaign_spec.reset_sources.runtime",
-        schema="mc2-runtime-state/v1",
+        schema=f"mc2-runtime-state/v{runtime_version}",
     )
     runtime = (package / runtime_descriptor["member"]).read_bytes()
-    require(len(runtime) == 2754 and runtime[:4] == b"MCR1" and (u16(runtime, 4), u16(runtime, 6)) == (1, 0), "campaign runtime header/extent changed")
+    require((runtime_version, len(runtime)) in {(1, 2754), (2, 2783)} and runtime[:4] == b"MCR1" and u16(runtime, 6) == 0, "campaign runtime header/extent changed")
     require(
         (u16(runtime, 16), u16(runtime, 18), u32(runtime, 32))
         == (0, profile["runtime_player_count"], profile["runtime_music_selector"]),
@@ -2114,6 +2123,10 @@ def _campaign_validate_presentation(
     owner_manifest: dict | None = None,
 ) -> None:
     keys = {"block_bank", "cursor", "map_type", "member", "palette", "resolved_files", "sky_bank", "sound_bank", "sprite_bank", "terrain_bank", "terrain_graphics_flag_2", "terrain_graphics_flags", "texture_size", "vga_resolution_selector", "web_bank"}
+    corrected_blocks = isinstance(recipe_value, dict) and "schema" in recipe_value
+    if corrected_blocks:
+        keys.add("schema")
+        require(recipe_value["schema"] == "mc2-presentation-recipe/v2", "unknown presentation recipe schema")
     recipe = _exact_object(recipe_value, keys, "campaign_spec.presentation_recipe")
     _campaign_member_ref(recipe["member"], files, "presentation_recipe.member", schema="mc2-presentation-snapshot/v1")
     if owner_manifest is not None:
@@ -2125,7 +2138,7 @@ def _campaign_validate_presentation(
         )
         return
     expected = {
-        "block_bank": "BL32N0-0", "cursor": 9, "map_type": "Day", "palette": "PALD-0",
+        "block_bank": "BLOCK32" if corrected_blocks else "BL32N0-0", "cursor": 9, "map_type": "Day", "palette": "PALD-0",
         "sky_bank": "SKYD0-0", "sound_bank": 1, "sprite_bank": "MSPRD0-0",
         "terrain_bank": "TMAPS0-0", "texture_size": 32, "vga_resolution_selector": 1,
         "web_bank": "MWEBD0-0",
@@ -2150,7 +2163,7 @@ def _campaign_validate_presentation(
         "terrain_bank": "owner:GAME/NETHERW/CDATA/TMAPS0-0.DAT",
         "sprite_bank": "owner:CD_Files/DATA/MSPRD0-0.DAT",
         "web_bank": "owner:CD_Files/DATA/MWEBD0-0.DAT",
-        "block_bank": "owner:CD_Files/DATA/BL32N0-0.DAT",
+        "block_bank": "owner:CD_Files/DATA/BLOCK32.DAT" if corrected_blocks else "owner:CD_Files/DATA/BL32N0-0.DAT",
         "palette": "owner:CD_Files/DATA/PALD-0.DAT",
         "sky_bank": "owner:CD_Files/DATA/SKYD0-0.DAT",
         "building_bank": "owner:CD_Files/DATA/BUILD0-0.DAT",

@@ -566,7 +566,12 @@ typedef struct McCampaignMinimapEntityV2 {
     uint32_t reserved[3];
 } McCampaignMinimapEntityV2;
 
-/* One source-ordered admitted Level 2 minimap mark. */
+/* One admitted campaign minimap command in 128-unit map coordinates.
+ * kind 2: objective rectangle. kind 3: arrow-outline vertex, exactly seven
+ * consecutive rows; join in row order and close. source_order remains strictly
+ * increasing across all commands, including rectangle-to-arrow boundaries.
+ * Rust supplies pulse visibility and palette; clients must not infer targets.
+ */
 typedef struct McCampaignMinimapMarkV2 {
     uint32_t abi_version;
     uint32_t struct_size;

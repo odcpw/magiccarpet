@@ -3755,11 +3755,27 @@ fn level_two_authored_model32_chain_continues_through_group18_and_group19() {
 
 #[test]
 fn level_two_group20_materializes_model1_and_archer_rows_from_row214() {
-    let inspection =
-        NativeWorld::inspect_level2(level_two_fixture_path()).expect("qualified Level 2 package");
-    let mut session = inspection
-        .level2_reset_session()
-        .expect("Level 2 group-20 production session");
+    let package = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../../generated/mc-cf02-campaign-package-v2-b/qualified-level2");
+    // The production campaign entry supplies the semantic creature bindings
+    // required by these authored births; the source payloads remain identical.
+    for member in [
+        "entities.bin", "authored-level.bin", "runtime.bin", "presentation.bin",
+        "players.bin", "terrain.bin", "feature-end.bin", "collision-masks.bin",
+    ] {
+        assert!(
+            std::fs::read(level_two_fixture_path().join(member)).unwrap()
+                == std::fs::read(package.join(member)).unwrap(),
+            "source member changed: {member}"
+        );
+    }
+    let mut session = crate::campaign::CampaignSession::open(
+        package,
+        crate::campaign::spec::CampaignSelection::LEVEL2,
+    )
+    .expect("Level 2 semantic campaign opens")
+    .level2_compatibility()
+    .clone();
     let baseline_hash = session.campaign_state_hash();
     let authored_features = session.mission().authored_features().to_vec();
     let feature_position = |index: u16| {
@@ -3777,6 +3793,7 @@ fn level_two_group20_materializes_model1_and_archer_rows_from_row214() {
     session.runtime.objectives[0].stage_selectors[1] = 2;
     session.runtime.objectives[0].stage_selectors[2] = 2;
     session.step_outer_turn(PlayerCommand::default(), 0);
+    let first_dispatch = session.dispatch_events().to_vec();
     session.runtime.objectives[0].stage_selectors[3] = 2;
     session.step_outer_turn(PlayerCommand::default(), 0);
     assert!(
@@ -3784,7 +3801,9 @@ fn level_two_group20_materializes_model1_and_archer_rows_from_row214() {
             .economy()
             .authored_switch_producers()
             .iter()
-            .any(|source| source.authored_index == 214)
+            .any(|source| source.authored_index == 214),
+        "row 214 missing: first={first_dispatch:?}; second={:?}; pose={:?}; objective={:?}",
+        session.dispatch_events(), session.state.position, session.runtime.objectives[0]
     );
 
     // Row 214 is model-0, so the source callback requires the local
@@ -3830,9 +3849,22 @@ fn level_two_group20_materializes_model1_and_archer_rows_from_row214() {
             model1.particle_index,
             model1.control_flags,
         ),
-        (1, 1, 400, 1, 41, 0x0002_0004)
+        (1, 1, 400, 1, 41, 0x0002_0006)
     );
-    assert_eq!(model1.last_sound_id, 0);
+    // UpdateEntities_57730 scans live slots, including births ahead of its
+    // cursor. AddQuickfair0A_01_30F60 has therefore already decremented life
+    // and latched sound 3 at this end-of-turn observation (not constructor time).
+    assert!(session.dispatch_events().iter().any(|event| matches!(
+        event,
+        Level2DispatchEvent::DynamicArena {
+            source_slot,
+            kind: Level2DynamicArenaKind::AuthoredModel1,
+            ..
+        } if *source_slot == model1.source_entity_index
+    )));
+    assert_eq!(model1.life, 0);
+    assert_eq!(model1.phase, (model1.source_entity_index as u8).wrapping_add(1));
+    assert_eq!(model1.last_sound_id, 3);
     assert!(model1.active);
     let constructor_phase = model1.phase;
     session.step_outer_turn(PlayerCommand::default(), 0);
@@ -3853,13 +3885,16 @@ fn level_two_group20_materializes_model1_and_archer_rows_from_row214() {
         .filter(|child| child.parent_entity_index == model1.source_entity_index)
         .collect::<Vec<_>>();
     assert!(!quickfair_children.is_empty());
+    // These children also lie ahead of the live cursor. sub_30D50 latches
+    // their impact bit on the first visit; the following turn is visit two.
     assert!(quickfair_children.iter().all(|child| {
         (
             child.parent_entity_id,
             child.control_flags,
             child.shift_rot_x,
             child.shift_rot_y,
-        ) == (model1.source_entity_index, 0x0002_0080, 128, 128)
+        ) == (model1.source_entity_index, 0x0002_0082, 128, 128)
+            && child.life == 6
     }));
 
     let archer = session
@@ -3881,19 +3916,23 @@ fn level_two_group20_materializes_model1_and_archer_rows_from_row214() {
         ),
         (30, 0, 30, 1_000, 500, 500)
     );
+    // AddArchers_4BA10 uses its constructor RNG for body angles;
+    // SetEntityIndexAndRot(0)'s 125/66 collision dimensions are not yaw/pitch.
+    // The live callbacks have already advanced RNG and may steer desired roll,
+    // but retain the equal constructor body yaw/pitch on this short route.
+    assert!((-1..=0x07fe).contains(&archer.yaw));
+    assert_eq!(archer.yaw, archer.pitch);
     assert_eq!(
         (
             archer.dword_0x10,
             archer.particle_index,
-            archer.yaw,
-            archer.pitch,
             archer.fov,
             archer.shift_rot_x,
             archer.shift_rot_y,
         ),
-        (0, 0, 125, 66, 125, 128, 256,)
+        (0, 0, 0, 128, 256)
     );
-    assert!((0_i16..=0x07ff_i16).contains(&archer.roll));
+    assert_ne!((archer.yaw, archer.pitch), (125, 66));
     assert_eq!(
         session
             .economy()
@@ -3904,9 +3943,8 @@ fn level_two_group20_materializes_model1_and_archer_rows_from_row214() {
     assert!(archer.active && archer.drawing_enabled);
 
     // The root uses remc2's `life-- < 0` callback guard: after the
-    // activation turn's first visit, two more source turns exhaust life
+    // activation turn's first visit and the second visit above, one more turn exhausts life
     // and hide drawing while retaining the allocated row.
-    session.step_outer_turn(PlayerCommand::default(), 0);
     session.step_outer_turn(PlayerCommand::default(), 0);
     let model1 = session
         .economy()

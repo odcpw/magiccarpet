@@ -318,17 +318,20 @@ authoring API, focused tests and the first-three-level runtime gate.
 
 ## Current migration frontier
 
-The first-three-level implementation milestone is now closed through focused,
-composing production-owner tests rather than one synthetic omnibus. The current
-evidence establishes all of the following:
+The first-three-level implementation milestone remains open. Focused tests
+establish the capabilities below, but some completion tests inject combat or
+entry state and therefore do not establish an uninterrupted public-command
+campaign. The current evidence establishes the following bounded results:
 
 - the qualified Level 1, 2 and 3 packages publish stable semantic definitions,
   package-present entity/objective/spell censuses and fail-closed compiled
   capabilities;
-- the ordinary package schedulers and downstream consumers cover the real
+- the package schedulers and downstream consumers have focused coverage for the
   Level 1 Castle/mana/Firefly exit route, the Level 2 waypoint/Nyphur/plague-Bee
   exit route, and the Level 3 Skeleton/Dragon/Castle-charge/revealed-way/final-
-  Bee exit route through Rust-owned transitions and Title restart;
+  Bee exit route through Rust-owned transitions and Title restart. Level 3
+  Dragon, Archer and final-Bee composition still needs public-command
+  acceptance; staged damage demonstrates only the downstream lifecycle;
 - semantic acquired/selected spell state is carried across transitions, and
   replay-save v5 persists the exact destination definition, receipt-bound
   spell carry, command trace and generation/hash identities across pause,
@@ -350,6 +353,79 @@ The detailed ledger below records how that milestone accreted. Earlier
 slice-local “does not yet prove” clauses describe the boundary of that focused
 test at the time; the composed evidence above supersedes them where a later
 owning route closes the named gap.
+
+The 2026-09-05 source-traced fixes address lost Fireball/Castle mana charges
+across player movement/upkeep, Archer arrows incorrectly joining their
+shooter's health chain, missing arrow flight/hit/reflection/expiry/reclaim,
+and imported Skeleton reactions rejecting a live typed Archer attacker.
+Skeleton conversion now hides its prey before shared-arena allocation,
+constructs a mapped Skeleton with semantic producer provenance, and reclaims
+the prey on the following pass. Its action-72 -> action-73 transition no longer
+silently drops out of the scheduler. The focused owner-package test covers
+actual post-countdown movement, allocation failure, provenance cleanup and
+reset; a constructor/target-scan unit test distinguishes class-3/model-2
+opponents from class-5/model-2 Bees. The missing source construction counters
+were subsequently exported and bound by the approved runtime-v2 change below.
+Archer construction now retains its seeded body angles separately from the
+particle collision dimensions; arrow launch height and the Archer collision
+vertical offset also follow those separate source fields. The owning tests
+discriminate two constructor seeds and the upper collision boundary.
+Focused owning tests cover these fixes, including an ordinary Archer shot
+reaching player damage and the following regeneration. The final candidate's
+staged group-5 public-control fight retires all 18 Archers, with attributed
+Fireball damage, ordinary mana drops and following-pass reclaim (232.01 s
+after the Skeleton conversion/scheduling fix).
+The rebuilt Unity plugin also passes all 27 `GameRuntimeEditModeTests` and
+real keyboard save/pause/paused-reset checks on Levels 1, 2 and 3; qualification
+artifacts are under the ignored `9cdd82e-skeleton-conversion-20260905` directory.
+The public-control final-Bee fight remains unqualified. The composed carry
+controller still died in the Level 1 Firefly fight at tick 6816; the isolated
+public-cast Firefly objective test passes. Neither result establishes full
+campaign parity.
+
+Focused verification for the uncommitted `9cdd82e` candidate (run from
+`research/private/remc2-sim-rs`):
+
+```sh
+cargo test -p sim-core --release --lib --locked native_world::campaign_shared_families::tests:: -- --nocapture
+cargo test -p sim-core --release --lib --locked native_world::campaign::tests::level_three_skeleton_converts_nearby_archer_through_shared_source_arena -- --exact --nocapture
+cargo test -p sim-core --release --lib --locked campaign::backend::l3_public_combat::public_fireballs_retire_real_level_three_group_five_archers_from_staged_group -- --exact --nocapture
+cargo fmt --all -- --check
+cargo clippy -p sim-core --lib --no-deps --locked -- -A clippy::pedantic -D clippy::correctness -D clippy::suspicious
+cargo build -p sim-capi --release --locked
+```
+
+These passed (6 shared-family tests, 1 conversion lifecycle test, 1 complete
+18-Archer fight). The source/installed/built-player plugin SHA-256 is
+`c9dc69c6084b88afd6949db9bd1938fee61a91400f5cdc093391801e7a65c75d`.
+The focused two-file UBS scan reported 0 critical and 367 warnings; this is
+not a clean whole-repository scan. No full-workspace or uninterrupted campaign
+completion is claimed for this candidate.
+
+On 2026-09-10, Oliver approved the private package-contract extension
+(`GOLDEN-CHANGE`). Campaign runtime v2 appends the exact 29 source construction
+counters at byte 2754, preserving every previous field offset. New owner-data
+exports for Levels 1–3 are retained under the ignored
+`research/private/generated/constructor-counters-runtime-v2-20260910/level{1,2,3}`.
+Level 3's Skeleton counter is 11, not the former Rust initial value of zero.
+The implemented constructor phases now start from these bytes; v1 compatibility
+captures retain their historical initialization and are not counter-parity proof.
+
+Self-verified at `9cdd82e` plus the working diff: exporter build passed;
+`python3 -m pytest tests -q` in the exporter passed 27 tests (including paired
+exports and five malformed-runtime negatives). Rust release tests passed
+`campaign::spec::tests::runtime_constructor_counter_version_requires_exact_extent`,
+the Skeleton conversion test above against both old and fresh Level 3 packages,
+all three `game_runtime::tests::runtime_replay_save_restores_real_level_*` tests
+against the fresh packages, and `cargo test -p sim-core --release --test campaign_package --locked`
+against fresh Level 2. Format, diff checks and the owning Clippy correctness/
+suspicious gate passed (existing warnings remain). Separate gate review kept
+all non-runtime owner bytes exact; only the approved version, appended bytes,
+layout metadata and hashes may differ. UBS scanned the exporter and descriptor
+files, reporting 5 critical/599 warning findings; its critical matches were
+existing cleanup `delete` and non-secret gameplay comparisons, not these changed
+hunks. This is not a clean repository scan. This counter candidate has not yet
+been rebuilt/qualified in Unity, and no full campaign completion is claimed.
 
 - the transaction store provides guarded atomic/idempotent publication through
   a discoverable closed operation schema; the consumed flight operations bind
@@ -778,11 +854,11 @@ owning route closes the named gap.
   scheduling stays with its existing owners. These are twenty-one
   bounded physical extractions, not a claim that the remaining `sim-core`
   monolith has been decomposed; and
-- the first-three-level semantic/runtime/persistence work packs are complete in
-  focused composing gates. A single human-input-only Unity playthrough,
+- the first-three-level semantic/runtime/persistence work has focused composing
+  gates. Full public-command completion and a single human-input-only Unity playthrough,
   source-art-complete menus/results, later campaign levels, commercial artifact
-  distribution and OpenXR remain subsequent product milestones; they do not
-  create a second gameplay authority or weaken the completed Rust contracts.
+  distribution and OpenXR remain unverified product scope. The existing gates
+  establish their stated Rust contracts, not complete campaign parity.
 
 The next foundation seam extends the same stable definition-to-runtime binding
 to the next package-present semantic domain without adding another arena,

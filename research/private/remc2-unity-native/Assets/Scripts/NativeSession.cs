@@ -169,6 +169,9 @@ namespace MagicCarpet.Native
 
         internal bool UsesGameRuntimeContract => gameRuntime != null;
 
+        internal GameRuntimeTransport.Identity GameRuntimeBeginNewGame()
+            => gameRuntime.BeginRestartNewGame();
+
         internal EngineSessionTransport.Contract EngineContract =>
             engine?.NegotiatedContract ?? throw new InvalidOperationException(
                 "legacy session has no neutral engine contract");

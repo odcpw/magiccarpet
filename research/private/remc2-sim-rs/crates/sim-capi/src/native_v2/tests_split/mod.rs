@@ -2925,8 +2925,7 @@ fn valid_camera_input() -> McCameraInputV2 {
 }
 
 fn open_level2_campaign_handle() -> u64 {
-    let level2_package = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../../generated/l2-debug3.fJ3PaM/level2");
+    let level2_package = qualified_level2_campaign_package();
     let package = level2_package.to_string_lossy();
     let selection = McCampaignSelectionV2 {
         abi_version: MC_NATIVE_ABI_VERSION,
@@ -2955,9 +2954,33 @@ fn qualified_level2_day_owner_cache() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../generated/level2-day-owner-cache")
 }
 
+fn qualified_level2_campaign_package() -> PathBuf {
+    let generated = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../generated");
+    let package = generated.join("mc-cf02-campaign-package-v2-b/qualified-level2");
+    // Exercise the same descriptor-backed authority used by the player, not
+    // the retained inspection-only entry with no semantic creature bindings.
+    // The descriptor adds bindings, not a replacement level or source reset.
+    for member in [
+        "entities.bin",
+        "authored-level.bin",
+        "runtime.bin",
+        "presentation.bin",
+        "players.bin",
+        "terrain.bin",
+        "feature-end.bin",
+        "collision-masks.bin",
+    ] {
+        assert!(
+            fs::read(generated.join("l2-debug3.fJ3PaM/level2").join(member)).unwrap()
+                == fs::read(package.join(member)).unwrap(),
+            "Level 2 campaign source member changed: {member}"
+        );
+    }
+    package
+}
+
 fn open_level2_campaign_handle_with_asset_cache(cache: &Path) -> u64 {
-    let level2_package = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../../generated/l2-debug3.fJ3PaM/level2");
+    let level2_package = qualified_level2_campaign_package();
     let package = level2_package.to_string_lossy();
     let cache = cache.to_string_lossy();
     let selection = McCampaignSelectionV2 {
@@ -3676,7 +3699,13 @@ fn drive_level2_public_group1_possession_claims_with_expected(
     if expected_claim_count.is_some() {
         assert!(
             saw_effect,
-            "strict model-39 flight collision allocates a typed model-12 effect"
+            "strict model-39 flight collision allocates a typed model-12 effect: target={target:?}, launch={launch_position:?}, predicted_player={predicted_player_position:?}, runtime={:?}",
+            with_campaign_session(handle, |session| {
+                let CampaignSessionKind::Level2 { reset, .. } = &session.kind else {
+                    unreachable!()
+                };
+                Ok(reset.economy().possession_projectiles().to_vec())
+            })
         );
     }
     let mut holder = possession_holder(campaign_day_hud_public(

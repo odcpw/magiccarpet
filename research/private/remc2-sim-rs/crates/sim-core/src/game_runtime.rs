@@ -1193,6 +1193,52 @@ mod tests {
     };
     use std::path::PathBuf;
 
+    /// Preserve the commands that actually ran, including the state immediately
+    /// before a route assertion. Replaying them avoids repeating the test
+    /// controller's speculative campaign clones. A capture is evidence only
+    /// after the production loader verifies its state receipts.
+    fn run_route_with_replay_capture(
+        resolver: &Mc2RuntimePackageResolver,
+        runtime: &mut GameRuntime<Mc2CampaignBackend>,
+        name: &str,
+        route: impl FnOnce(&mut GameRuntime<Mc2CampaignBackend>),
+    ) {
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| route(runtime)));
+        if let Some(directory) = std::env::var_os("MC_ROUTE_EVIDENCE_DIR") {
+            let capture = (|| -> Result<PathBuf, Box<dyn std::error::Error>> {
+                use std::io::Write;
+                let directory = PathBuf::from(directory);
+                std::fs::create_dir_all(&directory)?;
+                let tick = runtime
+                    .session()
+                    .ok_or("route has no active session")?
+                    .identity()
+                    .tick;
+                let outcome = if result.is_ok() { "passed" } else { "failed" };
+                let nonce = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)?
+                    .as_nanos();
+                let path =
+                    directory.join(format!("{name}-{outcome}-tick-{tick}-{nonce}.replay.json"));
+                let bytes = resolver.save_replay(runtime)?;
+                let mut file = std::fs::OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .open(&path)?;
+                file.write_all(&bytes)?;
+                file.sync_all()?;
+                Ok(path)
+            })();
+            match capture {
+                Ok(path) => eprintln!("route replay captured: {}", path.display()),
+                Err(error) => eprintln!("route replay capture failed: {error}"),
+            }
+        }
+        if let Err(panic) = result {
+            std::panic::resume_unwind(panic);
+        }
+    }
+
     fn level_one_package() -> PathBuf {
         std::env::var_os("MC_CAMPAIGN_LEVEL1_PACKAGE").map_or_else(
             || {
@@ -1201,6 +1247,48 @@ mod tests {
             },
             PathBuf::from,
         )
+    }
+
+    #[test]
+    #[ignore = "diagnostic: requires MC_ROUTE_REPLAY from a captured public guardian route"]
+    fn runtime_replays_guardian_boundary_and_continues_one_public_exchange() {
+        let path = std::env::var_os("MC_ROUTE_REPLAY")
+            .expect("set MC_ROUTE_REPLAY to a captured .replay.json path");
+        let bytes = std::fs::read(path).expect("captured route replay is readable");
+        let resolver = Mc2RuntimePackageResolver::load([
+            Mc2CampaignInputs::new(level_one_package()),
+            Mc2CampaignInputs::new(level_two_package()),
+            Mc2CampaignInputs::new(level_three_package()),
+        ])
+        .unwrap();
+        let mut runtime = GameRuntime::<Mc2CampaignBackend>::title(336).unwrap();
+        let guard = runtime.identity().guard();
+        resolver
+            .load_replay(&mut runtime, guard, 336, &bytes)
+            .expect("captured public commands must reproduce every production state receipt");
+        assert_eq!(
+            runtime
+                .identity()
+                .active_runtime_flow
+                .unwrap()
+                .bound_level_id()
+                .as_str(),
+            "level.magic_carpet_2.revealed_way"
+        );
+        eprintln!(
+            "verified guardian replay at tick {}",
+            runtime.session().unwrap().identity().tick
+        );
+        run_route_with_replay_capture(
+            &resolver,
+            &mut runtime,
+            "guardian-reproduction",
+            |runtime| {
+                crate::campaign::backend::tests::continue_guardian_public_exchange_for_test(
+                    runtime.session_mut().unwrap(),
+                );
+            },
+        );
     }
 
     fn level_two_package() -> PathBuf {
@@ -1325,6 +1413,145 @@ mod tests {
         runtime
     }
 
+    fn fly_to_real_exit_trigger(session: &mut GameSession<Mc2CampaignBackend>, authored_row: u16) {
+        // An exit uses an XY overlap box. Brake inside the box so its ordinary
+        // eight-pass cadence can observe overlap; never publish a player pose.
+        for _ in 0..2_048 {
+            let compatibility = session
+                .backend()
+                .compatibility_campaign()
+                .level2_compatibility();
+            if compatibility.level_exit_sequence().active {
+                return;
+            }
+            let trigger = compatibility
+                .economy()
+                .authored_switch_producers()
+                .iter()
+                .find(|row| row.authored_index == authored_row && row.active)
+                .expect("the real exit trigger remains live until overlap");
+            let state = compatibility.state;
+            let dx = i32::from(
+                trigger
+                    .position
+                    .x
+                    .wrapping_sub(state.position.x)
+                    .cast_signed(),
+            );
+            let dy = i32::from(
+                trigger
+                    .position
+                    .y
+                    .wrapping_sub(state.position.y)
+                    .cast_signed(),
+            );
+            let extent = i32::from(trigger.word_10).saturating_mul(256);
+            let inside = dx.abs() < (extent - 160).max(1) && dy.abs() < (extent - 160).max(1);
+            let desired = crate::heading_for_positions(state.position, trigger.position) as i16;
+            let correction = crate::turn_toward(state.yaw, desired, 127);
+            let moving = state.target_speed != 0 || state.actual_speed != 0;
+            let brake = match state.target_speed.cmp(&0) {
+                std::cmp::Ordering::Greater => LongitudinalControl::Decelerate,
+                std::cmp::Ordering::Less => LongitudinalControl::Accelerate,
+                std::cmp::Ordering::Equal => LongitudinalControl::Coast,
+            };
+            let command = if inside || correction.unsigned_abs() > 24 {
+                GameCommand {
+                    longitudinal: brake,
+                    roll_axis: if moving || inside {
+                        0
+                    } else {
+                        correction.clamp(-24, 24) as i8
+                    },
+                    ..GameCommand::default()
+                }
+            } else {
+                GameCommand {
+                    longitudinal: LongitudinalControl::Accelerate,
+                    roll_axis: correction.clamp(-24, 24) as i8,
+                    ..GameCommand::default()
+                }
+            };
+            session.step(session.identity().guard(), command).unwrap();
+        }
+        panic!(
+            "ordinary flight did not enter exit row {authored_row}: {:?}",
+            session
+                .backend()
+                .compatibility_campaign()
+                .level2_compatibility()
+                .state
+        );
+    }
+
+    #[test]
+    fn runtime_public_flight_enters_real_exit_trigger_for_each_package() {
+        let resolver = Mc2RuntimePackageResolver::load([
+            Mc2CampaignInputs::new(level_one_package()),
+            Mc2CampaignInputs::new(level_two_package()),
+            Mc2CampaignInputs::new(level_three_package()),
+        ])
+        .unwrap();
+        for (level, group, authored_row) in [(1, 4, 137), (2, 31, 209), (3, 6, 201)] {
+            let mut runtime = match level {
+                1 => {
+                    let mut runtime = GameRuntime::<Mc2CampaignBackend>::title(340).unwrap();
+                    let guard = runtime.identity().guard();
+                    let loading = resolver.new_game(&mut runtime, guard).unwrap();
+                    resolver
+                        .open_pending(&mut runtime, loading.guard(), 340)
+                        .unwrap();
+                    runtime
+                }
+                2 => open_real_level_two_at_proven_incoming_boundary(&resolver, 341),
+                _ => open_real_level_three_at_proven_incoming_boundary(&resolver, 342),
+            };
+            let session = runtime.session_mut().unwrap();
+            // Focused exit-consumer fixture: stage the completed-objective group
+            // and start outside its box. The crossing, cadence and exit start
+            // below must all be produced by ordinary public flight commands.
+            let compatibility = session
+                .backend_mut()
+                .compatibility_campaign_mut_for_test()
+                .level2_compatibility_mut();
+            compatibility
+                .activate_authored_group_prerequisite_for_test(group)
+                .unwrap();
+            let trigger = compatibility
+                .economy()
+                .authored_switch_producers()
+                .iter()
+                .find(|row| row.authored_index == authored_row)
+                .copied()
+                .unwrap();
+            let outside = crate::Position {
+                x: trigger
+                    .position
+                    .x
+                    .wrapping_add((trigger.word_10 as u16).wrapping_mul(256))
+                    .wrapping_add(512),
+                ..trigger.position
+            };
+            compatibility
+                .set_level2_entity_position(compatibility.state.entity_index, outside)
+                .unwrap();
+            assert!(!compatibility.level_exit_sequence().active);
+            let tick_before = session.identity().tick;
+            fly_to_real_exit_trigger(session, authored_row);
+            assert!(session.identity().tick > tick_before);
+            let exit = session
+                .backend()
+                .compatibility_campaign()
+                .level2_compatibility()
+                .level_exit_sequence();
+            assert!(
+                exit.active,
+                "level {level} ordinary flight starts its real exit"
+            );
+            assert_eq!(exit.trigger_entity_index, trigger.source_entity_index);
+        }
+    }
+
     fn complete_real_level_two_and_open_level_three(
         resolver: &Mc2RuntimePackageResolver,
         runtime: &mut GameRuntime<Mc2CampaignBackend>,
@@ -1368,7 +1595,7 @@ mod tests {
             .unwrap()
             .step(guard, GameCommand::default())
             .unwrap();
-        let (player, trigger) = {
+        {
             let compatibility = runtime
                 .session()
                 .unwrap()
@@ -1382,16 +1609,9 @@ mod tests {
                 .find(|source| source.authored_index == 209)
                 .copied()
                 .expect("ordinary L2 completion constructs the real group-31 exit trigger");
-            (compatibility.state.entity_index, trigger)
-        };
-        runtime
-            .session_mut()
-            .unwrap()
-            .backend_mut()
-            .compatibility_campaign_mut_for_test()
-            .level2_compatibility_mut()
-            .set_level2_entity_position(player, trigger.position)
-            .expect("position the real L2 player inside the proven exit-trigger boundary");
+            assert_eq!((trigger.model, trigger.action), (12, 12));
+        }
+        fly_to_real_exit_trigger(runtime.session_mut().unwrap(), 209);
         for _ in 0..16 {
             if runtime
                 .session()
@@ -2158,6 +2378,94 @@ mod tests {
     }
 
     #[test]
+    fn corrected_day_recipe_replay_restores_its_exact_package() {
+        let generated = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../generated");
+        for (external, relative) in [
+            (2, "level2-day-block32-campaign-v2"),
+            (3, "level3-day-block32-campaign-recipe-v2"),
+        ] {
+            let package = generated.join(relative);
+            let resolver = Mc2RuntimePackageResolver::load([
+                Mc2CampaignInputs::new(if external == 2 {
+                    package.clone()
+                } else {
+                    level_two_package()
+                }),
+                Mc2CampaignInputs::new(generated.join("level3-day-block32-campaign-recipe-v2")),
+                Mc2CampaignInputs::new(level_one_package()),
+            ])
+            .unwrap();
+            let definition =
+                Arc::new(load_mc2_campaign(&package, &default_catalog().unwrap()).unwrap());
+            // Stage only the incoming Loading boundary for this rendering probe;
+            // this is not evidence of playing through the preceding levels.
+            let mut source = GameRuntime {
+                runtime_id: 523,
+                generation: 6,
+                state: RuntimeState::Loading {
+                    definition,
+                    session_generation: NonZeroU64::new(3).unwrap(),
+                },
+            };
+            let guard = source.identity().guard();
+            resolver.open_pending(&mut source, guard, 523).unwrap();
+            let guard = source.session().unwrap().identity().guard();
+            source
+                .session_mut()
+                .unwrap()
+                .step(guard, GameCommand::default())
+                .unwrap();
+            let save = resolver.save_replay(&source).unwrap();
+            // Desktop replay supplies presentation components. They must not
+            // be interpreted as gameplay caches or change replayed authority.
+            let cached_resolver = Mc2RuntimePackageResolver::load([
+                if external == 2 {
+                    Mc2CampaignInputs::with_owner_cache(
+                        &package,
+                        generated.join("level2-day-minimap-owner-cache-v3/components/material"),
+                    )
+                } else {
+                    Mc2CampaignInputs::new(level_two_package())
+                },
+                Mc2CampaignInputs::with_owner_cache(
+                    generated.join("level3-day-block32-campaign-recipe-v2"),
+                    generated.join("level3-day-minimap-owner-cache-v3/components/material"),
+                ),
+                Mc2CampaignInputs::new(level_one_package()),
+            ])
+            .unwrap();
+            let mut restored = GameRuntime::<Mc2CampaignBackend>::title(524).unwrap();
+            let guard = restored.identity().guard();
+            cached_resolver
+                .load_replay(&mut restored, guard, 524, &save)
+                .unwrap();
+            assert_eq!(
+                restored.session().unwrap().snapshot().value,
+                source.session().unwrap().snapshot().value
+            );
+            assert_eq!(
+                restored.identity().active_runtime_flow,
+                source.identity().active_runtime_flow
+            );
+            // Optional fresh owner-local diagnostic output, never an updated golden.
+            let output_variable = if external == 2 {
+                "MC_CORRECTED_LEVEL2_REPLAY_OUTPUT"
+            } else {
+                "MC_CORRECTED_DAY_REPLAY_OUTPUT"
+            };
+            if let Some(path) = std::env::var_os(output_variable) {
+                use std::io::Write;
+                let mut output = std::fs::OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .open(path)
+                    .unwrap();
+                output.write_all(&save).unwrap();
+            }
+        }
+    }
+
+    #[test]
     fn runtime_replay_save_restores_real_level_three_from_its_bound_package() {
         let resolver = Mc2RuntimePackageResolver::load([
             Mc2CampaignInputs::new(level_two_package()),
@@ -2265,9 +2573,6 @@ mod tests {
 
     #[test]
     fn runtime_carries_real_level_one_castle_through_level_two_into_level_three_progression() {
-        const CASTLE_PICKUP_RECORD: u16 = 31;
-        const CASTLE_FAMILY: usize = 2;
-
         let resolver = Mc2RuntimePackageResolver::load([
             Mc2CampaignInputs::new(level_three_package()),
             Mc2CampaignInputs::new(level_one_package()),
@@ -2283,72 +2588,17 @@ mod tests {
 
         {
             let session = runtime.session_mut().unwrap();
-            let player = session
-                .backend()
-                .compatibility_campaign()
-                .level2_compatibility()
-                .state
-                .entity_index;
-            let outside = crate::Position {
-                x: 0,
-                y: 0,
-                z: session
-                    .backend()
-                    .compatibility_campaign()
-                    .level2_compatibility()
-                    .state
-                    .position
-                    .z,
-            };
-            session
-                .backend_mut()
-                .compatibility_campaign_mut_for_test()
-                .level2_compatibility_mut()
-                .set_level2_entity_position(player, outside)
-                .unwrap();
-            for _ in 0..8 {
-                let guard = session.identity().guard();
-                session.step(guard, GameCommand::default()).unwrap();
-            }
-            let pickup = session
-                .backend()
-                .compatibility_campaign()
-                .level2_compatibility()
-                .economy()
-                .spell_pickups()
-                .iter()
-                .find(|pickup| pickup.authored_index == CASTLE_PICKUP_RECORD)
-                .copied()
-                .expect("the ordinary reset gate materializes the real group-1 Castle pickup");
-            session
-                .backend_mut()
-                .compatibility_campaign_mut_for_test()
-                .level2_compatibility_mut()
-                .set_level2_entity_position(player, pickup.position)
-                .unwrap();
-            for _ in 0..4 {
-                let guard = session.identity().guard();
-                session.step(guard, GameCommand::default()).unwrap();
-                if session
-                    .backend()
-                    .compatibility_campaign()
-                    .level2_compatibility()
-                    .players()[0]
-                    .enabled_spell_holders[CASTLE_FAMILY]
-                    == pickup.source_entity_index
-                {
-                    break;
-                }
-            }
-            assert_eq!(
+            crate::campaign::backend::tests::complete_real_level_one_castle_route_to_group_six(
+                session,
+            );
+            crate::campaign::backend::tests::complete_real_level_one_firefly_objective_to_exit_group(session, false);
+            assert!(
                 session
                     .backend()
-                    .compatibility_campaign()
-                    .level2_compatibility()
-                    .players()[0]
-                    .enabled_spell_holders[CASTLE_FAMILY],
-                pickup.source_entity_index,
-                "the ordinary pickup callback acquires the package Castle holder"
+                    .semantic_spell_state_for_test()
+                    .unwrap()
+                    .0
+                    .contains(&SpellKind::Castle)
             );
             let guard = session.identity().guard();
             session
@@ -2364,17 +2614,6 @@ mod tests {
                 session.backend().semantic_spell_state_for_test().unwrap().1,
                 Some(SpellKind::Castle)
             );
-
-            // Disclosed boundary: the Level-1 objective lifecycles and their
-            // group-4 producer are independently proven. From this exact
-            // exit-group boundary the trigger, phase-12 completion, and
-            // resolver transition remain production-owned.
-            session
-                .backend_mut()
-                .compatibility_campaign_mut_for_test()
-                .level2_compatibility_mut()
-                .activate_authored_group_prerequisite_for_test(4)
-                .expect("stage only the separately-proven Level-1 exit-group boundary");
         }
 
         for _ in 0..8 {
@@ -2404,7 +2643,6 @@ mod tests {
                 .backend()
                 .compatibility_campaign()
                 .level2_compatibility();
-            let player = compatibility.state.entity_index;
             let trigger = compatibility
                 .economy()
                 .authored_switch_producers()
@@ -2412,12 +2650,8 @@ mod tests {
                 .find(|source| source.authored_index == 137)
                 .copied()
                 .expect("ordinary final-objective service materializes the real exit trigger");
-            session
-                .backend_mut()
-                .compatibility_campaign_mut_for_test()
-                .level2_compatibility_mut()
-                .set_level2_entity_position(player, trigger.position)
-                .unwrap();
+            assert_eq!((trigger.model, trigger.action), (12, 12));
+            fly_to_real_exit_trigger(session, 137);
         }
         for _ in 0..16 {
             let guard = runtime.session().unwrap().identity().guard();
@@ -2805,13 +3039,8 @@ mod tests {
                 .find(|source| source.authored_index == 137)
                 .copied()
                 .expect("the ordinary final objective materializes the real L1 exit trigger");
-            let player = compatibility.state.entity_index;
-            session
-                .backend_mut()
-                .compatibility_campaign_mut_for_test()
-                .level2_compatibility_mut()
-                .set_level2_entity_position(player, trigger.position)
-                .expect("position the real player inside the proven exit-trigger boundary");
+            assert_eq!((trigger.model, trigger.action), (12, 12));
+            fly_to_real_exit_trigger(session, 137);
         }
 
         let before_start = runtime.identity();
@@ -3310,19 +3539,9 @@ mod tests {
             .find(|source| source.authored_index == 244)
             .copied()
             .expect("ordinary L2 flow constructs the real exit portal");
-        {
-            let session = runtime
-                .session_mut()
-                .unwrap()
-                .backend_mut()
-                .compatibility_campaign_mut_for_test()
-                .level2_compatibility_mut();
-            assert_eq!((trigger.model, trigger.action), (12, 12));
-            assert_eq!((portal.model, portal.action), (3, 8));
-            session
-                .set_level2_entity_position(session.state.entity_index, trigger.position)
-                .expect("stage the real L2 player inside the real group-31 trigger");
-        }
+        assert_eq!((trigger.model, trigger.action), (12, 12));
+        assert_eq!((portal.model, portal.action), (3, 8));
+        fly_to_real_exit_trigger(runtime.session_mut().unwrap(), 209);
 
         for _ in 0..16 {
             if runtime
@@ -3595,7 +3814,7 @@ mod tests {
     }
 
     #[test]
-    fn runtime_real_level_three_guardian_dragons_advance_to_reveal_entrance() {
+    fn runtime_level_three_guardian_helper_accepts_organic_fireball_castle_carry_fixture() {
         let resolver = Mc2RuntimePackageResolver::load([
             Mc2CampaignInputs::new(level_two_package()),
             Mc2CampaignInputs::new(level_three_package()),
@@ -3606,17 +3825,29 @@ mod tests {
         let playing = runtime.identity();
         assert_eq!(playing.mode, RuntimeMode::Playing);
         assert_eq!(playing.session.as_ref().unwrap().generation, 3);
+        // Helper-contract fixture only: the separate
+        // `runtime_carries_real_level_one_castle_through_level_two_into_level_three_progression`
+        // acceptance owns the real pickup and cross-level chronology. This
+        // installs that proof's exact Fireball+Castle subset so this focused
+        // composition can discriminate the guardian helper itself.
         runtime
             .session_mut()
             .unwrap()
             .backend_mut()
             .compatibility_campaign_mut_for_test()
             .level2_compatibility_mut()
-            .apply_carried_spell_families(&[0], Some(0))
+            .apply_carried_spell_families(&[0, 2], Some(0))
             .unwrap();
 
-        crate::campaign::backend::tests::drive_real_level_three_guardian_dragons_to_reveal_entrance_for_test(
-            runtime.session_mut().unwrap(),
+        run_route_with_replay_capture(
+            &resolver,
+            &mut runtime,
+            "level-three-guardians",
+            |runtime| {
+                crate::campaign::backend::tests::drive_real_level_three_guardian_dragons_to_reveal_entrance_for_test(
+                runtime.session_mut().unwrap(),
+            );
+            },
         );
 
         let progressed = runtime
@@ -3740,17 +3971,7 @@ mod tests {
             .expect("ordinary L3 flow constructs the real exit portal");
         assert_eq!((trigger.model, trigger.action), (12, 12));
         assert_eq!((portal.model, portal.action), (3, 8));
-        {
-            let session = runtime
-                .session_mut()
-                .unwrap()
-                .backend_mut()
-                .compatibility_campaign_mut_for_test()
-                .level2_compatibility_mut();
-            session
-                .set_level2_entity_position(session.state.entity_index, trigger.position)
-                .expect("stage the real L3 player inside the real group-6 trigger");
-        }
+        fly_to_real_exit_trigger(runtime.session_mut().unwrap(), 201);
 
         for _ in 0..16 {
             if runtime

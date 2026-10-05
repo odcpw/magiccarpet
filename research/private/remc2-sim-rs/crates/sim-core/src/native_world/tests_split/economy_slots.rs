@@ -3079,6 +3079,7 @@ fn level_two_direct_starting_spell_allocation_is_transactional_when_full() {
         inspection.players()[0].enabled_spell_holders[2],
         inspection.runtime().random_state,
         inspection.level2_castle_stage_footprints.clone(),
+        inspection.runtime.constructor_counters(),
     )
     .expect("Level 2 economy reset");
     economy.free_slots.clear();
@@ -3109,6 +3110,7 @@ fn level_two_direct_starting_spell_allocation_is_transactional_when_full() {
         inspection.players()[0].enabled_spell_holders[2],
         inspection.runtime().random_state,
         inspection.level2_castle_stage_footprints.clone(),
+        inspection.runtime.constructor_counters(),
     )
     .expect("Level 2 economy reset for blocked/zero families");
     let blocked = Level2SharedSpellResetSession::from_parts_with_starting_spells(
