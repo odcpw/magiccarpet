@@ -19655,6 +19655,13 @@ impl Level2ResetSession {
             .live
             .shared_spells
             .set_player_hit_frame_time(4);
+        // sub_5EFA0 writes this linked-player countdown even when Shield
+        // absorbs the payload. The following upkeep owns its first decrement.
+        self.session
+            .state
+            .live
+            .shared_spells
+            .player_life_regen_cooldown = 16;
         let lethal = self.session.state.live.player_life < 0;
         let killer = if lethal && attacker_is_model67 {
             0
@@ -20629,6 +20636,194 @@ impl Level2ResetSession {
 mod tests {
     use super::*;
     use crate::campaign::{CampaignSession, spec::CampaignSelection};
+
+    #[test]
+    fn qualified_player_hit_suppresses_sixteen_upkeep_visits_then_regenerates() {
+        let package = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../generated/mc-cf02-campaign-package-v2-b/qualified-level2");
+        let mut campaign = CampaignSession::open(&package, CampaignSelection::LEVEL2)
+            .expect("qualified Level 2 campaign opens");
+        let baseline_hash = campaign.state_hash();
+        let player_slot = campaign.level2_compatibility().state.entity_index;
+        assert_eq!(
+            campaign
+                .level2_compatibility()
+                .session
+                .state
+                .live
+                .shared_spells
+                .player_life_regen_cooldown,
+            0,
+            "the source full-player reset clears dword_0x18D"
+        );
+        let starting_life = {
+            let live = &mut campaign.level2_compatibility_mut().session.state.live;
+            let life = live.shared_spells.player_entity.max_life / 2;
+            live.player_life = life;
+            live.economy.entities[usize::from(player_slot)].set_life(life);
+            live.economy.entities[usize::from(player_slot)].set_mana(0);
+            live.economy.entities[usize::from(player_slot)].set_mana_regen(7);
+            live.shared_spells.set_player_entity_life(life);
+            live.shared_spells.player_entity.set_mana(0);
+            live.shared_spells.player_entity.set_mana_regen(7);
+            live.shared_spells.player_entities[0] = live.shared_spells.player_entity.clone();
+            live.shared_spells.player_mana = 0;
+            live.shared_spells.caster.mana = 0;
+            life
+        };
+        // One speed-zero outer turn is one actual local-player source visit.
+        // It applies the old zero life rate and selects the outdoor rate.
+        let _ = campaign.step(PlayerCommand::default(), 0);
+        let regen = campaign
+            .level2_compatibility()
+            .session
+            .state
+            .live
+            .shared_spells
+            .player_life_regen;
+        assert!(regen > 0);
+        assert_eq!(
+            campaign
+                .level2_compatibility()
+                .canonical_player_life_for_test(),
+            starting_life
+        );
+        assert_eq!(
+            campaign
+                .level2_compatibility()
+                .shared_spells()
+                .player_mana(),
+            7
+        );
+        // The nearest no-damage case must not arm a healing countdown.
+        campaign
+            .level2_compatibility_mut()
+            .queue_level2_player_contact_damage(0, 1);
+        let _ = campaign.step(PlayerCommand::default(), 0);
+        assert_eq!(
+            campaign
+                .level2_compatibility()
+                .canonical_player_life_for_test(),
+            starting_life + regen
+        );
+        assert_eq!(
+            campaign
+                .level2_compatibility()
+                .session
+                .state
+                .live
+                .shared_spells
+                .player_life_regen_cooldown,
+            0
+        );
+        let held_spells = campaign
+            .level2_compatibility()
+            .shared_spells()
+            .local_player()
+            .enabled_spell_holders;
+        let selector_bytes = campaign
+            .level2_compatibility()
+            .shared_spells()
+            .local_player()
+            .record_bytes()[372..398]
+            .to_vec();
+        let events_before = campaign.level2_compatibility().economy().events().len();
+        campaign
+            .level2_compatibility_mut()
+            .queue_level2_player_contact_damage(100, 1);
+        let damaged_life = starting_life + regen - 100;
+        for visit in 0..16 {
+            let mana_before = campaign
+                .level2_compatibility()
+                .shared_spells()
+                .player_entity
+                .mana;
+            let mana_regen = campaign
+                .level2_compatibility()
+                .shared_spells()
+                .player_entity
+                .mana_regen;
+            let _ = campaign.step(PlayerCommand::default(), 0);
+            let live = &campaign.level2_compatibility().session.state.live;
+            assert_eq!(live.shared_spells.player_life_regen_cooldown, 15 - visit);
+            assert_eq!(
+                (
+                    live.player_life,
+                    live.shared_spells.player_entity.life,
+                    live.shared_spells.player_entities[0].life,
+                    live.economy.entities[usize::from(player_slot)].life
+                ),
+                (damaged_life, damaged_life, damaged_life, damaged_life),
+                "damage visit and following fifteen source visits suppress healing"
+            );
+            assert_eq!(
+                live.shared_spells.player_entity.mana,
+                mana_before
+                    .wrapping_add(mana_regen)
+                    .clamp(0, live.shared_spells.player_entity.max_mana),
+                "life cooldown preserves ordinary mana recharge"
+            );
+            assert_eq!(
+                live.shared_spells.local_player.enabled_spell_holders,
+                held_spells
+            );
+            assert_eq!(
+                &live.shared_spells.local_player.record_bytes()[372..398],
+                selector_bytes.as_slice()
+            );
+            if visit == 0 {
+                let clone = campaign.clone();
+                assert_eq!(clone.state_hash(), campaign.state_hash());
+                let mut changed = live.shared_spells.clone();
+                changed.player_life_regen_cooldown -= 1;
+                assert_ne!(changed.reset_hash(), live.shared_spells.reset_hash());
+                assert_ne!(
+                    changed.reset_hash_with_terrain(&live.terrain),
+                    live.shared_spells.reset_hash_with_terrain(&live.terrain)
+                );
+            }
+        }
+        assert_eq!(
+            campaign.level2_compatibility().economy().events()[events_before..]
+                .iter()
+                .filter(|event| matches!(event,
+                Level2EconomyEvent::DamageApplied { target_entity_index,
+                    attacker_entity_index: 1, damage: 100, lethal: false }
+                    if *target_entity_index == player_slot))
+                .count(),
+            1,
+            "the retained ownerless mailbox must not reapply damage"
+        );
+        let _ = campaign.step(PlayerCommand::default(), 0);
+        assert_eq!(
+            campaign
+                .level2_compatibility()
+                .canonical_player_life_for_test(),
+            damaged_life + regen
+        );
+        assert_eq!(
+            campaign
+                .level2_compatibility()
+                .session
+                .state
+                .live
+                .shared_spells
+                .player_life_regen_cooldown,
+            0
+        );
+        campaign.reset();
+        assert_eq!(campaign.state_hash(), baseline_hash);
+        assert_eq!(
+            campaign
+                .level2_compatibility()
+                .session
+                .state
+                .live
+                .shared_spells
+                .player_life_regen_cooldown,
+            0
+        );
+    }
 
     #[test]
     fn qualified_wind_squared_distance_bands_clear_airborne_latch_and_stop_damage() {
@@ -23004,8 +23199,8 @@ mod tests {
                 live.shared_spells.player_entity.life,
                 live.economy.entities[usize::from(player_entity_index)].life,
             ),
-            (1_510, 1_510, 1_510),
-            "one 500 pulse is followed by the source outdoor five-point upkeep"
+            (1_505, 1_505, 1_505),
+            "one 500 pulse starts the source cooldown before same-visit outdoor upkeep"
         );
         assert_eq!(
             live.economy.events[events_before..]

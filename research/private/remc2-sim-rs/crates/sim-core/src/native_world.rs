@@ -715,6 +715,11 @@ pub struct Level2SharedSpellResetSession {
     player_mana: i32,
 
     player_life_regen: i32,
+    /// Source Type_str_164 dword_0x18D_397. The compact owner export omits
+    /// this field; the full-player clear in sub_53160 initializes it to zero.
+    /// Keep its one local authority beside the player-upkeep rate, never in
+    /// compact spell-selector bytes at the unrelated offset 397.
+    player_life_regen_cooldown: i32,
 
     player_entity: EntitySnapshot,
     /// All source player records/entities are retained for the generic

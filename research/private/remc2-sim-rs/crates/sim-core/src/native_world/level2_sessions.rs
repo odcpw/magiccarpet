@@ -133,6 +133,7 @@ impl Level2SharedSpellResetSession {
             holders,
             player_mana: player_entity.mana,
             player_life_regen: 0,
+            player_life_regen_cooldown: 0,
             player_entity: player_entity.clone(),
             players: players.to_vec().into_boxed_slice(),
             player_entities,
@@ -342,6 +343,7 @@ impl Level2SharedSpellResetSession {
             player_mana: player_entity.mana,
 
             player_life_regen: 0,
+            player_life_regen_cooldown: 0,
 
             player_entity: player_entity.clone(),
 
@@ -1991,7 +1993,15 @@ impl Level2SharedSpellResetSession {
         // The source entity is authoritative for this callback; the caster
         // projection is only the activation gate and is synchronized after
         // the upkeep write.
-        let mut life = self.player_entity.life.wrapping_add(self.player_life_regen);
+        let mut life = self.player_entity.life;
+        // sub_5EFA0 sets dword_0x18D to 16 before this same source visit's
+        // upkeep. Each nonzero visit decrements instead of healing; the
+        // visit after the countdown reaches zero applies the old life rate.
+        if self.player_life_regen_cooldown != 0 {
+            self.player_life_regen_cooldown = self.player_life_regen_cooldown.wrapping_sub(1);
+        } else {
+            life = life.wrapping_add(self.player_life_regen);
+        }
         life = life.clamp(-1, self.player_entity.max_life);
         let mut mana = self
             .player_entity
@@ -3373,6 +3383,7 @@ impl Level2SharedSpellResetSession {
         hasher.update(terrain.deterministic_hash().to_le_bytes());
         hasher.update(self.player_mana.to_le_bytes());
         hasher.update(self.player_life_regen.to_le_bytes());
+        hasher.update(self.player_life_regen_cooldown.to_le_bytes());
         for experience in self.persistent_spell_experience {
             hasher.update(experience.to_le_bytes());
         }
@@ -3529,6 +3540,7 @@ impl Level2SharedSpellResetSession {
         hasher.update(self.player_entity_sha256.as_bytes());
         hasher.update(self.player_mana.to_le_bytes());
         hasher.update(self.player_life_regen.to_le_bytes());
+        hasher.update(self.player_life_regen_cooldown.to_le_bytes());
         for experience in self.persistent_spell_experience {
             hasher.update(experience.to_le_bytes());
         }
