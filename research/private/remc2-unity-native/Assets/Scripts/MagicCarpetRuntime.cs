@@ -9023,6 +9023,11 @@ namespace MagicCarpet.Native
                     gameRuntimeRequested,
                     "game runtime production qualification requires -mc-game-runtime");
                 OpenGameRuntimeFromStartupArguments(arguments);
+                if (HasArgument(arguments, "-mc-runtime-menu"))
+                {
+                    EnsureGameRuntimeMenu();
+                    ApplyGameRuntimeProductionInput(false, true, false);
+                }
             }
             catch (Exception exception)
             {
