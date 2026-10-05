@@ -1212,6 +1212,13 @@ impl Mc2RuntimePackageResolver {
         crate::game_runtime::CompletionTransitionReceipt,
         crate::game_runtime::RuntimeTransitionError,
     > {
+        // Reject stale outer identities before consulting resolver-owned state.
+        // A successful completion leaves a pending carry for the same runtime,
+        // so that carry must not mask a duplicate's generation mismatch.
+        runtime
+            .validate_guard(guard)
+            .map_err(Box::new)
+            .map_err(crate::game_runtime::RuntimeTransitionError::Guard)?;
         let mut pending = self.pending_spell_carries.lock().map_err(|_| {
             crate::game_runtime::RuntimeTransitionError::InvalidRuntimeFlow {
                 message: "resolver spell-carry state is unavailable".to_owned(),
@@ -2287,6 +2294,114 @@ pub(crate) mod tests {
             "carpet-flight-{label}-{}-{nonce}",
             std::process::id()
         ))
+    }
+
+    #[test]
+    fn runtime_package_resolver_stale_guard_precedes_pending_spell_carry() {
+        use crate::game_runtime::{
+            GameRuntime, RuntimeGuardErrorCode, RuntimeMode, RuntimeTransitionError,
+        };
+
+        let resolver = Mc2RuntimePackageResolver::load([
+            Mc2CampaignInputs::new(level_one_descriptor_fixture_path()),
+            Mc2CampaignInputs::new(descriptor_fixture_path()),
+            Mc2CampaignInputs::new(level_three_descriptor_fixture_path()),
+        ])
+        .unwrap();
+        let mut runtime = GameRuntime::<Mc2CampaignBackend>::title(94).unwrap();
+        let title = runtime.identity();
+        let loading = resolver.new_game(&mut runtime, title.guard()).unwrap();
+        let playing = resolver
+            .open_pending(&mut runtime, loading.guard(), 94)
+            .unwrap();
+        let session_guard = playing.session.as_ref().unwrap().guard();
+        let snapshot = runtime.session().unwrap().snapshot();
+        let carry = runtime
+            .session()
+            .unwrap()
+            .backend()
+            .semantic_spell_carry()
+            .unwrap();
+        assert_eq!(
+            resolver.accept_transition(&mut runtime, playing.guard(), session_guard),
+            Err(RuntimeTransitionError::CompletionNotReady)
+        );
+        assert_eq!(runtime.identity(), playing);
+        assert_eq!(runtime.session().unwrap().snapshot(), snapshot);
+
+        let title = runtime.close(playing.guard(), session_guard).unwrap();
+        let loading = resolver.new_game(&mut runtime, title.guard()).unwrap();
+        let pending = Mc2PendingSpellCarry {
+            loading_generation: loading.generation,
+            destination_level: resolver.flow().entry_level_id().clone(),
+            carry: carry.clone(),
+        };
+        // Reproduce only the resolver storage condition created by an accepted
+        // edge. Opening/closing above uses the real package and public runtime
+        // lifecycle; this fixture does not claim gameplay completion.
+        resolver
+            .pending_spell_carries
+            .lock()
+            .unwrap()
+            .insert(loading.runtime_id, pending.clone());
+        assert_eq!(loading.mode, RuntimeMode::Loading);
+        assert!(runtime.session().is_none());
+
+        let rejected = resolver.accept_transition(&mut runtime, playing.guard(), session_guard);
+        assert!(matches!(
+            rejected,
+            Err(RuntimeTransitionError::Guard(error))
+                if error.code == RuntimeGuardErrorCode::GenerationMismatch
+                    && error.expected == loading && error.actual == playing.guard()
+        ));
+        assert_eq!(runtime.identity(), loading);
+        assert!(runtime.session().is_none());
+        assert_eq!(
+            resolver
+                .pending_spell_carries
+                .lock()
+                .unwrap()
+                .get(&loading.runtime_id),
+            Some(&pending)
+        );
+
+        // A current outer guard retains the existing pending-carry rejection.
+        let rejected = resolver.accept_transition(&mut runtime, loading.guard(), session_guard);
+        assert!(matches!(
+            rejected,
+            Err(RuntimeTransitionError::InvalidRuntimeFlow { message })
+                if message == "resolver already owns a pending spell carry for this runtime"
+        ));
+        assert_eq!(runtime.identity(), loading);
+        assert_eq!(
+            resolver
+                .pending_spell_carries
+                .lock()
+                .unwrap()
+                .get(&loading.runtime_id),
+            Some(&pending)
+        );
+        let reopened = resolver
+            .open_pending(&mut runtime, loading.guard(), 94)
+            .unwrap();
+        assert_eq!(reopened.mode, RuntimeMode::Playing);
+        assert!(reopened.session.as_ref().unwrap().generation > session_guard.generation);
+        assert_eq!(
+            runtime
+                .session()
+                .unwrap()
+                .backend()
+                .semantic_spell_carry()
+                .unwrap(),
+            carry
+        );
+        assert!(
+            !resolver
+                .pending_spell_carries
+                .lock()
+                .unwrap()
+                .contains_key(&loading.runtime_id)
+        );
     }
 
     #[test]

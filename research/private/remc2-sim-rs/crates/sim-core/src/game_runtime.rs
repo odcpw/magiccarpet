@@ -1086,7 +1086,7 @@ impl<B: GameSessionBackend> GameRuntime<B> {
             .ok_or(RuntimeTransitionError::GenerationExhausted)
     }
 
-    fn validate_guard(&self, guard: RuntimeGuard) -> Result<(), RuntimeGuardError> {
+    pub(crate) fn validate_guard(&self, guard: RuntimeGuard) -> Result<(), RuntimeGuardError> {
         let expected = self.identity();
         let code = if guard.runtime_id == 0 {
             Some(RuntimeGuardErrorCode::InvalidRuntimeId)
