@@ -69,9 +69,12 @@ pinned remc2 + owner data
 - `research/private/remc2-level-asset-closure/` and
   `remc2-unity-asset-cache/` — owner asset closure and deterministic cache.
 - `research/private/remc2-sim-rs/crates/sim-core/` — gameplay authority.
-  `level_definition.rs` is the semantic vocabulary;
   `campaign/mc2_level_definition.rs` is the private MC2-number-to-semantic
-  adapter.
+  adapter; the production arena and scheduler remain here.
+- `research/private/remc2-sim-rs/crates/sim-definition/` — immutable game/level
+  definitions, semantic vocabulary, capabilities and authoring contracts.
+- `research/private/remc2-sim-rs/crates/sim-session/` — definition-bound
+  `GameSession` ownership and the neutral adapter/backend contract.
 - `research/private/remc2-sim-rs/crates/sim-capi/` — versioned transport;
   current Level 1/2 public shapes are compatibility surfaces, not the neutral
   domain contract.
