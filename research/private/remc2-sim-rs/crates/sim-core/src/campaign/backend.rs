@@ -8201,11 +8201,56 @@ pub(crate) mod tests {
             .cloned()
     }
 
+    #[derive(Clone, Copy, Debug)]
+    struct SkeletonDeathOutput {
+        sphere_event: usize,
+        sphere_id: u32,
+        mana: i32,
+        burst_event: usize,
+        burst_slot: u16,
+    }
+
+    struct SkeletonLifecycleObservation {
+        generation: u32,
+        actions: BTreeSet<u8>,
+        death_output: Option<SkeletonDeathOutput>,
+    }
+
+    impl SkeletonLifecycleObservation {
+        fn new(session: &GameSession<Mc2CampaignBackend>, slot: u16) -> Self {
+            let compatibility = session.backend().campaign.level2_compatibility();
+            Self {
+                generation: compatibility.economy().slot_generation(slot),
+                actions: BTreeSet::from([level_three_skeleton(session, slot).unwrap().action]),
+                death_output: None,
+            }
+        }
+    }
+
+    fn observed_level_three_skeleton(
+        session: &GameSession<Mc2CampaignBackend>,
+        slot: u16,
+        observations: &BTreeMap<u16, SkeletonLifecycleObservation>,
+    ) -> Option<crate::native_world::EntitySnapshot> {
+        let original = observations.get(&slot)?;
+        if session
+            .backend()
+            .campaign
+            .level2_compatibility()
+            .economy()
+            .slot_generation(slot)
+            != original.generation
+        {
+            return None;
+        }
+        level_three_skeleton(session, slot)
+    }
+
     fn observe_real_level_three_skeleton_actions_for_test(
         session: &GameSession<Mc2CampaignBackend>,
-        observed_actions: &mut BTreeMap<u16, BTreeSet<u8>>,
+        observed_actions: &mut BTreeMap<u16, SkeletonLifecycleObservation>,
     ) {
-        for (source_slot, actions) in observed_actions {
+        for (source_slot, observation) in observed_actions {
             if let Some(source) = session
                 .backend()
                 .campaign
@@ -8219,7 +8264,16 @@ pub(crate) mod tests {
                         && source.model == 9
                 })
             {
-                actions.insert(source.action);
+                if session
+                    .backend()
+                    .campaign
+                    .level2_compatibility()
+                    .economy()
+                    .slot_generation(*source_slot)
+                    == observation.generation
+                {
+                    observation.actions.insert(source.action);
+                }
             }
         }
     }
@@ -8227,20 +8281,95 @@ pub(crate) mod tests {
     fn step_real_level_three_skeleton_route_for_test(
         session: &mut GameSession<Mc2CampaignBackend>,
         command: GameCommand,
-        observed_actions: &mut BTreeMap<u16, BTreeSet<u8>>,
+        observed_actions: &mut BTreeMap<u16, SkeletonLifecycleObservation>,
     ) {
         observe_real_level_three_skeleton_actions_for_test(session, observed_actions);
+        let compatibility = session.backend().campaign.level2_compatibility();
+        let event_start = compatibility.economy().events().len();
+        let original_slots = observed_actions
+            .iter()
+            .filter(|(slot, observation)| {
+                observation.death_output.is_none()
+                    && compatibility.economy().slot_generation(**slot) == observation.generation
+                    && compatibility
+                        .entities()
+                        .get(usize::from(**slot))
+                        .is_some_and(|source| {
+                            source.active && source.class == 5 && source.model == 9
+                        })
+            })
+            .map(|(slot, _)| *slot)
+            .collect::<Vec<_>>();
         session.step(guard(session), command).unwrap();
+        let events = session
+            .backend()
+            .campaign
+            .level2_compatibility()
+            .economy()
+            .events();
+        for slot in original_slots {
+            let fresh = &events[event_start..];
+            let Some((birth_offset, sphere_id, mana)) =
+                fresh
+                    .iter()
+                    .enumerate()
+                    .find_map(|(offset, event)| match event {
+                        crate::native_world::Level2EconomyEvent::ManaSphereSpawned {
+                            sphere_id,
+                            source_entity_index,
+                            mana,
+                        } if *source_entity_index == slot => Some((offset, *sphere_id, *mana)),
+                        _ => None,
+                    })
+            else {
+                continue;
+            };
+            assert_eq!(
+                mana, 500,
+                "original Skeleton occurrence {slot} emits its exact mana payload"
+            );
+            let (burst_offset, burst_slot) = fresh
+                .iter()
+                .enumerate()
+                .skip(birth_offset + 1)
+                .find_map(|(offset, event)| match event {
+                    crate::native_world::Level2EconomyEvent::DeathBurstSpawned {
+                        source_entity_index,
+                        parent_entity_index,
+                        id_entity_index,
+                    } if *parent_entity_index == slot && *id_entity_index == slot => {
+                        Some((offset, *source_entity_index))
+                    }
+                    _ => None,
+                })
+                .expect("original Skeleton mana birth is followed by its ordinary death burst");
+            assert_eq!(
+                fresh[birth_offset..burst_offset].iter().filter(|event| matches!(event,
+                    crate::native_world::Level2EconomyEvent::ManaSphereSpawned { source_entity_index, .. }
+                        if *source_entity_index == slot
+                )).count(),
+                1,
+                "one original Skeleton kill callback emits exactly one mana sphere"
+            );
+            observed_actions.get_mut(&slot).unwrap().death_output = Some(SkeletonDeathOutput {
+                sphere_event: event_start + birth_offset,
+                sphere_id,
+                mana,
+                burst_event: event_start + burst_offset,
+                burst_slot,
+            });
+        }
         observe_real_level_three_skeleton_actions_for_test(session, observed_actions);
     }
 
     fn drive_real_level_three_skeleton_to_fireball_range_for_test(
         session: &mut GameSession<Mc2CampaignBackend>,
         source_slot: u16,
-        observed_actions: &mut BTreeMap<u16, BTreeSet<u8>>,
+        observed_actions: &mut BTreeMap<u16, SkeletonLifecycleObservation>,
     ) -> crate::native_world::EntitySnapshot {
         for _ in 0..24 {
-            if let Some(source) = level_three_skeleton(session, source_slot)
+            if let Some(source) =
+                observed_level_three_skeleton(session, source_slot, observed_actions)
                 && source.life >= 0
                 && matches!(source.action, 74 | 79)
             {
@@ -8254,7 +8383,7 @@ pub(crate) mod tests {
         }
 
         for _ in 0..640 {
-            let source = level_three_skeleton(session, source_slot)
+            let source = observed_level_three_skeleton(session, source_slot, observed_actions)
                 .filter(|source| source.life >= 0 && matches!(source.action, 74 | 79))
                 .expect("real Level 3 Skeleton remains in a public Fireball-consuming state");
             let state = session.backend().campaign.level2_compatibility().state;
@@ -8285,17 +8414,9 @@ pub(crate) mod tests {
                 source.position,
             ))
             .expect("source heading is 11-bit");
-            let correction = crate::turn_toward(state.yaw, desired, 127);
-            step_real_level_three_skeleton_route_for_test(
-                session,
-                GameCommand {
-                    longitudinal: LongitudinalControl::Accelerate,
-                    roll_axis: correction.clamp(-24, 24) as i8,
-                    pitch_axis: -127,
-                    ..GameCommand::default()
-                },
-                observed_actions,
-            );
+            let mut command = level_three_source_safe_flight_command(state, desired, false);
+            command.pitch_axis = -127;
+            step_real_level_three_skeleton_route_for_test(session, command, observed_actions);
         }
         panic!("ordinary player flight did not reach Skeleton source slot {source_slot}");
     }
@@ -8304,7 +8425,7 @@ pub(crate) mod tests {
         session: &mut GameSession<Mc2CampaignBackend>,
         source_slot: u16,
         exact_skeleton_slots: &[u16],
-        observed_actions: &mut BTreeMap<u16, BTreeSet<u8>>,
+        observed_actions: &mut BTreeMap<u16, SkeletonLifecycleObservation>,
     ) -> Vec<SkeletonFireballDamageReceipt> {
         for _ in 0..=24 {
             let compatibility = session.backend().campaign.level2_compatibility();
@@ -8361,12 +8482,31 @@ pub(crate) mod tests {
             );
             assert!((0..=2).contains(&holder.level_gate));
             assert!(shared.player_mana() >= holder.max_mana);
+            // Draining the previous cast and flying to this target run the
+            // real source scheduler. Peers in the caller's earlier census may
+            // finish ordinary pre-kill, kill, hide and reclaim during that gap.
             let before = exact_skeleton_slots
                 .iter()
-                .map(|slot| {
-                    let source = level_three_skeleton(session, *slot)
-                        .expect("all real Level 3 Skeletons remain addressable before the cast");
-                    (*slot, source.life)
+                .filter_map(|slot| match observed_level_three_skeleton(session, *slot, observed_actions) {
+                    Some(source) if source.life >= 0 => Some((*slot, source.life)),
+                    Some(source) => {
+                        assert!(
+                            matches!(source.action, 76 | 77),
+                            "negative-life Skeleton slot {slot} must be in ordinary pre-kill/kill"
+                        );
+                        None
+                    }
+                    None => {
+                        let actions = &observed_actions
+                            .get(slot)
+                            .expect("every package Skeleton retains its lifecycle observations")
+                            .actions;
+                        assert!(
+                            actions.contains(&76) && actions.contains(&77),
+                            "absent Skeleton slot {slot} must have completed ordinary pre-kill/kill: {actions:?}"
+                        );
+                        None
+                    }
                 })
                 .collect::<Vec<_>>();
             (
@@ -8525,7 +8665,7 @@ pub(crate) mod tests {
             let receipts = before
                 .iter()
                 .filter_map(|(slot, life_before)| {
-                    let current = level_three_skeleton(session, *slot)?;
+                    let current = observed_level_three_skeleton(session, *slot, observed_actions)?;
                     (current.life
                         == life_before.wrapping_sub(crate::level1_mission::FIREBALL_PAYLOAD)
                         && current.word_26() == attacker)
@@ -8538,7 +8678,7 @@ pub(crate) mod tests {
                 .collect::<Vec<_>>();
             if !receipts.is_empty() {
                 for (slot, life_before) in &before {
-                    let current = level_three_skeleton(session, *slot)
+                    let current = observed_level_three_skeleton(session, *slot, observed_actions)
                         .expect("public Fireball keeps every nonterminal Skeleton addressable");
                     let received = receipts.iter().any(|receipt| receipt.source_slot == *slot);
                     assert!(
@@ -8602,7 +8742,7 @@ pub(crate) mod tests {
             .map(|source_slot| {
                 (
                     *source_slot,
-                    BTreeSet::from([level_three_skeleton(&session, *source_slot).unwrap().action]),
+                    SkeletonLifecycleObservation::new(&session, *source_slot),
                 )
             })
             .collect::<BTreeMap<_, _>>();
@@ -8662,7 +8802,29 @@ pub(crate) mod tests {
     pub(crate) fn drive_real_level_three_skeleton_horde_to_guardian_dragons_for_test(
         session: &mut GameSession<Mc2CampaignBackend>,
     ) {
+        let compatibility = session.backend().campaign.level2_compatibility();
+        let original_generations = compatibility
+            .entities()
+            .iter()
+            .filter(|source| source.active && source.class == 5 && source.model == 9)
+            .map(|source| {
+                (
+                    source.index,
+                    compatibility.economy().slot_generation(source.index),
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
         let skeleton = |session: &GameSession<Mc2CampaignBackend>, source_slot: u16| {
+            if session
+                .backend()
+                .campaign
+                .level2_compatibility()
+                .economy()
+                .slot_generation(source_slot)
+                != *original_generations.get(&source_slot)?
+            {
+                return None;
+            }
             session
                 .backend()
                 .campaign
@@ -8713,7 +8875,7 @@ pub(crate) mod tests {
             .map(|source_slot| {
                 (
                     *source_slot,
-                    BTreeSet::from([skeleton(session, *source_slot).unwrap().action]),
+                    SkeletonLifecycleObservation::new(session, *source_slot),
                 )
             })
             .collect::<BTreeMap<_, _>>();
@@ -8724,17 +8886,11 @@ pub(crate) mod tests {
             }) {
                 break;
             }
-            session
-                .step(guard(session), GameCommand::default())
-                .unwrap();
-            for source_slot in &skeleton_slots {
-                if let Some(source) = skeleton(session, *source_slot) {
-                    observed_actions
-                        .get_mut(source_slot)
-                        .unwrap()
-                        .insert(source.action);
-                }
-            }
+            step_real_level_three_skeleton_route_for_test(
+                session,
+                GameCommand::default(),
+                &mut observed_actions,
+            );
         }
         assert!(skeleton_slots.iter().all(|source_slot| {
             skeleton(session, *source_slot).is_some_and(|row| row.action == 79)
@@ -8815,14 +8971,7 @@ pub(crate) mod tests {
                             .life_before
                             .wrapping_sub(crate::level1_mission::FIREBALL_PAYLOAD)
             }));
-            for candidate in &skeleton_slots {
-                if let Some(source) = skeleton(session, *candidate) {
-                    observed_actions
-                        .get_mut(candidate)
-                        .unwrap()
-                        .insert(source.action);
-                }
-            }
+            observe_real_level_three_skeleton_actions_for_test(session, &mut observed_actions);
         }
         assert!(
             skeleton_slots.iter().all(|source_slot| {
@@ -8846,75 +8995,79 @@ pub(crate) mod tests {
             {
                 break;
             }
-            session
-                .step(guard(session), GameCommand::default())
-                .unwrap();
-            for source_slot in &skeleton_slots {
-                if let Some(source) = skeleton(session, *source_slot) {
-                    observed_actions
-                        .get_mut(source_slot)
-                        .unwrap()
-                        .insert(source.action);
-                }
-            }
+            step_real_level_three_skeleton_route_for_test(
+                session,
+                GameCommand::default(),
+                &mut observed_actions,
+            );
         }
         assert!(
             skeleton_slots
                 .iter()
                 .all(|source_slot| skeleton(session, *source_slot).is_none())
         );
-        for actions in observed_actions.values() {
-            assert!(BTreeSet::from([72, 74, 76, 77, 79]).is_subset(actions));
+        for observation in observed_actions.values() {
+            assert!(BTreeSet::from([72, 74, 76, 77, 79]).is_subset(&observation.actions));
         }
 
         let economy = session.backend().campaign.level2_compatibility().economy();
+        let death_outputs = observed_actions
+            .values()
+            .map(|observation| {
+                observation
+                    .death_output
+                    .expect("each original Skeleton occurrence emitted its ordinary death products")
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(death_outputs.len(), skeleton_slots.len());
+        assert_eq!(
+            death_outputs.iter().map(|output| output.mana).sum::<i32>(),
+            500 * i32::try_from(skeleton_slots.len()).unwrap(),
+            "all eleven original Skeleton occurrences emit exactly 5,500 mana"
+        );
+        assert_eq!(
+            death_outputs
+                .iter()
+                .map(|output| output.sphere_event)
+                .collect::<BTreeSet<_>>()
+                .len(),
+            skeleton_slots.len(),
+            "each original Skeleton has a distinct production sphere birth"
+        );
+        let sphere_births = economy.events()[economy_event_start..]
+            .iter()
+            .filter_map(|event| match event {
+                crate::native_world::Level2EconomyEvent::ManaSphereSpawned {
+                    source_entity_index,
+                    sphere_id,
+                    mana,
+                } => Some((*source_entity_index, *sphere_id, *mana)),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert!(economy.events()[economy_event_start..].iter().all(|event| !matches!(event,
+            crate::native_world::Level2EconomyEvent::ManaSphereCollected { .. }
+                | crate::native_world::Level2EconomyEvent::CastleDefenderCollectedSphere { .. }
+        )), "the pre-Castle neutral sphere ledger has no collection sink");
         assert_eq!(
             economy
                 .spheres()
                 .iter()
                 .map(|sphere| sphere.mana)
                 .sum::<i32>(),
-            sphere_mana_before + 500 * i32::try_from(skeleton_slots.len()).unwrap(),
-            "source-authored sphere merges must conserve all 11 Skeleton mana outputs"
+            sphere_mana_before + sphere_births.iter().map(|(_, _, mana)| *mana).sum::<i32>(),
+            "source-authored sphere merges conserve every recorded birth, including original Skeleton outputs: births={sphere_births:?}"
         );
-        let sphere_sources = economy.events()[economy_event_start..]
-            .iter()
-            .filter_map(|event| match event {
-                crate::native_world::Level2EconomyEvent::ManaSphereSpawned {
-                    source_entity_index,
-                    mana: 500,
-                    ..
-                } if skeleton_slots.contains(source_entity_index) => Some(*source_entity_index),
-                _ => None,
-            })
-            .collect::<Vec<_>>();
-        assert_eq!(sphere_sources.len(), skeleton_slots.len());
-        assert_eq!(
-            sphere_sources.into_iter().collect::<BTreeSet<_>>(),
-            skeleton_slots.iter().copied().collect::<BTreeSet<_>>()
-        );
-        let burst_sources = economy.events()[economy_event_start..]
-            .iter()
-            .filter_map(|event| match event {
-                crate::native_world::Level2EconomyEvent::DeathBurstSpawned {
-                    parent_entity_index,
-                    ..
-                } => Some(*parent_entity_index),
-                _ => None,
-            })
-            .collect::<Vec<_>>();
-        assert_eq!(burst_sources.len(), skeleton_slots.len());
-        assert_eq!(
-            burst_sources.into_iter().collect::<BTreeSet<_>>(),
-            skeleton_slots.iter().copied().collect::<BTreeSet<_>>()
-        );
-        assert!(
-            economy
-                .death_bursts()
-                .iter()
-                .all(|burst| !skeleton_slots.contains(&burst.parent_entity_index)),
-            "ordinary following-pass cleanup must reclaim every real Skeleton death burst"
-        );
+        for output in death_outputs {
+            assert!(matches!(economy.events()[output.sphere_event],
+                crate::native_world::Level2EconomyEvent::ManaSphereSpawned { sphere_id, mana: 500, .. }
+                    if sphere_id == output.sphere_id
+            ));
+            assert!(economy.events()[output.burst_event + 1..].iter().any(|event| matches!(event,
+                crate::native_world::Level2EconomyEvent::DeathBurstExpired { source_entity_index, .. }
+                    if *source_entity_index == output.burst_slot
+            )), "ordinary following-pass cleanup reclaims every original Skeleton burst occurrence");
+        }
 
         let compatibility = session.backend().campaign.level2_compatibility();
         assert_eq!(compatibility.runtime().objectives[0].stage_selectors[0], 2);
@@ -9514,7 +9667,7 @@ pub(crate) mod tests {
                     dx.wrapping_mul(dx)
                         .wrapping_add(dy.wrapping_mul(dy))
                         .cast_unsigned(),
-                ) > crate::level1_mission::PROJECTILE_ACQUISITION_RANGE
+                ) > crate::level1_mission::PROJECTILE_ACQUISITION_RANGE + 512
             });
             let dragon_slots = compatibility
                 .economy()
@@ -9571,14 +9724,14 @@ pub(crate) mod tests {
                 ));
                 return;
             }
-            let (_, command) = level_three_public_high_speed_retreat_command_for_test(session)
+            let (_, command) = level_three_public_high_speed_retreat_command_for_test(session, None)
                 .unwrap_or_else(|| {
                     let compatibility = session.backend().campaign.level2_compatibility();
                     panic!(
                         "exact public retreat stencil exposes no safe progressing command: state={:#?} mailbox={:?} at_rest_lookahead={} candidates={:#?} chronology={chronology:#?}",
                         compatibility.state,
                         level_three_player_raw_mailbox_for_test(compatibility),
-                        level_three_public_at_rest_retreat_turn_for_test(session).is_some(),
+                        level_three_public_at_rest_retreat_turn_for_test(session, None).is_some(),
                         level_three_public_retreat_candidate_census_for_test(session),
                     )
                 });
@@ -9656,7 +9809,9 @@ pub(crate) mod tests {
         const RELATIVE_OUTWARD_SPEED: u32 = PLAYER_OUTWARD_SPEED - DRAGON_PURSUIT_SPEED;
         const HOSTILE_TRANSIENT_TAIL: u32 = 22 + 10 + 1;
 
-        let source_range = u32::from(crate::level1_mission::PROJECTILE_ACQUISITION_RANGE) + 1;
+        // Recovery routes retain a further two source tiles of clearance.
+        // Retreat must reach that same boundary before the BFS may expand.
+        let source_range = u32::from(crate::level1_mission::PROJECTILE_ACQUISITION_RANGE) + 512 + 1;
         let missing_separation = source_range.saturating_sub(initial_separation);
         let turn_loss = DRAGON_PURSUIT_SPEED * (REVERSE_BRAKE_TURNS + TURN_TURNS);
         let closure_turns =
@@ -9664,6 +9819,111 @@ pub(crate) mod tests {
                 .div_ceil(RELATIVE_OUTWARD_SPEED);
         usize::try_from(REVERSE_BRAKE_TURNS + TURN_TURNS + closure_turns + HOSTILE_TRANSIENT_TAIL)
             .expect("source-derived Dragon retreat bound fits usize")
+    }
+
+    fn level_three_castle_return_turn_is_safe_for_test(
+        session: &GameSession<Mc2CampaignBackend>,
+        waypoints: &[crate::Position],
+        mut waypoint_index: usize,
+        clearance: u32,
+    ) -> bool {
+        // Preview the selected controller through its braking/turning trap,
+        // using the same real callbacks and binding as public flight. One clone,
+        // one trajectory: this does not search hypothetical movement states.
+        const TURN_AND_ACCELERATION_BOUND: usize = 5 + 7 + (1_024_usize + 5 - 10).div_ceil(4) + 5;
+        let mut predicted = session.backend().campaign.clone();
+        let holders = predicted
+            .level2_compatibility()
+            .shared_spells()
+            .local_player()
+            .enabled_spell_holders[0];
+        for _ in 0..TURN_AND_ACCELERATION_BOUND {
+            let waypoint = waypoints[waypoint_index];
+            let final_waypoint = waypoint_index + 1 == waypoints.len();
+            let compatibility = predicted.level2_compatibility();
+            let state = compatibility.state;
+            let dx = i32::from(waypoint.x.wrapping_sub(state.position.x).cast_signed());
+            let dy = i32::from(waypoint.y.wrapping_sub(state.position.y).cast_signed());
+            let distance = crate::legacy_sqrt(
+                dx.wrapping_mul(dx)
+                    .wrapping_add(dy.wrapping_mul(dy))
+                    .cast_unsigned(),
+            );
+            let stop = compatibility
+                .economy()
+                .player_castle_shift_aabb_overlap(compatibility.shared_spells().player_entity())
+                || (!final_waypoint && distance <= 384);
+            let desired = i16::try_from(crate::heading_for_positions(state.position, waypoint))
+                .expect("source heading is 11-bit");
+            let command = level_three_source_safe_flight_command(state, desired, stop);
+            predicted.step_with_tuning(
+                campaign_player_command(&command),
+                CAMPAIGN_SPEED_INDEX,
+                session.backend().flight_binding.tuning(),
+            );
+            if predicted.events().iter().any(|event| {
+                matches!(
+                    event,
+                    crate::native_world::Level2DispatchEvent::Error { .. }
+                )
+            }) {
+                return false;
+            }
+            let after = predicted.level2_compatibility();
+            let roots = level_three_dragon_fireball_targets_from_economy(after.economy())
+                .into_iter()
+                .filter(|target| target.source_slot == target.root_slot)
+                .map(|target| target.position)
+                .collect::<Vec<_>>();
+            if after.shared_spells().player_entity().life < 0
+                || after.shared_spells().local_player().enabled_spell_holders[0] != holders
+                || !level_three_position_outside_dragon_clearance_for_test(
+                    after.state.position,
+                    &roots,
+                    clearance,
+                )
+                || !after.economy().castle().is_some_and(|castle| {
+                    castle.active
+                        && after.economy().player_castle_entity_index()
+                            == castle.source_entity_index
+                        && level_three_castle_healing_footprint_outside_dragon_range_for_test(
+                            castle.position,
+                            &roots,
+                        )
+                })
+                || after.economy().authored_class5().iter().any(|root| {
+                    root.active
+                        && root.model == 0
+                        && root.action == 2
+                        && root.word_0x96_150 == after.state.entity_index
+                })
+            {
+                return false;
+            }
+            if stop && after.state.target_speed == 0 && after.state.actual_speed == 0 {
+                if after
+                    .economy()
+                    .player_castle_shift_aabb_overlap(after.shared_spells().player_entity())
+                {
+                    return true;
+                }
+                // An intermediate stop is useful only if the next selected
+                // leg can depart safely; do not strand the real controller.
+                if !final_waypoint {
+                    waypoint_index += 1;
+                    continue;
+                }
+                return false;
+            }
+            if !stop
+                && after.state.target_speed == crate::SPEED_LIMIT
+                && after.state.actual_speed == crate::SPEED_LIMIT
+                && crate::turn_toward(after.state.yaw, desired, 127).unsigned_abs() <= 24
+            {
+                return true;
+            }
+        }
+        false
     }
 
     fn recover_at_real_level_three_castle_for_test(
@@ -9727,13 +9987,61 @@ pub(crate) mod tests {
             public_requests,
         ));
         const ROUTE_CLEARANCE: u32 = crate::level1_mission::PROJECTILE_ACQUISITION_RANGE + 512;
+        if let Some(path) = std::env::var_os("MC_LEVEL3_CASTLE_RECOVERY_CHECKPOINT") {
+            let save = Mc2CampaignReplaySave::new(
+                false,
+                session.definition().as_ref().clone(),
+                session.backend().initial_semantic_spell_carry().unwrap(),
+                session.backend().replay_operations.clone(),
+                &session.backend().snapshot(),
+            );
+            let bytes = serde_json::to_vec(&save).unwrap();
+            // Keep the evidence even if validation reveals an unjournaled
+            // prerequisite. This file is usable only after load_replay passes.
+            let mut file = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&path)
+                .unwrap();
+            std::io::Write::write_all(&mut file, &bytes).unwrap();
+            let resolver = Mc2RuntimePackageResolver::load([
+                Mc2CampaignInputs::new(level_one_descriptor_fixture_path()),
+                Mc2CampaignInputs::new(descriptor_fixture_path()),
+                Mc2CampaignInputs::new(level_three_descriptor_fixture_path()),
+            ])
+            .unwrap();
+            let mut restored = crate::game_runtime::GameRuntime::title(66).unwrap();
+            let guard = restored.identity().guard();
+            resolver
+                .load_replay(&mut restored, guard, 66, &bytes)
+                .unwrap();
+            assert_eq!(
+                restored.session().unwrap().backend().snapshot(),
+                session.backend().snapshot(),
+                "Castle recovery checkpoint must restore exact authoritative receipts",
+            );
+            eprintln!(
+                "verified Castle recovery checkpoint: {}",
+                PathBuf::from(path).display()
+            );
+        }
         let (mut recovery_waypoints, recovery_edges) = level_three_castle_recovery_route_for_test(
             session,
             ROUTE_CLEARANCE,
         )
-        .expect(
-            "source-resolved Level 3 terrain retains a Dragon-safe route back to the live Castle",
-        );
+        .unwrap_or_else(|| {
+            let compatibility = session.backend().campaign.level2_compatibility();
+            panic!(
+                "source-resolved Level 3 terrain has no Dragon-safe Castle route: player={:?} castle={:?} roots={:?} clearance={ROUTE_CLEARANCE} chronology={chronology:#?}",
+                compatibility.state.position,
+                compatibility.economy().castle().map(|castle| castle.position),
+                level_three_dragon_fireball_targets(session)
+                    .into_iter()
+                    .filter(|target| target.source_slot == target.root_slot)
+                    .map(|target| target.position)
+                    .collect::<Vec<_>>(),
+            );
+        });
         let root_count = session
             .backend()
             .campaign
@@ -9863,6 +10171,28 @@ pub(crate) mod tests {
             }
             let desired = i16::try_from(crate::heading_for_positions(state.position, waypoint))
                 .expect("source heading is 11-bit");
+            if !level_three_castle_return_turn_is_safe_for_test(
+                session,
+                &recovery_waypoints,
+                waypoint_index,
+                ROUTE_CLEARANCE,
+            ) {
+                // The route is spatially safe, but braking and turning would
+                // let a moving guardian close it. Buy room with real public
+                // retreat flight before choosing a fresh route from that state.
+                let (_, command) = level_three_public_high_speed_retreat_command_for_test(
+                    session,
+                    Some(ROUTE_CLEARANCE),
+                )
+                .expect("unsafe Castle return turn retains a real public retreat command");
+                step_level_three_public_macro_command(session, command);
+                let (waypoints, _) =
+                    level_three_castle_recovery_route_for_test(session, ROUTE_CLEARANCE)
+                        .expect("public retreat leaves a safe replanned Castle return route");
+                recovery_waypoints = waypoints;
+                waypoint_index = 0;
+                continue;
+            }
             session
                 .step(
                     guard(session),
@@ -11228,9 +11558,8 @@ pub(crate) mod tests {
                 }
                 let next_x = usize::from(committed.x.to_be_bytes()[0]);
                 let next_y = usize::from(committed.y.to_be_bytes()[0]);
-                if !(16..240).contains(&next_x) || !(16..240).contains(&next_y) {
-                    continue;
-                }
+                // Source coordinates wrap over all 256 tiles. The actual
+                // movement resolver above owns terrain admission at the seam.
                 let next = next_y * MAP_SIDE + next_x;
                 if predecessor[next] != usize::MAX {
                     continue;
@@ -11416,32 +11745,13 @@ pub(crate) mod tests {
                 i16::try_from(crate::heading_for_positions(state.position, cast_site))
                     .expect("source heading is 11-bit")
             };
-            let correction = crate::turn_toward(state.yaw, desired, 127);
-            session
-                .step(
-                    guard(session),
-                    GameCommand {
-                        longitudinal: if final_waypoint
-                            && distance <= 96
-                            && state.target_speed == 0
-                            && state.actual_speed == 0
-                        {
-                            LongitudinalControl::Coast
-                        } else if correction.unsigned_abs() > 24
-                            || ((final_waypoint && distance <= 96)
-                                || (!final_waypoint && distance <= 768))
-                                && (state.target_speed != 0 || state.actual_speed != 0)
-                        {
-                            LongitudinalControl::Decelerate
-                        } else {
-                            LongitudinalControl::Accelerate
-                        },
-                        roll_axis: correction.clamp(-24, 24) as i8,
-                        pitch_axis: -127,
-                        ..GameCommand::default()
-                    },
-                )
-                .unwrap();
+            let stop = (final_waypoint && distance <= 96)
+                || (!final_waypoint
+                    && distance <= 768
+                    && (state.target_speed != 0 || state.actual_speed != 0));
+            let mut command = level_three_source_safe_flight_command(state, desired, stop);
+            command.pitch_axis = -127;
+            session.step(guard(session), command).unwrap();
         }
         let final_compatibility = session.backend().campaign.level2_compatibility();
         let final_state = final_compatibility.state;
@@ -12551,11 +12861,48 @@ pub(crate) mod tests {
             && attacker_generation_after != attacker_generation_before
     }
 
+    fn level_three_public_retreat_preserves_recovery_clearance_for_test(
+        compatibility: &crate::native_world::Level2ResetSession,
+        recovery_clearance: Option<u32>,
+    ) -> bool {
+        let Some(clearance) = recovery_clearance else {
+            return true;
+        };
+        let roots = level_three_dragon_fireball_targets_from_economy(compatibility.economy())
+            .into_iter()
+            .filter(|target| target.source_slot == target.root_slot)
+            .map(|target| target.position)
+            .collect::<Vec<_>>();
+        level_three_position_outside_dragon_clearance_for_test(
+            compatibility.state.position,
+            &roots,
+            clearance,
+        ) && compatibility.economy().castle().is_some_and(|castle| {
+            castle.active
+                && compatibility.economy().player_castle_entity_index()
+                    == castle.source_entity_index
+                && level_three_castle_healing_footprint_outside_dragon_range_for_test(
+                    castle.position,
+                    &roots,
+                )
+        }) && !compatibility
+            .economy()
+            .authored_class5()
+            .iter()
+            .any(|root| {
+                root.active
+                    && root.model == 0
+                    && root.action == 2
+                    && root.word_0x96_150 == compatibility.state.entity_index
+            })
+    }
+
     fn level_three_public_high_speed_retreat_candidate_for_test(
         session: &GameSession<Mc2CampaignBackend>,
         longitudinal: LongitudinalControl,
         roll_axis: i8,
         allow_braking_nonprogress: bool,
+        recovery_clearance: Option<u32>,
     ) -> Option<(LevelThreePublicRetreatScore, GameCommand)> {
         let before = session.backend().campaign.level2_compatibility();
         let before_state = before.state;
@@ -12586,6 +12933,12 @@ pub(crate) mod tests {
             return None;
         }
         let compatibility = predicted.level2_compatibility();
+        if !level_three_public_retreat_preserves_recovery_clearance_for_test(
+            compatibility,
+            recovery_clearance,
+        ) {
+            return None;
+        }
         let progressed_xy =
             (evidence.committed.x, evidence.committed.y) != (evidence.before.x, evidence.before.y);
         let reduced_speed_toward_zero = {
@@ -12782,6 +13135,7 @@ pub(crate) mod tests {
 
     fn level_three_public_at_rest_retreat_turn_for_test(
         session: &GameSession<Mc2CampaignBackend>,
+        recovery_clearance: Option<u32>,
     ) -> Option<(LevelThreePublicRetreatScore, GameCommand)> {
         const SOURCE_HALF_TURN_BOUND: usize = 7 + (1_024_usize + 5 - 10).div_ceil(4);
         let state = session.backend().campaign.level2_compatibility().state;
@@ -12845,6 +13199,12 @@ pub(crate) mod tests {
                     continue;
                 }
                 let turn = turn_campaign.level2_compatibility();
+                if !level_three_public_retreat_preserves_recovery_clearance_for_test(
+                    turn,
+                    recovery_clearance,
+                ) {
+                    continue;
+                }
                 if !level_three_public_macro_state_is_unmodified(turn.state) {
                     continue;
                 }
@@ -12896,6 +13256,12 @@ pub(crate) mod tests {
                         continue;
                     }
                     let accelerated = accelerate_campaign.level2_compatibility();
+                    if !level_three_public_retreat_preserves_recovery_clearance_for_test(
+                        accelerated,
+                        recovery_clearance,
+                    ) {
+                        continue;
+                    }
                     if !level_three_public_macro_state_is_unmodified(accelerated.state) {
                         continue;
                     }
@@ -12938,6 +13304,7 @@ pub(crate) mod tests {
 
     fn level_three_public_high_speed_retreat_command_for_test(
         session: &GameSession<Mc2CampaignBackend>,
+        recovery_clearance: Option<u32>,
     ) -> Option<(LevelThreePublicRetreatScore, GameCommand)> {
         let center = level_three_source_retreat_roll_for_test(session)?;
         let stencil = level_three_source_pursuit_roll_stencil_for_test(center);
@@ -12950,6 +13317,7 @@ pub(crate) mod tests {
                     LongitudinalControl::Accelerate,
                     roll_axis,
                     false,
+                    recovery_clearance,
                 )
             })
             .min_by_key(|(score, _)| *score)
@@ -12978,10 +13346,13 @@ pub(crate) mod tests {
                     longitudinal,
                     roll_axis,
                     true,
+                    recovery_clearance,
                 )
             })
             .min_by_key(|(score, _)| *score);
-        fallback.or_else(|| level_three_public_at_rest_retreat_turn_for_test(session))
+        fallback.or_else(|| {
+            level_three_public_at_rest_retreat_turn_for_test(session, recovery_clearance)
+        })
     }
 
     fn step_level_three_public_translation_macro(
@@ -13713,7 +14084,7 @@ pub(crate) mod tests {
                 cleared = true;
                 break;
             }
-            let (_, command) = level_three_public_high_speed_retreat_command_for_test(&session)
+            let (_, command) = level_three_public_high_speed_retreat_command_for_test(&session, None)
                 .unwrap_or_else(|| {
                     let compatibility = session.backend().campaign.level2_compatibility();
                     let center = level_three_source_retreat_roll_for_test(&session)
@@ -13921,6 +14292,7 @@ pub(crate) mod tests {
                     longitudinal,
                     roll_axis,
                     true,
+                    None,
                 )
                 .is_some();
                 census.push(format!(
@@ -13937,7 +14309,7 @@ pub(crate) mod tests {
                 ));
             }
         }
-        let current_choice = level_three_public_high_speed_retreat_command_for_test(&session);
+        let current_choice = level_three_public_high_speed_retreat_command_for_test(&session, None);
         {
             let state = &mut session
                 .backend_mut()
@@ -13947,7 +14319,7 @@ pub(crate) mod tests {
             state.target_speed = 0;
             state.actual_speed = 0;
         }
-        let at_rest_lookahead = level_three_public_at_rest_retreat_turn_for_test(&session);
+        let at_rest_lookahead = level_three_public_at_rest_retreat_turn_for_test(&session, None);
         eprintln!(
             "turn17 current_choice={current_choice:?} at_rest_lookahead={at_rest_lookahead:?} census={census:#?}"
         );
@@ -14803,6 +15175,69 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn campaign_backend_level_three_source_route_preserves_wrapping_map_edges() {
+        let root = level_three_descriptor_fixture_path();
+        let catalog = default_catalog().unwrap();
+        let definition = Arc::new(load_mc2_campaign(&root, &catalog).unwrap());
+        let session = GameSession::open(
+            &Mc2CampaignAdapter,
+            definition,
+            66,
+            Mc2CampaignInputs::new(&root),
+        )
+        .unwrap();
+        let compatibility = session.backend().campaign.level2_compatibility();
+        let terrain = compatibility.canonical_terrain();
+        let (origin, destination) = (0_u16..256)
+            .find_map(|tile_y| {
+                let mut origin = crate::Position {
+                    x: 65_408,
+                    y: (tile_y << 8).wrapping_add(128),
+                    z: 0,
+                };
+                origin.z = crate::FlightWorld::ground_height(terrain, origin).wrapping_add(1_024);
+                let mut proposed = origin;
+                crate::move_entity(&mut proposed, 512, 0, 256);
+                let mut probe = compatibility.state;
+                probe.position = origin;
+                let committed = match crate::resolve_legacy_movement(
+                    &mut probe,
+                    origin,
+                    proposed,
+                    compatibility.profile(),
+                    terrain,
+                ) {
+                    crate::MovementResolution::Accept(position)
+                    | crate::MovementResolution::Redirect(position) => position,
+                    _ => return None,
+                };
+                (committed.x.to_be_bytes()[0] == 0).then_some((origin, committed))
+            })
+            .expect("real Level 3 source movement admits a wrapping map edge");
+        let (waypoints, edges, _) = level_three_source_route_to_sites_for_test(
+            &session,
+            origin,
+            vec![destination],
+            &[],
+            512,
+        )
+        .expect("the route planner must retain a source-admitted wrapping edge");
+        assert_eq!(edges, 1);
+        assert_eq!(waypoints, vec![destination]);
+        assert!(
+            level_three_source_route_to_sites_for_test(
+                &session,
+                origin,
+                vec![destination],
+                &[destination],
+                512,
+            )
+            .is_none(),
+            "wrapping admission must still reject the guardian clearance disk"
+        );
+    }
+
+    #[test]
     fn campaign_backend_public_castle_build_and_heal_reach_connected_site_after_skeletons() {
         let root = level_three_descriptor_fixture_path();
         let catalog = default_catalog().unwrap();
@@ -14816,9 +15251,10 @@ pub(crate) mod tests {
         .unwrap();
         session
             .backend_mut()
-            .campaign
-            .level2_compatibility_mut()
-            .apply_carried_spell_families(&[0, 2], Some(0))
+            .install_semantic_spell_carry_for_test(
+                vec![SpellKind::Fireball, SpellKind::Castle],
+                Some(SpellKind::Fireball),
+            )
             .unwrap();
         let castle_holder = session
             .backend()
@@ -14850,11 +15286,10 @@ pub(crate) mod tests {
             castle_holder
         );
         let max_life = compatibility.shared_spells().player_entity().max_life;
+        // The completed Skeleton objective owns group-1 construction.
+        // Advance its ordinary source pass so this route remains replayable.
         session
-            .backend_mut()
-            .campaign
-            .level2_compatibility_mut()
-            .activate_authored_group_prerequisite_for_test(1)
+            .step(guard(&session), GameCommand::default())
             .unwrap();
         assert_eq!(level_three_dragon_fireball_targets(&session).len(), 34);
         let mut saw_damage = false;
@@ -14895,6 +15330,43 @@ pub(crate) mod tests {
                 .enabled_spell_holders[2],
             castle_holder
         );
+    }
+
+    #[test]
+    #[ignore = "requires MC_LEVEL3_CASTLE_RECOVERY_REPLAY from the public Castle route"]
+    fn campaign_backend_public_castle_heals_from_verified_recovery_checkpoint() {
+        let path = std::env::var_os("MC_LEVEL3_CASTLE_RECOVERY_REPLAY")
+            .expect("set the verified Castle recovery replay path");
+        let bytes = std::fs::read(path).unwrap();
+        let resolver = Mc2RuntimePackageResolver::load([
+            Mc2CampaignInputs::new(level_one_descriptor_fixture_path()),
+            Mc2CampaignInputs::new(descriptor_fixture_path()),
+            Mc2CampaignInputs::new(level_three_descriptor_fixture_path()),
+        ])
+        .unwrap();
+        let mut runtime = crate::game_runtime::GameRuntime::title(66).unwrap();
+        let guard = runtime.identity().guard();
+        resolver
+            .load_replay(&mut runtime, guard, 66, &bytes)
+            .unwrap();
+        let session = runtime.session_mut().unwrap();
+        let compatibility = session.backend().campaign.level2_compatibility();
+        let player = compatibility.shared_spells().player_entity();
+        assert!(player.life >= 0 && player.life < player.max_life);
+        let max_life = player.max_life;
+        let fireball_holder = compatibility
+            .shared_spells()
+            .local_player()
+            .enabled_spell_holders[0];
+        assert_ne!(fireball_holder, 0);
+        assert!(
+            compatibility
+                .economy()
+                .castle()
+                .is_some_and(|castle| castle.active)
+        );
+        recover_at_real_level_three_castle_for_test(session, fireball_holder, &mut Vec::new(), 0);
+        assert_eq!(session.snapshot().value.player_vitals.life, max_life);
     }
 
     fn activate_and_retire_real_level_three_group_five_archers_for_test(
