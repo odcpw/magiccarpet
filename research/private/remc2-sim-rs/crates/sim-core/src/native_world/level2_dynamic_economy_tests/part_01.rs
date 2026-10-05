@@ -288,6 +288,173 @@
     }
 
     #[test]
+    fn level_two_mana_sphere_reclaims_contended_raw_relation_before_defender_selection() {
+        let mut session = level_two_possession_lifecycle_session();
+        let player = session.state.entity_index;
+        let rival = player.wrapping_add(1);
+        session.activate_level2_authored_switch_group(0, 23, 1);
+        let target = *session
+            .economy()
+            .spheres()
+            .iter()
+            .find(|sphere| sphere.active && !sphere.pending_delete)
+            .expect("real authored group supplies a model-39 source");
+        let neighbor = *session
+            .economy()
+            .spheres()
+            .iter()
+            .find(|sphere| {
+                sphere.active && sphere.source_entity_index != target.source_entity_index
+            })
+            .expect("authored group supplies an untouched neighboring sphere");
+        let target_slot = target.source_entity_index;
+        let generation = session.economy().slot_generation(target_slot);
+        let ground = session.canonical_terrain().ground_height(target.position);
+        {
+            let mut economy = session.economy_mut();
+            let sphere = economy
+                .spheres
+                .iter_mut()
+                .find(|sphere| sphere.source_entity_index == target_slot)
+                .unwrap();
+            // Actual failed-route state: local semantic owner retained while
+            // Nyphur sub_135C0 writes its provisional raw player relation.
+            sphere.owner_entity_index = player;
+            sphere.player_entity_index = rival;
+            sphere.incoming_owner_entity_index = player;
+            sphere.incoming_possession_payload = 0;
+            sphere.control_flags &= !0x0020_0040;
+            sphere.position.z = ground.saturating_add(1_024);
+        }
+        let before = *session
+            .economy()
+            .spheres()
+            .iter()
+            .find(|sphere| sphere.source_entity_index == target_slot)
+            .unwrap();
+        let events_before = session.economy().events().len();
+        assert_ne!(
+            session
+                .economy()
+                .select_castle_defender_sphere(before.position, player, 0, 0),
+            Some(target_slot),
+            "semantic ownership alone cannot satisfy the real defender's raw relation gate"
+        );
+        assert!(session.economy_mut().step_mana_sphere_slot(target_slot));
+        let reclaimed = *session
+            .economy()
+            .spheres()
+            .iter()
+            .find(|sphere| sphere.source_entity_index == target_slot)
+            .unwrap();
+        assert_eq!(
+            (reclaimed.owner_entity_index, reclaimed.player_entity_index),
+            (player, player)
+        );
+        assert_eq!(
+            (
+                reclaimed.incoming_owner_entity_index,
+                reclaimed.incoming_possession_payload
+            ),
+            (0, 0)
+        );
+        assert_eq!(
+            session.economy().events()[events_before..],
+            [Level2EconomyEvent::ManaSphereClaimed {
+                sphere_id: target.id,
+                owner_entity_index: player,
+            },]
+        );
+        assert_eq!(
+            session
+                .economy()
+                .select_castle_defender_sphere(reclaimed.position, player, 0, 0),
+            Some(target_slot),
+            "the reclaimed source relation feeds the ordinary Castle defender selector"
+        );
+        assert_eq!(reclaimed.mana, before.mana);
+        assert_eq!(reclaimed.entity_rng, before.entity_rng);
+        assert_eq!(session.economy().slot_generation(target_slot), generation);
+        assert_eq!(
+            session
+                .economy()
+                .spheres()
+                .iter()
+                .find(|sphere| sphere.source_entity_index == neighbor.source_entity_index),
+            Some(&neighbor)
+        );
+
+        // An already-matching raw relation does not publish another claim.
+        let events_before = session.economy().events().len();
+        session
+            .economy_mut()
+            .spheres
+            .iter_mut()
+            .find(|sphere| sphere.source_entity_index == target_slot)
+            .unwrap()
+            .incoming_owner_entity_index = player;
+        assert!(session.economy_mut().step_mana_sphere_slot(target_slot));
+        assert_eq!(session.economy().events().len(), events_before);
+
+        // Tier zero still cannot reclaim a protected rival relation. A real
+        // nonzero incoming source payload is the existing protected override.
+        {
+            let mut economy = session.economy_mut();
+            let sphere = economy
+                .spheres
+                .iter_mut()
+                .find(|sphere| sphere.source_entity_index == target_slot)
+                .unwrap();
+            sphere.player_entity_index = rival;
+            sphere.control_flags |= 0x0020_0000;
+            sphere.incoming_owner_entity_index = player;
+        }
+        assert!(session.economy_mut().step_mana_sphere_slot(target_slot));
+        assert_eq!(session.economy().events().len(), events_before);
+        let protected = *session
+            .economy()
+            .spheres()
+            .iter()
+            .find(|sphere| sphere.source_entity_index == target_slot)
+            .unwrap();
+        assert_eq!(protected.player_entity_index, rival);
+        assert_eq!(protected.incoming_owner_entity_index, 0);
+        {
+            let mut economy = session.economy_mut();
+            let sphere = economy
+                .spheres
+                .iter_mut()
+                .find(|sphere| sphere.source_entity_index == target_slot)
+                .unwrap();
+            sphere.incoming_owner_entity_index = player;
+            sphere.incoming_possession_payload = 1;
+        }
+        assert!(session.economy_mut().step_mana_sphere_slot(target_slot));
+        let restored = session
+            .economy()
+            .spheres()
+            .iter()
+            .find(|sphere| sphere.source_entity_index == target_slot)
+            .unwrap();
+        assert_eq!(
+            (restored.owner_entity_index, restored.player_entity_index),
+            (player, player)
+        );
+        assert_ne!(restored.control_flags & 0x0020_0000, 0);
+        assert_eq!(session.economy().events().len(), events_before + 1);
+        assert_eq!(restored.entity_rng, before.entity_rng);
+        assert_eq!(session.economy().slot_generation(target_slot), generation);
+        assert_eq!(
+            session
+                .economy()
+                .spheres()
+                .iter()
+                .find(|sphere| sphere.source_entity_index == neighbor.source_entity_index),
+            Some(&neighbor)
+        );
+    }
+
+    #[test]
     fn level_two_possession_expiry_retries_model12_allocation() {
         let mut session = level_two_possession_lifecycle_session();
         let source_id_entity_index = session.state.entity_index;

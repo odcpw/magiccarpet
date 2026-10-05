@@ -2933,7 +2933,9 @@ impl Level2EconomyState {
                 sphere.incoming_owner_entity_index = 0;
                 sphere.incoming_possession_payload = 0;
                 let protected = sphere.control_flags & 0x0020_0000 != 0;
-                if sphere.owner_entity_index != pending_owner && (payload != 0 || !protected) {
+                // sub_35940 compares word68 with the source word94 relation,
+                // which Nyphur can provisionally change before its pulse lands.
+                if sphere.player_entity_index != pending_owner && (payload != 0 || !protected) {
                     sphere.owner_entity_index = pending_owner;
                     sphere.player_entity_index = pending_owner;
                     sphere.control_flags &= !0x40;
