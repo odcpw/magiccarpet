@@ -2489,7 +2489,7 @@ namespace MagicCarpet.Native.Tests
                     "-mc-runtime-owner-cache", Path.Combine(generated, "level3-day-spell-owner-cache-v3/components/material"),
                     "-mc-runtime-presentation-cache", Path.Combine(generated, "level3-day-spell-owner-cache-v3"),
                     "-mc-runtime-loading-cache", LevelOneOwnerCache,
-                    "-mc-runtime-replay-load", Path.Combine(generated, "opened-l3-block32-play-campaign-spells-v5.json"),
+                    "-mc-runtime-replay-load", Path.Combine(generated, "opened-l3-block32-castle-boot-c330992-20261005.json"),
                     "-mc-runtime-replay-save", replayPath,
                 };
                 runtime.QualificationInitializeGameRuntimeProductionFromArguments(arguments);
