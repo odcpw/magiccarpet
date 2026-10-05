@@ -1502,7 +1502,23 @@ fn campaign_api_selects_level_profiles_and_preserves_old_level1_values() {
             .iter()
             .any(|entity| entity.next_relation != u16::MAX)
     );
-    let independent_level2_handle = open_level2_campaign_handle();
+    // Compare independent opens of the same package and profile. The shared
+    // gameplay helper opens a descriptor-backed package, whose reset hash and
+    // semantic player census differ from this retained inspection input.
+    let mut independent_level2_handle = 0;
+    assert_eq!(
+        mc_native_campaign_session_open(
+            package.as_ptr(),
+            package.len() as u32,
+            std::ptr::null(),
+            0,
+            &raw const selection,
+            &raw mut independent_level2_handle,
+        ),
+        MC_STATUS_OK
+    );
+    assert_ne!(independent_level2_handle, 0);
+    assert_ne!(independent_level2_handle, level2_handle);
     let mut independent_level2_info = McCampaignWorldInfoV2::default();
     assert_eq!(
         mc_native_campaign_world_info(
@@ -1512,6 +1528,7 @@ fn campaign_api_selects_level_profiles_and_preserves_old_level1_values() {
         ),
         MC_STATUS_OK
     );
+    assert_eq!(independent_level2_info, level2_info);
     assert_eq!(
         independent_level2_info.reset_state_hash,
         level2_info.reset_state_hash
