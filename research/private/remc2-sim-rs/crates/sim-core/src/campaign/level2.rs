@@ -5347,6 +5347,17 @@ impl Level2ResetSession {
         );
         // NewAdd0A0C's Possession mailbox effect deliberately has hide bit 1;
         // it is not a visible explosion, even while its ownership pulse lives.
+        if let Some(castle) = self.economy().castle().filter(|castle| {
+            castle.active && castle.control_flags & (ENTITY_DRAW_DISABLED_BIT | 0x21) == 0
+        }) {
+            candidates.push((
+                castle.source_entity_index,
+                castle.source_id_entity_index,
+                castle.source_particle_parameter,
+                castle.shift_yaw,
+                castle.position,
+            ));
+        }
         // SetManaSphereColorAndRot_36920 reads the raw player relation, not
         // the semantic ownership projection. TransformPlayerColorIndex's
         // offline permutation applies to both spheres and Castle balloons.

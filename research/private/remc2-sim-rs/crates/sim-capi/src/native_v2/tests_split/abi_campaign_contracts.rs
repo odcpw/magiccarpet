@@ -89,7 +89,7 @@ fn campaign_native_projection_copies_live_sphere_and_castle_balloon_and_clears_o
             ..McCampaignStepInputV2::default()
         },
     );
-    let (sphere, balloon, before_hash) = with_campaign_session(handle, |record| {
+    let (sphere, castle, balloon, before_hash) = with_campaign_session(handle, |record| {
         let CampaignSessionKind::Level2 { reset, .. } = &record.kind else {
             unreachable!()
         };
@@ -105,10 +105,15 @@ fn campaign_native_projection_copies_live_sphere_and_castle_balloon_and_clears_o
             .iter()
             .find(|row| row.active && (row.source_class, row.model, row.action) == (3, 3, 9))
             .expect("ordinary upkeep creates the live balloon");
-        Ok((sphere, balloon, reset.state_hash()))
+        Ok((sphere, reset.economy().castle().unwrap(), balloon, reset.state_hash()))
     })
     .unwrap();
     let entities = campaign_entities_public(handle);
+    let castle_row = entities[usize::from(castle.source_entity_index)];
+    assert_eq!((castle_row.authority, castle_row.active, castle_row.class_id, castle_row.model, castle_row.action),
+        (MC_AUTHORITY_CAMPAIGN_LIVE, 1, 3, 2, 4));
+    assert_eq!((castle_row.source_id, castle_row.x, castle_row.y, castle_row.z),
+        (player_slot, castle.position.x, castle.position.y, castle.position.z));
     let sphere_row = entities[usize::from(sphere_slot)];
     assert_eq!(
         (
@@ -181,6 +186,9 @@ fn campaign_native_projection_copies_live_sphere_and_castle_balloon_and_clears_o
         LAST_ERROR.with(|value| value.borrow().clone())
     );
     let sprites = &sprites[..written as usize];
+    let castle_sprite = sprites.iter().find(|row| row.entity_index == castle.source_entity_index)
+        .expect("the live Castle reaches the native visible selector");
+    assert_eq!((castle_sprite.render_parameter_index, castle_sprite.base_tmap), (177, 96));
     let sphere_sprite = sprites
         .iter()
         .find(|row| row.entity_index == sphere_slot)
@@ -211,6 +219,7 @@ fn campaign_native_projection_copies_live_sphere_and_castle_balloon_and_clears_o
     .unwrap();
     assert_eq!(mc_native_campaign_session_reset(handle), MC_STATUS_OK);
     let reset_entities = campaign_entities_public(handle);
+    assert_eq!(reset_entities[usize::from(castle.source_entity_index)].active, 0);
     assert_eq!(reset_entities[usize::from(sphere_slot)].active, 0);
     assert_eq!(
         reset_entities[usize::from(balloon.source_entity_index)].active,

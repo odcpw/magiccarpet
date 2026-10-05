@@ -3054,6 +3054,23 @@ pub extern "C" fn mc_native_campaign_entities_copy(
                                     )
                                 },
                             ))
+                            .chain(reset.economy().castle().into_iter().map(|source| {
+                                (
+                                    source.source_entity_index,
+                                    source.source_id_entity_index,
+                                    source.active
+                                        && source.control_flags & (0x0000_0400 | 0x21) == 0,
+                                    source.source_class,
+                                    source.source_model,
+                                    source.action,
+                                    source.phase,
+                                    source.position,
+                                    source.shift_yaw,
+                                    source.shift_pitch,
+                                    source.shift_fov,
+                                    0,
+                                )
+                            }))
                             .chain(reset.economy().spheres().iter().map(|source| {
                                 (
                                     source.source_entity_index,

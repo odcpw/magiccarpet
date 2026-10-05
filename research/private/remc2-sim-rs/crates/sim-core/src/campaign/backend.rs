@@ -21407,6 +21407,24 @@ pub(crate) mod tests {
         let mut collected = false;
         let mut deposited = 0;
         let mut saw_balloon_sprite = false;
+        let castle_sprites = session
+            .backend()
+            .campaign
+            .level2_compatibility()
+            .campaign_entity_presentations(0)
+            .unwrap();
+        let castle_sprite = castle_sprites
+            .iter()
+            .find(|row| row.entity_index == castle_slot)
+            .expect("the production Castle root reaches the shared world selector");
+        assert_eq!(
+            (
+                castle_sprite.render_parameter_index,
+                castle_sprite.base_tmap
+            ),
+            (177, 96)
+        );
+        assert_eq!(castle_sprite.source_id, player_entity);
         for _ in 0..128 {
             let compatibility = session.backend().campaign.level2_compatibility();
             let economy = compatibility.economy();
