@@ -1027,6 +1027,25 @@ fn level_two_model76_column_zero_owner_reaches_model2_mailbox_on_production_turn
     assert!(first_column_zero.column_index == 0);
     assert!(first_column_zero.collision_pitch > 0);
     assert!(first_column_zero.collision_fov > 0);
+    let particle = inspection.presentation().particles.get(340)
+        .expect("source SetEntityIndexAndRot particle 340");
+    assert_eq!((particle.speed, particle.rotation_speed), (97, 100));
+    let expected_axes = (
+        i16::try_from(particle.rotation_speed / 2).expect("source collision yaw"),
+        i16::try_from(particle.speed / 2).expect("source collision pitch"),
+        i16::try_from(particle.speed / 2).expect("source collision roll"),
+        i16::try_from(particle.rotation_speed / 2).expect("source collision FOV"),
+    );
+    assert_eq!(expected_axes, (50, 48, 48, 50));
+    assert!(session.economy().model76_children().iter()
+        .filter(|child| child.parent_entity_index == source.source_entity_index)
+        .all(|child| (
+            child.collision_yaw,
+            child.collision_pitch,
+            child.collision_roll,
+            child.collision_fov,
+        ) == expected_axes),
+        "every constructed child retains the actual source particle axes in release builds");
     // Keep the production turn focused on the explicitly allocated root;
     // the reset's independent class-11 producer rows would otherwise
     // activate their own model-76 families on this same pass.
@@ -1044,7 +1063,9 @@ fn level_two_model76_column_zero_owner_reaches_model2_mailbox_on_production_turn
     // moves the child, probes collision, then transitions the root to
     // state 2. Widen only this diagnostic target's axes so the test does
     // not depend on an unqualified reset target's orbit position.
-    session.state.position = first_column_zero.position;
+    session
+        .set_level2_entity_position(session.state.entity_index, first_column_zero.position)
+        .expect("fixture player position updates the authoritative row and map link");
     session
         .set_level2_entity_position(target_slot, first_column_zero.position)
         .expect("model-2 target position");

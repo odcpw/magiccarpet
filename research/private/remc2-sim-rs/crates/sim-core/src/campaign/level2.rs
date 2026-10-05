@@ -7755,13 +7755,14 @@ impl Level2ResetSession {
                 i16::try_from(particle.speed / 2).expect("model-76 particle pitch fits i16");
             let collision_roll = collision_pitch;
             let collision_fov = collision_yaw;
-            debug_assert!(self.economy.bind_model76_collision_axes(
+            let axes_bound = self.economy.bind_model76_collision_axes(
                 source.source_entity_index,
                 collision_yaw,
                 collision_pitch,
                 collision_roll,
                 collision_fov,
-            ));
+            );
+            debug_assert!(axes_bound);
         }
         Some(source)
     }
@@ -12989,6 +12990,42 @@ impl Level2ResetSession {
         Ok(())
     }
 
+    fn step_level2_house_sink_with_rollback(
+        &mut self,
+        source_slot: u16,
+    ) -> std::result::Result<Vec<HouseStepEvent>, String> {
+        let live = &mut self.session.state.live;
+        // Both the callback and its sink mutate only the House collection
+        // within ordinary state; the other ordinary families stay untouched.
+        let houses_before = live.ordinary.houses.clone();
+        let events = live
+            .ordinary
+            .step_house_action_52(source_slot, &live.terrain);
+        // An empty event list cannot mutate or fail in the terrain/economy
+        // sink. Keep every ordinary callback write, including phase and Z,
+        // without copying the world-sized rollback carriers on that path.
+        if events.is_empty() {
+            return Ok(events);
+        }
+        // The callback above owns only ordinary House state; these domains
+        // are still exactly their pre-callback values when first needed.
+        let economy_before = live.economy.clone();
+        let terrain_before = live.terrain.clone();
+        match live.ordinary.apply_house_terrain_events(
+            &mut live.economy,
+            &events,
+            &mut live.terrain,
+        ) {
+            Ok(()) => Ok(events),
+            Err(error) => {
+                live.ordinary.houses = houses_before;
+                live.economy = economy_before;
+                live.terrain = terrain_before;
+                Err(format!("Level 2 House sink failed: {error}"))
+            }
+        }
+    }
+
     fn dispatch_level2_source_visit(
         &mut self,
         pass: u8,
@@ -13346,26 +13383,8 @@ impl Level2ResetSession {
                 }
             }
             (ExistingHandler::Class10Effects, Level2SourceRoute::House) => {
-                let ordinary_before = self.session.state.live.ordinary.clone();
-                let economy_before = self.session.state.live.economy.clone();
-                let terrain_before = self.canonical_terrain().clone();
-                let terrain = &self.session.state.live.terrain;
-                let events = self
-                    .session
-                    .state
-                    .live
-                    .ordinary
-                    .step_house_action_52(source_slot, terrain);
-                let result = {
-                    let terrain = &mut self.session.state.live.terrain;
-                    self.session.state.live.ordinary.apply_house_terrain_events(
-                        &mut self.session.state.live.economy,
-                        &events,
-                        terrain,
-                    )
-                };
-                match result {
-                    Ok(()) => {
+                match self.step_level2_house_sink_with_rollback(source_slot) {
+                    Ok(events) => {
                         for event in &events {
                             if let HouseStepEvent::RemoveFootprint { entity_index, .. } = *event
                                 && let Some(entity) = self
@@ -13389,12 +13408,7 @@ impl Level2ResetSession {
                             events: events.into_boxed_slice(),
                         });
                     }
-                    Err(error) => {
-                        self.session.state.live.ordinary = ordinary_before;
-                        self.session.state.live.economy = economy_before;
-                        *&mut self.session.state.live.terrain = terrain_before;
-                        return Err(format!("Level 2 House sink failed: {error}"));
-                    }
+                    Err(error) => return Err(error),
                 }
             }
             (
@@ -20708,6 +20722,148 @@ impl Level2ResetSession {
 mod tests {
     use super::*;
     use crate::campaign::{CampaignSession, spec::CampaignSelection};
+
+    #[test]
+    fn qualified_house_lazy_rollback_matches_eager_outputs_and_hashes() {
+        fn eager_reference(
+            compatibility: &mut Level2ResetSession,
+            source_slot: u16,
+        ) -> std::result::Result<Vec<HouseStepEvent>, String> {
+            let live = &mut compatibility.session.state.live;
+            let ordinary_before = live.ordinary.clone();
+            let economy_before = live.economy.clone();
+            let terrain_before = live.terrain.clone();
+            let events = live
+                .ordinary
+                .step_house_action_52(source_slot, &live.terrain);
+            match live.ordinary.apply_house_terrain_events(
+                &mut live.economy,
+                &events,
+                &mut live.terrain,
+            ) {
+                Ok(()) => Ok(events),
+                Err(error) => {
+                    live.ordinary = ordinary_before;
+                    live.economy = economy_before;
+                    live.terrain = terrain_before;
+                    Err(format!("Level 2 House sink failed: {error}"))
+                }
+            }
+        }
+        let package = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../generated/mc-cf02-campaign-package-v2-b/qualified-level2");
+        let gameplay_cache = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../generated/level2-day-owner-cache/components/gameplay");
+        let baseline = CampaignSession::open_with_owner_cache(
+            &package,
+            &gameplay_cache,
+            CampaignSelection::LEVEL2,
+        )
+        .expect("qualified House rollback campaign opens with owner BUILD footprints");
+        let house = &baseline.level2_compatibility().ordinary().houses()[0];
+        let source_slot = house.entity_index;
+        assert!(
+            baseline
+                .level2_compatibility()
+                .ordinary()
+                .house_build_footprints
+                .contains_key(&house.building_index),
+            "the real owner BUILD footprint used by both construction cases is bound"
+        );
+        for case in [
+            "idle",
+            "damaged",
+            "construction",
+            "missing-footprint",
+            "removal",
+            "missing-removal-footprint",
+        ] {
+            let mut actual = baseline.clone();
+            {
+                let live = &mut actual.level2_compatibility_mut().session.state.live;
+                let house = live.ordinary.houses.house_mut(source_slot).unwrap();
+                house.phase = 1;
+                house.pending_damage = 0;
+                house.pending_attacker = 0;
+                house.pending_possession_payload = 0;
+                house.pending_possession_owner = 0;
+                match case {
+                    "idle" => {}
+                    "damaged" => {
+                        house.pending_damage = 250;
+                        house.pending_attacker = 111;
+                    }
+                    "construction" | "missing-footprint" => {
+                        house.action = crate::house::HOUSE_TERRAIN_TO_LIVE_ACTION;
+                        house.life = 2;
+                    }
+                    "removal" | "missing-removal-footprint" => {
+                        house.action = crate::house::HOUSE_REMOVE_ACTION;
+                    }
+                    _ => unreachable!(),
+                }
+                if matches!(case, "missing-footprint" | "missing-removal-footprint") {
+                    let building_index = house.building_index;
+                    assert!(
+                        live.ordinary
+                            .house_build_footprints
+                            .remove(&building_index)
+                            .is_some()
+                    );
+                }
+            }
+            let before = actual.clone();
+            let mut reference = actual.clone();
+            let expected = eager_reference(reference.level2_compatibility_mut(), source_slot);
+            let observed = actual
+                .level2_compatibility_mut()
+                .step_level2_house_sink_with_rollback(source_slot);
+            assert_eq!(observed, expected, "ordered House events/error: {case}");
+            assert_eq!(
+                actual.level2_compatibility(),
+                reference.level2_compatibility(),
+                "all rollback and source carriers: {case}"
+            );
+            assert_eq!(
+                actual.state_hash(),
+                reference.state_hash(),
+                "canonical hash: {case}"
+            );
+            if matches!(case, "missing-footprint" | "missing-removal-footprint") {
+                assert!(observed.unwrap_err().contains("BUILD footprint"));
+                assert_eq!(
+                    actual.level2_compatibility(),
+                    before.level2_compatibility(),
+                    "failure restores every pre-callback domain"
+                );
+            } else {
+                let events = observed.unwrap();
+                match case {
+                    "idle" => assert!(events.is_empty()),
+                    "damaged" => assert!(
+                        events
+                            .iter()
+                            .any(|event| matches!(event, HouseStepEvent::Damaged { .. }))
+                    ),
+                    "construction" => assert!(
+                        events
+                            .iter()
+                            .any(|event| matches!(event, HouseStepEvent::ConstructionPass { .. }))
+                    ),
+                    "removal" => assert!(
+                        events
+                            .iter()
+                            .any(|event| matches!(event, HouseStepEvent::RemoveFootprint { .. }))
+                    ),
+                    _ => unreachable!(),
+                }
+                assert_eq!(
+                    actual.level2_compatibility().ordinary().houses()[0].phase,
+                    2
+                );
+            }
+        }
+    }
 
     #[test]
     fn qualified_castle_protection_clears_each_mailbox_and_one_departure_visit() {
