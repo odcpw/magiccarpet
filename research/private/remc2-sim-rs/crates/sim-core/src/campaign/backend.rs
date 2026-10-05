@@ -1065,7 +1065,7 @@ impl Mc2RuntimePackageResolver {
         }
         let semantic_spell_carry = session
             .backend()
-            .semantic_spell_carry()
+            .initial_semantic_spell_carry()
             .map_err(Mc2CampaignReplaySaveError::Runtime)?;
         let save = Mc2CampaignReplaySave::new(
             mode == crate::game_runtime::RuntimeMode::Paused,
@@ -1781,7 +1781,22 @@ impl Mc2CampaignBackend {
     fn semantic_spell_carry(
         &self,
     ) -> Result<Mc2SemanticSpellCarry, crate::game_runtime::RuntimeTransitionError> {
-        let shared = self.campaign.level2_compatibility().shared_spells();
+        Self::semantic_spell_carry_from_campaign(&self.campaign)
+    }
+
+    fn initial_semantic_spell_carry(
+        &self,
+    ) -> Result<Mc2SemanticSpellCarry, crate::game_runtime::RuntimeTransitionError> {
+        // The loader installs this carrier before replaying the first command.
+        // Selection and acquisitions made by those commands belong only to the
+        // live campaign. Saving them here changes the replay's reset baseline.
+        Self::semantic_spell_carry_from_campaign(&self.package_campaign)
+    }
+
+    fn semantic_spell_carry_from_campaign(
+        campaign: &CampaignSession,
+    ) -> Result<Mc2SemanticSpellCarry, crate::game_runtime::RuntimeTransitionError> {
+        let shared = campaign.level2_compatibility().shared_spells();
         let player = shared.local_player();
         let mut acquired = Vec::new();
         for (family, holder_index) in player.enabled_spell_holders.iter().copied().enumerate() {
@@ -1831,7 +1846,7 @@ impl Mc2CampaignBackend {
         &mut self,
         carry: &Mc2SemanticSpellCarry,
     ) -> Result<(), crate::game_runtime::RuntimeTransitionError> {
-        // Replay saves retain the complete semantic spell state, while a
+        // Replay saves retain the semantic entry spell state, while a
         // freshly opened bound package may already contain that exact state.
         // Treat an equivalent installation as observationally inert: the
         // materializer seals a new reset baseline, which is correct for real
@@ -1898,6 +1913,15 @@ impl Mc2CampaignBackend {
             );
         }
         Ok(())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn install_semantic_spell_carry_for_test(
+        &mut self,
+        acquired: Vec<SpellKind>,
+        selected: Option<SpellKind>,
+    ) -> Result<(), crate::game_runtime::RuntimeTransitionError> {
+        self.apply_semantic_spell_carry(&Mc2SemanticSpellCarry { acquired, selected })
     }
 
     #[cfg(test)]

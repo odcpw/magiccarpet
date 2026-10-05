@@ -2214,12 +2214,13 @@ namespace MagicCarpet.Native.Tests
         public void DirectLevelThreePlayEntryCastsCarriedFireballAndSelectsCastleOnSameHandle()
         {
             var generated = Path.Combine(PrivateRoot, "generated");
+            var replayPath = Path.Combine(Path.GetTempPath(), $"mc-level3-play-{Guid.NewGuid():N}.replay.json");
             var root = new GameObject("direct owner Level 3 spell controls");
             root.SetActive(false);
             var runtime = root.AddComponent<MagicCarpetRuntime>();
             try
             {
-                runtime.QualificationInitializeGameRuntimeProductionFromArguments(new[]
+                var arguments = new[]
                 {
                     "-mc-game-runtime",
                     "-mc-runtime-package", LevelOnePackage,
@@ -2229,7 +2230,9 @@ namespace MagicCarpet.Native.Tests
                     "-mc-runtime-presentation-cache", Path.Combine(generated, "level3-day-spell-owner-cache-v3"),
                     "-mc-runtime-loading-cache", LevelOneOwnerCache,
                     "-mc-runtime-replay-load", Path.Combine(generated, "opened-l3-block32-play-fireball-castle-v5.json"),
-                });
+                    "-mc-runtime-replay-save", replayPath,
+                };
+                runtime.QualificationInitializeGameRuntimeProductionFromArguments(arguments);
                 Assert.That(runtime.GameRuntimeProductionStartupReady, Is.True);
                 Assert.That(runtime.GameRuntimeProductionIdentity.active_runtime_flow.bound_level_id,
                     Is.EqualTo("level.magic_carpet_2.revealed_way"));
@@ -2258,11 +2261,41 @@ namespace MagicCarpet.Native.Tests
                     Is.EqualTo(900), "the next source player visit debits the real cast");
                 Assert.That(runtime.SubmitGameRuntimeSpellKey(3), Is.True);
                 runtime.QualificationDriveGameRuntimeFrames(1);
+                Assert.That(runtime.Level2ProductionPlayers[0].selectedSpellUiIndex, Is.EqualTo(2));
                 StringAssert.Contains(
-                    "\"semantic_spell_carry\":{\"acquired\":[\"fireball\",\"castle\"],\"selected\":\"castle\"}",
+                    "\"semantic_spell_carry\":{\"acquired\":[\"fireball\",\"castle\"],\"selected\":\"fireball\"}",
                     Encoding.UTF8.GetString(runtime.QualificationSaveGameRuntimeProductionReplay()));
                 Assert.That(runtime.GameRuntimeProductionIdentity.runtime_id, Is.EqualTo(before.runtime_id));
                 Assert.That(runtime.GameRuntimeProductionIdentity.session.tick, Is.EqualTo("5"));
+                runtime.QualificationApplyGameRuntimeProductionInput(true, false);
+                runtime.QualificationDriveGameRuntimeFrames(1);
+                var paused = runtime.GameRuntimeProductionCampaignSnapshot;
+                runtime.QualificationRequestGameRuntimeProductionReplaySave();
+                Assert.That(File.Exists(replayPath), Is.False);
+                runtime.QualificationDriveGameRuntimeFrames(1);
+                Assert.That(File.Exists(replayPath), Is.True);
+                arguments[Array.IndexOf(arguments, "-mc-runtime-replay-load") + 1] = replayPath;
+                var restoredRoot = new GameObject("restored Level 3 play entry");
+                restoredRoot.SetActive(false);
+                var restored = restoredRoot.AddComponent<MagicCarpetRuntime>();
+                try
+                {
+                    restored.QualificationInitializeGameRuntimeProductionFromArguments(arguments);
+                    Assert.That(restored.GameRuntimeProductionIdentity.mode, Is.EqualTo(GameRuntimeTransport.PausedMode));
+                    AssertSameCampaignState(paused, restored.GameRuntimeProductionCampaignSnapshot);
+                    Assert.That(restored.Level2ProductionPlayers[0].selectedSpellUiIndex, Is.EqualTo(2));
+                    StringAssert.Contains(
+                        "\"semantic_spell_carry\":{\"acquired\":[\"fireball\",\"castle\"],\"selected\":\"fireball\"}",
+                        Encoding.UTF8.GetString(restored.QualificationSaveGameRuntimeProductionReplay()));
+                    restored.QualificationApplyGameRuntimeProductionInput(true, false);
+                    restored.QualificationDriveGameRuntimeFrames(1);
+                    Assert.That(restored.GameRuntimeProductionIdentity.session.tick, Is.EqualTo("6"));
+                }
+                finally
+                {
+                    restored.QualificationDisposeNativeOwners();
+                    UnityEngine.Object.DestroyImmediate(restoredRoot);
+                }
             }
             finally
             {

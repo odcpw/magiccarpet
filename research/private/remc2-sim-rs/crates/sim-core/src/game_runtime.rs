@@ -2416,9 +2416,10 @@ mod tests {
                     .session_mut()
                     .unwrap()
                     .backend_mut()
-                    .compatibility_campaign_mut_for_test()
-                    .level2_compatibility_mut()
-                    .apply_carried_spell_families(&[0, 2], Some(0))
+                    .install_semantic_spell_carry_for_test(
+                        vec![SpellKind::Fireball, SpellKind::Castle],
+                        Some(SpellKind::Fireball),
+                    )
                     .unwrap();
             }
             let guard = source.session().unwrap().identity().guard();
@@ -2483,6 +2484,161 @@ mod tests {
                 output.write_all(&save).unwrap();
             }
         }
+    }
+
+    #[test]
+    fn runtime_replay_save_retains_entry_carry_after_level_three_spell_selection_and_pause() {
+        let generated = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../generated");
+        let package = generated.join("level3-day-block32-campaign-recipe-v2");
+        let resolver = Mc2RuntimePackageResolver::load([
+            Mc2CampaignInputs::new(generated.join("level2-day-block32-campaign-v2")),
+            Mc2CampaignInputs::new(&package),
+            Mc2CampaignInputs::new(level_one_package()),
+        ])
+        .unwrap();
+        let definition =
+            Arc::new(load_mc2_campaign(&package, &default_catalog().unwrap()).unwrap());
+        // Stage the direct owner entry only. All later selection, Fireball,
+        // upkeep, pause and replay work use the ordinary production routes.
+        let mut source = GameRuntime {
+            runtime_id: 525,
+            generation: 6,
+            state: RuntimeState::Loading {
+                definition,
+                session_generation: NonZeroU64::new(3).unwrap(),
+            },
+        };
+        let guard = source.identity().guard();
+        resolver.open_pending(&mut source, guard, 525).unwrap();
+        source
+            .session_mut()
+            .unwrap()
+            .backend_mut()
+            .install_semantic_spell_carry_for_test(
+                vec![SpellKind::Fireball, SpellKind::Castle],
+                Some(SpellKind::Fireball),
+            )
+            .unwrap();
+        for command in [
+            GameCommand::default(),
+            GameCommand {
+                select_spell: Some(SemanticId::parse("spell.fireball").unwrap()),
+                ..GameCommand::default()
+            },
+            GameCommand {
+                cast_selected: true,
+                ..GameCommand::default()
+            },
+        ] {
+            let guard = source.session().unwrap().identity().guard();
+            source.session_mut().unwrap().step(guard, command).unwrap();
+        }
+        assert!(
+            source
+                .session()
+                .unwrap()
+                .backend()
+                .compatibility_campaign()
+                .level2_compatibility()
+                .economy()
+                .fireball_projectiles()
+                .iter()
+                .any(|projectile| projectile.active && !projectile.drawing_disabled)
+        );
+        for command in [
+            GameCommand::default(),
+            GameCommand {
+                select_spell: Some(SemanticId::parse("spell.castle").unwrap()),
+                ..GameCommand::default()
+            },
+        ] {
+            let guard = source.session().unwrap().identity().guard();
+            source.session_mut().unwrap().step(guard, command).unwrap();
+        }
+        assert_eq!(
+            source
+                .session()
+                .unwrap()
+                .snapshot()
+                .value
+                .player_vitals
+                .mana,
+            900
+        );
+        assert_eq!(
+            source
+                .session()
+                .unwrap()
+                .backend()
+                .semantic_spell_state_for_test()
+                .unwrap(),
+            (
+                vec![SpellKind::Fireball, SpellKind::Castle],
+                Some(SpellKind::Castle)
+            )
+        );
+        source.pause(source.identity().guard()).unwrap();
+        for _ in 0..2 {
+            let guard = source.identity().guard();
+            let session_guard = source.session().unwrap().identity().guard();
+            source.paused_frame(guard, session_guard).unwrap();
+        }
+        let before_identity = source.identity();
+        let before_snapshot = source.session().unwrap().snapshot();
+        let save = resolver.save_replay(&source).unwrap();
+        assert_eq!(source.identity(), before_identity);
+        assert_eq!(source.session().unwrap().snapshot(), before_snapshot);
+        let save_json: serde_json::Value = serde_json::from_slice(&save).unwrap();
+        assert_eq!(
+            save_json["save_contract"],
+            crate::campaign::backend::MC2_CAMPAIGN_REPLAY_SAVE_CONTRACT
+        );
+        assert_eq!(save_json["semantic_spell_carry"]["selected"], "fireball");
+        assert_eq!(
+            save_json["semantic_spell_carry"]["acquired"],
+            serde_json::json!(["fireball", "castle"])
+        );
+        assert_eq!(save_json["operations"].as_array().unwrap().len(), 7);
+        assert_eq!(save_json["expected_tick"], 5);
+        assert_eq!(save_json["paused"], true);
+
+        let mut restored = GameRuntime::<Mc2CampaignBackend>::title(526).unwrap();
+        let title = restored.identity();
+        let corrupted = Mc2RuntimePackageResolver::corrupt_save_expected_state_for_test(&save);
+        assert!(matches!(
+            resolver.load_replay(&mut restored, title.guard(), 526, &corrupted),
+            Err(Mc2CampaignReplaySaveError::Restore(
+                RestorePlayingError::Transition(RuntimeTransitionError::InvalidReplay { .. })
+            ))
+        ));
+        assert_eq!(restored.identity(), title);
+        assert!(restored.session().is_none());
+        resolver
+            .load_replay(&mut restored, title.guard(), 526, &save)
+            .unwrap();
+        assert_eq!(restored.identity().mode, RuntimeMode::Paused);
+        assert_eq!(
+            restored.identity().active_runtime_flow,
+            before_identity.active_runtime_flow
+        );
+        assert_eq!(
+            restored.session().unwrap().snapshot().value,
+            before_snapshot.value
+        );
+        assert_eq!(
+            restored
+                .session()
+                .unwrap()
+                .backend()
+                .semantic_spell_state_for_test()
+                .unwrap(),
+            (
+                vec![SpellKind::Fireball, SpellKind::Castle],
+                Some(SpellKind::Castle)
+            )
+        );
+        // Save/load remains closed under repetition after the selection change.
+        assert_eq!(resolver.save_replay(&restored).unwrap(), save);
     }
 
     #[test]
