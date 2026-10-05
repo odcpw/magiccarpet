@@ -26440,13 +26440,24 @@ pub(crate) mod tests {
         )
         .unwrap();
 
+        // Area Entry now has its own source-backed overlap consumer. Use a
+        // present switch family with no overlap parameter for this refusal.
         let wrong_family =
-            sim_definition::adapter::stable_entity_id("switch.area_entry_trigger.at_165_211")
-                .unwrap();
+            sim_definition::adapter::stable_entity_id("switch.objective_gate.at_194_17").unwrap();
+        let unsupported = level_one
+            .level_definition()
+            .unwrap()
+            .entity(&wrong_family)
+            .unwrap();
+        assert_eq!(
+            unsupported.kind(),
+            LevelEntityKind::Switch(SwitchKind::ObjectiveGate)
+        );
+        assert!(unsupported.switch_overlap().is_none());
         let fake = ChangeSetBuilder::new(
             "campaign-exit-sequence-overlap",
             &level_one,
-            "reject-area-entry-overlap-authoring",
+            "reject-objective-gate-overlap-authoring",
             RequestedTiming::SessionReset,
         )
         .set_switch_overlap_extent(wrong_family, 4)

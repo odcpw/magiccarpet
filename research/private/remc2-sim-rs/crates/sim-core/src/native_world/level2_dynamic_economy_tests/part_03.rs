@@ -2780,7 +2780,9 @@
 
     #[test]
     fn level_two_economy_sound_receipts_pin_source_owner_channel_and_negatives() {
-        let mut session = level_two_possession_lifecycle_session();
+        // The row214 -> group20 births require the descriptor's semantic
+        // creature bindings, as in the owning group20 production-chain test.
+        let mut session = super::super::tests::level_two_campaign_session();
 
         // AUD-L2-036: the qualified Quickfair callback latches sound before
         // its three shape-cell RNG branches. Drive the real row-214 ->
