@@ -21621,6 +21621,119 @@ pub(crate) mod tests {
             sphere_slot.is_some(),
             "typed Goat death must feed its ordinary 300-mana model-39 producer"
         );
+        let produced_slot = sphere_slot.unwrap();
+        let birth_economy = session.backend().campaign.level2_compatibility().economy();
+        let produced_generation = birth_economy.slot_generation(produced_slot);
+        assert!(
+            birth_economy.spheres().iter().any(|sphere| {
+                sphere.source_entity_index == produced_slot
+                    && sphere.id == u32::from(produced_slot)
+                    && sphere.active
+                    && !sphere.pending_delete
+                    && sphere.mana == 300
+            }),
+            "the birth receipt names the live exact 300-mana source carrier"
+        );
+        // A birth callback refreshes owner rows after the pass's published
+        // sub_60F00 census. The next ordinary source boundary publishes it.
+        session
+            .step(guard(&session), GameCommand::default())
+            .unwrap();
+        let published_economy = session.backend().campaign.level2_compatibility().economy();
+        assert_eq!(
+            published_economy.slot_generation(produced_slot),
+            produced_generation
+        );
+        assert!(
+            published_economy.spheres().iter().any(|sphere| {
+                sphere.source_entity_index == produced_slot
+                    && sphere.id == u32::from(produced_slot)
+                    && sphere.active
+                    && !sphere.pending_delete
+                    && sphere.mana == 300
+            }),
+            "the publication boundary retains the original sphere occurrence"
+        );
+
+        let source_slots = session
+            .backend()
+            .package_campaign
+            .level2_compatibility()
+            .goats()
+            .iter()
+            .filter(|goat| goat.mana == 300)
+            .map(|goat| goat.entity_index)
+            .collect::<BTreeSet<_>>();
+        let economy = session.backend().campaign.level2_compatibility().economy();
+        let mut seen = BTreeSet::new();
+        let mut selected_receipt = None;
+        for (event_index, event) in economy.events().iter().enumerate() {
+            if let crate::native_world::Level2EconomyEvent::ManaSphereSpawned {
+                sphere_id,
+                source_entity_index,
+                mana: 300,
+            } = *event
+            {
+                let slot = u16::try_from(sphere_id).expect("source sphere slot");
+                record_qualified_level_one_goat_birth(
+                    &source_slots,
+                    &mut seen,
+                    event_index,
+                    source_entity_index,
+                    slot,
+                )
+                .unwrap();
+                if source_entity_index == GOAT_SLOT {
+                    selected_receipt = Some((event_index, source_entity_index, slot));
+                }
+            }
+        }
+        let selected_receipt = selected_receipt.expect("selected ordinary Goat birth");
+        assert_eq!(selected_receipt.2, sphere_slot.unwrap());
+        assert_eq!(
+            economy.owner_mana_global(),
+            19_577 + 300 * i32::try_from(seen.len()).unwrap(),
+            "early real Goat receipts account for the exact reset-relative total"
+        );
+        let before_negative = seen.clone();
+        assert!(
+            record_qualified_level_one_goat_birth(
+                &source_slots,
+                &mut seen,
+                selected_receipt.0,
+                selected_receipt.1,
+                selected_receipt.2,
+            )
+            .is_err(),
+            "a duplicate receipt cannot add another 300 mana"
+        );
+        assert!(
+            record_qualified_level_one_goat_birth(
+                &source_slots,
+                &mut seen,
+                economy.events().len(),
+                selected_receipt.1,
+                selected_receipt.2,
+            )
+            .is_err(),
+            "a second event cannot convert the same qualified Goat twice"
+        );
+        assert!(!source_slots.contains(&0));
+        assert!(
+            record_qualified_level_one_goat_birth(
+                &source_slots,
+                &mut seen,
+                economy.events().len(),
+                0,
+                selected_receipt.2,
+            )
+            .is_err(),
+            "an unqualified producer cannot inflate the denominator"
+        );
+        assert_eq!(
+            seen, before_negative,
+            "rejected receipts leave the ledger unchanged"
+        );
     }
 
     #[test]
@@ -22139,9 +22252,30 @@ pub(crate) mod tests {
         );
     }
 
+    fn record_qualified_level_one_goat_birth(
+        source_slots: &BTreeSet<u16>,
+        seen: &mut BTreeSet<(usize, u16, u16)>,
+        event_index: usize,
+        source_slot: u16,
+        sphere_slot: u16,
+    ) -> Result<(), &'static str> {
+        if !source_slots.contains(&source_slot) {
+            return Err("300-mana birth has no qualified reset Goat producer");
+        }
+        if seen
+            .iter()
+            .any(|(index, source, _)| *index == event_index || *source == source_slot)
+        {
+            return Err("qualified Goat birth receipt or producer was duplicated");
+        }
+        seen.insert((event_index, source_slot, sphere_slot));
+        Ok(())
+    }
+
     pub(crate) fn complete_real_level_one_castle_route_to_group_six(
         mut session: &mut GameSession<Mc2CampaignBackend>,
     ) {
+        const RESET_WORLD_MANA: i32 = 19_577;
         const ARCHER_ROWS: [u16; 4] = [101, 102, 103, 106];
         const CASTLE_PICKUP_RECORD: u16 = 31;
         const CASTLE_FAMILY: u8 = 2;
@@ -22155,6 +22289,17 @@ pub(crate) mod tests {
             mana: i32,
         }
 
+        assert_eq!(
+            session
+                .backend()
+                .package_campaign
+                .level2_compatibility()
+                .economy()
+                .owner_mana_global(),
+            RESET_WORLD_MANA,
+            "the qualified reset package fixes the world mana baseline"
+        );
+
         let castle_id = SemanticId::parse("spell.castle").unwrap();
         let fireball_id = SemanticId::parse("spell.fireball").unwrap();
         let possession_id = SemanticId::parse("spell.possession").unwrap();
@@ -22164,6 +22309,59 @@ pub(crate) mod tests {
             .level2_compatibility()
             .state
             .entity_index;
+
+        let goat_source_slots = session
+            .backend()
+            .package_campaign
+            .level2_compatibility()
+            .goats()
+            .iter()
+            .filter(|goat| goat.mana == 300)
+            .map(|goat| goat.entity_index)
+            .collect::<BTreeSet<_>>();
+        // The reset roster and full event chronology include ambient Goat
+        // deaths during Archer flight, claiming and Castle transfer.
+        let mut goat_event_cursor = 0;
+        // Event indices bind births even after numeric sphere-slot reuse;
+        // current carrier selection below separately binds its generation.
+        let mut seen_goat_occurrences = BTreeSet::new();
+        let capture_goat_occurrences =
+            |session: &GameSession<Mc2CampaignBackend>,
+             event_cursor: &mut usize,
+             seen: &mut BTreeSet<(usize, u16, u16)>| {
+                let economy = session.backend().campaign.level2_compatibility().economy();
+                let event_end = economy.events().len();
+                for (offset, event) in economy.events()[*event_cursor..event_end]
+                    .iter()
+                    .enumerate()
+                {
+                    let crate::native_world::Level2EconomyEvent::ManaSphereSpawned {
+                        sphere_id,
+                        source_entity_index,
+                        mana: 300,
+                    } = *event
+                    else {
+                        continue;
+                    };
+                    let slot = u16::try_from(sphere_id).expect("Goat sphere id fits its slot");
+                    record_qualified_level_one_goat_birth(
+                        &goat_source_slots,
+                        seen,
+                        *event_cursor + offset,
+                        source_entity_index,
+                        slot,
+                    )
+                    .expect("one birth receipt per qualified reset Goat");
+                }
+                *event_cursor = event_end;
+            };
+
+        let known_world_mana = |archer_births: usize, goat_births: usize| {
+            RESET_WORLD_MANA
+                + 500 * i32::try_from(archer_births).expect("four Archer births fit i32")
+                + 300 * i32::try_from(goat_births).expect("qualified Goat births fit i32")
+        };
+        capture_goat_occurrences(session, &mut goat_event_cursor, &mut seen_goat_occurrences);
 
         let step_toward = |session: &mut GameSession<Mc2CampaignBackend>,
                            target: crate::Position| {
@@ -22397,10 +22595,6 @@ pub(crate) mod tests {
                 .economy()
                 .events()
                 .len();
-            let (player_yaw, player_fov) = {
-                let state = session.backend().campaign.level2_compatibility().state;
-                (state.yaw, state.entity_fov)
-            };
             session
                 .step(
                     guard(session),
@@ -22435,7 +22629,7 @@ pub(crate) mod tests {
                     mana: sphere.mana,
                 };
             }
-            let (sphere_position, target_top) = {
+            let (sphere_position, target_top, player_yaw, player_fov, player_speed, aim_yaw_offset) = {
                 let compatibility = session.backend().campaign.level2_compatibility();
                 assert_eq!(
                     compatibility.economy().slot_generation(sphere_slot),
@@ -22461,6 +22655,13 @@ pub(crate) mod tests {
                     compatibility
                         .possession_guidance_target_top_for_test(sphere_slot)
                         .expect("current death sphere has an exact source guidance top"),
+                    compatibility.state.yaw,
+                    compatibility.state.entity_fov,
+                    compatibility.state.actual_speed,
+                    compatibility
+                        .shared_spells()
+                        .beyond_sight_auxiliary()
+                        .next_entity,
                 )
             };
             let mut possession_cast_position = sphere_position;
@@ -22468,12 +22669,23 @@ pub(crate) mod tests {
                 &mut possession_cast_position,
                 player_yaw.wrapping_add(1_024),
                 0,
-                crate::level1_mission::POSSESSION_PROJECTILE_SPEED,
+                crate::level1_mission::POSSESSION_PROJECTILE_SPEED.wrapping_add(player_speed),
             );
             let mut launch_position = possession_cast_position;
             launch_position.z = launch_position.z.wrapping_add(player_fov);
             let (launch_yaw, launch_pitch) =
                 crate::level1_mission::projectile_guidance_angles(launch_position, target_top);
+            // The ordinary selected cast launches 256 units to the left of
+            // the parent, whose yaw excludes the retained auxiliary aim.
+            // Invert that displacement so this source-speed forecast starts
+            // at the same origin as the real holder constructor.
+            let hand_yaw = launch_yaw.wrapping_sub(aim_yaw_offset).wrapping_sub(512);
+            crate::move_entity(
+                &mut possession_cast_position,
+                hand_yaw.wrapping_add(1_024),
+                0,
+                256,
+            );
             let compatibility = session.backend_mut().campaign.level2_compatibility_mut();
             compatibility
                 .set_level2_entity_position(player_entity, possession_cast_position)
@@ -22741,6 +22953,7 @@ pub(crate) mod tests {
         session
             .step(guard(&session), GameCommand::default())
             .unwrap();
+        capture_goat_occurrences(session, &mut goat_event_cursor, &mut seen_goat_occurrences);
         assert_eq!(
             session
                 .backend()
@@ -22748,8 +22961,8 @@ pub(crate) mod tests {
                 .level2_compatibility()
                 .economy()
                 .owner_mana_global(),
-            20_077,
-            "the first Archer death sphere adds exactly 500 mana to the reset census"
+            known_world_mana(1, seen_goat_occurrences.len()),
+            "the first Archer adds exactly 500 mana plus explicitly recorded Goat births"
         );
         let pickup_slot = castle_pickup.source_entity_index;
         if session.backend().campaign.level2_compatibility().players()[0].enabled_spell_holders
@@ -22902,7 +23115,10 @@ pub(crate) mod tests {
             |session: &mut GameSession<Mc2CampaignBackend>,
              occurrence: SphereOccurrence,
              expected_mana: i32,
-             expected_global: Option<i32>| {
+             archer_births: usize,
+             goat_event_cursor: &mut usize,
+             seen_goat_occurrences: &mut BTreeSet<(usize, u16, u16)>| {
+                capture_goat_occurrences(session, goat_event_cursor, seen_goat_occurrences);
                 let sphere_slot = occurrence.slot;
                 let positions = {
                     let economy = session.backend().campaign.level2_compatibility().economy();
@@ -22980,6 +23196,7 @@ pub(crate) mod tests {
                         session
                             .step(guard(session), GameCommand::default())
                             .unwrap();
+                        capture_goat_occurrences(session, goat_event_cursor, seen_goat_occurrences);
                     }
                 }
                 let economy = session.backend().campaign.level2_compatibility().economy();
@@ -22988,13 +23205,11 @@ pub(crate) mod tests {
                     Some(expected_mana),
                     "claimed sphere {sphere_slot} must deposit exactly once"
                 );
-                if let Some(expected_global) = expected_global {
-                    assert_eq!(
-                        economy.owner_mana_global(),
-                        expected_global,
-                        "sphere-to-Castle transfer must conserve the live denominator"
-                    );
-                }
+                assert_eq!(
+                    economy.owner_mana_global(),
+                    known_world_mana(archer_births, seen_goat_occurrences.len()),
+                    "sphere-to-Castle transfer conserves mana except explicit qualified births"
+                );
                 assert!(
                     !economy.spheres().iter().any(|sphere| {
                         sphere.source_entity_index == sphere_slot
@@ -23014,7 +23229,9 @@ pub(crate) mod tests {
             &mut session,
             first_archer_sphere,
             expected_castle_mana,
-            Some(20_077),
+            1,
+            &mut goat_event_cursor,
+            &mut seen_goat_occurrences,
         );
 
         for (archer_index, archer) in archers.iter().skip(1).enumerate() {
@@ -23023,8 +23240,9 @@ pub(crate) mod tests {
             session
                 .step(guard(&session), GameCommand::default())
                 .unwrap();
-            let expected_global =
-                20_077 + 500 * i32::try_from(archer_index + 1).expect("four Archers fit i32");
+            capture_goat_occurrences(session, &mut goat_event_cursor, &mut seen_goat_occurrences);
+            let archer_births = archer_index + 2;
+            let expected_global = known_world_mana(archer_births, seen_goat_occurrences.len());
             assert_eq!(
                 session
                     .backend()
@@ -23045,7 +23263,9 @@ pub(crate) mod tests {
                 &mut session,
                 occurrence,
                 expected_castle_mana,
-                Some(expected_global),
+                archer_births,
+                &mut goat_event_cursor,
+                &mut seen_goat_occurrences,
             );
             mana_sphere_slots.push(claimed_occurrence.slot);
         }
@@ -23058,52 +23278,8 @@ pub(crate) mod tests {
                 .level2_compatibility()
                 .economy()
                 .owner_mana_global(),
-            21_577
+            known_world_mana(ARCHER_ROWS.len(), seen_goat_occurrences.len())
         );
-
-        let goat_source_slots = session
-            .backend()
-            .campaign
-            .level2_compatibility()
-            .goats()
-            .iter()
-            .filter(|goat| goat.mana == 300)
-            .map(|goat| goat.entity_index)
-            .collect::<BTreeSet<_>>();
-        let mut goat_event_cursor = session
-            .backend()
-            .campaign
-            .level2_compatibility()
-            .economy()
-            .events()
-            .len();
-        let mut seen_goat_occurrences = BTreeSet::new();
-        let capture_goat_occurrences =
-            |session: &GameSession<Mc2CampaignBackend>,
-             event_cursor: &mut usize,
-             seen: &mut BTreeSet<(usize, u16, u16)>| {
-                let economy = session.backend().campaign.level2_compatibility().economy();
-                let event_end = economy.events().len();
-                for (offset, event) in economy.events()[*event_cursor..event_end]
-                    .iter()
-                    .enumerate()
-                {
-                    let crate::native_world::Level2EconomyEvent::ManaSphereSpawned {
-                        sphere_id,
-                        source_entity_index,
-                        mana: 300,
-                    } = *event
-                    else {
-                        continue;
-                    };
-                    if !goat_source_slots.contains(&source_entity_index) {
-                        continue;
-                    }
-                    let slot = u16::try_from(sphere_id).expect("Goat sphere id fits its slot");
-                    assert!(seen.insert((*event_cursor + offset, source_entity_index, slot)));
-                }
-                *event_cursor = event_end;
-            };
 
         for _ in 0..24 {
             if session
@@ -23232,19 +23408,24 @@ pub(crate) mod tests {
                     &mut seen_goat_occurrences,
                 );
                 expected_castle_mana += occurrence.mana;
-                deposit_claimed_sphere(&mut session, occurrence, expected_castle_mana, None);
+                deposit_claimed_sphere(
+                    &mut session,
+                    occurrence,
+                    expected_castle_mana,
+                    ARCHER_ROWS.len(),
+                    &mut goat_event_cursor,
+                    &mut seen_goat_occurrences,
+                );
                 capture_goat_occurrences(
                     &session,
                     &mut goat_event_cursor,
                     &mut seen_goat_occurrences,
                 );
                 deposited_goat_mana += occurrence.mana;
-                let distinct_deaths = i32::try_from(seen_goat_occurrences.len())
-                    .expect("package Goat occurrence census fits i32");
                 let economy = session.backend().campaign.level2_compatibility().economy();
                 assert_eq!(
                     economy.owner_mana_global(),
-                    21_577 + 300 * distinct_deaths,
+                    known_world_mana(ARCHER_ROWS.len(), seen_goat_occurrences.len()),
                     "each distinct package Goat death adds one exact 300-mana row"
                 );
                 assert_eq!(
@@ -23405,9 +23586,12 @@ pub(crate) mod tests {
             "every current Goat occurrence must be deposited"
         );
         assert_eq!(deposited_goat_mana, 300 * distinct_deaths);
-        assert_eq!(economy.owner_mana_global(), 21_577 + 300 * distinct_deaths);
-        let exact_percent =
-            100_i32 * (2_000 + deposited_goat_mana) / (21_577 + 300 * distinct_deaths);
+        assert_eq!(
+            economy.owner_mana_global(),
+            known_world_mana(ARCHER_ROWS.len(), seen_goat_occurrences.len())
+        );
+        let exact_percent = 100_i32 * (2_000 + deposited_goat_mana)
+            / known_world_mana(ARCHER_ROWS.len(), seen_goat_occurrences.len());
         assert_eq!(
             100_i32
                 * economy
