@@ -14711,25 +14711,30 @@ impl Level2ResetSession {
                     )
             })
             .collect::<Vec<_>>();
-        let callback_start_entities = self.session.state.live.economy.entities.clone();
         let dynamic_targets = self.model9_dynamic_damage_targets();
         let (position, outcome) = {
             let live = &mut self.session.state.live;
-            let source = &mut live.economy.entities[usize::from(source_slot)];
+            // Only this row changes during the kernel. Borrow the original
+            // table as the frozen callback view, including its old source row.
+            let mut source = live.economy.entities[usize::from(source_slot)].clone();
             let outcome = campaign_shared_families::step_model9_action74(
-                source,
+                &mut source,
                 &live.terrain,
-                &callback_start_entities,
+                &live.economy.entities,
                 &dynamic_targets,
                 movement_pose,
                 reaction_pose,
                 scan_period,
                 awareness_radius,
                 &candidates,
-            )
-            .map_err(|error| error.to_string())?;
-            (source.position, outcome)
+            );
+            let position = source.position;
+            // Damage consumption can mutate the row before a child/attacker
+            // error. Preserve those writes before propagating the result.
+            live.economy.entities[usize::from(source_slot)] = source;
+            (position, outcome)
         };
+        let outcome = outcome.map_err(|error| error.to_string())?;
         if let Some(prey_slot) = outcome.prey_to_consume {
             self.convert_model9_prey(source_slot, prey_slot, scan_period, true)?;
         }
@@ -20656,6 +20661,194 @@ mod tests {
                 live.economy.economy.possession_projectiles().is_empty(),
                 flags == 0
             );
+        }
+    }
+
+    #[test]
+    fn level_three_skeleton_action74_local_row_matches_frozen_table_callback() {
+        let package = level_three_descriptor_fixture_path();
+        let mut seed = CampaignSession::open(&package, CampaignSelection::LEVEL3).unwrap();
+        let session = seed.level2_compatibility_mut();
+        session.consume_authored_group(0, 0, 5).unwrap();
+        let predator_slot = 122_u16;
+        let (prey_slot, prey_position) = session
+            .economy()
+            .authored_class5()
+            .iter()
+            .find(|source| source.model == 4)
+            .map(|source| (source.source_entity_index, source.position))
+            .unwrap();
+        session
+            .set_level2_entity_position(
+                predator_slot,
+                Position {
+                    x: prey_position.x.wrapping_sub(100),
+                    ..prey_position
+                },
+            )
+            .unwrap();
+        let source = &mut session.session.state.live.economy.entities[usize::from(predator_slot)];
+        assert_eq!((source.class, source.model), (5, 9));
+        source.set_source_action(74);
+        source.set_source_dword_10(0);
+        source.phase = 0;
+        source.record[66] = 0;
+        source.record[61] = 0;
+        source.record[56..58].fill(0);
+        source.clear_source_upkeep_owner();
+        let initial_life = source.life;
+
+        for case in [
+            "prey",
+            "prey_allocation_failure",
+            "dynamic_damage",
+            "invalid_child",
+        ] {
+            let mut actual = seed.clone();
+            let session = actual.level2_compatibility_mut();
+            if case == "prey_allocation_failure" {
+                session
+                    .session
+                    .state
+                    .live
+                    .economy
+                    .economy
+                    .exhaust_new_event_capacity_for_test()
+                    .unwrap();
+            }
+            if matches!(case, "dynamic_damage" | "invalid_child") {
+                let source =
+                    &mut session.session.state.live.economy.entities[usize::from(predator_slot)];
+                source.set_source_upkeep_payload(100);
+                source.record[102..104].copy_from_slice(&prey_slot.to_le_bytes());
+                if case == "invalid_child" {
+                    // The kernel consumes damage before rejecting this link.
+                    source.record[56..58].copy_from_slice(&u16::MAX.to_le_bytes());
+                }
+            }
+            let model_slots = session
+                .session
+                .state
+                .live
+                .economy
+                .rebuilt_class5_model_slots();
+            let mut reference = actual.clone();
+            let expected = {
+                let session = reference.level2_compatibility_mut();
+                let movement_pose = session.model9_particle_pose(201).unwrap();
+                let reaction_pose = session.model9_particle_pose(202).unwrap();
+                let source =
+                    &session.session.state.live.economy.entities[usize::from(predator_slot)];
+                let parameter = &session.session.definition.presentation.entity_parameters
+                    [usize::from(source.parameter_relation.unwrap())];
+                let scan_period = u16::from_le_bytes([parameter[26], parameter[27]]);
+                let awareness_radius =
+                    i32::from(i16::from_le_bytes([parameter[28], parameter[29]]));
+                let scanned_model =
+                    [4_u8, 12, 13][usize::from((u16::from(source.phase) / scan_period) % 3)];
+                let candidates = model_slots[usize::from(scanned_model)]
+                    .iter()
+                    .copied()
+                    .filter_map(|source_slot| {
+                        session
+                            .session
+                            .state
+                            .live
+                            .economy
+                            .class5_position(source_slot)
+                            .map(
+                                |position| campaign_shared_families::Model9ReactionCandidate {
+                                    source_slot,
+                                    position,
+                                },
+                            )
+                    })
+                    .collect::<Vec<_>>();
+                let dynamic_targets = session.model9_dynamic_damage_targets();
+                // Retain the previous full-table callback as the differential
+                // oracle. The reference mutates the canonical source in place.
+                let frozen = session.session.state.live.economy.entities.clone();
+                let result = {
+                    let live = &mut session.session.state.live;
+                    let source = &mut live.economy.entities[usize::from(predator_slot)];
+                    campaign_shared_families::step_model9_action74(
+                        source,
+                        &live.terrain,
+                        &frozen,
+                        &dynamic_targets,
+                        movement_pose,
+                        reaction_pose,
+                        scan_period,
+                        awareness_radius,
+                        &candidates,
+                    )
+                    .map_err(|error| error.to_string())
+                };
+                result.and_then(|outcome| {
+                    let position = session.session.state.live.economy.entities
+                        [usize::from(predator_slot)]
+                    .position;
+                    if let Some(prey) = outcome.prey_to_consume {
+                        session.convert_model9_prey(predator_slot, prey, scan_period, true)?;
+                    }
+                    session
+                        .session
+                        .state
+                        .live
+                        .economy
+                        .economy
+                        .map_chains
+                        .sync_entity(RenderableMapSeed {
+                            entity_index: predator_slot,
+                            active: true,
+                            x: position.x,
+                            y: position.y,
+                        })
+                        .map_err(|error| {
+                            format!("model-9 source slot {predator_slot} map sync failed: {error}")
+                        })
+                })
+            };
+            let observed = actual
+                .level2_compatibility_mut()
+                .step_imported_model9_action74(predator_slot, &model_slots);
+            assert_eq!(observed, expected, "{case}");
+            let actual = actual.level2_compatibility();
+            let reference = reference.level2_compatibility();
+            assert_eq!(actual.entities(), reference.entities(), "{case}");
+            assert_eq!(
+                actual.campaign_state_hash(),
+                reference.campaign_state_hash(),
+                "{case}"
+            );
+            let source = &actual.entities()[usize::from(predator_slot)];
+            if matches!(case, "dynamic_damage" | "invalid_child") {
+                assert_eq!(source.life, initial_life - 100);
+                assert_eq!(source.source_upkeep_word_62(), 0);
+            }
+            if case == "dynamic_damage" {
+                assert_eq!((source.record[69], source.record[70]), (5, 4));
+            }
+            if case == "invalid_child" {
+                assert!(observed.unwrap_err().contains("invalid child-chain"));
+            } else {
+                observed.unwrap();
+            }
+            if matches!(case, "prey" | "prey_allocation_failure") {
+                assert!(
+                    !actual
+                        .economy()
+                        .authored_class5()
+                        .iter()
+                        .find(|source| source.source_entity_index == prey_slot)
+                        .unwrap()
+                        .drawing_enabled
+                );
+                assert_eq!(
+                    actual.economy().converted_skeleton_origins.is_empty(),
+                    case == "prey_allocation_failure"
+                );
+            }
         }
     }
 
