@@ -9210,7 +9210,7 @@ pub(crate) mod tests {
         session: &mut GameSession<Mc2CampaignBackend>,
         source_slot: u16,
         observed_actions: &mut BTreeMap<u16, SkeletonLifecycleObservation>,
-    ) -> crate::native_world::EntitySnapshot {
+    ) -> Option<crate::native_world::EntitySnapshot> {
         for _ in 0..24 {
             if let Some(source) =
                 observed_level_three_skeleton(session, source_slot, observed_actions)
@@ -9227,9 +9227,39 @@ pub(crate) mod tests {
         }
 
         for _ in 0..640 {
-            let source = observed_level_three_skeleton(session, source_slot, observed_actions)
-                .filter(|source| source.life >= 0 && matches!(source.action, 74 | 79))
-                .expect("real Level 3 Skeleton remains in a public Fireball-consuming state");
+            let Some(source) =
+                observed_level_three_skeleton(session, source_slot, observed_actions)
+            else {
+                let observation = &observed_actions[&source_slot];
+                assert!(
+                    observation.actions.contains(&76) && observation.actions.contains(&77),
+                    "selected Skeleton occurrence {source_slot} disappeared without its observed pre-kill/kill: {:?}",
+                    observation.actions,
+                );
+                return None;
+            };
+            if source.life < 0 {
+                assert!(
+                    matches!(source.action, 76 | 77),
+                    "selected negative-life Skeleton must enter ordinary pre-kill/kill: {source:?}",
+                );
+                return None;
+            }
+            if !matches!(source.action, 74 | 79) {
+                assert!(
+                    matches!(source.action, 72 | 73),
+                    "selected live Skeleton entered an unsupported source action: {source:?}",
+                );
+                // Ordinary movement/countdown may be revisited while prior
+                // impacts drain or the player approaches. Keep the original
+                // occurrence and let its real callback resume damage handling.
+                step_real_level_three_skeleton_route_for_test(
+                    session,
+                    GameCommand::default(),
+                    observed_actions,
+                );
+                continue;
+            }
             let state = session.backend().campaign.level2_compatibility().state;
             let dx = i32::from(
                 source
@@ -9251,7 +9281,7 @@ pub(crate) mod tests {
                     .cast_unsigned(),
             );
             if distance <= 3_500 {
-                return source;
+                return Some(source);
             }
             let desired = i16::try_from(crate::heading_for_positions(
                 state.position,
@@ -9262,7 +9292,11 @@ pub(crate) mod tests {
             command.pitch_axis = -127;
             step_real_level_three_skeleton_route_for_test(session, command, observed_actions);
         }
-        panic!("ordinary player flight did not reach Skeleton source slot {source_slot}");
+        panic!(
+            "ordinary player flight did not reach Skeleton source slot {source_slot}: source={:?} actions={:?}",
+            observed_level_three_skeleton(session, source_slot, observed_actions),
+            observed_actions[&source_slot].actions
+        );
     }
 
     fn fire_real_player_fireball_at_level_three_skeleton_for_test(
@@ -9294,11 +9328,16 @@ pub(crate) mod tests {
             );
         }
 
-        let aimed = drive_real_level_three_skeleton_to_fireball_range_for_test(
+        let Some(aimed) = drive_real_level_three_skeleton_to_fireball_range_for_test(
             session,
             source_slot,
             observed_actions,
-        );
+        ) else {
+            // This occurrence completed its ordinary terminal lifecycle while
+            // earlier real impacts drained. The outer bounded controller will
+            // recensus surviving original occurrences; no new hit is claimed.
+            return Vec::new();
+        };
         let (
             attacker,
             direction_bits,
