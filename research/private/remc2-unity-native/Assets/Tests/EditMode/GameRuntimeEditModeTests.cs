@@ -9,6 +9,60 @@ namespace MagicCarpet.Native.Tests
 {
     public sealed class GameRuntimeEditModeTests
     {
+        [TestCase(2, "objective.reach.payahandra_ruins", "Fly to Payahandra's ruins.")]
+        [TestCase(3, "objective.clear.undead_horde", "Destroy the undead horde.")]
+        [Timeout(180000)]
+        public void CurrentDayPlayerEntryShowsRustSelectedObjectiveAndClearsItOnTitle(
+            int externalLevel, string objectiveId, string instruction)
+        {
+            var activeBefore = NativeSession.ActiveSessionCount;
+            var generated = Path.Combine(PrivateRoot, "generated");
+            var entry = Path.Combine(generated,
+                $"opened-l{externalLevel}-block32-castle-boot-v5-20261005.json");
+            Assert.That(File.Exists(entry), Is.True, "exact Rust-generated current player entry");
+            var root = new GameObject($"current Level {externalLevel} objective instruction");
+            root.SetActive(false);
+            var runtime = root.AddComponent<MagicCarpetRuntime>();
+            try
+            {
+                runtime.QualificationInitializeGameRuntimeProductionFromArguments(new[] {
+                    "-mc-game-runtime", "-mc-runtime-replay-load", entry,
+                    "-mc-runtime-package", LevelOnePackage,
+                    "-mc-runtime-owner-cache", Path.Combine(generated, "level1-unity-asset-cache-plan29-final"),
+                    "-mc-runtime-presentation-cache", Path.Combine(generated, "level1-unity-asset-cache-plan29-final"),
+                    "-mc-runtime-package", Path.Combine(generated, "level2-day-block32-campaign-v2"),
+                    "-mc-runtime-owner-cache", Path.Combine(generated, "level2-day-spell-owner-cache-v3/components/material"),
+                    "-mc-runtime-presentation-cache", Path.Combine(generated, "level2-day-spell-owner-cache-v3"),
+                    "-mc-runtime-package", Path.Combine(generated, "level3-day-block32-campaign-recipe-v2"),
+                    "-mc-runtime-owner-cache", Path.Combine(generated, "level3-day-spell-owner-cache-v3/components/material"),
+                    "-mc-runtime-presentation-cache", Path.Combine(generated, "level3-day-spell-owner-cache-v3") });
+                var opened = runtime.GameRuntimeProductionIdentity;
+                var before = runtime.GameRuntimeProductionCampaignSnapshot;
+                Assert.That(opened.mode, Is.EqualTo(GameRuntimeTransport.PlayingMode));
+                Assert.That(before.value.objective_progress.current_objective, Is.EqualTo(objectiveId));
+                Assert.That(runtime.GameRuntimeObjectiveInstruction, Is.EqualTo(instruction));
+                Assert.That(runtime.GameRuntimeProductionCampaignSnapshot.value.state_hash,
+                    Is.EqualTo(before.value.state_hash), "caption reads are observational");
+                runtime.QualificationDriveGameRuntimeFrames(2);
+                var stepped = runtime.GameRuntimeProductionCampaignSnapshot;
+                Assert.That(stepped.identity.session_id, Is.EqualTo(opened.session.session_id));
+                Assert.That(ulong.Parse(stepped.identity.tick), Is.EqualTo(ulong.Parse(before.identity.tick) + 2));
+                Assert.That(stepped.value.objective_progress.current_objective, Is.EqualTo(objectiveId));
+                Assert.That(runtime.GameRuntimeObjectiveInstruction, Is.EqualTo(instruction));
+                runtime.QualificationApplyGameRuntimeProductionInput(true, false);
+                Assert.That(runtime.ExecuteGameRuntimeMenuAction(CampaignMenuPresenter.Action.Title), Is.True);
+                Assert.That(runtime.GameRuntimeProductionIdentity.mode, Is.EqualTo(GameRuntimeTransport.TitleMode));
+                Assert.That(runtime.GameRuntimeObjectiveInstruction, Is.Null,
+                    "the former level must not leave an instruction on Title or the next level");
+            }
+            finally
+            {
+                runtime.QualificationDisposeGameRuntimeProduction();
+                UnityEngine.Object.DestroyImmediate(root);
+            }
+            Assert.That(NativeSession.ActiveSessionCount, Is.EqualTo(activeBefore));
+        }
+
         [Test]
         [Timeout(300000)]
         public void ProductionNightNewGameCastSaveLoadResumeAndRetryKeepsRustAuthority()

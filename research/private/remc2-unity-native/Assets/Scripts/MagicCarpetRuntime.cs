@@ -9701,6 +9701,7 @@ namespace MagicCarpet.Native
                 observation.value.player_pose.yaw);
             level3PresentationSurface.PresentView(observation.value.player_pose);
             PresentLevel2DayHud(campaignSession.DayHudState(campaignSession.Tick));
+            gameRuntimeObjectiveInstruction = Mc2ObjectiveText.Resolve(observation.value.objective_progress);
         }
 
         private void DisposeGameRuntimeLevel2Presentation()
@@ -9745,6 +9746,7 @@ namespace MagicCarpet.Native
 
         private void DisposeGameRuntimeCampaignPresentation()
         {
+            gameRuntimeObjectiveInstruction = null;
             if (gameRuntimeNightSurface != null)
             {
                 gameRuntimeNightSurface.Dispose();
@@ -9785,6 +9787,7 @@ namespace MagicCarpet.Native
             level2TerrainState = campaignSession.TerrainState();
             level2DayHud = campaignSession.DayHudState(tick);
             PresentLevel2DayHud(level2DayHud);
+            gameRuntimeObjectiveInstruction = Mc2ObjectiveText.Resolve(observation.value.objective_progress);
             if (level2DayPresentationSurface != null)
             {
                 level2DayPresentationSurface.Present(campaignSession, ownerAssetCache,
