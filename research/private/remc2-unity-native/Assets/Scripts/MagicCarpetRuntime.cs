@@ -920,6 +920,8 @@ namespace MagicCarpet.Native
         private bool rightSpellRequested;
         private bool selectedSpellRequested;
         private string gameRuntimeSpellSelectionRequested;
+        private string gameRuntimeSpellInputStatus;
+        private float gameRuntimeSpellInputStatusUntil;
         private short requestedSpell = NativeSim.NoRequestedSpell;
         private int level2SpellMenuCursor = -1;
         private bool spellMenuOpen;
@@ -2844,13 +2846,34 @@ namespace MagicCarpet.Native
             // step and is cleared whenever the runtime enters Paused.
             appliedRoll = ClampToSByte(steeringRoll);
             appliedPitch = ClampToSByte(steeringPitch);
-            gameRuntimeCampaignSnapshot = session.GameRuntimeCampaignStep(
-                appliedRoll,
-                appliedPitch,
-                unchecked((sbyte)flags),
-                0,
-                0,
-                selectSpell);
+            try
+            {
+                gameRuntimeCampaignSnapshot = session.GameRuntimeCampaignStep(
+                    appliedRoll, appliedPitch, unchecked((sbyte)flags), 0, 0, selectSpell);
+                if (selectSpell != null)
+                {
+                    gameRuntimeSpellInputStatus = selectSpell switch
+                    {
+                        "spell.fireball" => "Fireball selected. Space to cast.",
+                        "spell.possession" => "Possession selected. Space to cast.",
+                        "spell.castle" => "Castle selected. Space to cast.",
+                        "spell.speed" => "Speed selected. Space to cast.",
+                        _ => null,
+                    };
+                    gameRuntimeSpellInputStatusUntil = Time.unscaledTime + 3f;
+                }
+            }
+            catch (EngineSessionTransport.CommandException exception)
+                when (selectSpell != null && exception.Status == NativeSim.ValidationFailed)
+            {
+                // Rust rejects an unacquired selection before changing the
+                // session. Keep the ordinary flight turn, but cancel the
+                // selected cast so an unavailable key cannot cast the old spell.
+                gameRuntimeSpellInputStatus = "That spell has not been acquired.";
+                gameRuntimeSpellInputStatusUntil = Time.unscaledTime + 3f;
+                gameRuntimeCampaignSnapshot = session.GameRuntimeCampaignStep(
+                    appliedRoll, appliedPitch, unchecked((sbyte)(flags & ~0x40)), 0, 0);
+            }
             gameRuntimeSpellSelectionRequested = null;
             var afterStepIdentity = session.GameRuntimeIdentity();
             DrainGameRuntimeSemanticEvents();
@@ -3226,8 +3249,14 @@ namespace MagicCarpet.Native
                     ApplyGameRuntimeProductionInput(
                         Input.GetKeyDown(KeyCode.P) || Input.GetKeyDown(KeyCode.Escape),
                         false,
-                        Input.GetMouseButtonDown(0) || Input.GetKeyDown(KeyCode.Space),
+                        Input.GetMouseButtonDown(0),
                         Input.GetMouseButtonDown(1));
+                    var spellKey = Input.GetKeyDown(KeyCode.Alpha1) ? 1 :
+                        Input.GetKeyDown(KeyCode.Alpha2) ? 2 :
+                        Input.GetKeyDown(KeyCode.Alpha3) ? 3 :
+                        Input.GetKeyDown(KeyCode.Alpha4) ? 4 : 0;
+                    if (spellKey != 0) SubmitGameRuntimeSpellKey(spellKey);
+                    if (Input.GetKeyDown(KeyCode.Space)) RequestGameRuntimeSelectedSpellCast();
                     ApplyGameRuntimeReplaySaveInput(Input.GetKeyDown(KeyCode.F5));
                     if (session.GameRuntimeIdentity().mode ==
                             GameRuntimeTransport.PlayingMode &&
@@ -9211,13 +9240,35 @@ namespace MagicCarpet.Native
             return SubmitGameRuntimeSpellSelection(semanticId);
         }
 
+        internal bool SubmitGameRuntimeSpellKey(int key)
+        {
+            var semanticId = key switch
+            {
+                1 => "spell.fireball",
+                2 => "spell.possession",
+                3 => "spell.castle",
+                4 => "spell.speed",
+                _ => null,
+            };
+            return semanticId != null && SubmitGameRuntimeSpellSelection(semanticId);
+        }
+
+        internal bool RequestGameRuntimeSelectedSpellCast()
+        {
+            if (!GameRuntimeProductionStartupReady ||
+                session.GameRuntimeIdentity().mode != GameRuntimeTransport.PlayingMode)
+                return false;
+            selectedSpellRequested = true;
+            return true;
+        }
+
         internal void QualificationRequestGameRuntimeSelectedSpellCast()
         {
             Require(
                 GameRuntimeProductionStartupReady &&
                 session.GameRuntimeIdentity().mode == GameRuntimeTransport.PlayingMode,
                 "game runtime selected-spell input requires a validated Playing owner");
-            selectedSpellRequested = true;
+            RequestGameRuntimeSelectedSpellCast();
         }
 
         private GameRuntimeTransport.CompletionTransitionReceipt
@@ -9493,6 +9544,7 @@ namespace MagicCarpet.Native
             rightSpellRequested = false;
             selectedSpellRequested = false;
             gameRuntimeSpellSelectionRequested = null;
+            gameRuntimeSpellInputStatus = null;
         }
 
         private void ComposeGameRuntimeLevel2Presentation(
@@ -13103,6 +13155,10 @@ namespace MagicCarpet.Native
                     GUI.Label(new Rect(Screen.width * .2f, Screen.height - 75,
                         Screen.width * .6f, 60), gameRuntimeObjectiveInstruction, hudStyle);
                 if (gameRuntimeMode) DrawGameRuntimePauseOverlay();
+                if (gameRuntimeMode && gameRuntimeSpellInputStatus != null &&
+                    Time.unscaledTime <= gameRuntimeSpellInputStatusUntil)
+                    GUI.Label(new Rect(20, 20, Screen.width - 40, 35),
+                        gameRuntimeSpellInputStatus, hudStyle);
                 return;
             }
             if (gameRuntimeMode)

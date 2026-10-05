@@ -981,13 +981,23 @@ namespace MagicCarpet.Native
             return parsed;
         }
 
+        internal sealed class CommandException : InvalidOperationException
+        {
+            internal int Status { get; }
+
+            internal CommandException(string operation, int status, int expected, string detail)
+                : base($"{operation} failed: status={status}, expected={expected}: {detail}")
+            {
+                Status = status;
+            }
+        }
+
         private static void Check(int status, string operation, int expected = NativeSim.Ok)
         {
             if (status != expected)
             {
                 var detail = NativeSession.ReadLastError();
-                throw new InvalidOperationException(
-                    $"{operation} failed: status={status}, expected={expected}: {detail}");
+                throw new CommandException(operation, status, expected, detail);
             }
         }
     }

@@ -2409,6 +2409,18 @@ mod tests {
             };
             let guard = source.identity().guard();
             resolver.open_pending(&mut source, guard, 523).unwrap();
+            if external == 3 {
+                // Direct owner-level play starts with this explicit carried
+                // subset. This does not claim preceding campaign completion.
+                source
+                    .session_mut()
+                    .unwrap()
+                    .backend_mut()
+                    .compatibility_campaign_mut_for_test()
+                    .level2_compatibility_mut()
+                    .apply_carried_spell_families(&[0, 2], Some(0))
+                    .unwrap();
+            }
             let guard = source.session().unwrap().identity().guard();
             source
                 .session_mut()
@@ -2416,6 +2428,14 @@ mod tests {
                 .step(guard, GameCommand::default())
                 .unwrap();
             let save = resolver.save_replay(&source).unwrap();
+            if external == 3 {
+                let save_json: serde_json::Value = serde_json::from_slice(&save).unwrap();
+                assert_eq!(
+                    save_json["semantic_spell_carry"]["acquired"],
+                    serde_json::json!(["fireball", "castle"]),
+                );
+                assert_eq!(save_json["semantic_spell_carry"]["selected"], "fireball");
+            }
             // Desktop replay supplies presentation components. They must not
             // be interpreted as gameplay caches or change replayed authority.
             let cached_resolver = Mc2RuntimePackageResolver::load([

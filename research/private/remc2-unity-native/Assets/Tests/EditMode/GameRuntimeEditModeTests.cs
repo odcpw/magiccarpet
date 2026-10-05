@@ -1,5 +1,6 @@
 using System;
 using System.IO;
+using System.Runtime.InteropServices;
 using System.Text;
 using NUnit.Framework;
 using UnityEngine;
@@ -135,6 +136,7 @@ namespace MagicCarpet.Native.Tests
         {
             public bool cast_left;
             public bool cast_right;
+            public bool cast_selected;
         }
 
         [Serializable]
@@ -2141,10 +2143,10 @@ namespace MagicCarpet.Native.Tests
                 Assert.That(initial.value.presentation_entities, Is.Empty);
 
                 Assert.That(
-                    runtime.QualificationSelectGameRuntimeProductionSpell("spell.fireball"),
+                    runtime.SubmitGameRuntimeSpellKey(1),
                     Is.True);
                 Assert.That(
-                    runtime.QualificationSelectGameRuntimeProductionSpell("spell.castle"),
+                    runtime.SubmitGameRuntimeSpellKey(3),
                     Is.False,
                     "Unity must not overwrite a pending semantic selection before Rust consumes it");
                 runtime.QualificationDriveGameRuntimeFrames(1);
@@ -2152,7 +2154,7 @@ namespace MagicCarpet.Native.Tests
                 Assert.That(selected.identity.tick, Is.EqualTo("1"));
                 Assert.That(selected.value.presentation_entities, Is.Empty);
 
-                runtime.QualificationRequestGameRuntimeSelectedSpellCast();
+                Assert.That(runtime.RequestGameRuntimeSelectedSpellCast(), Is.True);
                 runtime.QualificationDriveGameRuntimeFrames(1);
                 var cast = runtime.GameRuntimeProductionCampaignSnapshot;
                 Assert.That(cast.identity.tick, Is.EqualTo("2"));
@@ -2161,6 +2163,106 @@ namespace MagicCarpet.Native.Tests
                         cast.value.presentation_entities,
                         entity => entity.kind == "spell.fireball.projectile"),
                     Is.True);
+            }
+            finally
+            {
+                runtime.QualificationDisposeNativeOwners();
+                UnityEngine.Object.DestroyImmediate(root);
+            }
+        }
+
+        [Test]
+        [Timeout(180000)]
+        public void ProductionSpellKeysRejectUnacquiredSelectionWithoutCastingOrStoppingFlight()
+        {
+            var root = new GameObject("campaign unavailable spell key");
+            root.SetActive(false);
+            var runtime = root.AddComponent<MagicCarpetRuntime>();
+            try
+            {
+                runtime.QualificationInitializeGameRuntimeProductionFromArguments(
+                    RuntimeArguments(LevelThreePackage, LevelOnePackage, LevelTwoPackage));
+                var before = runtime.GameRuntimeProductionIdentity;
+                var mana = runtime.GameRuntimeProductionCampaignSnapshot.value.player_vitals.mana;
+                Assert.That(runtime.SubmitGameRuntimeSpellKey(0), Is.False);
+                Assert.That(runtime.SubmitGameRuntimeSpellKey(5), Is.False);
+                Assert.That(runtime.SubmitGameRuntimeSpellKey(3), Is.True);
+                Assert.That(runtime.RequestGameRuntimeSelectedSpellCast(), Is.True);
+                runtime.QualificationDriveGameRuntimeFrames(1);
+                Assert.That(runtime.GameRuntimeProductionIdentity.runtime_id, Is.EqualTo(before.runtime_id));
+                Assert.That(runtime.GameRuntimeProductionIdentity.session.tick, Is.EqualTo("1"));
+                var after = runtime.GameRuntimeProductionCampaignSnapshot;
+                Assert.That(after.value.presentation_entities, Is.Empty);
+                Assert.That(after.value.player_vitals.mana, Is.EqualTo(mana));
+                var replay = JsonUtility.FromJson<RecordedInputReplay>(Encoding.UTF8.GetString(
+                    runtime.QualificationSaveGameRuntimeProductionReplay()));
+                Assert.That(replay.operations, Has.Length.EqualTo(1));
+                Assert.That(replay.operations[0].command.cast_selected, Is.False);
+                runtime.QualificationApplyGameRuntimeProductionInput(true, false);
+                Assert.That(runtime.SubmitGameRuntimeSpellKey(1), Is.False);
+                Assert.That(runtime.RequestGameRuntimeSelectedSpellCast(), Is.False);
+            }
+            finally
+            {
+                runtime.QualificationDisposeNativeOwners();
+                UnityEngine.Object.DestroyImmediate(root);
+            }
+        }
+
+        [Test]
+        [Timeout(180000)]
+        public void DirectLevelThreePlayEntryCastsCarriedFireballAndSelectsCastleOnSameHandle()
+        {
+            var generated = Path.Combine(PrivateRoot, "generated");
+            var root = new GameObject("direct owner Level 3 spell controls");
+            root.SetActive(false);
+            var runtime = root.AddComponent<MagicCarpetRuntime>();
+            try
+            {
+                runtime.QualificationInitializeGameRuntimeProductionFromArguments(new[]
+                {
+                    "-mc-game-runtime",
+                    "-mc-runtime-package", LevelOnePackage,
+                    "-mc-runtime-package", Path.Combine(generated, "level2-day-block32-campaign-v2"),
+                    "-mc-runtime-package", Path.Combine(generated, "level3-day-block32-campaign-recipe-v2"),
+                    "-mc-runtime-owner-cache", Path.Combine(generated, "level3-day-spell-owner-cache-v3/components/material"),
+                    "-mc-runtime-presentation-cache", Path.Combine(generated, "level3-day-spell-owner-cache-v3"),
+                    "-mc-runtime-loading-cache", LevelOneOwnerCache,
+                    "-mc-runtime-replay-load", Path.Combine(generated, "opened-l3-block32-play-fireball-castle-v5.json"),
+                });
+                Assert.That(runtime.GameRuntimeProductionStartupReady, Is.True);
+                Assert.That(runtime.GameRuntimeProductionIdentity.active_runtime_flow.bound_level_id,
+                    Is.EqualTo("level.magic_carpet_2.revealed_way"));
+                Assert.That(runtime.GameRuntimeLevel3PresentationTick, Is.EqualTo(1));
+                Assert.That(runtime.Level2ProductionDayHudPresenterReady, Is.True);
+                var before = runtime.GameRuntimeProductionIdentity;
+                Assert.That(runtime.SubmitGameRuntimeSpellKey(1), Is.True);
+                runtime.QualificationDriveGameRuntimeFrames(1);
+                Assert.That(runtime.RequestGameRuntimeSelectedSpellCast(), Is.True);
+                runtime.QualificationDriveGameRuntimeFrames(1);
+                // This recipe uses the qualified indexed world feed. Its
+                // optional neutral billboard asset is absent, so read the
+                // same native entity projection that Unity actually draws.
+                var rows = new NativeSim.CampaignEntitySnapshot[1000];
+                Assert.That(NativeSim.mc_native_campaign_entities_copy(
+                    ulong.Parse(before.runtime_id), 0, rows, (uint)rows.Length,
+                    (uint)Marshal.SizeOf<NativeSim.CampaignEntitySnapshot>(), out var written),
+                    Is.EqualTo(NativeSim.Ok));
+                Assert.That(written, Is.EqualTo(rows.Length));
+                var player = runtime.Level2ProductionPlayers[0].entityIndex;
+                var flyer = Array.Find(rows, row => row.active != 0 && row.classId == 9 &&
+                    row.model == 0 && row.sourceId == player);
+                Assert.That(flyer.active, Is.EqualTo(1), "the public cast creates a live Fireball");
+                runtime.QualificationDriveGameRuntimeFrames(1);
+                Assert.That(runtime.GameRuntimeProductionCampaignSnapshot.value.player_vitals.mana,
+                    Is.EqualTo(900), "the next source player visit debits the real cast");
+                Assert.That(runtime.SubmitGameRuntimeSpellKey(3), Is.True);
+                runtime.QualificationDriveGameRuntimeFrames(1);
+                StringAssert.Contains(
+                    "\"semantic_spell_carry\":{\"acquired\":[\"fireball\",\"castle\"],\"selected\":\"castle\"}",
+                    Encoding.UTF8.GetString(runtime.QualificationSaveGameRuntimeProductionReplay()));
+                Assert.That(runtime.GameRuntimeProductionIdentity.runtime_id, Is.EqualTo(before.runtime_id));
+                Assert.That(runtime.GameRuntimeProductionIdentity.session.tick, Is.EqualTo("5"));
             }
             finally
             {

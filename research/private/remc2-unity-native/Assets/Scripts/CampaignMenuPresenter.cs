@@ -83,7 +83,12 @@ namespace MagicCarpet.Native
                     y += 50;
                 }
                 GUI.enabled = true;
-                GUI.Label(new Rect(x, y + 8, width, 80), status ?? "", message);
+                var help = mode == GameRuntimeTransport.PausedMode
+                    ? "W/S fly · A/D strafe · Mouse steer\n" +
+                      "1 Fireball · 2 Possession · 3 Castle · 4 Speed\n" +
+                      "Space cast · F5 save · R restart"
+                    : "";
+                GUI.Label(new Rect(x, y + 8, width, 80), status ?? help, message);
                 return Action.None;
             }
             finally { GUI.color = oldColor; GUI.enabled = oldEnabled; }

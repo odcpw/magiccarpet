@@ -355,6 +355,27 @@ Campaign menu / loading-screen UI:
 sh ./run-campaign.sh
 ```
 
+To enter any of the three real owner levels directly:
+
+```bash
+sh ./run-campaign.sh --level 1
+sh ./run-campaign.sh --level 2
+sh ./run-campaign.sh --level 3
+```
+
+Levels 2 and 3 load Rust-generated entry replays with one neutral opening turn.
+Level 3 includes an explicit Fireball and Castle carry for independent play.
+The Rust loader verifies the exact package and state receipts. These entries
+let you play each level independently;
+they do not establish completion of the preceding campaign objectives. The
+usual New Game button still starts the campaign at Level 1.
+
+Campaign controls: `W/S` accelerate/brake, `A/D` strafe, mouse or `I/J/K/L`
+steer, and `C` centers steering. `1` selects Fireball, `2` Possession, `3`
+Castle and `4` Speed; `Space` casts the selected spell. Rust rejects spells
+you have not acquired. Mouse buttons cast the retained left/right hand spells.
+`Escape/P` pauses, `F5` saves, `R` restarts and `F10` quits.
+
 This uses the original validated indexed loading artwork with functional Unity
 buttons. Escape/P opens the paused menu; Resume, Save, Restart Level, Main Menu
 and Quit dispatch to the existing Rust runtime. New Game visibly passes through
