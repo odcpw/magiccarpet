@@ -5381,86 +5381,157 @@ pub(crate) mod tests {
                 .copied()
         }
 
-        fn public_firefly_cast_command(
-            session: &GameSession<Mc2CampaignBackend>,
-            source_slot: u16,
+        fn public_firefly_roll_axis(state: crate::FlightState, heading: i16) -> i8 {
+            // Flight derives delta=(2*axis-accumulator)/4, then turns by
+            // the new accumulator/8. Invert that response; passing a small
+            // angle error directly as an axis takes too long to escape.
+            let turn = i32::from(crate::turn_toward(state.yaw, heading, 24));
+            ((32 * turn - 3 * i32::from(state.roll_accumulator)) / 2).clamp(-127, 127) as i8
+        }
+
+        fn public_firefly_wait_command(
+            compatibility: &crate::native_world::Level2ResetSession,
         ) -> GameCommand {
-            // The holder launches after the player's movement in this pass.
-            // Forecast that public no-input movement, not the pre-step pose.
-            let mut forecast = session.backend().campaign.clone();
-            forecast.step_with_tuning(
-                campaign_player_command(&GameCommand::default()),
-                CAMPAIGN_SPEED_INDEX,
-                session.backend().flight_binding.tuning(),
-            );
-            let (target, state, direction_bits) = {
-                let compatibility = session.backend().campaign.level2_compatibility();
-                (
-                    compatibility
-                        .economy()
-                        .authored_class5()
-                        .iter()
-                        .find(|source| source.source_entity_index == source_slot)
-                        .copied()
-                        .expect("real package Firefly remains live before the cast"),
-                    forecast.level2_compatibility().state,
-                    compatibility.shared_spells().player_entity().control_flags & 0x0300,
-                )
-            };
-            let flight_turns = crate::distance_3d_wrapped(state.position, target.position)
-                .div_ceil(384)
-                .clamp(1, 8);
-            for _ in 1..flight_turns {
-                forecast.step_with_tuning(
-                    campaign_player_command(&GameCommand::default()),
-                    CAMPAIGN_SPEED_INDEX,
-                    session.backend().flight_binding.tuning(),
-                );
-            }
-            let mut predicted_target = forecast
-                .level2_compatibility()
+            let state = compatibility.state;
+            let nearest = compatibility
                 .economy()
                 .authored_class5()
                 .iter()
-                .find(|source| source.source_entity_index == source_slot)
-                .map_or(target.position, |source| source.position);
-            predicted_target.z = predicted_target
-                .z
-                .wrapping_sub(crate::level1_mission::FIREBALL_COLLISION_VERTICAL_OFFSET);
-            let mut launch_position = state.position;
-            let hand_yaw = if direction_bits & 0x0100 != 0 {
-                Some(state.yaw.wrapping_sub(512))
-            } else if direction_bits & 0x0200 != 0 {
-                Some(state.yaw.wrapping_add(512))
-            } else {
-                None
+                .filter(|source| FIREFLY_ROWS.contains(&source.authored_index) && source.life >= 0)
+                .min_by_key(|source| {
+                    (
+                        crate::distance_3d_wrapped(state.position, source.position),
+                        source.source_entity_index,
+                    )
+                });
+            let Some(target) = nearest else {
+                return GameCommand::default();
             };
-            if let Some(hand_yaw) = hand_yaw {
-                crate::move_entity(&mut launch_position, hand_yaw, 0, 256);
-                if crate::FlightWorld::ground_height(
-                    session
-                        .backend()
-                        .campaign
-                        .level2_compatibility()
-                        .canonical_terrain(),
-                    launch_position,
-                ) > launch_position.z
-                {
-                    launch_position = state.position;
-                }
-            }
-            launch_position.z = launch_position.z.wrapping_add(state.entity_fov);
-            let (yaw, pitch) = crate::level1_mission::projectile_guidance_angles(
-                launch_position,
-                predicted_target,
+            let away = (crate::heading_for_positions(state.position, target.position) as i16)
+                .wrapping_add(1_024)
+                & 0x07ff;
+            // Positive strafe contributes at parent yaw+512. Compensate its
+            // heading so the combined velocity escapes, rather than sliding
+            // sideways around an incoming charge.
+            let mut forward = crate::Position { x: 0, y: 0, z: 0 };
+            crate::move_entity(
+                &mut forward,
+                0,
+                state.effective_pitch,
+                state.actual_speed.max(1),
             );
+            let drift = crate::legacy_atan(state.strafe_speed, forward.y.cast_signed());
+            let heading = away.wrapping_sub(drift) & 0x07ff;
             GameCommand {
-                select_spell: Some(SemanticId::parse("spell.fireball").unwrap()),
-                cast_selected: true,
-                look_yaw: yaw.wrapping_sub(state.yaw),
-                look_pitch: pitch.wrapping_sub(state.display_pitch),
+                longitudinal: LongitudinalControl::Accelerate,
+                lateral: LateralControl::Positive,
+                roll_axis: public_firefly_roll_axis(state, heading),
+                pitch_axis: -127,
                 ..GameCommand::default()
             }
+        }
+
+        fn public_firefly_cast_command(
+            session: &GameSession<Mc2CampaignBackend>,
+            source_slot: u16,
+        ) -> Option<GameCommand> {
+            let compatibility = session.backend().campaign.level2_compatibility();
+            let mut command = public_firefly_wait_command(compatibility);
+            command.select_spell = Some(SemanticId::parse("spell.fireball").unwrap());
+            command.cast_selected = true;
+            let tuning = session.backend().flight_binding.tuning();
+            let mut forecast = session.backend().campaign.clone();
+            // Look words offset spell aim; the flight axes determine the
+            // parent's post-body pose. Forecast the same evasive movement.
+            forecast.step_with_tuning(
+                campaign_player_command(&public_firefly_wait_command(compatibility)),
+                CAMPAIGN_SPEED_INDEX,
+                tuning,
+            );
+            let state = forecast.level2_compatibility().state;
+            let mut launch = state.position;
+            // cast_selected always sets the left direction bit, regardless of
+            // the incoming player's retained direction flags.
+            crate::move_entity(&mut launch, state.yaw.wrapping_sub(512), 0, 256);
+            if crate::FlightWorld::ground_height(compatibility.canonical_terrain(), launch)
+                > launch.z
+            {
+                launch = state.position;
+            }
+            launch.z = launch.z.wrapping_add(state.entity_fov);
+            let speed = crate::level1_mission::FIREBALL_SPEED
+                .wrapping_add(state.actual_speed)
+                .clamp(crate::level1_mission::FIREBALL_SPEED, 0x2000);
+            let mut best = None;
+            for turn in 1..=8 {
+                let target = forecast
+                    .level2_compatibility()
+                    .economy()
+                    .authored_class5()
+                    .iter()
+                    .find(|source| source.source_entity_index == source_slot)?;
+                let mut aim = target.position;
+                aim.z = aim
+                    .z
+                    .wrapping_sub(crate::level1_mission::FIREBALL_COLLISION_VERTICAL_OFFSET);
+                let (yaw, pitch) = crate::level1_mission::projectile_guidance_angles(launch, aim);
+                let mut projectile = launch;
+                let mut blocked = false;
+                for _ in 0..turn {
+                    crate::move_entity(&mut projectile, yaw, pitch, speed);
+                    blocked |= crate::FlightWorld::ground_height(
+                        compatibility.canonical_terrain(),
+                        projectile,
+                    ) > projectile.z;
+                }
+                let score = crate::distance_3d_wrapped(projectile, aim);
+                if !blocked && best.is_none_or(|(best_score, _, _)| score < best_score) {
+                    best = Some((score, yaw, pitch));
+                }
+                let wait = public_firefly_wait_command(forecast.level2_compatibility());
+                forecast.step_with_tuning(
+                    campaign_player_command(&wait),
+                    CAMPAIGN_SPEED_INDEX,
+                    tuning,
+                );
+            }
+            let (_, yaw, pitch) = best?;
+            command.look_yaw = yaw.wrapping_sub(state.yaw);
+            command.look_pitch = pitch.wrapping_sub(state.display_pitch);
+
+            // Admit a shot only when the unchanged public cast and source
+            // scheduler actually predict a living objective Firefly hit.
+            // This exercises homing, map-order collision and the damage
+            // mailbox rather than treating geometric proximity as success.
+            let before = compatibility
+                .economy()
+                .authored_class5()
+                .iter()
+                .filter(|source| FIREFLY_ROWS.contains(&source.authored_index) && source.life >= 0)
+                .map(|source| (source.source_entity_index, source.life))
+                .collect::<Vec<_>>();
+            let mut shot = session.backend().campaign.clone();
+            shot.step_with_tuning(
+                session.backend().campaign_player_command(&command).unwrap(),
+                CAMPAIGN_SPEED_INDEX,
+                tuning,
+            );
+            for _ in 0..12 {
+                if before.iter().any(|(slot, life)| {
+                    shot.level2_compatibility()
+                        .economy()
+                        .authored_class5()
+                        .iter()
+                        .any(|source| {
+                            source.source_entity_index == *slot && source.life == *life - 250
+                        })
+                }) {
+                    return Some(command);
+                }
+                let wait = public_firefly_wait_command(shot.level2_compatibility());
+                shot.step_with_tuning(campaign_player_command(&wait), CAMPAIGN_SPEED_INDEX, tuning);
+            }
+            None
         }
 
         fn observe_lifecycle(
@@ -5548,9 +5619,9 @@ pub(crate) mod tests {
                 {
                     break;
                 }
-                session
-                    .step(guard(session), GameCommand::default())
-                    .unwrap();
+                let wait =
+                    public_firefly_wait_command(session.backend().campaign.level2_compatibility());
+                session.step(guard(session), wait).unwrap();
                 observe_lifecycle(
                     session,
                     targets,
@@ -5561,7 +5632,7 @@ pub(crate) mod tests {
                     saw_reclaimed,
                 );
             }
-            let mut in_range = false;
+            let mut aimed_command = None;
             for _ in 0..640 {
                 let Some(target) = firefly(session, target_slot).filter(|source| source.life >= 0)
                 else {
@@ -5587,8 +5658,14 @@ pub(crate) mod tests {
                         .wrapping_add(dy.wrapping_mul(dy))
                         .cast_unsigned(),
                 );
-                if distance <= 900 {
-                    in_range = true;
+                // Firefly charges contact below 768 units and move 228
+                // units per pass. Keep the public firing envelope outside
+                // that close-range approach; the ordinary forecast must still
+                // prove an exact hit before the driver fires.
+                if distance <= 3_072
+                    && let Some(command) = public_firefly_cast_command(session, target_slot)
+                {
+                    aimed_command = Some(command);
                     break;
                 }
                 let heading = crate::heading_for_positions(state.position, target.position) as i16;
@@ -5600,21 +5677,23 @@ pub(crate) mod tests {
                 } else {
                     LongitudinalControl::Coast
                 };
-                session
-                    .step(
-                        guard(session),
-                        GameCommand {
-                            longitudinal: if heading_error.abs() < 128 {
-                                LongitudinalControl::Accelerate
-                            } else {
-                                brake
-                            },
-                            roll_axis: heading_error.clamp(-24, 24) as i8,
-                            pitch_axis: -127,
-                            ..GameCommand::default()
+                let flight = if distance <= 3_072 {
+                    // A blocked or not-yet-ready shot is a retreat turn,
+                    // never permission to close into the charge envelope.
+                    public_firefly_wait_command(session.backend().campaign.level2_compatibility())
+                } else {
+                    GameCommand {
+                        longitudinal: if heading_error.abs() < 128 {
+                            LongitudinalControl::Accelerate
+                        } else {
+                            brake
                         },
-                    )
-                    .unwrap();
+                        roll_axis: public_firefly_roll_axis(state, heading),
+                        pitch_axis: -127,
+                        ..GameCommand::default()
+                    }
+                };
+                session.step(guard(session), flight).unwrap();
                 observe_lifecycle(
                     session,
                     targets,
@@ -5625,9 +5704,8 @@ pub(crate) mod tests {
                     saw_reclaimed,
                 );
             }
-            assert!(
-                in_range,
-                "ordinary flight reaches Firefly source {target_slot}"
+            let command = aimed_command.expect(
+                "ordinary flight reaches a verified public Firefly firing solution within 640 turns",
             );
             let before = targets
                 .iter()
@@ -5637,7 +5715,6 @@ pub(crate) mod tests {
                         .map(|source| (*source_slot, source.life))
                 })
                 .collect::<Vec<_>>();
-            let command = public_firefly_cast_command(session, target_slot);
             session.step(guard(session), command).unwrap_or_else(|error| {
                 let state = session.backend().campaign.level2_compatibility();
                 panic!("Firefly cast rejected at tick {}: {error:?}; flight={:?}; life={}; holders={:?}",
@@ -5668,9 +5745,9 @@ pub(crate) mod tests {
                     // each exact recipient rather than dropping all but one.
                     return changed;
                 }
-                session
-                    .step(guard(session), GameCommand::default())
-                    .unwrap();
+                let wait =
+                    public_firefly_wait_command(session.backend().campaign.level2_compatibility());
+                session.step(guard(session), wait).unwrap();
                 observe_lifecycle(
                     session,
                     targets,
@@ -5754,9 +5831,9 @@ pub(crate) mod tests {
                     "Firefly public impact {exact_impacts}: tick={} source={damaged_slot} life={after}",
                     session.identity().tick
                 );
-                session
-                    .step(guard(&session), GameCommand::default())
-                    .unwrap();
+                let wait =
+                    public_firefly_wait_command(session.backend().campaign.level2_compatibility());
+                session.step(guard(&session), wait).unwrap();
                 observe_lifecycle(
                     &session,
                     &targets,
