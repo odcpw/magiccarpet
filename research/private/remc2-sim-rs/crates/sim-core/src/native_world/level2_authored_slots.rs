@@ -3290,14 +3290,14 @@ impl Level2EconomyState {
     /// model-0 child arena, which is the pinned `NewAdd0A00_4E320` producer
     /// used by `IfSubtypeCallCreatingManaSphere_4A190(10, 0)`.
     pub fn step_authored_model1_slot(&mut self, source_slot: u16) -> bool {
-        let Some(source_index) = self
+        let Some(mut source) = self
             .authored_model1
             .iter()
-            .position(|source| source.active && source.source_entity_index == source_slot)
+            .find(|source| source.active && source.source_entity_index == source_slot)
+            .copied()
         else {
             return false;
         };
-        let mut source = self.authored_model1[source_index];
         let life_before = source.life;
         source.life = source.life.wrapping_sub(1);
         if life_before < 0 {
@@ -3342,8 +3342,17 @@ impl Level2EconomyState {
             }
         }
         source.phase = source.phase.wrapping_add(1);
+        // NewEvent may replace an earlier temporary carrier and compact this
+        // vector. Resolve the surviving source by its numeric slot again.
+        let Some(current) = self
+            .authored_model1
+            .iter_mut()
+            .find(|current| current.active && current.source_entity_index == source_slot)
+        else {
+            return false;
+        };
+        *current = source;
         self.source_rng.insert(source_slot, source.entity_rng);
-        self.authored_model1[source_index] = source;
         self.map_chains
             .sync_entity(RenderableMapSeed {
                 entity_index: source_slot,

@@ -1,4 +1,222 @@
     #[test]
+    fn level_two_quickfair_child_replacement_compaction_preserves_source_identity() {
+        fn assert_child(
+            economy: &Level2EconomyState,
+            parent: Level2AuthoredModel1Source,
+            slot: u16,
+            previous_generation: u32,
+        ) {
+            let children = economy
+                .model17_spawned_children()
+                .iter()
+                .filter(|child| {
+                    child.active && child.parent_entity_index == parent.source_entity_index
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(
+                children.len(),
+                1,
+                "seed 10 emits only the first shape-cell child"
+            );
+            let child = children[0];
+            assert_eq!(child.source_entity_index, slot);
+            assert_eq!(child.parent_entity_id, parent.source_entity_index);
+            assert_eq!((child.source_class, child.model, child.action), (10, 0, 0));
+            assert_eq!(
+                (child.subspell_index, child.max_life, child.life),
+                (400, 8, 8)
+            );
+            assert_eq!(
+                (child.control_flags, child.shift_rot_x, child.shift_rot_y),
+                (0x0002_0080, 128, 128)
+            );
+            assert_eq!(
+                child.position,
+                Position {
+                    x: parent.position.x.wrapping_sub(97),
+                    y: parent.position.y.wrapping_sub(157),
+                    z: parent.position.z,
+                }
+            );
+            assert_eq!(child.phase, slot as u8);
+            assert_eq!(
+                child.entity_rng,
+                slot.wrapping_add(economy.global_rng as u16)
+            );
+            assert_eq!(economy.source_rng.get(&slot), Some(&child.entity_rng));
+            assert_eq!(
+                economy.slot_generation(slot),
+                previous_generation.wrapping_add(1)
+            );
+            assert!(economy.map_chains().is_linked(slot));
+        }
+
+        let session = level_two_possession_lifecycle_session();
+        let terrain = session.canonical_terrain().clone();
+        let mut baseline = session.economy().clone();
+        let mut roots = Vec::new();
+        for authored_index in [216_u16, 217, 218] {
+            let feature = session
+                .mission
+                .authored_features()
+                .iter()
+                .find(|feature| feature.index == authored_index)
+                .copied()
+                .expect("qualified group-20 Quickfair feature");
+            assert_eq!(
+                (feature.kind, feature.subtype, feature.activation_group),
+                (10, 1, 20)
+            );
+            roots.push(
+                baseline
+                    .allocate_authored_model1(authored_index, feature.world_position(0), &terrain)
+                    .expect("ordinary NewAdd0A01 Quickfair constructor"),
+            );
+        }
+        let [victim, neighbor, selected] = roots.as_slice() else {
+            panic!("three qualified Quickfairs");
+        };
+        let (victim_slot, neighbor_slot, selected_slot) = (
+            victim.source_entity_index,
+            neighbor.source_entity_index,
+            selected.source_entity_index,
+        );
+        assert_eq!(
+            baseline
+                .authored_model1()
+                .last()
+                .map(|row| row.source_entity_index),
+            Some(selected_slot)
+        );
+
+        // Exhaust only the ordinary capacity fixture, then admit one real
+        // constructor's replaceable carrier below the callback's last row.
+        baseline.exhaust_new_event_capacity_for_test();
+        let selected_row = baseline
+            .authored_model1
+            .iter_mut()
+            .find(|row| row.source_entity_index == selected_slot)
+            .expect("selected root");
+        selected_row.entity_rng = 10;
+        selected_row.life = 1;
+        selected_row.control_flags &= !0x02;
+        baseline.source_rng.insert(selected_slot, 10);
+        let selected_before = *baseline
+            .authored_model1()
+            .iter()
+            .find(|row| row.source_entity_index == selected_slot)
+            .expect("selected root");
+        let neighbor_before = *baseline
+            .authored_model1()
+            .iter()
+            .find(|row| row.source_entity_index == neighbor_slot)
+            .expect("nearest surviving neighbor");
+        let selected_generation = baseline.slot_generation(selected_slot);
+        let neighbor_generation = baseline.slot_generation(neighbor_slot);
+        let victim_generation = baseline.slot_generation(victim_slot);
+        let root_count = baseline.authored_model1().len();
+        let child_count = baseline.model17_spawned_children().len();
+
+        let mut earlier_replaced = baseline.clone();
+        earlier_replaced
+            .authored_model1
+            .iter_mut()
+            .find(|row| row.source_entity_index == victim_slot)
+            .expect("earlier active victim")
+            .control_flags |= SOURCE_REPLACEABLE_FLAG;
+        assert!(earlier_replaced.step_authored_model1_slot(selected_slot));
+        assert_eq!(earlier_replaced.authored_model1().len(), root_count - 1);
+        assert!(
+            !earlier_replaced
+                .authored_model1()
+                .iter()
+                .any(|row| row.source_entity_index == victim_slot)
+        );
+        let mut expected = selected_before;
+        expected.life = 0;
+        expected.entity_rng = 37_221;
+        expected.phase = expected.phase.wrapping_add(1);
+        expected.control_flags |= 0x02;
+        expected.last_sound_id = 3;
+        assert_eq!(
+            earlier_replaced
+                .authored_model1()
+                .iter()
+                .find(|row| row.source_entity_index == selected_slot),
+            Some(&expected)
+        );
+        assert_eq!(
+            earlier_replaced.source_rng.get(&selected_slot),
+            Some(&37_221)
+        );
+        assert_eq!(
+            earlier_replaced.slot_generation(selected_slot),
+            selected_generation
+        );
+        assert_eq!(
+            earlier_replaced
+                .authored_model1()
+                .iter()
+                .find(|row| row.source_entity_index == neighbor_slot),
+            Some(&neighbor_before)
+        );
+        assert_eq!(
+            earlier_replaced.slot_generation(neighbor_slot),
+            neighbor_generation
+        );
+        assert_eq!(
+            earlier_replaced.model17_spawned_children().len(),
+            child_count + 1
+        );
+        assert_child(
+            &earlier_replaced,
+            selected_before,
+            victim_slot,
+            victim_generation,
+        );
+
+        // The selected root can itself be the only remaining replaceable row.
+        // Its newly constructed child must survive without resurrecting the
+        // old root or overwriting the child's constructor RNG sidecar.
+        let mut self_replaced = baseline;
+        self_replaced
+            .authored_model1
+            .iter_mut()
+            .find(|row| row.source_entity_index == selected_slot)
+            .expect("self-replaceable root")
+            .control_flags |= SOURCE_REPLACEABLE_FLAG;
+        assert!(!self_replaced.step_authored_model1_slot(selected_slot));
+        assert_eq!(self_replaced.authored_model1().len(), root_count - 1);
+        assert!(
+            !self_replaced
+                .authored_model1()
+                .iter()
+                .any(|row| row.source_entity_index == selected_slot)
+        );
+        assert_eq!(
+            self_replaced
+                .authored_model1()
+                .iter()
+                .find(|row| row.source_entity_index == neighbor_slot),
+            Some(&neighbor_before)
+        );
+        assert_eq!(
+            self_replaced.slot_generation(neighbor_slot),
+            neighbor_generation
+        );
+        assert_eq!(
+            self_replaced.model17_spawned_children().len(),
+            child_count + 1
+        );
+        assert_child(
+            &self_replaced,
+            selected_before,
+            selected_slot,
+            selected_generation,
+        );
+    }
+
+    #[test]
     fn level_two_castle_defender_cadence_uses_root_phase_with_fixed_source_v21() {
         let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
             .expect("qualified Level 2 package");
