@@ -690,12 +690,38 @@ mod tests {
     fn cf11_level2_opens_steps_resets_through_descriptor() {
         let legacy_inspection = NativeWorld::inspect_level2(level_two_fixture_path())
             .expect("legacy Level 2 compatibility package loads");
-        let mut legacy = legacy_inspection
+        let unbound_legacy = legacy_inspection
             .level2_reset_session()
             .expect("legacy Level 2 compatibility session opens");
         let mut campaign =
             CampaignSession::open(descriptor_fixture_path(), CampaignSelection::LEVEL2)
                 .expect("qualified campaign definition opens one Rust session");
+        // The descriptor boot binds reset-hashed Castle construction data and
+        // semantic creature parameters. Compare its folded compatibility path
+        // against the same definition, independently decoded from the owner export.
+        let mut legacy = legacy_inspection
+            .level2_reset_session_from_definition(campaign.definition())
+            .expect("legacy inspection binds the qualified campaign definition");
+        assert!(unbound_legacy.semantic_level_definition().is_none());
+        assert!(!unbound_legacy.economy().has_castle_stage_footprint(1));
+        assert_ne!(
+            campaign.state_hash(),
+            unbound_legacy.campaign_state_hash(),
+            "an unbound legacy reset is not the descriptor's gameplay baseline"
+        );
+        assert_eq!(
+            legacy.semantic_level_definition(),
+            Some(campaign.definition().level_definition())
+        );
+        for stage in 1..=3 {
+            assert!(legacy.economy().has_castle_stage_footprint(stage));
+            assert!(
+                campaign
+                    .level2_compatibility()
+                    .economy()
+                    .has_castle_stage_footprint(stage)
+            );
+        }
 
         assert_eq!(
             campaign.definition().completed_stage,
