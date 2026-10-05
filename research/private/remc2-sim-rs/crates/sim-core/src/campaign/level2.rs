@@ -17113,7 +17113,7 @@ impl Level2ResetSession {
 
         for effect in effects {
             match effect {
-                crate::level_exit::LevelExitEffect::PrepareSound { sound_id } => {
+                crate::level_exit::LevelExitEffect::PrepareSound { sound_id, .. } => {
                     if sound_id == crate::level_exit::EXIT_SWITCH_SOUND {
                         mark_source_audio_call(SourceAudioCallTag::ExitSequenceSwitch);
                     } else {

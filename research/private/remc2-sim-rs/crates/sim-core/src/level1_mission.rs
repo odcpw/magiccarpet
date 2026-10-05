@@ -13731,7 +13731,7 @@ impl Level1MissionState {
         }
         for effect in effects {
             match effect {
-                crate::level_exit::LevelExitEffect::PrepareSound { sound_id } => {
+                crate::level_exit::LevelExitEffect::PrepareSound { sound_id, position } => {
                     if sound_id == EXIT_SWITCH_SOUND {
                         mark_source_audio_call(SourceAudioCallTag::ExitSequenceSwitch);
                     } else {
@@ -13748,7 +13748,7 @@ impl Level1MissionState {
                         },
                         sound_id,
                         source_entity_index: player.entity_index,
-                        position: player.position,
+                        position,
                         random_state: self.global_rng,
                     });
                 }

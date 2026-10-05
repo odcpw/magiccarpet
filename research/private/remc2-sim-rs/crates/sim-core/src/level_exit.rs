@@ -27,8 +27,14 @@ pub enum ExitMovementResolution {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum LevelExitEffect {
-    PrepareSound { sound_id: u16 },
-    Completed { result_code: u8 },
+    PrepareSound {
+        sound_id: u16,
+        /// The source emission precedes the common altitude epilogue.
+        position: Position,
+    },
+    Completed {
+        result_code: u8,
+    },
 }
 
 /// Canonical state established when a package exit trigger captures its
@@ -103,11 +109,13 @@ impl LevelExitSequence {
         }
         self.last_movement = ExitMovementResolution::NotAttempted;
         let mut effects = Vec::new();
+        let mut acceleration_sound = false;
         loop {
             match self.phase {
                 0 => {
                     effects.push(LevelExitEffect::PrepareSound {
                         sound_id: EXIT_SWITCH_SOUND,
+                        position: player.position,
                     });
                     self.palette_submode = EXIT_PALETTE_ENTRY_FLASH_REQUEST;
                     self.player_status_flags |= 0x20;
@@ -180,9 +188,7 @@ impl LevelExitSequence {
                     player.actual_speed = 100;
                     self.phase = 7;
                     self.blur_mode = 2;
-                    effects.push(LevelExitEffect::PrepareSound {
-                        sound_id: EXIT_ACCELERATION_SOUND,
-                    });
+                    acceleration_sound = true;
                     continue;
                 }
                 7 => {
@@ -208,9 +214,7 @@ impl LevelExitSequence {
                     player.actual_speed = 100;
                     self.phase = 9;
                     self.blur_mode = 2;
-                    effects.push(LevelExitEffect::PrepareSound {
-                        sound_id: EXIT_ACCELERATION_SOUND,
-                    });
+                    acceleration_sound = true;
                     continue;
                 }
                 9 => {
@@ -253,6 +257,15 @@ impl LevelExitSequence {
                 _ => {}
             }
             break;
+        }
+
+        // sub_5E8C0_endGameSeq sets v28 in phase6/8, runs phase7/9 movement,
+        // then emits sound19 before the common altitude adjustment.
+        if acceleration_sound {
+            effects.push(LevelExitEffect::PrepareSound {
+                sound_id: EXIT_ACCELERATION_SOUND,
+                position: player.position,
+            });
         }
 
         let ground = world.ground_height(player.position);
@@ -325,4 +338,91 @@ fn wrapping_xy_distance(left: Position, right: Position) -> u32 {
             .cast_unsigned()
             .wrapping_add(dy.wrapping_mul(dy).cast_unsigned()),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct FlatWorld;
+
+    impl FlightWorld for FlatWorld {
+        fn ground_height(&self, _position: Position) -> i16 {
+            0
+        }
+        fn ceiling_height(&self, _position: Position) -> Option<i16> {
+            None
+        }
+        fn material_mask(&self, _position: Position) -> u32 {
+            0
+        }
+        fn angle_flags(&self, _tile: crate::Tile) -> u8 {
+            0
+        }
+    }
+
+    #[test]
+    fn exit_sound_pose_precedes_altitude_epilogue_and_follows_acceleration_motion() {
+        let start = Position {
+            x: 10_000,
+            y: 10_000,
+            z: 1_024,
+        };
+        for phase in [0, 6, 8] {
+            let mut sequence = LevelExitSequence {
+                active: true,
+                phase,
+                portal_entity_index: 1,
+                ..LevelExitSequence::default()
+            };
+            let mut player = FlightState {
+                position: start,
+                ..FlightState::default()
+            };
+            let portal = Position {
+                x: 10_000,
+                y: 20_000,
+                z: 1_024,
+            };
+            let effects = sequence.advance(
+                &FlatWorld,
+                FlightProfile::OUTDOOR,
+                &mut player,
+                &mut FlightContext::default(),
+                Some(portal),
+            );
+            assert_eq!(player.position.z, start.z - 128);
+            let sound_position = Position {
+                z: start.z,
+                ..player.position
+            };
+            assert_eq!(
+                effects,
+                vec![LevelExitEffect::PrepareSound {
+                    sound_id: if phase == 0 {
+                        EXIT_SWITCH_SOUND
+                    } else {
+                        EXIT_ACCELERATION_SOUND
+                    },
+                    position: sound_position,
+                }]
+            );
+            if phase == 0 {
+                assert_eq!(sound_position, start);
+            } else {
+                assert_ne!((sound_position.x, sound_position.y), (start.x, start.y));
+            }
+            assert_ne!(sound_position, player.position);
+            // The next ordinary phase callback still moves/settles the player,
+            // but neither phase1 nor phase7/9 emits another sound.
+            let next = sequence.advance(
+                &FlatWorld,
+                FlightProfile::OUTDOOR,
+                &mut player,
+                &mut FlightContext::default(),
+                Some(portal),
+            );
+            assert!(next.is_empty());
+        }
+    }
 }
