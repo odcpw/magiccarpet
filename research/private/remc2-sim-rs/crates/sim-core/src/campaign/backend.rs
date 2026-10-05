@@ -6437,20 +6437,35 @@ pub(crate) mod tests {
         )
         .unwrap();
         let reset_hash = session.backend().campaign.state_hash();
-        session
-            .backend_mut()
-            .campaign
-            .level2_compatibility_mut()
-            .activate_authored_group_prerequisite_for_test(6)
-            .expect("the separately proved row-190 boundary constructs package group 6");
-        complete_real_level_one_firefly_objective_to_exit_group(&mut session, true);
+        // Group6 is reached after the real Archer/Castle objective. Materializing
+        // only its creatures into the reset player omits the earned player and
+        // Castle state which the ordinary full-route Firefly consumer receives.
+        complete_real_level_one_castle_route_to_group_six(&mut session);
+        {
+            let compatibility = session.backend().campaign.level2_compatibility();
+            let player = compatibility.shared_spells().player_entity();
+            let castle = compatibility
+                .economy()
+                .castle()
+                .expect("the real incoming Firefly boundary retains its owned Castle");
+            assert!(castle.active && castle.life >= 0 && player.life >= 0);
+            assert_eq!(castle.owner_entity_index, player.index);
+            assert_eq!(
+                compatibility.economy().player_castle_entity_index(),
+                castle.source_entity_index
+            );
+            assert_eq!(
+                &compatibility.runtime().objectives[0].stage_selectors[..4],
+                &[2; 4]
+            );
+        }
+        complete_real_level_one_firefly_objective_to_exit_group(&mut session, false);
 
         session.reset(guard(&session)).unwrap();
         assert_eq!(session.backend().campaign.state_hash(), reset_hash);
-        // The Archer objective is staged as separately proved prerequisite
-        // evidence. This chain owns all five real Firefly combat/death/reclaim
-        // lifecycles, semantic absence evaluation, and the ordinary group-4
-        // gate; it does not enter the exit trigger or LevelExitSequence.
+        // This chain retains all five real Firefly combat/death/reclaim,
+        // absence and group4 gates after the actual earned incoming boundary;
+        // it does not enter the exit trigger or LevelExitSequence.
     }
 
     #[test]
@@ -15045,8 +15060,8 @@ pub(crate) mod tests {
             if after_life < before_life {
                 assert_eq!(
                     after_life,
-                    before_life - 500 + 5,
-                    "every admitted retreat loss is one exact Dragon pulse plus outdoor upkeep"
+                    before_life - 500,
+                    "the exact Dragon pulse starts the source healing cooldown before upkeep"
                 );
                 attributed_hit_steps += 1;
             }
