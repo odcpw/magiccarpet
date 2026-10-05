@@ -269,8 +269,11 @@ fn level_two_wind_sub33340_filters_and_moves_model0_target_on_production_turn() 
         .copied()
         .expect("wind parent after second callback");
     let nonzero_model_position = Position {
-        x: current_parent.position.x.wrapping_add(1_024),
-        y: current_parent.position.y,
+        // This case exercises the inner, non-airborne turn/RNG branch.
+        // sub_33340 measures from axis_0x9A and compares squared distance
+        // with 0x40000, so the target must remain inside 512 source units.
+        x: current_parent.axis_position.x.wrapping_add(256),
+        y: current_parent.axis_position.y,
         z: current_parent.position.z,
     };
     {

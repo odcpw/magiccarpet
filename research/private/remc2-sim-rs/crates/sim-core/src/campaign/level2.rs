@@ -17898,7 +17898,25 @@ impl Level2ResetSession {
             } else {
                 snapshot.position
             };
-            let distance = level2_wrapping_target_distance(parent.axis_position, target_position);
+            // Maths::EuclideanDistXY_584D0 returns squared signed-16 XY
+            // distance. These bands are squared thresholds; taking a square
+            // root keeps map candidates in the inner band and prevents escape.
+            let dx = i32::from(
+                target_position
+                    .x
+                    .wrapping_sub(parent.axis_position.x)
+                    .cast_signed(),
+            );
+            let dy = i32::from(
+                target_position
+                    .y
+                    .wrapping_sub(parent.axis_position.y)
+                    .cast_signed(),
+            );
+            let distance = dx
+                .wrapping_mul(dx)
+                .wrapping_add(dy.wrapping_mul(dy))
+                .cast_unsigned();
             let airborne = snapshot.control_flags & 0x1000_0000 != 0;
             let model_zero = snapshot.model == 0;
             let turn_delta = if model_zero { 56 } else { 204 };
@@ -20611,6 +20629,183 @@ impl Level2ResetSession {
 mod tests {
     use super::*;
     use crate::campaign::{CampaignSession, spec::CampaignSelection};
+
+    #[test]
+    fn qualified_wind_squared_distance_bands_clear_airborne_latch_and_stop_damage() {
+        let package = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../generated/mc-cf02-campaign-package-v2-b/qualified-level2");
+        let mut campaign = CampaignSession::open(&package, CampaignSelection::LEVEL2)
+            .expect("qualified Level 2 campaign opens");
+        // 1792^2 = 3211264 selects far movement; 2304^2 = 5308416
+        // clears the source airborne latch. Keep the nearest inner cases.
+        for (distance, near_movement, clears_latch) in [
+            (1_791_u16, true, false),
+            (1_792, false, false),
+            (2_303, false, false),
+            (2_304, false, true),
+        ] {
+            campaign.reset();
+            let session = campaign.level2_compatibility_mut();
+            let axis = Position {
+                x: 20_000,
+                y: 20_000,
+                z: 0,
+            };
+            let wind = session
+                .economy_mut()
+                .allocate_authored_model22(110, axis, axis)
+                .expect("the actual Wind constructor creates its parent and chain");
+            assert_eq!(
+                (
+                    wind.source_class,
+                    wind.model,
+                    wind.action,
+                    wind.subspell_index
+                ),
+                (10, 22, 22, 1_000)
+            );
+            assert_eq!(session.economy().model22_spawned_children().len(), 11);
+            let player_slot = session.state.entity_index;
+            let mut position = Position {
+                x: axis.x.wrapping_add(distance),
+                y: axis.y,
+                z: 0,
+            };
+            position.z = session
+                .canonical_terrain()
+                .ground_height(position)
+                .wrapping_add(2_048);
+            session
+                .set_level2_entity_position(player_slot, position)
+                .unwrap();
+            let settle_descent = {
+                let target = &session.entities()[usize::from(player_slot)];
+                let parameter = &session.session.definition.presentation.entity_parameters
+                    [usize::from(
+                        target
+                            .parameter_relation
+                            .expect("qualified player parameter"),
+                    )];
+                i16::from_le_bytes([parameter[14], parameter[15]])
+            };
+            {
+                let target =
+                    &mut session.session.state.live.economy.entities[usize::from(player_slot)];
+                target.set_control_flags(target.control_flags | 0x1000_0000);
+                target.set_yaw(0);
+                target.set_source_word_30(0);
+            }
+            let life_before = session.canonical_player_life_for_test();
+            session
+                .step_level2_authored_model22_sub33340_eligible_targets(wind.source_entity_index);
+            let target = &session.entities()[usize::from(player_slot)];
+            assert_eq!(
+                target.position.z,
+                position
+                    .z
+                    .wrapping_add(if near_movement { 114 } else { settle_descent }),
+                "source movement selects the squared 1792 band at distance {distance}"
+            );
+            assert_eq!(
+                target.control_flags & 0x1000_0000 == 0,
+                clears_latch,
+                "source latch selects the squared 2304 band at distance {distance}"
+            );
+            assert_eq!(target.source_wind_spell_payload(), 1_000);
+            assert_eq!(target.source_wind_spell_owner(), wind.entity_id);
+            assert_eq!(
+                session.consume_level2_player_damage(),
+                Some((1_000, wind.entity_id, false))
+            );
+            assert_eq!(
+                session.canonical_player_life_for_test(),
+                life_before - 1_000
+            );
+            assert_eq!(
+                session.entities()[usize::from(player_slot)].source_wind_spell_owner(),
+                0
+            );
+            assert_eq!(
+                session.entities()[usize::from(player_slot)].source_wind_spell_payload(),
+                1_000
+            );
+            assert_eq!(
+                session.consume_level2_player_damage(),
+                None,
+                "a retained ownerless payload does not reapply without a new producer"
+            );
+            if clears_latch {
+                // The ordinary next Wind callback admits this same map row,
+                // but the cleared latch must prevent another hit/mailbox add.
+                session.step_level2_authored_model22_sub33340_eligible_targets(
+                    wind.source_entity_index,
+                );
+                assert_eq!(session.consume_level2_player_damage(), None);
+                assert_eq!(
+                    session.canonical_player_life_for_test(),
+                    life_before - 1_000
+                );
+                assert_eq!(
+                    session.entities()[usize::from(player_slot)].source_wind_spell_payload(),
+                    1_000
+                );
+            }
+        }
+        // The same squared carrier selects the grounded inner/orbit branch
+        // at 512 units. Its nearest negative must retain the inner turn.
+        for distance in [511_u16, 512] {
+            campaign.reset();
+            let session = campaign.level2_compatibility_mut();
+            let axis = Position {
+                x: 20_000,
+                y: 20_000,
+                z: 0,
+            };
+            let wind = session
+                .economy_mut()
+                .allocate_authored_model22(110, axis, axis)
+                .unwrap();
+            let player_slot = session.state.entity_index;
+            let mut position = Position {
+                x: axis.x.wrapping_add(distance),
+                y: axis.y,
+                z: 0,
+            };
+            position.z = session
+                .canonical_terrain()
+                .ground_height(position)
+                .wrapping_add(2_048);
+            session
+                .set_level2_entity_position(player_slot, position)
+                .unwrap();
+            {
+                let target =
+                    &mut session.session.state.live.economy.entities[usize::from(player_slot)];
+                target.set_control_flags(target.control_flags & !0x1000_0000);
+                target.set_yaw(0);
+                target.set_source_word_30(0);
+            }
+            session
+                .step_level2_authored_model22_sub33340_eligible_targets(wind.source_entity_index);
+            let target = &session.entities()[usize::from(player_slot)];
+            let orbit_yaw = wrap_source_angle(
+                i16::try_from(heading_for_positions(axis, position))
+                    .unwrap()
+                    .wrapping_add(591),
+            );
+            assert_eq!(target.yaw, if distance < 512 { 56 } else { orbit_yaw });
+            assert_eq!(
+                target.source_word_30(),
+                if distance < 512 {
+                    56
+                } else {
+                    orbit_yaw.cast_unsigned()
+                }
+            );
+            assert_eq!(target.control_flags & 0x1000_0000 != 0, distance < 512);
+            assert_eq!(session.consume_level2_player_damage(), None);
+        }
+    }
 
     #[test]
     fn selected_cast_survives_player_movement_authority_sync() {
