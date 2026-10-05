@@ -11484,6 +11484,11 @@ impl Level2ResetSession {
         player_entity_index: u16,
     ) -> Option<Level2ResolvedSourcePlan> {
         let live = &self.session.state.live;
+        let dynamic_row = if source_slot == player_entity_index {
+            None
+        } else {
+            live.economy.live_arena_cursor_row(source_slot)
+        };
 
         let route_and_selector = if source_slot == player_entity_index {
             live.economy
@@ -11491,19 +11496,12 @@ impl Level2ResetSession {
                 .get(usize::from(source_slot))
                 .filter(|row| row.active && row.index == source_slot)
                 .map(|row| (Level2SourceRoute::Player, row.class, row.action))
-        } else if let Some(row) = live
-            .economy
-            .live_arena_cursor_rows()
-            .into_iter()
-            .find(|row| {
-                row.source_slot == source_slot
-                    && matches!(
-                        row.kind,
-                        Level2DynamicArenaKind::SpellPickup
-                            | Level2DynamicArenaKind::SpellReplacement
-                    )
-            })
-        {
+        } else if let Some(row) = dynamic_row.filter(|row| {
+            matches!(
+                row.kind,
+                Level2DynamicArenaKind::SpellPickup | Level2DynamicArenaKind::SpellReplacement
+            )
+        }) {
             // A NewEvent-backed pickup or replacement is already authoritative in the
             // shared dynamic arena. Keep it on that route so the imported-row
             // projection below cannot replace it with the inactive reset row
@@ -11698,12 +11696,7 @@ impl Level2ResetSession {
             entity.active && entity.index == source_slot && entity.class == 3 && entity.model == 1
         }) {
             Some((Level2SourceRoute::Nyphur, nyphur.class, nyphur.action))
-        } else if let Some(row) = live
-            .economy
-            .live_arena_cursor_rows()
-            .into_iter()
-            .find(|row| row.source_slot == source_slot)
-        {
+        } else if let Some(row) = dynamic_row {
             live.economy
                 .economy
                 .live_arena_class_action(source_slot, row.kind)

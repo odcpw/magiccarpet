@@ -5669,6 +5669,26 @@ impl Level2EconomyState {
         rows.into_values().collect()
     }
 
+    /// Resolve one numeric slot with the same last-carrier-wins rule as the
+    /// ordered cursor census, without allocating the complete arena census.
+    #[must_use]
+    pub(super) fn live_arena_cursor_row(
+        &self,
+        source_slot: u16,
+    ) -> Option<Level2DynamicArenaCursorRow> {
+        let mut final_kind = None;
+        self.for_each_live_arena_slot(|slot, kind| {
+            if slot == source_slot {
+                final_kind = Some(kind);
+            }
+        });
+        final_kind.map(|kind| Level2DynamicArenaCursorRow {
+            source_slot,
+            generation: self.slot_generation(source_slot),
+            kind,
+        })
+    }
+
     /// Read the live source action-table selector for one typed arena row.
     ///
     /// `UpdateEntities_57730` reads class/action from the fixed numeric row at

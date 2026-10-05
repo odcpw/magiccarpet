@@ -1,4 +1,121 @@
     #[test]
+    fn level_two_direct_arena_cursor_matches_census_through_reclaim_and_reuse() {
+        fn assert_matches_census(economy: &Level2EconomyState) {
+            let before = economy.clone();
+            let expected = economy.live_arena_cursor_rows();
+            for slot in (0..=1_000).chain(std::iter::once(u16::MAX)) {
+                assert_eq!(
+                    economy.live_arena_cursor_row(slot),
+                    expected.iter().find(|row| row.source_slot == slot).copied(),
+                    "direct cursor differs at source slot {slot}"
+                );
+            }
+            for row in expected {
+                assert_eq!(economy.live_arena_cursor_row(row.source_slot), Some(row));
+            }
+            assert_eq!(economy, &before, "cursor queries are observational");
+        }
+
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let terrain = SessionTerrain::from_inspection(&inspection);
+        let mut economy = inspection
+            .level2_reset_session()
+            .expect("qualified reset session")
+            .economy()
+            .clone();
+        assert_matches_census(&economy);
+
+        let slot = u16::try_from(
+            economy
+                .spawn_mana_sphere_from_death(
+                    77,
+                    Position::default(),
+                    0,
+                    0x1234,
+                    500,
+                    111,
+                    &terrain,
+                )
+                .expect("ordinary sphere allocation"),
+        )
+        .expect("source slot fits");
+        let generation = economy.slot_generation(slot);
+        let original_sphere = economy
+            .spheres()
+            .iter()
+            .find(|sphere| sphere.source_entity_index == slot)
+            .cloned()
+            .expect("allocated sphere");
+        assert_eq!(
+            economy
+                .live_arena_cursor_row(slot)
+                .map(|row| (row.kind, row.generation)),
+            Some((Level2DynamicArenaKind::ManaSphere, generation))
+        );
+        assert_matches_census(&economy);
+
+        economy
+            .spheres
+            .iter_mut()
+            .find(|sphere| sphere.source_entity_index == slot)
+            .expect("callback-hidden sphere remains allocated")
+            .control_flags |= ENTITY_DRAW_DISABLED_BIT;
+        assert_eq!(
+            economy
+                .live_arena_cursor_row(slot)
+                .map(|row| row.generation),
+            Some(generation),
+            "hidden active rows retain their identity until source cleanup"
+        );
+        assert_matches_census(&economy);
+        economy.reclaim_inactive_slots_at_source_boundary();
+        assert_eq!(economy.live_arena_cursor_row(slot), None);
+        assert!(economy.free_slots.contains(&slot));
+        assert!(!economy.map_chains().is_linked(slot));
+        assert_matches_census(&economy);
+
+        let replacement = economy
+            .allocate_spell_replacement(11, 38, Position::default())
+            .expect("ordinary replacement allocation reuses reclaimed LIFO slot");
+        assert_eq!(replacement.source_entity_index, slot);
+        let next_generation = economy.slot_generation(slot);
+        assert_eq!(next_generation, generation.wrapping_add(1));
+        assert_eq!(
+            economy
+                .live_arena_cursor_row(slot)
+                .map(|row| (row.kind, row.generation)),
+            Some((Level2DynamicArenaKind::SpellReplacement, next_generation))
+        );
+        assert_matches_census(&economy);
+
+        // Deliberately overlap typed carriers only in this census comparison:
+        // the old BTreeMap overwrites the earlier sphere with the later spell
+        // replacement. A direct lookup must not return its first match.
+        let mut overlap = economy.clone();
+        overlap.spheres.push(original_sphere);
+        assert_eq!(
+            overlap.live_arena_cursor_row(slot).map(|row| row.kind),
+            Some(Level2DynamicArenaKind::SpellReplacement)
+        );
+        assert_matches_census(&overlap);
+        overlap
+            .spell_replacements
+            .iter_mut()
+            .find(|row| row.source_entity_index == slot)
+            .expect("overlapping replacement")
+            .active = false;
+        assert_eq!(
+            overlap
+                .live_arena_cursor_row(slot)
+                .map(|row| (row.kind, row.generation)),
+            Some((Level2DynamicArenaKind::ManaSphere, next_generation)),
+            "inactive later carriers cannot overwrite the surviving active row"
+        );
+        assert_matches_census(&overlap);
+    }
+
+    #[test]
     fn level_two_castle_root_positions_follow_source_grid_and_anchor_vector() {
         let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
             .expect("qualified Level 2 package");
