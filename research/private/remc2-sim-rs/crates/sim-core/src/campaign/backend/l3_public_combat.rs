@@ -715,11 +715,6 @@ fn ordinary_level_three_archer_arrow_damages_player_without_lowering_shooter_hea
         .unwrap();
     let mut launched = BTreeSet::new();
     for _ in 0..180 {
-        let upkeep_regen = session
-            .backend()
-            .campaign
-            .level2_compatibility()
-            .player_life_regen_for_test();
         step(&mut session, GameCommand::default());
         let compatibility = session.backend().campaign.level2_compatibility();
         let economy = compatibility.economy();
@@ -735,7 +730,12 @@ fn ordinary_level_three_archer_arrow_damages_player_without_lowering_shooter_hea
         if economy.events().iter().any(|event| matches!(event,
             crate::native_world::Level2EconomyEvent::DamageApplied { target_entity_index, attacker_entity_index, damage: 250, lethal: false }
                 if *target_entity_index == player && launched.contains(attacker_entity_index))) {
-            assert_eq!(compatibility.canonical_player_life_for_test(), initial_life - 250 + upkeep_regen);
+            // The source damage consumer starts the sixteen-visit healing
+            // cooldown before this visit's upkeep; no same-visit regen applies.
+            assert_eq!(
+                compatibility.canonical_player_life_for_test(),
+                initial_life - 250
+            );
             return;
         }
     }
