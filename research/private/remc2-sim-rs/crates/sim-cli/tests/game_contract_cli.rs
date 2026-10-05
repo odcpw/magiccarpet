@@ -100,14 +100,14 @@ fn capabilities_describe_and_get_are_deterministic_data_only_reads() {
     assert_eq!(capabilities["ok"], true);
     assert_eq!(capabilities["data"]["read_only"], false);
     assert_eq!(capabilities["data"]["writable_descriptor_count"], 6);
-    assert_eq!(capabilities["contract_version"], "35.0");
+    assert_eq!(capabilities["contract_version"], "36.0");
     assert_eq!(
         capabilities["data"]["authoring"]["change_set_schema"],
         "carpet-flight-change-set/v9"
     );
     assert_eq!(
         capabilities["data"]["authoring"]["game_definition_schema"],
-        "carpet-flight-game-definition/v10"
+        "carpet-flight-game-definition/v11"
     );
     assert_eq!(
         capabilities["data"]["authoring"]["operation_schema"]["variants"][0]["operation"],
@@ -583,7 +583,7 @@ fn semantic_level_entities_are_discoverable_without_source_identity() {
     assert!(entities.status.success(), "{:?}", entities.stderr);
     assert!(entities.stderr.is_empty());
     let entities: Value = serde_json::from_slice(&entities.stdout).unwrap();
-    assert_eq!(entities["contract_version"], "35.0");
+    assert_eq!(entities["contract_version"], "36.0");
     assert_eq!(entities["data"]["page"]["total"], 1);
     assert_eq!(
         entities["data"]["entities"][0]["id"],
@@ -598,12 +598,21 @@ fn semantic_level_entities_are_discoverable_without_source_identity() {
         "session_reset"
     );
     let public_entity = entities["data"]["entities"][0].as_object().unwrap();
-    assert_eq!(public_entity.len(), 5);
+    assert_eq!(public_entity.len(), 7);
     assert!(public_entity.contains_key("id"));
     assert!(public_entity.contains_key("kind"));
     assert!(public_entity.contains_key("position"));
     assert!(public_entity.contains_key("position_access"));
     assert_eq!(public_entity["creature_health"], serde_json::Value::Null);
+    assert_eq!(public_entity["experience_scroll"], serde_json::Value::Null);
+    assert_eq!(
+        public_entity["switch_overlap"],
+        serde_json::json!({
+            "default_overlap_extent_tiles": 64,
+            "overlap_extent_tiles": 64,
+            "overlap_extent_tiles_access": "session_reset"
+        })
+    );
     assert!(!public_entity.contains_key("activation_group"));
     assert!(!public_entity.contains_key("source_slot"));
     let get = run(&[
@@ -920,10 +929,10 @@ fn campaign_workspace_authors_one_absence_countdown_through_the_typed_cli_lifecy
     assert!(described.stderr.is_empty());
     let described: Value = serde_json::from_slice(&described.stdout).unwrap();
     let descriptor = &described["data"]["descriptors"][0];
-    assert_eq!(described["contract_version"], "35.0");
+    assert_eq!(described["contract_version"], "36.0");
     assert_eq!(
         described["identity"]["schema"],
-        "carpet-flight-game-definition/v10"
+        "carpet-flight-game-definition/v11"
     );
     assert_eq!(descriptor["id"], TARGET);
     assert_eq!(descriptor["kind"], "mechanic");
@@ -936,48 +945,45 @@ fn campaign_workspace_authors_one_absence_countdown_through_the_typed_cli_lifecy
     assert_eq!(descriptor["default_value"]["value"], 16);
     assert_eq!(descriptor["effective_value"]["value"], 16);
 
-    let entities = run(&[
-        "game",
-        "entities",
-        "--campaign-package",
-        campaign,
-        "--limit",
-        "1",
-    ]);
-    assert!(entities.status.success(), "{:?}", entities.stderr);
-    let entities: Value = serde_json::from_slice(&entities.stdout).unwrap();
-    let countdown_offset = 4 + entities["data"]["page"]["total"].as_u64().unwrap();
-    let cursor = format!(
-        "v1.{}.{}.{}",
-        described["data"]["catalog_hash"]
-            .as_str()
+    // Follow the public cursor instead of manufacturing an offset from the
+    // number of entities: other writable descriptors also precede mechanics.
+    let mut cursor = None::<String>;
+    let mut found = false;
+    for _ in 0..20 {
+        let mut arguments = vec![
+            "game",
+            "describe",
+            "--campaign-package",
+            campaign,
+            "--limit",
+            "100",
+        ];
+        if let Some(cursor) = &cursor {
+            arguments.extend(["--cursor", cursor.as_str()]);
+        }
+        let listed = run(&arguments);
+        assert!(listed.status.success(), "{:?}", listed.stderr);
+        let listed: Value = serde_json::from_slice(&listed.stdout).unwrap();
+        if listed["data"]["descriptors"]
+            .as_array()
             .unwrap()
-            .trim_start_matches("sha256:"),
-        described["identity"]["definition_hash"]
+            .iter()
+            .any(|descriptor| descriptor["id"] == TARGET)
+        {
+            found = true;
+            break;
+        }
+        cursor = listed["data"]["page"]["next_cursor"]
             .as_str()
-            .unwrap()
-            .trim_start_matches("sha256:"),
-        countdown_offset
+            .map(str::to_owned);
+        if cursor.is_none() {
+            break;
+        }
+    }
+    assert!(
+        found,
+        "countdown descriptor must be discoverable through public pages"
     );
-    let listed = run(&[
-        "game",
-        "describe",
-        "--campaign-package",
-        campaign,
-        "--limit",
-        "2",
-        "--cursor",
-        &cursor,
-    ]);
-    assert!(listed.status.success(), "{:?}", listed.stderr);
-    let listed: Value = serde_json::from_slice(&listed.stdout).unwrap();
-    let listed_ids = listed["data"]["descriptors"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|descriptor| descriptor["id"].as_str().unwrap())
-        .collect::<Vec<_>>();
-    assert!(listed_ids.contains(&TARGET));
 
     let created = run(&[
         "game",
@@ -1199,10 +1205,10 @@ fn campaign_workspace_authors_exit_sequence_overlap_through_the_typed_cli_lifecy
         assert!(described.stderr.is_empty());
         let described: Value = serde_json::from_slice(&described.stdout).unwrap();
         let descriptor = &described["data"]["descriptors"][0];
-        assert_eq!(described["contract_version"], "35.0");
+        assert_eq!(described["contract_version"], "36.0");
         assert_eq!(
             described["identity"]["schema"],
-            "carpet-flight-game-definition/v10"
+            "carpet-flight-game-definition/v11"
         );
         assert_eq!(descriptor["id"], *target);
         assert_eq!(descriptor["kind"], "entity_parameter");
@@ -1371,10 +1377,10 @@ fn campaign_workspace_authors_area_entry_overlap_through_the_typed_cli_lifecycle
     assert!(described.stderr.is_empty());
     let described: Value = serde_json::from_slice(&described.stdout).unwrap();
     let descriptor = &described["data"]["descriptors"][0];
-    assert_eq!(described["contract_version"], "35.0");
+    assert_eq!(described["contract_version"], "36.0");
     assert_eq!(
         described["identity"]["schema"],
-        "carpet-flight-game-definition/v10"
+        "carpet-flight-game-definition/v11"
     );
     assert_eq!(descriptor["id"], TARGET);
     assert_eq!(descriptor["kind"], "entity_parameter");
@@ -1541,7 +1547,7 @@ fn campaign_workspace_authors_area_exit_overlap_through_the_typed_cli_lifecycle(
     assert!(described.stderr.is_empty());
     let described: Value = serde_json::from_slice(&described.stdout).unwrap();
     let descriptor = &described["data"]["descriptors"][0];
-    assert_eq!(described["contract_version"], "35.0");
+    assert_eq!(described["contract_version"], "36.0");
     assert_eq!(descriptor["id"], TARGET);
     assert_eq!(descriptor["unit"], "tiles");
     assert_eq!(descriptor["access"], "writable");
@@ -1675,7 +1681,7 @@ fn campaign_workspace_authors_grouped_house_construction_visits_through_the_type
     assert!(described.stderr.is_empty());
     let described: Value = serde_json::from_slice(&described.stdout).unwrap();
     let descriptor = &described["data"]["descriptors"][0];
-    assert_eq!(described["contract_version"], "35.0");
+    assert_eq!(described["contract_version"], "36.0");
     assert_eq!(descriptor["id"], TARGET);
     assert_eq!(descriptor["unit"], "entity_visits");
     assert_eq!(descriptor["access"], "writable");
@@ -1839,7 +1845,7 @@ fn campaign_workspace_authors_one_firefly_max_life_through_the_typed_cli_lifecyc
     assert!(described.stderr.is_empty());
     let described: Value = serde_json::from_slice(&described.stdout).unwrap();
     let descriptor = &described["data"]["descriptors"][0];
-    assert_eq!(described["contract_version"], "35.0");
+    assert_eq!(described["contract_version"], "36.0");
     assert_eq!(descriptor["id"], TARGET);
     assert_eq!(descriptor["kind"], "entity_parameter");
     assert_eq!(descriptor["value_type"], "integer");
@@ -2466,10 +2472,10 @@ fn campaign_workspace_authors_level_one_fireball_cost_through_typed_cli() {
     assert!(described.status.success(), "{:?}", described.stderr);
     assert!(described.stderr.is_empty());
     let described: Value = serde_json::from_slice(&described.stdout).unwrap();
-    assert_eq!(described["contract_version"], "35.0");
+    assert_eq!(described["contract_version"], "36.0");
     assert_eq!(
         described["identity"]["schema"],
-        "carpet-flight-game-definition/v10"
+        "carpet-flight-game-definition/v11"
     );
     let descriptor = &described["data"]["descriptors"][0];
     assert_eq!(descriptor["id"], TARGET);
@@ -2793,10 +2799,10 @@ fn campaign_workspace_authors_level_one_castle_mana_objective_through_typed_cli(
     assert!(described.status.success(), "{:?}", described.stderr);
     assert!(described.stderr.is_empty());
     let described: Value = serde_json::from_slice(&described.stdout).unwrap();
-    assert_eq!(described["contract_version"], "35.0");
+    assert_eq!(described["contract_version"], "36.0");
     assert_eq!(
         described["identity"]["schema"],
-        "carpet-flight-game-definition/v10"
+        "carpet-flight-game-definition/v11"
     );
     let descriptor = &described["data"]["descriptors"][0];
     assert_eq!(descriptor["id"], TARGET);
@@ -3075,10 +3081,10 @@ fn campaign_workspace_authors_level_one_creature_absence_objective_through_typed
     ]);
     assert!(described.status.success(), "{:?}", described.stderr);
     let described: Value = serde_json::from_slice(&described.stdout).unwrap();
-    assert_eq!(described["contract_version"], "35.0");
+    assert_eq!(described["contract_version"], "36.0");
     assert_eq!(
         described["identity"]["schema"],
-        "carpet-flight-game-definition/v10"
+        "carpet-flight-game-definition/v11"
     );
     let descriptor = &described["data"]["descriptors"][0];
     assert_eq!(descriptor["id"], TARGET);
@@ -3582,6 +3588,7 @@ fn workspace_authoring_cli_stages_previews_and_refuses_unsafe_asset_timing_witho
         inspect["data"]["writable_surface"],
         serde_json::json!([
             "ai.enemy.default.policy",
+            "flight.player.forward_acceleration",
             "flight.player.max_forward_speed",
             "presentation.spell.fireball.projectile_asset"
         ])
@@ -3729,7 +3736,7 @@ fn real_campaign_goat_policy_is_discoverable_and_publishes_through_the_typed_cli
         assert!(described.status.success(), "{:?}", described.stderr);
         assert!(described.stderr.is_empty());
         let described: Value = serde_json::from_slice(&described.stdout).unwrap();
-        assert_eq!(described["contract_version"], "35.0");
+        assert_eq!(described["contract_version"], "36.0");
         let descriptor = &described["data"]["descriptors"][0];
         assert_eq!(descriptor["id"], TARGET);
         assert_eq!(descriptor["kind"], "behavior");
@@ -3918,7 +3925,7 @@ fn real_level_one_fireball_asset_is_discoverable_publishable_and_package_scoped(
     assert!(described.status.success(), "{:?}", described.stderr);
     assert!(described.stderr.is_empty());
     let described: Value = serde_json::from_slice(&described.stdout).unwrap();
-    assert_eq!(described["contract_version"], "35.0");
+    assert_eq!(described["contract_version"], "36.0");
     let descriptor = &described["data"]["descriptors"][0];
     assert_eq!(descriptor["access"], "writable");
     assert_eq!(descriptor["mutation_timing"], "package_reload");

@@ -462,8 +462,13 @@ pub(crate) fn campaign_minimap_plan(
                     entity.index
                 )
             })?;
-        let command =
-            level2_day_minimap_command(session, input, family12_enabled, parameter_record_index);
+        let command = if selection == CampaignSelection::LEVEL1 {
+            // The qualified Night package uses DrawMinimapEntities' Night
+            // classifier directly; Day palette overrides are a separate branch.
+            level1_minimap_entity_command(&session.state, input)
+        } else {
+            level2_day_minimap_command(session, input, family12_enabled, parameter_record_index)
+        };
         let Some(command) = command else {
             continue;
         };
@@ -620,6 +625,17 @@ pub(crate) fn campaign_minimap_plan(
         }
     }
 
+    if selection == CampaignSelection::LEVEL1 {
+        // Source DrawMinimapMarks: CLRN[0xff0] for fixed targets and
+        // CLRN[3840] for entity targets and arrows (sealed Night palette).
+        for mark in &mut marks {
+            mark.palette_index = if mark.kind == 2 && mark.help_selector == 0x51 {
+                184
+            } else {
+                119
+            };
+        }
+    }
     let visibility_flags = u32::from(visibility.visible_to_local_player)
         | (u32::from(visibility.owner_visibility_mode != 0) << 1)
         | (u32::from(visibility.beyond_sight_holder_present) << 2)
@@ -650,6 +666,70 @@ fn append_objective_arrow(
             ..Level2MinimapMark::default()
         });
     }
+}
+
+#[test]
+fn night_campaign_minimap_uses_live_source_commands_and_night_objective_colors() {
+    let package = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../../generated/mc-cf15-level1-package-v3-current");
+    let mut campaign =
+        sim_core::campaign::CampaignSession::open(package, CampaignSelection::LEVEL1)
+            .expect("real Night package opens");
+    let baseline = campaign.state_hash();
+    let reset = campaign.level2_compatibility();
+    let plan = campaign_minimap_plan(reset, CampaignSelection::LEVEL1).expect("Night map plan");
+    assert!(!plan.entities.is_empty(), "real Night entity commands");
+    assert!(
+        plan.marks
+            .iter()
+            .any(|row| row.kind == 2 && row.palette_index == 184)
+    );
+    assert!(
+        plan.marks
+            .iter()
+            .filter(|row| row.kind == 3)
+            .all(|row| row.palette_index == 119)
+    );
+    assert_eq!(plan.marks.iter().filter(|row| row.kind == 3).count(), 7);
+    for row in &plan.entities {
+        let entity = reset
+            .entities()
+            .iter()
+            .find(|entity| entity.index == row.subject_entity_index)
+            .unwrap();
+        let local = reset.players()[usize::from(reset.runtime().local_player_slot)].entity_index;
+        let (input, _) = level2_minimap_input(reset, entity, local).unwrap();
+        let expected = level1_minimap_entity_command(&reset.state, input).unwrap();
+        assert_eq!(
+            (row.x, row.y, row.selector, row.palette_index),
+            (
+                expected.x,
+                expected.y,
+                expected.selector,
+                expected.palette_index
+            )
+        );
+    }
+    assert!(
+        plan.marks
+            .iter()
+            .all(|row| row.palette_index != 188 && row.palette_index != 123),
+        "Night objective commands must not inherit Day palette colors"
+    );
+    assert_eq!(campaign.state_hash(), baseline, "polls are observational");
+    campaign.step(
+        sim_core::PlayerCommand {
+            roll: 24,
+            pitch: -8,
+            ..Default::default()
+        },
+        0,
+    );
+    let after = campaign.state_hash();
+    let live =
+        campaign_minimap_plan(campaign.level2_compatibility(), CampaignSelection::LEVEL1).unwrap();
+    assert!(!live.entities.is_empty());
+    assert_eq!(campaign.state_hash(), after);
 }
 
 #[test]

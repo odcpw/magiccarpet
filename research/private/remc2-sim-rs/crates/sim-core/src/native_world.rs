@@ -612,15 +612,33 @@ const LEVEL2_DAY_HUD_PALETTE_TABLE: [[u8; 3]; 8] = [
     [0x3D, 0x3A, 0x7B],
 ];
 
-fn level2_day_hud_palette_indices(color_index: u8) -> Result<[u8; 3]> {
-    LEVEL2_DAY_HUD_PALETTE_TABLE
-        .get(usize::from(color_index))
-        .copied()
-        .ok_or_else(|| {
-            NativeWorldError::new(format!(
-                "Level 2 Day HUD player color {color_index} has no source palette row"
-            ))
-        })
+fn campaign_hud_palette_indices(color_index: u8, map_type: MapType) -> Result<[u8; 3]> {
+    // Pinned EventsFunctions.cpp::sub_48120; the Night palette shares the
+    // status geometry with Day but has different player mana colours.
+    const NIGHT: [[u8; 3]; 8] = [
+        [0xA4, 0xAA, 0x7B],
+        [0x77, 0x7D, 0x7B],
+        [0xC0, 0xC6, 0x7B],
+        [0x58, 0x5D, 0x7B],
+        [0x97, 0x9D, 0x7B],
+        [0xD7, 0xDD, 0x7B],
+        [0x69, 0x62, 0x7B],
+        [0xC9, 0xCF, 0x7B],
+    ];
+    let table = match map_type {
+        MapType::Day => &LEVEL2_DAY_HUD_PALETTE_TABLE,
+        MapType::Night => &NIGHT,
+        _ => {
+            return Err(NativeWorldError::new(
+                "campaign HUD palette profile is unsupported",
+            ));
+        }
+    };
+    table.get(usize::from(color_index)).copied().ok_or_else(|| {
+        NativeWorldError::new(format!(
+            "Level 2 Day HUD player color {color_index} has no source palette row"
+        ))
+    })
 }
 
 /// Minimal authoritative projection for the Day top bar and two spell hands.
@@ -8959,7 +8977,7 @@ impl QualifiedOwnerCacheReader {
         })
     }
 
-    fn manifest_object(&self) -> Result<&serde_json::Map<String, Value>> {
+    pub(crate) fn manifest_object(&self) -> Result<&serde_json::Map<String, Value>> {
         as_object(&self.manifest, "owner cache manifest")
     }
 

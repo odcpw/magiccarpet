@@ -135,6 +135,50 @@ pub struct DayIndexedFrameAssets {
 }
 
 impl DayIndexedFrameAssets {
+    /// Reuse the sealed Night texture/sky/palette products for the Level 1
+    /// descriptor campaign. Geometry is supplied solely by the live session;
+    /// the retained cache's package hash identifies its original export.
+    pub fn load_night(cache_dir: impl AsRef<Path>) -> Result<Self, DayIndexedFrameError> {
+        let cache = crate::native_world::QualifiedOwnerCacheReader::open(cache_dir)
+            .map_err(|error| DayIndexedFrameError::new(error.to_string()))?;
+        let manifest = cache
+            .manifest_object()
+            .map_err(|error| DayIndexedFrameError::new(error.to_string()))?;
+        let bindings = object_field(manifest, "bindings", "Night cache")?;
+        let package_sha256 =
+            string_field(bindings, "level_export_package_sha256", "Night cache")?.to_owned();
+        let cache_content_sha256 =
+            string_field(manifest, "cache_content_sha256", "Night cache")?.to_owned();
+        let read = |path: &str, extent: usize| -> Result<Box<[u8]>, DayIndexedFrameError> {
+            let bytes = cache
+                .read(path)
+                .map_err(|error| DayIndexedFrameError::new(error.to_string()))?;
+            if bytes.len() != extent {
+                return Err(DayIndexedFrameError::new(format!(
+                    "Night {path} extent mismatch"
+                )));
+            }
+            Ok(bytes.into_boxed_slice())
+        };
+        Ok(Self {
+            source_minimap: true,
+            profile: DayIndexedProfile {
+                external_level: 1,
+                internal_level: 0,
+                map_type_id: 1,
+                vga_resolution_selector: 1,
+                texture_size: 32,
+            },
+            package_sha256,
+            campaign_package_sha256: None,
+            cache_content_sha256,
+            palette_rgb8: read("palette/paln.rgb8", PALETTE_RGB8_BYTES)?,
+            tablesd: read("palette/tablesn.u8", TABLESD_BYTES)?,
+            sky: read("sky/skyn.indices.u8", SKY_BYTES)?,
+            terrain_atlas: read("terrain/bl32n.atlas.indices.u8", TERRAIN_ATLAS_BYTES)?,
+        })
+    }
+
     /// Load and fully validate one owner-generated Level 2 Day material cache.
     ///
     /// The manifest payload, every listed output hash/size, content-tree
@@ -765,14 +809,14 @@ fn validate_day_route(
     let material = assets.profile();
     if metadata.external_level != material.external_level
         || metadata.internal_level != material.internal_level
-        || metadata.map_type != MapType::Day
-        || material.map_type_id != 0
+        || metadata.map_type as u8 != material.map_type_id
+        || !matches!(metadata.map_type, MapType::Day | MapType::Night)
     {
         return Err(DayIndexedFrameError::new(
             "Day indexed frame metadata and material selection differ",
         ));
     }
-    if assets.package_sha256() != inspection.package_sha256()
+    if (material.map_type_id == 0 && assets.package_sha256() != inspection.package_sha256())
         || session.package_sha256() != inspection.package_sha256()
     {
         return Err(DayIndexedFrameError::new(
@@ -1415,6 +1459,68 @@ mod tests {
                 .as_bytes(),
         );
         object.insert("manifest_payload_sha256".to_owned(), Value::String(claim));
+    }
+
+    #[test]
+    fn qualified_night_campaign_renders_live_terrain_and_rejects_day_substitution() {
+        let mut campaign = crate::campaign::CampaignSession::open(
+            generated_path("mc-cf15-level1-package-v3-current"),
+            crate::campaign::spec::CampaignSelection::LEVEL1,
+        )
+        .expect("real Night campaign opens");
+        let assets = DayIndexedFrameAssets::load_night(generated_path(
+            "level1-unity-asset-cache-plan29-final",
+        ))
+        .expect("sealed Night assets validate without rebuilding owner products");
+        let initial_hash = campaign.state_hash();
+        let render = |campaign: &crate::campaign::CampaignSession| {
+            render_level2_day_indexed_frame(
+                campaign.inspection(),
+                campaign.level2_compatibility(),
+                &assets,
+                campaign.generation(),
+            )
+            .unwrap()
+        };
+        let first = render(&campaign);
+        assert_eq!(first.indices.len(), 320 * 200);
+        assert_eq!(first.palette_rgb8.len(), 768);
+        assert!(first.indices.iter().any(|pixel| *pixel != 0));
+        assert_eq!(first, render(&campaign));
+        assert_eq!(
+            campaign.state_hash(),
+            initial_hash,
+            "render polling is observational"
+        );
+        campaign.step(
+            crate::PlayerCommand {
+                roll: 24,
+                pitch: -8,
+                ..crate::PlayerCommand::default()
+            },
+            0,
+        );
+        let stepped = render(&campaign);
+        assert_eq!(stepped.tick, 1);
+        assert_ne!(stepped.terrain_input_hash, first.terrain_input_hash);
+        let day = crate::campaign::CampaignSession::open(
+            generated_path("level2-day-block32-campaign-v2"),
+            crate::campaign::spec::CampaignSelection::LEVEL2,
+        )
+        .unwrap();
+        assert!(
+            render_level2_day_indexed_frame(
+                day.inspection(),
+                day.level2_compatibility(),
+                &assets,
+                0
+            )
+            .is_err()
+        );
+        campaign.reset();
+        let reset = render(&campaign);
+        assert_eq!(reset.indices, first.indices);
+        assert_eq!(reset.palette_rgb8, first.palette_rgb8);
     }
 
     #[test]

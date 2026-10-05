@@ -3,17 +3,29 @@ fn campaign_entity_projection_follows_live_player_and_reset() {
     let handle = open_level2_campaign_handle();
     let live_player = || {
         with_campaign_session(handle, |record| {
-            let CampaignSessionKind::Level2 { reset, .. } = &record.kind else { unreachable!() };
+            let CampaignSessionKind::Level2 { reset, .. } = &record.kind else {
+                unreachable!()
+            };
             let slot = reset.players()[0].entity_index;
             let row = &reset.entities()[usize::from(slot)];
             Ok((slot, (row.position.x, row.position.y, row.position.z)))
-        }).unwrap()
+        })
+        .unwrap()
     };
     let copy_player = |slot: u16| {
         let mut row = McCampaignEntitySnapshotV2::default();
         let mut written = 0;
-        assert_eq!(mc_native_campaign_entities_copy(handle, u32::from(slot), &raw mut row,
-            1, struct_size::<McCampaignEntitySnapshotV2>(), &raw mut written), MC_STATUS_OK);
+        assert_eq!(
+            mc_native_campaign_entities_copy(
+                handle,
+                u32::from(slot),
+                &raw mut row,
+                1,
+                struct_size::<McCampaignEntitySnapshotV2>(),
+                &raw mut written
+            ),
+            MC_STATUS_OK
+        );
         assert_eq!(written, 1);
         (row.x, row.y, row.z)
     };
@@ -21,8 +33,15 @@ fn campaign_entity_projection_follows_live_player_and_reset() {
     assert_eq!(copy_player(slot), initial);
     step_level2_campaign_once(handle, 0);
     let (_, moved) = live_player();
-    assert_ne!(moved, initial, "the public native turn moved the authoritative player row");
-    assert_eq!(copy_player(slot), moved, "presentation must not copy the immutable package row");
+    assert_ne!(
+        moved, initial,
+        "the public native turn moved the authoritative player row"
+    );
+    assert_eq!(
+        copy_player(slot),
+        moved,
+        "presentation must not copy the immutable package row"
+    );
     assert_eq!(mc_native_campaign_session_reset(handle), MC_STATUS_OK);
     assert_eq!(live_player().1, initial);
     assert_eq!(copy_player(slot), initial);
@@ -1046,7 +1065,10 @@ fn descriptor_campaign_counts_follow_the_level_definition() {
         MC_STATUS_OK
     );
     assert_eq!(players_written, 1);
-    assert_eq!((players[0].slot, players[0].active, players[0].is_ai), (0, 1, 0));
+    assert_eq!(
+        (players[0].slot, players[0].active, players[0].is_ai),
+        (0, 1, 0)
+    );
 
     let mut objective_count = 0;
     assert_eq!(
@@ -1068,10 +1090,7 @@ fn descriptor_campaign_counts_follow_the_level_definition() {
         MC_STATUS_OK
     );
     assert_eq!(objectives_written, 5);
-    assert_eq!(
-        mc_native_campaign_session_destroy(handle),
-        MC_STATUS_OK
-    );
+    assert_eq!(mc_native_campaign_session_destroy(handle), MC_STATUS_OK);
 }
 
 #[test]
@@ -2453,13 +2472,15 @@ fn cf12_generic_campaign_lifecycle_journal_and_frame_route() {
         assert_eq!(effect.generation, 0);
         assert_eq!(effect.sequence, index as u64 + 1);
         assert_eq!(effect.state_hash, step.state_hash);
-        assert!([
-            campaign_facade::MC_CAMPAIGN_EFFECT_DISPATCH,
-            campaign_facade::MC_CAMPAIGN_EFFECT_SHARED_SPELL,
-            campaign_facade::MC_CAMPAIGN_EFFECT_FLIGHT,
-            campaign_facade::MC_CAMPAIGN_EFFECT_SCENE_CHANGE,
-        ]
-        .contains(&effect.kind));
+        assert!(
+            [
+                campaign_facade::MC_CAMPAIGN_EFFECT_DISPATCH,
+                campaign_facade::MC_CAMPAIGN_EFFECT_SHARED_SPELL,
+                campaign_facade::MC_CAMPAIGN_EFFECT_FLIGHT,
+                campaign_facade::MC_CAMPAIGN_EFFECT_SCENE_CHANGE,
+            ]
+            .contains(&effect.kind)
+        );
     }
 
     let stepped_frame_query = cf12_frame_query(0, 1);
@@ -2540,7 +2561,10 @@ fn cf12_generic_campaign_lifecycle_journal_and_frame_route() {
     assert_eq!((reset_frame.generation, reset_frame.tick), (1, 0));
     assert_eq!(reset_frame.index_hash, initial_frame.index_hash);
     assert_eq!(reset_indices, initial_indices);
-    assert_eq!(cf12_world_info(handle).reset_state_hash, initial_world.reset_state_hash);
+    assert_eq!(
+        cf12_world_info(handle).reset_state_hash,
+        initial_world.reset_state_hash
+    );
     assert_eq!(mc_native_campaign_session_destroy(handle), MC_STATUS_OK);
 }
 
@@ -2612,7 +2636,10 @@ fn cf12_generic_campaign_abi_failures_are_atomic() {
         ),
         MC_STATUS_OK
     );
-    assert_eq!(empty_batch.written, 0, "failed step must not append effects");
+    assert_eq!(
+        empty_batch.written, 0,
+        "failed step must not append effects"
+    );
 
     let (step, _, _) = step_level2_campaign_once(handle, 0);
     let valid_query = empty_query;
@@ -2787,7 +2814,13 @@ fn cf12_generic_campaign_abi_failures_are_atomic() {
     let unaligned_batch = unsafe { unaligned_batch.read_unaligned() };
     assert!(unaligned_batch.written > 0);
     let first_unaligned_event = unsafe { unaligned_events.read_unaligned() };
-    assert_eq!((first_unaligned_event.sequence, first_unaligned_event.state_hash), (1, step.state_hash));
+    assert_eq!(
+        (
+            first_unaligned_event.sequence,
+            first_unaligned_event.state_hash
+        ),
+        (1, step.state_hash)
+    );
 
     let frame_query = cf12_frame_query(0, 1);
     let mut short_indices = vec![0xa5; INDEX_BYTES - 1];
@@ -2903,7 +2936,10 @@ fn cf12_generic_campaign_abi_failures_are_atomic() {
         ),
         MC_STATUS_OK
     );
-    assert_eq!(frame_info.newly_committed, 1, "failed copies must not commit the frame");
+    assert_eq!(
+        frame_info.newly_committed, 1,
+        "failed copies must not commit the frame"
+    );
     assert_eq!(byte_hash(&good_indices), frame_info.index_hash);
 
     assert_eq!(mc_native_campaign_session_reset(handle), MC_STATUS_OK);
@@ -3239,7 +3275,7 @@ fn cf14_level3_uses_generic_campaign_abi() {
         (local.entity_index, 1)
     );
 
-    let assert_level3_surfaces = |tick: u64| {
+    let assert_level3_surfaces = |tick: u64, visible: bool| {
         let mut hud = McCampaignDayHudSnapshotV2::default();
         assert_eq!(
             mc_native_campaign_day_hud_state(
@@ -3290,7 +3326,11 @@ fn cf14_level3_uses_generic_campaign_abi() {
             "{}",
             LAST_ERROR.with(|value| value.borrow().clone())
         );
-        assert!(sprite_count > 0);
+        assert_eq!(
+            sprite_count > 0,
+            visible,
+            "source range admission at this camera"
+        );
         assert!(sprites[..sprite_count as usize].iter().all(|row| {
             row.abi_version == MC_NATIVE_ABI_VERSION
                 && row.struct_size == struct_size::<McCampaignEntityPresentationV2>()
@@ -3300,7 +3340,14 @@ fn cf14_level3_uses_generic_campaign_abi() {
                 && row.reserved == [0; 4]
         }));
     };
-    assert_level3_surfaces(0);
+    assert_level3_surfaces(0, false);
+
+    let nearby_actor = direct
+        .level2_compatibility()
+        .entities()
+        .iter()
+        .find(|row| row.active && row.class == 5 && row.particle_parameter_index.is_some())
+        .expect("real package creature for positive draw admission");
 
     let step_input = McCampaignStepInputV2 {
         abi_version: MC_NATIVE_ABI_VERSION,
@@ -3308,9 +3355,9 @@ fn cf14_level3_uses_generic_campaign_abi() {
         generation: 0,
         command: valid_command(),
         player_slot: local.slot,
-        player_x: local_entity.x,
-        player_y: local_entity.y,
-        player_z: local_entity.z,
+        player_x: nearby_actor.position.x,
+        player_y: nearby_actor.position.y.wrapping_add(1024),
+        player_z: nearby_actor.position.z,
         ..McCampaignStepInputV2::default()
     };
     let mut step = McCampaignStepSnapshotV2::default();
@@ -3388,7 +3435,7 @@ fn cf14_level3_uses_generic_campaign_abi() {
     );
     assert_eq!((stepped_frame.generation, stepped_frame.tick), (0, 1));
     assert_eq!(byte_hash(&stepped_indices), stepped_frame.index_hash);
-    assert_level3_surfaces(1);
+    assert_level3_surfaces(1, true);
 
     assert_eq!(mc_native_campaign_session_reset(handle), MC_STATUS_OK);
     let mut stale_batch = McEventBatchV2::default();

@@ -6826,7 +6826,14 @@ impl Level2ResetSession {
             mana_palette_index,
             mana_max_palette_index,
             life_palette_index,
-        ] = level2_day_hud_palette_indices(local_player_color_index)?;
+        ] = campaign_hud_palette_indices(
+            local_player_color_index,
+            if selection.map_type_id == MapType::Night as u8 {
+                MapType::Night
+            } else {
+                MapType::Day
+            },
+        )?;
         let spell_slot = |raw_spell_selector: i16| -> Result<Level2DayHudSpellSlot> {
             if raw_spell_selector < 0 {
                 return Ok(Level2DayHudSpellSlot::empty(

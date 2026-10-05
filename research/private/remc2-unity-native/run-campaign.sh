@@ -17,6 +17,8 @@ exec sh "$script_dir/run-player.sh" \
   -mc-runtime-loading-cache "$generated/level1-unity-asset-cache-plan29-final" \
   -mc-runtime-replay-save "${MC_CAMPAIGN_SAVE:-$generated/campaign-save.json}" \
   -mc-runtime-package "$generated/mc-cf15-level1-package-v3-current" \
+  -mc-runtime-owner-cache "$generated/level1-unity-asset-cache-plan29-final" \
+  -mc-runtime-presentation-cache "$generated/level1-unity-asset-cache-plan29-final" \
   -mc-runtime-package "$generated/level2-day-block32-campaign-v2" \
   -mc-runtime-owner-cache "$generated/level2-day-spell-owner-cache-v3/components/material" \
   -mc-runtime-presentation-cache "$generated/level2-day-spell-owner-cache-v3" \

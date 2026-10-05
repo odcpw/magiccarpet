@@ -649,11 +649,11 @@ impl SourceArena {
             .map(|(source_slot, _)| source_slot)
             .collect::<BTreeSet<_>>();
         let mut slots: [Vec<u16>; 29] = std::array::from_fn(|_| Vec::new());
-        let mut include = |source_slot: u16, model: u8, action: u8, _life: i32| {
-            // Source class-model membership retains lethal rows through their
-            // visible death callback. Hide/reclaim, not the negative life
-            // mailbox write, removes them from absence-objective census.
-            if matches!(action, 180 | 232 | 234) {
+        let mut include = |source_slot: u16, model: u8, action: u8, life: i32| {
+            // EventsFunctions.cpp's pre-pass class-5 list excludes negative
+            // life before action filtering. The visible death callback can
+            // remain live without retaining an absence-objective target.
+            if life < 0 || matches!(action, 180 | 232 | 234) {
                 return;
             }
             if let Some(bucket) = slots.get_mut(usize::from(model)) {
@@ -771,24 +771,21 @@ mod tests {
     use crate::{
         PlayerCommand,
         campaign::{CampaignSession, spec::CampaignSelection},
-        native_world::NativeWorld,
     };
     use std::path::PathBuf;
 
     fn level_two_session() -> crate::native_world::Level2ResetSession {
-        let package = std::env::var_os("MC_LEVEL2_PACKAGE_V5").map_or_else(
+        let package = std::env::var_os("MC_CAMPAIGN_PACKAGE").map_or_else(
             || {
                 PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                    .join("../../../generated/l2-debug3.fJ3PaM/level2")
+                    .join("../../../generated/mc-cf02-campaign-package-v2-b/qualified-level2")
             },
             PathBuf::from,
         );
-        let gameplay_cache = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../../generated/level2-day-owner-cache/components/gameplay");
-        NativeWorld::inspect_level2_with_owner_cache(&package, &gameplay_cache)
-            .expect("qualified Level 2 gameplay component")
-            .level2_reset_session()
-            .expect("qualified Level 2 source arena session")
+        CampaignSession::open(package, CampaignSelection::LEVEL2)
+            .expect("qualified Level 2 semantic source arena package")
+            .level2_compatibility()
+            .clone()
     }
 
     #[test]

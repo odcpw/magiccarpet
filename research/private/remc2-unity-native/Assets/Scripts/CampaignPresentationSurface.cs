@@ -78,12 +78,12 @@ namespace MagicCarpet.Native
     }
 
     /// <summary>
-    /// A package-neutral Level 3 Unity consumer. Rust supplies the live frame,
+    /// A shared campaign Unity consumer. Rust supplies the live frame,
     /// entity and spell-inventory state; the sealed owner cache supplies only
     /// validated HUD/spell/minimap pixels. Rust supplies sprite selectors and
     /// draw admission; the client only projects the returned pose and pixels.
     /// </summary>
-    internal sealed class DayPresentationSurface : IDisposable
+    internal sealed class CampaignPresentationSurface : IDisposable
     {
         private readonly Transform root;
         private readonly Dictionary<ushort, Level3EntitySurfaceMarker> entities = new();
@@ -113,10 +113,33 @@ namespace MagicCarpet.Native
             internal byte[] Mask;
         }
         private bool disposed;
+        private bool night;
 
-        internal DayPresentationSurface(Transform parent = null)
+        [Serializable]
+        private sealed class NightMaterials
         {
-            root = new GameObject("Level 3 Rust presentation surface").transform;
+            public OwnerAssetCache.Level3TextureBank tmaps1;
+        }
+
+        [Serializable]
+        private sealed class NightHud
+        {
+            public NightHudBitmap[] bitmap_assets;
+        }
+
+        [Serializable]
+        private sealed class NightHudBitmap
+        {
+            public int selector;
+            public int stored_width;
+            public int stored_height;
+            public string indices_path;
+            public string mask_path;
+        }
+
+        internal CampaignPresentationSurface(Transform parent = null)
+        {
+            root = new GameObject("Campaign Rust presentation surface").transform;
             if (parent != null) root.SetParent(parent, false);
         }
 
@@ -139,9 +162,69 @@ namespace MagicCarpet.Native
         internal int LiveSpellSurfaceCount { get; private set; }
         internal string CacheContentHash { get; private set; }
 
+        internal void PresentNight(NativeCampaignSession session, OwnerAssetCache cache, short cameraYaw)
+        {
+            if (disposed) throw new ObjectDisposedException(nameof(CampaignPresentationSurface));
+            if (session == null || cache == null || cache.IsDayAggregate ||
+                session.Selection.externalLevel != 1 || session.Selection.internalLevel != 0 ||
+                session.Selection.mapType != 1)
+                throw new InvalidOperationException("Night presentation requires the qualified Night campaign and cache");
+            night = true;
+            var info = session.CopyPresentationFrame(session.Tick);
+            if (materialRows.Count == 0)
+            {
+                var descriptor = JsonUtility.FromJson<NightMaterials>(cache.ReadOutputText("terrain/materials.json"));
+                if (descriptor?.tmaps1?.textures == null)
+                    throw new InvalidOperationException("Night sprite descriptor is missing");
+                foreach (var row in descriptor.tmaps1.textures)
+                    if (!string.IsNullOrEmpty(row.indices_path)) materialRows.Add(row.index, row);
+            }
+            var generation = session.Generation;
+            var tick = session.Tick;
+            var minimap = session.MinimapState(tick);
+            var minimapEntities = session.MinimapEntities(tick, minimap);
+            var minimapMarks = session.MinimapMarks(tick, minimap);
+            minimapTables ??= cache.ReadOutput("palette/tablesn.u8");
+            if (minimapSymbols.Count == 0)
+            {
+                var hud = JsonUtility.FromJson<NightHud>(cache.ReadOutputText("hud/level1.json"));
+                if (hud?.bitmap_assets == null)
+                    throw new InvalidOperationException("Night minimap symbol descriptor is missing");
+                foreach (var row in hud.bitmap_assets)
+                {
+                    if (row.selector != 58 && row.selector != 66) continue;
+                    var indices = cache.ReadOutput(row.indices_path);
+                    var mask = cache.ReadOutput(row.mask_path);
+                    if (row.stored_width <= 0 || row.stored_height <= 0 ||
+                        indices.Length != checked(row.stored_width * row.stored_height) ||
+                        mask.Length != indices.Length)
+                        throw new InvalidOperationException("Night minimap symbol extent is invalid");
+                    minimapSymbols.Add(row.selector, new MinimapSymbolPixels {
+                        Width = row.stored_width, Height = row.stored_height,
+                        Indices = indices, Mask = mask
+                    });
+                }
+            }
+            Buffer.BlockCopy(session.CampaignFrameIndices, 0, presentedIndices, 0, presentedIndices.Length);
+            MaterializeMinimapPixels(presentedIndices, minimapEntities, minimapTables, generation, tick, minimapSymbols);
+            MaterializeMinimapMarks(presentedIndices, minimapMarks, minimapTables, generation, tick);
+            var palette = cache.ReadOutput("palette/paln.rgb8");
+            EnsureWorld(presentedIndices, palette);
+            minimapOverlay ??= root.gameObject.AddComponent<CampaignMinimapOverlay>();
+            minimapOverlay.Present(presentedIndices, palette, minimapTables);
+            LiveMinimapReady = minimap.entityCount == (uint)minimapEntities.Length &&
+                               minimap.markCount == (uint)minimapMarks.Length;
+            MaterializeEntities(session.Entities(), session.EntityPresentations(cameraYaw), cache,
+                session.Generation, session.Tick);
+            Generation = info.generation;
+            Tick = info.tick;
+            FrameHash = info.indexHash;
+            CacheContentHash = cache.ContentHash;
+        }
+
         internal void Present(NativeCampaignSession session, OwnerAssetCache cache, short cameraYaw = 0)
         {
-            if (disposed) throw new ObjectDisposedException(nameof(DayPresentationSurface));
+            if (disposed) throw new ObjectDisposedException(nameof(CampaignPresentationSurface));
             if (session == null) throw new ArgumentNullException(nameof(session));
             if (cache == null || !cache.IsDayAggregate)
                 throw new InvalidOperationException("Day presentation requires a qualified Day aggregate");
@@ -573,7 +656,7 @@ namespace MagicCarpet.Native
             OwnerAssetCache.Level3Texture row)
         {
             if (entityMaterials.TryGetValue(row.index, out var material)) return material;
-            var bytes = cache.ReadLevel3MaterialOutput(row.indices_path);
+            var bytes = night ? cache.ReadOutput(row.indices_path) : cache.ReadLevel3MaterialOutput(row.indices_path);
             if (bytes.Length != row.width * row.height)
                 throw new InvalidOperationException($"Level 3 TMAP {row.index} is incomplete");
             var texture = new Texture2D(row.width, row.height, TextureFormat.R8, false, true)
@@ -596,7 +679,8 @@ namespace MagicCarpet.Native
         private Texture2D EnsureEntityPalette(OwnerAssetCache cache)
         {
             if (hudPalette != null) return hudPalette;
-            var bytes = cache.ReadLevel3MaterialOutput(cache.Level3Materials.palette.rgb8_path);
+            var bytes = night ? cache.ReadOutput("palette/paln.rgb8") :
+                cache.ReadLevel3MaterialOutput(cache.Level3Materials.palette.rgb8_path);
             if (bytes.Length != 256 * 3)
                 throw new InvalidOperationException("Level 3 material palette is incomplete");
             hudPalette = new Texture2D(256, 1, TextureFormat.RGB24, false, false)

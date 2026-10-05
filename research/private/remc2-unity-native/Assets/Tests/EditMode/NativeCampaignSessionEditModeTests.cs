@@ -1039,7 +1039,7 @@ namespace MagicCarpet.Native.Tests
                 cache.Level3Materials.tmaps0.selectors);
 
             var root = new GameObject("Level 3 presentation qualification");
-            DayPresentationSurface surface = null;
+            CampaignPresentationSurface surface = null;
             try
             {
                 using (var session = NativeCampaignSession.Open(
@@ -1047,7 +1047,7 @@ namespace MagicCarpet.Native.Tests
                            NativeSim.CampaignSelection.Create(3, 2, 0),
                            Level3DayCache))
                 {
-                    surface = new DayPresentationSurface(root.transform);
+                    surface = new CampaignPresentationSurface(root.transform);
                     surface.Present(session, cache);
                     Assert.That((surface.Generation, surface.Tick), Is.EqualTo((0ul, 0ul)));
                     Assert.That(surface.WorldReady, Is.True);
@@ -1669,14 +1669,14 @@ namespace MagicCarpet.Native.Tests
             foreach (short family in new short[] { 0, 1 })
             {
                 var root = new GameObject("Live campaign spell presentation");
-                DayPresentationSurface surface = null;
+                CampaignPresentationSurface surface = null;
                 try
                 {
                     using var session = NativeCampaignSession.Open(
                         Path.Combine(generated, "level2-day-block32-campaign-v2"),
                         NativeSim.CampaignSelection.Create(2, 1, 0),
                         Path.Combine(cachePath, "components/material"));
-                    surface = new DayPresentationSurface(root.transform);
+                    surface = new CampaignPresentationSurface(root.transform);
                     var sawFlyer = false;
                     var sawImpact = false;
                     ushort cameraX = 384;

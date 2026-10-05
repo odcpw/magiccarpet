@@ -14,14 +14,14 @@ namespace MagicCarpet.Native.Tests
             // Source projected point: x=164*256/1024=41;
             // y=(32*320>>8)+164*128/1024=60.5, measured upward.
             var point = new Vector4(256f / 64f, 128f / 64f, -1024f / 64f, 1f);
-            var clip = DayPresentationSurface.SourceSpriteProjection(32, 0, .035f, 1800f) * point;
+            var clip = CampaignPresentationSurface.SourceSpriteProjection(32, 0, .035f, 1800f) * point;
             Assert.That((clip.x / clip.w + 1f) * 160f, Is.EqualTo(201f).Within(.001f));
             Assert.That((1f - clip.y / clip.w) * 100f, Is.EqualTo(39.5f).Within(.001f));
-            var rolled = DayPresentationSurface.SourceSpriteProjection(32, 512, .035f, 1800f) * point;
+            var rolled = CampaignPresentationSurface.SourceSpriteProjection(32, 512, .035f, 1800f) * point;
             Assert.That((rolled.x / rolled.w + 1f) * 160f, Is.EqualTo(99.5f).Within(.001f));
             Assert.That((1f - rolled.y / rolled.w) * 100f, Is.EqualTo(59f).Within(.001f));
             var farther = new Vector4(point.x * 2, point.y * 2, point.z * 2, 1f);
-            var distant = DayPresentationSurface.SourceSpriteProjection(32, 0, .035f, 1800f) * farther;
+            var distant = CampaignPresentationSurface.SourceSpriteProjection(32, 0, .035f, 1800f) * farther;
             Assert.That(distant.y / distant.w, Is.EqualTo(clip.y / clip.w).Within(.00001f),
                 "pitch is a depth-independent screen offset, not world rotation");
         }
@@ -50,7 +50,7 @@ namespace MagicCarpet.Native.Tests
                     var identity = runtime.LoadReplay(replay, packages);
                     using (var session = NativeCampaignSession.BorrowGameRuntime(
                         runtime.Handle, identity, package, NativeSim.CampaignSelection.Level2Day()))
-                    using (var surface = new DayPresentationSurface(root.transform))
+                    using (var surface = new CampaignPresentationSurface(root.transform))
                     {
                         surface.Present(session, OwnerAssetCache.OpenAndValidateLevel2(cachePath));
                         Assert.That(surface.WorldReady && surface.LiveMinimapReady, Is.True);
@@ -79,7 +79,7 @@ namespace MagicCarpet.Native.Tests
             var cachePath = Path.Combine(generated, "level2-day-minimap-owner-cache-v3");
             var cache = OwnerAssetCache.OpenAndValidateLevel2(cachePath);
             var root = new GameObject("shared Day Level 2 test");
-            DayPresentationSurface surface = null;
+            CampaignPresentationSurface surface = null;
             try
             {
                 using (var session = NativeCampaignSession.Open(
@@ -87,7 +87,7 @@ namespace MagicCarpet.Native.Tests
                     NativeSim.CampaignSelection.Create(2, 1, 0),
                     Path.Combine(cachePath, "components/material")))
                 {
-                    surface = new DayPresentationSurface(root.transform);
+                    surface = new CampaignPresentationSurface(root.transform);
                     surface.Present(session, cache);
                     Assert.That(surface.WorldReady, Is.True);
                     Assert.That(surface.LiveMinimapReady, Is.True);
@@ -142,18 +142,18 @@ namespace MagicCarpet.Native.Tests
             NativeCampaignSession.ValidateMinimapMarks(marks, 1, 66);
             Assert.Throws<InvalidOperationException>(() =>
                 NativeCampaignSession.ValidateMinimapMarks(new[] { marks[0] }, 1, 66));
-            Assert.That(DayPresentationSurface.MaterializeMinimapMarks(pixels, marks, tables, 1, 66), Is.GreaterThan(30));
+            Assert.That(CampaignPresentationSurface.MaterializeMinimapMarks(pixels, marks, tables, 1, 66), Is.GreaterThan(30));
             Assert.That(pixels[16 * 320 + 32], Is.EqualTo(123));
             Assert.That(pixels[39 * 320 + 32], Is.EqualTo(123));
             Assert.That(pixels[32 * 320 + 32], Is.Zero, "outline has no invented fill");
             marks[6].tick = 65;
             Assert.Throws<InvalidOperationException>(() =>
-                DayPresentationSurface.MaterializeMinimapMarks(pixels, marks, tables, 1, 66));
+                CampaignPresentationSurface.MaterializeMinimapMarks(pixels, marks, tables, 1, 66));
             Assert.Throws<InvalidOperationException>(() =>
-                DayPresentationSurface.MaterializeMinimapMarks(pixels, new[] { marks[0] }, tables, 1, 66));
+                CampaignPresentationSurface.MaterializeMinimapMarks(pixels, new[] { marks[0] }, tables, 1, 66));
             marks[6].tick = 66;
             for (var i = 0; i < 7; i++) marks[i].visible = 0;
-            Assert.That(DayPresentationSurface.MaterializeMinimapMarks(pixels, marks, tables, 1, 66), Is.Zero);
+            Assert.That(CampaignPresentationSurface.MaterializeMinimapMarks(pixels, marks, tables, 1, 66), Is.Zero);
         }
 
         [Test]
@@ -166,14 +166,14 @@ namespace MagicCarpet.Native.Tests
             var marks = new[] { new NativeSim.CampaignMinimapMark {
                 generation = 1, tick = 4, visible = 1, kind = 2,
                 x = 64, y = 64, paletteIndex = 188 } };
-            Assert.That(DayPresentationSurface.MaterializeMinimapMarks(pixels, marks, tables, 1, 4), Is.EqualTo(8));
+            Assert.That(CampaignPresentationSurface.MaterializeMinimapMarks(pixels, marks, tables, 1, 4), Is.EqualTo(8));
             Assert.That(pixels[32 * 320 + 32], Is.EqualTo(17));
             Assert.That(pixels[31 * 320 + 31], Is.EqualTo(188));
             marks[0].visible = 0;
-            Assert.That(DayPresentationSurface.MaterializeMinimapMarks(pixels, marks, tables, 1, 4), Is.Zero);
+            Assert.That(CampaignPresentationSurface.MaterializeMinimapMarks(pixels, marks, tables, 1, 4), Is.Zero);
             marks[0].visible = 1;
             marks[0].x = 2;
-            Assert.That(DayPresentationSurface.MaterializeMinimapMarks(pixels, marks, tables, 1, 4), Is.Zero);
+            Assert.That(CampaignPresentationSurface.MaterializeMinimapMarks(pixels, marks, tables, 1, 4), Is.Zero);
         }
 
         [Test]
@@ -184,7 +184,7 @@ namespace MagicCarpet.Native.Tests
             var cache = OwnerAssetCache.OpenAndValidateLevel3(root);
             var row = cache.Level3Materials.minimap_symbols.symbols[8];
             Assert.That(row.selector, Is.EqualTo(66));
-            var symbol = new DayPresentationSurface.MinimapSymbolPixels {
+            var symbol = new CampaignPresentationSurface.MinimapSymbolPixels {
                 Width = row.width, Height = row.height,
                 Indices = cache.ReadLevel3MaterialOutput(row.indices_path),
                 Mask = cache.ReadLevel3MaterialOutput(row.mask_path)
@@ -193,9 +193,9 @@ namespace MagicCarpet.Native.Tests
             var commands = new[] { new NativeSim.CampaignMinimapEntity {
                 generation = 1, tick = 2, visible = 1, kind = 2,
                 selector = 66, x = 64, y = 64, anchor = 3 } };
-            var written = DayPresentationSurface.MaterializeMinimapPixels(frame, commands,
+            var written = CampaignPresentationSurface.MaterializeMinimapPixels(frame, commands,
                 cache.ReadLevel3MaterialOutput("palette/tablesd.u8"), 1, 2,
-                new Dictionary<int, DayPresentationSurface.MinimapSymbolPixels> { [66] = symbol });
+                new Dictionary<int, CampaignPresentationSurface.MinimapSymbolPixels> { [66] = symbol });
             Assert.That(written, Is.GreaterThan(0));
             for (var y = 0; y < row.height; y++)
             for (var x = 0; x < row.width; x++)
@@ -225,12 +225,12 @@ namespace MagicCarpet.Native.Tests
                 new NativeSim.CampaignMinimapEntity { generation = 1, tick = 2,
                     visible = 0, kind = 1, x = 64, y = 64, paletteIndex = 55 }
             };
-            Assert.That(DayPresentationSurface.MaterializeMinimapPixels(
+            Assert.That(CampaignPresentationSurface.MaterializeMinimapPixels(
                 pixels, commands, tables, 1, 2), Is.EqualTo(2));
             Assert.That(pixels[32 * 320 + 32], Is.EqualTo(91));
             Assert.That(pixels[30 * 320 + 30], Is.Zero);
             Assert.Throws<InvalidOperationException>(() =>
-                DayPresentationSurface.MaterializeMinimapPixels(pixels, commands, tables, 1, 3));
+                CampaignPresentationSurface.MaterializeMinimapPixels(pixels, commands, tables, 1, 3));
         }
     }
 }

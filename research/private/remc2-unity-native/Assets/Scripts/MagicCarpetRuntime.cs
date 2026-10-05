@@ -633,6 +633,7 @@ namespace MagicCarpet.Native
         private const string GameRuntimeFireballAssetSlot =
             "presentation.spell.fireball.projectile_asset";
         private const string GameRuntimeFireballKind = "spell.fireball.projectile";
+        private const string GameRuntimeLevelOneId = "level.magic_carpet_2.night_spire";
         private const string GameRuntimeLevelTwoId =
             "level.magic_carpet_2.payahandra_ruins";
         private const string GameRuntimeLevelThreeId =
@@ -654,6 +655,8 @@ namespace MagicCarpet.Native
         private readonly Dictionary<ulong, GameRuntimePresentationMarker>
             gameRuntimeFireballMarkers = new();
         private Transform gameRuntimeWorldRoot;
+        private CampaignPresentationSurface gameRuntimeNightSurface;
+        private string gameRuntimeObjectiveInstruction;
         private Transform gameRuntimeCameraRig;
         private Camera gameRuntimeCamera;
         private Material gameRuntimeFireballMaterial;
@@ -703,8 +706,8 @@ namespace MagicCarpet.Native
         private bool level2StartupReady;
         private bool level3Mode;
         private bool level3StartupReady;
-        private DayPresentationSurface level3PresentationSurface;
-        private DayPresentationSurface level2DayPresentationSurface;
+        private CampaignPresentationSurface level3PresentationSurface;
+        private CampaignPresentationSurface level2DayPresentationSurface;
         private GameObject level2IndexedFrameObject;
         private Camera level2IndexedFrameCamera;
         private Mesh level2IndexedFrameMesh;
@@ -1122,11 +1125,19 @@ namespace MagicCarpet.Native
              gameRuntimeTransitionPresenter?.IsVisible == true ||
              level2Mode && level2StartupReady ||
              level3Mode && level3StartupReady ||
+             gameRuntimeNightSurface?.WorldReady == true ||
              gameRuntimePresentationAssetCache != null &&
              gameRuntimeFireballAsset?.value != null) &&
             (campaignSession == null ||
              level2Mode && level2StartupReady ||
-             level3Mode && level3StartupReady);
+             level3Mode && level3StartupReady || gameRuntimeNightSurface?.WorldReady == true);
+
+        internal bool GameRuntimeNightPresentationReady =>
+            gameRuntimeNightSurface?.WorldReady == true && campaignSession != null && level2DayHudPresenterReady;
+        internal ulong GameRuntimeNightPresentationTick => gameRuntimeNightSurface?.Tick ?? 0;
+        internal ulong GameRuntimeNightPresentationHash => gameRuntimeNightSurface?.FrameHash ?? 0;
+        internal bool GameRuntimeNightMinimapReady => gameRuntimeNightSurface?.LiveMinimapReady == true;
+        internal string GameRuntimeObjectiveInstruction => gameRuntimeObjectiveInstruction;
 
         internal bool GameRuntimeLoadingPresentationVisible =>
             gameRuntimeTransitionPresenter?.IsVisible == true;
@@ -2792,13 +2803,14 @@ namespace MagicCarpet.Native
             {
                 gameRuntimeCampaignSnapshot = session.GameRuntimeCampaignPausedFrame();
                 DrainGameRuntimeSemanticEvents();
-                if (level2Mode || level3Mode)
+                if (level2Mode || level3Mode || gameRuntimeNightSurface != null)
                 {
                     // Paused frames are observational; the last composed
                     // campaign world/HUD remains live without a presentation
                     // projection that mutates gameplay state.
                     campaignSession.SynchronizeGameRuntimeIdentity(
                         session.GameRuntimeIdentity());
+                    UpdateGameRuntimeNightPresentation(session.GameRuntimeIdentity(), gameRuntimeCampaignSnapshot);
                 }
                 else
                 {
@@ -2857,6 +2869,7 @@ namespace MagicCarpet.Native
             else
             {
                 UpdateGameRuntimeFireballPresentation(gameRuntimeCampaignSnapshot);
+                UpdateGameRuntimeNightPresentation(afterStepIdentity, gameRuntimeCampaignSnapshot);
             }
         }
 
@@ -8018,6 +8031,49 @@ namespace MagicCarpet.Native
                 "complete Level 2 Day HUD materialization");
         }
 
+        private void MaterializeCampaignNightHud()
+        {
+            DestroyLevel2DayHudPresentation();
+            var descriptor = JsonUtility.FromJson<HudDescriptor>(ownerAssetCache.ReadOutputText("hud/level1.json"));
+            Require(descriptor?.schema == "mc2-level1-owner-hud/v1", "qualified Night HUD descriptor");
+            ownerHudPaletteRgb8 = ownerAssetCache.ReadOutput("palette/paln.rgb8");
+            foreach (var row in descriptor.bitmap_assets)
+            {
+                if (!OwnerAssetCache.IsQualifiedDayHudSpriteSelector(row.selector)) continue;
+                var indices = ownerAssetCache.ReadOutput(row.indices_path);
+                var mask = ownerAssetCache.ReadOutput(row.mask_path);
+                Require(indices.Length == checked(row.stored_width * row.stored_height) &&
+                    mask.Length == indices.Length, "qualified Night HUD bitmap extent");
+                var rgba = new byte[checked(indices.Length * 4)];
+                for (var pixel = 0; pixel < indices.Length; pixel++)
+                {
+                    if (mask[pixel] == 0) continue;
+                    var colour = indices[pixel] * 3;
+                    Buffer.BlockCopy(ownerHudPaletteRgb8, colour, rgba, pixel * 4, 3);
+                    rgba[pixel * 4 + 3] = 255;
+                }
+                hudBitmapDescriptors.Add(row.selector, row);
+                hudBitmapIndices.Add(row.selector, indices);
+                hudBitmapMasks.Add(row.selector, mask);
+                hudBitmapTextures.Add(row.selector, CreateTopDownRgbaTexture(
+                    $"Owner Night HSPRN selector {row.selector}", rgba, row.stored_width, row.stored_height));
+            }
+            foreach (var row in descriptor.spells.tier_rows)
+            {
+                level2DayHudTierRows.Add(row.tier, new Level2DayHudTierRowDescriptor {
+                    tier = row.tier, text = row.text,
+                    stored_width = row.render_width, stored_height = row.render_height,
+                    runtime_width = row.render_width, runtime_height = row.render_height,
+                    raster_path = row.render_path });
+                ownerSpellTierTextures.Add(row.tier, CreateTopDownRgbaTexture(
+                    $"Owner Night spell tier {row.text}", ownerAssetCache.ReadOutput(row.render_path),
+                    row.render_width, row.render_height));
+            }
+            ownerObjectiveRows.Clear();
+            foreach (var row in descriptor.objective.rows)
+                ownerObjectiveRows.Add(row.selector, row);
+        }
+
         private void DestroyLevel2DayHudPresentation()
         {
             foreach (var texture in hudBitmapTextures.Values)
@@ -9198,10 +9254,7 @@ namespace MagicCarpet.Native
             gameRuntimeLoadingPresentationGate.Begin(
                 receipt.after,
                 receipt.completion_destination.level_id);
-            if (level2Mode)
-            {
-                DisposeGameRuntimeLevel2Presentation();
-            }
+            DisposeGameRuntimeCampaignPresentation();
             return receipt;
         }
 
@@ -9251,6 +9304,7 @@ namespace MagicCarpet.Native
             {
                 ConfigureGameRuntimeFireballPresentation(
                     session.GameRuntimePresentationAsset(GameRuntimeFireballAssetSlot), observation);
+                ComposeGameRuntimeNightPresentation(identity, observation);
             }
             if (!Application.isBatchMode) CaptureMouse();
         }
@@ -9453,7 +9507,7 @@ namespace MagicCarpet.Native
             ownerAssetCache = OwnerAssetCache.OpenAndValidateLevel2(
                 resource.presentation_cache_path);
             if (ownerAssetCache.IsDayAggregate)
-                level2DayPresentationSurface = new DayPresentationSurface(transform);
+                level2DayPresentationSurface = new CampaignPresentationSurface(transform);
             level2DayHudDescriptor = ownerAssetCache.DayHud;
             MaterializeCampaignDayHud();
             campaignSession = NativeCampaignSession.BorrowGameRuntime(
@@ -9471,6 +9525,49 @@ namespace MagicCarpet.Native
             Debug.Log(
                 $"MC_GAME_RUNTIME_LEVEL2_PRESENTATION VERIFIED handle={session.Handle} " +
                 $"generation={identity.session.generation} tick={identity.session.tick}");
+        }
+
+        private void ComposeGameRuntimeNightPresentation(
+            GameRuntimeTransport.Identity identity,
+            EngineSessionTransport.CampaignSnapshotObservation observation)
+        {
+            if (identity.active_runtime_flow.bound_level_id != GameRuntimeLevelOneId) return;
+            var selection = NativeSim.CampaignSelection.Create(1, 0, 1);
+            if (!gameRuntimePackages.Any(candidate =>
+            {
+                if (candidate == null || string.IsNullOrWhiteSpace(candidate.presentation_cache_path)) return false;
+                try { NativeCampaignSession.ReadPackageIdentity(candidate.package_dir, selection); return true; }
+                catch (InvalidDataException) { return false; }
+            }))
+                return;
+            var resource = ResolveGameRuntimePresentationResource(selection);
+            ownerAssetCache = OwnerAssetCache.OpenAndValidate(resource.presentation_cache_path,
+                ExpectedPackageHash, ExpectedOwnerAssetClosureHash);
+            campaignSession = NativeCampaignSession.BorrowGameRuntime(session.Handle, identity,
+                resource.package_dir, selection);
+            gameRuntimeNightSurface = new CampaignPresentationSurface(transform);
+            MaterializeCampaignNightHud();
+            if (gameRuntimeCamera != null) gameRuntimeCamera.enabled = false;
+            UpdateGameRuntimeNightPresentation(identity, observation);
+            Debug.Log($"MC_GAME_RUNTIME_NIGHT_PRESENTATION VERIFIED handle={session.Handle} generation={identity.session.generation}");
+        }
+
+        private void UpdateGameRuntimeNightPresentation(
+            GameRuntimeTransport.Identity identity,
+            EngineSessionTransport.CampaignSnapshotObservation observation)
+        {
+            if (gameRuntimeNightSurface == null) return;
+            campaignSession.SynchronizeGameRuntimeIdentity(identity);
+            gameRuntimeNightSurface.PresentNight(campaignSession, ownerAssetCache,
+                observation.value.player_pose.yaw);
+            gameRuntimeNightSurface.PresentView(observation.value.player_pose);
+            var hud = campaignSession.DayHudState(campaignSession.Tick);
+            PresentLevel2DayHud(hud);
+            var objective = campaignSession.ObjectiveStageState(hud.localPlayerSlot, 0);
+            var selector = objective.isLevelEnd != 0 ? 53 : 48 + objective.textSelector;
+            gameRuntimeObjectiveInstruction = ownerObjectiveRows.TryGetValue(selector, out var row)
+                ? string.Join(" ", row.lines_ascii)
+                : null;
         }
 
         private void ComposeGameRuntimeLevel3Presentation(
@@ -9492,7 +9589,7 @@ namespace MagicCarpet.Native
                 resource.package_dir,
                 selection);
             level3PresentationSurface?.Dispose();
-            level3PresentationSurface = new DayPresentationSurface(transform);
+            level3PresentationSurface = new CampaignPresentationSurface(transform);
             level3StartupReady = true;
             UpdateGameRuntimeLevel3Presentation(identity, observation);
             Debug.Log(
@@ -9591,6 +9688,18 @@ namespace MagicCarpet.Native
 
         private void DisposeGameRuntimeCampaignPresentation()
         {
+            if (gameRuntimeNightSurface != null)
+            {
+                gameRuntimeNightSurface.Dispose();
+                gameRuntimeNightSurface = null;
+                gameRuntimeObjectiveInstruction = null;
+                ownerObjectiveRows.Clear();
+                DestroyLevel2DayHudPresentation();
+                level2DayHudPresenterReady = false;
+                campaignSession?.Dispose();
+                campaignSession = null;
+                ownerAssetCache = null;
+            }
             if (level2Mode)
             {
                 DisposeGameRuntimeLevel2Presentation();
@@ -9769,6 +9878,7 @@ namespace MagicCarpet.Native
             else
             {
                 UpdateGameRuntimeFireballPresentation(gameRuntimeCampaignSnapshot);
+                UpdateGameRuntimeNightPresentation(identity, gameRuntimeCampaignSnapshot);
             }
         }
 
@@ -12986,9 +13096,12 @@ namespace MagicCarpet.Native
                 fontSize = Mathf.Max(21, Screen.height / 38),
                 fontStyle = FontStyle.Bold
             };
-            if (campaignSession != null && (level2Mode || level3Mode))
+            if (campaignSession != null && (level2Mode || level3Mode || gameRuntimeNightSurface != null))
             {
                 DrawLevel2DayHud();
+                if (!string.IsNullOrEmpty(gameRuntimeObjectiveInstruction))
+                    GUI.Label(new Rect(Screen.width * .2f, Screen.height - 75,
+                        Screen.width * .6f, 60), gameRuntimeObjectiveInstruction, hudStyle);
                 if (gameRuntimeMode) DrawGameRuntimePauseOverlay();
                 return;
             }
@@ -13609,6 +13722,7 @@ namespace MagicCarpet.Native
                         fireballAsset.value.slot_id == GameRuntimeFireballAssetSlot,
                         "production Fireball asset is bound to the same nested session");
                     ConfigureGameRuntimeFireballPresentation(fireballAsset, observation);
+                    ComposeGameRuntimeNightPresentation(identity, observation);
                 }
                 Debug.Log(
                     $"MC_GAME_RUNTIME_STARTUP VERIFIED handle={opened.Handle} " +
@@ -14333,6 +14447,10 @@ namespace MagicCarpet.Native
 
         private void DisposeSession()
         {
+            if (gameRuntimeNightSurface != null)
+            {
+                DisposeGameRuntimeCampaignPresentation();
+            }
             if (disposed) return;
             disposed = true;
             var wasLevel2 = level2Mode;

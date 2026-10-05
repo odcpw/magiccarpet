@@ -385,7 +385,8 @@ namespace MagicCarpet.Native
         private static bool IsPresentationSelection(
             NativeSim.CampaignSelection selection)
         {
-            return selection.mapType == 0 &&
+            return selection.externalLevel == 1 && selection.internalLevel == 0 && selection.mapType == 1 ||
+                   selection.mapType == 0 &&
                    (selection.externalLevel == 2 && selection.internalLevel == 1 ||
                     selection.externalLevel == 3 && selection.internalLevel == 2);
         }

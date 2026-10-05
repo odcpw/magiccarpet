@@ -2661,7 +2661,13 @@ pub(super) fn load_optional_day_frame_assets(
     } else {
         return Ok(None);
     };
-    let assets = DayIndexedFrameAssets::load(material_root).map_err(|error| {
+    let night = inspection.metadata().map_type == sim_core::native_world::MapType::Night;
+    let loaded = if night {
+        DayIndexedFrameAssets::load_night(material_root)
+    } else {
+        DayIndexedFrameAssets::load(material_root)
+    };
+    let assets = loaded.map_err(|error| {
         AbiError::new(
             MC_STATUS_VALIDATION_FAILED,
             format!("cannot load qualified Day indexed-frame cache: {error}"),
@@ -2672,7 +2678,7 @@ pub(super) fn load_optional_day_frame_assets(
     if profile.external_level != metadata.external_level
         || profile.internal_level != metadata.internal_level
         || profile.map_type_id != metadata.map_type as u8
-        || assets.package_sha256() != inspection.package_sha256()
+        || (!night && assets.package_sha256() != inspection.package_sha256())
     {
         return Err(AbiError::new(
             MC_STATUS_VALIDATION_FAILED,

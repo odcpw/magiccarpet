@@ -91,7 +91,14 @@ impl CampaignSession {
     ) -> Result<Self, CampaignOpenError> {
         let owner_cache = owner_cache.as_ref();
         Self::open_with_materializer(package_root.as_ref(), selection, |definition| {
-            let inspection = if owner_cache.join("materials/descriptor.json").is_file() {
+            let inspection = if selection == CampaignSelection::LEVEL1 {
+                // Sealed Night textures are reusable presentation assets. The
+                // campaign's v2 runtime component differs from the old export;
+                // never feed that cache into the legacy gameplay decoder.
+                crate::day_indexed_frame::DayIndexedFrameAssets::load_night(owner_cache)
+                    .map_err(|error| NativeWorldError::new(error.to_string()))?;
+                NativeWorld::inspect_campaign_definition(definition)?
+            } else if owner_cache.join("materials/descriptor.json").is_file() {
                 // Material components supply presentation, not legacy BUILD
                 // footprints. Validate their package binding without feeding
                 // them to the gameplay-component decoder or changing reset state.

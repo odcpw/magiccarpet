@@ -5,21 +5,40 @@ may justify advancing the next item. Preserve remc2 behavior in one Rust engine;
 Unity presents state, packages define content. Focused checks, not repeated audits.
 Unchecked means unfinished, including partially implemented items.
 
-5 October resume: Oliver requested committing/pushing the recovered work and
-continuing to real first-three-level play. Fresh checkpoint verification:
-format/diff checks, 41 closure tests and eight Unity minimap tests pass. The
-workspace stops in sim-capi with 163 passed, one failed and two ignored:
-`cf14_level3_uses_generic_campaign_abi` still expects visible sprites in the
-empty starting sea view despite the source range fix. Its test needs the same
-empty-view/nearby-real-actor discrimination already proved by the Unity test.
-Exporter checks initially lacked their configured binary; a clean pinned-source
-build is in progress. Cache checks exposed the old capture-runtime signature
-validator; it now recognizes the conditional v1/v2 encoder and still rejects a
-changed legacy v1 branch. The cache suite is rerunning. UBS's staged Rust scan
-is partial: existing monolith output exceeds its AST diagnostic limit. This is
-a recovery checkpoint, not three-level acceptance. Next: connect qualified
-Night presentation to the same Level 1 campaign session, then exercise actual
-New Game and progression.
+5 October resume: recovered work was committed and pushed as `b1afec9`.
+The clean pinned exporter build and 29 exporter tests pass; 41 closure tests and
+49 cache tests pass (one owner-input-dependent cache test skipped). The stale
+Level 3 sprite assertion now explicitly checks the empty starting sea view and
+a nearby real creature, retaining both inclusion and exclusion coverage.
+
+Night world/HUD checkpoint: the shared campaign surface now consumes the sealed
+Night terrain, sky and live sprite resources on the same Rust runtime handle.
+Original status/spell HUD bitmaps use the source Night colors. Eleven focused
+Unity checks pass, including flight, pause, reset and Title→New Game's visible
+loading gate. The release plugin and rebuilt desktop startup pass with SHA256
+`67baed7036460e57a4383ca55209cd89db724daeb5731e3ffb526d5f6a92a9dc`;
+the actual owner-data startup is `/tmp/mc-night-player-20261005.log`.
+This establishes real Night entry and presentation, not a complete playthrough.
+The next Night slice connects native minimap entities/objective arrows, original
+symbols, Night palette colors and readable owner objective instructions. Its
+owning native test and all eleven Unity checks pass in
+`/tmp/mc-night-navigation-unity-20261005.xml`. Latest release plugin SHA256:
+`076f010bf87075e78582565af3e4790edf4bfad90eec61a66ecb77fb30a8cdf4`.
+Ordinary integrated campaign progression remains open.
+The native ABI suite passes 164 tests with two ignored. Workspace follow-through
+exposed stale CLI contract/schema/descriptor assertions and a fabricated paging
+offset; corrected checks retain exact current shapes and follow public cursors.
+All 27 CLI contract tests now pass. The remaining workspace run reveals several
+gameplay failures; no full-workspace success is claimed. Source-backed follow-up
+restores the pre-pass negative-life exclusion in the shared creature-model census
+(pinned `EventsFunctions.cpp:39994`), fixing the Night Firefly extinction gate.
+The unchanged owning test passes, including no completion on the lethal same
+pass and progression on the next pass. The three source-arena topology tests
+also pass after opening the semantic campaign loader that supplies scroll awards.
+UBS reports zero criticals in that source-arena file; test unwrap warnings remain.
+UBS's large staged
+scan remains partial; the focused Night frame scan's sole critical is an existing
+test temporary-directory timestamp misclassified as a security token.
 
 1. [ ] **Active: finish shared minimap.** Terrain layer is visible in Unity.
    Decode original player/castle/objective symbols; draw native entity/mark
@@ -27,6 +46,10 @@ New Game and progression.
    pickups, ownership changes, hidden/reclaimed entities and map settings.
 2. [ ] Complete Level 1 Night terrain/world/HUD through the single semantic
    campaign runtime, reusing qualified assets without a second simulation.
+   5 October: real Night world, live sprites, original status/spell HUD and
+   ordinary flight are connected. Native minimap commands and readable original
+   objective instructions are now connected; sustained full-level play remains
+   unfinished.
 3. [ ] Finish corrected Day package/cache consumers for Level 2 as well as 3.
 4. [ ] Fix source-backed Castle casting, placement, mana and upgrades;
    Possession ownership/mana effects; acquired spell selection and pickup cleanup.

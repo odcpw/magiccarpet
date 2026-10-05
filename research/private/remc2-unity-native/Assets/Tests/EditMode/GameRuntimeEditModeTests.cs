@@ -9,6 +9,63 @@ namespace MagicCarpet.Native.Tests
     public sealed class GameRuntimeEditModeTests
     {
         [Test]
+        public void ProductionNightCampaignDrawsWorldFromSameRustHandleThroughStepPauseAndReset()
+        {
+            var root = new GameObject("Night campaign production consumer");
+            root.SetActive(false);
+            try
+            {
+                var runtime = root.AddComponent<MagicCarpetRuntime>();
+                var cache = Path.GetFullPath(Path.Combine(Application.dataPath,
+                    "../../generated/level1-unity-asset-cache-plan29-final"));
+                runtime.QualificationInitializeGameRuntimeProductionFromArguments(new[] {
+                    "-mc-game-runtime", "-mc-runtime-package", LevelOnePackage,
+                    "-mc-runtime-owner-cache", cache, "-mc-runtime-presentation-cache", cache,
+                    "-mc-runtime-loading-cache", cache,
+                    "-mc-runtime-package", LevelTwoPackage, "-mc-runtime-package", LevelThreePackage });
+                Assert.That(runtime.GameRuntimeProductionStartupReady, Is.True);
+                Assert.That(runtime.GameRuntimeNightPresentationReady, Is.True);
+                Assert.That(runtime.GameRuntimeNightMinimapReady, Is.True);
+                Assert.That(runtime.GameRuntimeObjectiveInstruction, Does.Contain("Fly towards my beacon"));
+                Assert.That(runtime.Level2ProductionDayHudPresenterReady, Is.True);
+                Assert.That(runtime.Level2ProductionDayHud.manaPaletteIndex, Is.EqualTo(0xA4));
+                Assert.That(runtime.QualificationHasMaterializedLevel2DayHudSprite(40), Is.True);
+                var before = runtime.GameRuntimeProductionIdentity;
+                var frame = runtime.GameRuntimeNightPresentationHash;
+                Assert.That(frame, Is.Not.Zero);
+                runtime.QualificationApplyGameRuntimeProductionSteering(24f, -8f);
+                runtime.QualificationDriveGameRuntimeFrames(3);
+                Assert.That(runtime.GameRuntimeProductionIdentity.runtime_id, Is.EqualTo(before.runtime_id));
+                Assert.That(runtime.GameRuntimeNightPresentationTick, Is.EqualTo(3));
+                Assert.That(runtime.GameRuntimeNightMinimapReady, Is.True);
+                Assert.That(runtime.Level2ProductionDayHud.localPlayerMana,
+                    Is.EqualTo(runtime.GameRuntimeProductionCampaignSnapshot.value.player_vitals.mana));
+                Assert.That(runtime.GameRuntimeNightPresentationHash, Is.Not.EqualTo(frame));
+                runtime.QualificationApplyGameRuntimeProductionInput(true, false);
+                runtime.QualificationDriveGameRuntimeFrames(2);
+                Assert.That(runtime.GameRuntimeNightPresentationTick, Is.EqualTo(3));
+                runtime.QualificationResetGameRuntimeProduction();
+                Assert.That(runtime.GameRuntimeNightPresentationReady, Is.True);
+                Assert.That(runtime.GameRuntimeNightPresentationTick, Is.Zero);
+                Assert.That(runtime.GameRuntimeNightPresentationHash, Is.EqualTo(frame));
+                Assert.That(runtime.GameRuntimeProductionIdentity.session.generation, Is.Not.EqualTo(before.session.generation));
+                Assert.That(runtime.ExecuteGameRuntimeMenuAction(CampaignMenuPresenter.Action.Title), Is.True);
+                Assert.That(runtime.GameRuntimeNightPresentationReady, Is.False);
+                Assert.That(runtime.GameRuntimeObjectiveInstruction, Is.Null);
+                Assert.That(runtime.ExecuteGameRuntimeMenuAction(CampaignMenuPresenter.Action.NewGame), Is.True);
+                runtime.QualificationDriveGameRuntimeFrames(1);
+                Assert.That(runtime.GameRuntimeProductionIdentity.mode, Is.EqualTo(GameRuntimeTransport.LoadingMode));
+                runtime.QualificationObserveGameRuntimeLoadingPresentationFrame();
+                runtime.QualificationDriveGameRuntimeFrames(1);
+                Assert.That(runtime.GameRuntimeProductionIdentity.mode, Is.EqualTo(GameRuntimeTransport.PlayingMode));
+                Assert.That(runtime.GameRuntimeProductionIdentity.runtime_id, Is.EqualTo(before.runtime_id));
+                Assert.That(runtime.GameRuntimeNightPresentationReady, Is.True);
+                Assert.That(runtime.GameRuntimeNightPresentationHash, Is.EqualTo(frame));
+            }
+            finally { UnityEngine.Object.DestroyImmediate(root); }
+        }
+
+        [Test]
         public void CampaignMenuUsesRustPauseSaveTitleAndVisibleNewGameLoading()
         {
             var before = NativeSession.ActiveSessionCount;

@@ -364,9 +364,13 @@ the objective counter. Button artwork/layout is not yet an original-menu port.
 Each run prints its separate log directory. `MC_CAMPAIGN_REPLAY` optionally starts
 a saved game directly rather than the main menu.
 
-Important: the campaign runtime's Level 1 world/HUD presentation is still
-incomplete. This UI addition does **not** connect the legacy playable Level 1
-viewer below to Level 2 or establish a complete Level 1→2 playthrough.
+The campaign now draws Level 1's qualified Night terrain, sky, live sprites and
+original status/spell HUD through the same Rust session used by the Day levels.
+Pause, reset and Title→New Game retain that session's authority and loading gate.
+Night minimap entity/objective overlays use native commands and Night symbols
+and colors; the current objective instruction comes from the original owner
+text selected by Rust. The integrated Level 1→2→3 playthrough remains unfinished.
+The legacy viewer below remains a separate preservation entry point.
 
 The owner-local launcher supplies the qualified package, closure, and external
 asset-cache paths:
