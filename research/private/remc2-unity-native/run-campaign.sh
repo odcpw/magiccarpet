@@ -22,9 +22,9 @@ case "${1:-}" in
     fi
     if [ "$entry_level" != 1 ]; then
       # Rust-generated entry saves retain one neutral opening turn. Level 3
-      # also carries Fireball and Castle for independent owner-local play.
+      # also carries the four earlier spells for independent owner-local play.
       if [ "$entry_level" = 3 ]; then
-        entry_replay="$generated/opened-l3-block32-play-fireball-castle-v5.json"
+        entry_replay="$generated/opened-l3-block32-play-campaign-spells-v5.json"
       else
         entry_replay="$generated/opened-l2-block32-replay-v5.json"
       fi

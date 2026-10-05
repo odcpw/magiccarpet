@@ -2410,14 +2410,20 @@ mod tests {
             let guard = source.identity().guard();
             resolver.open_pending(&mut source, guard, 523).unwrap();
             if external == 3 {
-                // Direct owner-level play starts with this explicit carried
-                // subset. This does not claim preceding campaign completion.
+                // Independent owner-level play needs the earlier spells for
+                // combat, sphere claims, Castle building and movement. This
+                // entry does not claim preceding campaign completion.
                 source
                     .session_mut()
                     .unwrap()
                     .backend_mut()
                     .install_semantic_spell_carry_for_test(
-                        vec![SpellKind::Fireball, SpellKind::Castle],
+                        vec![
+                            SpellKind::Fireball,
+                            SpellKind::Possession,
+                            SpellKind::Castle,
+                            SpellKind::Speed,
+                        ],
                         Some(SpellKind::Fireball),
                     )
                     .unwrap();
@@ -2433,7 +2439,7 @@ mod tests {
                 let save_json: serde_json::Value = serde_json::from_slice(&save).unwrap();
                 assert_eq!(
                     save_json["semantic_spell_carry"]["acquired"],
-                    serde_json::json!(["fireball", "castle"]),
+                    serde_json::json!(["fireball", "possession", "castle", "speed"]),
                 );
                 assert_eq!(save_json["semantic_spell_carry"]["selected"], "fireball");
             }

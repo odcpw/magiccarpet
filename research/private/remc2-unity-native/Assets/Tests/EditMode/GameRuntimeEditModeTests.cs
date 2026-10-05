@@ -2229,7 +2229,7 @@ namespace MagicCarpet.Native.Tests
                     "-mc-runtime-owner-cache", Path.Combine(generated, "level3-day-spell-owner-cache-v3/components/material"),
                     "-mc-runtime-presentation-cache", Path.Combine(generated, "level3-day-spell-owner-cache-v3"),
                     "-mc-runtime-loading-cache", LevelOneOwnerCache,
-                    "-mc-runtime-replay-load", Path.Combine(generated, "opened-l3-block32-play-fireball-castle-v5.json"),
+                    "-mc-runtime-replay-load", Path.Combine(generated, "opened-l3-block32-play-campaign-spells-v5.json"),
                     "-mc-runtime-replay-save", replayPath,
                 };
                 runtime.QualificationInitializeGameRuntimeProductionFromArguments(arguments);
@@ -2263,7 +2263,7 @@ namespace MagicCarpet.Native.Tests
                 runtime.QualificationDriveGameRuntimeFrames(1);
                 Assert.That(runtime.Level2ProductionPlayers[0].selectedSpellUiIndex, Is.EqualTo(2));
                 StringAssert.Contains(
-                    "\"semantic_spell_carry\":{\"acquired\":[\"fireball\",\"castle\"],\"selected\":\"fireball\"}",
+                    "\"semantic_spell_carry\":{\"acquired\":[\"fireball\",\"possession\",\"castle\",\"speed\"],\"selected\":\"fireball\"}",
                     Encoding.UTF8.GetString(runtime.QualificationSaveGameRuntimeProductionReplay()));
                 Assert.That(runtime.GameRuntimeProductionIdentity.runtime_id, Is.EqualTo(before.runtime_id));
                 Assert.That(runtime.GameRuntimeProductionIdentity.session.tick, Is.EqualTo("5"));
@@ -2285,11 +2285,17 @@ namespace MagicCarpet.Native.Tests
                     AssertSameCampaignState(paused, restored.GameRuntimeProductionCampaignSnapshot);
                     Assert.That(restored.Level2ProductionPlayers[0].selectedSpellUiIndex, Is.EqualTo(2));
                     StringAssert.Contains(
-                        "\"semantic_spell_carry\":{\"acquired\":[\"fireball\",\"castle\"],\"selected\":\"fireball\"}",
+                        "\"semantic_spell_carry\":{\"acquired\":[\"fireball\",\"possession\",\"castle\",\"speed\"],\"selected\":\"fireball\"}",
                         Encoding.UTF8.GetString(restored.QualificationSaveGameRuntimeProductionReplay()));
                     restored.QualificationApplyGameRuntimeProductionInput(true, false);
                     restored.QualificationDriveGameRuntimeFrames(1);
                     Assert.That(restored.GameRuntimeProductionIdentity.session.tick, Is.EqualTo("6"));
+                    Assert.That(restored.SubmitGameRuntimeSpellKey(2), Is.True);
+                    restored.QualificationDriveGameRuntimeFrames(1);
+                    Assert.That(restored.Level2ProductionPlayers[0].selectedSpellUiIndex, Is.EqualTo(1));
+                    Assert.That(restored.SubmitGameRuntimeSpellKey(4), Is.True);
+                    restored.QualificationDriveGameRuntimeFrames(1);
+                    Assert.That(restored.Level2ProductionPlayers[0].selectedSpellUiIndex, Is.EqualTo(3));
                 }
                 finally
                 {

@@ -364,7 +364,8 @@ sh ./run-campaign.sh --level 3
 ```
 
 Levels 2 and 3 load Rust-generated entry replays with one neutral opening turn.
-Level 3 includes an explicit Fireball and Castle carry for independent play.
+Level 3 carries Fireball, Possession, Castle and Speed for independent play,
+including the Possession needed to claim mana spheres.
 The Rust loader verifies the exact package and state receipts. These entries
 let you play each level independently;
 they do not establish completion of the preceding campaign objectives. The
