@@ -206,6 +206,7 @@ pub const fn house_construction_entity_definition(
     id: LevelEntityId,
     position: TilePosition,
     activation_group: ActivationGroupId,
+    position_access: LevelEntityPositionAccess,
     life_mana_scalar: u16,
     life_mana_scalar_access: LevelEntityParameterAccess,
     construction_visits: u16,
@@ -216,7 +217,7 @@ pub const fn house_construction_entity_definition(
         LevelEntityKind::Building(crate::level_definition::BuildingKind::House),
         position,
         Some(activation_group),
-        LevelEntityPositionAccess::ReadOnly,
+        position_access,
         None,
         None,
         None,
@@ -391,4 +392,34 @@ pub fn game_package_with_payloads(
         provenance,
         artifact_payloads,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn house_construction_preserves_validated_position_access() {
+        for access in [
+            LevelEntityPositionAccess::SessionReset,
+            LevelEntityPositionAccess::ReadOnly,
+        ] {
+            let entity = house_construction_entity_definition(
+                stable_entity_id("building.house.at_156_215").unwrap(),
+                TilePosition { x: 156, y: 215 },
+                activation_group_id(13),
+                access,
+                16,
+                LevelEntityParameterAccess::SessionReset,
+                32,
+                LevelEntityParameterAccess::SessionReset,
+            );
+            assert_eq!(entity.position_access(), access);
+            assert_eq!(entity.position(), TilePosition { x: 156, y: 215 });
+            assert_eq!(entity.activation_group(), Some(activation_group_id(13)));
+            let construction = entity.house_construction().unwrap();
+            assert_eq!(construction.life_mana_scalar(), 16);
+            assert_eq!(construction.construction_visits(), 32);
+        }
+    }
 }

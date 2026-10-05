@@ -381,6 +381,7 @@ impl Mc2LevelDefinition {
                         id.clone(),
                         position,
                         group,
+                        position_access,
                         life_mana_scalar,
                         LevelEntityParameterAccess::SessionReset,
                         crate::house::AUTHORED_HOUSE_CONSTRUCTION_VISITS,
