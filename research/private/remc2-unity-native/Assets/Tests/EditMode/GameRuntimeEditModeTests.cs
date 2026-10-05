@@ -734,6 +734,100 @@ namespace MagicCarpet.Native.Tests
 
         [Test]
         [Timeout(180000)]
+        public void LevelTwoPublicCastleCreatesRealWorldFeedRootAndSurvivesRuntimeReset()
+        {
+            // This fresh entry replay is produced by Rust's existing
+            // corrected_day_recipe_replay_restores_its_exact_package test.
+            // Its receipts bind the exact current player-entry recipe; the
+            // older opened-Level-2 baseline fixture remains unchanged.
+            var generated = Path.Combine(PrivateRoot, "generated");
+            var entryReplay = Environment.GetEnvironmentVariable("MC_CASTLE_LEVEL2_REPLAY") ??
+                Path.Combine(generated, "opened-l2-block32-castle-boot-v5-20261005.json");
+            var levelTwo = Environment.GetEnvironmentVariable("MC_CASTLE_LEVEL2_PACKAGE") ??
+                Path.Combine(generated, "level2-day-block32-campaign-v2");
+            var levelThree = Environment.GetEnvironmentVariable("MC_CASTLE_LEVEL3_PACKAGE") ??
+                Path.Combine(generated, "level3-day-block32-campaign-recipe-v2");
+            Assert.That(File.Exists(entryReplay), Is.True,
+                "generate a fresh exact Rust entry replay before this native Castle regression");
+            using (var runtime = new GameRuntimeTransport())
+            {
+                runtime.LoadReplay(File.ReadAllBytes(entryReplay),
+                    Package(LevelOnePackage), Package(levelTwo), Package(levelThree));
+                var handle = runtime.Handle;
+                Assert.That(runtime.Current.active_runtime_flow.bound_level_id,
+                    Is.EqualTo("level.magic_carpet_2.payahandra_ruins"));
+                var firstGeneration = ulong.Parse(runtime.Current.session.generation);
+
+                NativeSim.CampaignEntitySnapshot[] ReadWorldFeed()
+                {
+                    var before = runtime.CampaignSnapshot();
+                    var rows = new NativeSim.CampaignEntitySnapshot[1000];
+                    Assert.That(NativeSim.mc_native_campaign_entities_copy(
+                        handle, 0, rows, (uint)rows.Length,
+                        (uint)Marshal.SizeOf<NativeSim.CampaignEntitySnapshot>(), out var written),
+                        Is.EqualTo(NativeSim.Ok));
+                    Assert.That(written, Is.EqualTo(rows.Length));
+                    Assert.That(runtime.CampaignSnapshot().value.state_hash,
+                        Is.EqualTo(before.value.state_hash), "world polling is observational");
+                    return rows;
+                }
+
+                for (var attempt = 0; attempt < 2; attempt++)
+                {
+                    var initial = runtime.CampaignSnapshot();
+                    Assert.That(initial.value.player_vitals.mana, Is.EqualTo(1000));
+                    Assert.That(initial.value.player_vitals.max_mana, Is.EqualTo(1000));
+                    Assert.That(Array.Exists(ReadWorldFeed(), row =>
+                        row.active != 0 && row.classId == 3 && row.model == 2), Is.False,
+                        "each generation starts without a constructed Castle");
+                    runtime.CampaignStep(0, 0, 0, 0, 0, "spell.castle");
+                    var launch = runtime.CampaignSnapshot();
+                    var player = Array.Find(ReadWorldFeed(), row =>
+                        row.active != 0 && row.classId == 3 && row.model == 0).entityIndex;
+                    runtime.CampaignStep(0, 0, 0x40, 0, 0);
+                    var sawFlyer = false;
+                    var root = default(NativeSim.CampaignEntitySnapshot);
+                    var minimumMana = 1000;
+                    for (var turn = 0; turn < 64; turn++)
+                    {
+                        var rows = ReadWorldFeed();
+                        sawFlyer |= Array.Exists(rows, row => row.active != 0 &&
+                            row.classId == 9 && row.model == 10 && row.sourceId == player);
+                        root = Array.Find(rows, row => row.active != 0 &&
+                            row.classId == 3 && row.model == 2 && row.action == 4);
+                        minimumMana = Math.Min(minimumMana,
+                            runtime.CampaignSnapshot().value.player_vitals.mana);
+                        if (sawFlyer && root.active != 0) break;
+                        runtime.CampaignStep(0, 0, 0, 0, 0);
+                    }
+                    Assert.That(sawFlyer, Is.True,
+                        $"generation {attempt}: public Castle did not expose its real flyer; " +
+                        $"launch=({launch.value.player_pose.x},{launch.value.player_pose.y}," +
+                        $"{launch.value.player_pose.z}) yaw={launch.value.player_pose.yaw}; " +
+                        $"end={JsonUtility.ToJson(runtime.CampaignSnapshot())}");
+                    Assert.That(root.active, Is.EqualTo(1),
+                        "the real flyer must construct the stable Castle root within 64 turns");
+                    Assert.That(minimumMana, Is.Zero,
+                        "the next player source visit must consume the actual 1000-mana Castle cost");
+                    Assert.That(Level2WorldObjectProjection.TryDescribe(root, out var description), Is.True);
+                    Assert.That(description.Kind, Is.EqualTo(Level2WorldObjectKind.Castle));
+                    Assert.That(description.AssetSelector, Is.EqualTo((ushort)96));
+                    Assert.That(runtime.Handle, Is.EqualTo(handle));
+                    Assert.That(runtime.Current.session.session_id, Is.EqualTo(handle.ToString()));
+                    if (attempt == 0)
+                    {
+                        var reset = runtime.CampaignReset();
+                        Assert.That(reset.identity.tick, Is.EqualTo("0"));
+                        Assert.That(ulong.Parse(reset.identity.generation), Is.EqualTo(firstGeneration + 1));
+                        Assert.That(runtime.Current.active_runtime_flow.bound_level_id,
+                            Is.EqualTo("level.magic_carpet_2.payahandra_ruins"));
+                    }
+                }
+            }
+        }
+
+        [Test]
+        [Timeout(180000)]
         public void OpenedLevelThreeReplayKeepsQualifiedSurfaceOnOneRuntimeHandle()
         {
             Assert.That(File.Exists(OpenedLevelThreeReplay), Is.True,

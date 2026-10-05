@@ -3014,6 +3014,30 @@ pub extern "C" fn mc_native_campaign_entities_copy(
                                     source.actual_speed,
                                 )
                             })
+                            .chain(reset.economy().castle_projectiles().iter().map(|source| {
+                                (
+                                    source.source_entity_index,
+                                    source.owner_entity_index,
+                                    source.active
+                                        && !source.drawing_disabled
+                                        && source.control_flags & (0x0000_0400 | 0x21) == 0,
+                                    source.source_class,
+                                    source.source_model,
+                                    // The source Castle flyer dispatch selector is
+                                    // class 9/action 10. Its carrier has no public
+                                    // FOV field. Phase comes from the existing
+                                    // Rust source scheduler carrier.
+                                    10,
+                                    reset
+                                        .cf10_live_source_phase(source.source_entity_index)
+                                        .unwrap_or_default(),
+                                    source.position,
+                                    source.yaw,
+                                    source.pitch,
+                                    0,
+                                    source.actual_speed,
+                                )
+                            }))
                             .chain(
                                 reset
                                     .economy()
@@ -4751,4 +4775,155 @@ pub extern "C" fn mc_native_goats_copy(
             })
         })
     })
+}
+
+#[cfg(test)]
+mod castle_worldfeed_tests {
+    use super::super::{game_runtime_abi::*, game_session_abi::*};
+    use super::*;
+
+    fn snapshot(handle: u64) -> serde_json::Value {
+        let mut bytes = vec![0_u8; 1024 * 1024];
+        let mut written = 0;
+        assert_eq!(
+            mc_game_session_snapshot_json_v1(
+                handle,
+                bytes.as_mut_ptr(),
+                bytes.len() as u32,
+                &raw mut written,
+            ),
+            MC_STATUS_OK,
+        );
+        serde_json::from_slice(&bytes[..written as usize]).unwrap()
+    }
+
+    fn public_step(handle: u64, command: &[u8]) {
+        let before = snapshot(handle);
+        let identity = &before["identity"];
+        assert_eq!(
+            mc_game_session_step_json_v1(
+                handle,
+                identity["generation"].as_str().unwrap().parse().unwrap(),
+                identity["tick"].as_str().unwrap().parse().unwrap(),
+                command.as_ptr(),
+                command.len() as u32,
+            ),
+            MC_STATUS_OK,
+        );
+    }
+
+    fn world_rows(handle: u64) -> Vec<McCampaignEntitySnapshotV2> {
+        let before = snapshot(handle);
+        let mut rows = vec![McCampaignEntitySnapshotV2::default(); 1000];
+        let mut written = 0;
+        assert_eq!(
+            mc_native_campaign_entities_copy(
+                handle,
+                0,
+                rows.as_mut_ptr(),
+                rows.len() as u32,
+                struct_size::<McCampaignEntitySnapshotV2>(),
+                &raw mut written,
+            ),
+            MC_STATUS_OK,
+        );
+        assert_eq!(written, 1000);
+        assert_eq!(snapshot(handle), before, "world polling is observational");
+        rows
+    }
+
+    #[test]
+    fn real_level_two_public_castle_flyer_worldfeed_hides_after_landing_and_reset() {
+        let generated = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../generated");
+        let replay = fs::read(generated.join("opened-l2-block32-castle-boot-v5-20261005.json"))
+            .expect("fresh exact owner Level 2 entry replay");
+        let packages = serde_json::to_vec(&serde_json::json!({
+            "request_contract": "carpet-flight-installed-package-set-bootstrap/v1",
+            "packages": [
+                {"package_dir": generated.join("mc-cf15-level1-package-v3-current")},
+                {"package_dir": generated.join("level2-day-block32-campaign-v2")},
+                {"package_dir": generated.join("level3-day-block32-campaign-recipe-v2")}
+            ]
+        }))
+        .unwrap();
+        let mut handle = 0;
+        assert_eq!(mc_game_runtime_create_v1(&raw mut handle), MC_STATUS_OK);
+        assert_eq!(
+            mc_game_runtime_load_replay_json_v1(
+                handle,
+                1,
+                packages.as_ptr(),
+                packages.len() as u32,
+                replay.as_ptr(),
+                replay.len() as u32,
+            ),
+            MC_STATUS_OK,
+        );
+        for attempt in 0..2 {
+            let rows = world_rows(handle);
+            assert!(
+                !rows
+                    .iter()
+                    .any(|row| row.active != 0 && row.class_id == 9 && row.model == 10)
+            );
+            let player = rows
+                .iter()
+                .find(|row| row.active != 0 && row.class_id == 3 && row.model == 0)
+                .expect("real local player")
+                .entity_index;
+            public_step(handle, br#"{"select_spell":"spell.castle"}"#);
+            public_step(handle, br#"{"cast_selected":true}"#);
+            let rows = world_rows(handle);
+            let flyer = rows
+                .iter()
+                .find(|row| row.active != 0 && row.class_id == 9 && row.model == 10)
+                .expect("the real public Castle birth is visible before landing");
+            assert_eq!(flyer.authority, MC_AUTHORITY_CAMPAIGN_LIVE);
+            assert_eq!(flyer.source_id, player);
+            assert_eq!(flyer.action, 10);
+            assert_ne!(
+                flyer.phase, 0,
+                "the real source phase is published, not a placeholder"
+            );
+            assert!(flyer.actual_speed > 0);
+            let flyer_slot = flyer.entity_index;
+            public_step(handle, b"{}");
+            assert_eq!(snapshot(handle)["value"]["player_vitals"]["mana"], 0);
+            let mut reached_root = false;
+            for _ in 0..64 {
+                let rows = world_rows(handle);
+                if rows.iter().any(|row| {
+                    row.active != 0 && row.class_id == 3 && row.model == 2 && row.action == 4
+                }) {
+                    assert!(
+                        !rows.iter().any(|row| row.active != 0
+                            && row.entity_index == flyer_slot
+                            && row.class_id == 9
+                            && row.model == 10),
+                        "landed flyer is hidden/reclaimed"
+                    );
+                    reached_root = true;
+                    break;
+                }
+                public_step(handle, b"{}");
+            }
+            assert!(
+                reached_root,
+                "public Castle construction remains within 64 turns"
+            );
+            if attempt == 0 {
+                let before = snapshot(handle);
+                let identity = &before["identity"];
+                assert_eq!(
+                    mc_game_session_reset_v1(
+                        handle,
+                        identity["generation"].as_str().unwrap().parse().unwrap(),
+                        identity["tick"].as_str().unwrap().parse().unwrap(),
+                    ),
+                    MC_STATUS_OK
+                );
+            }
+        }
+        assert_eq!(mc_game_runtime_destroy_v1(handle), MC_STATUS_OK);
+    }
 }

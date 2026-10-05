@@ -1294,8 +1294,9 @@ impl Level2ResetSession {
             .map(|child| child.source_entity_index)
     }
 
-    #[cfg(test)]
-    pub(crate) fn cf10_live_source_phase(&self, source_slot: u16) -> Option<u8> {
+    /// Observational source phase for the private MC2 compatibility transport.
+    /// This exposes the existing scheduler carrier, not a neutral gameplay API.
+    pub fn cf10_live_source_phase(&self, source_slot: u16) -> Option<u8> {
         self.resolve_level2_source_plan(
             source_slot,
             self.session.state.live.core.state.entity_index,
