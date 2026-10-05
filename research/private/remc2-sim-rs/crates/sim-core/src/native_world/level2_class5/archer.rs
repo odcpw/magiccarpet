@@ -1096,7 +1096,9 @@ pub(crate) fn archer_child_packet(
         xsubtype: request.target_model,
         yaw,
         pitch,
-        roll: request.parent_roll,
+        // NewEvent clears body roll; neither AddEvent09_0D nor the Archer
+        // sub_1CCE0 tail copies the parent's body orientation into the arrow.
+        roll: 0,
         fov: ARCHER_CHILD_PARTICLE_FOV,
         position,
         // NewEvent seeds byte_0x3E from the fixed arena slot before the

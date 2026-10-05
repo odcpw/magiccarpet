@@ -1,4 +1,4 @@
-use super::super::tests::level_two_fixture_path;
+use super::super::tests::{level_two_campaign_session, level_two_fixture_path};
 use super::super::*;
 use super::archer::{
     ARCHER_ACTION_ATTACK, ARCHER_DESCRIPTOR_CADENCE, ARCHER_MODEL, ArcherChildRequest,
@@ -156,11 +156,7 @@ fn assert_no_goat_bleat(events: &[GoatStepEvent]) {
 }
 
 fn activate_group20_archers() -> (Level2ResetSession, u64) {
-    let inspection =
-        NativeWorld::inspect_level2(level_two_fixture_path()).expect("qualified Level 2 package");
-    let mut session = inspection
-        .level2_reset_session()
-        .expect("Level 2 group-20 production session");
+    let mut session = level_two_campaign_session();
     let baseline_hash = session.campaign_state_hash();
     let authored_features = session.mission().authored_features().to_vec();
     let feature_position = |index: u16| {
@@ -218,11 +214,19 @@ fn produce_archer_child(session: &mut Level2ResetSession) -> (u16, u16, i16) {
         .copied()
         .expect("group-20 row 232 Archer root");
     let player_entity = session.state.entity_index;
-    session.state.position = root.position;
+    // Keep the ordinary arrow in flight for the following parent/child
+    // scheduling test, rather than colliding with an overlapping player in
+    // its very first source visit. Day permits this vertical target and the
+    // 4,096-unit separation remains within the 5,120-unit Archer range.
+    let target_position = Position {
+        z: root.position.z.wrapping_add(4_096),
+        ..root.position
+    };
+    session.state.position = target_position;
     session
-        .set_level2_entity_position(player_entity, root.position)
+        .set_level2_entity_position(player_entity, target_position)
         .expect("local player accepts Archer target position");
-    let parent_roll = root.roll;
+    let parent_roll = 320;
     let mut economy_view = session.economy_mut();
     let source = economy_view
         .authored_class5
@@ -230,6 +234,8 @@ fn produce_archer_child(session: &mut Level2ResetSession) -> (u16, u16, i16) {
         .find(|source| source.source_entity_index == root.source_entity_index)
         .expect("Archer root remains mutable");
     source.action = ARCHER_ACTION_ATTACK;
+    source.actual_speed = 0;
+    source.roll = parent_roll;
     source.source_byte_3e = ARCHER_DESCRIPTOR_CADENCE;
     source.word_0x96_150 = player_entity;
     session.step_outer_turn(PlayerCommand::default(), 0);
@@ -240,6 +246,8 @@ fn produce_archer_child(session: &mut Level2ResetSession) -> (u16, u16, i16) {
         .find(|child| child.parent_entity_index == root.source_entity_index)
         .copied()
         .expect("ordinary Archer cursor retains a positive child");
+    assert!(child.active && child.drawing_enabled && child.life > 0);
+    assert_eq!(child.action, super::archer::ARCHER_CHILD_ACTION);
     (
         root.source_entity_index,
         child.source_entity_index,
@@ -292,10 +300,18 @@ fn level_two_archers_complete_constructor_action_and_child_chain() {
         .find(|child| child.source_entity_index == child_slot)
         .copied()
         .expect("retained Archer child");
-    assert_eq!(archer_state.word_0x34, child_slot);
+    // sub_1CCE0 produces an independent arrow, never a word-0x34 body
+    // link whose 13-tick lifetime could overwrite the Archer's 1,000 life.
+    assert_eq!(archer_state.word_0x34, 0);
+    assert_eq!(child.word_0x34, 0);
     assert_eq!(child.parent_entity_index, root_slot);
     assert_eq!(child.word_0x96, root.word_0x96_150);
-    assert_eq!(child.roll, parent_roll);
+    assert_ne!(parent_roll, 0);
+    assert_eq!(root.roll, parent_roll);
+    assert_eq!(
+        child.roll, 0,
+        "the arrow retains its NewEvent-cleared body roll"
+    );
     assert!(child.slot_generation > 0);
     assert!(
         child.phase > 0,
@@ -466,6 +482,16 @@ fn archer_hit_and_kill_propagate_through_the_retained_child_chain() {
         "this receipt specifically proves the parent-before-child source order"
     );
     let mut economy_view = session.economy_mut();
+    // Ordinary arrows are independent. This focused PreKillEntity test
+    // explicitly stages its word-0x34 input chain instead of attributing a
+    // body link to the ordinary Archer projectile constructor.
+    let state = economy_view
+        .authored_class5_archer
+        .iter_mut()
+        .find(|state| state.source_entity_index == root_slot)
+        .expect("Archer state for explicit linked-chain input");
+    assert_eq!(state.word_0x34, 0);
+    state.word_0x34 = child_slot;
     let root = economy_view
         .authored_class5
         .iter_mut()
@@ -473,6 +499,10 @@ fn archer_hit_and_kill_propagate_through_the_retained_child_chain() {
         .expect("Archer root for hit transition");
     root.action = super::archer::ARCHER_ACTION_HIT;
     root.dword_0x10 = 0;
+    // HitArcher advances 7 to 8; the following KillArcher visit is the
+    // actual source phase-zero producer, not an assumed immediate kill.
+    root.source_byte_3e = 7;
+    root.phase = 7;
 
     session.step_outer_turn(PlayerCommand::default(), 0);
     let child_receipts = session.cf10_production_schedule_receipts();
@@ -680,11 +710,7 @@ fn archer_action37_cadence_advances_rng_copies_owner_and_preserves_life() {
 
 #[test]
 fn level_two_model45_group22_materializes_authored_class5_rows_in_source_order() {
-    let inspection =
-        NativeWorld::inspect_level2(level_two_fixture_path()).expect("qualified Level 2 package");
-    let mut session = inspection
-        .level2_reset_session()
-        .expect("Level 2 group-22 authored class-5 session");
+    let mut session = level_two_campaign_session();
     let baseline_hash = session.campaign_state_hash();
     session
         .set_level2_selected_objective_stage_state(2)
@@ -1402,11 +1428,7 @@ fn level_two_bee_damage_mailbox_keeps_payload_and_orders_nonlethal_tail() {
 
 #[test]
 fn level_two_bee_lethal_mailbox_skips_rng_and_enters_action20() {
-    let inspection =
-        NativeWorld::inspect_level2(level_two_fixture_path()).expect("qualified Level 2 package");
-    let mut session = inspection
-        .level2_reset_session()
-        .expect("qualified Level 2 Bee session");
+    let mut session = level_two_campaign_session();
     let bee = session
         .allocate_level2_authored_bee(229)
         .expect("qualified authored Day Bee");
@@ -1434,11 +1456,7 @@ fn level_two_bee_lethal_mailbox_skips_rng_and_enters_action20() {
 
 #[test]
 fn level_two_bee_death_tail_is_phase_gated_and_orders_outputs() {
-    let inspection =
-        NativeWorld::inspect_level2(level_two_fixture_path()).expect("qualified Level 2 package");
-    let mut session = inspection
-        .level2_reset_session()
-        .expect("qualified Level 2 Bee session");
+    let mut session = level_two_campaign_session();
     let bee = session
         .allocate_level2_authored_bee(229)
         .expect("qualified authored Day Bee");
@@ -1488,11 +1506,7 @@ fn level_two_bee_death_tail_is_phase_gated_and_orders_outputs() {
 
 #[test]
 fn level_two_bee_death_tail_allocation_failure_still_closes_without_partial_output() {
-    let inspection =
-        NativeWorld::inspect_level2(level_two_fixture_path()).expect("qualified Level 2 package");
-    let mut session = inspection
-        .level2_reset_session()
-        .expect("qualified Level 2 Bee session");
+    let mut session = level_two_campaign_session();
     let bee = session
         .allocate_level2_authored_bee(229)
         .expect("qualified authored Day Bee");
@@ -1734,11 +1748,12 @@ fn level_two_creature_audio_negative_branches_emit_nothing_and_preserve_state() 
     assert!(!reclaimed_after.active);
     assert_eq!(reclaimed_after.rng, reclaimed.rng);
 
-    // Wrong class/model allocation is rejected before a class-5 source row
-    // exists, so it cannot manufacture a creature audio event.
+    // Unsupported model allocation is rejected before a class-5 source
+    // row exists, so it cannot manufacture a creature audio event. Model 1
+    // is the supported Goat constructor, not an allocation negative.
     let economy_before = session.economy().clone();
     let economy_hash = session.economy().reset_hash();
-    for wrong_model in [1, 2, 13] {
+    for wrong_model in [2, 13] {
         assert!(
             session
                 .economy_mut()
@@ -1749,6 +1764,28 @@ fn level_two_creature_audio_negative_branches_emit_nothing_and_preserve_state() 
     assert_eq!(session.economy(), &economy_before);
     assert_eq!(session.economy().reset_hash(), economy_hash);
     assert!(creature_audio_receipts(&session).is_empty());
+    let supported_goat = session
+        .economy_mut()
+        .allocate_authored_class5(900, crate::goat::GOAT_MODEL, Position::default())
+        .expect("the package-reachable Goat model has an ordinary constructor");
+    assert_eq!(
+        (
+            supported_goat.model,
+            supported_goat.action,
+            supported_goat.life,
+            supported_goat.mana
+        ),
+        (
+            crate::goat::GOAT_MODEL,
+            crate::goat::GOAT_CONSTRUCTOR_ACTION,
+            crate::goat::GOAT_CONSTRUCTOR_LIFE,
+            crate::goat::GOAT_CONSTRUCTOR_MANA
+        )
+    );
+    assert!(
+        creature_audio_receipts(&session).is_empty(),
+        "construction alone emits no Goat callback audio"
+    );
 
     // Unsupported Level 1/Night input fails before a mutable Level 2 audio
     // session can exist.

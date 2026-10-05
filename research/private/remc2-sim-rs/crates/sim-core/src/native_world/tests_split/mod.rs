@@ -26,6 +26,26 @@ pub(super) fn level_two_fixture_path() -> PathBuf {
     )
 }
 
+/// Open the production descriptor-backed fixture for gameplay tests that
+/// require semantic authored health, item rewards, or switch configuration.
+/// Raw reset/profile/hash inspection tests continue to use the export fixture.
+pub(super) fn level_two_campaign_session() -> Level2ResetSession {
+    let package = std::env::var_os("MC_CAMPAIGN_PACKAGE").map_or_else(
+        || {
+            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../../generated/mc-cf02-campaign-package-v2-b/qualified-level2")
+        },
+        PathBuf::from,
+    );
+    crate::campaign::CampaignSession::open(
+        package,
+        crate::campaign::spec::CampaignSelection::LEVEL2,
+    )
+    .expect("qualified Level 2 semantic campaign fixture")
+    .level2_compatibility()
+    .clone()
+}
+
 /// Fire one real reset-imported model-32 producer through its source
 /// objective relation. Tests that need an authored group must advance the
 /// package's producer; a live class-11 row alone is not an activation event.
