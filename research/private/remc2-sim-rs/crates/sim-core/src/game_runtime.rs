@@ -2690,6 +2690,11 @@ mod tests {
             "level.magic_carpet_2.revealed_way"
         );
         assert_eq!(save_json["expected_tick"], 2);
+        assert_eq!(
+            save_json["semantic_spell_carry"],
+            serde_json::json!({ "acquired": [], "selected": null })
+        );
+        assert_eq!(save_json["operations"].as_array().unwrap().len(), 2);
 
         let mut restored = GameRuntime::<Mc2CampaignBackend>::title(522).unwrap();
         let title = restored.identity();
@@ -2744,6 +2749,45 @@ mod tests {
             .step(guard, GameCommand::default())
             .unwrap();
         assert_eq!(after.identity.tick, 3);
+
+        // Opt-in current-authority entry for the native generic-package tests.
+        // Execute the two historical public commands above; never copy their
+        // old receipts. Verify the native consumers' real owner cache before
+        // writing a new ignored artifact, preserving every existing fixture.
+        if let Some(path) = std::env::var_os("MC_GENERIC_LEVEL3_REPLAY_OUTPUT") {
+            let generated = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../generated");
+            let cached_resolver = Mc2RuntimePackageResolver::load([
+                Mc2CampaignInputs::new(level_two_package()),
+                Mc2CampaignInputs::with_owner_cache(
+                    level_three_package(),
+                    generated.join("level3-day-material-cache"),
+                ),
+                Mc2CampaignInputs::new(level_one_package()),
+            ])
+            .unwrap();
+            let mut cached = GameRuntime::<Mc2CampaignBackend>::title(523).unwrap();
+            let guard = cached.identity().guard();
+            cached_resolver
+                .load_replay(&mut cached, guard, 523, &save)
+                .unwrap();
+            assert_eq!(cached.identity().mode, RuntimeMode::Playing);
+            assert_eq!(
+                cached.identity().active_runtime_flow,
+                source_identity.active_runtime_flow
+            );
+            assert_eq!(
+                cached.session().unwrap().snapshot().value,
+                source_snapshot.value
+            );
+            assert_eq!(cached_resolver.save_replay(&cached).unwrap(), save);
+            use std::io::Write;
+            let mut output = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(path)
+                .unwrap();
+            output.write_all(&save).unwrap();
+        }
 
         // No-Claim: this stages only the separately proved incoming Level 3
         // boundary and proves definition-bound Playing replay for that real
