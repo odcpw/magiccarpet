@@ -4,8 +4,9 @@ Follow `/home/oliver/.codex/AGENTS.md` for machine-wide guidance.
 
 ## Purpose
 
-Port the full Magic Carpet 2 single-player game from remc2 into the existing
-Rust engine. Multiplayer is a separate later deliverable.
+Port the full Magic Carpet 2 game from remc2 into the existing Rust engine.
+Complete single-player first. Rust-to-Rust multiplayer is the separate
+`mc-bc0` outcome; legacy remc2 interoperability is separate deferred scope.
 Build its enemy classes, properties, rules and asset bindings so they can be
 modified and replaced. Complete playable MC2 behavior is the immediate work;
 the reusable flying-carpet game engine grows through that implementation.
@@ -29,6 +30,12 @@ Each family owns its real runtime integration, typed properties/rules and
 asset/observation bindings. Serialize edits to shared scheduler, ABI and client
 surfaces. Extend the existing implementation directly when needed; do not
 restart planning or build an AI player as a prerequisite to delivery.
+Use [ENGINE.md](ENGINE.md) for source, asset and domain ownership navigation.
+Deliver each feature in a focused module that owns its state and behavior;
+shared roots only compose it. Moving methods while retaining unrestricted
+whole-session access does not remove a monolith. Shared harness outcomes
+`mc-hkm` and `mc-b9s` also cover authored games and multiplayer, but their later
+capabilities do not block the existing single-player opening milestone.
 
 ## Checkout and stack
 
