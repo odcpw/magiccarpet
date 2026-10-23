@@ -10,6 +10,12 @@ modified and replaced. Complete playable MC2 behavior is the immediate work;
 the reusable flying-carpet game engine grows through that implementation.
 Oliver can playtest. An AI player is optional tooling.
 
+Select implementation work with `br ready --json --label worker-ready` and
+`bv --robot-next --label worker-ready`. These beads target `gpt-6.1-sol` at
+`xhigh`. Epics retain the full outcomes; deferred `needs-scope` items are not
+worker assignments. Each implementation bead names its positive runtime result
+and direct self-verification.
+
 ## Checkout and stack
 
 - Canonical checkout: `/home/oliver/Projects/odcpw/magiccarpet` on `3090`.
