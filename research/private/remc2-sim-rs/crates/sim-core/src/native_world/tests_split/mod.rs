@@ -26,22 +26,40 @@ pub(super) fn level_two_fixture_path() -> PathBuf {
     )
 }
 
-/// Open the production descriptor-backed fixture for gameplay tests that
-/// require semantic authored health, item rewards, or switch configuration.
-/// Raw reset/profile/hash inspection tests continue to use the export fixture.
-pub(super) fn level_two_campaign_session() -> Level2ResetSession {
-    let package = std::env::var_os("MC_CAMPAIGN_PACKAGE").map_or_else(
+fn level_two_campaign_fixture_path() -> PathBuf {
+    std::env::var_os("MC_CAMPAIGN_PACKAGE").map_or_else(
         || {
             PathBuf::from(env!("CARGO_MANIFEST_DIR"))
                 .join("../../../generated/mc-cf02-campaign-package-v2-b/qualified-level2")
         },
         PathBuf::from,
-    );
+    )
+}
+
+/// Open the production descriptor-backed fixture for gameplay tests that
+/// require semantic authored health, item rewards, or switch configuration.
+/// Raw reset/profile/hash inspection tests continue to use the export fixture.
+pub(super) fn level_two_campaign_session() -> Level2ResetSession {
     crate::campaign::CampaignSession::open(
-        package,
+        level_two_campaign_fixture_path(),
         crate::campaign::spec::CampaignSelection::LEVEL2,
     )
     .expect("qualified Level 2 semantic campaign fixture")
+    .level2_compatibility()
+    .clone()
+}
+
+/// Keep explicit gameplay-cache fixtures on the same production descriptor
+/// path while preserving their authored BUILD footprints.
+fn level_two_campaign_session_with_owner_cache(
+    owner_cache: &std::path::Path,
+) -> Level2ResetSession {
+    crate::campaign::CampaignSession::open_with_owner_cache(
+        level_two_campaign_fixture_path(),
+        owner_cache,
+        crate::campaign::spec::CampaignSelection::LEVEL2,
+    )
+    .expect("qualified Level 2 semantic campaign fixture with owner cache")
     .level2_compatibility()
     .clone()
 }
@@ -290,11 +308,7 @@ fn acquire_level_two_beyond_sight_from_ordinary_route(
 }
 
 fn level_two_acquired_family12_menu_session() -> (Level2ResetSession, u16) {
-    let inspection =
-        NativeWorld::inspect_level2(level_two_fixture_path()).expect("qualified Level 2 package");
-    let mut session = inspection
-        .level2_reset_session()
-        .expect("Level 2 core menu session");
+    let mut session = level_two_campaign_session();
     let source_slot = acquire_level_two_beyond_sight_from_ordinary_route(&mut session).source_slot;
     assert_eq!(
         session.shared_spells().local_player.enabled_spell_holders[12],

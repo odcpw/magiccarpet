@@ -17,7 +17,14 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{error::Error, fmt, num::NonZeroU64, sync::Arc};
 
-pub const GAME_RUNTIME_CONTRACT: &str = "carpet-flight-game-runtime/v10";
+mod campaign_menu;
+pub use campaign_menu::{CampaignMenuCommand, CampaignMenuPhase, CampaignMenuSnapshot};
+
+// GOLDEN-CHANGE candidate: v11 adds the campaign owner required by remc2's
+// sub_46830_main_loop -> NewGameDialog_77350 return path. Completion releases
+// gameplay into Results; map selection is a later guarded operation. Existing
+// gameplay/asset goldens and the immutable definition contract stay intact.
+pub const GAME_RUNTIME_CONTRACT: &str = "carpet-flight-game-runtime/v11";
 pub const COMPLETION_TRANSITION_RECEIPT: &str = "carpet-flight-completion-transition-receipt/v2";
 
 fn serialize_u64_decimal<S>(value: &u64, serializer: S) -> Result<S::Ok, S::Error>
@@ -32,6 +39,7 @@ where
 #[serde(rename_all = "snake_case")]
 pub enum RuntimeMode {
     Title,
+    Campaign,
     Loading,
     Playing,
     Paused,
@@ -42,6 +50,7 @@ pub enum RuntimeMode {
 #[serde(rename_all = "snake_case")]
 pub enum RuntimePresentationPhase {
     Title,
+    CampaignMap,
     Loading,
     LevelEntry,
     LevelCompletion,
@@ -86,6 +95,7 @@ impl RuntimeMode {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Title => "title",
+            Self::Campaign => "campaign",
             Self::Loading => "loading",
             Self::Playing => "playing",
             Self::Paused => "paused",
@@ -134,6 +144,8 @@ pub struct RuntimeIdentity {
     pub generation: u64,
     pub mode: RuntimeMode,
     pub presentation: RuntimePresentationCue,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub campaign_menu: Option<CampaignMenuSnapshot>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pending_definition: Option<RuntimeDefinitionIdentity>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -371,6 +383,13 @@ enum RuntimeState<B> {
         definition: Arc<GameDefinition>,
         session_generation: NonZeroU64,
     },
+    Campaign {
+        definition: Arc<GameDefinition>,
+        selected_definition: Option<Arc<GameDefinition>>,
+        session_generation: NonZeroU64,
+        phase: CampaignMenuPhase,
+        completed_level: SemanticLevelId,
+    },
     Playing {
         session: GameSession<B>,
         paused: bool,
@@ -388,6 +407,7 @@ pub struct GameRuntime<B> {
     runtime_id: u64,
     generation: u64,
     state: RuntimeState<B>,
+    completed_levels: Vec<SemanticLevelId>,
 }
 
 impl<B: GameSessionBackend> GameRuntime<B> {
@@ -404,6 +424,7 @@ impl<B: GameSessionBackend> GameRuntime<B> {
         Ok(Self {
             runtime_id,
             generation: 1,
+            completed_levels: Vec::new(),
             state: RuntimeState::Title {
                 session_generation: NonZeroU64::MIN,
                 presentation_cue: SemanticPresentationCueId::parse(TITLE_PRESENTATION_CUE_ID)
@@ -432,6 +453,24 @@ impl<B: GameSessionBackend> GameRuntime<B> {
                     None,
                     None,
                 ),
+                RuntimeState::Campaign {
+                    definition,
+                    selected_definition,
+                    phase,
+                    completed_level,
+                    ..
+                } => (
+                    RuntimeMode::Campaign,
+                    campaign_menu::presentation(
+                        definition,
+                        selected_definition.as_deref(),
+                        *phase,
+                        completed_level,
+                    ),
+                    None,
+                    definition.runtime_flow().cloned(),
+                    None,
+                ),
                 RuntimeState::Playing { session, paused } => (
                     if *paused {
                         RuntimeMode::Paused
@@ -450,6 +489,7 @@ impl<B: GameSessionBackend> GameRuntime<B> {
             generation: self.generation,
             mode,
             presentation,
+            campaign_menu: self.campaign_menu_snapshot(),
             pending_definition,
             active_runtime_flow,
             session,
@@ -519,6 +559,7 @@ impl<B: GameSessionBackend> GameRuntime<B> {
             definition,
             session_generation,
         };
+        self.completed_levels.clear();
         self.generation = next_generation;
         Ok(self.identity())
     }
@@ -612,8 +653,9 @@ impl<B: GameSessionBackend> GameRuntime<B> {
     /// semantic commands into a locally constructed candidate. Guard, mode,
     /// package resolution, semantic pre-replay initialization, every command,
     /// and the caller's exact receipt verifier all succeed before the runtime
-    /// publishes the candidate.
-    pub(crate) fn restore_playing_resolved<A, F, P, V, I>(
+    /// publishes the candidate. Observations borrow the private candidate;
+    /// callers must discard them when final receipt verification fails.
+    pub(crate) fn restore_playing_resolved<A, F, P, V, I, O>(
         &mut self,
         guard: RuntimeGuard,
         definition: Arc<GameDefinition>,
@@ -624,6 +666,7 @@ impl<B: GameSessionBackend> GameRuntime<B> {
         resolve_input: F,
         prepare: P,
         verify: V,
+        mut observe: O,
     ) -> Result<RuntimeIdentity, RestorePlayingError<A::Error>>
     where
         A: GameAdapter<Backend = B, Error = B::Error>,
@@ -631,6 +674,7 @@ impl<B: GameSessionBackend> GameRuntime<B> {
         P: FnOnce(&mut GameSession<B>) -> Result<(), RuntimeTransitionError>,
         V: FnOnce(&GameSession<B>) -> Result<(), RuntimeTransitionError>,
         I: IntoIterator<Item = ReplayOperation<B::Command>>,
+        O: FnMut(&GameSession<B>),
     {
         self.validate_guard(guard)
             .map_err(Box::new)
@@ -662,6 +706,7 @@ impl<B: GameSessionBackend> GameRuntime<B> {
         )
         .map_err(RestorePlayingError::Session)?;
         prepare(&mut candidate).map_err(RestorePlayingError::Transition)?;
+        observe(&candidate);
         for (operation_index, operation) in operations.into_iter().enumerate() {
             let guard = candidate.identity().guard();
             match operation {
@@ -680,6 +725,7 @@ impl<B: GameSessionBackend> GameRuntime<B> {
                     }
                 })?,
             };
+            observe(&candidate);
         }
         verify(&candidate).map_err(RestorePlayingError::Transition)?;
         self.state = RuntimeState::Playing {
@@ -865,17 +911,19 @@ impl<B: GameSessionBackend> GameRuntime<B> {
             .entry(&completed_level_id)
             .expect("validated presentation flow binds its completed level");
         let completion_presentation_cue = completion_presentation.completion_cue().clone();
-        let title_presentation_cue = current_flow.presentation().title_cue().clone();
-
-        self.state = match next_definition {
-            Some(definition) => RuntimeState::Loading {
-                definition,
-                session_generation: next_session_generation,
-            },
-            None => RuntimeState::Title {
-                session_generation: next_session_generation,
-                presentation_cue: title_presentation_cue,
-            },
+        let definition = Arc::clone(session.definition());
+        if !self.completed_levels.contains(&completed_level_id) {
+            self.completed_levels.push(completed_level_id.clone());
+        }
+        // remc2 sub_46830_main_loop -> MainMenu_76FA0 -> NewGameDialog_77350:
+        // gameplay ends before the results/map owner runs. Loading the next
+        // mission is a later player selection, never this completion edge.
+        self.state = RuntimeState::Campaign {
+            definition,
+            selected_definition: next_definition,
+            session_generation: next_session_generation,
+            phase: CampaignMenuPhase::Results,
+            completed_level: completed_level_id.clone(),
         };
         self.generation = next_runtime_generation;
         let after = self.identity();
@@ -1026,7 +1074,9 @@ impl<B: GameSessionBackend> GameRuntime<B> {
     pub fn session(&self) -> Option<&GameSession<B>> {
         match &self.state {
             RuntimeState::Playing { session, .. } => Some(session),
-            RuntimeState::Title { .. } | RuntimeState::Loading { .. } => None,
+            RuntimeState::Title { .. }
+            | RuntimeState::Loading { .. }
+            | RuntimeState::Campaign { .. } => None,
         }
     }
 
@@ -1041,6 +1091,7 @@ impl<B: GameSessionBackend> GameRuntime<B> {
             } => Some(session),
             RuntimeState::Playing { paused: true, .. }
             | RuntimeState::Title { .. }
+            | RuntimeState::Campaign { .. }
             | RuntimeState::Loading { .. } => None,
         }
     }
@@ -1249,12 +1300,15 @@ mod tests {
         )
     }
 
-    #[test]
-    #[ignore = "diagnostic: requires MC_ROUTE_REPLAY from a captured public guardian route"]
-    fn runtime_replays_guardian_boundary_and_continues_one_public_exchange() {
-        let path = std::env::var_os("MC_ROUTE_REPLAY")
-            .expect("set MC_ROUTE_REPLAY to a captured .replay.json path");
-        let bytes = std::fs::read(path).expect("captured route replay is readable");
+    fn load_verified_level_three_route_replay_for_test() -> (
+        Mc2RuntimePackageResolver,
+        GameRuntime<Mc2CampaignBackend>,
+        crate::campaign::backend::tests::VerifiedGuardianReplayHistoryForTest,
+    ) {
+        let input_trace = std::env::var_os("MC_ROUTE_INPUT_TRACE");
+        let path = input_trace.clone().or_else(|| std::env::var_os("MC_ROUTE_REPLAY"))
+            .expect("set MC_ROUTE_REPLAY for strict replay, or MC_ROUTE_INPUT_TRACE for a fresh current execution of historical inputs");
+        let bytes = std::fs::read(path).expect("captured route input is readable");
         let resolver = Mc2RuntimePackageResolver::load([
             Mc2CampaignInputs::new(level_one_package()),
             Mc2CampaignInputs::new(level_two_package()),
@@ -1263,9 +1317,22 @@ mod tests {
         .unwrap();
         let mut runtime = GameRuntime::<Mc2CampaignBackend>::title(336).unwrap();
         let guard = runtime.identity().guard();
-        resolver
-            .load_replay(&mut runtime, guard, 336, &bytes)
-            .expect("captured public commands must reproduce every production state receipt");
+        let (_, guardian_history) = if input_trace.is_some() {
+            let result = crate::campaign::backend::tests::execute_historical_input_trace_as_current_replay_for_test(
+                &resolver, &mut runtime, guard, 336, &bytes,
+            ).expect("historical inputs must execute safely and the new current save must verify through the production loader");
+            run_route_with_replay_capture(
+                &resolver,
+                &mut runtime,
+                "level-three-current-input-trace-frontier",
+                |_| {},
+            );
+            result
+        } else {
+            resolver
+                .load_replay_observing_guardians_for_test(&mut runtime, guard, 336, &bytes)
+                .expect("captured public commands must reproduce every production state receipt")
+        };
         assert_eq!(
             runtime
                 .identity()
@@ -1276,9 +1343,16 @@ mod tests {
             "level.magic_carpet_2.revealed_way"
         );
         eprintln!(
-            "verified guardian replay at tick {}",
+            "verified current Guardian replay at tick {}",
             runtime.session().unwrap().identity().tick
         );
+        (resolver, runtime, guardian_history)
+    }
+
+    #[test]
+    #[ignore = "diagnostic: requires MC_ROUTE_REPLAY from a captured public guardian route"]
+    fn runtime_replays_guardian_boundary_and_continues_one_public_exchange() {
+        let (resolver, mut runtime, _) = load_verified_level_three_route_replay_for_test();
         run_route_with_replay_capture(
             &resolver,
             &mut runtime,
@@ -1289,6 +1363,154 @@ mod tests {
                 );
             },
         );
+    }
+
+    #[test]
+    #[ignore = "diagnostic: requires MC_ROUTE_REPLAY from a verified Guardian or Castle boundary"]
+    fn runtime_replays_verified_level_three_frontier_through_final_bees() {
+        let (resolver, mut runtime, guardian_history) =
+            load_verified_level_three_route_replay_for_test();
+        assert_eq!(runtime.identity().mode, RuntimeMode::Playing);
+        assert_eq!(
+            runtime
+                .session()
+                .unwrap()
+                .backend()
+                .compatibility_campaign()
+                .level2_compatibility()
+                .runtime()
+                .objectives[0]
+                .stage_selectors[0],
+            2,
+            "a suffix checkpoint must already own the completed Skeleton lifecycle",
+        );
+        if runtime
+            .session()
+            .unwrap()
+            .backend()
+            .compatibility_campaign()
+            .level2_compatibility()
+            .runtime()
+            .objectives[0]
+            .stage_selectors[1]
+            != 2
+        {
+            run_route_with_replay_capture(
+                &resolver,
+                &mut runtime,
+                "level-three-guardian-boundary",
+                |runtime| {
+                    crate::campaign::backend::tests::resume_verified_level_three_guardians_for_test(
+                        runtime.session_mut().unwrap(),
+                        guardian_history,
+                    );
+                },
+            );
+        }
+        if runtime
+            .session()
+            .unwrap()
+            .backend()
+            .compatibility_campaign()
+            .level2_compatibility()
+            .runtime()
+            .objectives[0]
+            .stage_selectors[2]
+            != 2
+        {
+            run_route_with_replay_capture(
+                &resolver,
+                &mut runtime,
+                "level-three-castle-boundary",
+                |runtime| {
+                    crate::campaign::backend::tests::drive_real_level_three_owned_castle_charge_to_revealed_way_for_test(
+                    runtime.session_mut().unwrap(),
+                );
+                },
+            );
+        }
+        if !runtime
+            .session()
+            .unwrap()
+            .snapshot()
+            .value
+            .objective_progress
+            .all_objectives_satisfied
+        {
+            run_route_with_replay_capture(
+                &resolver,
+                &mut runtime,
+                "level-three-final-bee-boundary",
+                |runtime| {
+                    crate::campaign::backend::tests::drive_real_level_three_revealed_way_through_final_bees_for_test(
+                    runtime.session_mut().unwrap(),
+                );
+                },
+            );
+        }
+        let completed = runtime.identity();
+        let snapshot = runtime.session().unwrap().snapshot();
+        assert_eq!(snapshot.value.objective_progress.completed_count, 5);
+        assert!(snapshot.value.objective_progress.all_objectives_satisfied);
+        assert!(snapshot.value.player_vitals.life >= 0);
+        assert_eq!(
+            runtime
+                .session()
+                .unwrap()
+                .backend()
+                .compatibility_campaign()
+                .level2_compatibility()
+                .runtime()
+                .objectives[0]
+                .is_level_end,
+            1,
+        );
+        // The ordinary following-pass exit constructors and sequence still
+        // own semantic completion. Goal completion alone cannot accept Title.
+        assert!(matches!(
+            resolver.accept_transition(
+                &mut runtime,
+                completed.guard(),
+                completed.session.as_ref().unwrap().guard(),
+            ),
+            Err(RuntimeTransitionError::CompletionNotReady)
+        ));
+        assert_eq!(runtime.identity(), completed);
+        assert_eq!(runtime.session().unwrap().snapshot(), snapshot);
+        run_route_with_replay_capture(
+            &resolver,
+            &mut runtime,
+            "level-three-exit-boundary",
+            |runtime| complete_real_level_three_exit_sequence_for_test(&resolver, runtime),
+        );
+        let completed = runtime.identity();
+        let completed_snapshot = runtime.session().unwrap().snapshot();
+        let receipt = resolver
+            .accept_transition(
+                &mut runtime,
+                completed.guard(),
+                completed.session.as_ref().unwrap().guard(),
+            )
+            .unwrap();
+        assert!(receipt.verify());
+        assert_eq!(receipt.source_session, completed_snapshot.identity);
+        assert_eq!(
+            receipt.completion.state_hash,
+            completed_snapshot.value.state_hash
+        );
+        assert_eq!(
+            receipt.completed_level_id.as_str(),
+            "level.magic_carpet_2.revealed_way"
+        );
+        assert!(matches!(
+            receipt.completion_destination,
+            RuntimeFlowDestination::Title { ref node_id }
+                if node_id.as_str() == "flow.magic_carpet_2.return_to_title"
+        ));
+        assert_eq!(runtime.identity().mode, RuntimeMode::Campaign);
+        assert_eq!(receipt.after, runtime.identity());
+        assert!(runtime.session().is_none());
+        assert!(runtime.identity().generation > completed.generation);
     }
 
     fn level_two_package() -> PathBuf {
@@ -1344,6 +1566,38 @@ mod tests {
         )
     }
 
+    fn start_selected_campaign_mission(
+        resolver: &Mc2RuntimePackageResolver,
+        runtime: &mut GameRuntime<Mc2CampaignBackend>,
+    ) -> RuntimeIdentity {
+        let results = runtime.identity();
+        assert_eq!(results.mode, RuntimeMode::Campaign);
+        assert_eq!(
+            results.campaign_menu.as_ref().unwrap().phase,
+            CampaignMenuPhase::Results
+        );
+        assert!(
+            resolver
+                .open_pending(runtime, results.guard(), results.runtime_id)
+                .is_err(),
+            "results cannot be skipped by opening gameplay"
+        );
+        let map = resolver
+            .campaign_menu_command(
+                runtime,
+                results.guard(),
+                CampaignMenuCommand::DismissResults,
+            )
+            .unwrap();
+        assert_eq!(
+            map.campaign_menu.as_ref().unwrap().phase,
+            CampaignMenuPhase::MissionSelect
+        );
+        resolver
+            .campaign_menu_command(runtime, map.guard(), CampaignMenuCommand::StartMission)
+            .unwrap()
+    }
+
     fn open_real_level_two_at_proven_incoming_boundary(
         resolver: &Mc2RuntimePackageResolver,
         runtime_id: u64,
@@ -1356,6 +1610,7 @@ mod tests {
         let mut runtime = GameRuntime {
             runtime_id,
             generation: 4,
+            completed_levels: vec![resolver.flow().entry_level_id().clone()],
             state: RuntimeState::Loading {
                 definition,
                 session_generation: NonZeroU64::new(2).unwrap(),
@@ -1390,6 +1645,13 @@ mod tests {
         let mut runtime = GameRuntime {
             runtime_id,
             generation: 6,
+            completed_levels: resolver
+                .flow()
+                .entries()
+                .iter()
+                .take(2)
+                .map(|entry| entry.level_id().clone())
+                .collect(),
             state: RuntimeState::Loading {
                 definition,
                 session_generation: NonZeroU64::new(3).unwrap(),
@@ -1666,7 +1928,7 @@ mod tests {
             .backend()
             .semantic_spell_state_for_test()
             .unwrap();
-        let loading = resolver
+        let results = resolver
             .accept_transition(
                 runtime,
                 completed.guard(),
@@ -1674,6 +1936,8 @@ mod tests {
             )
             .unwrap()
             .after;
+        assert_eq!(results, runtime.identity());
+        let loading = start_selected_campaign_mission(resolver, runtime);
         assert_eq!(loading.mode, RuntimeMode::Loading);
         let playing = resolver
             .open_pending(runtime, loading.guard(), session_id)
@@ -2402,6 +2666,7 @@ mod tests {
             let mut source = GameRuntime {
                 runtime_id: 523,
                 generation: 6,
+                completed_levels: Vec::new(),
                 state: RuntimeState::Loading {
                     definition,
                     session_generation: NonZeroU64::new(3).unwrap(),
@@ -2509,6 +2774,7 @@ mod tests {
         let mut source = GameRuntime {
             runtime_id: 525,
             generation: 6,
+            completed_levels: Vec::new(),
             state: RuntimeState::Loading {
                 definition,
                 session_generation: NonZeroU64::new(3).unwrap(),
@@ -2940,7 +3206,7 @@ mod tests {
             runtime.session().unwrap().backend().completion_status(),
             GameCompletionStatus::Completed { .. }
         ));
-        let loading = resolver
+        let results = resolver
             .accept_transition(
                 &mut runtime,
                 completed.guard(),
@@ -2948,6 +3214,8 @@ mod tests {
             )
             .unwrap()
             .after;
+        assert_eq!(results, runtime.identity());
+        let loading = start_selected_campaign_mission(&resolver, &mut runtime);
         assert_eq!(loading.mode, RuntimeMode::Loading);
         let playing = resolver
             .open_pending(&mut runtime, loading.guard(), 112)
@@ -3210,7 +3478,7 @@ mod tests {
     }
 
     #[test]
-    fn runtime_completed_real_level_one_accepts_only_level_two_into_loading_once() {
+    fn runtime_completed_real_level_one_returns_to_map_before_loading_level_two_once() {
         let catalog = default_catalog().unwrap();
         let level_one = level_one_package();
         let level_two = level_two_package();
@@ -3507,12 +3775,12 @@ mod tests {
             "presentation.magic_carpet_2.night_spire.completion"
         );
         assert_eq!(receipt.presentation_sequence[1], receipt.after.presentation);
-        assert_eq!(runtime.identity().mode, RuntimeMode::Loading);
+        assert_eq!(runtime.identity().mode, RuntimeMode::Campaign);
         assert_presentation(
             &runtime.identity(),
-            RuntimePresentationPhase::Loading,
-            "presentation.magic_carpet_2.payahandra_ruins.loading",
-            Some("level.magic_carpet_2.payahandra_ruins"),
+            RuntimePresentationPhase::LevelCompletion,
+            "presentation.magic_carpet_2.night_spire.completion",
+            Some("level.magic_carpet_2.night_spire"),
         );
         assert!(runtime.session().is_none());
 
@@ -3527,7 +3795,7 @@ mod tests {
                 if error.code == RuntimeGuardErrorCode::GenerationMismatch
         ));
 
-        let pending_level_two = runtime.identity();
+        let pending_level_two = start_selected_campaign_mission(&resolver, &mut runtime);
         let level_two_playing = resolver
             .open_pending(&mut runtime, pending_level_two.guard(), 111)
             .unwrap();
@@ -3613,6 +3881,105 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "diagnostic: requires MC_ROUTE_LEVEL_TWO_REPLAY from a current pre-plague Castle checkpoint"]
+    fn runtime_replays_verified_level_two_pre_plague_castle_through_vault() {
+        let input_trace = std::env::var_os("MC_ROUTE_INPUT_TRACE");
+        let path = input_trace
+            .clone()
+            .or_else(|| std::env::var_os("MC_ROUTE_LEVEL_TWO_REPLAY"))
+            .expect("provide a current Level2 checkpoint, or historical inputs for a new current execution");
+        let bytes = std::fs::read(path).unwrap();
+        let resolver = Mc2RuntimePackageResolver::load([
+            Mc2CampaignInputs::new(level_one_package()),
+            Mc2CampaignInputs::new(level_two_package()),
+            Mc2CampaignInputs::new(level_three_package()),
+        ])
+        .unwrap();
+        let mut runtime = GameRuntime::title(341).unwrap();
+        let guard = runtime.identity().guard();
+        let history;
+        if input_trace.is_some() {
+            crate::campaign::backend::tests::execute_historical_input_trace_as_current_replay_for_test(
+                &resolver, &mut runtime, guard, 341, &bytes,
+            ).expect("historical inputs must execute safely and the new current save must verify through the production loader");
+            run_route_with_replay_capture(
+                &resolver,
+                &mut runtime,
+                "level-two-current-input-trace-frontier",
+                |_| {},
+            );
+            history = None;
+        } else {
+            let (_, observed) = resolver
+                .load_replay_observing_level_two_bees_for_test(&mut runtime, guard, 341, &bytes)
+                .expect("current checkpoint must reproduce every normal production replay receipt");
+            history = Some(observed);
+        }
+        assert_eq!(runtime.identity().mode, RuntimeMode::Playing);
+        run_route_with_replay_capture(
+            &resolver,
+            &mut runtime,
+            "level-two-pre-plague-castle-suffix",
+            |runtime| {
+                if let Some(history) = history {
+                    crate::campaign::backend::tests::resume_verified_level_two_plague_through_vault_for_test(
+                        runtime.session_mut().unwrap(), history,
+                    );
+                } else {
+                    crate::campaign::backend::tests::continue_real_level_two_pre_plague_castle_through_vault_for_test(
+                        runtime.session_mut().unwrap(),
+                    );
+                }
+            },
+        );
+        assert_eq!(
+            runtime
+                .session()
+                .unwrap()
+                .snapshot()
+                .value
+                .objective_progress
+                .completed_count,
+            4
+        );
+    }
+
+    #[test]
+    fn runtime_verified_level_two_checkpoint_rejects_unreached_plague_suffix() {
+        let resolver = Mc2RuntimePackageResolver::load([
+            Mc2CampaignInputs::new(level_one_package()),
+            Mc2CampaignInputs::new(level_two_package()),
+            Mc2CampaignInputs::new(level_three_package()),
+        ])
+        .unwrap();
+        let original = open_real_level_two_at_proven_incoming_boundary(&resolver, 342);
+        let bytes = resolver.save_replay(&original).unwrap();
+        let mut restored = GameRuntime::title(343).unwrap();
+        let guard = restored.identity().guard();
+        let (_, history) = resolver
+            .load_replay_observing_level_two_bees_for_test(&mut restored, guard, 343, &bytes)
+            .unwrap();
+        let before = restored.session().unwrap().snapshot();
+        let identity = restored.identity();
+        let rejected = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            crate::campaign::backend::tests::continue_real_level_two_pre_plague_castle_through_vault_for_test(
+                restored.session_mut().unwrap(),
+            );
+        }));
+        assert!(rejected.is_err());
+        assert_eq!(restored.identity(), identity);
+        assert_eq!(restored.session().unwrap().snapshot(), before);
+        let rejected_resume = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            crate::campaign::backend::tests::resume_verified_level_two_plague_through_vault_for_test(
+                restored.session_mut().unwrap(), history,
+            );
+        }));
+        assert!(rejected_resume.is_err());
+        assert_eq!(restored.identity(), identity);
+        assert_eq!(restored.session().unwrap().snapshot(), before);
+    }
+
+    #[test]
     fn runtime_completed_real_level_two_resolves_and_opens_level_three() {
         const GROUP31_ROWS: [u16; 15] = [
             209, 244, 260, 261, 262, 264, 265, 266, 267, 268, 269, 270, 271, 272, 274,
@@ -3636,6 +4003,7 @@ mod tests {
         let mut spliced = GameRuntime::<Mc2CampaignBackend> {
             runtime_id: 223,
             generation: 4,
+            completed_levels: Vec::new(),
             state: RuntimeState::Loading {
                 definition: reissued_level_two,
                 session_generation: NonZeroU64::new(2).unwrap(),
@@ -3656,8 +4024,15 @@ mod tests {
         assert_eq!(level_two_playing.generation, 5);
         assert_eq!(level_two_playing.session.as_ref().unwrap().generation, 2);
 
-        crate::campaign::backend::tests::drive_real_level_two_to_final_vault_objective_for_test(
-            runtime.session_mut().unwrap(),
+        run_route_with_replay_capture(
+            &resolver,
+            &mut runtime,
+            "level-two-real-completion",
+            |runtime| {
+                crate::campaign::backend::tests::drive_real_level_two_to_final_vault_objective_for_test(
+                    runtime.session_mut().unwrap(),
+                );
+            },
         );
         {
             let session = runtime
@@ -3891,8 +4266,10 @@ mod tests {
             "presentation.magic_carpet_2.payahandra_ruins.completion"
         );
         assert_eq!(receipt.presentation_sequence[1], receipt.after.presentation);
-        let level_three_loading = runtime.identity();
-        assert_eq!(level_three_loading.generation, 6);
+        assert_eq!(runtime.identity().mode, RuntimeMode::Campaign);
+        assert_eq!(runtime.identity().generation, 6);
+        let level_three_loading = start_selected_campaign_mission(&resolver, &mut runtime);
+        assert_eq!(level_three_loading.generation, 8);
         assert_eq!(level_three_loading.mode, RuntimeMode::Loading);
         assert_presentation(
             &level_three_loading,
@@ -4091,74 +4468,11 @@ mod tests {
         assert!(!progressed.all_objectives_satisfied);
     }
 
-    #[test]
-    fn runtime_completed_real_level_three_returns_to_title_and_restarts_without_aba() {
-        const BEE_ROWS: [u16; 6] = [149, 150, 152, 153, 154, 155];
+    fn complete_real_level_three_exit_sequence_for_test(
+        resolver: &Mc2RuntimePackageResolver,
+        runtime: &mut GameRuntime<Mc2CampaignBackend>,
+    ) {
         const GROUP6_ROWS: [u16; 7] = [196, 197, 198, 199, 200, 201, 202];
-
-        let mut resolver = Mc2RuntimePackageResolver::load([
-            Mc2CampaignInputs::new(level_two_package()),
-            Mc2CampaignInputs::new(level_three_package()),
-            Mc2CampaignInputs::new(level_one_package()),
-        ])
-        .unwrap();
-        let mut runtime = open_real_level_three_at_proven_incoming_boundary(&resolver, 333);
-
-        runtime
-            .session_mut()
-            .unwrap()
-            .backend_mut()
-            .compatibility_campaign_mut_for_test()
-            .level2_compatibility_mut()
-            .apply_carried_spell_families(&[0, 1, 2, 3], Some(2))
-            .unwrap();
-        crate::campaign::backend::tests::drive_real_level_three_carried_castle_to_revealed_way_for_test(
-            runtime.session_mut().unwrap(),
-        );
-        crate::campaign::backend::tests::drive_real_level_three_revealed_way_through_final_bees_for_test(
-            runtime.session_mut().unwrap(),
-        );
-        {
-            let session = runtime
-                .session()
-                .unwrap()
-                .backend()
-                .compatibility_campaign()
-                .level2_compatibility();
-            assert!(
-                session
-                    .economy()
-                    .bee_creatures()
-                    .iter()
-                    .all(|bee| !BEE_ROWS.contains(&bee.authored_index().unwrap_or(u16::MAX)))
-            );
-            assert_eq!(session.runtime().objectives[0].stage_selectors[4], 2);
-            assert_eq!(session.runtime().objectives[0].is_level_end, 1);
-            assert!(session.dispatch_events().iter().all(|event| !matches!(
-                event,
-                crate::native_world::Level2DispatchEvent::AuthoredGroupActivated { group: 6, .. }
-            )));
-        }
-        let completed_objective_identity = runtime.identity();
-        let completed_objective_snapshot = runtime.session().unwrap().snapshot();
-        let before_group6 = resolver.accept_transition(
-            &mut runtime,
-            completed_objective_identity.guard(),
-            completed_objective_identity
-                .session
-                .as_ref()
-                .unwrap()
-                .guard(),
-        );
-        assert!(matches!(
-            before_group6,
-            Err(RuntimeTransitionError::CompletionNotReady)
-        ));
-        assert_eq!(runtime.identity(), completed_objective_identity);
-        assert_eq!(
-            runtime.session().unwrap().snapshot(),
-            completed_objective_snapshot
-        );
 
         let guard = runtime.session().unwrap().identity().guard();
         runtime
@@ -4230,7 +4544,7 @@ mod tests {
         let active_identity = runtime.identity();
         let active_snapshot = runtime.session().unwrap().snapshot();
         let premature = resolver.accept_transition(
-            &mut runtime,
+            runtime,
             active_identity.guard(),
             active_identity.session.as_ref().unwrap().guard(),
         );
@@ -4255,6 +4569,111 @@ mod tests {
                 .step(guard, GameCommand::default())
                 .unwrap();
         }
+        assert!(matches!(
+            runtime.session().unwrap().backend().completion_status(),
+            GameCompletionStatus::Completed { .. }
+        ));
+    }
+
+    #[test]
+    fn runtime_completed_real_level_three_returns_to_title_and_restarts_without_aba() {
+        const BEE_ROWS: [u16; 6] = [149, 150, 152, 153, 154, 155];
+
+        let mut resolver = Mc2RuntimePackageResolver::load([
+            Mc2CampaignInputs::new(level_two_package()),
+            Mc2CampaignInputs::new(level_three_package()),
+            Mc2CampaignInputs::new(level_one_package()),
+        ])
+        .unwrap();
+        let mut runtime = open_real_level_three_at_proven_incoming_boundary(&resolver, 333);
+
+        runtime
+            .session_mut()
+            .unwrap()
+            .backend_mut()
+            .install_semantic_spell_carry_for_test(
+                vec![
+                    SpellKind::Fireball,
+                    SpellKind::Possession,
+                    SpellKind::Castle,
+                    SpellKind::Speed,
+                ],
+                Some(SpellKind::Castle),
+            )
+            .unwrap();
+        run_route_with_replay_capture(
+            &resolver,
+            &mut runtime,
+            "real-level-three-guardian-boundary",
+            |runtime| {
+                crate::campaign::backend::tests::drive_real_level_three_carried_castle_to_guardian_completion_for_test(
+                    runtime.session_mut().unwrap(),
+                );
+            },
+        );
+        run_route_with_replay_capture(
+            &resolver,
+            &mut runtime,
+            "real-level-three-castle-boundary",
+            |runtime| {
+                crate::campaign::backend::tests::drive_real_level_three_owned_castle_charge_to_revealed_way_for_test(
+                    runtime.session_mut().unwrap(),
+                );
+            },
+        );
+        run_route_with_replay_capture(
+            &resolver,
+            &mut runtime,
+            "real-level-three-final-bee-boundary",
+            |runtime| {
+                crate::campaign::backend::tests::drive_real_level_three_revealed_way_through_final_bees_for_test(
+                    runtime.session_mut().unwrap(),
+                );
+            },
+        );
+        {
+            let session = runtime
+                .session()
+                .unwrap()
+                .backend()
+                .compatibility_campaign()
+                .level2_compatibility();
+            assert!(
+                session
+                    .economy()
+                    .bee_creatures()
+                    .iter()
+                    .all(|bee| !BEE_ROWS.contains(&bee.authored_index().unwrap_or(u16::MAX)))
+            );
+            assert_eq!(session.runtime().objectives[0].stage_selectors[4], 2);
+            assert_eq!(session.runtime().objectives[0].is_level_end, 1);
+            assert!(session.dispatch_events().iter().all(|event| !matches!(
+                event,
+                crate::native_world::Level2DispatchEvent::AuthoredGroupActivated { group: 6, .. }
+            )));
+        }
+        let completed_objective_identity = runtime.identity();
+        let completed_objective_snapshot = runtime.session().unwrap().snapshot();
+        let before_group6 = resolver.accept_transition(
+            &mut runtime,
+            completed_objective_identity.guard(),
+            completed_objective_identity
+                .session
+                .as_ref()
+                .unwrap()
+                .guard(),
+        );
+        assert!(matches!(
+            before_group6,
+            Err(RuntimeTransitionError::CompletionNotReady)
+        ));
+        assert_eq!(runtime.identity(), completed_objective_identity);
+        assert_eq!(
+            runtime.session().unwrap().snapshot(),
+            completed_objective_snapshot
+        );
+
+        complete_real_level_three_exit_sequence_for_test(&resolver, &mut runtime);
         let completed_identity = runtime.identity();
         let completed_snapshot = runtime.session().unwrap().snapshot();
         let stale_level_three_guard = completed_identity.session.as_ref().unwrap().guard();
@@ -4320,20 +4739,20 @@ mod tests {
             receipt.presentation_sequence[0].cue_id.as_str(),
             "presentation.magic_carpet_2.revealed_way.completion"
         );
-        let title = runtime.identity();
-        assert_eq!(title.generation, 8);
-        assert_eq!(title.mode, RuntimeMode::Title);
+        let results = runtime.identity();
+        assert_eq!(results.generation, 8);
+        assert_eq!(results.mode, RuntimeMode::Campaign);
         assert_presentation(
-            &title,
-            RuntimePresentationPhase::Title,
-            TITLE_PRESENTATION_CUE_ID,
-            None,
+            &results,
+            RuntimePresentationPhase::LevelCompletion,
+            "presentation.magic_carpet_2.revealed_way.completion",
+            Some("level.magic_carpet_2.revealed_way"),
         );
-        assert_eq!(receipt.presentation_sequence[1], title.presentation);
-        assert!(title.pending_definition.is_none());
-        assert!(title.active_runtime_flow.is_none());
-        assert!(title.session.is_none());
-        assert_eq!(receipt.after, title);
+        assert_eq!(receipt.presentation_sequence[1], results.presentation);
+        assert!(results.pending_definition.is_none());
+        assert!(results.active_runtime_flow.is_some());
+        assert!(results.session.is_none());
+        assert_eq!(receipt.after, results);
 
         let duplicate = resolver.accept_transition(
             &mut runtime,
@@ -4345,14 +4764,35 @@ mod tests {
             Err(RuntimeTransitionError::Guard(error))
                 if error.code == RuntimeGuardErrorCode::GenerationMismatch
         ));
-        assert_eq!(runtime.identity(), title);
-
+        assert_eq!(runtime.identity(), results);
+        let map = resolver
+            .campaign_menu_command(
+                &mut runtime,
+                results.guard(),
+                CampaignMenuCommand::DismissResults,
+            )
+            .unwrap();
+        assert_eq!(
+            map.campaign_menu.as_ref().unwrap().phase,
+            CampaignMenuPhase::MissionSelect
+        );
+        assert!(
+            map.campaign_menu
+                .as_ref()
+                .unwrap()
+                .selected_level_id
+                .is_none()
+        );
+        let title = resolver
+            .campaign_menu_command(&mut runtime, map.guard(), CampaignMenuCommand::ReturnTitle)
+            .unwrap();
+        assert_eq!(title.mode, RuntimeMode::Title);
         let loading = resolver.new_game(&mut runtime, title.guard()).unwrap();
-        assert_eq!(loading.generation, 9);
+        assert_eq!(loading.generation, 11);
         let restarted = resolver
             .open_pending(&mut runtime, loading.guard(), 333)
             .unwrap();
-        assert_eq!(restarted.generation, 10);
+        assert_eq!(restarted.generation, 12);
         assert_eq!(restarted.runtime_id, 333);
         assert_eq!(restarted.session.as_ref().unwrap().session_id, 333);
         assert_eq!(restarted.session.as_ref().unwrap().generation, 4);

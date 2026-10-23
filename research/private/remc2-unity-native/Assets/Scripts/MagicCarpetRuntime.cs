@@ -1123,7 +1123,8 @@ namespace MagicCarpet.Native
             string.IsNullOrEmpty(fatalError) &&
             session != null &&
             session.UsesGameRuntimeContract &&
-            (session.GameRuntimeIdentity().mode == GameRuntimeTransport.LoadingMode &&
+            (session.GameRuntimeIdentity().mode == GameRuntimeTransport.CampaignMode ||
+             session.GameRuntimeIdentity().mode == GameRuntimeTransport.LoadingMode &&
              gameRuntimeTransitionPresenter?.IsVisible == true ||
              level2Mode && level2StartupReady ||
              level3Mode && level3StartupReady ||
@@ -2783,6 +2784,11 @@ namespace MagicCarpet.Native
                 return;
             }
             var identity = session.GameRuntimeIdentity();
+            if (identity.mode == GameRuntimeTransport.CampaignMode)
+            {
+                FreezeGameRuntimeInput();
+                return;
+            }
             if (identity.mode == GameRuntimeTransport.LoadingMode)
             {
                 FreezeGameRuntimeInput();
@@ -2824,6 +2830,7 @@ namespace MagicCarpet.Native
             {
                 return;
             }
+            if (TryFinishGameRuntimeMission()) return;
             var flags = gameRuntimeMovementFlags;
             if (fireRequested)
             {
@@ -3213,6 +3220,8 @@ namespace MagicCarpet.Native
         {
             if (gameRuntimeMode)
             {
+                if (gameRuntimeStartupReady && session?.GameRuntimeIdentity().mode == GameRuntimeTransport.PlayingMode &&
+                    TryFinishGameRuntimeMission()) return;
                 if (gameRuntimeMenuAction != CampaignMenuPresenter.Action.None)
                 {
                     var action = gameRuntimeMenuAction;
@@ -9078,7 +9087,7 @@ namespace MagicCarpet.Native
                 GameRuntimeProductionStartupReady,
                 "game runtime input requires a validated production owner");
             var identity = session.GameRuntimeIdentity();
-            if (identity.mode == GameRuntimeTransport.LoadingMode)
+            if (identity.mode == GameRuntimeTransport.LoadingMode || identity.mode == GameRuntimeTransport.CampaignMode)
             {
                 FreezeGameRuntimeInput();
                 return;
@@ -9155,7 +9164,7 @@ namespace MagicCarpet.Native
                 GameRuntimeProductionStartupReady,
                 "game runtime movement input requires a validated production owner");
             var identity = session.GameRuntimeIdentity();
-            if (identity.mode == GameRuntimeTransport.LoadingMode)
+            if (identity.mode == GameRuntimeTransport.LoadingMode || identity.mode == GameRuntimeTransport.CampaignMode)
             {
                 FreezeGameRuntimeInput();
                 return;
@@ -9191,7 +9200,7 @@ namespace MagicCarpet.Native
                 GameRuntimeProductionStartupReady,
                 "game runtime steering requires a validated production owner");
             var identity = session.GameRuntimeIdentity();
-            if (identity.mode == GameRuntimeTransport.LoadingMode)
+            if (identity.mode == GameRuntimeTransport.LoadingMode || identity.mode == GameRuntimeTransport.CampaignMode)
             {
                 FreezeGameRuntimeInput();
                 return;
@@ -9286,31 +9295,37 @@ namespace MagicCarpet.Native
             EnsureGameRuntimeTransitionPresentation();
             FreezeGameRuntimeInput();
             var receipt = session.GameRuntimeAcceptCompletionTransition();
+            return CompleteGameRuntimeMissionPresentation(receipt);
+        }
+
+        private bool TryFinishGameRuntimeMission()
+        {
+            // remc2 InGameLoop_47320 tests the persistent exit-success byte
+            // before dispatching another gameplay frame. Rust decides whether
+            // this boundary is ready; Unity only applies its returned mode.
+            var receipt = session.GameRuntimeFinishMissionIfReady();
+            if (receipt == null) return false;
+            CompleteGameRuntimeMissionPresentation(receipt);
+            return true;
+        }
+
+        private GameRuntimeTransport.CompletionTransitionReceipt CompleteGameRuntimeMissionPresentation(
+            GameRuntimeTransport.CompletionTransitionReceipt receipt)
+        {
+            FreezeGameRuntimeInput();
             gameRuntimeLastCompletionTransitionReceipt = receipt;
             DestroyGameRuntimeFireballPresentation();
             gameRuntimeCampaignSnapshot = null;
             gameRuntimeSemanticEventCursor = "0";
             gameRuntimeRecentSemanticEvents.Clear();
-            if (receipt.after.mode == GameRuntimeTransport.TitleMode)
-            {
-                DisposeGameRuntimeCampaignPresentation();
-                PresentGameRuntimeTransition(receipt);
-                gameRuntimeLoadingPresentationGate.Reset();
-                gameRuntimeStartupReady = false;
-                return receipt;
-            }
             Require(
-                receipt.after.mode == GameRuntimeTransport.LoadingMode &&
-                receipt.completion_destination.kind == "level" &&
-                (receipt.completion_destination.level_id == GameRuntimeLevelTwoId ||
-                 receipt.completion_destination.level_id == GameRuntimeLevelThreeId),
-                "accepted nonterminal completion entered resolver-owned Loading");
-            EnsureGameRuntimeTransitionPresentation();
+                receipt.after.mode == GameRuntimeTransport.CampaignMode &&
+                receipt.after.campaign_menu?.phase == "results",
+                "accepted completion returned to the Rust campaign results owner");
             PresentGameRuntimeTransition(receipt);
-            gameRuntimeLoadingPresentationGate.Begin(
-                receipt.after,
-                receipt.completion_destination.level_id);
+            gameRuntimeLoadingPresentationGate.Reset();
             DisposeGameRuntimeCampaignPresentation();
+            ReleaseMouse();
             return receipt;
         }
 
@@ -9417,7 +9432,8 @@ namespace MagicCarpet.Native
             Require(!string.IsNullOrWhiteSpace(gameRuntimeLoadingCachePath),
                 "campaign menus require the qualified original loading cache");
             gameRuntimeMenu = new CampaignMenuPresenter(OwnerAssetCache.OpenAndValidate(
-                gameRuntimeLoadingCachePath, ExpectedPackageHash, ExpectedOwnerAssetClosureHash));
+                gameRuntimeLoadingCachePath, ExpectedPackageHash, ExpectedOwnerAssetClosureHash),
+                Path.Combine(Path.GetDirectoryName(gameRuntimeLoadingCachePath), "mc2-campaign-menu-cache"));
         }
 
         private void BeginGameRuntimeMenuNewGame()
@@ -9498,7 +9514,25 @@ namespace MagicCarpet.Native
                         }
                         break;
                     case CampaignMenuPresenter.Action.Title:
-                        ApplyGameRuntimeProductionInput(false, true, false);
+                        if (mode == GameRuntimeTransport.CampaignMode)
+                        {
+                            session.GameRuntimeCampaignMenuAction("return_title");
+                            gameRuntimeStartupReady = false;
+                            gameRuntimeMenuStatus = null;
+                        }
+                        else ApplyGameRuntimeProductionInput(false, true, false);
+                        break;
+                    case CampaignMenuPresenter.Action.DismissResults:
+                        PresentGameRuntimeTransition(session.GameRuntimeCampaignMenuAction("dismiss_results"));
+                        break;
+                    case CampaignMenuPresenter.Action.SelectMission:
+                        PresentGameRuntimeTransition(session.GameRuntimeCampaignMenuAction("select_mission", gameRuntimeMenu.SelectedMission));
+                        break;
+                    case CampaignMenuPresenter.Action.StartMission:
+                        var missionLoading = session.GameRuntimeCampaignMenuAction("start_mission");
+                        PresentGameRuntimeTransition(missionLoading);
+                        gameRuntimeLoadingPresentationGate.Begin(missionLoading,
+                            missionLoading.pending_definition.runtime_flow.bound_level_id);
                         break;
                     case CampaignMenuPresenter.Action.Quit:
                         Application.Quit();
@@ -13109,13 +13143,13 @@ namespace MagicCarpet.Native
             if (gameRuntimeMode && session != null && fatalError == null)
             {
                 var mode = session.GameRuntimeIdentity().mode;
-                if (mode == GameRuntimeTransport.TitleMode || mode == GameRuntimeTransport.PausedMode)
+                if (mode == GameRuntimeTransport.TitleMode || mode == GameRuntimeTransport.PausedMode || mode == GameRuntimeTransport.CampaignMode)
                 {
                     // Existing headless qualification routes need no GUI cache.
                     if (!string.IsNullOrWhiteSpace(gameRuntimeLoadingCachePath))
                     {
                         EnsureGameRuntimeMenu();
-                        var action = gameRuntimeMenu.Draw(mode,
+                        var action = gameRuntimeMenu.Draw(session.GameRuntimeIdentity(),
                             !string.IsNullOrWhiteSpace(gameRuntimeReplaySavePath),
                             !string.IsNullOrWhiteSpace(gameRuntimeReplaySavePath) && File.Exists(gameRuntimeReplaySavePath),
                             gameRuntimeCampaignSnapshot?.value?.objective_progress?.all_objectives_satisfied == true,

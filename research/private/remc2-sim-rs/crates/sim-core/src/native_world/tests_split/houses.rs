@@ -530,11 +530,7 @@ fn level_two_authored_subtype45_runs_action51_and_reclaims_at_following_boundary
 
 #[test]
 fn level_two_authored_class14_rows_dispatch_source_terrain_callbacks() {
-    let inspection =
-        NativeWorld::inspect_level2(level_two_fixture_path()).expect("qualified Level 2 package");
-    let mut session = inspection
-        .level2_reset_session()
-        .expect("Level 2 authored class-14 session");
+    let mut session = level_two_campaign_session();
     let baseline_hash = session.economy().reset_hash();
 
     // The pinned corpus contains one subtype-3 row (244) and subtype-5
@@ -644,11 +640,7 @@ fn level_two_authored_class14_rows_dispatch_source_terrain_callbacks() {
 
 #[test]
 fn level_two_authored_class14_model5_collects_for_local_player_and_reclaims() {
-    let inspection =
-        NativeWorld::inspect_level2(level_two_fixture_path()).expect("qualified Level 2 package");
-    let mut session = inspection
-        .level2_reset_session()
-        .expect("Level 2 authored class-14 session");
+    let mut session = level_two_campaign_session();
     let source = session
         .allocate_level2_authored_class14(248)
         .expect("authored subtype-5 row");
@@ -718,11 +710,7 @@ fn level_two_authored_class14_model5_collects_for_local_player_and_reclaims() {
 
 #[test]
 fn level_two_authored_class14_model5_uses_strict_collision_boundaries() {
-    let inspection =
-        NativeWorld::inspect_level2(level_two_fixture_path()).expect("qualified Level 2 package");
-    let mut session = inspection
-        .level2_reset_session()
-        .expect("Level 2 authored class-14 session");
+    let mut session = level_two_campaign_session();
     let source = session
         .allocate_level2_authored_class14(248)
         .expect("authored subtype-5 row");
@@ -747,11 +735,7 @@ fn level_two_authored_class14_model5_uses_strict_collision_boundaries() {
 
 #[test]
 fn level_two_authored_class14_model5_scans_past_remote_collision_for_local_xp() {
-    let inspection =
-        NativeWorld::inspect_level2(level_two_fixture_path()).expect("qualified Level 2 package");
-    let mut session = inspection
-        .level2_reset_session()
-        .expect("Level 2 authored class-14 session");
+    let mut session = level_two_campaign_session();
     let source = session
         .allocate_level2_authored_class14(248)
         .expect("authored subtype-5 row");
@@ -2670,11 +2654,8 @@ fn level_two_castle_public_route_rejects_invalid_input_and_allocation_failures()
 
 #[test]
 fn level_two_castle_public_route_retries_root_and_child_failures_and_upgrades() {
-    let package = level_two_fixture_path();
     let gameplay_cache = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../../../generated/level2-day-owner-cache/components/gameplay");
-    let inspection = NativeWorld::inspect_level2_with_owner_cache(&package, &gameplay_cache)
-        .expect("qualified Level 2 gameplay component");
     let request = PlayerCommand {
         opcode: 6,
         argument_1: 2,
@@ -2682,9 +2663,7 @@ fn level_two_castle_public_route_retries_root_and_child_failures_and_upgrades() 
         ..PlayerCommand::default()
     };
 
-    let mut root_failed = inspection
-        .level2_reset_session()
-        .expect("Level 2 root-allocation retry session");
+    let mut root_failed = level_two_campaign_session_with_owner_cache(&gameplay_cache);
     root_failed.select_level2_campaign_entry_stage();
     root_failed.step_outer_turn(request, 0);
     let free_slots = root_failed.economy().free_slots.clone();
@@ -2723,9 +2702,7 @@ fn level_two_castle_public_route_retries_root_and_child_failures_and_upgrades() 
     assert_eq!(root.source_word_2e, 0);
     assert_eq!(root_failed.economy().player_castle_entity_index(), 0);
 
-    let mut child_failed = inspection
-        .level2_reset_session()
-        .expect("Level 2 construction-child retry session");
+    let mut child_failed = level_two_campaign_session_with_owner_cache(&gameplay_cache);
     child_failed.select_level2_campaign_entry_stage();
     child_failed.step_outer_turn(request, 0);
     let free_slots = child_failed.economy().free_slots.clone();
@@ -2781,9 +2758,7 @@ fn level_two_castle_public_route_retries_root_and_child_failures_and_upgrades() 
         .iter()
         .any(|event| matches!(event, Level2EconomyEvent::CastleBuilt { .. })));
 
-    let mut occupied = inspection
-        .level2_reset_session()
-        .expect("Level 2 Castle-upgrade session");
+    let mut occupied = level_two_campaign_session_with_owner_cache(&gameplay_cache);
     occupied.select_level2_campaign_entry_stage();
     occupied.step_outer_turn(request, 0);
     for _ in 0..32 {
@@ -2952,17 +2927,40 @@ fn level_two_castle_public_route_retries_root_and_child_failures_and_upgrades() 
             .count(),
         1
     );
-    assert!(
-        occupied.dispatch_events().iter().any(|event| matches!(
-            event,
-            Level2DispatchEvent::DynamicArena {
-                pass: 0,
-                kind: Level2DynamicArenaKind::CastleChild,
-                ..
-            }
-        )),
-        "the occupied-root hit dispatches its 10/43 product later in the same source pass"
-    );
+    let upgrade_product_before = occupied.economy().castle_children().iter()
+        .find(|child| child.active && child.model == 43 && child.action == 45)
+        .copied().expect("the source landing constructs its actual 10/43 product");
+    let upgrade_product_generation = occupied.economy()
+        .slot_generation(upgrade_product_before.source_entity_index);
+    let product_dispatched = |session: &Level2ResetSession| session.dispatch_events().iter().any(|event| {
+        matches!(event, Level2DispatchEvent::DynamicArena {
+            pass: 0, source_slot, kind: Level2DynamicArenaKind::CastleChild,
+        } if *source_slot == upgrade_product_before.source_entity_index)
+    });
+    let mut product_callback_prediction = None;
+    if !product_dispatched(&occupied) {
+        // Observe the exact source producer on an immutable execution clone
+        // before the ordinary numeric pass can also consume its mailbox.
+        let mut callback_probe = occupied.clone();
+        assert!(callback_probe.step_level2_dynamic_arena(0,
+            upgrade_product_before.source_entity_index, Level2DynamicArenaKind::CastleChild));
+        let probe_root = callback_probe.economy().castle().expect("real callback target");
+        assert_eq!(probe_root.source_word_7c, 10);
+        assert_eq!(probe_root.source_word_80, upgrade.owner_entity_index);
+        product_callback_prediction = callback_probe.economy().castle_children().iter()
+            .find(|child| child.source_entity_index == upgrade_product_before.source_entity_index)
+            .copied();
+        assert!(upgrade_product_before.source_entity_index < upgrade.source_entity_index,
+            "only a real lower-slot product can await the next source scan: flyer={upgrade:?} product={upgrade_product_before:?} dispatch={:?}",
+            occupied.dispatch_events());
+        assert_eq!(upgrade_product_before.control_flags & ENTITY_DRAW_DISABLED_BIT, 0);
+        assert_eq!(upgrade_product_before.life, 8);
+        occupied.step_outer_turn(PlayerCommand::default(), 0);
+        assert_eq!(occupied.economy().slot_generation(upgrade_product_before.source_entity_index),
+            upgrade_product_generation);
+    }
+    assert!(product_dispatched(&occupied),
+        "the generation-qualified 10/43 product must run on its first reachable numeric source visit");
     assert!(
         occupied.dispatch_events().iter().all(|event| !matches!(
             event,
@@ -2975,8 +2973,24 @@ fn level_two_castle_public_route_retries_root_and_child_failures_and_upgrades() 
     );
     let upgrade_spawn_position = upgrade.position;
     let landed_root = occupied.economy().castle().expect("live Castle root");
-    assert_eq!(landed_root.source_word_7c, 10);
-    assert_eq!(landed_root.source_word_80, upgrade.owner_entity_index);
+    let same_pass_consumer = if landed_root.source_word_7c == 0 {
+        assert!(upgrade_product_before.source_entity_index < root_slot,
+            "only an earlier source product can have its mailbox consumed by this root in the same pass");
+        assert_eq!((landed_root.action, landed_root.build_state), (5, 0));
+        assert_eq!(landed_root.source_word_80, 0);
+        assert_ne!(landed_root.control_flags & 0x40, 0);
+        assert!(occupied.cf10_production_schedule_receipts().iter().any(|receipt| matches!(receipt,
+            crate::campaign::schedule::ScheduleReceipt::CallbackCompleted { slot, selector, .. }
+                if *slot == root_slot
+                    && selector.registry_key().selector == crate::campaign::spec::BehaviorSelector::ClassAction {
+                        class: 3, action: 4,
+                    })), "the exact real action4 consumer must run after the product");
+        Some(landed_root)
+    } else {
+        assert_eq!(landed_root.source_word_7c, 10);
+        assert_eq!(landed_root.source_word_80, upgrade.owner_entity_index);
+        None
+    };
     let upgrade_product_slot = occupied
         .economy()
         .castle_children()
@@ -2994,6 +3008,10 @@ fn level_two_castle_public_route_retries_root_and_child_failures_and_upgrades() 
         upgrade_product.position, upgrade_spawn_position,
         "the flyer terrain landing is carried unchanged into the higher-slot 10/43 product"
     );
+    if let Some(predicted) = product_callback_prediction {
+        assert_eq!(*upgrade_product, predicted,
+            "the ordinary source visit must match the exact unmodified producer callback prediction");
+    }
     assert_eq!(upgrade_product.parent_entity_index, root_slot);
     assert_ne!(upgrade_product.control_flags & ENTITY_DRAW_DISABLED_BIT, 0);
     assert_ne!(upgrade_product.control_flags & 0x2, 0);
@@ -3021,10 +3039,8 @@ fn level_two_castle_public_route_retries_root_and_child_failures_and_upgrades() 
         .economy()
         .free_slots
         .contains(&upgrade_product_slot));
-    let mailbox_root = occupied
-        .economy()
-        .castle()
-        .expect("Castle root after mailbox consumption");
+    let mailbox_root = same_pass_consumer.unwrap_or_else(|| occupied.economy().castle()
+        .expect("Castle root after its first mailbox-consumer visit"));
     assert_eq!((mailbox_root.action, mailbox_root.build_state), (5, 0));
     assert_ne!(mailbox_root.control_flags & 0x40, 0);
     assert_eq!(mailbox_root.source_word_80, 0);

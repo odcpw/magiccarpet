@@ -8,14 +8,18 @@ namespace MagicCarpet.Native
     // not a claim that the original menu layout/animation has been ported.
     internal sealed class CampaignMenuPresenter : IDisposable
     {
-        internal enum Action { None, NewGame, Resume, Save, Load, Restart, Continue, Title, Quit }
+        internal enum Action { None, NewGame, Resume, Save, Load, Restart, Continue, Title, Quit, DismissResults, SelectMission, StartMission }
+        internal string SelectedMission { get; private set; }
         private readonly Texture2D background;
+        private readonly string campaignCachePath;
+        private OwnerCampaignMenuCache campaignCache;
         private GUIStyle heading;
         private GUIStyle button;
         private GUIStyle message;
 
-        internal CampaignMenuPresenter(OwnerAssetCache cache)
+        internal CampaignMenuPresenter(OwnerAssetCache cache, string campaignCachePath = null)
         {
+            this.campaignCachePath = campaignCachePath;
             var indices = cache.ReadOutput(CampaignTransitionPresenter.IndicesPath);
             var palette = cache.ReadOutput(CampaignTransitionPresenter.PalettePath);
             if (indices.Length != 320 * 200 || palette.Length != 256 * 3)
@@ -45,16 +49,19 @@ namespace MagicCarpet.Native
                 Action.Resume => mode == GameRuntimeTransport.PausedMode,
                 Action.Save => mode == GameRuntimeTransport.PausedMode && canSave,
                 Action.Load => mode == GameRuntimeTransport.TitleMode && canLoad,
-                Action.Restart or Action.Title => mode == GameRuntimeTransport.PausedMode,
+                Action.Restart => mode == GameRuntimeTransport.PausedMode,
+                Action.Title => mode == GameRuntimeTransport.PausedMode || mode == GameRuntimeTransport.CampaignMode,
+                Action.DismissResults or Action.SelectMission or Action.StartMission => mode == GameRuntimeTransport.CampaignMode,
                 Action.Continue => mode == GameRuntimeTransport.PausedMode && objectivesSatisfied,
                 Action.Quit => mode == GameRuntimeTransport.TitleMode || mode == GameRuntimeTransport.PausedMode,
                 _ => false
             };
         }
 
-        internal Action Draw(string mode, bool canSave, bool canLoad, bool objectivesSatisfied, string status)
+        internal Action Draw(GameRuntimeTransport.Identity identity, bool canSave, bool canLoad, bool objectivesSatisfied, string status)
         {
-            if (mode != GameRuntimeTransport.TitleMode && mode != GameRuntimeTransport.PausedMode)
+            var mode = identity.mode;
+            if (mode != GameRuntimeTransport.TitleMode && mode != GameRuntimeTransport.PausedMode && mode != GameRuntimeTransport.CampaignMode)
                 return Action.None;
             heading ??= new GUIStyle(GUI.skin.label) { alignment = TextAnchor.MiddleCenter, fontSize = 28 };
             button ??= new GUIStyle(GUI.skin.button) { fontSize = 19 };
@@ -64,18 +71,55 @@ namespace MagicCarpet.Native
             try
             {
                 GUI.color = Color.white;
-                GUI.DrawTexture(new Rect(0, 0, Screen.width, Screen.height), background, ScaleMode.ScaleToFit);
+                if (mode == GameRuntimeTransport.CampaignMode)
+                {
+                    campaignCache ??= new OwnerCampaignMenuCache(campaignCachePath ?? throw new InvalidOperationException("campaign map requires its decoded owner cache"));
+                    campaignCache.DrawMap(identity.campaign_menu);
+                }
+                else GUI.DrawTexture(new Rect(0, 0, Screen.width, Screen.height), background, ScaleMode.ScaleToFit);
                 var width = Mathf.Min(360, Screen.width - 32);
                 var x = (Screen.width - width) * .5f;
                 var y = Mathf.Max(16, (Screen.height - 480) * .5f);
                 GUI.color = new Color(0, 0, 0, .85f);
                 GUI.DrawTexture(new Rect(x - 16, y, width + 32, 480), Texture2D.whiteTexture);
                 GUI.color = Color.white;
-                GUI.Label(new Rect(x, y + 12, width, 44), mode == GameRuntimeTransport.TitleMode ? "MAGIC CARPET II" : "PAUSED", heading);
+                GUI.Label(new Rect(x, y + 12, width, 44), mode == GameRuntimeTransport.TitleMode ? "MAGIC CARPET II" : mode == GameRuntimeTransport.CampaignMode ? "CAMPAIGN" : "PAUSED", heading);
                 y += 66;
+                if (mode == GameRuntimeTransport.CampaignMode)
+                {
+                    var menu = identity.campaign_menu;
+                    if (menu.phase == "results")
+                    {
+                        GUI.Label(new Rect(x, y, width, 70), "Mission completed\n" + campaignCache.ForMission(menu.completed_level_id).name, message);
+                        y += 80;
+                        if (GUI.Button(new Rect(x, y, width, 42), "Return to campaign map", button)) return Action.DismissResults;
+                        y += 50;
+                    }
+                    else
+                    {
+                        foreach (var level in menu.available_levels)
+                        {
+                            var label = (level == menu.selected_level_id ? "> " : "") + campaignCache.ForMission(level).name;
+                            if (GUI.Button(new Rect(x, y, width, 42), label, button))
+                            { SelectedMission = level; return Action.SelectMission; }
+                            y += 50;
+                        }
+                        GUI.enabled = !string.IsNullOrEmpty(menu.selected_level_id);
+                        if (GUI.Button(new Rect(x, y, width, 42), "Enter selected mission", button)) return Action.StartMission;
+                        GUI.enabled = true;
+                        y += 50;
+                        if (!string.IsNullOrEmpty(menu.briefing_level_id))
+                        {
+                            GUI.Label(new Rect(x, y, width, 110), campaignCache.ForMission(menu.briefing_level_id).briefing, message);
+                            y += 120;
+                        }
+                    }
+                    if (GUI.Button(new Rect(x, y, width, 42), "Main menu", button)) return Action.Title;
+                    return Action.None;
+                }
                 var choices = mode == GameRuntimeTransport.TitleMode
                     ? new[] { (Action.NewGame, "New game"), (Action.Load, "Load saved game"), (Action.Quit, "Quit") }
-                    : new[] { (Action.Resume, "Resume"), (Action.Save, "Save game"), (Action.Continue, "Continue to next level"), (Action.Restart, "Restart level"), (Action.Title, "Main menu"), (Action.Quit, "Quit") };
+                    : new[] { (Action.Resume, "Resume"), (Action.Save, "Save game"), (Action.Continue, "Return to campaign"), (Action.Restart, "Restart level"), (Action.Title, "Main menu"), (Action.Quit, "Quit") };
                 foreach (var (action, label) in choices)
                 {
                     GUI.enabled = Allows(mode, action, canSave, canLoad, objectivesSatisfied);
@@ -96,6 +140,7 @@ namespace MagicCarpet.Native
 
         public void Dispose()
         {
+            campaignCache?.Dispose();
             if (Application.isPlaying) UnityEngine.Object.Destroy(background);
             else UnityEngine.Object.DestroyImmediate(background);
         }

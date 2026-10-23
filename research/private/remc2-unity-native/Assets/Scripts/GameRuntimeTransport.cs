@@ -16,9 +16,9 @@ namespace MagicCarpet.Native
     /// </summary>
     internal sealed class GameRuntimeTransport : IDisposable
     {
-        internal const string RuntimeContract = "carpet-flight-game-runtime/v10";
+        internal const string RuntimeContract = "carpet-flight-game-runtime/v11";
         internal const string TransportContract =
-            "carpet-flight-native-game-runtime-json/v10";
+            "carpet-flight-native-game-runtime-json/v11";
         internal const string DefinitionContract =
             "carpet-flight-game-definition/v11";
         internal const string SemanticContractVersion = "36.0";
@@ -30,6 +30,8 @@ namespace MagicCarpet.Native
             "carpet-flight-mc2-campaign-replay-save/v5";
         internal const int MaximumReplaySaveJsonBytes = 16 * 1024 * 1024;
         internal const string TitleMode = "title";
+        internal const string CampaignMode = "campaign";
+        internal const string CampaignMapPresentationPhase = "campaign_map";
         internal const string LoadingMode = "loading";
         internal const string PlayingMode = "playing";
         internal const string PausedMode = "paused";
@@ -181,9 +183,34 @@ namespace MagicCarpet.Native
             public string generation;
             public string mode;
             public RuntimePresentationCue presentation;
+            public CampaignMenuSnapshot campaign_menu;
             public DefinitionIdentity pending_definition;
             public RuntimeFlowDefinition active_runtime_flow;
             public EngineSessionTransport.Identity session;
+        }
+
+        [Serializable]
+        internal sealed class CampaignMenuSnapshot
+        {
+            public string phase;
+            public string completed_level_id;
+            public string[] completed_levels;
+            public string[] available_levels;
+            public string selected_level_id;
+            public string briefing_level_id;
+        }
+
+        [Serializable]
+        internal sealed class CampaignMenuCommand
+        {
+            public string action;
+            public string level_id;
+        }
+
+        [Serializable]
+        private sealed class CampaignActionCommand
+        {
+            public string action;
         }
 
         [Serializable]
@@ -395,6 +422,38 @@ namespace MagicCarpet.Native
                 throw new InvalidOperationException("open level did not enter bound Playing");
             }
             return identity;
+        }
+
+        internal Identity CampaignMenuAction(string action, string levelId = null)
+        {
+            if (Current?.mode != CampaignMode)
+                throw new InvalidOperationException("campaign action requires a Rust campaign owner");
+            var generation = ParseCounter(Current.generation, "generation");
+            // Omit level_id on commands that do not select a mission: Rust
+            // rejects extra fields instead of treating them as destinations.
+            var request = levelId == null
+                ? Encoding.UTF8.GetBytes(JsonUtility.ToJson(new CampaignActionCommand { action = action }))
+                : Encoding.UTF8.GetBytes(JsonUtility.ToJson(new CampaignMenuCommand { action = action, level_id = levelId }));
+            Check(NativeSim.mc_game_runtime_campaign_menu_command_json_v1(RequireHandle(), generation, request, checked((uint)request.Length)), "campaign menu action");
+            var identity = IdentitySnapshot();
+            if (ParseCounter(identity.generation, "generation") != checked(generation + 1) || HasSessionIdentityData(identity.session))
+                throw new InvalidOperationException("campaign action did not advance its guarded owner");
+            return identity;
+        }
+
+        internal CompletionTransitionReceipt FinishMissionIfReady()
+        {
+            RequireSessionMode(allowPaused: false, "finish mission boundary");
+            var before = Current;
+            var generation = ParseCounter(before.generation, "generation");
+            Check(NativeSim.mc_game_runtime_finish_mission_if_ready_v1(RequireHandle(), generation,
+                ParseCounter(before.session.generation, "session_generation"), ParseCounter(before.session.tick, "tick")), "finish mission boundary");
+            var after = IdentitySnapshot();
+            if (SameIdentity(before, after)) return null;
+            var receipt = ReadJson<CompletionTransitionReceipt>((IntPtr buffer, uint capacity, out uint length) =>
+                NativeSim.mc_game_runtime_completion_transition_receipt_json_v1(RequireHandle(), buffer, capacity, out length), "read mission completion receipt");
+            ValidateCompletionTransitionReceipt(receipt, before, after, generation);
+            return receipt;
         }
 
         internal Identity RestartNewGame()
@@ -668,7 +727,7 @@ namespace MagicCarpet.Native
             if (contract == null ||
                 contract.runtime_contract != RuntimeContract ||
                 contract.transport_contract != TransportContract ||
-                contract.transport_version != 10 ||
+                contract.transport_version != 11 ||
                 contract.definition_contract != DefinitionContract ||
                 contract.semantic_contract_version != SemanticContractVersion ||
                 contract.encoding != "utf-8-json" ||
@@ -730,13 +789,13 @@ namespace MagicCarpet.Native
                 contract.limits.maximum_replay_save_json_bytes != MaximumReplaySaveJsonBytes ||
                 contract.limits.json_length_type != "u32" ||
                 contract.modes == null ||
-                !new[] { TitleMode, LoadingMode, PlayingMode, PausedMode }
+                !new[] { TitleMode, CampaignMode, LoadingMode, PlayingMode, PausedMode }
                     .SequenceEqual(contract.modes) ||
                 contract.transitions == null ||
                 !new[] {
                     "bootstrap_package_set", "restart_new_game", "open_level",
                     "load_replay_save", "pause", "paused_frame", "resume",
-                    "accept_completion_transition", "close"
+                    "accept_completion_transition", "finish_mission_if_ready", "campaign_menu_command", "close"
                 }
                     .SequenceEqual(contract.transitions))
             {
@@ -755,15 +814,38 @@ namespace MagicCarpet.Native
         {
             if (identity == null || identity.runtime_contract != RuntimeContract ||
                 ParseCounter(identity.runtime_id, "runtime_id") != handle ||
-                !new[] { TitleMode, LoadingMode, PlayingMode, PausedMode }
+                !new[] { TitleMode, CampaignMode, LoadingMode, PlayingMode, PausedMode }
                     .Contains(identity.mode))
             {
                 throw new InvalidOperationException("game runtime identity is incomplete");
             }
             ParseCounter(identity.generation, "generation");
+            if (identity.mode != CampaignMode && HasCampaignMenuData(identity.campaign_menu))
+                throw new InvalidOperationException("non-campaign identity carries a campaign menu");
             ValidateIdentityPresentation(identity);
             switch (identity.mode)
             {
+                case CampaignMode:
+                    if (HasDefinitionIdentityData(identity.pending_definition) || HasSessionIdentityData(identity.session) ||
+                        !HasRuntimeFlowData(identity.active_runtime_flow) || identity.campaign_menu == null ||
+                        !new[] { "results", "mission_select" }.Contains(identity.campaign_menu.phase) ||
+                        identity.campaign_menu.completed_levels == null || identity.campaign_menu.available_levels == null ||
+                        !identity.campaign_menu.completed_levels.Contains(identity.campaign_menu.completed_level_id) ||
+                        (!string.IsNullOrEmpty(identity.campaign_menu.selected_level_id) &&
+                         !identity.campaign_menu.available_levels.Contains(identity.campaign_menu.selected_level_id)))
+                        throw new InvalidOperationException("Campaign runtime identity is incomplete");
+                    ValidateRuntimeFlow(identity.active_runtime_flow);
+                    var campaignLevels = identity.active_runtime_flow.entries.Select(entry => entry.level_id).ToArray();
+                    var menu = identity.campaign_menu;
+                    if (menu.completed_level_id != identity.active_runtime_flow.bound_level_id ||
+                        menu.completed_levels.Distinct().Count() != menu.completed_levels.Length ||
+                        menu.available_levels.Distinct().Count() != menu.available_levels.Length ||
+                        menu.completed_levels.Any(level => !campaignLevels.Contains(level)) ||
+                        menu.available_levels.Any(level => !campaignLevels.Contains(level)) ||
+                        (menu.phase == "results" && !string.IsNullOrEmpty(menu.selected_level_id)) ||
+                        (!string.IsNullOrEmpty(menu.briefing_level_id) && !menu.available_levels.Contains(menu.briefing_level_id)))
+                        throw new InvalidOperationException("Campaign menu is not bound to its retained flow and phase");
+                    break;
                 case TitleMode:
                     if (HasDefinitionIdentityData(identity.pending_definition) ||
                         HasSessionIdentityData(identity.session) ||
@@ -808,6 +890,7 @@ namespace MagicCarpet.Native
             ValidatePresentationCue(identity?.presentation);
             var expectedPhase = identity?.mode switch
             {
+                CampaignMode => identity.campaign_menu?.phase == "results" ? LevelCompletionPresentationPhase : CampaignMapPresentationPhase,
                 TitleMode => TitlePresentationPhase,
                 LoadingMode => LoadingPresentationPhase,
                 PlayingMode => LevelEntryPresentationPhase,
@@ -816,6 +899,7 @@ namespace MagicCarpet.Native
             };
             var expectedLevel = identity?.mode switch
             {
+                CampaignMode => identity.campaign_menu?.phase == "results" ? identity.campaign_menu.completed_level_id : identity.campaign_menu?.selected_level_id,
                 LoadingMode => identity.pending_definition?.runtime_flow?.bound_level_id,
                 PlayingMode => identity.active_runtime_flow?.bound_level_id,
                 PausedMode => identity.active_runtime_flow?.bound_level_id,
@@ -897,34 +981,11 @@ namespace MagicCarpet.Native
                     "completion transition receipt is not bound to the accepted Rust transition");
             }
             ValidateCompletionPresentationSequence(receipt);
-            if (receipt.completion_destination.kind == "level")
-            {
-                if (after.mode != LoadingMode ||
-                    after.pending_definition?.runtime_flow?.bound_level_id !=
-                        receipt.completion_destination.level_id ||
-                    HasSessionIdentityData(after.session) ||
-                    HasRuntimeFlowData(after.active_runtime_flow))
-                {
-                    throw new InvalidOperationException(
-                        "level completion did not enter resolver-owned Loading");
-                }
-            }
-            else if (receipt.completion_destination.kind == "title")
-            {
-                if (after.mode != TitleMode ||
-                    HasDefinitionIdentityData(after.pending_definition) ||
-                    HasSessionIdentityData(after.session) ||
-                    HasRuntimeFlowData(after.active_runtime_flow))
-                {
-                    throw new InvalidOperationException(
-                        "terminal completion did not enter unbound Title");
-                }
-            }
-            else
-            {
-                throw new InvalidOperationException(
-                    "completion transition receipt has an unknown destination");
-            }
+            if (after.mode != CampaignMode || after.campaign_menu?.phase != "results" ||
+                after.campaign_menu.completed_level_id != receipt.completed_level_id ||
+                HasSessionIdentityData(after.session) || HasDefinitionIdentityData(after.pending_definition) ||
+                !SameRuntimeFlow(before.active_runtime_flow, after.active_runtime_flow))
+                throw new InvalidOperationException("completion did not return to campaign results");
         }
 
         internal static void ValidatePresentationCue(RuntimePresentationCue cue)
@@ -932,6 +993,7 @@ namespace MagicCarpet.Native
             if (cue == null || !IsSemanticId(cue.cue_id, "presentation") ||
                 !new[] {
                     TitlePresentationPhase,
+                    CampaignMapPresentationPhase,
                     LoadingPresentationPhase,
                     LevelEntryPresentationPhase,
                     LevelCompletionPresentationPhase
@@ -949,6 +1011,14 @@ namespace MagicCarpet.Native
                     throw new InvalidOperationException(
                         "Title presentation cue carries invalid context");
                 }
+                return;
+            }
+            if (cue.phase == CampaignMapPresentationPhase)
+            {
+                if (cue.cue_id != "presentation.campaign.map" ||
+                    (!string.IsNullOrEmpty(cue.level_id) && !IsSemanticId(cue.level_id, "level")) ||
+                    HasDestinationData(cue.completion_destination))
+                    throw new InvalidOperationException("campaign map cue carries invalid context");
                 return;
             }
             if (!IsSemanticId(cue.level_id, "level"))
@@ -1217,7 +1287,22 @@ namespace MagicCarpet.Native
                 SamePresentationCue(left.presentation, right.presentation) &&
                 SameDefinitionIdentity(left.pending_definition, right.pending_definition) &&
                 SameRuntimeFlow(left.active_runtime_flow, right.active_runtime_flow) &&
+                SameCampaignMenu(left.campaign_menu, right.campaign_menu) &&
                 SameSessionIdentity(left.session, right.session);
+        }
+
+        private static bool HasCampaignMenuData(CampaignMenuSnapshot menu) => menu != null &&
+            (!string.IsNullOrEmpty(menu.phase) || !string.IsNullOrEmpty(menu.completed_level_id) ||
+             menu.completed_levels?.Length > 0 || menu.available_levels?.Length > 0 ||
+             !string.IsNullOrEmpty(menu.selected_level_id) || !string.IsNullOrEmpty(menu.briefing_level_id));
+
+        private static bool SameCampaignMenu(CampaignMenuSnapshot left, CampaignMenuSnapshot right)
+        {
+            if (!HasCampaignMenuData(left) || !HasCampaignMenuData(right))
+                return !HasCampaignMenuData(left) && !HasCampaignMenuData(right);
+            return left.phase == right.phase && left.completed_level_id == right.completed_level_id &&
+                left.selected_level_id == right.selected_level_id && left.briefing_level_id == right.briefing_level_id &&
+                left.completed_levels.SequenceEqual(right.completed_levels) && left.available_levels.SequenceEqual(right.available_levels);
         }
 
         private static bool SameDefinitionIdentity(

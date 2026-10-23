@@ -629,10 +629,17 @@ fn staged_group_boundary(group: u16) -> GameSession<Mc2CampaignBackend> {
         Mc2CampaignInputs::new(&root),
     )
     .unwrap();
-    let compatibility = session.backend_mut().campaign.level2_compatibility_mut();
-    compatibility
+    session
+        .backend_mut()
+        .campaign
+        .level2_compatibility_mut()
         .apply_carried_spell_families(&[0, 1, 2, 3], Some(0))
         .unwrap();
+    if group == 3 {
+        super::tests::build_real_level_three_carried_castle_for_test(&mut session);
+        super::tests::close_real_level_three_strip_for_staged_bees_for_test(&mut session);
+    }
+    let compatibility = session.backend_mut().campaign.level2_compatibility_mut();
     compatibility
         .activate_authored_group_prerequisite_for_test(group)
         .unwrap();
@@ -792,6 +799,291 @@ fn public_fireballs_retire_real_level_three_group_five_archers_from_staged_group
     );
 }
 
+// This is an explicitly staged component command trace, not a production
+// campaign save or organic mission proof. Recreate its existing fixture, then
+// replay only actual driver commands; candidate forecast clones are excluded.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct StagedBeeCommandTrace {
+    fixture: String,
+    initial_hash: u64,
+    final_hash: u64,
+    final_tick: u64,
+    operations: Vec<crate::game_runtime::ReplayOperation<GameCommand>>,
+}
+
+fn retire_staged_bees_with_optional_trace(
+    session: &mut GameSession<Mc2CampaignBackend>,
+) -> Vec<super::tests::BeeFireballDamageReceipt> {
+    let trace_path = std::env::var_os("MC_STAGED_BEE_COMMAND_TRACE");
+    let initial_hash = session.backend().campaign.state_hash();
+    let operation_start = session.backend().replay_operations.len();
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        super::tests::retire_real_level_three_final_bees_with_public_commands_for_test(session)
+    }));
+    if let Some(path) = trace_path {
+        use std::io::Write;
+        let trace = StagedBeeCommandTrace {
+            fixture: "staged_group_boundary(3):real_castle_and_strip_close".to_owned(),
+            initial_hash,
+            final_hash: session.backend().campaign.state_hash(),
+            final_tick: session.identity().tick,
+            operations: session.backend().replay_operations[operation_start..].to_vec(),
+        };
+        let mut output = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .unwrap();
+        output
+            .write_all(&serde_json::to_vec(&trace).unwrap())
+            .unwrap();
+        eprintln!(
+            "actual staged Bee command trace captured: {:?}, {} operations, tick{}",
+            path,
+            trace.operations.len(),
+            trace.final_tick
+        );
+    }
+    match result {
+        Ok(receipts) => receipts,
+        Err(payload) => std::panic::resume_unwind(payload),
+    }
+}
+
+fn restore_actual_staged_bee_trace_frontier() -> GameSession<Mc2CampaignBackend> {
+    let trace: StagedBeeCommandTrace = serde_json::from_slice(
+        &std::fs::read(
+            std::env::var_os("MC_STAGED_BEE_COMMAND_TRACE_INPUT")
+                .expect("set an actual captured component trace"),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        trace.fixture,
+        "staged_group_boundary(3):real_castle_and_strip_close"
+    );
+    let mut session = staged_group_boundary(3);
+    assert_eq!(session.backend().campaign.state_hash(), trace.initial_hash);
+    for operation in trace.operations {
+        match operation {
+            crate::game_runtime::ReplayOperation::Step { command } => {
+                session.step(guard(&session), command).unwrap();
+            }
+            crate::game_runtime::ReplayOperation::PausedFrame => {
+                panic!("the staged Bee combat driver never pauses");
+            }
+        }
+    }
+    assert_eq!(session.identity().tick, trace.final_tick);
+    assert_eq!(session.backend().campaign.state_hash(), trace.final_hash);
+    session
+}
+
+#[test]
+#[ignore = "requires an actual MC_STAGED_BEE_COMMAND_TRACE_INPUT; staged component departure proof"]
+fn staged_bee_pilot_departs_on_live_contact_cadence_and_heals_at_real_castle() {
+    // First qualify the complete captured chronology and final receipt.
+    let _qualified_frontier = restore_actual_staged_bee_trace_frontier();
+    let trace: StagedBeeCommandTrace = serde_json::from_slice(
+        &std::fs::read(std::env::var_os("MC_STAGED_BEE_COMMAND_TRACE_INPUT").unwrap()).unwrap(),
+    )
+    .unwrap();
+    let mut session = staged_group_boundary(3);
+    assert_eq!(session.backend().campaign.state_hash(), trace.initial_hash);
+    let mut departed = false;
+    for operation in trace.operations {
+        let compatibility = session.backend().campaign.level2_compatibility();
+        let shared = compatibility.shared_spells();
+        let holder = shared.local_player().enabled_spell_holders[0];
+        let cost = shared
+            .holders()
+            .iter()
+            .chain(shared.pickups())
+            .chain(shared.dynamic_pickups())
+            .find(|row| row.index == holder)
+            .unwrap()
+            .mana_cost;
+        let raw =
+            compatibility.entities()[usize::from(compatibility.state.entity_index)].record_bytes();
+        let pending = i32::from_le_bytes(raw[98..102].try_into().unwrap());
+        if pending > 0
+            && shared.player_mana() >= cost
+            && super::tests::public_bee_needs_castle_recovery_for_test(compatibility, cost)
+        {
+            let life_before = shared.player_entity().life;
+            assert!(
+                life_before > pending,
+                "departure must precede the already-lethal packet"
+            );
+            super::tests::recover_public_bee_at_owned_castle_for_test(
+                &mut session,
+                cost,
+                &mut BTreeSet::new(),
+            );
+            let after = session.backend().campaign.level2_compatibility();
+            assert_eq!(
+                after.shared_spells().player_entity().life,
+                after.shared_spells().player_entity().max_life
+            );
+            assert!(
+                after
+                    .economy()
+                    .player_castle_shift_aabb_overlap(after.shared_spells().player_entity())
+            );
+            let raw = after.entities()[usize::from(after.state.entity_index)].record_bytes();
+            assert_eq!(&raw[98..104], &[0; 6]);
+            departed = true;
+            break;
+        }
+        match operation {
+            crate::game_runtime::ReplayOperation::Step { command } => {
+                session.step(guard(&session), command).unwrap();
+            }
+            crate::game_runtime::ReplayOperation::PausedFrame => panic!("combat does not pause"),
+        }
+    }
+    assert!(
+        departed,
+        "the actual captured contact prefix reaches early ordinary Castle departure"
+    );
+}
+
+#[test]
+#[ignore = "requires the actual tick869 MC_STAGED_BEE_COMMAND_TRACE_INPUT"]
+fn staged_bee_pilot_consumes_exact_current_dragon_impact() {
+    let mut session = restore_actual_staged_bee_trace_frontier();
+    assert_eq!(session.identity().tick, 869);
+    let before = session.backend().campaign.level2_compatibility();
+    assert_eq!(before.shared_spells().player_entity().life, 6_375);
+    let root = *before
+        .economy()
+        .authored_class5()
+        .iter()
+        .find(|root| root.source_entity_index == 282)
+        .unwrap();
+    assert_eq!((root.authored_index, root.model, root.action), (142, 0, 2));
+    let generation = before.economy().slot_generation(282);
+    assert_eq!(generation, 1);
+    assert!(
+        super::tests::public_bee_current_dragon_occurrence_is_qualified_for_test(
+            &root, &root, generation, generation, 282
+        )
+    );
+    assert!(
+        !super::tests::public_bee_current_dragon_occurrence_is_qualified_for_test(
+            &root,
+            &root,
+            generation,
+            generation.wrapping_add(1),
+            282
+        )
+    );
+    let mut unrelated = root;
+    unrelated.authored_index = 149;
+    assert!(
+        !super::tests::public_bee_current_dragon_occurrence_is_qualified_for_test(
+            &unrelated, &unrelated, generation, generation, 282
+        )
+    );
+    let event_start = before.economy().events().len();
+    super::tests::step_public_bee_command_for_test(
+        &mut session,
+        GameCommand::default(),
+        &mut BTreeSet::new(),
+    );
+    let after = session.backend().campaign.level2_compatibility();
+    assert_eq!(after.shared_spells().player_entity().life, 5_875);
+    assert_eq!(after.economy().slot_generation(282), generation);
+    assert!(
+        after.economy().events()[event_start..]
+            .iter()
+            .any(|event| matches!(
+                event,
+                crate::native_world::Level2EconomyEvent::DamageApplied {
+                    target_entity_index: 252,
+                    attacker_entity_index: 282,
+                    damage: 500,
+                    lethal: false,
+                }
+            ))
+    );
+}
+
+#[test]
+#[ignore = "requires MC_STAGED_BEE_COMMAND_TRACE_INPUT; replays only the explicitly staged component"]
+fn staged_final_bee_command_trace_restores_exact_failed_frontier() {
+    let session = restore_actual_staged_bee_trace_frontier();
+    let before = session.backend().campaign.level2_compatibility().clone();
+    let mut forecast = session.backend().campaign.clone();
+    let motion = forecast.step_with_tuning(
+        campaign_player_command(&GameCommand::default()),
+        CAMPAIGN_SPEED_INDEX,
+        session.backend().flight_binding.tuning(),
+    );
+    let after = forecast.level2_compatibility();
+    let raw_mailbox = |state: &crate::native_world::Level2ResetSession| {
+        let raw = state.entities()[usize::from(state.state.entity_index)].record_bytes();
+        (
+            i32::from_le_bytes(raw[98..102].try_into().unwrap()),
+            u16::from_le_bytes(raw[102..104].try_into().unwrap()),
+        )
+    };
+    for event in after
+        .economy()
+        .events()
+        .get(before.economy().events().len()..)
+        .unwrap()
+    {
+        if let crate::native_world::Level2EconomyEvent::DamageApplied {
+            target_entity_index,
+            attacker_entity_index,
+            ..
+        } = event
+            && *target_entity_index == before.state.entity_index
+        {
+            let actor = *attacker_entity_index;
+            eprintln!(
+                "staged Bee damage actor={} gen={}->{} before_root={:?} after_root={:?} before_flyers={:?} after_flyers={:?} before_impacts={:?} after_impacts={:?} before_imported={:?} after_imported={:?}",
+                actor,
+                before.economy().slot_generation(actor),
+                after.economy().slot_generation(actor),
+                before
+                    .economy()
+                    .authored_class5()
+                    .iter()
+                    .filter(|row| row.source_entity_index == actor)
+                    .collect::<Vec<_>>(),
+                after
+                    .economy()
+                    .authored_class5()
+                    .iter()
+                    .filter(|row| row.source_entity_index == actor)
+                    .collect::<Vec<_>>(),
+                before.economy().fireball_projectiles(),
+                after.economy().fireball_projectiles(),
+                before.economy().model17_spawned_children(),
+                after.economy().model17_spawned_children(),
+                before.entities().get(usize::from(actor)),
+                after.entities().get(usize::from(actor))
+            );
+        }
+    }
+    eprintln!(
+        "staged Bee exact frontier tick={} life={}->{} raw={:?}->{:?} new_events={:?} motion={:?}",
+        session.identity().tick,
+        before.shared_spells().player_entity().life,
+        after.shared_spells().player_entity().life,
+        raw_mailbox(&before),
+        raw_mailbox(after),
+        after
+            .economy()
+            .events()
+            .get(before.economy().events().len()..),
+        motion
+    );
+}
+
 #[test]
 fn public_fireballs_retire_real_level_three_final_bees_from_staged_group() {
     let mut session = staged_group_boundary(3);
@@ -823,7 +1115,35 @@ fn public_fireballs_retire_real_level_three_final_bees_from_staged_group() {
             .collect::<Vec<_>>(),
         FINAL_BEE_ROWS
     );
-    let receipts = retire_public_combat_for_test(&mut session, CombatFamily::Bee);
+    let initial = targets(&session, CombatFamily::Bee);
+    let receipts = retire_staged_bees_with_optional_trace(&mut session);
+    assert!(
+        receipts.len() >= 78,
+        "six real3000-life Bees require thirteen genuine250 pulses each"
+    );
+    for row in initial {
+        assert!(
+            receipts
+                .iter()
+                .any(|receipt| receipt.authored_index == row.row
+                    && receipt.source_slot == row.slot
+                    && receipt.generation == row.generation
+                    && receipt.life_after < 0),
+            "each exact initial Bee occurrence requires a public lethal pulse"
+        );
+    }
+    assert!(
+        targets(&session, CombatFamily::Bee).is_empty(),
+        "all six source Bee occurrences reach following-pass reclaim"
+    );
+    assert!(
+        session
+            .backend()
+            .campaign
+            .level2_compatibility()
+            .canonical_player_life_for_test()
+            > 0
+    );
     assert!(
         receipts
             .iter()

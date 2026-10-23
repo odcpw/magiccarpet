@@ -781,7 +781,7 @@ struct Mc2SemanticSpellCarry {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct Mc2PendingSpellCarry {
-    loading_generation: u64,
+    session_generation: u64,
     destination_level: SemanticLevelId,
     carry: Mc2SemanticSpellCarry,
 }
@@ -998,7 +998,7 @@ impl Mc2RuntimePackageResolver {
                     .definition()
                     .runtime_flow()
                     .map(RuntimeFlowDefinition::bound_level_id);
-                if pending.loading_generation != guard.generation
+                if pending.session_generation != candidate.identity().generation
                     || destination != Some(&pending.destination_level)
                 {
                     return Err(
@@ -1099,6 +1099,17 @@ impl Mc2RuntimePackageResolver {
         session_id: u64,
         bytes: &[u8],
     ) -> Result<crate::game_runtime::RuntimeIdentity, Mc2CampaignReplaySaveError> {
+        self.load_replay_observed(runtime, guard, session_id, bytes, |_| {})
+    }
+
+    fn load_replay_observed(
+        &self,
+        runtime: &mut crate::game_runtime::GameRuntime<Mc2CampaignBackend>,
+        guard: crate::game_runtime::RuntimeGuard,
+        session_id: u64,
+        bytes: &[u8],
+        observe: impl FnMut(&crate::game_session::GameSession<Mc2CampaignBackend>),
+    ) -> Result<crate::game_runtime::RuntimeIdentity, Mc2CampaignReplaySaveError> {
         runtime
             .preflight_title_transition(guard)
             .map_err(Mc2CampaignReplaySaveError::Runtime)?;
@@ -1186,8 +1197,75 @@ impl Mc2RuntimePackageResolver {
                     }
                     Ok(())
                 },
+                observe,
             )
             .map_err(Mc2CampaignReplaySaveError::Restore)
+    }
+
+    /// Test-route history is returned only after the authoritative loader has
+    /// verified every final receipt and atomically published the candidate.
+    #[cfg(test)]
+    pub(crate) fn load_replay_observing_guardians_for_test(
+        &self,
+        runtime: &mut crate::game_runtime::GameRuntime<Mc2CampaignBackend>,
+        guard: crate::game_runtime::RuntimeGuard,
+        session_id: u64,
+        bytes: &[u8],
+    ) -> Result<
+        (
+            crate::game_runtime::RuntimeIdentity,
+            tests::VerifiedGuardianReplayHistoryForTest,
+        ),
+        Mc2CampaignReplaySaveError,
+    > {
+        let mut observations = tests::GuardianReplayObservationsForTest::default();
+        let identity =
+            self.load_replay_observed(runtime, guard, session_id, bytes, |candidate| {
+                observations.observe(candidate)
+            })?;
+        let history = tests::VerifiedGuardianReplayHistoryForTest {
+            frontier: runtime
+                .session()
+                .expect("verified replay publishes a session")
+                .backend()
+                .snapshot(),
+            observations,
+        };
+        Ok((identity, history))
+    }
+
+    /// Retain actual Bee source receipts during the same normal replay execution.
+    /// Historical observations escape only after every saved receipt verifies.
+    #[cfg(test)]
+    pub(crate) fn load_replay_observing_level_two_bees_for_test(
+        &self,
+        runtime: &mut crate::game_runtime::GameRuntime<Mc2CampaignBackend>,
+        guard: crate::game_runtime::RuntimeGuard,
+        session_id: u64,
+        bytes: &[u8],
+    ) -> Result<
+        (
+            crate::game_runtime::RuntimeIdentity,
+            tests::VerifiedLevelTwoBeeReplayHistoryForTest,
+        ),
+        Mc2CampaignReplaySaveError,
+    > {
+        let mut observations = tests::LevelTwoBeeReplayObservationsForTest::default();
+        let identity =
+            self.load_replay_observed(runtime, guard, session_id, bytes, |candidate| {
+                observations.observe(candidate)
+            })?;
+        Ok((
+            identity,
+            tests::VerifiedLevelTwoBeeReplayHistoryForTest {
+                frontier: runtime
+                    .session()
+                    .expect("verified replay publishes a session")
+                    .backend()
+                    .snapshot(),
+                observations,
+            },
+        ))
     }
 
     /// Reseal a save with one deliberately wrong expected state for the
@@ -1260,23 +1338,64 @@ impl Mc2RuntimePackageResolver {
             },
             |session| session.backend().semantic_spell_carry(),
         )?;
-        match &receipt.completion_destination {
-            RuntimeFlowDestination::Level { level_id } => {
-                let replaced = pending.insert(
-                    guard.runtime_id,
-                    Mc2PendingSpellCarry {
-                        loading_generation: receipt.after.generation,
-                        destination_level: level_id.clone(),
-                        carry,
-                    },
-                );
-                debug_assert!(replaced.is_none());
+        let destination_level = match &receipt.completion_destination {
+            RuntimeFlowDestination::Level { level_id } => level_id.clone(),
+            RuntimeFlowDestination::Title { .. } => receipt.completed_level_id.clone(),
+        };
+        let replaced = pending.insert(
+            guard.runtime_id,
+            Mc2PendingSpellCarry {
+                session_generation: receipt.source_session.generation + 1,
+                destination_level,
+                carry,
+            },
+        );
+        debug_assert!(replaced.is_none());
+        Ok(receipt)
+    }
+
+    /// Apply a guarded campaign map action and resolve semantic selections
+    /// through the same immutable installed package set used for loading.
+    pub fn campaign_menu_command(
+        &self,
+        runtime: &mut crate::game_runtime::GameRuntime<Mc2CampaignBackend>,
+        guard: crate::game_runtime::RuntimeGuard,
+        command: crate::game_runtime::CampaignMenuCommand,
+    ) -> Result<crate::game_runtime::RuntimeIdentity, crate::game_runtime::RuntimeTransitionError>
+    {
+        let mut pending = self.pending_spell_carries.lock().map_err(|_| {
+            crate::game_runtime::RuntimeTransitionError::InvalidRuntimeFlow {
+                message: "resolver spell-carry state is unavailable".to_owned(),
             }
-            RuntimeFlowDestination::Title { .. } => {
-                pending.remove(&guard.runtime_id);
+        })?;
+        let identity = runtime.campaign_menu_command_resolved(guard, command, |level_id| {
+            self.package(level_id)
+                .map(|package| Arc::clone(&package.definition))
+                .ok_or_else(
+                    || crate::game_runtime::RuntimeTransitionError::InvalidRuntimeFlow {
+                        message: "selected mission is not installed".to_owned(),
+                    },
+                )
+        })?;
+        if identity.mode == crate::game_runtime::RuntimeMode::Title {
+            pending.remove(&guard.runtime_id);
+        } else if let Some(carry) = pending.get_mut(&guard.runtime_id) {
+            let selected = identity
+                .campaign_menu
+                .as_ref()
+                .and_then(|menu| menu.selected_level_id.as_ref())
+                .or_else(|| {
+                    identity
+                        .pending_definition
+                        .as_ref()
+                        .and_then(|definition| definition.runtime_flow.as_ref())
+                        .map(RuntimeFlowDefinition::bound_level_id)
+                });
+            if let Some(selected) = selected {
+                carry.destination_level.clone_from(selected);
             }
         }
-        Ok(receipt)
+        Ok(identity)
     }
 }
 
@@ -2332,7 +2451,7 @@ pub(crate) mod tests {
         let title = runtime.close(playing.guard(), session_guard).unwrap();
         let loading = resolver.new_game(&mut runtime, title.guard()).unwrap();
         let pending = Mc2PendingSpellCarry {
-            loading_generation: loading.generation,
+            session_generation: session_guard.generation + 1,
             destination_level: resolver.flow().entry_level_id().clone(),
             carry: carry.clone(),
         };
@@ -7044,56 +7163,231 @@ pub(crate) mod tests {
         compatibility.set_level2_player_aim_for_test(0, 0);
     }
 
+    fn real_bee_source_shot_hits_for_test(
+        session: &GameSession<Mc2CampaignBackend>,
+        bee: crate::native_world::BeeCreatureRuntime,
+        player_position: crate::Position,
+        yaw: i16,
+        pitch: i16,
+    ) -> bool {
+        let backend = session.backend();
+        let mut shot = backend.campaign.clone();
+        let attacker = shot.level2_compatibility().state.entity_index;
+        // A pending earlier mailbox is not evidence for this new request.
+        if bee.pending_attacker_entity_index == attacker && bee.pending_damage > 0 {
+            return false;
+        }
+        let generation = shot
+            .level2_compatibility()
+            .economy()
+            .slot_generation(bee.source_entity_index);
+        let compatibility = shot.level2_compatibility_mut();
+        compatibility
+            .set_level2_entity_position(attacker, player_position)
+            .expect("forecast uses the same map-linked Bee launch boundary");
+        compatibility.set_level2_player_aim_for_test(yaw, pitch);
+        let command = GameCommand {
+            select_spell: Some(SemanticId::parse("spell.fireball").unwrap()),
+            cast_selected: true,
+            ..GameCommand::default()
+        };
+        let tuning = backend.flight_binding.tuning();
+        let economy = shot.level2_compatibility().economy();
+        let carrier_occurrences_before = economy
+            .fireball_projectiles()
+            .iter()
+            .map(|flyer| flyer.source_entity_index)
+            .chain(
+                economy
+                    .model17_spawned_children()
+                    .iter()
+                    .map(|impact| impact.source_entity_index),
+            )
+            .map(|slot| (slot, economy.slot_generation(slot)))
+            .collect::<BTreeSet<_>>();
+        let mut saw_new_cast_carrier = false;
+        shot.step_with_tuning(
+            backend.campaign_player_command(&command).unwrap(),
+            CAMPAIGN_SPEED_INDEX,
+            tuning,
+        );
+        // This is a staged-position fixture forecast, not organic play proof.
+        // Only ordinary production construction, acquisition, terrain,
+        // collision, allocator and mailbox callbacks can admit the shot.
+        for turn in 0..=24 {
+            let compatibility = shot.level2_compatibility();
+            let player = compatibility.shared_spells().player_entity();
+            let numeric = &compatibility.entities()[usize::from(attacker)];
+            if player.life <= 0
+                || numeric.life <= 0
+                || numeric.action != 0
+                || shot
+                    .events()
+                    .iter()
+                    .any(|event| matches!(event, Level2DispatchEvent::Error { .. }))
+            {
+                return false;
+            }
+            let economy = compatibility.economy();
+            saw_new_cast_carrier |= economy.fireball_projectiles().iter().any(|flyer| {
+                flyer.owner_entity_index == attacker
+                    && flyer.source_subspell_index == crate::level1_mission::FIREBALL_PAYLOAD as u16
+                    && !carrier_occurrences_before.contains(&(
+                        flyer.source_entity_index,
+                        economy.slot_generation(flyer.source_entity_index),
+                    ))
+            }) || economy.model17_spawned_children().iter().any(|impact| {
+                impact.source_class == 10
+                    && impact.model == 0
+                    && impact.parent_entity_id == attacker
+                    && impact.subspell_index == crate::level1_mission::FIREBALL_PAYLOAD as u16
+                    && !carrier_occurrences_before.contains(&(
+                        impact.source_entity_index,
+                        economy.slot_generation(impact.source_entity_index),
+                    ))
+            });
+            if saw_new_cast_carrier
+                && economy.slot_generation(bee.source_entity_index) == generation
+                && economy.bee_creatures().iter().any(|target| {
+                    target.source_entity_index == bee.source_entity_index
+                        && target.authored_index() == bee.authored_index()
+                        && target.life == bee.life.wrapping_sub(250)
+                        && target.damage_attacker_entity_index == attacker
+                })
+            {
+                return true;
+            }
+            if turn < 24 {
+                prepare_real_bee_public_impact_wait_for_test(&mut shot);
+                shot.step_with_tuning(
+                    campaign_player_command(&GameCommand::default()),
+                    CAMPAIGN_SPEED_INDEX,
+                    tuning,
+                );
+            }
+        }
+        false
+    }
+
     fn aim_real_player_fireball_at_bee_for_test(
         session: &mut GameSession<Mc2CampaignBackend>,
         bee: crate::native_world::BeeCreatureRuntime,
     ) {
-        let (player_slot, player_fov, direction_bits) = {
-            let compatibility = session.backend().campaign.level2_compatibility();
-            (
-                compatibility.state.entity_index,
-                compatibility.state.entity_fov,
-                compatibility.shared_spells().player_entity().control_flags & 0x0300,
-            )
-        };
+        let compatibility = session.backend().campaign.level2_compatibility();
+        let player_slot = compatibility.state.entity_index;
+        let player_fov = compatibility.state.entity_fov;
+        let aim_yaw_offset = compatibility
+            .shared_spells()
+            .beyond_sight_auxiliary()
+            .next_entity;
+        let terrain = compatibility.canonical_terrain();
+        let bees = compatibility.economy().bee_creatures();
+        // Project the next source movement for initial acquisition. Subsequent
+        // real flyer callbacks home on the then-current Bee, rather than
+        // assuming its yaw/speed stay fixed throughout a longer flight.
         let mut predicted_target = bee.position;
         crate::move_entity(&mut predicted_target, bee.yaw, 0, bee.actual_speed);
         predicted_target.z = predicted_target
             .z
             .wrapping_sub(crate::level1_mission::FIREBALL_COLLISION_VERTICAL_OFFSET);
-        let mut launch_position = predicted_target;
-        crate::move_entity(
-            &mut launch_position,
-            bee.yaw.wrapping_add(1024),
-            0,
-            crate::level1_mission::FIREBALL_SPEED,
-        );
-        launch_position.z = crate::FlightWorld::ground_height(
-            session
-                .backend()
-                .campaign
-                .level2_compatibility()
-                .canonical_terrain(),
-            launch_position,
-        )
-        .wrapping_add(256)
-        .wrapping_add(player_fov);
-        let (yaw, pitch) =
-            crate::level1_mission::projectile_guidance_angles(launch_position, predicted_target);
-        let hand_yaw = if direction_bits & 0x0100 != 0 {
-            Some(yaw.wrapping_sub(512))
-        } else if direction_bits & 0x0200 != 0 {
-            Some(yaw.wrapping_add(512))
-        } else {
-            None
-        };
-        let mut player_position = crate::Position {
-            z: launch_position.z.wrapping_sub(player_fov),
-            ..launch_position
-        };
-        if let Some(hand_yaw) = hand_yaw {
-            crate::move_entity(&mut player_position, hand_yaw.wrapping_add(1024), 0, 256);
-        }
+        let mut candidates = (0..8)
+            .flat_map(|direction| {
+                [256_i16, 512, 1_024, 1_536, 2_048].map(|height| (direction, height))
+            })
+            .filter_map(|(direction, height)| {
+                let mut launch_position = predicted_target;
+                crate::move_entity(
+                    &mut launch_position,
+                    bee.yaw.wrapping_add(1_024 + direction * 256),
+                    0,
+                    3_072,
+                );
+                launch_position.z = crate::FlightWorld::ground_height(terrain, launch_position)
+                    .wrapping_add(height)
+                    .wrapping_add(player_fov);
+                let (yaw, pitch) = crate::level1_mission::projectile_guidance_angles(
+                    launch_position,
+                    predicted_target,
+                );
+                // The public cast chooses left 0x0100. Its 256-unit hand
+                // shift uses raw parent yaw before the actual A4 aim offset.
+                let hand_yaw = yaw.wrapping_sub(aim_yaw_offset).wrapping_sub(512);
+                let mut player_position = crate::Position {
+                    z: launch_position.z.wrapping_sub(player_fov),
+                    ..launch_position
+                };
+                crate::move_entity(&mut player_position, hand_yaw.wrapping_add(1_024), 0, 256);
+                if crate::FlightWorld::ground_height(terrain, player_position) >= player_position.z
+                {
+                    return None;
+                }
+                let clearance = bees
+                    .iter()
+                    .filter(|other| other.active && other.drawing_enabled && other.life >= 0)
+                    .map(|other| crate::distance_3d_wrapped(player_position, other.position))
+                    .min()
+                    .unwrap();
+                if clearance < 2_048 {
+                    return None;
+                }
+                // Keep the selected Bee ahead of other swarm members in the
+                // real source acquisition score; the public flyer owns the
+                // actual acquisition and all later collision/mailbox work.
+                let target_score = crate::level1_mission::projectile_target_score(
+                    launch_position,
+                    yaw,
+                    pitch,
+                    bee.position,
+                )?;
+                if bees.iter().any(|other| {
+                    other.active
+                        && other.drawing_enabled
+                        && other.life >= 0
+                        && other.source_entity_index != bee.source_entity_index
+                        && crate::level1_mission::projectile_target_score(
+                            launch_position,
+                            yaw,
+                            pitch,
+                            other.position,
+                        )
+                        .is_some_and(|score| score <= target_score)
+                }) {
+                    return None;
+                }
+                // Five source yaw units per homing callback cannot repair
+                // a distant crossing shot against a moving Bee. Prefer its
+                // travel axis (head-on or tail chase), then the lowest height
+                // admitted by the actual scheduler below.
+                // Extra vertical clearance is not a better firing solution.
+                let crossing_angle = crate::angle_distance(i32::from(yaw), i32::from(bee.yaw)).min(
+                    crate::angle_distance(
+                        i32::from(yaw),
+                        i32::from(bee.yaw.wrapping_add(1_024) & 0x07ff),
+                    ),
+                );
+                Some((
+                    crossing_angle,
+                    height,
+                    clearance,
+                    player_position,
+                    yaw,
+                    pitch,
+                ))
+            })
+            .collect::<Vec<_>>();
+        candidates.sort_by_key(|(crossing_angle, height, clearance, _, _, _)| {
+            (*crossing_angle, *height, std::cmp::Reverse(*clearance))
+        });
+        let (_, _, clearance, player_position, yaw, pitch) = candidates
+            .into_iter()
+            .find(|(_, _, _, position, yaw, pitch)| {
+                real_bee_source_shot_hits_for_test(session, bee, *position, *yaw, *pitch)
+            })
+            .unwrap_or_else(|| panic!(
+                "no source-executed Fireball candidate hits the requested Bee while clearing the swarm: tick={}, bee={bee:?}",
+                session.identity().tick,
+            ));
+        assert!(clearance >= 2_048);
         let compatibility = session.backend_mut().campaign.level2_compatibility_mut();
         compatibility
             .set_level2_entity_position(player_slot, player_position)
@@ -7101,11 +7395,273 @@ pub(crate) mod tests {
         compatibility.set_level2_player_aim_for_test(yaw, pitch);
     }
 
+    fn assert_real_level_two_bee_player_alive_for_test(
+        session: &GameSession<Mc2CampaignBackend>,
+        phase: &str,
+    ) {
+        let compatibility = session.backend().campaign.level2_compatibility();
+        let player = compatibility.shared_spells().player_entity();
+        let source = &compatibility.entities()[usize::from(player.index)];
+        assert!(
+            player.life > 0 && source.life > 0 && source.action == 0,
+            "Bee driver must keep the actual caster alive during {phase}: tick={}, shared_life={}, source_life={}, action={}, flags={:#x}",
+            session.identity().tick,
+            player.life,
+            source.life,
+            source.action,
+            source.control_flags,
+        );
+    }
+
+    fn heal_real_level_two_owned_castle_player_for_test(
+        session: &mut GameSession<Mc2CampaignBackend>,
+    ) {
+        assert_real_level_two_bee_player_alive_for_test(session, "Castle healing entry");
+        // The preceding real mana refill has already placed the player in
+        // the owned Castle. Add only ordinary upkeep turns until full life.
+        let (max_life, life_rate) = {
+            let player = session
+                .backend()
+                .campaign
+                .level2_compatibility()
+                .shared_spells()
+                .player_entity();
+            (player.max_life, player.max_life / 250)
+        };
+        assert!(life_rate > 0);
+        let bound = usize::try_from(max_life / life_rate).unwrap() + 2;
+        for _ in 0..bound {
+            assert_real_level_two_bee_player_alive_for_test(session, "owned Castle healing");
+            let compatibility = session.backend().campaign.level2_compatibility();
+            let player = compatibility.shared_spells().player_entity();
+            let castle = compatibility
+                .economy()
+                .castle()
+                .expect("the real healing Castle remains live");
+            assert!(castle.active && castle.mana > 0);
+            assert_eq!(
+                compatibility.economy().player_castle_entity_index(),
+                castle.source_entity_index
+            );
+            assert!(
+                compatibility
+                    .economy()
+                    .player_castle_shift_aabb_overlap(player)
+            );
+            assert_eq!(
+                compatibility.player_life_regen_for_test(),
+                life_rate,
+                "owned Castle source upkeep must select its actual life-recharge rate"
+            );
+            if player.life == max_life {
+                return;
+            }
+            session
+                .step(guard(session), GameCommand::default())
+                .unwrap();
+        }
+        let player = session
+            .backend()
+            .campaign
+            .level2_compatibility()
+            .shared_spells()
+            .player_entity();
+        assert_eq!(
+            player.life, max_life,
+            "ordinary owned Castle upkeep must finish healing before the next Bee exchange"
+        );
+    }
+
+    fn real_bee_clear_boundary_for_test(
+        campaign: &CampaignSession,
+        origin: crate::Position,
+        headings: &[i16],
+        distance: i16,
+    ) -> crate::Position {
+        let bees = campaign.level2_compatibility().economy().bee_creatures();
+        let (clearance, position) = headings
+            .iter()
+            .map(|&heading| {
+                let mut position = origin;
+                crate::move_entity(&mut position, heading, 0, distance);
+                let clearance = bees
+                    .iter()
+                    .filter(|bee| bee.active && bee.drawing_enabled && bee.life >= 0)
+                    .map(|bee| crate::distance_3d_wrapped(position, bee.position))
+                    .min()
+                    .unwrap_or(u32::MAX);
+                (clearance, position)
+            })
+            .max_by_key(|(clearance, _)| *clearance)
+            .expect("the existing combat boundary has candidate headings");
+        assert!(
+            clearance >= 2_048,
+            "every ordinary waiting boundary must clear all live Bee contact radii: tick={}, clearance={clearance}, position={position:?}",
+            campaign.tick(),
+        );
+        position
+    }
+
+    fn retreat_real_bee_player_boundary_for_test(session: &mut GameSession<Mc2CampaignBackend>) {
+        retreat_real_bee_campaign_boundary_for_test(&mut session.backend_mut().campaign);
+    }
+
+    fn retreat_real_bee_campaign_boundary_for_test(campaign: &mut CampaignSession) {
+        let compatibility = campaign.level2_compatibility();
+        let origin = compatibility.state.position;
+        if compatibility.economy().bee_creatures().iter().all(|bee| {
+            !bee.active
+                || !bee.drawing_enabled
+                || bee.life < 0
+                || crate::distance_3d_wrapped(origin, bee.position) >= 8_192
+        }) {
+            return;
+        }
+        let position = real_bee_clear_boundary_for_test(
+            campaign,
+            origin,
+            &[0, 256, 512, 768, 1_024, 1_280, 1_536, 1_792],
+            20_000,
+        );
+        let compatibility = campaign.level2_compatibility_mut();
+        let player_slot = compatibility.state.entity_index;
+        compatibility
+            .set_level2_entity_position(player_slot, position)
+            .expect("Bee combat boundary remains map-linked");
+        compatibility.set_level2_player_aim_for_test(0, 0);
+    }
+
+    fn prepare_real_bee_public_impact_wait_for_test(campaign: &mut CampaignSession) {
+        let compatibility = campaign.level2_compatibility();
+        let player_slot = compatibility.state.entity_index;
+        let economy = compatibility.economy();
+        let constructor_completed = economy
+            .fireball_projectiles()
+            .iter()
+            .any(|projectile| projectile.owner_entity_index == player_slot)
+            || economy.model17_spawned_children().iter().any(|impact| {
+                impact.source_class == 10
+                    && impact.model == 0
+                    && impact.parent_entity_id == player_slot
+            });
+        if constructor_completed {
+            // Preserve the scheduled public constructor's launch boundary.
+            // Once it exists, the owner need not remain inside Bee contact
+            // while the independent projectile/impact consumes its payload.
+            retreat_real_bee_campaign_boundary_for_test(campaign);
+        }
+    }
+
+    fn step_real_bee_public_impact_wait_for_test(session: &mut GameSession<Mc2CampaignBackend>) {
+        prepare_real_bee_public_impact_wait_for_test(&mut session.backend_mut().campaign);
+        session
+            .step(guard(session), GameCommand::default())
+            .unwrap();
+    }
+
     fn drive_real_bee_to_fireball_action_for_test(
         session: &mut GameSession<Mc2CampaignBackend>,
         authored_index: u16,
     ) -> crate::native_world::BeeCreatureRuntime {
+        let convergence_state = |session: &GameSession<Mc2CampaignBackend>| {
+            let compatibility = session.backend().campaign.level2_compatibility();
+            let player = compatibility.shared_spells().player_entity();
+            let source = &compatibility.entities()[usize::from(player.index)];
+            let record = source.record_bytes();
+            (
+                session.identity().tick,
+                (
+                    player.life,
+                    source.life,
+                    source.action,
+                    source.control_flags,
+                ),
+                (
+                    source.position,
+                    player.position,
+                    compatibility.state.position,
+                ),
+                (
+                    compatibility.state.target_speed,
+                    compatibility.state.actual_speed,
+                ),
+                (
+                    i32::from_le_bytes(record[98..102].try_into().unwrap()),
+                    u16::from_le_bytes(record[102..104].try_into().unwrap()),
+                ),
+                (
+                    crate::FlightWorld::ground_height(
+                        compatibility.canonical_terrain(),
+                        source.position,
+                    ),
+                    crate::FlightWorld::material_mask(
+                        compatibility.canonical_terrain(),
+                        source.position,
+                    ),
+                    crate::FlightWorld::ceiling_height(
+                        compatibility.canonical_terrain(),
+                        source.position,
+                    ),
+                ),
+                compatibility
+                    .economy()
+                    .bee_creatures()
+                    .iter()
+                    .filter(|bee| bee.active && bee.drawing_enabled && bee.life >= 0)
+                    .map(|bee| {
+                        (
+                            bee.authored_index(),
+                            bee.source_entity_index,
+                            (
+                                bee.action,
+                                bee.target_entity_index,
+                                bee.source_byte_3e,
+                                bee.action_window,
+                                bee.dword_0x10,
+                            ),
+                            (
+                                bee.position,
+                                bee.yaw,
+                                bee.actual_speed,
+                                bee.minimum_speed,
+                                bee.maximum_speed,
+                            ),
+                            (
+                                bee.subspell_index,
+                                bee.pending_damage,
+                                bee.pending_attacker_entity_index,
+                            ),
+                            (
+                                crate::distance_3d_wrapped(source.position, bee.position),
+                                crate::distance_3d_wrapped(player.position, bee.position),
+                                crate::distance_3d_wrapped(
+                                    compatibility.state.position,
+                                    bee.position,
+                                ),
+                            ),
+                            compatibility
+                                .entities()
+                                .get(usize::from(bee.source_entity_index))
+                                .map(|raw| {
+                                    (
+                                        (
+                                            raw.index, raw.active, raw.class, raw.model,
+                                            raw.action, raw.life,
+                                        ),
+                                        (raw.position, raw.yaw, raw.actual_speed),
+                                        crate::distance_3d_wrapped(source.position, raw.position),
+                                        compatibility
+                                            .economy()
+                                            .slot_generation(bee.source_entity_index),
+                                    )
+                                }),
+                        )
+                    })
+                    .collect::<Vec<_>>(),
+            )
+        };
         for _ in 0..160 {
+            assert_real_level_two_bee_player_alive_for_test(session, "Bee convergence");
             let bee = session
                 .backend()
                 .campaign
@@ -7116,29 +7672,91 @@ pub(crate) mod tests {
                 .find(|bee| bee.authored_index() == Some(authored_index))
                 .copied()
                 .expect("production Bee remains before its public Fireball callback");
-            if bee.action == 17 && bee.active && bee.drawing_enabled && bee.life >= 0 {
+            let state = session.backend().campaign.level2_compatibility().state;
+            let braking = state.target_speed != 0 || state.actual_speed != 0;
+            if bee.action == 17 && bee.active && bee.drawing_enabled && bee.life >= 0 && !braking {
                 return bee;
             }
             assert!(
                 !matches!(bee.action, 20 | 21),
                 "Bee {authored_index} reached death before the selected Fireball"
             );
-            let player_position = if bee.action == 23 {
-                let mut position = bee.position;
-                crate::move_entity(&mut position, bee.yaw, 0, 1_000);
-                position.z = bee.position.z;
-                position
+            let player_position = if bee.action == 23 && !braking {
+                // All five headings remain inside the source 682-angle
+                // acquisition cone and the 5120 radius. Pick against the
+                // whole swarm, including attackers other than this Bee.
+                real_bee_clear_boundary_for_test(
+                    &session.backend().campaign,
+                    bee.position,
+                    &[
+                        bee.yaw,
+                        bee.yaw.wrapping_add(256),
+                        bee.yaw.wrapping_sub(256),
+                        bee.yaw.wrapping_add(512),
+                        bee.yaw.wrapping_sub(512),
+                    ],
+                    4_096,
+                )
             } else {
-                crate::Position {
-                    x: bee.position.x.wrapping_add(20_000),
-                    y: bee.position.y.wrapping_add(20_000),
-                    z: bee.position.z,
-                }
+                real_bee_clear_boundary_for_test(
+                    &session.backend().campaign,
+                    bee.position,
+                    &[0, 256, 512, 768, 1_024, 1_280, 1_536, 1_792],
+                    20_000,
+                )
             };
             position_player_at_bee_fireball_boundary_for_test(session, player_position);
+            let before_turn = convergence_state(session);
             session
-                .step(guard(session), GameCommand::default())
+                .step(
+                    guard(session),
+                    GameCommand {
+                        longitudinal: if state.target_speed > 0 {
+                            LongitudinalControl::Decelerate
+                        } else if state.target_speed < 0 {
+                            LongitudinalControl::Accelerate
+                        } else {
+                            LongitudinalControl::Coast
+                        },
+                        ..GameCommand::default()
+                    },
+                )
                 .unwrap();
+            let compatibility = session.backend().campaign.level2_compatibility();
+            let player = compatibility.shared_spells().player_entity();
+            let source = &compatibility.entities()[usize::from(player.index)];
+            if player.life <= 0 || source.life <= 0 || source.action != 0 {
+                let damage_visits = compatibility
+                    .dispatch_events()
+                    .iter()
+                    .rev()
+                    .filter_map(|event| match event {
+                        crate::native_world::Level2DispatchEvent::Economy {
+                            pass,
+                            source_slot,
+                            event:
+                                crate::native_world::Level2EconomyEvent::DamageApplied {
+                                    target_entity_index,
+                                    attacker_entity_index,
+                                    damage,
+                                    lethal,
+                                },
+                        } if *target_entity_index == player.index => Some((
+                            *pass,
+                            *source_slot,
+                            *attacker_entity_index,
+                            *damage,
+                            *lethal,
+                        )),
+                        _ => None,
+                    })
+                    .take(8)
+                    .collect::<Vec<_>>();
+                panic!(
+                    "one ordinary convergence turn killed the actual caster for Bee {authored_index}: before={before_turn:#?}, after={:#?}, source_damage_visits={damage_visits:?}",
+                    convergence_state(session),
+                );
+            }
         }
         let bee = session
             .backend()
@@ -7159,6 +7777,7 @@ pub(crate) mod tests {
         let bee = drive_real_bee_to_fireball_action_for_test(session, authored_index);
         let life_before = bee.life;
         aim_real_player_fireball_at_bee_for_test(session, bee);
+        assert_real_level_two_bee_player_alive_for_test(session, "first Bee public request");
         session
             .step(
                 guard(session),
@@ -7169,7 +7788,15 @@ pub(crate) mod tests {
                 },
             )
             .unwrap();
+        assert_real_level_two_bee_player_alive_for_test(
+            session,
+            "immediately after first Bee public cast",
+        );
         for _ in 0..=24 {
+            assert_real_level_two_bee_player_alive_for_test(
+                session,
+                "first Bee public impact wait",
+            );
             let compatibility = session.backend().campaign.level2_compatibility();
             let current = compatibility
                 .economy()
@@ -7182,11 +7809,10 @@ pub(crate) mod tests {
                 && current.damage_attacker_entity_index == compatibility.state.entity_index
             {
                 assert!(matches!(current.action, 18 | 20));
+                retreat_real_bee_player_boundary_for_test(session);
                 return current;
             }
-            session
-                .step(guard(session), GameCommand::default())
-                .unwrap();
+            step_real_bee_public_impact_wait_for_test(session);
         }
         panic!(
             "one ordinary semantic Fireball did not reach Bee {authored_index}'s source mailbox"
@@ -7194,12 +7820,12 @@ pub(crate) mod tests {
     }
 
     #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-    struct BeeFireballDamageReceipt {
-        authored_index: u16,
-        source_slot: u16,
-        generation: u32,
-        life_before: i16,
-        life_after: i16,
+    pub(super) struct BeeFireballDamageReceipt {
+        pub(super) authored_index: u16,
+        pub(super) source_slot: u16,
+        pub(super) generation: u32,
+        pub(super) life_before: i16,
+        pub(super) life_after: i16,
     }
 
     fn real_level_two_new_event_replaceable_slots_for_test(
@@ -7245,16 +7871,139 @@ pub(crate) mod tests {
         slots
     }
 
+    fn bee_fireball_readiness_snapshot_for_test(
+        session: &GameSession<Mc2CampaignBackend>,
+        boundary: &str,
+        activation_cursor: u64,
+    ) -> String {
+        let compatibility = session.backend().campaign.level2_compatibility();
+        let shared = compatibility.shared_spells();
+        let player = shared.player_entity();
+        let local = shared.local_player();
+        let holder = shared
+            .pickups()
+            .iter()
+            .chain(shared.holders())
+            .chain(shared.dynamic_pickups())
+            .find(|holder| holder.index == local.enabled_spell_holders[0]);
+        let numeric_player = &compatibility.entities()[usize::from(player.index)];
+        let auxiliary = shared.beyond_sight_auxiliary();
+        let holder_state = holder.map(|holder| {
+            let record = holder.record_bytes();
+            let cooldown_word36 = u16::from_le_bytes([record[58], record[59]]);
+            (
+                (
+                    holder.index,
+                    holder.active,
+                    holder.class,
+                    holder.model,
+                    holder.action,
+                    holder.life,
+                ),
+                (
+                    holder.active_value,
+                    holder.activation_value,
+                    holder.level_gate,
+                    holder.subspell_index,
+                    cooldown_word36,
+                ),
+                (
+                    holder.mana,
+                    holder.max_mana,
+                    holder.mana_regen,
+                    holder.source_spell_parent_entity_index(),
+                ),
+            )
+        });
+        let requests = compatibility
+            .effect_journal()
+            .records()
+            .iter()
+            .filter(|record| record.sequence >= activation_cursor)
+            .filter(|record| {
+                matches!(
+                    record.effect,
+                    crate::campaign::journal::CampaignEffect::Flight(
+                        FlightEvent::RequestSpellActivation { .. }
+                    )
+                )
+            })
+            .take(8)
+            .map(|record| (record.sequence, record.turn, &record.effect))
+            .collect::<Vec<_>>();
+        let projectiles = compatibility
+            .economy()
+            .fireball_projectiles()
+            .iter()
+            .filter(|projectile| projectile.owner_entity_index == player.index)
+            .map(|projectile| {
+                (
+                    projectile.source_entity_index,
+                    projectile.active,
+                    projectile.life,
+                    projectile.source_subspell_index,
+                    projectile.position,
+                )
+            })
+            .collect::<Vec<_>>();
+        format!(
+            "boundary={boundary}; tick={}; selected={:?}; player=(slot {},action {},life {},mana {},max {},regen {},flags {:#x}); numeric=(action {},life {},mana {},regen {},flags {:#x}); holder={holder_state:?}; hands=({},{},{},{}) ui={}; family0=(holder {},eligible {},acquired {},tier {}); a4=({},{},{}); castle_mana={:?}; free={}; requests_since={activation_cursor}:{requests:?}; projectiles={projectiles:?}",
+            session.identity().tick,
+            session
+                .backend()
+                .semantic_spell_state_for_test()
+                .map(|(_, selected)| selected),
+            player.index,
+            player.action,
+            player.life,
+            player.mana,
+            player.max_mana,
+            player.mana_regen,
+            player.control_flags,
+            numeric_player.action,
+            numeric_player.life,
+            numeric_player.mana,
+            numeric_player.mana_regen,
+            numeric_player.control_flags,
+            local.left_spell_slot_raw,
+            local.left_subspell_index,
+            local.right_spell_slot_raw,
+            local.right_subspell_index,
+            local.selected_spell_ui_index,
+            local.enabled_spell_holders[0],
+            local.spell_hand_eligibility[0],
+            local.acquired_spell_flags[0],
+            local.family_selected_tiers[0],
+            auxiliary.next_entity,
+            auxiliary.entity_index2,
+            local
+                .type_str_164_auxiliary()
+                .map_or(0, |carrier| carrier.byte_0x154_340),
+            compatibility
+                .economy()
+                .castle()
+                .map(|castle| (castle.active, castle.mana)),
+            compatibility.economy().free_slot_count(),
+        )
+    }
+
     fn fire_real_player_fireball_at_bee_swarm_for_test(
         session: &mut GameSession<Mc2CampaignBackend>,
         requested_authored_index: u16,
         exact_package_rows: &[u16],
     ) -> Vec<BeeFireballDamageReceipt> {
+        // The prior hit returns with a live impact tail; do not spend its
+        // cleanup turns at the previous single-Bee launch position.
+        retreat_real_bee_player_boundary_for_test(session);
         // A class-10/model-0 impact remains in the source arena for its
         // authored eight-life callback tail.  Do not pile another cast onto
         // an occupied projectile/effect arena: ordinary no-input turns own
         // its expiry, following-pass reclaim, and player mana recharge.
         for _ in 0..=24 {
+            assert_real_level_two_bee_player_alive_for_test(
+                session,
+                "Bee projectile cleanup or impact wait",
+            );
             let compatibility = session.backend().campaign.level2_compatibility();
             let economy = compatibility.economy();
             let player_slot = compatibility.state.entity_index;
@@ -7270,9 +8019,7 @@ pub(crate) mod tests {
             if !has_player_projectile && !has_player_impact {
                 break;
             }
-            session
-                .step(guard(session), GameCommand::default())
-                .unwrap();
+            step_real_bee_public_impact_wait_for_test(session);
         }
         let mut stable_aimed_bee = None;
         for _ in 0..exact_package_rows.len() {
@@ -7288,7 +8035,10 @@ pub(crate) mod tests {
                     bee.authored_index()
                         .filter(|row| exact_package_rows.contains(row))
                 })
-                .min();
+                // Retain the caller's live target. A newly activated lower
+                // authored row must not steal all sixteen casts intended for
+                // the requested Bee; fall back only after that Bee retires.
+                .min_by_key(|row| (*row != requested_authored_index, *row));
             let Some(current_row) = current_row else {
                 break;
             };
@@ -7412,6 +8162,13 @@ pub(crate) mod tests {
         }));
 
         aim_real_player_fireball_at_bee_for_test(session, aimed_bee);
+        assert_real_level_two_bee_player_alive_for_test(session, "Bee swarm public request");
+        let activation_cursor = session.backend().campaign.effect_cursor().next_sequence;
+        let mut readiness_trace = vec![bee_fireball_readiness_snapshot_for_test(
+            session,
+            "before_request",
+            activation_cursor,
+        )];
         session
             .step(
                 guard(session),
@@ -7422,11 +8179,28 @@ pub(crate) mod tests {
                 },
             )
             .unwrap();
+        assert_real_level_two_bee_player_alive_for_test(
+            session,
+            "immediately after Bee swarm public cast",
+        );
 
+        readiness_trace.push(bee_fireball_readiness_snapshot_for_test(
+            session,
+            "after_request",
+            activation_cursor,
+        ));
         let mut projectile_slot = None;
+        let mut observed_projectile_occurrence = None;
         let mut saw_class10_impact = false;
         let mut saw_completed_impact_callback = false;
+        let mut observed_impact_occurrence = None;
+        let mut saw_retired_cast = false;
+        let mut trajectory_trace = Vec::new();
         for _ in 0..=24 {
+            assert_real_level_two_bee_player_alive_for_test(
+                session,
+                "Bee projectile cleanup or impact wait",
+            );
             let compatibility = session.backend().campaign.level2_compatibility();
             let economy = compatibility.economy();
             projectile_slot = projectile_slot.or_else(|| {
@@ -7439,8 +8213,57 @@ pub(crate) mod tests {
                             && projectile.source_subspell_index
                                 == crate::level1_mission::FIREBALL_PAYLOAD as u16
                     })
-                    .map(|projectile| projectile.source_entity_index)
+                    .map(|projectile| {
+                        observed_projectile_occurrence = Some((
+                            projectile.source_entity_index,
+                            economy.slot_generation(projectile.source_entity_index),
+                        ));
+                        projectile.source_entity_index
+                    })
             });
+            trajectory_trace.push((
+                session.identity().tick,
+                economy
+                    .fireball_projectiles()
+                    .iter()
+                    .find(|projectile| {
+                        Some(projectile.source_entity_index) == projectile_slot
+                            && observed_projectile_occurrence.is_none_or(|(slot, generation)| {
+                                projectile.source_entity_index == slot
+                                    && economy.slot_generation(slot) == generation
+                            })
+                    })
+                    .map(|projectile| {
+                        (
+                            projectile.position,
+                            projectile.yaw,
+                            projectile.pitch,
+                            projectile.target_source_entity_index,
+                            projectile.life,
+                            crate::FlightWorld::ground_height(
+                                compatibility.canonical_terrain(),
+                                projectile.position,
+                            ),
+                            crate::FlightWorld::material_mask(
+                                compatibility.canonical_terrain(),
+                                projectile.position,
+                            ),
+                        )
+                    }),
+                economy
+                    .bee_creatures()
+                    .iter()
+                    .find(|bee| bee.source_entity_index == aimed_bee.source_entity_index)
+                    .map(|bee| (bee.position, bee.action, bee.life)),
+                economy
+                    .authored_model5_water_splashes()
+                    .iter()
+                    .rev()
+                    .filter(|splash| splash.entity_id == attacker)
+                    .take(2)
+                    .map(|splash| (splash.source_entity_index, splash.position))
+                    .collect::<Vec<_>>(),
+            ));
             let completed_impact_callback = economy
                 .model17_spawned_children()
                 .iter()
@@ -7459,6 +8282,10 @@ pub(crate) mod tests {
                 .map(|impact| {
                     projectile_slot = Some(impact.parent_entity_index);
                     saw_class10_impact = true;
+                    observed_impact_occurrence = Some((
+                        impact.source_entity_index,
+                        economy.slot_generation(impact.source_entity_index),
+                    ));
                     impact.control_flags & 2 != 0
                 })
                 .unwrap_or(false);
@@ -7494,17 +8321,59 @@ pub(crate) mod tests {
                 // observed impact's parent slot) and generation-qualified
                 // recipient delta are the durable source identities.
                 assert!(projectile_slot.is_some());
+                retreat_real_bee_player_boundary_for_test(session);
                 return recipients;
             }
+            // Pool pressure may replace the real flyer or its terrain
+            // impact before the observer sees an impact callback. Retirement
+            // of the original slot generation is a terminal miss only after
+            // another ordinary turn, with no surviving player cast carriers
+            // or pending player-owned Bee damage. The damage branch above
+            // still takes priority, and a miss spends the existing cast budget.
+            let impact_retired = observed_impact_occurrence.is_some_and(|(slot, generation)| {
+                economy.model17_spawned_children().iter().all(|impact| {
+                    impact.source_entity_index != slot
+                        || economy.slot_generation(slot) != generation
+                })
+            }) && economy
+                .fireball_projectiles()
+                .iter()
+                .all(|projectile| projectile.owner_entity_index != attacker);
+            let projectile_retired =
+                observed_projectile_occurrence.is_some_and(|(slot, generation)| {
+                    economy.fireball_projectiles().iter().all(|projectile| {
+                        projectile.source_entity_index != slot
+                            || economy.slot_generation(slot) != generation
+                    })
+                });
+            let pending_player_bee_damage = economy
+                .bee_creatures()
+                .iter()
+                .any(|bee| bee.pending_attacker_entity_index == attacker && bee.pending_damage > 0);
+            let cast_retired = (impact_retired || projectile_retired)
+                && economy
+                    .fireball_projectiles()
+                    .iter()
+                    .all(|projectile| projectile.owner_entity_index != attacker)
+                && economy.model17_spawned_children().iter().all(|impact| {
+                    impact.source_class != 10
+                        || impact.model != 0
+                        || impact.parent_entity_id != attacker
+                })
+                && !pending_player_bee_damage;
+            if cast_retired && saw_retired_cast {
+                retreat_real_bee_player_boundary_for_test(session);
+                return Vec::new();
+            }
+            saw_retired_cast = cast_retired;
             if completed_impact_callback {
-                if saw_completed_impact_callback {
+                if saw_completed_impact_callback && !pending_player_bee_damage {
+                    retreat_real_bee_player_boundary_for_test(session);
                     return Vec::new();
                 }
                 saw_completed_impact_callback = true;
             }
-            session
-                .step(guard(session), GameCommand::default())
-                .unwrap();
+            step_real_bee_public_impact_wait_for_test(session);
         }
         let current = session
             .backend()
@@ -7519,9 +8388,166 @@ pub(crate) mod tests {
                     .map(|row| (row, bee.source_entity_index, bee.life, bee.action))
             })
             .collect::<Vec<_>>();
+        readiness_trace.push(bee_fireball_readiness_snapshot_for_test(
+            session,
+            "end_wait",
+            activation_cursor,
+        ));
         panic!(
-            "ordinary Fireball aimed at Bee {aimed_authored_index} did not damage the current package swarm: projectile={projectile_slot:?}, impact={saw_class10_impact}, before={before:?}, current={current:?}"
+            "ordinary Fireball aimed at Bee {aimed_authored_index} did not damage the current package swarm: projectile={projectile_slot:?}, impact={saw_class10_impact}, before={before:?}, current={current:?}, readiness={readiness_trace:#?}, trajectory={trajectory_trace:#?}"
         );
+    }
+
+    fn fire_real_public_fireball_away_from_bee_swarm_for_test(
+        session: &mut GameSession<Mc2CampaignBackend>,
+    ) -> bool {
+        // The preceding owning exchange already returned to its qualified
+        // staged boundary. This discriminator only uses ordinary public input.
+        let player = session
+            .backend()
+            .campaign
+            .level2_compatibility()
+            .state
+            .entity_index;
+        for _ in 0..=24 {
+            let economy = session.backend().campaign.level2_compatibility().economy();
+            if !economy
+                .fireball_projectiles()
+                .iter()
+                .any(|row| row.owner_entity_index == player)
+                && !economy.model17_spawned_children().iter().any(|row| {
+                    row.source_class == 10 && row.model == 0 && row.parent_entity_id == player
+                })
+            {
+                break;
+            }
+            step_public_bee_command_for_test(session, GameCommand::default(), &mut BTreeSet::new());
+        }
+        let compatibility = session.backend().campaign.level2_compatibility();
+        let before = compatibility
+            .economy()
+            .bee_creatures()
+            .iter()
+            .map(|row| {
+                (
+                    row.authored_index(),
+                    row.source_entity_index,
+                    compatibility
+                        .economy()
+                        .slot_generation(row.source_entity_index),
+                    row.life,
+                )
+            })
+            .collect::<Vec<_>>();
+        assert!(before.iter().any(|row| row.3 >= 0));
+        assert!(
+            compatibility.economy().bee_creatures().iter().all(
+                |row| !bee_is_public_target_for_test(row)
+                    || crate::distance_3d_wrapped(compatibility.state.position, row.position)
+                        > crate::level1_mission::PROJECTILE_ACQUISITION_RANGE
+            ),
+            "the existing clear boundary excludes source acquisition of the moving swarm"
+        );
+        let old_flyers = compatibility
+            .economy()
+            .fireball_projectiles()
+            .iter()
+            .map(|row| {
+                (
+                    row.source_entity_index,
+                    compatibility
+                        .economy()
+                        .slot_generation(row.source_entity_index),
+                )
+            })
+            .collect::<BTreeSet<_>>();
+        let old_impacts = compatibility
+            .economy()
+            .model17_spawned_children()
+            .iter()
+            .map(|row| {
+                (
+                    row.source_entity_index,
+                    compatibility
+                        .economy()
+                        .slot_generation(row.source_entity_index),
+                )
+            })
+            .collect::<BTreeSet<_>>();
+        let event_start = compatibility.economy().events().len();
+        let command = GameCommand {
+            select_spell: Some(SemanticId::parse("spell.fireball").unwrap()),
+            cast_selected: true,
+            // Aim at the nearby ground rather than leaving a shot alive long
+            // enough to acquire one of the distant moving source creatures.
+            look_pitch: 512_i16.wrapping_sub(compatibility.state.display_pitch),
+            ..GameCommand::default()
+        };
+        step_public_bee_command_for_test(session, command, &mut BTreeSet::new());
+        let mut saw_flyer = false;
+        let mut saw_impact = false;
+        let mut retired = false;
+        for _ in 0..=24 {
+            let compatibility = session.backend().campaign.level2_compatibility();
+            let economy = compatibility.economy();
+            saw_flyer |= economy.fireball_projectiles().iter().any(|row| {
+                row.owner_entity_index == player
+                    && !old_flyers.contains(&(
+                        row.source_entity_index,
+                        economy.slot_generation(row.source_entity_index),
+                    ))
+            });
+            saw_impact |= economy.model17_spawned_children().iter().any(|row| {
+                row.source_class == 10
+                    && row.model == 0
+                    && row.parent_entity_id == player
+                    && !old_impacts.contains(&(
+                        row.source_entity_index,
+                        economy.slot_generation(row.source_entity_index),
+                    ))
+            });
+            for (authored, slot, generation, life) in &before {
+                let current = economy
+                    .bee_creatures()
+                    .iter()
+                    .find(|row| {
+                        row.source_entity_index == *slot
+                            && row.authored_index() == *authored
+                            && economy.slot_generation(*slot) == *generation
+                    })
+                    .expect("the deliberately missed shot retains every current Bee occurrence");
+                assert_eq!(current.life, *life);
+                assert_ne!(current.pending_attacker_entity_index, player);
+            }
+            assert!(
+                !economy.events()[event_start..]
+                    .iter()
+                    .any(|event| matches!(event,
+                        crate::native_world::Level2EconomyEvent::DamageApplied {
+                            attacker_entity_index, ..
+                        } if *attacker_entity_index == player
+                    )),
+                "the real public ground shot must miss every actual damage recipient"
+            );
+            retired = saw_flyer
+                && saw_impact
+                && !economy
+                    .fireball_projectiles()
+                    .iter()
+                    .any(|row| row.owner_entity_index == player)
+                && !economy.model17_spawned_children().iter().any(|row| {
+                    row.source_class == 10 && row.model == 0 && row.parent_entity_id == player
+                });
+            if retired {
+                break;
+            }
+            step_public_bee_command_for_test(session, GameCommand::default(), &mut BTreeSet::new());
+        }
+        assert!(
+            saw_flyer && saw_impact && retired,
+            "the deliberate miss constructs and retires a real public flyer/impact within24 callbacks"
+        );
+        saw_flyer && saw_impact && retired
     }
 
     #[test]
@@ -7675,33 +8701,23 @@ pub(crate) mod tests {
                 ))
         );
 
-        let mut saw_miss = false;
-        let mut saw_later_hit = false;
-        for _ in 0..BEE_ROWS.len() * 16 {
-            let aimed_row = session
-                .backend()
-                .campaign
-                .level2_compatibility()
-                .economy()
-                .bee_creatures()
-                .iter()
-                .filter(|bee| bee.active && bee.drawing_enabled && bee.life >= 0)
-                .filter_map(|bee| bee.authored_index().filter(|row| BEE_ROWS.contains(row)))
-                .min()
-                .expect("moving-swarm miss discriminator retains a live package Bee");
-            let receipts =
-                fire_real_player_fireball_at_bee_swarm_for_test(&mut session, aimed_row, &BEE_ROWS);
-            if receipts.is_empty() {
-                saw_miss = true;
-            } else {
-                for receipt in receipts {
-                    assert_eq!(receipt.life_after, receipt.life_before.wrapping_sub(250));
-                }
-                if saw_miss {
-                    saw_later_hit = true;
-                    break;
-                }
-            }
+        let saw_miss = fire_real_public_fireball_away_from_bee_swarm_for_test(&mut session);
+        let aimed_row = session
+            .backend()
+            .campaign
+            .level2_compatibility()
+            .economy()
+            .bee_creatures()
+            .iter()
+            .filter(|bee| bee.active && bee.drawing_enabled && bee.life >= 0)
+            .filter_map(|bee| bee.authored_index().filter(|row| BEE_ROWS.contains(row)))
+            .min()
+            .expect("the deliberate miss retains a live package Bee");
+        let later_receipts =
+            fire_real_player_fireball_at_bee_swarm_for_test(&mut session, aimed_row, &BEE_ROWS);
+        let saw_later_hit = !later_receipts.is_empty();
+        for receipt in later_receipts {
+            assert_eq!(receipt.life_after, receipt.life_before.wrapping_sub(250));
         }
         let census = session
             .backend()
@@ -7931,12 +8947,12 @@ pub(crate) mod tests {
                 },
             )
             .unwrap();
-        // Use the existing test's placement boundary, but admit the actual
-        // selected-left launch and let the real flyer construct the root.
+        // The source map and footprint scan wrap at the tile seam. Search
+        // every real tile rather than excluding the nearby seam component.
         let cast_site = {
             let compatibility = session.backend().campaign.level2_compatibility();
-            (16_u8..240)
-                .flat_map(|y| (16_u8..240).map(move |x| (x, y)))
+            (0_u8..=255)
+                .flat_map(|y| (0_u8..=255).map(move |x| (x, y)))
                 .filter_map(|(x, y)| {
                     let mut origin = crate::Position {
                         x: (u16::from(x) << 8) + 128,
@@ -7955,16 +8971,36 @@ pub(crate) mod tests {
                         .castle_projectile_site_admitted_for_test(launch)
                         .then_some(origin)
                 })
-                .min_by_key(|origin| crate::distance_3d_wrapped(*origin, switch_position))
-                .expect("the real Level 2 terrain admits a Castle near the mana producer")
+                .min_by_key(|origin| {
+                    // Rank the destination the ordinary build flight will
+                    // actually reach: inverse raw-yaw-zero left-hand shift.
+                    let mut parent = *origin;
+                    crate::move_entity(&mut parent, 512, 0, 256);
+                    crate::distance_3d_wrapped(parent, compatibility.state.position)
+                })
+                .expect("the real Level 2 terrain admits a Castle near the player")
         };
-        let mut player_position = cast_site;
-        crate::move_entity(&mut player_position, 512, 0, 256);
-        let compatibility = session.backend_mut().campaign.level2_compatibility_mut();
-        compatibility
-            .set_level2_entity_position(player_slot, player_position)
-            .unwrap();
-        compatibility.set_level2_player_aim_for_test(0, 0);
+        fly_real_castle_build_leg_for_test(session, cast_site);
+        let mut forecast = session.backend().campaign.clone();
+        forecast.step_with_tuning(
+            campaign_player_command(&GameCommand::default()),
+            CAMPAIGN_SPEED_INDEX,
+            session.backend().flight_binding.tuning(),
+        );
+        let compatibility = forecast.level2_compatibility();
+        let state = compatibility.state;
+        let mut launch = state.position;
+        // Public cast_selected chooses left256 even if the prior hand flags
+        // differ. The source owns the raw-yaw shift and strict floor rollback.
+        crate::move_entity(&mut launch, state.yaw.wrapping_sub(512), 0, 256);
+        if compatibility.canonical_terrain().ground_height(launch) > launch.z {
+            launch = state.position;
+        }
+        launch.z = launch.z.wrapping_add(state.entity_fov);
+        assert!(
+            compatibility.castle_projectile_site_admitted_for_test(launch),
+            "ordinary flight must admit the actual selected-left Castle launch: state={state:?}, launch={launch:?}, site={cast_site:?}"
+        );
         assert_real_level_two_spell_cost_ready_for_test(session, 2);
         let mut castle_trace = vec![real_level_two_castle_launch_snapshot_for_test(
             session,
@@ -8033,6 +9069,315 @@ pub(crate) mod tests {
         (player_slot, switch_position)
     }
 
+    fn prepare_real_level_two_castle_recharge_for_test(
+        session: &mut GameSession<Mc2CampaignBackend>,
+    ) {
+        let producer_snapshot = |session: &GameSession<Mc2CampaignBackend>, phase: &str| {
+            let compatibility = session.backend().campaign.level2_compatibility();
+            let feature = compatibility
+                .mission()
+                .authored_features()
+                .iter()
+                .find(|feature| feature.index == 11)
+                .expect("the row-11 producer remains in the qualified package");
+            let position = feature.world_position(0);
+            let root = compatibility.entities().iter().find(|source| {
+                source.class == 11
+                    && source.model == 0
+                    && source.position.x == position.x
+                    && source.position.y == position.y
+                    && source.source_id == feature.stage_tag.cast_unsigned()
+            });
+            let root_state = root.map(|source| {
+                (
+                    source.index,
+                    source.active,
+                    source.drawing_disabled(),
+                    source.phase,
+                    source.source_id,
+                    i16::from_le_bytes(source.record_bytes()[88..90].try_into().unwrap()),
+                    i16::from_le_bytes(source.record_bytes()[90..92].try_into().unwrap()),
+                )
+            });
+            let mut owner_counts = BTreeMap::<(u16, u16, bool), usize>::new();
+            let mut spheres = compatibility
+                .economy()
+                .spheres()
+                .iter()
+                .filter(|sphere| sphere.active && !sphere.pending_delete)
+                .collect::<Vec<_>>();
+            for sphere in &spheres {
+                *owner_counts
+                    .entry((
+                        sphere.owner_entity_index,
+                        sphere.player_entity_index,
+                        sphere.vertical_velocity == 0,
+                    ))
+                    .or_default() += 1;
+            }
+            spheres.sort_by_key(|sphere| {
+                crate::distance_3d_wrapped(compatibility.state.position, sphere.position)
+            });
+            let nearest = spheres
+                .iter()
+                .take(6)
+                .map(|sphere| {
+                    (
+                        sphere.source_entity_index,
+                        sphere.position,
+                        sphere.vertical_velocity,
+                        sphere.owner_entity_index,
+                        sphere.player_entity_index,
+                        sphere.assigned_carrier_id,
+                        sphere.assigned_defender_slot,
+                        sphere.control_flags,
+                    )
+                })
+                .collect::<Vec<_>>();
+            format!(
+                "{phase}: tick={} player={:?} root={root_state:?} sphere_owner_settled_counts={owner_counts:?} nearest={nearest:?}",
+                session.identity().tick,
+                compatibility.state.position
+            )
+        };
+        let mut producer_trace = vec![producer_snapshot(session, "before_castle")];
+        let (player_slot, switch_position) = build_real_level_two_castle_for_test(session);
+        producer_trace.push(producer_snapshot(session, "after_castle_recharge"));
+        // The initial public waypoints may already have consumed row 11.
+        // Preserve its remaining neutral opportunities instead of spending
+        // rival turns returning to a trigger that cannot produce them again.
+        let neutral_opportunity = session
+            .backend()
+            .campaign
+            .level2_compatibility()
+            .economy()
+            .spheres()
+            .iter()
+            .any(|sphere| {
+                sphere.active
+                    && !sphere.pending_delete
+                    && sphere.owner_entity_index == 0
+                    && sphere.player_entity_index == 0
+            });
+        if !neutral_opportunity {
+            fly_real_castle_charge_leg_for_test(session, switch_position, false);
+        }
+        producer_trace.push(producer_snapshot(
+            session,
+            "after_producer_or_neutral_choice",
+        ));
+        for _ in 0..8 {
+            if session
+                .backend()
+                .campaign
+                .level2_compatibility()
+                .economy()
+                .spheres()
+                .iter()
+                .any(|sphere| {
+                    sphere.active
+                        && !sphere.pending_delete
+                        && sphere.owner_entity_index == 0
+                        && sphere.player_entity_index == 0
+                })
+            {
+                break;
+            }
+            session
+                .step(guard(session), GameCommand::default())
+                .unwrap();
+        }
+        for turn in 0..128 {
+            if session
+                .backend()
+                .campaign
+                .level2_compatibility()
+                .economy()
+                .spheres()
+                .iter()
+                .any(|sphere| {
+                    sphere.active
+                        && !sphere.pending_delete
+                        && sphere.owner_entity_index == 0
+                        && sphere.player_entity_index == 0
+                        && sphere.vertical_velocity == 0
+                })
+            {
+                break;
+            }
+            session
+                .step(guard(session), GameCommand::default())
+                .unwrap();
+            if matches!(turn, 0 | 7 | 31 | 63 | 127) {
+                producer_trace.push(producer_snapshot(
+                    session,
+                    &format!("settlement_wait_{}", turn + 1),
+                ));
+            }
+        }
+        session
+            .step(
+                guard(session),
+                GameCommand {
+                    select_spell: Some(SemanticId::parse("spell.possession").unwrap()),
+                    ..GameCommand::default()
+                },
+            )
+            .unwrap();
+        let (sphere, generation, event_start) = {
+            let compatibility = session.backend().campaign.level2_compatibility();
+            let sphere = *compatibility
+                .economy()
+                .spheres()
+                .iter()
+                .filter(|sphere| {
+                    sphere.active
+                        && !sphere.pending_delete
+                        && sphere.owner_entity_index == 0
+                        && sphere.player_entity_index == 0
+                        && sphere.vertical_velocity == 0
+                })
+                .min_by_key(|sphere| {
+                    crate::distance_3d_wrapped(compatibility.state.position, sphere.position)
+                })
+                .unwrap_or_else(|| panic!("the row-11 production route exposes a settled neutral mana sphere: {producer_trace:#?}"));
+            (
+                sphere,
+                compatibility
+                    .economy()
+                    .slot_generation(sphere.source_entity_index),
+                compatibility.economy().events().len(),
+            )
+        };
+        fly_real_castle_charge_leg_for_test(session, sphere.position, false);
+        let mut forecast = session.backend().campaign.clone();
+        forecast.step_with_tuning(
+            campaign_player_command(&GameCommand::default()),
+            CAMPAIGN_SPEED_INDEX,
+            session.backend().flight_binding.tuning(),
+        );
+        let compatibility = forecast.level2_compatibility();
+        assert_eq!(
+            compatibility
+                .economy()
+                .slot_generation(sphere.source_entity_index),
+            generation
+        );
+        let target_top = compatibility
+            .possession_guidance_target_top_for_test(sphere.source_entity_index)
+            .expect("ordinary approach retains the exact neutral sphere guidance top");
+        let state = compatibility.state;
+        let mut launch_position = state.position;
+        crate::move_entity(&mut launch_position, state.yaw.wrapping_sub(512), 0, 256);
+        if compatibility
+            .canonical_terrain()
+            .ground_height(launch_position)
+            > launch_position.z
+        {
+            launch_position = state.position;
+        }
+        launch_position.z = launch_position.z.wrapping_add(state.entity_fov);
+        let (yaw, pitch) =
+            crate::level1_mission::projectile_guidance_angles(launch_position, target_top);
+        assert_real_level_two_spell_cost_ready_for_test(session, 1);
+        session
+            .step(
+                guard(session),
+                GameCommand {
+                    cast_selected: true,
+                    look_yaw: yaw.wrapping_sub(state.yaw),
+                    look_pitch: pitch.wrapping_sub(state.display_pitch),
+                    ..GameCommand::default()
+                },
+            )
+            .unwrap();
+        let mut saw_projectile = false;
+        let mut saw_effect = false;
+        let mut saw_claim = false;
+        for _ in 0..32 {
+            let economy = session.backend().campaign.level2_compatibility().economy();
+            saw_projectile |= !economy.possession_projectiles().is_empty();
+            saw_effect |= !economy.possession_effects().is_empty();
+            saw_claim |= economy.events()[event_start..].iter().any(|event| matches!(event,
+                    crate::native_world::Level2EconomyEvent::ManaSphereClaimed { sphere_id, owner_entity_index }
+                        if *sphere_id == sphere.id && *owner_entity_index == player_slot));
+            if saw_claim {
+                break;
+            }
+            session
+                .step(guard(session), GameCommand::default())
+                .unwrap();
+        }
+        assert!(
+            saw_projectile && saw_effect && saw_claim,
+            "real Possession must deliver its flyer, effect and exact mana claim before Castle collection"
+        );
+        for _ in 0..32 {
+            let economy = session.backend().campaign.level2_compatibility().economy();
+            if economy.possession_projectiles().is_empty()
+                && economy.possession_effects().is_empty()
+            {
+                break;
+            }
+            session
+                .step(guard(session), GameCommand::default())
+                .unwrap();
+        }
+        let claimed_mana = {
+            let economy = session.backend().campaign.level2_compatibility().economy();
+            assert!(
+                economy.possession_projectiles().is_empty()
+                    && economy.possession_effects().is_empty()
+            );
+            assert_eq!(
+                economy.slot_generation(sphere.source_entity_index),
+                generation
+            );
+            let claimed = economy
+                .spheres()
+                .iter()
+                .find(|current| {
+                    current.source_entity_index == sphere.source_entity_index
+                        && current.active
+                        && !current.pending_delete
+                })
+                .expect("the exact claimed sphere remains before Castle collection");
+            assert_eq!(
+                (claimed.owner_entity_index, claimed.player_entity_index),
+                (player_slot, player_slot)
+            );
+            claimed.mana
+        };
+        await_real_castle_sphere_deposit_for_test(
+            session,
+            sphere.source_entity_index,
+            0,
+            claimed_mana,
+            event_start,
+        );
+        recharge_real_level_two_castle_mana_for_test(session);
+        assert!(
+            session
+                .backend()
+                .campaign
+                .level2_compatibility()
+                .shared_spells()
+                .player_entity()
+                .max_mana
+                > 1_000,
+            "the claimed/collected mana must expand the reset player's capacity through the source owner census"
+        );
+        session
+            .step(
+                guard(session),
+                GameCommand {
+                    select_spell: Some(SemanticId::parse("spell.fireball").unwrap()),
+                    ..GameCommand::default()
+                },
+            )
+            .unwrap();
+    }
+
     fn assert_real_level_two_spell_cost_ready_for_test(
         session: &GameSession<Mc2CampaignBackend>,
         family: usize,
@@ -8061,10 +9406,63 @@ pub(crate) mod tests {
         );
     }
 
+    fn recharge_real_level_two_castle_mana_for_test(session: &mut GameSession<Mc2CampaignBackend>) {
+        let compatibility = session.backend().campaign.level2_compatibility();
+        let economy = compatibility.economy();
+        let castle = economy.castle();
+        let ready = castle.is_some_and(|castle| castle.active && castle.mana > 0);
+        if !ready || std::env::var_os("MC_ROUTE_CASTLE_TRACE").is_some() {
+            let castle_slot = economy.player_castle_entity_index();
+            let events = economy
+                .events()
+                .iter()
+                .enumerate()
+                .filter(|(_, event)| match event {
+                    crate::native_world::Level2EconomyEvent::CastleBuilt { .. }
+                    | crate::native_world::Level2EconomyEvent::CastleDestroyed { .. }
+                    | crate::native_world::Level2EconomyEvent::CastleStageDestroyed { .. }
+                    | crate::native_world::Level2EconomyEvent::ManaSphereSpawned { .. }
+                    | crate::native_world::Level2EconomyEvent::ManaSphereClaimed { .. }
+                    | crate::native_world::Level2EconomyEvent::ManaSphereCollected { .. }
+                    | crate::native_world::Level2EconomyEvent::ManaSpheresMerged { .. }
+                    | crate::native_world::Level2EconomyEvent::ManaCarrierArrived { .. }
+                    | crate::native_world::Level2EconomyEvent::CastleDefenderCollectedSphere {
+                        ..
+                    }
+                    | crate::native_world::Level2EconomyEvent::CastleDefenderArrived { .. } => true,
+                    crate::native_world::Level2EconomyEvent::DamageApplied {
+                        target_entity_index,
+                        ..
+                    } => *target_entity_index == castle_slot,
+                    _ => false,
+                })
+                .rev()
+                .take(32)
+                .collect::<Vec<_>>();
+            let player = compatibility.shared_spells().player_entity();
+            eprintln!(
+                "L2_CASTLE_RECHARGE tick={} ready={ready} root_generation={} castle={castle:?} player=(life={},mana={},max={},regen={}) flight={:?} selectors={:?} recent_economy_events_newest_first={events:?}",
+                session.identity().tick,
+                economy.slot_generation(castle_slot),
+                player.life,
+                player.mana,
+                player.max_mana,
+                player.mana_regen,
+                compatibility.state,
+                &compatibility.runtime().objectives[0].stage_selectors[..5],
+            );
+        }
+        assert!(
+            ready,
+            "combat recharge requires the real sphere deposit in the owned Castle"
+        );
+        recharge_real_level_two_owned_castle_mana_for_test(session);
+    }
+
     fn recharge_real_level_two_owned_castle_mana_for_test(
         session: &mut GameSession<Mc2CampaignBackend>,
     ) {
-        let (player_slot, castle_position) = {
+        let castle_position = {
             let compatibility = session.backend().campaign.level2_compatibility();
             let castle = compatibility
                 .economy()
@@ -8075,14 +9473,9 @@ pub(crate) mod tests {
                 compatibility.economy().player_castle_entity_index(),
                 castle.source_entity_index
             );
-            (compatibility.state.entity_index, castle.position)
+            castle.position
         };
-        session
-            .backend_mut()
-            .campaign
-            .level2_compatibility_mut()
-            .set_level2_entity_position(player_slot, castle_position)
-            .unwrap();
+        fly_real_castle_charge_leg_for_test(session, castle_position, true);
         let mut saw_castle_rate = false;
         for _ in 0..64 {
             let compatibility = session.backend().campaign.level2_compatibility();
@@ -8123,39 +9516,576 @@ pub(crate) mod tests {
         );
     }
 
-    #[test]
-    fn campaign_backend_real_level_two_starting_castle_builds_and_survives_reset() {
-        let root = descriptor_fixture_path();
-        let definition = load_mc2_campaign(&root, &default_catalog().unwrap()).unwrap();
-        let mut session = GameSession::open(
-            &Mc2CampaignAdapter,
-            Arc::new(definition),
-            74,
-            Mc2CampaignInputs::new(&root),
-        )
-        .unwrap();
-        for attempt in 0..2 {
+    fn fly_real_level_two_until_stage_complete_for_test(
+        session: &mut GameSession<Mc2CampaignBackend>,
+        stage_index: usize,
+    ) {
+        let stage_position = |session: &GameSession<Mc2CampaignBackend>, stage_index: usize| {
             let compatibility = session.backend().campaign.level2_compatibility();
-            for stage in 1..=3 {
-                assert!(compatibility.economy().has_castle_stage_footprint(stage));
+            let stage = &compatibility.runtime().stages[stage_index];
+            crate::Position {
+                x: stage.axis_x.cast_unsigned(),
+                y: stage.axis_y.cast_unsigned(),
+                z: compatibility.state.position.z,
             }
-            assert!(compatibility.economy().castle().is_none());
-            let player = compatibility.shared_spells().player_entity();
-            assert_eq!((player.mana, player.max_mana), (1_000, 1_000));
-            build_real_level_two_castle_for_test(&mut session);
-            let compatibility = session.backend().campaign.level2_compatibility();
-            let castle = compatibility.economy().castle().unwrap();
-            assert!(castle.active && castle.level == 1);
-            assert_eq!(castle.mana, 0);
-            assert_eq!(
-                compatibility.economy().player_castle_entity_index(),
-                castle.source_entity_index
+        };
+        let target = stage_position(session, stage_index);
+        for _ in 0..640 {
+            if session
+                .backend()
+                .campaign
+                .level2_compatibility()
+                .runtime()
+                .objectives[0]
+                .stage_selectors[stage_index]
+                == 2
+            {
+                return;
+            }
+            let state = session.backend().campaign.level2_compatibility().state;
+            let desired = i16::try_from(crate::heading_for_positions(state.position, target))
+                .expect("source heading is 11-bit");
+            let correction = crate::turn_toward(state.yaw, desired, 127);
+            session
+                .step(
+                    guard(session),
+                    GameCommand {
+                        longitudinal: LongitudinalControl::Accelerate,
+                        roll_axis: correction.clamp(-24, 24) as i8,
+                        pitch_axis: -127,
+                        ..GameCommand::default()
+                    },
+                )
+                .unwrap();
+        }
+        let compatibility = session.backend().campaign.level2_compatibility();
+        panic!(
+            "ordinary flight did not complete Level 2 stage {stage_index}: state={:?}, target={target:?}, selectors={:?}",
+            compatibility.state,
+            &compatibility.runtime().objectives[0].stage_selectors[..5]
+        );
+    }
+
+    fn nyphur_public_fireball_cost_for_test(session: &GameSession<Mc2CampaignBackend>) -> i32 {
+        let shared = session
+            .backend()
+            .campaign
+            .level2_compatibility()
+            .shared_spells();
+        let holder_slot = shared.local_player().enabled_spell_holders[0];
+        shared
+            .pickups()
+            .iter()
+            .chain(shared.holders())
+            .chain(shared.dynamic_pickups())
+            .find(|holder| holder.active && holder.index == holder_slot)
+            .expect("the acquired source Fireball holder owns its actual cost")
+            .mana_cost
+    }
+
+    fn nyphur_public_fireball_forecast_hits_for_test(
+        session: &GameSession<Mc2CampaignBackend>,
+        cast: &GameCommand,
+    ) -> bool {
+        const NYPHUR_SLOT: u16 = 112;
+        let compatibility = session.backend().campaign.level2_compatibility();
+        let generation = compatibility.economy().slot_generation(NYPHUR_SLOT);
+        let player = compatibility.state.entity_index;
+        let holders = compatibility
+            .shared_spells()
+            .local_player()
+            .enabled_spell_holders;
+        let projectiles_before = compatibility
+            .economy()
+            .fireball_projectiles()
+            .iter()
+            .map(|projectile| {
+                (
+                    projectile.source_entity_index,
+                    compatibility
+                        .economy()
+                        .slot_generation(projectile.source_entity_index),
+                )
+            })
+            .collect::<BTreeSet<_>>();
+        let impacts_before = compatibility
+            .economy()
+            .model17_spawned_children()
+            .iter()
+            .map(|impact| {
+                (
+                    impact.source_entity_index,
+                    compatibility
+                        .economy()
+                        .slot_generation(impact.source_entity_index),
+                )
+            })
+            .collect::<BTreeSet<_>>();
+        let Ok(command) = session.backend().campaign_player_command(cast) else {
+            return false;
+        };
+        let mut forecast = session.backend().campaign.clone();
+        let mut projectile = None;
+        let mut saw_impact = false;
+        let mut expected_damage = None;
+        // Exactly the actual consumer's cast state and eleven following
+        // ordinary visits: a hit beyond its12 observations is not admitted.
+        for visit in 0..12 {
+            let before_step = forecast
+                .level2_compatibility()
+                .nyphur_common_upkeep()
+                .expect("the qualified Nyphur upkeep carrier remains addressable");
+            let evidence = forecast.step_with_tuning(
+                if visit == 0 {
+                    command
+                } else {
+                    campaign_player_command(&GameCommand::default())
+                },
+                CAMPAIGN_SPEED_INDEX,
+                session.backend().flight_binding.tuning(),
             );
-            let player = compatibility.shared_spells().player_entity();
-            assert_eq!((player.mana, player.max_mana), (1_000, 1_000));
-            if attempt == 0 {
-                session.reset(guard(&session)).unwrap();
+            let after = forecast.level2_compatibility();
+            if after.shared_spells().player_entity().life < 0
+                || after.shared_spells().local_player().enabled_spell_holders != holders
+                || forecast.events().iter().any(|event| {
+                    matches!(
+                        event,
+                        crate::native_world::Level2DispatchEvent::Error { .. }
+                    )
+                })
+                || evidence.iter().any(|step| {
+                    matches!(
+                        step.movement_resolution,
+                        "skipped" | "rejected" | "rejected-and-stopped" | "recovered-after-reject"
+                    )
+                })
+                || after.economy().slot_generation(NYPHUR_SLOT) != generation
+            {
+                return false;
             }
+            projectile = projectile.or_else(|| {
+                after
+                    .economy()
+                    .fireball_projectiles()
+                    .iter()
+                    .find(|projectile| {
+                        projectile.owner_entity_index == player
+                            && projectile.source_subspell_index
+                                == crate::level1_mission::FIREBALL_PAYLOAD as u16
+                            && !projectiles_before.contains(&(
+                                projectile.source_entity_index,
+                                after
+                                    .economy()
+                                    .slot_generation(projectile.source_entity_index),
+                            ))
+                    })
+                    .map(|projectile| {
+                        (
+                            projectile.source_entity_index,
+                            after
+                                .economy()
+                                .slot_generation(projectile.source_entity_index),
+                        )
+                    })
+            });
+            saw_impact |= projectile.is_some_and(|projectile| {
+                after
+                    .economy()
+                    .model17_spawned_children()
+                    .iter()
+                    .any(|impact| {
+                        impact.source_class == 10
+                            && impact.model == 0
+                            && impact.parent_entity_index == projectile.0
+                            && impact.parent_entity_id == player
+                            && impact.subspell_index
+                                == crate::level1_mission::FIREBALL_PAYLOAD as u16
+                            && !impacts_before.contains(&(
+                                impact.source_entity_index,
+                                after.economy().slot_generation(impact.source_entity_index),
+                            ))
+                    })
+            });
+            let source = &after.entities()[usize::from(NYPHUR_SLOT)];
+            if !source.active || source.class != 3 || source.model != 1 {
+                return false;
+            }
+            let raw = source.record_bytes();
+            let damage = i32::from_le_bytes(raw[98..102].try_into().unwrap());
+            let pending_attacker = u16::from_le_bytes(raw[102..104].try_into().unwrap());
+            let upkeep = after.nyphur_common_upkeep().unwrap();
+            if saw_impact {
+                if let Some(consumed_life) = nyphur_public_consumed_fireball_life_for_test(
+                    source,
+                    &before_step,
+                    &upkeep,
+                    player,
+                ) {
+                    // The previous upkeep owns both ordinary and lethal
+                    // consumption. Death retains the source damage owner.
+                    return expected_damage.is_none_or(|life| life == consumed_life);
+                }
+            }
+            if damage == 250 && pending_attacker == player {
+                if source.control_flags & (0x0000_4000 | 0x0040_0000) != 0 {
+                    return false;
+                }
+                expected_damage = Some(nyphur_fireball_damage_life_for_test(&upkeep));
+            }
+        }
+        false
+    }
+
+    fn forecast_public_player_aim_at_real_nyphur_for_test(
+        session: &GameSession<Mc2CampaignBackend>,
+    ) -> Option<(i16, i16)> {
+        forecast_public_mobile_aim_at_real_nyphur_for_test(session, &GameCommand::default())
+            .map(|cast| (cast.look_yaw, cast.look_pitch))
+    }
+
+    fn forecast_public_mobile_aim_at_real_nyphur_for_test(
+        session: &GameSession<Mc2CampaignBackend>,
+        movement: &GameCommand,
+    ) -> Option<GameCommand> {
+        const NYPHUR_SLOT: u16 = 112;
+        let compatibility = session.backend().campaign.level2_compatibility();
+        let generation = compatibility.economy().slot_generation(NYPHUR_SLOT);
+        // The ordinary player callback moves the parent before the later
+        // holder callback constructs the hand launch. A4 offsets also add to
+        // this next yaw/display pitch, rather than the pre-command pose.
+        let mut motion = session.backend().campaign.clone();
+        let evidence = motion.step_with_tuning(
+            session.backend().campaign_player_command(movement).ok()?,
+            CAMPAIGN_SPEED_INDEX,
+            session.backend().flight_binding.tuning(),
+        );
+        let state = motion.level2_compatibility().state;
+        let parent_position = evidence.first()?.committed;
+        let mut launch = parent_position;
+        // The left-hand constructor consumes the raw parent's yaw before A4
+        // applies public look offsets. Preserve its actual source ground gate.
+        crate::move_entity(&mut launch, state.yaw.wrapping_sub(512), 0, 256);
+        if crate::FlightWorld::ground_height(compatibility.canonical_terrain(), launch) > launch.z {
+            launch = parent_position;
+        }
+        launch.z = launch.z.wrapping_add(state.entity_fov);
+        let mut tried = BTreeSet::new();
+        for visit in 0..12 {
+            if visit != 0 {
+                motion.step_with_tuning(
+                    campaign_player_command(&GameCommand::default()),
+                    CAMPAIGN_SPEED_INDEX,
+                    session.backend().flight_binding.tuning(),
+                );
+            }
+            let future = motion.level2_compatibility();
+            let target = &future.entities()[usize::from(NYPHUR_SLOT)];
+            if !target.active
+                || target.class != 3
+                || target.model != 1
+                || future.economy().slot_generation(NYPHUR_SLOT) != generation
+            {
+                return None;
+            }
+            let collision = target.collision_target();
+            let target_position = crate::Position {
+                z: target
+                    .position
+                    .z
+                    .wrapping_add(collision.collision_vertical_offset)
+                    .wrapping_sub(crate::level1_mission::FIREBALL_COLLISION_VERTICAL_OFFSET),
+                ..target.position
+            };
+            let (yaw, pitch) =
+                crate::level1_mission::projectile_guidance_angles(launch, target_position);
+            let look = (
+                yaw.wrapping_sub(state.yaw),
+                pitch.wrapping_sub(state.display_pitch),
+            );
+            let cast = GameCommand {
+                select_spell: Some(SemanticId::parse("spell.fireball").unwrap()),
+                cast_selected: true,
+                look_yaw: look.0,
+                look_pitch: look.1,
+                ..movement.clone()
+            };
+            if tried.insert(look) && nyphur_public_fireball_forecast_hits_for_test(session, &cast) {
+                return Some(cast);
+            }
+        }
+        None
+    }
+
+    fn aim_public_player_at_real_nyphur_for_test(
+        session: &mut GameSession<Mc2CampaignBackend>,
+    ) -> (i16, i16) {
+        const NYPHUR_SLOT: u16 = 112;
+        for _ in 0..1_280 {
+            let compatibility = session.backend().campaign.level2_compatibility();
+            let target = compatibility
+                .entities()
+                .get(usize::from(NYPHUR_SLOT))
+                .filter(|source| source.active && source.class == 3 && source.model == 1)
+                .expect("real package Nyphur remains live during public approach");
+            let state = compatibility.state;
+            let close = crate::distance_3d_wrapped(state.position, target.position) <= 2_048;
+            if close
+                && state.target_speed == 0
+                && state.actual_speed == 0
+                && state.roll_accumulator == 0
+                && state.pitch_accumulator == 0
+            {
+                if let Some(look) = forecast_public_player_aim_at_real_nyphur_for_test(session) {
+                    return look;
+                }
+            }
+            // A moving rival can outrun a flyer launched at the old2048
+            // boundary. Approach more closely through the same ordinary
+            // controller when no cast meets the unchanged12-visit gate.
+            let braking =
+                close && crate::distance_3d_wrapped(state.position, target.position) <= 1_024;
+            let desired = crate::heading_for_positions(state.position, target.position) as i16;
+            let mut command = level_three_source_safe_flight_command(state, desired, braking);
+            command.pitch_axis = if braking {
+                let feedback = if state.pitch_accumulator > 0 {
+                    (-3 * i32::from(state.pitch_accumulator) - 1) / 2
+                } else if state.pitch_accumulator < 0 {
+                    (-3 * i32::from(state.pitch_accumulator) + 1) / 2
+                } else {
+                    0
+                };
+                feedback.clamp(-127, 127) as i8
+            } else if i32::from(target.position.z) > i32::from(state.position.z) + 512 {
+                -127
+            } else if i32::from(target.position.z) < i32::from(state.position.z) - 512 {
+                127
+            } else {
+                0
+            };
+            if braking && state.target_speed == 0 && state.actual_speed == 0 {
+                // Neutral roll must settle too; no aim/pose setter bypasses
+                // the source flight callback before the cast.
+                command.roll_axis = (-i32::from(state.roll_accumulator) * 2).clamp(-127, 127) as i8;
+            }
+            let holders = compatibility
+                .shared_spells()
+                .local_player()
+                .enabled_spell_holders;
+            let mut predicted = session.backend().campaign.clone();
+            let evidence = predicted.step_with_tuning(
+                session.backend().campaign_player_command(&command).unwrap(),
+                CAMPAIGN_SPEED_INDEX,
+                session.backend().flight_binding.tuning(),
+            );
+            assert!(
+                predicted
+                    .level2_compatibility()
+                    .shared_spells()
+                    .player_entity()
+                    .life
+                    >= 0
+            );
+            assert_eq!(
+                predicted
+                    .level2_compatibility()
+                    .shared_spells()
+                    .local_player()
+                    .enabled_spell_holders,
+                holders
+            );
+            assert!(!predicted.events().iter().any(|event| matches!(
+                event,
+                crate::native_world::Level2DispatchEvent::Error { .. }
+            )));
+            assert!(evidence.iter().all(|step| !matches!(
+                step.movement_resolution,
+                "skipped" | "rejected" | "rejected-and-stopped" | "recovered-after-reject"
+            )));
+            let hash = predicted.state_hash();
+            session.step(guard(session), command).unwrap();
+            assert_eq!(session.backend().campaign.state_hash(), hash);
+        }
+        let compatibility = session.backend().campaign.level2_compatibility();
+        panic!(
+            "ordinary public Nyphur approach/aim found no source250 firing solution within1280 turns: player={:?}, rival={:?}, upkeep={:?}, holders={:?}",
+            compatibility.state,
+            compatibility.entities()[usize::from(NYPHUR_SLOT)],
+            compatibility.nyphur_common_upkeep(),
+            compatibility
+                .shared_spells()
+                .local_player()
+                .enabled_spell_holders,
+        );
+    }
+
+    fn source_public_creature_pursuit_command_for_test(
+        session: &GameSession<Mc2CampaignBackend>,
+        target: crate::Position,
+    ) -> GameCommand {
+        let compatibility = session.backend().campaign.level2_compatibility();
+        let state = compatibility.state;
+        let desired = crate::heading_for_positions(state.position, target) as i16;
+        let turn = i32::from(crate::turn_toward(state.yaw, desired, 24));
+        // Invert the ordinary roll accumulator; heading changes remain
+        // available while moving. No stop/settle prerequisite owns a cast.
+        let roll_axis =
+            ((32 * turn - 3 * i32::from(state.roll_accumulator)) / 2).clamp(-127, 127) as i8;
+        let reversing = crate::turn_toward(state.yaw, desired, 1_024).unsigned_abs() > 256;
+        let longitudinal = if reversing && state.target_speed > 0 {
+            LongitudinalControl::Decelerate
+        } else {
+            LongitudinalControl::Accelerate
+        };
+        let mut command = GameCommand {
+            longitudinal,
+            roll_axis,
+            ..GameCommand::default()
+        };
+        // Choose an ordinary pitch input through the real flight callback,
+        // including terrain admission and the source's carried pitch state.
+        let mut best = None;
+        for axis in -127_i16..=127 {
+            let candidate = GameCommand {
+                pitch_axis: axis as i8,
+                ..command.clone()
+            };
+            let mut motion = state;
+            let mut context = crate::FlightContext::default();
+            let evidence = crate::step_outer_turn_with_context_and_tuning(
+                &mut motion,
+                campaign_player_command(&candidate),
+                CAMPAIGN_SPEED_INDEX,
+                compatibility.profile(),
+                compatibility.canonical_terrain(),
+                &mut context,
+                session.backend().flight_binding.tuning(),
+            );
+            if evidence.iter().any(|step| {
+                matches!(
+                    step.movement_resolution,
+                    "skipped" | "rejected" | "rejected-and-stopped" | "recovered-after-reject"
+                )
+            }) {
+                continue;
+            }
+            let score = (
+                i32::from(motion.position.z).abs_diff(i32::from(target.z)),
+                motion.pitch_accumulator.unsigned_abs(),
+                axis.unsigned_abs(),
+            );
+            if best.as_ref().is_none_or(|(previous, _)| score < *previous) {
+                best = Some((score, axis as i8));
+            }
+        }
+        command.pitch_axis = best
+            .expect("ordinary source flight admits a next creature pursuit height")
+            .1;
+        command
+    }
+
+    fn mobile_public_fireball_at_real_nyphur_for_test(
+        session: &mut GameSession<Mc2CampaignBackend>,
+    ) -> GameCommand {
+        for _ in 0..1_280 {
+            let compatibility = session.backend().campaign.level2_compatibility();
+            let target = compatibility.entities()[112].clone();
+            assert!(target.active && target.class == 3 && target.model == 1);
+            let command = source_public_creature_pursuit_command_for_test(session, target.position);
+            if crate::distance_3d_wrapped(compatibility.state.position, target.position) <= 2_048 {
+                if let Some(cast) =
+                    forecast_public_mobile_aim_at_real_nyphur_for_test(session, &command)
+                {
+                    return cast;
+                }
+            }
+            let holders = compatibility
+                .shared_spells()
+                .local_player()
+                .enabled_spell_holders;
+            let generation = compatibility.economy().slot_generation(112);
+            let mut predicted = session.backend().campaign.clone();
+            let evidence = predicted.step_with_tuning(
+                session.backend().campaign_player_command(&command).unwrap(),
+                CAMPAIGN_SPEED_INDEX,
+                session.backend().flight_binding.tuning(),
+            );
+            let after = predicted.level2_compatibility();
+            assert!(after.shared_spells().player_entity().life >= 0);
+            assert_eq!(
+                after.shared_spells().local_player().enabled_spell_holders,
+                holders
+            );
+            assert_eq!(after.economy().slot_generation(112), generation);
+            assert!(!predicted.events().iter().any(|event| matches!(
+                event,
+                crate::native_world::Level2DispatchEvent::Error { .. }
+            )));
+            assert!(
+                evidence.iter().all(|step| !matches!(
+                    step.movement_resolution,
+                    "skipped" | "rejected" | "rejected-and-stopped" | "recovered-after-reject"
+                )),
+                "source-safe moving Nyphur pursuit: command={command:?}, player={:?}, rival={target:?}, evidence={evidence:?}",
+                compatibility.state
+            );
+            let hash = predicted.state_hash();
+            session.step(guard(session), command).unwrap();
+            assert_eq!(session.backend().campaign.state_hash(), hash);
+        }
+        let compatibility = session.backend().campaign.level2_compatibility();
+        panic!(
+            "ordinary mobile Nyphur approach/aim found no source250 firing solution within1280 turns: tick={}, player={:?}, rival={:?}, upkeep={:?}",
+            session.identity().tick,
+            compatibility.state,
+            compatibility.entities()[112],
+            compatibility.nyphur_common_upkeep(),
+        );
+    }
+
+    fn nyphur_public_consumed_fireball_life_for_test(
+        source: &crate::native_world::EntitySnapshot,
+        before: &crate::native_world::Level2NyphurCommonUpkeepSnapshot,
+        after: &crate::native_world::Level2NyphurCommonUpkeepSnapshot,
+        player: u16,
+    ) -> Option<i32> {
+        if !source.active || source.class != 3 || source.model != 1 || before.life < 0 {
+            return None;
+        }
+        let raw = source.record_bytes();
+        let damage = i32::from_le_bytes(raw[98..102].try_into().unwrap());
+        let pending = u16::from_le_bytes(raw[102..104].try_into().unwrap());
+        let consumed = u16::from_le_bytes(raw[42..44].try_into().unwrap());
+        let killer = u16::from_le_bytes(raw[40..42].try_into().unwrap());
+        let expected = nyphur_fireball_damage_life_for_test(before);
+        if damage != 250
+            || consumed != player
+            || source.control_flags & (0x0000_4000 | 0x0040_0000) != 0
+            || after.life >= before.life
+            || after.life != expected
+        {
+            return None;
+        }
+        // sub_5EFA0 clears word62 only on nonlethal consumption. A lethal
+        // hit retains it, publishes the player killer in word40, and returns
+        // before life regeneration. Retained damage alone is never a receipt.
+        let source_owner_matches = if expected < 0 {
+            pending == player && killer == player
+        } else {
+            pending == 0
+        };
+        source_owner_matches.then_some(expected)
+    }
+
+    fn nyphur_fireball_damage_life_for_test(
+        upkeep: &crate::native_world::Level2NyphurCommonUpkeepSnapshot,
+    ) -> i32 {
+        let damaged = upkeep.life.wrapping_sub(250);
+        if damaged < 0 {
+            damaged
+        } else {
+            damaged
+                .wrapping_add(i32::from(upkeep.life_regen))
+                .clamp(-1, upkeep.max_life)
         }
     }
 
@@ -8171,53 +10101,6 @@ pub(crate) mod tests {
                 .objective_progress
                 .current_objective
                 .map(|id| id.as_str().to_owned())
-        };
-        let stage_position = |session: &GameSession<Mc2CampaignBackend>, stage_index: usize| {
-            let compatibility = session.backend().campaign.level2_compatibility();
-            let stage = &compatibility.runtime().stages[stage_index];
-            crate::Position {
-                x: stage.axis_x.cast_unsigned(),
-                y: stage.axis_y.cast_unsigned(),
-                z: compatibility.state.position.z,
-            }
-        };
-        let fly_until_stage_complete = |session: &mut GameSession<Mc2CampaignBackend>,
-                                        stage_index: usize| {
-            let target = stage_position(session, stage_index);
-            for _ in 0..640 {
-                if session
-                    .backend()
-                    .campaign
-                    .level2_compatibility()
-                    .runtime()
-                    .objectives[0]
-                    .stage_selectors[stage_index]
-                    == 2
-                {
-                    return;
-                }
-                let state = session.backend().campaign.level2_compatibility().state;
-                let desired = i16::try_from(crate::heading_for_positions(state.position, target))
-                    .expect("source heading is 11-bit");
-                let correction = crate::turn_toward(state.yaw, desired, 127);
-                session
-                    .step(
-                        guard(session),
-                        GameCommand {
-                            longitudinal: LongitudinalControl::Accelerate,
-                            roll_axis: correction.clamp(-24, 24) as i8,
-                            pitch_axis: -127,
-                            ..GameCommand::default()
-                        },
-                    )
-                    .unwrap();
-            }
-            let compatibility = session.backend().campaign.level2_compatibility();
-            panic!(
-                "ordinary flight did not complete Level 2 stage {stage_index}: state={:?}, target={target:?}, selectors={:?}",
-                compatibility.state,
-                &compatibility.runtime().objectives[0].stage_selectors[..5]
-            );
         };
 
         let compatibility = session.backend().campaign.level2_compatibility();
@@ -8239,7 +10122,7 @@ pub(crate) mod tests {
             Some("objective.reach.payahandra_ruins")
         );
 
-        fly_until_stage_complete(&mut session, 3);
+        fly_real_level_two_until_stage_complete_for_test(&mut session, 3);
         let compatibility = session.backend().campaign.level2_compatibility();
         assert_eq!(
             &compatibility.runtime().objectives[0].stage_selectors[..5],
@@ -8285,7 +10168,7 @@ pub(crate) mod tests {
             "the ordinary slot-32 turn hides both group-8 vault rows after their same-pass callbacks"
         );
 
-        fly_until_stage_complete(&mut session, 0);
+        fly_real_level_two_until_stage_complete_for_test(&mut session, 0);
         let compatibility = session.backend().campaign.level2_compatibility();
         assert_eq!(
             &compatibility.runtime().objectives[0].stage_selectors[..5],
@@ -8338,128 +10221,19 @@ pub(crate) mod tests {
                 })
                 .map(|entity| entity.action)
         };
-        let aim_player_at_nyphur = |session: &mut GameSession<Mc2CampaignBackend>| {
-            let (target, player_slot, player_fov) = {
-                let compatibility = session.backend().campaign.level2_compatibility();
-                (
-                    compatibility
-                        .entities()
-                        .iter()
-                        .find(|entity| {
-                            entity.active
-                                && entity.index == NYPHUR_SLOT
-                                && entity.class == 3
-                                && entity.model == 1
-                        })
-                        .cloned()
-                        .expect("real package Nyphur remains live before the cast"),
-                    compatibility.state.entity_index,
-                    compatibility.state.entity_fov,
-                )
-            };
-            let collision = target.collision_target();
-            let mut predicted_target = crate::Position {
-                z: target
-                    .position
-                    .z
-                    .wrapping_add(collision.collision_vertical_offset)
-                    .wrapping_sub(crate::level1_mission::FIREBALL_COLLISION_VERTICAL_OFFSET),
-                ..target.position
-            };
-            crate::move_entity(
-                &mut predicted_target,
-                target.yaw,
-                target.pitch,
-                target.actual_speed,
-            );
-            let current_launch = crate::Position {
-                z: session
-                    .backend()
-                    .campaign
-                    .level2_compatibility()
-                    .state
-                    .position
-                    .z
-                    .wrapping_add(player_fov),
-                ..session
-                    .backend()
-                    .campaign
-                    .level2_compatibility()
-                    .state
-                    .position
-            };
-            let approach_yaw =
-                crate::level1_mission::projectile_guidance_angles(current_launch, predicted_target)
-                    .0;
-            let crossing_distance = crate::level1_mission::FIREBALL_SPEED
-                .saturating_add(crate::level1_mission::FIREBALL_COLLISION_HALF_WIDTH)
-                .saturating_add(collision.collision_half_width)
-                .saturating_sub(1);
-            let mut player_position = predicted_target;
-            crate::move_entity(
-                &mut player_position,
-                approach_yaw.wrapping_add(1024),
-                0,
-                crossing_distance,
-            );
-            player_position.z = crate::FlightWorld::ground_height(
-                session
-                    .backend()
-                    .campaign
-                    .level2_compatibility()
-                    .canonical_terrain(),
-                player_position,
-            )
-            .wrapping_add(256);
-            let mut launch_position = player_position;
-            let provisional_launch = crate::Position {
-                z: launch_position.z.wrapping_add(player_fov),
-                ..launch_position
-            };
-            let provisional = crate::level1_mission::projectile_guidance_angles(
-                provisional_launch,
-                predicted_target,
-            );
-            let direction_bits = session
+
+        prepare_real_level_two_castle_recharge_for_test(&mut session);
+        assert_eq!(
+            &session
                 .backend()
                 .campaign
                 .level2_compatibility()
-                .shared_spells()
-                .player_entity()
-                .control_flags
-                & 0x0300;
-            let hand_yaw = if direction_bits & 0x0100 != 0 {
-                Some(provisional.0.wrapping_sub(512))
-            } else if direction_bits & 0x0200 != 0 {
-                Some(provisional.0.wrapping_add(512))
-            } else {
-                None
-            };
-            if let Some(hand_yaw) = hand_yaw {
-                crate::move_entity(&mut launch_position, hand_yaw, 0, 256);
-                if crate::FlightWorld::ground_height(
-                    session
-                        .backend()
-                        .campaign
-                        .level2_compatibility()
-                        .canonical_terrain(),
-                    launch_position,
-                ) > launch_position.z
-                {
-                    launch_position = player_position;
-                }
-            }
-            launch_position.z = launch_position.z.wrapping_add(player_fov);
-            let (yaw, pitch) = crate::level1_mission::projectile_guidance_angles(
-                launch_position,
-                predicted_target,
-            );
-            let compatibility = session.backend_mut().campaign.level2_compatibility_mut();
-            compatibility
-                .set_level2_entity_position(player_slot, player_position)
-                .expect("position the real player at the proven incoming-combat boundary");
-            compatibility.set_level2_player_aim_for_test(yaw, pitch);
-        };
+                .runtime()
+                .objectives[0]
+                .stage_selectors[..5],
+            &[2, 1, 1, 2, 1],
+            "real mana collection and Castle recharge do not satisfy the rival objective"
+        );
 
         assert_eq!(nyphur_player_state(&session), Some(1));
         assert_eq!(nyphur_action(&session), Some(1));
@@ -8467,6 +10241,20 @@ pub(crate) mod tests {
             if nyphur_action(&session) == Some(2) {
                 break;
             }
+            let cost = nyphur_public_fireball_cost_for_test(session);
+            if session
+                .backend()
+                .campaign
+                .level2_compatibility()
+                .shared_spells()
+                .player_mana()
+                < cost
+            {
+                recharge_real_level_two_castle_mana_for_test(&mut session);
+            }
+            let approach_tick = session.identity().tick;
+            let cast = mobile_public_fireball_at_real_nyphur_for_test(session);
+            let cast_tick = session.identity().tick;
             let life_before = session
                 .backend()
                 .campaign
@@ -8474,6 +10262,26 @@ pub(crate) mod tests {
                 .nyphur_common_upkeep()
                 .expect("qualified Nyphur common carrier")
                 .life;
+            let nyphur_generation = session
+                .backend()
+                .campaign
+                .level2_compatibility()
+                .economy()
+                .slot_generation(112);
+            let player_attacker = session
+                .backend()
+                .campaign
+                .level2_compatibility()
+                .state
+                .entity_index;
+            let mut saw_player_mailbox = false;
+            let mut expected_damage_life = None;
+            let mut last_upkeep_before_step = session
+                .backend()
+                .campaign
+                .level2_compatibility()
+                .nyphur_common_upkeep()
+                .unwrap();
             let projectile_slots_before = session
                 .backend()
                 .campaign
@@ -8481,7 +10289,17 @@ pub(crate) mod tests {
                 .economy()
                 .fireball_projectiles()
                 .iter()
-                .map(|projectile| projectile.source_entity_index)
+                .map(|projectile| {
+                    (
+                        projectile.source_entity_index,
+                        session
+                            .backend()
+                            .campaign
+                            .level2_compatibility()
+                            .economy()
+                            .slot_generation(projectile.source_entity_index),
+                    )
+                })
                 .collect::<BTreeSet<_>>();
             let impact_slots_before = session
                 .backend()
@@ -8490,19 +10308,19 @@ pub(crate) mod tests {
                 .economy()
                 .model17_spawned_children()
                 .iter()
-                .map(|impact| impact.source_entity_index)
+                .map(|impact| {
+                    (
+                        impact.source_entity_index,
+                        session
+                            .backend()
+                            .campaign
+                            .level2_compatibility()
+                            .economy()
+                            .slot_generation(impact.source_entity_index),
+                    )
+                })
                 .collect::<BTreeSet<_>>();
-            aim_player_at_nyphur(&mut session);
-            session
-                .step(
-                    guard(&session),
-                    GameCommand {
-                        select_spell: Some(SemanticId::parse("spell.fireball").unwrap()),
-                        cast_selected: true,
-                        ..GameCommand::default()
-                    },
-                )
-                .unwrap();
+            session.step(guard(&session), cast).unwrap();
             let mut impact_life = None;
             let mut projectile_slot = None;
             let mut saw_class10_impact = false;
@@ -8514,12 +10332,26 @@ pub(crate) mod tests {
                         .fireball_projectiles()
                         .iter()
                         .find(|projectile| {
-                            !projectile_slots_before.contains(&projectile.source_entity_index)
-                                && projectile.owner_entity_index == compatibility.state.entity_index
+                            !projectile_slots_before.contains(&(
+                                projectile.source_entity_index,
+                                compatibility
+                                    .economy()
+                                    .slot_generation(projectile.source_entity_index),
+                            )) && projectile.owner_entity_index == compatibility.state.entity_index
                                 && projectile.source_subspell_index
                                     == crate::level1_mission::FIREBALL_PAYLOAD as u16
                         })
-                        .map(|projectile| projectile.source_entity_index)
+                        .map(|projectile| {
+                            (
+                                projectile.source_entity_index,
+                                session
+                                    .backend()
+                                    .campaign
+                                    .level2_compatibility()
+                                    .economy()
+                                    .slot_generation(projectile.source_entity_index),
+                            )
+                        })
                 });
                 saw_class10_impact |= projectile_slot.is_some_and(|projectile_slot| {
                     compatibility
@@ -8527,34 +10359,122 @@ pub(crate) mod tests {
                         .model17_spawned_children()
                         .iter()
                         .any(|impact| {
-                            !impact_slots_before.contains(&impact.source_entity_index)
-                                && impact.source_class == 10
+                            !impact_slots_before.contains(&(
+                                impact.source_entity_index,
+                                compatibility
+                                    .economy()
+                                    .slot_generation(impact.source_entity_index),
+                            )) && impact.source_class == 10
                                 && impact.model == 0
-                                && impact.parent_entity_index == projectile_slot
+                                && impact.parent_entity_index == projectile_slot.0
                                 && impact.subspell_index
                                     == crate::level1_mission::FIREBALL_PAYLOAD as u16
                         })
                 });
+                let source = &compatibility.entities()[112];
+                let raw = source.record_bytes();
+                saw_player_mailbox |= compatibility.economy().slot_generation(112)
+                    == nyphur_generation
+                    && i32::from_le_bytes(raw[98..102].try_into().unwrap()) == 250
+                    && u16::from_le_bytes(raw[102..104].try_into().unwrap()) == player_attacker;
                 let life = compatibility
                     .nyphur_common_upkeep()
                     .expect("Nyphur common carrier survives until lethal impact")
                     .life;
                 if life < life_before {
+                    // A flyer with a lower source slot can queue the hit and
+                    // Nyphur can consume it within the same entity pass. Bind
+                    // that receipt to the prior upkeep and this new impact.
+                    if expected_damage_life.is_none()
+                        && saw_class10_impact
+                        && compatibility.economy().slot_generation(112) == nyphur_generation
+                    {
+                        expected_damage_life = nyphur_public_consumed_fireball_life_for_test(
+                            source,
+                            &last_upkeep_before_step,
+                            &compatibility.nyphur_common_upkeep().unwrap(),
+                            player_attacker,
+                        );
+                    }
                     impact_life = Some(life);
                     break;
                 }
+                // sub_12A70 consumes this source mailbox before its life upkeep.
+                // Lethal consumption returns before regeneration; otherwise the
+                // CURRENT carried rate is added and capped, then the rate is refreshed.
+                if compatibility.economy().slot_generation(112) == nyphur_generation
+                    && i32::from_le_bytes(raw[98..102].try_into().unwrap()) == 250
+                    && u16::from_le_bytes(raw[102..104].try_into().unwrap()) == player_attacker
+                {
+                    assert_eq!(
+                        source.control_flags & (0x0000_4000 | 0x0040_0000),
+                        0,
+                        "this receipt requires the ordinary full250 source damage branch"
+                    );
+                    let upkeep = compatibility.nyphur_common_upkeep().unwrap();
+                    expected_damage_life = Some(nyphur_fireball_damage_life_for_test(&upkeep));
+                }
+                last_upkeep_before_step = compatibility.nyphur_common_upkeep().unwrap();
                 session
                     .step(guard(&session), GameCommand::default())
                     .unwrap();
             }
+            let player_after_cast = session
+                .backend()
+                .campaign
+                .level2_compatibility()
+                .shared_spells()
+                .player_entity();
             assert!(
                 impact_life.is_some(),
-                "ordinary semantic Fireball cast {cast_index} did not reach Nyphur's source mailbox"
+                "ordinary semantic Fireball cast {cast_index} did not reach Nyphur's source mailbox; life_before={life_before}, player_mana={}/{}, regen={}, projectile_slot={projectile_slot:?}, saw_class10_impact={saw_class10_impact}",
+                player_after_cast.mana,
+                player_after_cast.max_mana,
+                player_after_cast.mana_regen,
             );
             assert!(
                 saw_class10_impact,
                 "ordinary semantic Fireball cast {cast_index} did not emit the source class-10/model-0 impact"
             );
+            let consumed_attacker = u16::from_le_bytes(
+                session.backend().campaign.level2_compatibility().entities()[112].record_bytes()
+                    [42..44]
+                    .try_into()
+                    .unwrap(),
+            );
+            assert!(
+                saw_player_mailbox || consumed_attacker == player_attacker,
+                "current Nyphur must receive or consume the real player's payload"
+            );
+            assert_eq!(
+                session
+                    .backend()
+                    .campaign
+                    .level2_compatibility()
+                    .economy()
+                    .slot_generation(112),
+                nyphur_generation
+            );
+            assert!(
+                expected_damage_life.is_some(),
+                "exact250 player consumption must bind to the preceding source upkeep"
+            );
+            assert_eq!(
+                impact_life, expected_damage_life,
+                "real250 source consumption precedes carried regeneration and max-life cap"
+            );
+            if std::env::var_os("MC_ROUTE_NYPHUR_TRACE").is_some() {
+                let compatibility = session.backend().campaign.level2_compatibility();
+                let upkeep = compatibility.nyphur_common_upkeep().unwrap();
+                eprintln!(
+                    "Nyphur public cast={cast_index} approach_tick={approach_tick} cast_tick={cast_tick} consumed_tick={} life_before={life_before} life_after={impact_life:?} regen_after={} max_life={} player={:?} rival={:?} flyer={projectile_slot:?}",
+                    session.identity().tick,
+                    upkeep.life_regen,
+                    upkeep.max_life,
+                    compatibility.state,
+                    compatibility.entities()[112].position,
+                );
+            }
             if impact_life.is_some_and(|life| life < 0) {
                 session
                     .step(guard(&session), GameCommand::default())
@@ -8602,75 +10522,447 @@ pub(crate) mod tests {
             3
         );
 
-        const PLAGUE_BEE_ROWS: [u16; 6] = [229, 230, 231, 236, 237, 257];
-        for _ in 0..4 {
-            let bee_rows = session
-                .backend()
-                .campaign
-                .level2_compatibility()
-                .economy()
+        continue_real_level_two_pre_plague_castle_through_vault_for_test(session);
+    }
+
+    fn capture_real_level_two_pre_plague_checkpoint_for_test(
+        session: &GameSession<Mc2CampaignBackend>,
+    ) {
+        let Some(directory) = std::env::var_os("MC_ROUTE_EVIDENCE_DIR") else {
+            return;
+        };
+        let result = (|| -> Result<std::path::PathBuf, Box<dyn std::error::Error>> {
+            use std::io::Write;
+            let directory = std::path::PathBuf::from(directory);
+            std::fs::create_dir_all(&directory)?;
+            let nonce = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)?
+                .as_nanos();
+            let path = directory.join(format!(
+                "level-two-pre-plague-castle-tick-{}-{nonce}.replay.json",
+                session.identity().tick,
+            ));
+            let save = Mc2CampaignReplaySave::new(
+                false,
+                session.definition().as_ref().clone(),
+                session.backend().initial_semantic_spell_carry()?,
+                session.backend().replay_operations.clone(),
+                &session.backend().snapshot(),
+            );
+            let bytes = serde_json::to_vec(&save)?;
+            let mut file = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&path)?;
+            file.write_all(&bytes)?;
+            file.sync_all()?;
+            Ok(path)
+        })();
+        match result {
+            Ok(path) => eprintln!(
+                "current L2 pre-plague replay captured (production load verification pending): {}",
+                path.display()
+            ),
+            Err(error) => eprintln!("current L2 pre-plague capture failed: {error}"),
+        }
+    }
+
+    const LEVEL_TWO_PLAGUE_BEE_ROWS_FOR_TEST: [u16; 6] = [229, 230, 231, 236, 237, 257];
+
+    struct LevelTwoBeeOccurrenceForTest {
+        born: crate::native_world::BeeCreatureRuntime,
+        generation: u32,
+        life: i16,
+        player_hits: usize,
+        lethal: bool,
+        mana_sequence: Option<u64>,
+        burst_sequence: Option<u64>,
+        reclaimed: bool,
+    }
+
+    #[derive(Default)]
+    pub(crate) struct LevelTwoBeeReplayObservationsForTest {
+        occurrences: BTreeMap<u16, LevelTwoBeeOccurrenceForTest>,
+        groups: BTreeSet<u16>,
+        next_sequence: u64,
+        previous_occurrences: BTreeSet<(u16, u32)>,
+        player_flyers: BTreeSet<(u16, u32)>,
+        player_impacts: BTreeSet<(u16, u32)>,
+    }
+
+    pub(crate) struct VerifiedLevelTwoBeeReplayHistoryForTest {
+        pub(super) frontier: CampaignSnapshot,
+        pub(super) observations: LevelTwoBeeReplayObservationsForTest,
+    }
+
+    impl LevelTwoBeeReplayObservationsForTest {
+        pub(super) fn observe(&mut self, session: &GameSession<Mc2CampaignBackend>) {
+            use crate::native_world::{Level2DispatchEvent, Level2EconomyEvent};
+            if session.backend().campaign.definition().identity != CampaignSelection::LEVEL2 {
+                return;
+            }
+            let compatibility = session.backend().campaign.level2_compatibility();
+            let economy = compatibility.economy();
+            let player = compatibility.state.entity_index;
+            for bee in economy.bee_creatures() {
+                let Some(row) = bee
+                    .authored_index()
+                    .filter(|row| LEVEL_TWO_PLAGUE_BEE_ROWS_FOR_TEST.contains(row))
+                else {
+                    continue;
+                };
+                if let std::collections::btree_map::Entry::Vacant(entry) =
+                    self.occurrences.entry(row)
+                {
+                    assert!(bee.active && bee.drawing_enabled && bee.life == bee.max_life);
+                    assert_eq!((bee.source_class, bee.model), (5, 2));
+                    assert_eq!(bee.entity_id, bee.source_entity_index);
+                    entry.insert(LevelTwoBeeOccurrenceForTest {
+                        born: *bee,
+                        generation: economy.slot_generation(bee.source_entity_index),
+                        life: bee.life,
+                        player_hits: 0,
+                        lethal: false,
+                        mana_sequence: None,
+                        burst_sequence: None,
+                        reclaimed: false,
+                    });
+                }
+            }
+            self.player_flyers.extend(
+                economy
+                    .fireball_projectiles()
+                    .iter()
+                    .filter(|flyer| {
+                        flyer.owner_entity_index == player && flyer.source_subspell_index == 250
+                    })
+                    .map(|flyer| {
+                        (
+                            flyer.source_entity_index,
+                            economy.slot_generation(flyer.source_entity_index),
+                        )
+                    }),
+            );
+            self.player_impacts.extend(
+                economy
+                    .model17_spawned_children()
+                    .iter()
+                    .filter(|impact| {
+                        impact.source_class == 10
+                            && impact.model == 0
+                            && impact.parent_entity_id == player
+                            && impact.subspell_index == 250
+                            && self.player_flyers.contains(&(
+                                impact.parent_entity_index,
+                                economy.slot_generation(impact.parent_entity_index),
+                            ))
+                    })
+                    .map(|impact| {
+                        (
+                            impact.source_entity_index,
+                            economy.slot_generation(impact.source_entity_index),
+                        )
+                    }),
+            );
+            let records = compatibility.effect_journal().records();
+            if let Some(first) = records.first() {
+                assert!(
+                    first.sequence <= self.next_sequence,
+                    "ordinary replay observation cannot lose retained source receipts"
+                );
+            }
+            for record in
+                &records[records.partition_point(|record| record.sequence < self.next_sequence)..]
+            {
+                match &record.effect {
+                    CampaignEffect::Dispatch(Level2DispatchEvent::AuthoredGroupActivated {
+                        group,
+                        authored_indices,
+                        ..
+                    }) => {
+                        if (*group == 17 && authored_indices.as_ref() == [208, 236, 237, 257])
+                            || (*group == 21 && authored_indices.as_ref() == [229, 230, 231])
+                        {
+                            self.groups.insert(*group);
+                        }
+                    }
+                    CampaignEffect::Dispatch(Level2DispatchEvent::Economy { event, .. }) => {
+                        match event {
+                            Level2EconomyEvent::DamageApplied {
+                                target_entity_index,
+                                attacker_entity_index,
+                                damage,
+                                lethal,
+                            } => {
+                                for proof in self.occurrences.values_mut().filter(|proof| {
+                                    !proof.reclaimed && proof.born.entity_id == *target_entity_index
+                                }) {
+                                    let slot = proof.born.source_entity_index;
+                                    assert!(
+                                        economy.slot_generation(slot) == proof.generation
+                                            || self
+                                                .previous_occurrences
+                                                .contains(&(slot, proof.generation))
+                                    );
+                                    assert!(
+                                        !proof.lethal,
+                                        "one original Bee consumes no damage after its lethal source visit"
+                                    );
+                                    assert_eq!((*attacker_entity_index, *damage), (player, 250));
+                                    assert!(
+                                        !self.player_flyers.is_empty()
+                                            && !self.player_impacts.is_empty(),
+                                        "retained player damage requires actual source Fireball products"
+                                    );
+                                    proof.life = proof.life.wrapping_sub(250);
+                                    proof.player_hits += 1;
+                                    assert_eq!(*lethal, proof.life < 0);
+                                    proof.lethal = *lethal;
+                                }
+                            }
+                            Level2EconomyEvent::ManaSphereSpawned {
+                                source_entity_index,
+                                mana,
+                                ..
+                            } => {
+                                for proof in self.occurrences.values_mut().filter(|proof| {
+                                    !proof.reclaimed
+                                        && proof.born.source_entity_index == *source_entity_index
+                                }) {
+                                    assert!(proof.lethal);
+                                    assert_eq!(*mana, proof.born.mana);
+                                    assert!(proof.mana_sequence.replace(record.sequence).is_none());
+                                }
+                            }
+                            Level2EconomyEvent::DeathBurstSpawned {
+                                parent_entity_index,
+                                id_entity_index,
+                                ..
+                            } => {
+                                for proof in self.occurrences.values_mut().filter(|proof| {
+                                    !proof.reclaimed
+                                        && proof.born.source_entity_index == *parent_entity_index
+                                }) {
+                                    assert!(proof.lethal);
+                                    assert_eq!(*id_entity_index, proof.born.entity_id);
+                                    assert!(
+                                        proof
+                                            .mana_sequence
+                                            .is_some_and(|sequence| sequence < record.sequence)
+                                    );
+                                    assert!(
+                                        proof.burst_sequence.replace(record.sequence).is_none()
+                                    );
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                    _ => {}
+                }
+                self.next_sequence = record.sequence + 1;
+            }
+            for proof in self.occurrences.values_mut() {
+                let current = economy.bee_creatures().iter().find(|bee| {
+                    bee.source_entity_index == proof.born.source_entity_index
+                        && economy.slot_generation(bee.source_entity_index) == proof.generation
+                });
+                if let Some(bee) = current {
+                    if bee.life >= 0 {
+                        assert_eq!(bee.life, proof.life);
+                    }
+                    if proof.lethal {
+                        assert!(bee.life < 0 && matches!(bee.action, 20 | 21));
+                    }
+                } else if !proof.reclaimed {
+                    assert!(proof.lethal && proof.player_hits > 0);
+                    assert!(proof.mana_sequence.is_some() && proof.burst_sequence.is_some());
+                    proof.reclaimed = true;
+                }
+            }
+            self.previous_occurrences = economy
                 .bee_creatures()
                 .iter()
-                .filter_map(|bee| bee.authored_index())
-                .collect::<BTreeSet<_>>();
-            if bee_rows == BTreeSet::from(PLAGUE_BEE_ROWS) {
-                break;
-            }
-            session
-                .step(guard(&session), GameCommand::default())
-                .unwrap();
+                .map(|bee| {
+                    (
+                        bee.source_entity_index,
+                        economy.slot_generation(bee.source_entity_index),
+                    )
+                })
+                .collect();
         }
+    }
+
+    pub(crate) fn resume_verified_level_two_plague_through_vault_for_test(
+        session: &mut GameSession<Mc2CampaignBackend>,
+        history: VerifiedLevelTwoBeeReplayHistoryForTest,
+    ) {
+        assert_eq!(
+            session.backend().snapshot(),
+            history.frontier,
+            "historical Bee proof belongs only to its verified replay frontier"
+        );
+        continue_real_level_two_plague_with_history_for_test(session, Some(history.observations));
+    }
+
+    /// Continue only an actual pre-plague boundary. Fresh play reaches this
+    /// through the full preceding route; a checkpoint consumer must first
+    /// reproduce the complete current production replay receipts.
+    pub(crate) fn continue_real_level_two_pre_plague_castle_through_vault_for_test(
+        session: &mut GameSession<Mc2CampaignBackend>,
+    ) {
+        continue_real_level_two_plague_with_history_for_test(session, None);
+    }
+
+    fn continue_real_level_two_plague_with_history_for_test(
+        session: &mut GameSession<Mc2CampaignBackend>,
+        history: Option<LevelTwoBeeReplayObservationsForTest>,
+    ) {
+        let mut session = session;
         let compatibility = session.backend().campaign.level2_compatibility();
         assert_eq!(
-            compatibility
-                .economy()
-                .bee_creatures()
-                .iter()
-                .filter_map(|bee| bee.authored_index())
-                .collect::<BTreeSet<_>>(),
-            BTreeSet::from(PLAGUE_BEE_ROWS),
-            "the ordinary row-206/group-17 producer materializes exactly the package plague Bees"
+            session.backend().campaign.definition().identity,
+            CampaignSelection::LEVEL2
         );
-        assert!(compatibility.dispatch_events().iter().any(|event| matches!(
-            event,
-            crate::native_world::Level2DispatchEvent::AuthoredGroupActivated {
+        assert_eq!(
+            &compatibility.runtime().objectives[0].stage_selectors[..5],
+            &[2, 2, 1, 2, 1],
+            "the replay suffix requires the real completed waypoints and banished rival"
+        );
+        assert_eq!(
+            session.snapshot().value.objective_progress.completed_count,
+            3
+        );
+        assert_eq!(
+            session
+                .snapshot()
+                .value
+                .objective_progress
+                .current_objective
+                .as_ref()
+                .map(SemanticId::as_str),
+            Some("objective.clear.plague_bees")
+        );
+        let progress_id = |session: &GameSession<Mc2CampaignBackend>| {
+            session
+                .snapshot()
+                .value
+                .objective_progress
+                .current_objective
+                .map(|id| id.as_str().to_owned())
+        };
+        const PLAGUE_BEE_ROWS: [u16; 6] = [229, 230, 231, 236, 237, 257];
+        let mut reclaimed_rows = BTreeSet::new();
+        let mut retired_rows = BTreeSet::new();
+        let mut terminal_rows = BTreeSet::new();
+        let mut hit_casts = 0_usize;
+        let mut missed_casts = 0_usize;
+        let mut recipient_hits = 0_usize;
+        if let Some(history) = &history {
+            assert_eq!(history.groups, BTreeSet::from([17, 21]));
+            assert_eq!(
+                history.occurrences.keys().copied().collect::<BTreeSet<_>>(),
+                BTreeSet::from(PLAGUE_BEE_ROWS),
+                "resume retains all six actual production constructors, not only surviving rows"
+            );
+            let economy = session.backend().campaign.level2_compatibility().economy();
+            for (&row, proof) in &history.occurrences {
+                let current = economy
+                    .bee_creatures()
+                    .iter()
+                    .find(|bee| bee.authored_index() == Some(row));
+                if proof.reclaimed {
+                    assert!(current.is_none());
+                    assert!(proof.lethal && proof.life < 0 && proof.player_hits > 0);
+                    assert!(
+                        proof
+                            .mana_sequence
+                            .zip(proof.burst_sequence)
+                            .is_some_and(|(mana, burst)| mana < burst)
+                    );
+                    reclaimed_rows.insert(row);
+                    retired_rows.insert(row);
+                    terminal_rows.insert(row);
+                } else {
+                    let current = current
+                        .expect("an unreclaimed original Bee remains physically addressable");
+                    assert_eq!(current.source_entity_index, proof.born.source_entity_index);
+                    assert_eq!(
+                        economy.slot_generation(current.source_entity_index),
+                        proof.generation
+                    );
+                    if proof.lethal {
+                        assert!(current.life < 0 && matches!(current.action, 20 | 21));
+                        retired_rows.insert(row);
+                        terminal_rows.insert(row);
+                    } else {
+                        assert_eq!(current.life, proof.life);
+                    }
+                }
+                hit_casts += proof.player_hits;
+                recipient_hits += proof.player_hits;
+            }
+            eprintln!(
+                "verified L2 Bee continuation: tick={} real_births={} prior_player_250_hits={recipient_hits} retired={retired_rows:?} reclaimed={reclaimed_rows:?}",
+                session.identity().tick,
+                history.occurrences.len()
+            );
+        } else {
+            for _ in 0..4 {
+                let bee_rows = session
+                    .backend()
+                    .campaign
+                    .level2_compatibility()
+                    .economy()
+                    .bee_creatures()
+                    .iter()
+                    .filter_map(|bee| bee.authored_index())
+                    .collect::<BTreeSet<_>>();
+                if bee_rows == BTreeSet::from(PLAGUE_BEE_ROWS) {
+                    break;
+                }
+                session
+                    .step(guard(&session), GameCommand::default())
+                    .unwrap();
+            }
+            let compatibility = session.backend().campaign.level2_compatibility();
+            assert_eq!(
+                compatibility
+                    .economy()
+                    .bee_creatures()
+                    .iter()
+                    .filter_map(|bee| bee.authored_index())
+                    .collect::<BTreeSet<_>>(),
+                BTreeSet::from(PLAGUE_BEE_ROWS),
+                "the ordinary row-206/group-17 producer materializes exactly the package plague Bees"
+            );
+            // Construction precedes the stopped checkpoint. Its source emission
+            // belongs to the canonical replay-verified journal, not only the last
+            // visit's compatibility slice, which subsequent flight replaces.
+            assert!(compatibility.effect_journal().records().iter().any(|record| matches!(
+            &record.effect,
+            CampaignEffect::Dispatch(crate::native_world::Level2DispatchEvent::AuthoredGroupActivated {
                 group: 17,
                 authored_indices,
                 ..
-            } if authored_indices.as_ref() == [208, 236, 237, 257]
+            }) if authored_indices.as_ref() == [208, 236, 237, 257]
         )));
-        assert!(compatibility.dispatch_events().iter().any(|event| matches!(
-            event,
-            crate::native_world::Level2DispatchEvent::AuthoredGroupActivated {
+            assert!(compatibility.effect_journal().records().iter().any(|record| matches!(
+            &record.effect,
+            CampaignEffect::Dispatch(crate::native_world::Level2DispatchEvent::AuthoredGroupActivated {
                 group: 21,
                 authored_indices,
                 ..
-            } if authored_indices.as_ref() == [229, 230, 231]
+            }) if authored_indices.as_ref() == [229, 230, 231]
         )));
+        }
+        let compatibility = session.backend().campaign.level2_compatibility();
         assert_eq!(
             &compatibility.runtime().objectives[0].stage_selectors[..5],
             &[2, 2, 1, 2, 1],
             "materializing the two production plague groups must not complete their absence objective"
         );
 
-        let first_bee_position = session
-            .backend()
-            .campaign
-            .level2_compatibility()
-            .economy()
-            .bee_creatures()
-            .iter()
-            .find(|bee| bee.authored_index() == Some(PLAGUE_BEE_ROWS[0]))
-            .expect("first package plague Bee is live")
-            .position;
-        position_player_at_bee_fireball_boundary_for_test(
-            &mut session,
-            crate::Position {
-                x: first_bee_position.x.wrapping_add(20_000),
-                y: first_bee_position.y.wrapping_add(20_000),
-                z: first_bee_position.z,
-            },
-        );
         for _ in 0..64 {
             let state = session.backend().campaign.level2_compatibility().state;
             if state.target_speed == 0 && state.actual_speed == 0 {
@@ -8703,54 +10995,93 @@ pub(crate) mod tests {
         const ALL_PACKAGE_BEE_ROWS: [u16; 12] =
             [210, 211, 212, 229, 230, 231, 236, 237, 257, 307, 308, 312];
 
-        // Keep one complete public semantic route in this causal test. Source
-        // guidance supplies the launch angles, then production owns class-9
-        // construction, class-10 impact, target selection, and the mailbox.
-        let first_bee =
-            drive_real_bee_to_fireball_action_for_test(&mut session, PLAGUE_BEE_ROWS[0]);
-        let first_life_before = first_bee.life;
-        let other_lives_before = session
-            .backend()
-            .campaign
-            .level2_compatibility()
-            .economy()
-            .bee_creatures()
-            .iter()
-            .filter_map(|bee| {
-                bee.authored_index()
-                    .filter(|row| *row != PLAGUE_BEE_ROWS[0])
-                    .map(|row| (row, bee.life))
-            })
-            .collect::<Vec<_>>();
-        let public_hit =
-            fire_real_player_fireball_at_bee_for_test(&mut session, PLAGUE_BEE_ROWS[0]);
-        assert_eq!(public_hit.life, first_life_before.wrapping_sub(250));
-        for (other_row, other_life) in other_lives_before {
+        // Both packages use the same guarded public Bee flight/cast
+        // controller. Production owns motion, class-9 construction, class-10
+        // impact, target selection, and each exact-generation damage mailbox.
+        if history.is_none() {
+            capture_real_level_two_pre_plague_checkpoint_for_test(session);
+            recharge_real_level_two_castle_mana_for_test(&mut session);
+            heal_real_level_two_owned_castle_player_for_test(&mut session);
+            let first_lives_before = {
+                let economy = session.backend().campaign.level2_compatibility().economy();
+                economy
+                    .bee_creatures()
+                    .iter()
+                    .filter_map(|bee| {
+                        bee.authored_index().map(|row| {
+                            (
+                                row,
+                                (
+                                    bee.source_entity_index,
+                                    economy.slot_generation(bee.source_entity_index),
+                                    bee.life,
+                                ),
+                            )
+                        })
+                    })
+                    .collect::<BTreeMap<_, _>>()
+            };
+            assert!(
+                first_lives_before.contains_key(&PLAGUE_BEE_ROWS[0]),
+                "the requested approach Bee remains addressable before public flight"
+            );
+            let first_receipts = fire_public_bee_exchange_for_test(
+                &mut session,
+                PLAGUE_BEE_ROWS[0],
+                &mut terminal_rows,
+            );
+            assert_eq!(first_receipts.len(), 1);
+            let first_receipt = &first_receipts[0];
+            // The requested row guides public flight, not the projectile's source
+            // acquisition/overlap consumer. Pin the actual current plague recipient
+            // and preserve the one-hit plus every other carrier's unchanged-life gate.
+            assert!(PLAGUE_BEE_ROWS.contains(&first_receipt.authored_index));
+            let &(first_slot, first_generation, first_life_before) = first_lives_before
+                .get(&first_receipt.authored_index)
+                .expect("the actual first recipient belongs to the pre-exchange source census");
+            assert_eq!(first_receipt.source_slot, first_slot);
+            assert_eq!(first_receipt.generation, first_generation);
             assert_eq!(
+                first_receipt.generation,
                 session
                     .backend()
                     .campaign
                     .level2_compatibility()
                     .economy()
+                    .slot_generation(first_slot),
+            );
+            assert_eq!(first_receipt.life_before, first_life_before);
+            assert_eq!(
+                first_receipt.life_after,
+                first_life_before.wrapping_sub(250)
+            );
+            let economy = session.backend().campaign.level2_compatibility().economy();
+            for (row, (slot, generation, life)) in first_lives_before {
+                let current = economy
                     .bee_creatures()
                     .iter()
-                    .find(|bee| bee.authored_index() == Some(other_row))
-                    .map(|bee| bee.life),
-                Some(other_life),
-                "the public collision selects only row 229"
-            );
+                    .find(|bee| bee.authored_index() == Some(row))
+                    .expect("every preexisting Bee remains addressable after the first exchange");
+                assert_eq!(current.source_entity_index, slot);
+                assert_eq!(economy.slot_generation(slot), generation);
+                let expected_life = if row == first_receipt.authored_index {
+                    life.wrapping_sub(250)
+                } else {
+                    life
+                };
+                assert_eq!(
+                    current.life, expected_life,
+                    "only the actual source-qualified first recipient changes life: row={row}"
+                );
+            }
+
+            hit_casts = 1;
+            recipient_hits = 1;
         }
 
-        // Subsequent public casts retain their source-derived aim, while the
-        // real class-10 overlap decides which current package Bee receives
-        // each pulse. Ordinary Bee callbacks still own damage, death phases,
-        // hide, following-pass reclaim, allocator retry, and objective census.
-        let mut reclaimed_rows = BTreeSet::new();
-        let mut terminal_rows = BTreeSet::new();
-        let mut retired_rows = BTreeSet::new();
-        let mut hit_casts = 1_usize;
-        let mut missed_casts = 0_usize;
-        let mut recipient_hits = 1_usize;
+        // Subsequent exchanges use the same public controller as the first.
+        // Real class-10 overlap chooses current package recipients; ordinary
+        // callbacks retain damage, death, hide, reclaim and objective timing.
         for _ in 0..ALL_PACKAGE_BEE_ROWS.len() {
             if session
                 .backend()
@@ -8849,10 +11180,12 @@ pub(crate) mod tests {
             };
             assert!(ALL_PACKAGE_BEE_ROWS.contains(&authored_index));
             for _pulse in 0..16 {
-                let receipts = fire_real_player_fireball_at_bee_swarm_for_test(
+                recharge_real_level_two_castle_mana_for_test(&mut session);
+                heal_real_level_two_owned_castle_player_for_test(&mut session);
+                let receipts = fire_public_bee_exchange_for_test(
                     &mut session,
                     authored_index,
-                    &ALL_PACKAGE_BEE_ROWS,
+                    &mut terminal_rows,
                 );
                 if receipts.is_empty() {
                     missed_casts += 1;
@@ -8932,6 +11265,10 @@ pub(crate) mod tests {
             }
 
             let mut objective_completed = false;
+            // The objective census excludes negative-life Bees before their
+            // action-21 byte-0x3E phase reaches zero modulo eight. Continue
+            // this same bounded ordinary cleanup through sphere/burst output,
+            // hide and following-pass reclaim even if the objective completed.
             for _ in 0..24 {
                 if session
                     .backend()
@@ -8943,7 +11280,6 @@ pub(crate) mod tests {
                     == 2
                 {
                     objective_completed = true;
-                    break;
                 }
                 if session
                     .backend()
@@ -8952,7 +11288,17 @@ pub(crate) mod tests {
                     .economy()
                     .bee_creatures()
                     .iter()
-                    .all(|bee| bee.authored_index() != Some(authored_index))
+                    .all(|bee| {
+                        if objective_completed {
+                            // An incidental lethal recipient can lag the
+                            // requested Bee's death phase. The completed
+                            // absence census does not imply physical reclaim.
+                            !bee.authored_index()
+                                .is_some_and(|row| ALL_PACKAGE_BEE_ROWS.contains(&row))
+                        } else {
+                            bee.authored_index() != Some(authored_index)
+                        }
+                    })
                 {
                     break;
                 }
@@ -8999,7 +11345,32 @@ pub(crate) mod tests {
             .filter(|bee| bee.active && bee.drawing_enabled)
             .filter_map(|bee| bee.authored_index())
             .collect::<BTreeSet<_>>();
-        assert!(BTreeSet::from(ALL_PACKAGE_BEE_ROWS).is_disjoint(&live_bee_rows));
+        assert!(
+            BTreeSet::from(ALL_PACKAGE_BEE_ROWS).is_disjoint(&live_bee_rows),
+            "all package Bee death tails must hide/reclaim within the existing24-turn cleanup: retained={:?}",
+            compatibility
+                .economy()
+                .bee_creatures()
+                .iter()
+                .filter(|bee| bee
+                    .authored_index()
+                    .is_some_and(|row| ALL_PACKAGE_BEE_ROWS.contains(&row)))
+                .map(|bee| (
+                    bee.authored_index(),
+                    bee.source_entity_index,
+                    compatibility
+                        .economy()
+                        .slot_generation(bee.source_entity_index),
+                    bee.life,
+                    bee.action,
+                    bee.source_byte_3e,
+                    bee.active,
+                    bee.drawing_enabled,
+                    bee.pending_damage,
+                    bee.pending_attacker_entity_index
+                ))
+                .collect::<Vec<_>>(),
+        );
         assert!(
             compatibility.economy().authored_model45().is_empty(),
             "the real group-8 vault rows reach ordinary hide and following-pass reclaim before their final absence objective"
@@ -9016,6 +11387,498 @@ pub(crate) mod tests {
             session.snapshot().value.objective_progress.completed_count,
             4
         );
+    }
+
+    #[test]
+    fn campaign_backend_real_level_two_starting_castle_builds_and_survives_reset() {
+        let root = descriptor_fixture_path();
+        let definition = load_mc2_campaign(&root, &default_catalog().unwrap()).unwrap();
+        let mut session = GameSession::open(
+            &Mc2CampaignAdapter,
+            Arc::new(definition),
+            74,
+            Mc2CampaignInputs::new(&root),
+        )
+        .unwrap();
+        for attempt in 0..2 {
+            let compatibility = session.backend().campaign.level2_compatibility();
+            for stage in 1..=3 {
+                assert!(compatibility.economy().has_castle_stage_footprint(stage));
+            }
+            assert!(compatibility.economy().castle().is_none());
+            let player = compatibility.shared_spells().player_entity();
+            assert_eq!((player.mana, player.max_mana), (1_000, 1_000));
+            build_real_level_two_castle_for_test(&mut session);
+            let compatibility = session.backend().campaign.level2_compatibility();
+            let castle = compatibility.economy().castle().unwrap();
+            assert!(castle.active && castle.level == 1);
+            assert_eq!(castle.mana, 0);
+            assert_eq!(
+                compatibility.economy().player_castle_entity_index(),
+                castle.source_entity_index
+            );
+            let player = compatibility.shared_spells().player_entity();
+            assert_eq!((player.mana, player.max_mana), (1_000, 1_000));
+            if attempt == 0 {
+                session.reset(guard(&session)).unwrap();
+            }
+        }
+    }
+
+    #[test]
+    fn campaign_backend_real_level_two_public_castle_possession_deposit_recharges_mana() {
+        let root = descriptor_fixture_path();
+        let catalog = default_catalog().unwrap();
+        let definition = load_mc2_campaign(&root, &catalog).unwrap();
+        let mut session = GameSession::open(
+            &Mc2CampaignAdapter,
+            Arc::new(definition),
+            74,
+            Mc2CampaignInputs::new(&root),
+        )
+        .unwrap();
+        for stage in 1..=3 {
+            assert!(
+                session
+                    .backend()
+                    .campaign
+                    .level2_compatibility()
+                    .economy()
+                    .has_castle_stage_footprint(stage)
+            );
+        }
+        let baseline = session
+            .backend()
+            .campaign
+            .level2_compatibility()
+            .shared_spells()
+            .player_entity();
+        assert_eq!((baseline.mana, baseline.max_mana), (1_000, 1_000));
+        // Row 11 is enabled by the same ordinary entry waypoint route as
+        // the full combat driver; opening the package alone does not arm it.
+        assert_eq!(
+            &session
+                .backend()
+                .campaign
+                .level2_compatibility()
+                .runtime()
+                .objectives[0]
+                .stage_selectors[..5],
+            &[1, 1, 1, 1, 1]
+        );
+        fly_real_level_two_until_stage_complete_for_test(&mut session, 3);
+        assert_eq!(
+            &session
+                .backend()
+                .campaign
+                .level2_compatibility()
+                .runtime()
+                .objectives[0]
+                .stage_selectors[..5],
+            &[1, 1, 1, 2, 1]
+        );
+        session
+            .step(guard(&session), GameCommand::default())
+            .unwrap();
+        assert!(
+            session
+                .backend()
+                .campaign
+                .level2_compatibility()
+                .dispatch_events()
+                .iter()
+                .any(|event| matches!(
+                    event,
+                    crate::native_world::Level2DispatchEvent::AuthoredGroupActivated {
+                        source_slot: 32,
+                        group: 8,
+                        authored_indices,
+                        ..
+                    } if authored_indices.as_ref() == [153, 154]
+                ))
+        );
+        fly_real_level_two_until_stage_complete_for_test(&mut session, 0);
+        assert_eq!(
+            &session
+                .backend()
+                .campaign
+                .level2_compatibility()
+                .runtime()
+                .objectives[0]
+                .stage_selectors[..5],
+            &[2, 1, 1, 2, 1]
+        );
+        assert_eq!(
+            session.snapshot().value.objective_progress.completed_count,
+            2
+        );
+        prepare_real_level_two_castle_recharge_for_test(&mut session);
+        let compatibility = session.backend().campaign.level2_compatibility();
+        let castle = compatibility
+            .economy()
+            .castle()
+            .expect("real Castle construction completed");
+        assert!(castle.active && castle.level == 1 && castle.mana > 0);
+        assert_eq!(
+            compatibility.economy().player_castle_entity_index(),
+            castle.source_entity_index
+        );
+        let player = compatibility.shared_spells().player_entity();
+        assert!(player.max_mana > 1_000);
+        assert_eq!(player.mana, player.max_mana);
+        assert!(
+            compatibility
+                .economy()
+                .player_castle_shift_aabb_overlap(player)
+        );
+        assert_eq!(
+            session.backend().semantic_spell_state_for_test().unwrap().1,
+            Some(SpellKind::Fireball)
+        );
+        session.reset(guard(&session)).unwrap();
+        let reset = session.backend().campaign.level2_compatibility();
+        for stage in 1..=3 {
+            assert!(reset.economy().has_castle_stage_footprint(stage));
+        }
+        assert!(reset.economy().castle().is_none());
+        assert_eq!(reset.economy().player_castle_entity_index(), 0);
+        let player = reset.shared_spells().player_entity();
+        assert_eq!((player.mana, player.max_mana), (1_000, 1_000));
+    }
+
+    #[test]
+    fn campaign_backend_staged_carried_fireball_reaches_real_nyphur_through_public_flight_and_look()
+    {
+        assert_public_carried_fireball_reaches_real_nyphur_for_test(false);
+    }
+
+    #[test]
+    fn campaign_backend_carried_fireball_hits_real_nyphur_during_ordinary_public_motion() {
+        assert_public_carried_fireball_reaches_real_nyphur_for_test(true);
+    }
+
+    fn open_carried_fireball_real_nyphur_for_test() -> GameSession<Mc2CampaignBackend> {
+        // Staged inventory only. Nyphur and the player retain package entry
+        // poses and all combat movement, aim, cast and callbacks are public.
+        let root = descriptor_fixture_path();
+        let catalog = default_catalog().unwrap();
+        let definition = Arc::new(load_mc2_campaign(&root, &catalog).unwrap());
+        let mut session = GameSession::open(
+            &Mc2CampaignAdapter,
+            definition,
+            74,
+            Mc2CampaignInputs::new(&root),
+        )
+        .unwrap();
+        session
+            .backend_mut()
+            .campaign
+            .level2_compatibility_mut()
+            .apply_carried_spell_families(&[0], Some(0))
+            .unwrap();
+        session
+    }
+
+    fn assert_public_carried_fireball_reaches_real_nyphur_for_test(mobile: bool) {
+        let mut session = open_carried_fireball_real_nyphur_for_test();
+        let cast = if mobile {
+            mobile_public_fireball_at_real_nyphur_for_test(&mut session)
+        } else {
+            let (look_yaw, look_pitch) = aim_public_player_at_real_nyphur_for_test(&mut session);
+            GameCommand {
+                select_spell: Some(SemanticId::parse("spell.fireball").unwrap()),
+                cast_selected: true,
+                look_yaw,
+                look_pitch,
+                ..GameCommand::default()
+            }
+        };
+        assert_public_nyphur_fireball_receipt_for_test(&mut session, cast, mobile);
+    }
+
+    fn assert_public_nyphur_fireball_receipt_for_test(
+        session: &mut GameSession<Mc2CampaignBackend>,
+        cast: GameCommand,
+        require_motion: bool,
+    ) -> (i32, crate::native_world::Level2NyphurCommonUpkeepSnapshot) {
+        let position_before_cast = session
+            .backend()
+            .campaign
+            .level2_compatibility()
+            .state
+            .position;
+        let cast_index = 0;
+        let life_before = session
+            .backend()
+            .campaign
+            .level2_compatibility()
+            .nyphur_common_upkeep()
+            .expect("qualified Nyphur common carrier")
+            .life;
+        let nyphur_generation = session
+            .backend()
+            .campaign
+            .level2_compatibility()
+            .economy()
+            .slot_generation(112);
+        let player_attacker = session
+            .backend()
+            .campaign
+            .level2_compatibility()
+            .state
+            .entity_index;
+        let mut saw_player_mailbox = false;
+        let mut expected_damage_life = None;
+        let mut last_upkeep_before_step = session
+            .backend()
+            .campaign
+            .level2_compatibility()
+            .nyphur_common_upkeep()
+            .unwrap();
+        let projectile_slots_before = session
+            .backend()
+            .campaign
+            .level2_compatibility()
+            .economy()
+            .fireball_projectiles()
+            .iter()
+            .map(|projectile| {
+                (
+                    projectile.source_entity_index,
+                    session
+                        .backend()
+                        .campaign
+                        .level2_compatibility()
+                        .economy()
+                        .slot_generation(projectile.source_entity_index),
+                )
+            })
+            .collect::<BTreeSet<_>>();
+        let impact_slots_before = session
+            .backend()
+            .campaign
+            .level2_compatibility()
+            .economy()
+            .model17_spawned_children()
+            .iter()
+            .map(|impact| {
+                (
+                    impact.source_entity_index,
+                    session
+                        .backend()
+                        .campaign
+                        .level2_compatibility()
+                        .economy()
+                        .slot_generation(impact.source_entity_index),
+                )
+            })
+            .collect::<BTreeSet<_>>();
+        session.step(guard(&session), cast).unwrap();
+        if require_motion {
+            let state = session.backend().campaign.level2_compatibility().state;
+            assert_ne!(
+                state.actual_speed, 0,
+                "the admitted public cast occurs in source motion"
+            );
+            assert_ne!(state.position, position_before_cast);
+        }
+        let mut impact_life = None;
+        let mut projectile_slot = None;
+        let mut saw_class10_impact = false;
+        for _ in 0..12 {
+            let compatibility = session.backend().campaign.level2_compatibility();
+            projectile_slot = projectile_slot.or_else(|| {
+                compatibility
+                    .economy()
+                    .fireball_projectiles()
+                    .iter()
+                    .find(|projectile| {
+                        !projectile_slots_before.contains(&(
+                            projectile.source_entity_index,
+                            compatibility
+                                .economy()
+                                .slot_generation(projectile.source_entity_index),
+                        )) && projectile.owner_entity_index == compatibility.state.entity_index
+                            && projectile.source_subspell_index
+                                == crate::level1_mission::FIREBALL_PAYLOAD as u16
+                    })
+                    .map(|projectile| {
+                        (
+                            projectile.source_entity_index,
+                            session
+                                .backend()
+                                .campaign
+                                .level2_compatibility()
+                                .economy()
+                                .slot_generation(projectile.source_entity_index),
+                        )
+                    })
+            });
+            saw_class10_impact |= projectile_slot.is_some_and(|projectile_slot| {
+                compatibility
+                    .economy()
+                    .model17_spawned_children()
+                    .iter()
+                    .any(|impact| {
+                        !impact_slots_before.contains(&(
+                            impact.source_entity_index,
+                            compatibility
+                                .economy()
+                                .slot_generation(impact.source_entity_index),
+                        )) && impact.source_class == 10
+                            && impact.model == 0
+                            && impact.parent_entity_index == projectile_slot.0
+                            && impact.subspell_index
+                                == crate::level1_mission::FIREBALL_PAYLOAD as u16
+                    })
+            });
+            let source = &compatibility.entities()[112];
+            let raw = source.record_bytes();
+            saw_player_mailbox |= compatibility.economy().slot_generation(112) == nyphur_generation
+                && i32::from_le_bytes(raw[98..102].try_into().unwrap()) == 250
+                && u16::from_le_bytes(raw[102..104].try_into().unwrap()) == player_attacker;
+            let life = compatibility
+                .nyphur_common_upkeep()
+                .expect("Nyphur common carrier survives until lethal impact")
+                .life;
+            if life < life_before {
+                if expected_damage_life.is_none()
+                    && saw_class10_impact
+                    && compatibility.economy().slot_generation(112) == nyphur_generation
+                {
+                    expected_damage_life = nyphur_public_consumed_fireball_life_for_test(
+                        source,
+                        &last_upkeep_before_step,
+                        &compatibility.nyphur_common_upkeep().unwrap(),
+                        player_attacker,
+                    );
+                }
+                impact_life = Some(life);
+                break;
+            }
+            // sub_12A70 consumes this source mailbox before its life upkeep.
+            // Lethal consumption returns before regeneration; otherwise the
+            // CURRENT carried rate is added and capped, then the rate is refreshed.
+            if compatibility.economy().slot_generation(112) == nyphur_generation
+                && i32::from_le_bytes(raw[98..102].try_into().unwrap()) == 250
+                && u16::from_le_bytes(raw[102..104].try_into().unwrap()) == player_attacker
+            {
+                assert_eq!(
+                    source.control_flags & (0x0000_4000 | 0x0040_0000),
+                    0,
+                    "this receipt requires the ordinary full250 source damage branch"
+                );
+                let upkeep = compatibility.nyphur_common_upkeep().unwrap();
+                expected_damage_life = Some(nyphur_fireball_damage_life_for_test(&upkeep));
+            }
+            last_upkeep_before_step = compatibility.nyphur_common_upkeep().unwrap();
+            session
+                .step(guard(&session), GameCommand::default())
+                .unwrap();
+        }
+        let player_after_cast = session
+            .backend()
+            .campaign
+            .level2_compatibility()
+            .shared_spells()
+            .player_entity();
+        assert!(
+            impact_life.is_some(),
+            "ordinary semantic Fireball cast {cast_index} did not reach Nyphur's source mailbox; life_before={life_before}, player_mana={}/{}, regen={}, projectile_slot={projectile_slot:?}, saw_class10_impact={saw_class10_impact}",
+            player_after_cast.mana,
+            player_after_cast.max_mana,
+            player_after_cast.mana_regen,
+        );
+        assert!(
+            saw_class10_impact,
+            "ordinary semantic Fireball cast {cast_index} did not emit the source class-10/model-0 impact"
+        );
+        let consumed_attacker = u16::from_le_bytes(
+            session.backend().campaign.level2_compatibility().entities()[112].record_bytes()
+                [42..44]
+                .try_into()
+                .unwrap(),
+        );
+        assert!(
+            saw_player_mailbox || consumed_attacker == player_attacker,
+            "current Nyphur must receive or consume the real player's payload"
+        );
+        assert_eq!(
+            session
+                .backend()
+                .campaign
+                .level2_compatibility()
+                .economy()
+                .slot_generation(112),
+            nyphur_generation
+        );
+        assert!(
+            expected_damage_life.is_some(),
+            "exact250 player consumption must bind to the preceding source upkeep"
+        );
+        assert_eq!(
+            impact_life, expected_damage_life,
+            "real250 source consumption precedes carried regeneration and max-life cap"
+        );
+        assert!(player_after_cast.life >= 0);
+        (impact_life.unwrap(), last_upkeep_before_step)
+    }
+
+    #[test]
+    fn campaign_backend_public_mobile_fireballs_accept_real_lethal_nyphur_receipt() {
+        let mut session = open_carried_fireball_real_nyphur_for_test();
+        for _ in 0..32 {
+            let cast = mobile_public_fireball_at_real_nyphur_for_test(&mut session);
+            let (life, before) =
+                assert_public_nyphur_fireball_receipt_for_test(&mut session, cast, false);
+            if life < 0 {
+                let compatibility = session.backend().campaign.level2_compatibility();
+                let source = &compatibility.entities()[112];
+                let after = compatibility.nyphur_common_upkeep().unwrap();
+                let player = compatibility.state.entity_index;
+                assert_eq!(
+                    nyphur_public_consumed_fireball_life_for_test(source, &before, &after, player),
+                    Some(before.life.wrapping_sub(250)),
+                    "a real lethal hit retains its source owner and player killer before regeneration"
+                );
+                assert_eq!(
+                    nyphur_public_consumed_fireball_life_for_test(
+                        source,
+                        &before,
+                        &after,
+                        player.wrapping_add(1),
+                    ),
+                    None,
+                    "another player cannot claim the actual lethal source receipt"
+                );
+                assert_eq!(
+                    nyphur_public_consumed_fireball_life_for_test(source, &after, &after, player),
+                    None,
+                    "retained damage on an already-dead carrier is not another consumption"
+                );
+                session
+                    .step(guard(&session), GameCommand::default())
+                    .unwrap();
+                assert_eq!(
+                    session
+                        .backend()
+                        .campaign
+                        .level2_compatibility()
+                        .entities()
+                        .get(112)
+                        .filter(|entity| {
+                            entity.active
+                                && entity.index == 112
+                                && entity.class == 3
+                                && entity.model == 1
+                        })
+                        .map(|entity| entity.action),
+                    Some(2)
+                );
+                return;
+            }
+        }
+        panic!("ordinary public Fireballs must reach a real lethal Nyphur receipt within32 casts");
     }
 
     #[test]
@@ -9298,17 +12161,15 @@ pub(crate) mod tests {
             if distance <= 3_500 {
                 return Some(source);
             }
-            let desired = i16::try_from(crate::heading_for_positions(
-                state.position,
-                source.position,
-            ))
-            .expect("source heading is 11-bit");
-            let mut command = level_three_source_safe_flight_command(state, desired, false);
-            command.pitch_axis = -127;
+            // Decode steering through the ordinary source roll accumulator
+            // and choose an admitted pitch toward the live target height. A
+            // constant climb while stopping to turn can stall this pursuit.
+            let command = source_public_creature_pursuit_command_for_test(session, source.position);
             step_real_level_three_skeleton_route_for_test(session, command, observed_actions);
         }
         panic!(
-            "ordinary player flight did not reach Skeleton source slot {source_slot}: source={:?} actions={:?}",
+            "ordinary player flight did not reach Skeleton source slot {source_slot}: player={:?} source={:?} actions={:?}",
+            session.backend().campaign.level2_compatibility().state,
             observed_level_three_skeleton(session, source_slot, observed_actions),
             observed_actions[&source_slot].actions
         );
@@ -10142,9 +13003,10 @@ pub(crate) mod tests {
         targets
             .iter()
             .copied()
-            .filter(|target| {
-                target.source_slot != target.root_slot && target.source_slot > target.root_slot
-            })
+            // Each body retains independent health. The source root only
+            // adopts a lower linked-child life; damage across healthier
+            // segments is not summed. Aim at the root's current kill carrier.
+            .filter(|target| target.source_slot == target.root_slot)
             .filter(|target| desired_root.is_none_or(|root| target.root_slot == root))
             .min_by_key(|target| {
                 let dx = i64::from(i32::from(
@@ -10155,6 +13017,72 @@ pub(crate) mod tests {
                 ));
                 dx * dx + dy * dy
             })
+    }
+
+    #[test]
+    fn campaign_backend_guardian_public_targeting_uses_root_health_carrier() {
+        let root = level_three_descriptor_fixture_path();
+        let catalog = default_catalog().unwrap();
+        let definition = Arc::new(load_mc2_campaign(&root, &catalog).unwrap());
+        let mut session = GameSession::open(
+            &Mc2CampaignAdapter,
+            definition,
+            65,
+            Mc2CampaignInputs::new(&root),
+        )
+        .unwrap();
+        session
+            .backend_mut()
+            .campaign
+            .level2_compatibility_mut()
+            .activate_authored_group_prerequisite_for_test(1)
+            .unwrap();
+        let targets = level_three_dragon_fireball_targets(&session);
+        assert_eq!(targets.len(), 34);
+        let roots = targets
+            .iter()
+            .filter(|target| target.source_slot == target.root_slot)
+            .copied()
+            .collect::<Vec<_>>();
+        assert_eq!(roots.len(), 2);
+        let hash_before = session.backend().campaign.state_hash();
+        for root in roots {
+            let bodies = targets
+                .iter()
+                .filter(|target| {
+                    target.root_slot == root.source_slot && target.source_slot != root.source_slot
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(bodies.len(), 16);
+            assert!(bodies.iter().all(|body| body.life == root.life));
+            assert_eq!(
+                nearest_level_three_dragon_target_for_test(&session, Some(root.source_slot)),
+                Some(root),
+                "public aim must concentrate damage in this root's source kill carrier"
+            );
+            assert_eq!(
+                level_three_dragon_launch_gap_for_test(
+                    session.backend().campaign.level2_compatibility(),
+                    Some(root.source_slot),
+                )
+                .map(|(target, _, _)| target),
+                Some(root),
+                "ordinary pursuit and hand-launch admission must use the same current root"
+            );
+            let body_slot = bodies[0].source_slot;
+            assert!(
+                nearest_level_three_dragon_target_for_test(&session, Some(body_slot)).is_none()
+            );
+            assert!(
+                level_three_dragon_launch_gap_for_test(
+                    session.backend().campaign.level2_compatibility(),
+                    Some(body_slot),
+                )
+                .is_none(),
+                "a body source slot may not substitute for the requested root identity"
+            );
+        }
+        assert_eq!(session.backend().campaign.state_hash(), hash_before);
     }
 
     #[derive(Debug, Eq, PartialEq)]
@@ -10617,6 +13545,9 @@ pub(crate) mod tests {
                         root.active
                             && root.model == 0
                             && root.action == 2
+                            // A lethal hit can precede the next source death
+                            // visit. Its retained target word is no live aggro.
+                            && root.life >= 0
                             && root.word_0x96_150 == player
                     });
             if outside_source_range
@@ -10831,6 +13762,108 @@ pub(crate) mod tests {
             }
         }
         false
+    }
+
+    fn level_three_castle_retreat_carrier_census_for_test(
+        session: &GameSession<Mc2CampaignBackend>,
+        clearance: u32,
+    ) -> Vec<String> {
+        let before = session.backend().campaign.level2_compatibility();
+        let center = level_three_source_retreat_roll_for_test(session).unwrap_or(0);
+        let stencil = level_three_source_pursuit_roll_stencil_for_test(center);
+        let signed_brake = if before.state.target_speed < 0 {
+            LongitudinalControl::Accelerate
+        } else if before.state.target_speed > 0 {
+            LongitudinalControl::Decelerate
+        } else {
+            LongitudinalControl::Coast
+        };
+        let actor = |compatibility: &crate::native_world::Level2ResetSession, slot: u16| {
+            compatibility
+                .entities()
+                .get(usize::from(slot))
+                .map(|source| {
+                    (
+                        source.index,
+                        source.source_id,
+                        compatibility.economy().slot_generation(slot),
+                        source.active,
+                        compatibility.economy().map_chains().is_linked(slot),
+                        source.drawing_disabled(),
+                        (source.class, source.model, source.action),
+                        source.life,
+                        source.position,
+                        source.source_word_96(),
+                    )
+                })
+        };
+        [LongitudinalControl::Accelerate, LongitudinalControl::Coast, signed_brake]
+            .into_iter()
+            .flat_map(|longitudinal| {
+                stencil.iter().copied().map(move |roll_axis| (longitudinal, roll_axis))
+            })
+            .map(|(longitudinal, roll_axis)| {
+                let mut predicted = session.backend().campaign.clone();
+                let command = GameCommand {
+                    longitudinal,
+                    roll_axis,
+                    ..GameCommand::default()
+                };
+                let evidence = predicted.step_with_tuning(
+                    campaign_player_command(&command),
+                    CAMPAIGN_SPEED_INDEX,
+                    session.backend().flight_binding.tuning(),
+                );
+                let after = predicted.level2_compatibility();
+                let player = before.shared_spells().player_entity().index;
+                let before_mailbox = level_three_player_raw_mailbox_for_test(before);
+                let after_mailbox = level_three_player_raw_mailbox_for_test(after);
+                let event_start = before.economy().events().len();
+                let damage = after.economy().events().get(event_start..).unwrap_or_default()
+                    .iter().filter(|event| matches!(event,
+                        crate::native_world::Level2EconomyEvent::DamageApplied {
+                            target_entity_index, ..
+                        } if *target_entity_index == player
+                    )).collect::<Vec<_>>();
+                let mut attackers = BTreeSet::from([before_mailbox.1, after_mailbox.1]);
+                for event in &damage {
+                    if let crate::native_world::Level2EconomyEvent::DamageApplied {
+                        attacker_entity_index, ..
+                    } = event {
+                        attackers.insert(*attacker_entity_index);
+                    }
+                }
+                let effects = level_three_effect_records_after_for_test(before.effect_journal(), after.effect_journal());
+                let actors = attackers.iter().copied().filter(|slot| *slot != 0)
+                    .map(|slot| {
+                        let projectiles = [before, after].into_iter().flat_map(|state| {
+                            state.economy().fireball_projectiles().iter()
+                                .filter(move |flyer| flyer.source_entity_index == slot
+                                    || flyer.owner_entity_index == slot)
+                                .map(move |flyer| (state.economy().slot_generation(flyer.source_entity_index), flyer))
+                        }).collect::<Vec<_>>();
+                        let impacts = [before, after].into_iter().flat_map(|state| {
+                            state.economy().model17_spawned_children().iter()
+                                .filter(move |impact| impact.source_entity_index == slot
+                                    || impact.parent_entity_index == slot
+                                    || impact.parent_entity_id == slot)
+                                .map(move |impact| (state.economy().slot_generation(impact.source_entity_index), impact))
+                        }).collect::<Vec<_>>();
+                        format!("attacker={slot} before={:?} after={:?} terminal_mailbox={} imported_worm={} projectiles={projectiles:?} impacts={impacts:?}",
+                            actor(before, slot), actor(after, slot),
+                            level_three_terminal_authored_dragon_mailbox_for_test(before, after, slot),
+                            level_three_imported_worm_attacker_for_test(before, slot, player))
+                    }).collect::<Vec<_>>();
+                format!("{longitudinal:?}/{roll_axis}: clearance_before={} clearance_after={} player_raw={:?}->{:?} mailbox={before_mailbox:?}->{after_mailbox:?} authoritative_pos={:?}->{:?} flight_pos={:?}->{:?} damage={damage:?} actors={actors:?} evidence={evidence:?} dispatch={:?} effects={effects:?} pending={:?}->{:?}",
+                    level_three_public_retreat_preserves_recovery_clearance_for_test(before, Some(clearance)),
+                    level_three_public_retreat_preserves_recovery_clearance_for_test(after, Some(clearance)),
+                    actor(before, player), actor(after, player),
+                    before.shared_spells().player_entity().position,
+                    after.shared_spells().player_entity().position,
+                    before.state.position, after.state.position, after.dispatch_events(),
+                    (before.session.state.live.player_pending_damage, before.session.state.live.player_pending_attacker),
+                    (after.session.state.live.player_pending_damage, after.session.state.live.player_pending_attacker))
+            }).collect()
     }
 
     fn recover_at_real_level_three_castle_for_test(
@@ -11084,14 +14117,45 @@ pub(crate) mod tests {
                 waypoint_index,
                 ROUTE_CLEARANCE,
             ) {
-                // The route is spatially safe, but braking and turning would
-                // let a moving guardian close it. Buy room with real public
-                // retreat flight before choosing a fresh route from that state.
+                // Spatial clearance alone does not keep an old route safe as
+                // guardians move. Try the same current-state planning used by
+                // recovery entry, admitting it only through the unchanged full
+                // source-executed braking/turning safety preview.
+                if let Some((waypoints, _)) =
+                    level_three_castle_recovery_route_for_test(session, ROUTE_CLEARANCE)
+                    && level_three_castle_return_turn_is_safe_for_test(
+                        session,
+                        &waypoints,
+                        0,
+                        ROUTE_CLEARANCE,
+                    )
+                {
+                    let decision = format!(
+                        "recovery.temporal_replan: tick={} prior_waypoint_index={waypoint_index} prior_waypoint={waypoint:?} new_waypoint={:?}",
+                        session.identity().tick,
+                        waypoints.first(),
+                    );
+                    eprintln!("{decision}");
+                    chronology.push(decision);
+                    recovery_waypoints = waypoints;
+                    waypoint_index = 0;
+                    continue;
+                }
+                // If current-state replanning is also unsafe, retain the
+                // existing source-qualified public retreat fallback.
                 let (_, command) = level_three_public_high_speed_retreat_command_for_test(
                     session,
                     Some(ROUTE_CLEARANCE),
                 )
-                .expect("unsafe Castle return turn retains a real public retreat command");
+                .unwrap_or_else(|| {
+                    panic!(
+                        "unsafe Castle return turn retains a real public retreat command: identity={:?} flow={:?} waypoint_index={waypoint_index} waypoint={waypoint:?} clearance={ROUTE_CLEARANCE} context={} candidates={:#?} carriers={:#?}",
+                        session.identity(), session.definition().runtime_flow(),
+                        level_three_dragon_survival_snapshot_for_test(session, "recovery.refused", public_requests),
+                        level_three_public_retreat_candidate_census_for_test(session),
+                        level_three_castle_retreat_carrier_census_for_test(session, ROUTE_CLEARANCE),
+                    )
+                });
                 step_level_three_public_macro_command(session, command);
                 let (waypoints, _) =
                     level_three_castle_recovery_route_for_test(session, ROUTE_CLEARANCE)
@@ -11383,15 +14447,12 @@ pub(crate) mod tests {
                 panic!("current Dragon chain exposes no map-linked body row");
             };
             if gap == 0 {
-                normalize_level_three_public_macro_to_rest(session);
-                if let Some((settled_target, _, 0)) = level_three_dragon_launch_gap_for_test(
-                    session.backend().campaign.level2_compatibility(),
-                    desired_root,
-                ) {
-                    aimed = Some(settled_target);
-                    break;
-                }
-                continue;
+                // Auxiliary public look aims independently of body heading.
+                // Cast at this live range boundary; braking and a long turn
+                // before launch let the moving root leave acquisition range.
+                // The existing source-safe retreat runs after construction.
+                aimed = Some(target);
+                break;
             }
             let (_, command) = level_three_public_high_speed_pursuit_command_for_test(
                 session,
@@ -11422,21 +14483,17 @@ pub(crate) mod tests {
                     .collect::<Vec<_>>(),
             )
         });
-        // Fireball aim is carried by the public look deltas independently of flight heading.
-        // Face away before casting so retreat can accelerate immediately instead of spending
-        // the projectile lifetime turning at rest inside the Dragon acquisition envelope.
-        let retreat_heading = level_three_initial_dragon_retreat_heading(session);
-        turn_level_three_public_macro_to_heading(session, retreat_heading);
+        // Retain the current body heading/motion for the public launch.
+        // Look deltas supply spell guidance; ordinary retreat follows the cast.
         let aimed = level_three_dragon_fireball_targets(session)
             .into_iter()
             .find(|current| {
                 current.source_slot == aimed.source_slot && current.generation == aimed.generation
             })
             .or_else(|| nearest_level_three_dragon_target_for_test(session, desired_root))
-            .expect("one current Dragon body remains after the public pre-cast turn");
+            .expect("the requested Dragon root remains at the public cast boundary");
         let (
             player,
-            direction_bits,
             player_state,
             mut before,
             projectile_occurrences_before,
@@ -11461,7 +14518,6 @@ pub(crate) mod tests {
             );
             (
                 compatibility.state.entity_index,
-                shared.player_entity().control_flags & 0x0300,
                 compatibility.state,
                 level_three_dragon_fireball_targets(session),
                 compatibility
@@ -11497,41 +14553,61 @@ pub(crate) mod tests {
             .find(|target| target.source_slot == aimed.source_slot)
             .copied()
             .expect("aimed Dragon occurrence remains current at the cast boundary");
+        // The public selected cast always uses the left hand. Forecast the
+        // same public Coast body turn first, preserving actual motion:
+        // look deltas offset auxiliary spell
+        // angles, while the constructor displaces the parent's BODY yaw-512.
+        let forecast_command = GameCommand {
+            select_spell: Some(SemanticId::parse("spell.fireball").unwrap()),
+            ..GameCommand::default()
+        };
+        let mut cast_forecast = session.backend().campaign.clone();
+        cast_forecast.step_with_tuning(
+            session
+                .backend()
+                .campaign_player_command(&forecast_command)
+                .unwrap(),
+            CAMPAIGN_SPEED_INDEX,
+            session.backend().flight_binding.tuning(),
+        );
+        let cast_state = cast_forecast.level2_compatibility().state;
+        let scheduled_target = level_three_dragon_fireball_targets_from_economy(
+            cast_forecast.level2_compatibility().economy(),
+        )
+        .into_iter()
+        .find(|target| {
+            target.source_slot == aimed.source_slot && target.generation == aimed.generation
+        })
+        .unwrap_or(aimed);
         let target_position = crate::Position {
-            z: aimed.position.z.wrapping_add(aimed.vertical_offset),
-            ..aimed.position
+            z: scheduled_target
+                .position
+                .z
+                .wrapping_add(scheduled_target.vertical_offset),
+            ..scheduled_target.position
         };
-        let mut launch_position = player_state.position;
-        let provisional_launch = crate::Position {
-            z: launch_position.z.wrapping_add(player_state.entity_fov),
-            ..launch_position
-        };
-        let provisional =
-            crate::level1_mission::projectile_guidance_angles(provisional_launch, target_position);
-        let hand_yaw = if direction_bits & 0x0100 != 0 {
-            Some(provisional.0.wrapping_sub(512))
-        } else if direction_bits & 0x0200 != 0 {
-            Some(provisional.0.wrapping_add(512))
-        } else {
-            None
-        };
-        if let Some(hand_yaw) = hand_yaw {
-            crate::move_entity(&mut launch_position, hand_yaw, 0, 256);
-            if crate::FlightWorld::ground_height(
-                session
-                    .backend()
-                    .campaign
-                    .level2_compatibility()
-                    .canonical_terrain(),
-                launch_position,
-            ) > launch_position.z
-            {
-                launch_position = player_state.position;
-            }
+        let mut launch_position = cast_state.position;
+        crate::move_entity(
+            &mut launch_position,
+            cast_state.yaw.wrapping_sub(512),
+            0,
+            256,
+        );
+        if crate::FlightWorld::ground_height(
+            session
+                .backend()
+                .campaign
+                .level2_compatibility()
+                .canonical_terrain(),
+            launch_position,
+        ) > launch_position.z
+        {
+            launch_position = cast_state.position;
         }
-        launch_position.z = launch_position.z.wrapping_add(player_state.entity_fov);
+        launch_position.z = launch_position.z.wrapping_add(cast_state.entity_fov);
         let (aim_yaw, aim_pitch) =
             crate::level1_mission::projectile_guidance_angles(launch_position, target_position);
+        let cast_tick = session.identity().tick;
         let activation_cursor = session.snapshot().value.effect_head;
         session
             .step(
@@ -11539,8 +14615,8 @@ pub(crate) mod tests {
                 GameCommand {
                     select_spell: Some(SemanticId::parse("spell.fireball").unwrap()),
                     cast_selected: true,
-                    look_yaw: aim_yaw.wrapping_sub(player_state.yaw),
-                    look_pitch: aim_pitch.wrapping_sub(player_state.display_pitch),
+                    look_yaw: aim_yaw.wrapping_sub(cast_state.yaw),
+                    look_pitch: aim_pitch.wrapping_sub(cast_state.display_pitch),
                     ..GameCommand::default()
                 },
             )
@@ -11569,7 +14645,8 @@ pub(crate) mod tests {
         let mut impact_overlap_recipients = BTreeSet::new();
         let mut impact_mailbox_recipients = BTreeSet::new();
         let retreat_heading = level_three_initial_dragon_retreat_heading(session);
-        for _ in 0..=24 {
+        let mut miss_trace = Vec::with_capacity(25);
+        for flight_turn in 0..=24 {
             let compatibility = session.backend().campaign.level2_compatibility();
             let economy = compatibility.economy();
             launched_projectile_slots.extend(
@@ -11587,6 +14664,75 @@ pub(crate) mod tests {
                         _ => None,
                     }),
             );
+            let flyers = economy
+                .fireball_projectiles()
+                .iter()
+                .filter(|flyer| {
+                    launched_projectile_slots.contains(&flyer.source_entity_index)
+                        && flyer.owner_entity_index == player
+                })
+                .map(|flyer| {
+                    (
+                        flyer.source_entity_index,
+                        economy.slot_generation(flyer.source_entity_index),
+                        flyer.active,
+                        flyer.action,
+                        flyer.life,
+                        flyer.position,
+                        flyer.axis_position,
+                        (flyer.yaw, flyer.pitch, flyer.roll, flyer.fov),
+                        flyer.actual_speed,
+                        flyer.target_source_entity_index,
+                        flyer.acquisition_attempted,
+                        crate::FlightWorld::ground_height(
+                            compatibility.canonical_terrain(),
+                            flyer.position,
+                        ),
+                    )
+                })
+                .collect::<Vec<_>>();
+            let impacts = economy
+                .model17_spawned_children()
+                .iter()
+                .filter(|impact| {
+                    launched_projectile_slots.contains(&impact.parent_entity_index)
+                        && impact.parent_entity_id == player
+                })
+                .map(|impact| {
+                    (
+                        impact.source_entity_index,
+                        economy.slot_generation(impact.source_entity_index),
+                        impact.parent_entity_index,
+                        impact.parent_entity_id,
+                        impact.position,
+                        impact.active,
+                        impact.life,
+                    )
+                })
+                .collect::<Vec<_>>();
+            let typed_target = level_three_dragon_fireball_targets_from_economy(economy)
+                .into_iter()
+                .find(|target| {
+                    target.source_slot == aimed.source_slot && target.generation == aimed.generation
+                });
+            let raw_target = compatibility
+                .entities()
+                .get(usize::from(aimed.source_slot))
+                .map(|row| {
+                    (
+                        row.index,
+                        row.source_id,
+                        economy.slot_generation(row.index),
+                        row.active,
+                        (row.class, row.model, row.action),
+                        row.life,
+                        row.position,
+                        row.drawing_disabled(),
+                        economy.map_chains().is_linked(row.index),
+                    )
+                });
+            miss_trace.push(format!("turn={flight_turn} tick={} typed_target={typed_target:?} raw_target={raw_target:?} flyers={flyers:?} impacts={impacts:?}",
+                session.identity().tick));
             saw_projectile |= economy.fireball_projectiles().iter().any(|projectile| {
                 projectile.owner_entity_index == player
                     && projectile.source_subspell_index
@@ -11790,6 +14936,10 @@ pub(crate) mod tests {
             );
             return DragonFireballCastOutcome::AllocationRace;
         }
+        eprintln!(
+            "guardian terminal Miss: cast_tick={cast_tick} terminal_tick={} requested_root={desired_root:?} aimed={aimed:?} scheduled_target={scheduled_target:?} incoming_state={player_state:?} cast_state={cast_state:?} launch={launch_position:?} aim=({aim_yaw},{aim_pitch}) saw_projectile={saw_projectile} saw_impact={saw_impact} impact_position={impact_position:?} trace={miss_trace:#?}",
+            session.identity().tick,
+        );
         retreat_beyond_level_three_dragon_fireballs_for_test(
             session,
             holder_index,
@@ -11945,8 +15095,572 @@ pub(crate) mod tests {
         matches!(outcome, DragonFireballCastOutcome::Damage(_))
     }
 
+    #[derive(Default)]
+    pub(crate) struct GuardianReplayObservationsForTest {
+        roots: Vec<crate::native_world::Level2AuthoredClass5Source>,
+        mana_by_source: BTreeMap<u16, i32>,
+        generation_by_source: BTreeMap<u16, u32>,
+        root_by_source: BTreeMap<u16, u16>,
+        actions_by_root: BTreeMap<u16, BTreeSet<u8>>,
+        damage_by_root: BTreeMap<u16, BTreeSet<u16>>,
+        output_event_start: Option<usize>,
+        previous_targets: Vec<DragonFireballTarget>,
+        player_projectiles: BTreeSet<(u16, u32)>,
+        corroborated_player_recipients: BTreeSet<(u16, u32)>,
+    }
+
+    pub(crate) struct VerifiedGuardianReplayHistoryForTest {
+        pub(super) frontier: CampaignSnapshot,
+        pub(super) observations: GuardianReplayObservationsForTest,
+    }
+
+    impl GuardianReplayObservationsForTest {
+        pub(super) fn observe(&mut self, session: &GameSession<Mc2CampaignBackend>) {
+            let compatibility = session.backend().campaign.level2_compatibility();
+            let economy = compatibility.economy();
+            let player = compatibility.state.entity_index;
+            if self.roots.is_empty() {
+                let mut roots = economy
+                    .authored_class5()
+                    .iter()
+                    .filter(|root| root.model == 0 && [141, 142].contains(&root.authored_index))
+                    .copied()
+                    .collect::<Vec<_>>();
+                roots.sort_unstable_by_key(|root| root.authored_index);
+                if roots.len() != 2 {
+                    return;
+                }
+                assert_eq!(
+                    roots
+                        .iter()
+                        .map(|root| root.authored_index)
+                        .collect::<Vec<_>>(),
+                    [141, 142]
+                );
+                for root in &roots {
+                    assert!(root.active && root.life == root.max_life);
+                    let root_slot = root.source_entity_index;
+                    self.mana_by_source.insert(root_slot, root.mana);
+                    self.generation_by_source
+                        .insert(root_slot, economy.slot_generation(root_slot));
+                    self.root_by_source.insert(root_slot, root_slot);
+                    let parts = economy
+                        .authored_dragon_parts()
+                        .iter()
+                        .filter(|part| part.entity_id == root_slot)
+                        .collect::<Vec<_>>();
+                    assert_eq!(
+                        parts.len(),
+                        16,
+                        "replay must observe the actual complete Dragon constructor"
+                    );
+                    for part in parts {
+                        assert_eq!(part.root_authored_index, root.authored_index);
+                        assert!(part.active && part.life == part.max_life);
+                        assert!(
+                            self.mana_by_source
+                                .insert(part.source_entity_index, part.mana)
+                                .is_none()
+                        );
+                        self.generation_by_source.insert(
+                            part.source_entity_index,
+                            economy.slot_generation(part.source_entity_index),
+                        );
+                        self.root_by_source
+                            .insert(part.source_entity_index, root_slot);
+                    }
+                }
+                assert_eq!(self.mana_by_source.len(), 34);
+                self.output_event_start = Some(economy.events().len());
+                self.roots = roots;
+            }
+            for root in &self.roots {
+                if let Some(current) = economy.authored_class5().iter().find(|current| {
+                    current.authored_index == root.authored_index
+                        && current.source_entity_index == root.source_entity_index
+                        && economy.slot_generation(current.source_entity_index)
+                            == self.generation_by_source[&root.source_entity_index]
+                }) {
+                    self.actions_by_root
+                        .entry(root.source_entity_index)
+                        .or_default()
+                        .insert(current.action);
+                }
+            }
+            // Use the same live producer/impact/mailbox and source250 delta
+            // attribution as the ordinary Guardian exchange. Retain only
+            // original generation-qualified recipients, never reused slots.
+            self.player_projectiles.extend(
+                economy
+                    .fireball_projectiles()
+                    .iter()
+                    .filter(|projectile| {
+                        projectile.owner_entity_index == player
+                            && projectile.source_subspell_index
+                                == crate::level1_mission::FIREBALL_PAYLOAD as u16
+                    })
+                    .map(|projectile| {
+                        (
+                            projectile.source_entity_index,
+                            economy.slot_generation(projectile.source_entity_index),
+                        )
+                    }),
+            );
+            let current_targets = level_three_dragon_fireball_targets_from_economy(economy);
+            let mut current_recipients = BTreeSet::new();
+            for impact in economy.model17_spawned_children().iter().filter(|impact| {
+                impact.source_class == 10
+                    && impact.model == 0
+                    && impact.parent_entity_id == player
+                    && impact.subspell_index == crate::level1_mission::FIREBALL_PAYLOAD as u16
+                    && self.player_projectiles.contains(&(
+                        impact.parent_entity_index,
+                        economy.slot_generation(impact.parent_entity_index),
+                    ))
+            }) {
+                current_recipients.extend(
+                    level_three_dragon_targets_at_impact(&current_targets, impact.position)
+                        .into_iter()
+                        .map(|target| (target.source_slot, target.generation)),
+                );
+            }
+            current_recipients.extend(
+                economy
+                    .authored_class5()
+                    .iter()
+                    .filter(|root| {
+                        root.pending_word_0x62 == player
+                            && economy.authored_class5_runtime().iter().any(|runtime| {
+                                runtime.source_entity_index == root.source_entity_index
+                                    && runtime.pending_damage
+                                        == crate::level1_mission::FIREBALL_PAYLOAD
+                            })
+                    })
+                    .map(|root| {
+                        (
+                            root.source_entity_index,
+                            economy.slot_generation(root.source_entity_index),
+                        )
+                    }),
+            );
+            current_recipients.extend(
+                economy
+                    .authored_dragon_parts()
+                    .iter()
+                    .filter(|part| {
+                        part.pending_word_0x62 == player
+                            && part.pending_damage == crate::level1_mission::FIREBALL_PAYLOAD
+                    })
+                    .map(|part| {
+                        (
+                            part.source_entity_index,
+                            economy.slot_generation(part.source_entity_index),
+                        )
+                    }),
+            );
+            // Corroboration belongs to this consumption boundary, not every
+            // later root adoption in the same source-slot generation.
+            let recipients = self
+                .corroborated_player_recipients
+                .union(&current_recipients)
+                .copied()
+                .collect::<BTreeSet<_>>();
+            for prior in &self.previous_targets {
+                let Some(current) = current_targets.iter().find(|current| {
+                    current.source_slot == prior.source_slot
+                        && current.generation == prior.generation
+                }) else {
+                    continue;
+                };
+                if self.generation_by_source.get(&current.source_slot) != Some(&current.generation)
+                    || !recipients.contains(&(current.source_slot, current.generation))
+                {
+                    continue;
+                }
+                if level_three_direct_dragon_damage_attribution_for_test(
+                    *prior,
+                    *current,
+                    &current_targets,
+                    player,
+                    &recipients,
+                ) == Some(DragonDamageAttribution::Player)
+                {
+                    assert_eq!(
+                        current.life,
+                        prior
+                            .life
+                            .wrapping_sub(crate::level1_mission::FIREBALL_PAYLOAD)
+                    );
+                    let root_slot = self.root_by_source[&current.source_slot];
+                    self.damage_by_root
+                        .entry(root_slot)
+                        .or_default()
+                        .insert(current.source_slot);
+                }
+            }
+            self.corroborated_player_recipients = current_recipients;
+            self.previous_targets = current_targets;
+        }
+    }
+
+    pub(crate) fn resume_verified_level_three_guardians_for_test(
+        session: &mut GameSession<Mc2CampaignBackend>,
+        history: VerifiedGuardianReplayHistoryForTest,
+    ) {
+        assert_eq!(
+            session.backend().snapshot(),
+            history.frontier,
+            "historical Guardian proof belongs only to its verified replay frontier"
+        );
+        drive_level_three_guardians_with_history_for_test(session, Some(history.observations));
+    }
+
+    /// A historical save supplies semantic inputs only here. Its old state
+    /// receipts are never accepted, edited or resealed. Execute a new current
+    /// session and construct a new save from its actual production snapshot;
+    /// only the normal loader may verify and publish that fresh execution.
+    pub(crate) fn execute_historical_input_trace_as_current_replay_for_test(
+        resolver: &Mc2RuntimePackageResolver,
+        runtime: &mut crate::game_runtime::GameRuntime<Mc2CampaignBackend>,
+        runtime_guard: crate::game_runtime::RuntimeGuard,
+        session_id: u64,
+        bytes: &[u8],
+    ) -> Result<
+        (
+            crate::game_runtime::RuntimeIdentity,
+            VerifiedGuardianReplayHistoryForTest,
+        ),
+        Mc2CampaignReplaySaveError,
+    > {
+        use crate::game_runtime::{ReplayOperation, RestorePlayingError};
+
+        runtime
+            .preflight_title_transition(runtime_guard)
+            .map_err(Mc2CampaignReplaySaveError::Runtime)?;
+        if bytes.len() > MAX_MC2_CAMPAIGN_REPLAY_SAVE_BYTES {
+            return Err(Mc2CampaignReplaySaveError::InvalidSave {
+                message: "historical input trace exceeds the existing byte bound".to_owned(),
+            });
+        }
+        let trace: Mc2CampaignReplaySave = serde_json::from_slice(bytes).map_err(|error| {
+            Mc2CampaignReplaySaveError::InvalidSave {
+                message: format!("historical input trace JSON is invalid: {error}"),
+            }
+        })?;
+        // Verify the retained input envelope's integrity, not its old runtime
+        // state. Current normal load continues to require every old receipt.
+        if !trace.verify() || trace.operations.len() > MAX_MC2_CAMPAIGN_REPLAY_OPERATIONS {
+            return Err(Mc2CampaignReplaySaveError::InvalidSave {
+                message: "historical input trace contract, digest or operation bound is invalid"
+                    .to_owned(),
+            });
+        }
+        trace
+            .definition
+            .verify_identity()
+            .map_err(Mc2CampaignReplaySaveError::Definition)?;
+        let flow = trace.definition.runtime_flow().ok_or_else(|| {
+            Mc2CampaignReplaySaveError::InvalidSave {
+                message: "historical input trace definition has no semantic runtime flow"
+                    .to_owned(),
+            }
+        })?;
+        let package = resolver.package(flow.bound_level_id()).ok_or_else(|| {
+            Mc2CampaignReplaySaveError::InvalidSave {
+                message: "historical input trace has no installed current package".to_owned(),
+            }
+        })?;
+        let catalog = default_catalog().map_err(Mc2CampaignReplaySaveError::Definition)?;
+        trace
+            .definition
+            .verify_semantic_variant_of(&package.definition, &catalog)
+            .map_err(Mc2CampaignReplaySaveError::Definition)?;
+        let mut current = GameSession::open(
+            &Mc2CampaignAdapter,
+            Arc::new(trace.definition),
+            session_id,
+            package.inputs.clone(),
+        )
+        .map_err(|error| {
+            Mc2CampaignReplaySaveError::Restore(RestorePlayingError::Session(error))
+        })?;
+        current
+            .backend_mut()
+            .apply_semantic_spell_carry(&trace.semantic_spell_carry)
+            .map_err(Mc2CampaignReplaySaveError::Runtime)?;
+        for (operation_index, operation) in trace.operations.into_iter().enumerate() {
+            let guard = current.identity().guard();
+            match operation {
+                ReplayOperation::Step { command } => {
+                    current.step(guard, command).map_err(|error| {
+                        Mc2CampaignReplaySaveError::Restore(RestorePlayingError::ReplayStep {
+                            command_index: operation_index,
+                            error,
+                        })
+                    })?;
+                }
+                ReplayOperation::PausedFrame => {
+                    current.paused_frame(guard).map_err(|error| {
+                        Mc2CampaignReplaySaveError::Restore(
+                            RestorePlayingError::ReplayPausedFrame {
+                                operation_index,
+                                error,
+                            },
+                        )
+                    })?;
+                }
+            }
+            let compatibility = current.backend().campaign.level2_compatibility();
+            if compatibility.shared_spells().player_entity().life < 0
+                || compatibility
+                    .economy()
+                    .player_death_markers()
+                    .iter()
+                    .any(|marker| {
+                        marker.trigger_player_entity_index
+                            == compatibility.shared_spells().player_entity().index
+                    })
+                || current.backend().campaign.events().iter().any(|event| {
+                    matches!(
+                        event,
+                        crate::native_world::Level2DispatchEvent::Error { .. }
+                    )
+                })
+            {
+                return Err(Mc2CampaignReplaySaveError::InvalidSave {
+                    message: format!(
+                        "historical input trace produced an unsafe current execution at operation {operation_index}, tick {}, player_life {}, dispatch_errors {:?}",
+                        current.identity().tick,
+                        compatibility.shared_spells().player_entity().life,
+                        current
+                            .backend()
+                            .campaign
+                            .events()
+                            .iter()
+                            .filter(|event| matches!(
+                                event,
+                                crate::native_world::Level2DispatchEvent::Error { .. }
+                            ))
+                            .take(8)
+                            .collect::<Vec<_>>()
+                    ),
+                });
+            }
+        }
+        let actual = current.backend().snapshot();
+        let fresh = Mc2CampaignReplaySave::new(
+            trace.paused,
+            current.definition().as_ref().clone(),
+            current
+                .backend()
+                .initial_semantic_spell_carry()
+                .map_err(Mc2CampaignReplaySaveError::Runtime)?,
+            current.backend().replay_operations.clone(),
+            &actual,
+        );
+        let fresh_bytes = serde_json::to_vec(&fresh).map_err(|error| {
+            Mc2CampaignReplaySaveError::InvalidSave {
+                message: format!("cannot serialize fresh current execution: {error}"),
+            }
+        })?;
+        eprintln!(
+            "historical input trace freshly executed: tick={} state_hash={} retained_old_state_hash={} (old receipts were not verified)",
+            actual.tick, actual.state_hash, trace.expected_state_hash
+        );
+        // This performs a second independent current execution, all existing
+        // exact final receipt checks and atomic publication. No history from
+        // the unverified historical envelope escapes this normal loader.
+        resolver.load_replay_observing_guardians_for_test(
+            runtime,
+            runtime_guard,
+            session_id,
+            &fresh_bytes,
+        )
+    }
+
+    #[test]
+    fn campaign_backend_historical_inputs_execute_fresh_and_keep_stale_receipts_rejected() {
+        let root = level_three_descriptor_fixture_path();
+        let catalog = default_catalog().unwrap();
+        let definition = Arc::new(load_mc2_campaign(&root, &catalog).unwrap());
+        let mut original = GameSession::open(
+            &Mc2CampaignAdapter,
+            definition.clone(),
+            341,
+            Mc2CampaignInputs::new(&root),
+        )
+        .unwrap();
+        for _ in 0..2 {
+            original
+                .step(
+                    guard(&original),
+                    GameCommand {
+                        longitudinal: LongitudinalControl::Accelerate,
+                        ..GameCommand::default()
+                    },
+                )
+                .unwrap();
+        }
+        let expected = original.backend().snapshot();
+        let save = Mc2CampaignReplaySave::new(
+            false,
+            definition.as_ref().clone(),
+            original.backend().initial_semantic_spell_carry().unwrap(),
+            original.backend().replay_operations.clone(),
+            &expected,
+        );
+        // A second actual tiny execution supplies genuine receipts at the
+        // same tick for different inputs. Pair those stale receipts with the
+        // first trace's commands; no retained capture is edited or resealed.
+        let mut alternate = GameSession::open(
+            &Mc2CampaignAdapter,
+            definition.clone(),
+            346,
+            Mc2CampaignInputs::new(&root),
+        )
+        .unwrap();
+        for _ in 0..2 {
+            alternate
+                .step(guard(&alternate), GameCommand::default())
+                .unwrap();
+        }
+        let alternate_snapshot = alternate.backend().snapshot();
+        assert_eq!(alternate_snapshot.tick, expected.tick);
+        assert_ne!(alternate_snapshot.state_hash, expected.state_hash);
+        let stale_save = Mc2CampaignReplaySave::new(
+            false,
+            definition.as_ref().clone(),
+            original.backend().initial_semantic_spell_carry().unwrap(),
+            original.backend().replay_operations.clone(),
+            &alternate_snapshot,
+        );
+        let stale = serde_json::to_vec(&stale_save).unwrap();
+        let valid = serde_json::to_vec(&save).unwrap();
+        assert_ne!(stale, valid);
+        let resolver = Mc2RuntimePackageResolver::load([
+            Mc2CampaignInputs::new(level_one_descriptor_fixture_path()),
+            Mc2CampaignInputs::new(descriptor_fixture_path()),
+            Mc2CampaignInputs::new(&root),
+        ])
+        .unwrap();
+        let assert_old_rejected = |runtime_id| {
+            let mut rejected = crate::game_runtime::GameRuntime::title(runtime_id).unwrap();
+            let before = rejected.identity();
+            assert!(matches!(
+                resolver.load_replay(&mut rejected, before.guard(), runtime_id, &stale),
+                Err(Mc2CampaignReplaySaveError::Restore(
+                    crate::game_runtime::RestorePlayingError::Transition(
+                        crate::game_runtime::RuntimeTransitionError::InvalidReplay { .. }
+                    )
+                ))
+            ));
+            assert_eq!(rejected.identity(), before);
+            assert!(rejected.session().is_none());
+        };
+        assert_old_rejected(342);
+        let mut current = crate::game_runtime::GameRuntime::title(343).unwrap();
+        let current_guard = current.identity().guard();
+        let (identity, history) = execute_historical_input_trace_as_current_replay_for_test(
+            &resolver,
+            &mut current,
+            current_guard,
+            343,
+            &stale,
+        )
+        .unwrap();
+        assert_eq!(identity.mode, crate::game_runtime::RuntimeMode::Playing);
+        assert_eq!(current.session().unwrap().identity().tick, 2);
+        assert_eq!(current.session().unwrap().backend().snapshot(), expected);
+        assert_eq!(history.frontier, expected);
+        // The normal loader must still reject the original bytes afterward.
+        assert_old_rejected(344);
+        let fresh_bytes = resolver.save_replay(&current).unwrap();
+        let mut restored = crate::game_runtime::GameRuntime::title(345).unwrap();
+        let restored_guard = restored.identity().guard();
+        resolver
+            .load_replay(&mut restored, restored_guard, 345, &fresh_bytes)
+            .unwrap();
+        assert_eq!(restored.session().unwrap().backend().snapshot(), expected);
+    }
+
+    #[test]
+    fn campaign_backend_observed_replay_verifies_receipts_before_history_publication() {
+        let root = level_three_descriptor_fixture_path();
+        let catalog = default_catalog().unwrap();
+        let definition = Arc::new(load_mc2_campaign(&root, &catalog).unwrap());
+        let mut original = GameSession::open(
+            &Mc2CampaignAdapter,
+            definition.clone(),
+            337,
+            Mc2CampaignInputs::new(&root),
+        )
+        .unwrap();
+        for _ in 0..2 {
+            original
+                .step(guard(&original), GameCommand::default())
+                .unwrap();
+        }
+        let save = Mc2CampaignReplaySave::new(
+            false,
+            definition.as_ref().clone(),
+            original.backend().initial_semantic_spell_carry().unwrap(),
+            original.backend().replay_operations.clone(),
+            &original.backend().snapshot(),
+        );
+        let bytes = serde_json::to_vec(&save).unwrap();
+        let resolver = Mc2RuntimePackageResolver::load([
+            Mc2CampaignInputs::new(level_one_descriptor_fixture_path()),
+            Mc2CampaignInputs::new(descriptor_fixture_path()),
+            Mc2CampaignInputs::new(&root),
+        ])
+        .unwrap();
+        let mut normal = crate::game_runtime::GameRuntime::title(337).unwrap();
+        let normal_guard = normal.identity().guard();
+        resolver
+            .load_replay(&mut normal, normal_guard, 337, &bytes)
+            .unwrap();
+        let mut observed = crate::game_runtime::GameRuntime::title(338).unwrap();
+        let observed_guard = observed.identity().guard();
+        let mut ticks = Vec::new();
+        resolver
+            .load_replay_observed(&mut observed, observed_guard, 338, &bytes, |candidate| {
+                ticks.push(candidate.identity().tick)
+            })
+            .unwrap();
+        assert_eq!(ticks, [0, 1, 2]);
+        assert_eq!(
+            normal.session().unwrap().backend().snapshot(),
+            observed.session().unwrap().backend().snapshot()
+        );
+        let mut rejected = crate::game_runtime::GameRuntime::title(339).unwrap();
+        let before = rejected.identity();
+        let wrong_receipt = Mc2RuntimePackageResolver::corrupt_save_expected_state_for_test(&bytes);
+        assert!(matches!(
+            resolver.load_replay_observing_guardians_for_test(
+                &mut rejected,
+                before.guard(),
+                339,
+                &wrong_receipt,
+            ),
+            Err(Mc2CampaignReplaySaveError::Restore(
+                crate::game_runtime::RestorePlayingError::Transition(
+                    crate::game_runtime::RuntimeTransitionError::InvalidReplay { .. }
+                )
+            ))
+        ));
+        assert_eq!(rejected.identity(), before);
+        assert!(rejected.session().is_none());
+    }
+
     pub(crate) fn drive_real_level_three_guardian_dragons_to_reveal_entrance_for_test(
         session: &mut GameSession<Mc2CampaignBackend>,
+    ) {
+        drive_level_three_guardians_with_history_for_test(session, None);
+    }
+
+    fn drive_level_three_guardians_with_history_for_test(
+        session: &mut GameSession<Mc2CampaignBackend>,
+        history: Option<GuardianReplayObservationsForTest>,
     ) {
         const DRAGON_AUTHORED_ROWS: [u16; 2] = [141, 142];
         const DRAGON_MODEL: u8 = 0;
@@ -11978,7 +15692,7 @@ pub(crate) mod tests {
             .filter(|source| DRAGON_AUTHORED_ROWS.contains(&source.authored_index))
             .count()
             == DRAGON_AUTHORED_ROWS.len();
-        if !dragons_already_materialized {
+        if history.is_none() && !dragons_already_materialized {
             session
                 .step(guard(session), GameCommand::default())
                 .unwrap();
@@ -12001,13 +15715,18 @@ pub(crate) mod tests {
             );
         }
         let compatibility = session.backend().campaign.level2_compatibility();
-        let mut dragon_roots = compatibility
-            .economy()
-            .authored_class5()
-            .iter()
-            .filter(|source| source.model == DRAGON_MODEL)
-            .copied()
-            .collect::<Vec<_>>();
+        let mut dragon_roots = history.as_ref().map_or_else(
+            || {
+                compatibility
+                    .economy()
+                    .authored_class5()
+                    .iter()
+                    .filter(|source| source.model == DRAGON_MODEL)
+                    .copied()
+                    .collect::<Vec<_>>()
+            },
+            |history| history.roots.clone(),
+        );
         dragon_roots.sort_unstable_by_key(|source| source.authored_index);
         assert_eq!(
             dragon_roots
@@ -12022,30 +15741,54 @@ pub(crate) mod tests {
             .collect::<Vec<_>>();
         let mut expected_death_sources = BTreeSet::new();
         let mut expected_mana_by_source = BTreeMap::new();
-        for root in &dragon_roots {
-            let root_slot = root.source_entity_index;
-            expected_death_sources.insert(root_slot);
-            expected_mana_by_source.insert(root_slot, root.mana);
-            let body_rows = compatibility
-                .economy()
-                .authored_dragon_parts()
-                .iter()
-                .filter(|part| part.entity_id == root_slot)
-                .copied()
-                .collect::<Vec<_>>();
-            assert_eq!(body_rows.len(), DRAGON_PART_COUNT);
-            for part in body_rows {
-                expected_death_sources.insert(part.source_entity_index);
-                expected_mana_by_source.insert(part.source_entity_index, part.mana);
+        if let Some(history) = &history {
+            assert_eq!(history.generation_by_source.len(), 34);
+            assert_eq!(history.root_by_source.len(), 34);
+            expected_death_sources.extend(history.mana_by_source.keys().copied());
+            expected_mana_by_source = history.mana_by_source.clone();
+        } else {
+            for root in &dragon_roots {
+                let root_slot = root.source_entity_index;
+                expected_death_sources.insert(root_slot);
+                expected_mana_by_source.insert(root_slot, root.mana);
+                let body_rows = compatibility
+                    .economy()
+                    .authored_dragon_parts()
+                    .iter()
+                    .filter(|part| part.entity_id == root_slot)
+                    .copied()
+                    .collect::<Vec<_>>();
+                assert_eq!(body_rows.len(), DRAGON_PART_COUNT);
+                for part in body_rows {
+                    expected_death_sources.insert(part.source_entity_index);
+                    expected_mana_by_source.insert(part.source_entity_index, part.mana);
+                }
             }
         }
         assert_eq!(expected_death_sources.len(), 34);
 
-        let event_count_before = compatibility.economy().events().len();
-        let mut actual_damage_sources = BTreeSet::new();
+        let event_count_before = history.as_ref().map_or_else(
+            || compatibility.economy().events().len(),
+            |history| {
+                history
+                    .output_event_start
+                    .expect("replay observed the original constructor")
+            },
+        );
+        let mut actual_damage_sources = history.as_ref().map_or_else(BTreeSet::new, |history| {
+            history.damage_by_root.values().flatten().copied().collect()
+        });
         for (dragon_index, root_slot) in dragon_source_slots.iter().copied().enumerate() {
-            let mut observed_root_actions = BTreeSet::new();
-            let mut root_damage_sources = BTreeSet::new();
+            let mut observed_root_actions = history
+                .as_ref()
+                .and_then(|history| history.actions_by_root.get(&root_slot))
+                .cloned()
+                .unwrap_or_default();
+            let mut root_damage_sources = history
+                .as_ref()
+                .and_then(|history| history.damage_by_root.get(&root_slot))
+                .cloned()
+                .unwrap_or_default();
             for cast_index in 0..MAX_PUBLIC_CASTS_PER_DRAGON {
                 let root_is_terminal = session
                     .backend()
@@ -12752,9 +16495,47 @@ pub(crate) mod tests {
             && state.immobilize_subcounter == 0
             && state.tether_target_index == 0
             && state.tether_holder_index == 0
-            && state.speed_spell_holder_index == 0
+            // This is acquired-holder identity, not an active modifier. The
+            // production callback projects it even when Speed is inactive.
             && !state.recovery_latch
             && !state.skip_flight_once
+    }
+
+    #[test]
+    fn level_three_public_macro_allows_acquired_speed_holder_but_rejects_active_modifiers() {
+        let state = crate::FlightState {
+            speed_spell_holder_index: 256,
+            ..crate::FlightState::default()
+        };
+        assert!(level_three_public_macro_state_is_unmodified(state));
+        for modified in [
+            crate::FlightState {
+                speed_modifier: 1,
+                ..state
+            },
+            crate::FlightState {
+                speed_modifier_counter: 1,
+                ..state
+            },
+            crate::FlightState {
+                impulse_z: 1,
+                ..state
+            },
+            crate::FlightState {
+                recovery_latch: true,
+                ..state
+            },
+            crate::FlightState {
+                skip_flight_once: true,
+                ..state
+            },
+            crate::FlightState {
+                tether_holder_index: 1,
+                ..state
+            },
+        ] {
+            assert!(!level_three_public_macro_state_is_unmodified(modified));
+        }
     }
 
     fn predict_level_three_public_macro_command_from_state(
@@ -12768,6 +16549,40 @@ pub(crate) mod tests {
             "public command-macro prediction rejects modifiers, impulses, tether, and redirect-origin state: {predicted:?}"
         );
         let mut context = crate::FlightContext::default();
+        if predicted.speed_spell_holder_index != 0 {
+            // Preserve the source registry used by movement rejection to stop
+            // Speed. An acquired inactive holder still participates in that
+            // callback; a default context would discard its cross-entity state.
+            let shared = compatibility.shared_spells();
+            let holder = shared
+                .pickups()
+                .iter()
+                .chain(shared.holders().iter())
+                .chain(shared.dynamic_pickups().iter())
+                .find(|holder| holder.index == predicted.speed_spell_holder_index)
+                .expect("the acquired Speed holder remains in the source registry");
+            assert_eq!(holder.model, 3);
+            assert_eq!(
+                holder.active_value, 0,
+                "rest-turn prediction requires inactive Speed"
+            );
+            context.speed_spell_holder = Some(crate::SpellHolder {
+                entity_index: holder.index,
+                active_value: holder.active_value,
+            });
+            context.spell_fire = Some(crate::SpellFireContext {
+                holders: vec![crate::SpellActivationHolder {
+                    entity_index: holder.index,
+                    model: holder.model,
+                    level_gate: holder.level_gate,
+                    active_value: holder.active_value,
+                    activation_value: holder.activation_value,
+                    mana_cost: holder.mana_cost,
+                    action_marker: holder.action_marker,
+                }],
+                ..crate::SpellFireContext::default()
+            });
+        }
         let latched = crate::latch_command(&mut predicted, campaign_player_command(command));
         let evidence = crate::step_entity_pass_with_context_and_tuning(
             &mut predicted,
@@ -12826,9 +16641,10 @@ pub(crate) mod tests {
         let state = compatibility.state;
         let target = level_three_dragon_fireball_targets_from_economy(compatibility.economy())
             .into_iter()
-            .filter(|target| {
-                target.source_slot != target.root_slot && target.source_slot > target.root_slot
-            })
+            // Each body retains independent health. The source root only
+            // adopts a lower linked-child life; damage across healthier
+            // segments is not summed. Aim at the root's current kill carrier.
+            .filter(|target| target.source_slot == target.root_slot)
             .filter(|target| desired_root.is_none_or(|root| target.root_slot == root))
             .min_by_key(|target| {
                 let dx = i64::from(i32::from(
@@ -12913,13 +16729,63 @@ pub(crate) mod tests {
         stencil.into_iter().collect()
     }
 
+    fn trace_level_three_public_pursuit_candidate_for_test(
+        session: &GameSession<Mc2CampaignBackend>,
+        desired_root: Option<u16>,
+        command: &GameCommand,
+        predicted: &crate::campaign::CampaignSession,
+        evidence: &[crate::StepEvidence],
+    ) {
+        if std::env::var_os("MC_DRAGON_PURSUIT_DIAGNOSTIC").is_none() {
+            return;
+        }
+        let before = session.backend().campaign.level2_compatibility();
+        let after = predicted.level2_compatibility();
+        eprintln!(
+            "Dragon pursuit candidate: tick={} command={command:?} state={:?}->{:?} life={}->{} holders={:?}->{:?} mailbox={:?}->{:?} speed_holder_before={:?} context_event_count={} damage_receipts={:?} attributed_damage={:?} movement={evidence:?} scores={:?}->{:?} unmodified={} errors={:?}",
+            session.identity().tick,
+            before.state,
+            after.state,
+            before.shared_spells().player_entity().life,
+            after.shared_spells().player_entity().life,
+            before.shared_spells().local_player().enabled_spell_holders,
+            after.shared_spells().local_player().enabled_spell_holders,
+            level_three_player_raw_mailbox_for_test(before),
+            level_three_player_raw_mailbox_for_test(after),
+            before.context.speed_spell_holder,
+            before.context.events.len(),
+            after
+                .economy()
+                .events()
+                .iter()
+                .skip(before.economy().events().len())
+                .filter(|event| matches!(
+                    event,
+                    crate::native_world::Level2EconomyEvent::DamageApplied { .. }
+                ))
+                .take(4)
+                .collect::<Vec<_>>(),
+            level_three_source_attributed_retreat_damage_for_test(before, after),
+            level_three_public_pursuit_score_for_test(before, desired_root, command.roll_axis),
+            level_three_public_pursuit_score_for_test(after, desired_root, command.roll_axis),
+            level_three_public_macro_state_is_unmodified(after.state),
+            predicted
+                .events()
+                .iter()
+                .filter(|event| matches!(
+                    event,
+                    crate::native_world::Level2DispatchEvent::Error { .. }
+                ))
+                .collect::<Vec<_>>(),
+        );
+    }
+
     fn level_three_public_high_speed_pursuit_candidate_for_test(
         session: &GameSession<Mc2CampaignBackend>,
         desired_root: Option<u16>,
         roll_axis: i8,
     ) -> Option<(LevelThreePublicPursuitScore, GameCommand)> {
         let before = session.backend().campaign.level2_compatibility();
-        let before_life = before.shared_spells().player_entity().life;
         let command = GameCommand {
             longitudinal: LongitudinalControl::Accelerate,
             roll_axis,
@@ -12930,6 +16796,13 @@ pub(crate) mod tests {
             campaign_player_command(&command),
             CAMPAIGN_SPEED_INDEX,
             session.backend().flight_binding.tuning(),
+        );
+        trace_level_three_public_pursuit_candidate_for_test(
+            session,
+            desired_root,
+            &command,
+            &predicted,
+            &evidence,
         );
         if predicted.events().iter().any(|event| {
             matches!(
@@ -12950,7 +16823,8 @@ pub(crate) mod tests {
         }
         let compatibility = predicted.level2_compatibility();
         if !level_three_public_macro_state_is_unmodified(compatibility.state)
-            || compatibility.shared_spells().player_entity().life < before_life
+            || level_three_source_attributed_retreat_damage_for_test(before, compatibility)
+                .is_none()
         {
             return None;
         }
@@ -12997,7 +16871,6 @@ pub(crate) mod tests {
     ) -> Option<(LevelThreePublicPursuitScore, GameCommand)> {
         let before = session.backend().campaign.level2_compatibility();
         let before_state = before.state;
-        let before_life = before.shared_spells().player_entity().life;
         let before_holders = before.shared_spells().local_player().enabled_spell_holders;
         let before_distance = level_three_dragon_launch_gap_for_test(before, desired_root)?.1;
         let command = GameCommand {
@@ -13010,6 +16883,13 @@ pub(crate) mod tests {
             campaign_player_command(&command),
             CAMPAIGN_SPEED_INDEX,
             session.backend().flight_binding.tuning(),
+        );
+        trace_level_three_public_pursuit_candidate_for_test(
+            session,
+            desired_root,
+            &command,
+            &predicted,
+            &evidence,
         );
         if predicted.events().iter().any(|event| {
             matches!(
@@ -13028,7 +16908,7 @@ pub(crate) mod tests {
         }
         let after = predicted.level2_compatibility();
         if !level_three_public_macro_state_is_unmodified(after.state)
-            || after.shared_spells().player_entity().life < before_life
+            || level_three_source_attributed_retreat_damage_for_test(before, after).is_none()
             || after.shared_spells().local_player().enabled_spell_holders != before_holders
         {
             return None;
@@ -13222,6 +17102,128 @@ pub(crate) mod tests {
         None
     }
 
+    fn level_three_public_source_safe_pursuit_command_for_test(
+        session: &GameSession<Mc2CampaignBackend>,
+        desired_root: Option<u16>,
+    ) -> Option<(LevelThreePublicPursuitScore, GameCommand)> {
+        let before = session.backend().campaign.level2_compatibility();
+        let (target, _, _) = level_three_dragon_launch_gap_for_test(before, desired_root)?;
+        let state = before.state;
+        let desired = i16::try_from(crate::heading_for_positions(
+            state.position,
+            target.position,
+        ))
+        .expect("source heading is 11-bit");
+        let mut command = level_three_source_safe_flight_command(state, desired, false);
+        // The existing terrain controller uses negative pitch to climb. A
+        // distant body above the current carpet may require altitude before
+        // its next safe translation can reduce the horizontal launch gap.
+        if target.position.z > state.position.z {
+            command.pitch_axis = -127;
+        }
+        let mut predicted = session.backend().campaign.clone();
+        let evidence = predicted.step_with_tuning(
+            campaign_player_command(&command),
+            CAMPAIGN_SPEED_INDEX,
+            session.backend().flight_binding.tuning(),
+        );
+        if std::env::var_os("MC_DRAGON_PURSUIT_DIAGNOSTIC").is_some() {
+            let after = predicted.level2_compatibility();
+            let same_target_sign = (state.target_speed >= 0 && after.state.target_speed >= 0)
+                || (state.target_speed <= 0 && after.state.target_speed <= 0);
+            let same_actual_sign = (state.actual_speed >= 0 && after.state.actual_speed >= 0)
+                || (state.actual_speed <= 0 && after.state.actual_speed <= 0);
+            let braking = same_target_sign
+                && same_actual_sign
+                && after.state.target_speed.unsigned_abs() <= state.target_speed.unsigned_abs()
+                && after.state.actual_speed.unsigned_abs() <= state.actual_speed.unsigned_abs()
+                && (after.state.target_speed.unsigned_abs() < state.target_speed.unsigned_abs()
+                    || after.state.actual_speed.unsigned_abs() < state.actual_speed.unsigned_abs());
+            let heading_improved =
+                crate::angle_distance(i32::from(after.state.yaw), i32::from(desired))
+                    .unsigned_abs()
+                    < crate::angle_distance(i32::from(state.yaw), i32::from(desired))
+                        .unsigned_abs();
+            let climbing = command.pitch_axis < 0
+                && after.state.position.z > state.position.z
+                && i32::from(target.position.z).abs_diff(i32::from(after.state.position.z))
+                    < i32::from(target.position.z).abs_diff(i32::from(state.position.z));
+            let before_score =
+                level_three_public_pursuit_score_for_test(before, desired_root, command.roll_axis);
+            let after_score =
+                level_three_public_pursuit_score_for_test(after, desired_root, command.roll_axis);
+            eprintln!(
+                "Dragon selected fallback diagnostic: tick={} target={target:?} desired={desired} command={command:?} before_state={state:#?} before_life={} before_holders={:?} movement={:?} after_state={:#?} after_life={} after_holders={:?} dispatch_errors={:?} unmodified={} braking={braking} heading_improved={heading_improved} climbing={climbing} scores={before_score:?}->{after_score:?}",
+                session.identity().tick,
+                before.shared_spells().player_entity().life,
+                before.shared_spells().local_player().enabled_spell_holders,
+                evidence
+                    .first()
+                    .map(|evidence| evidence.movement_resolution),
+                after.state,
+                after.shared_spells().player_entity().life,
+                after.shared_spells().local_player().enabled_spell_holders,
+                predicted
+                    .events()
+                    .iter()
+                    .filter(|event| matches!(
+                        event,
+                        crate::native_world::Level2DispatchEvent::Error { .. }
+                    ))
+                    .collect::<Vec<_>>(),
+                level_three_public_macro_state_is_unmodified(after.state),
+            );
+        }
+        if predicted.events().iter().any(|event| {
+            matches!(
+                event,
+                crate::native_world::Level2DispatchEvent::Error { .. }
+            )
+        }) {
+            return None;
+        }
+        let evidence = evidence.into_iter().next()?;
+        if matches!(
+            evidence.movement_resolution,
+            "skipped" | "rejected" | "rejected-and-stopped" | "recovered-after-reject"
+        ) {
+            return None;
+        }
+        let after = predicted.level2_compatibility();
+        if !level_three_public_macro_state_is_unmodified(after.state)
+            || level_three_source_attributed_retreat_damage_for_test(before, after).is_none()
+            || after.shared_spells().local_player().enabled_spell_holders
+                != before.shared_spells().local_player().enabled_spell_holders
+        {
+            return None;
+        }
+        let same_speed_sign = (state.target_speed >= 0 && after.state.target_speed >= 0)
+            || (state.target_speed <= 0 && after.state.target_speed <= 0);
+        let same_actual_sign = (state.actual_speed >= 0 && after.state.actual_speed >= 0)
+            || (state.actual_speed <= 0 && after.state.actual_speed <= 0);
+        let braking = same_speed_sign
+            && same_actual_sign
+            && after.state.target_speed.unsigned_abs() <= state.target_speed.unsigned_abs()
+            && after.state.actual_speed.unsigned_abs() <= state.actual_speed.unsigned_abs()
+            && (after.state.target_speed.unsigned_abs() < state.target_speed.unsigned_abs()
+                || after.state.actual_speed.unsigned_abs() < state.actual_speed.unsigned_abs());
+        let heading_improved =
+            crate::angle_distance(i32::from(after.state.yaw), i32::from(desired)).unsigned_abs()
+                < crate::angle_distance(i32::from(state.yaw), i32::from(desired)).unsigned_abs();
+        let climbing = command.pitch_axis < 0
+            && after.state.position.z > state.position.z
+            && i32::from(target.position.z).abs_diff(i32::from(after.state.position.z))
+                < i32::from(target.position.z).abs_diff(i32::from(state.position.z));
+        let before_score =
+            level_three_public_pursuit_score_for_test(before, desired_root, command.roll_axis)?;
+        let score =
+            level_three_public_pursuit_score_for_test(after, desired_root, command.roll_axis)?;
+        if !braking && !heading_improved && !climbing && score.0 >= before_score.0 {
+            return None;
+        }
+        Some((score, command))
+    }
+
     fn level_three_public_high_speed_pursuit_command_for_test(
         session: &GameSession<Mc2CampaignBackend>,
         desired_root: Option<u16>,
@@ -13267,7 +17269,11 @@ pub(crate) mod tests {
                 )
             })
             .min_by_key(|(score, _)| *score);
-        fallback.or_else(|| level_three_public_at_rest_pursuit_turn_for_test(session, desired_root))
+        fallback
+            .or_else(|| level_three_public_at_rest_pursuit_turn_for_test(session, desired_root))
+            .or_else(|| {
+                level_three_public_source_safe_pursuit_command_for_test(session, desired_root)
+            })
     }
 
     fn level_three_dragon_retreat_state_for_test(
@@ -13402,6 +17408,46 @@ pub(crate) mod tests {
         )
     }
 
+    fn level_three_terminal_authored_dragon_mailbox_for_test(
+        before: &crate::native_world::Level2ResetSession,
+        after: &crate::native_world::Level2ResetSession,
+        attacker: u16,
+    ) -> bool {
+        // A source-arrived player mailbox survives its producer's pre-kill.
+        // Bind to the current authored guardian root and unchanged NewEvent
+        // generation, not its numeric slot or an assumed imported generation.
+        let player = before.shared_spells().player_entity().index;
+        if after.shared_spells().player_entity().index != player
+            || level_three_player_raw_mailbox_for_test(before) != (500, attacker)
+            || level_three_player_raw_mailbox_for_test(after).1 != 0
+            || before.economy().slot_generation(attacker)
+                != after.economy().slot_generation(attacker)
+        {
+            return false;
+        }
+        let root = before.economy().authored_class5().iter().find(|root| {
+            root.source_entity_index == attacker
+                && matches!(root.authored_index, 141 | 142)
+                && root.model == 0
+                && root.active
+                && root.life < 0
+                && root.action == 5
+        });
+        root.is_some_and(|root| {
+            after.economy().authored_class5().iter().any(|current| {
+                current.source_entity_index == attacker
+                    && current.authored_index == root.authored_index
+                    && current.model == 0
+                    && current.life < 0
+                    && current.action == 5
+            })
+        }) && before
+            .economy()
+            .authored_dragons()
+            .iter()
+            .any(|root| root.source_entity_index == attacker)
+    }
+
     fn level_three_source_attributed_retreat_damage_for_test(
         before: &crate::native_world::Level2ResetSession,
         after: &crate::native_world::Level2ResetSession,
@@ -13526,6 +17572,11 @@ pub(crate) mod tests {
             {
                 let direct_root =
                     roots.contains(attacker_entity_index) && has_live_chain(*attacker_entity_index);
+                let terminal_root_mailbox = level_three_terminal_authored_dragon_mailbox_for_test(
+                    before,
+                    after,
+                    *attacker_entity_index,
+                );
                 let imported_worm = level_three_imported_worm_attacker_for_test(
                     before,
                     *attacker_entity_index,
@@ -13609,6 +17660,7 @@ pub(crate) mod tests {
                 if *lethal
                     || *damage != 500
                     || (!direct_root
+                        && !terminal_root_mailbox
                         && impact_root.is_none()
                         && !transient_impact
                         && !imported_worm)
@@ -14410,6 +18462,9 @@ pub(crate) mod tests {
         session: &mut GameSession<Mc2CampaignBackend>,
         desired: i16,
     ) {
+        // Source tangent headings can include 2048; live yaw and steering use
+        // the equivalent 11-bit heading. Keep the final assertion canonical too.
+        let desired = desired & 0x07ff;
         let state = session.backend().campaign.level2_compatibility().state;
         let commands = level_three_turn_at_rest_commands_for_test(session, state, desired);
         for command in commands {
@@ -14465,6 +18520,55 @@ pub(crate) mod tests {
             "ordinary public Coast/brake feedback did not normalize motion to rest: {:?}",
             session.backend().campaign.level2_compatibility().state
         );
+    }
+
+    #[test]
+    fn campaign_backend_level_three_public_rest_turn_accepts_wrapped_heading_without_a_step() {
+        let root = level_three_descriptor_fixture_path();
+        let catalog = default_catalog().unwrap();
+        let definition = Arc::new(load_mc2_campaign(&root, &catalog).unwrap());
+        let mut session = GameSession::open(
+            &Mc2CampaignAdapter,
+            definition,
+            67,
+            Mc2CampaignInputs::new(&root),
+        )
+        .unwrap();
+        let before = session.backend().campaign.level2_compatibility().state;
+        assert_eq!(
+            (
+                before.yaw,
+                before.roll_accumulator,
+                before.target_speed,
+                before.actual_speed
+            ),
+            (0, 0, 0, 0)
+        );
+        let hash = session.backend().campaign.state_hash();
+        for heading in [2048, -2048, 4096] {
+            turn_level_three_public_macro_to_heading(&mut session, heading);
+            assert_eq!(
+                session.backend().campaign.level2_compatibility().state,
+                before
+            );
+            assert_eq!(session.backend().campaign.state_hash(), hash);
+        }
+        // A neighboring heading must still execute the ordinary turn and meet
+        // the exact terminal-state assertion rather than being treated as zero.
+        turn_level_three_public_macro_to_heading(&mut session, 2049);
+        let turned = session.backend().campaign.level2_compatibility().state;
+        assert_eq!(
+            (
+                turned.yaw,
+                turned.roll_accumulator,
+                turned.target_speed,
+                turned.actual_speed
+            ),
+            (1, 0, 0, 0)
+        );
+        assert_eq!(turned.position.x, before.position.x);
+        assert_eq!(turned.position.y, before.position.y);
+        assert_ne!(session.backend().campaign.state_hash(), hash);
     }
 
     #[test]
@@ -15798,6 +19902,210 @@ pub(crate) mod tests {
     }
 
     #[test]
+    #[ignore = "requires MC_LEVEL3_DRAGON_PURSUIT_REPLAY from the actual current root180 frontier"]
+    fn campaign_backend_public_pursuit_advances_verified_moving_dragon_frontier() {
+        let path = std::env::var_os("MC_LEVEL3_DRAGON_PURSUIT_REPLAY")
+            .expect("set the exact current Dragon pursuit frontier replay");
+        let bytes = std::fs::read(path).unwrap();
+        let resolver = Mc2RuntimePackageResolver::load([
+            Mc2CampaignInputs::new(level_one_descriptor_fixture_path()),
+            Mc2CampaignInputs::new(descriptor_fixture_path()),
+            Mc2CampaignInputs::new(level_three_descriptor_fixture_path()),
+        ])
+        .unwrap();
+        let mut runtime = crate::game_runtime::GameRuntime::title(334).unwrap();
+        let runtime_guard = runtime.identity().guard();
+        resolver
+            .load_replay(&mut runtime, runtime_guard, 334, &bytes)
+            .expect("current frontier must reproduce every production receipt");
+        let session = runtime.session_mut().unwrap();
+        assert_eq!(session.identity().tick, 27_939);
+        let before = session.backend().campaign.level2_compatibility().clone();
+        let (target, _, gap) = level_three_dragon_launch_gap_for_test(&before, Some(180))
+            .expect("same live root180 remains the sole requested target");
+        assert_eq!(
+            (
+                target.source_slot,
+                target.root_slot,
+                target.generation,
+                target.life
+            ),
+            (180, 180, 6, 750)
+        );
+        assert_eq!(
+            before.state.position,
+            crate::Position {
+                x: 34_739,
+                y: 42_239,
+                z: 1_829
+            }
+        );
+        assert_eq!(
+            target.position,
+            crate::Position {
+                x: 27_777,
+                y: 42_601,
+                z: 3_942
+            }
+        );
+        assert!(gap > 0);
+        let before_hash = session.backend().campaign.state_hash();
+        let candidate = level_three_public_high_speed_pursuit_command_for_test(session, Some(180));
+        assert_eq!(
+            session.backend().campaign.state_hash(),
+            before_hash,
+            "source candidate search remains observational"
+        );
+        let (_, command) =
+            candidate.expect("verified moving root frontier admits an ordinary safe pursuit turn");
+        assert!(!command.cast_left && !command.cast_right && !command.cast_selected);
+        let mut predicted = session.backend().campaign.clone();
+        let evidence = predicted.step_with_tuning(
+            campaign_player_command(&command),
+            CAMPAIGN_SPEED_INDEX,
+            session.backend().flight_binding.tuning(),
+        );
+        trace_level_three_public_pursuit_candidate_for_test(
+            session,
+            Some(180),
+            &command,
+            &predicted,
+            &evidence,
+        );
+        let after = predicted.level2_compatibility();
+        assert!(level_three_public_macro_state_is_unmodified(after.state));
+        assert_eq!(before.shared_spells().player_entity().life, 9_120);
+        assert_eq!(
+            level_three_source_attributed_retreat_damage_for_test(&before, after),
+            Some(500),
+            "only the actual generation-qualified source damage may admit this turn"
+        );
+        assert_eq!(after.shared_spells().player_entity().life, 8_620);
+        assert!(after.shared_spells().player_entity().life > 0);
+        assert_eq!(
+            after.shared_spells().local_player().enabled_spell_holders,
+            before.shared_spells().local_player().enabled_spell_holders
+        );
+        assert!(!predicted.events().iter().any(|event| matches!(
+            event,
+            crate::native_world::Level2DispatchEvent::Error { .. }
+        )));
+        let expected_hash = predicted.state_hash();
+        step_level_three_public_macro_command(session, command);
+        assert_eq!(session.identity().tick, 27_940);
+        assert_eq!(session.backend().campaign.state_hash(), expected_hash);
+        assert_eq!(
+            session
+                .backend()
+                .campaign
+                .level2_compatibility()
+                .economy()
+                .slot_generation(180),
+            6
+        );
+    }
+
+    #[test]
+    #[ignore = "requires MC_LEVEL3_DRAGON_RETREAT_REPLAY from the actual terminal-root frontier"]
+    fn campaign_backend_public_retreat_consumes_verified_terminal_dragon_mailbox() {
+        let path = std::env::var_os("MC_LEVEL3_DRAGON_RETREAT_REPLAY")
+            .expect("set the actual Dragon retreat frontier replay");
+        let bytes = std::fs::read(path).unwrap();
+        let resolver = Mc2RuntimePackageResolver::load([
+            Mc2CampaignInputs::new(level_one_descriptor_fixture_path()),
+            Mc2CampaignInputs::new(descriptor_fixture_path()),
+            Mc2CampaignInputs::new(level_three_descriptor_fixture_path()),
+        ])
+        .unwrap();
+        let mut runtime = crate::game_runtime::GameRuntime::title(333).unwrap();
+        let runtime_guard = runtime.identity().guard();
+        resolver
+            .load_replay(&mut runtime, runtime_guard, 333, &bytes)
+            .unwrap();
+        let session = runtime.session_mut().unwrap();
+        assert_eq!(session.identity().tick, 17_755);
+        let before = session.backend().campaign.level2_compatibility().clone();
+        assert_eq!(level_three_player_raw_mailbox_for_test(&before), (500, 93));
+        let imported_slot = &before.entities()[93];
+        assert!(!imported_slot.active);
+        assert_eq!((imported_slot.class, imported_slot.model), (0, 9));
+        // Authored NewEvent state owns this reused slot. The original imported
+        // record is still present, but cannot qualify its current producer.
+        let mut diagnostic = session.backend().campaign.clone();
+        diagnostic.step_with_tuning(
+            campaign_player_command(&GameCommand {
+                longitudinal: LongitudinalControl::Accelerate,
+                ..GameCommand::default()
+            }),
+            CAMPAIGN_SPEED_INDEX,
+            session.backend().flight_binding.tuning(),
+        );
+        let diagnostic_after = diagnostic.level2_compatibility();
+        eprintln!(
+            "terminal Dragon mailbox boundary: generation={}->{} before_typed={:?} after_typed={:?} before_raw={:?} after_raw={:?} root_sidecar={} mailbox={:?}->{:?} attributed={:?}",
+            before.economy().slot_generation(93),
+            diagnostic_after.economy().slot_generation(93),
+            before
+                .economy()
+                .authored_class5()
+                .iter()
+                .find(|root| root.source_entity_index == 93),
+            diagnostic_after
+                .economy()
+                .authored_class5()
+                .iter()
+                .find(|root| root.source_entity_index == 93),
+            before.entities().get(93),
+            diagnostic_after.entities().get(93),
+            before
+                .economy()
+                .authored_dragons()
+                .iter()
+                .any(|root| root.source_entity_index == 93),
+            level_three_player_raw_mailbox_for_test(&before),
+            level_three_player_raw_mailbox_for_test(diagnostic_after),
+            level_three_source_attributed_retreat_damage_for_test(&before, diagnostic_after),
+        );
+        let (_, command) = level_three_public_high_speed_retreat_command_for_test(session, None)
+            .expect("the real queued terminal-root damage must not strand public retreat");
+        let mut predicted = session.backend().campaign.clone();
+        predicted.step_with_tuning(
+            campaign_player_command(&command),
+            CAMPAIGN_SPEED_INDEX,
+            session.backend().flight_binding.tuning(),
+        );
+        let after = predicted.level2_compatibility();
+        assert!(level_three_terminal_authored_dragon_mailbox_for_test(
+            &before, after, 93
+        ));
+        assert!(!level_three_terminal_authored_dragon_mailbox_for_test(
+            &before, after, 180
+        ));
+        assert_eq!(
+            level_three_source_attributed_retreat_damage_for_test(&before, after),
+            Some(500)
+        );
+        assert_eq!(after.shared_spells().player_entity().life, 8_305);
+        assert_eq!(
+            after.shared_spells().local_player().enabled_spell_holders,
+            before.shared_spells().local_player().enabled_spell_holders
+        );
+        let expected_hash = predicted.state_hash();
+        step_level_three_public_macro_command(session, command);
+        assert_eq!(session.backend().campaign.state_hash(), expected_hash);
+        assert_eq!(
+            session
+                .backend()
+                .campaign
+                .level2_compatibility()
+                .shared_spells()
+                .player_entity()
+                .life,
+            8_305
+        );
+    }
+
+    #[test]
     fn campaign_backend_signed_flight_controller_brakes_without_crossing_into_reverse() {
         let mut state = crate::FlightState::default();
         state.yaw = 0;
@@ -16321,6 +20629,170 @@ pub(crate) mod tests {
         );
     }
 
+    /// Traverse the source-admitted component using ordinary guarded flight.
+    /// Shared by package-bound Castle economy chains on Levels 2 and 3.
+    fn fly_real_castle_charge_leg_for_test(
+        session: &mut GameSession<Mc2CampaignBackend>,
+        target: crate::Position,
+        castle_overlap_required: bool,
+    ) {
+        fly_real_castle_leg_for_test(session, target, castle_overlap_required, false);
+    }
+
+    fn fly_real_castle_build_leg_for_test(
+        session: &mut GameSession<Mc2CampaignBackend>,
+        launch_site: crate::Position,
+    ) {
+        // Reach the raw parent position for a source left-hand launch at
+        // yaw zero. This only selects a public flight destination.
+        let mut target = launch_site;
+        crate::move_entity(&mut target, 512, 0, 256);
+        fly_real_castle_leg_for_test(session, target, false, true);
+    }
+
+    fn fly_real_castle_leg_for_test(
+        session: &mut GameSession<Mc2CampaignBackend>,
+        target: crate::Position,
+        castle_overlap_required: bool,
+        castle_launch_required: bool,
+    ) {
+        let compatibility = session.backend().campaign.level2_compatibility();
+        let (waypoints, edges, _) = level_three_source_route_to_sites_for_test(
+            session,
+            compatibility.state.position,
+            vec![target],
+            &[],
+            0,
+        )
+        .expect("the real Castle-charge destination is source-connected");
+        let bound = edges
+            .saturating_mul(24)
+            .saturating_add(waypoints.len().saturating_mul(8))
+            .saturating_add(256);
+        let mut waypoint_index = 0;
+        for _ in 0..bound {
+            let compatibility = session.backend().campaign.level2_compatibility();
+            let state = compatibility.state;
+            let player = compatibility.shared_spells().player_entity();
+            assert!(
+                player.life >= 0,
+                "public Castle-charge flight keeps the player alive: tick={} life={} position={:?} target={target:?} waypoint={waypoint_index}/{} mailbox={:?}",
+                session.identity().tick,
+                player.life,
+                state.position,
+                waypoints.len(),
+                level_three_player_raw_mailbox_for_test(compatibility)
+            );
+            let waypoint = waypoints[waypoint_index];
+            let dx = i32::from(waypoint.x.wrapping_sub(state.position.x).cast_signed());
+            let dy = i32::from(waypoint.y.wrapping_sub(state.position.y).cast_signed());
+            let distance = crate::legacy_sqrt(
+                dx.wrapping_mul(dx)
+                    .wrapping_add(dy.wrapping_mul(dy))
+                    .cast_unsigned(),
+            );
+            let final_waypoint = waypoint_index + 1 == waypoints.len();
+            let moving = state.target_speed != 0 || state.actual_speed != 0;
+            let admitted_launch =
+                if final_waypoint && castle_launch_required && distance <= 384 && !moving {
+                    let mut forecast = session.backend().campaign.clone();
+                    forecast.step_with_tuning(
+                        campaign_player_command(&GameCommand::default()),
+                        CAMPAIGN_SPEED_INDEX,
+                        session.backend().flight_binding.tuning(),
+                    );
+                    let next = forecast.level2_compatibility();
+                    let state = next.state;
+                    let mut launch = state.position;
+                    crate::move_entity(&mut launch, state.yaw.wrapping_sub(512), 0, 256);
+                    if next.canonical_terrain().ground_height(launch) > launch.z {
+                        launch = state.position;
+                    }
+                    launch.z = launch.z.wrapping_add(state.entity_fov);
+                    next.castle_projectile_site_admitted_for_test(launch)
+                } else {
+                    false
+                };
+            let arrived = if final_waypoint && castle_launch_required {
+                admitted_launch
+            } else if final_waypoint && castle_overlap_required {
+                compatibility
+                    .economy()
+                    .player_castle_shift_aabb_overlap(player)
+            } else {
+                distance <= 384
+            };
+            if arrived && state.target_speed == 0 && state.actual_speed == 0 {
+                if final_waypoint {
+                    return;
+                }
+                waypoint_index += 1;
+                continue;
+            }
+            let close_build_parent = final_waypoint && castle_launch_required && distance <= 96;
+            let desired = if close_build_parent {
+                0
+            } else {
+                i16::try_from(crate::heading_for_positions(state.position, waypoint))
+                    .expect("source heading is 11-bit")
+            };
+            // Brake inside the existing384 approach radius. If the stopped
+            // parent is still outside the precise launch neighborhood, an
+            // ordinary short accelerate/brake pulse advances it; at the
+            // final parent point public roll aligns the raw left-hand yaw.
+            let stop = if final_waypoint && castle_launch_required {
+                close_build_parent || (distance <= 384 && moving)
+            } else {
+                arrived
+            };
+            let mut command = level_three_source_safe_flight_command(state, desired, stop);
+            // A heading error is not the source roll input: the accumulator
+            // integrates it before yaw. Reach the next route heading without
+            // leaving the player stopped through hundreds of hostile visits.
+            command.roll_axis = public_bee_source_roll_for_test(state, desired);
+            command.pitch_axis = -127;
+            let life_before = player.life;
+            let mailbox_before = level_three_player_raw_mailbox_for_test(compatibility);
+            let event_start = compatibility.economy().events().len();
+            let observed_command = command.clone();
+            session.step(guard(session), command).unwrap();
+            let after = session.backend().campaign.level2_compatibility();
+            let player_after = after.shared_spells().player_entity();
+            if std::env::var_os("MC_CASTLE_FLIGHT_TRACE").is_some()
+                && player_after.life < life_before
+            {
+                eprintln!(
+                    "CASTLE_FLIGHT_DAMAGE tick={} command={observed_command:?} life={life_before}->{} before={state:?} after={:?} mailbox_before={mailbox_before:?} mailbox_after={:?} events={:?} bees={:?}",
+                    session.identity().tick,
+                    player_after.life,
+                    after.state,
+                    level_three_player_raw_mailbox_for_test(after),
+                    &after.economy().events()[event_start..],
+                    after
+                        .economy()
+                        .bee_creatures()
+                        .iter()
+                        .map(|bee| (
+                            bee.authored_index(),
+                            bee.source_entity_index,
+                            after.economy().slot_generation(bee.source_entity_index),
+                            bee.action,
+                            bee.life,
+                            bee.position,
+                            bee.target_entity_index,
+                            bee.subspell_index,
+                        ))
+                        .collect::<Vec<_>>(),
+                );
+            }
+        }
+        panic!(
+            "public Castle-charge flight exhausted its source-route bound: target={target:?}              waypoint={waypoint_index}/{} edges={edges} state={:?} castle_overlap_required={castle_overlap_required} castle_launch_required={castle_launch_required}",
+            waypoints.len(),
+            session.backend().campaign.level2_compatibility().state,
+        );
+    }
+
     fn claim_real_neutral_mana_sphere_for_castle_for_test(
         session: &mut GameSession<Mc2CampaignBackend>,
     ) -> (u16, i32, usize) {
@@ -16393,7 +20865,7 @@ pub(crate) mod tests {
                 settled
             })
             .expect("one real death sphere must settle while still neutral");
-        let (sphere_position, target_top, mana) = {
+        let (sphere_position, sphere_generation, mana) = {
             let compatibility = session.backend().campaign.level2_compatibility();
             let sphere = compatibility
                 .economy()
@@ -16403,12 +20875,21 @@ pub(crate) mod tests {
                 .expect("the selected neutral sphere remains live");
             (
                 sphere.position,
-                compatibility
-                    .possession_guidance_target_top_for_test(sphere_slot)
-                    .expect("the real sphere exposes its source guidance top"),
+                compatibility.economy().slot_generation(sphere_slot),
                 sphere.mana,
             )
         };
+        fly_real_castle_charge_leg_for_test(session, sphere_position, false);
+        assert_eq!(
+            session
+                .backend()
+                .campaign
+                .level2_compatibility()
+                .economy()
+                .slot_generation(sphere_slot),
+            sphere_generation,
+            "ordinary approach retains the selected sphere occurrence",
+        );
         let event_count_before = session
             .backend()
             .campaign
@@ -16425,28 +20906,52 @@ pub(crate) mod tests {
                 },
             )
             .unwrap();
-        let state = session.backend().campaign.level2_compatibility().state;
-        let mut cast_position = sphere_position;
-        crate::move_entity(
-            &mut cast_position,
-            state.yaw.wrapping_add(1_024),
-            0,
-            crate::level1_mission::POSSESSION_PROJECTILE_SPEED,
+        // Forecast the ordinary next callback only to aim from its actual
+        // holder launch origin. The live session executes the public command.
+        let mut forecast = session.backend().campaign.clone();
+        forecast.step_with_tuning(
+            campaign_player_command(&GameCommand::default()),
+            CAMPAIGN_SPEED_INDEX,
+            session.backend().flight_binding.tuning(),
         );
-        let mut launch_position = cast_position;
+        let compatibility = forecast.level2_compatibility();
+        assert_eq!(
+            compatibility.economy().slot_generation(sphere_slot),
+            sphere_generation
+        );
+        let target_top = compatibility
+            .possession_guidance_target_top_for_test(sphere_slot)
+            .expect("the same real sphere exposes its current source guidance top");
+        let state = compatibility.state;
+        let direction_bits = compatibility.shared_spells().player_entity().control_flags & 0x0300;
+        let mut launch_position = state.position;
+        let hand_yaw = if direction_bits & 0x0100 != 0 {
+            Some(state.yaw.wrapping_sub(512))
+        } else if direction_bits & 0x0200 != 0 {
+            Some(state.yaw.wrapping_add(512))
+        } else {
+            None
+        };
+        if let Some(hand_yaw) = hand_yaw {
+            crate::move_entity(&mut launch_position, hand_yaw, 0, 256);
+            if compatibility
+                .canonical_terrain()
+                .ground_height(launch_position)
+                > launch_position.z
+            {
+                launch_position = state.position;
+            }
+        }
         launch_position.z = launch_position.z.wrapping_add(state.entity_fov);
         let (launch_yaw, launch_pitch) =
             crate::level1_mission::projectile_guidance_angles(launch_position, target_top);
-        let compatibility = session.backend_mut().campaign.level2_compatibility_mut();
-        compatibility
-            .set_level2_entity_position(player_entity, cast_position)
-            .unwrap();
-        compatibility.set_level2_player_aim_for_test(launch_yaw, launch_pitch);
         session
             .step(
                 guard(session),
                 GameCommand {
                     cast_selected: true,
+                    look_yaw: launch_yaw.wrapping_sub(state.yaw),
+                    look_pitch: launch_pitch.wrapping_sub(state.display_pitch),
                     ..GameCommand::default()
                 },
             )
@@ -16488,6 +20993,198 @@ pub(crate) mod tests {
         (sphere_slot, mana, event_count_before)
     }
 
+    fn real_owned_castle_collected_sphere_for_test(
+        session: &GameSession<Mc2CampaignBackend>,
+        sphere_slot: u16,
+        event_start: usize,
+    ) -> bool {
+        let economy = session.backend().campaign.level2_compatibility().economy();
+        let castle = economy
+            .castle()
+            .expect("the real owned Castle remains live");
+        economy.events()[event_start..]
+            .iter()
+            .any(|event| match event {
+                crate::native_world::Level2EconomyEvent::ManaSphereCollected {
+                    sphere_id,
+                    carrier_id,
+                    ..
+                } => {
+                    *sphere_id == u32::from(sphere_slot)
+                        && *carrier_id == u32::from(castle.source_entity_index)
+                }
+                crate::native_world::Level2EconomyEvent::CastleDefenderCollectedSphere {
+                    sphere_id,
+                    defender_slot,
+                    ..
+                } => {
+                    *sphere_id == u32::from(sphere_slot)
+                        && economy.castle_children().iter().any(|child| {
+                            child.active
+                                && child.source_entity_index == *defender_slot
+                                && child.source_class == 3
+                                && child.model == 3
+                                && child.action == 9
+                                && child.id_entity_index == castle.source_id_entity_index
+                                && child.owner_entity_index == castle.owner_entity_index
+                        })
+                }
+                _ => false,
+            })
+    }
+
+    fn reclaim_real_castle_sphere_through_public_possession_for_test(
+        session: &mut GameSession<Mc2CampaignBackend>,
+        sphere_slot: u16,
+        generation: u32,
+        event_start: usize,
+    ) {
+        session
+            .step(
+                guard(session),
+                GameCommand {
+                    select_spell: Some(SemanticId::parse("spell.possession").unwrap()),
+                    ..GameCommand::default()
+                },
+            )
+            .unwrap();
+        if real_owned_castle_collected_sphere_for_test(session, sphere_slot, event_start) {
+            return;
+        }
+        let compatibility = session.backend().campaign.level2_compatibility();
+        let economy = compatibility.economy();
+        assert_eq!(economy.slot_generation(sphere_slot), generation);
+        let sphere = economy
+            .spheres()
+            .iter()
+            .find(|sphere| {
+                sphere.source_entity_index == sphere_slot && sphere.active && !sphere.pending_delete
+            })
+            .expect("public reclaim retains the selected live sphere occurrence");
+        assert!(
+            crate::distance_3d_wrapped(compatibility.state.position, sphere.position) <= 2_048,
+            "reclaim uses the real sphere position within public Possession reach: player={:?}, sphere={sphere:?}",
+            compatibility.state
+        );
+        assert_real_level_two_spell_cost_ready_for_test(session, 1);
+        let projectiles_before = economy
+            .possession_projectiles()
+            .iter()
+            .map(|row| {
+                (
+                    row.source_entity_index,
+                    economy.slot_generation(row.source_entity_index),
+                )
+            })
+            .collect::<BTreeSet<_>>();
+        let effects_before = economy
+            .possession_effects()
+            .iter()
+            .map(|row| {
+                (
+                    row.source_entity_index,
+                    economy.slot_generation(row.source_entity_index),
+                )
+            })
+            .collect::<BTreeSet<_>>();
+        let claim_start = economy.events().len();
+        let player = compatibility.state.entity_index;
+        let mut forecast = session.backend().campaign.clone();
+        forecast.step_with_tuning(
+            campaign_player_command(&GameCommand::default()),
+            CAMPAIGN_SPEED_INDEX,
+            session.backend().flight_binding.tuning(),
+        );
+        let next = forecast.level2_compatibility();
+        assert_eq!(next.economy().slot_generation(sphere_slot), generation);
+        let target = next
+            .possession_guidance_target_top_for_test(sphere_slot)
+            .expect("the exact contended sphere exposes its current source guidance top");
+        let state = next.state;
+        let mut launch = state.position;
+        // cast_selected chooses the left hand; the next source parent pose
+        // and strict floor rollback own the constructor's real launch.
+        crate::move_entity(&mut launch, state.yaw.wrapping_sub(512), 0, 256);
+        if next.canonical_terrain().ground_height(launch) > launch.z {
+            launch = state.position;
+        }
+        launch.z = launch.z.wrapping_add(state.entity_fov);
+        let (yaw, pitch) = crate::level1_mission::projectile_guidance_angles(launch, target);
+        session
+            .step(
+                guard(session),
+                GameCommand {
+                    cast_selected: true,
+                    look_yaw: yaw.wrapping_sub(state.yaw),
+                    look_pitch: pitch.wrapping_sub(state.display_pitch),
+                    ..GameCommand::default()
+                },
+            )
+            .unwrap();
+        let mut flyer = None;
+        let mut saw_effect = false;
+        for visit in 0..32 {
+            let compatibility = session.backend().campaign.level2_compatibility();
+            let economy = compatibility.economy();
+            assert!(compatibility.shared_spells().player_entity().life >= 0);
+            flyer = flyer.or_else(|| {
+                economy
+                    .possession_projectiles()
+                    .iter()
+                    .find(|row| {
+                        row.source_id_entity_index == player
+                            && !projectiles_before.contains(&(
+                                row.source_entity_index,
+                                economy.slot_generation(row.source_entity_index),
+                            ))
+                    })
+                    .map(|row| row.source_entity_index)
+            });
+            saw_effect |= flyer.is_some_and(|flyer| {
+                economy.possession_effects().iter().any(|row| {
+                    row.source_id_entity_index == player
+                        && row.projectile_entity_index == flyer
+                        && !effects_before.contains(&(
+                            row.source_entity_index,
+                            economy.slot_generation(row.source_entity_index),
+                        ))
+                })
+            });
+            if real_owned_castle_collected_sphere_for_test(session, sphere_slot, event_start) {
+                return;
+            }
+            assert_eq!(economy.slot_generation(sphere_slot), generation);
+            let sphere = economy
+                .spheres()
+                .iter()
+                .find(|sphere| {
+                    sphere.source_entity_index == sphere_slot
+                        && sphere.active
+                        && !sphere.pending_delete
+                })
+                .expect("public reclaim may not substitute a reused or missing sphere");
+            let claimed = economy.events()[claim_start..].iter().any(|event| matches!(event,
+                crate::native_world::Level2EconomyEvent::ManaSphereClaimed { sphere_id, owner_entity_index }
+                    if *sphere_id == u32::from(sphere_slot) && *owner_entity_index == player));
+            if flyer.is_some()
+                && saw_effect
+                && claimed
+                && sphere.owner_entity_index == player
+                && sphere.player_entity_index == player
+            {
+                return;
+            }
+            if visit != 31 {
+                session
+                    .step(guard(session), GameCommand::default())
+                    .unwrap();
+            }
+        }
+        panic!(
+            "a new public Possession flyer/effect must restore the same sphere's raw relation within32 observations"
+        );
+    }
+
     fn await_real_castle_sphere_deposit_for_test(
         session: &mut GameSession<Mc2CampaignBackend>,
         sphere_slot: u16,
@@ -16495,32 +21192,78 @@ pub(crate) mod tests {
         sphere_mana: i32,
         event_count_before: usize,
     ) -> i32 {
-        let (player_entity, castle_slot, castle_position) = {
+        let (castle_slot, castle_position) = {
             let compatibility = session.backend().campaign.level2_compatibility();
             let castle = compatibility
                 .economy()
                 .castle()
                 .expect("the carried Castle remains live before deposit");
-            (
-                compatibility.state.entity_index,
-                castle.source_entity_index,
-                castle.position,
-            )
+            (castle.source_entity_index, castle.position)
         };
-        session
-            .backend_mut()
+        let contested_level_two =
+            session.backend().campaign.definition().identity == CampaignSelection::LEVEL2;
+        let sphere_generation = session
+            .backend()
             .campaign
-            .level2_compatibility_mut()
-            .set_level2_entity_position(player_entity, castle_position)
-            .unwrap();
+            .level2_compatibility()
+            .economy()
+            .slot_generation(sphere_slot);
+        // Stay near this real claim while its defender approaches. Leaving
+        // immediately lets the rival reserve word94 again without another
+        // ordinary local Possession request to restore the carrier relation.
+        if !contested_level_two {
+            fly_real_castle_charge_leg_for_test(session, castle_position, true);
+        }
         let minimum_mana = mana_before.saturating_add(sphere_mana);
+        let wait_start = session.identity().tick;
+        let mut source_collected = false;
         for _ in 0..2_048 {
+            let elapsed = session.identity().tick - wait_start;
+            if elapsed >= 2_048 {
+                break;
+            }
             let economy = session.backend().campaign.level2_compatibility().economy();
             if economy
                 .castle()
                 .is_some_and(|castle| castle.mana >= minimum_mana)
             {
                 break;
+            }
+            if contested_level_two {
+                source_collected |= real_owned_castle_collected_sphere_for_test(
+                    session,
+                    sphere_slot,
+                    event_count_before,
+                );
+                if !source_collected {
+                    assert_eq!(economy.slot_generation(sphere_slot), sphere_generation);
+                    let sphere = economy
+                        .spheres()
+                        .iter()
+                        .find(|sphere| {
+                            sphere.source_entity_index == sphere_slot
+                                && sphere.active
+                                && !sphere.pending_delete
+                        })
+                        .expect(
+                            "the selected occurrence remains until real owned-Castle collection",
+                        );
+                    let castle = economy.castle().unwrap();
+                    if sphere.player_entity_index != castle.source_id_entity_index {
+                        // Selection + cast + at most31 following callbacks
+                        // all count inside the existing2048-visit wait gate.
+                        if 2_048 - elapsed < 33 {
+                            break;
+                        }
+                        reclaim_real_castle_sphere_through_public_possession_for_test(
+                            session,
+                            sphere_slot,
+                            sphere_generation,
+                            event_count_before,
+                        );
+                        continue;
+                    }
+                }
             }
             session
                 .step(guard(session), GameCommand::default())
@@ -16531,6 +21274,77 @@ pub(crate) mod tests {
             .castle()
             .map(|castle| castle.mana)
             .expect("the carried Castle remains live through deposit");
+        if deposited_mana < minimum_mana {
+            let events = economy.events()[event_count_before..]
+                .iter()
+                .filter(|event| match event {
+                    crate::native_world::Level2EconomyEvent::ManaSphereClaimed { .. }
+                    | crate::native_world::Level2EconomyEvent::ManaSphereCollected { .. }
+                    | crate::native_world::Level2EconomyEvent::ManaSpheresMerged { .. }
+                    | crate::native_world::Level2EconomyEvent::ManaCarrierSpawned { .. }
+                    | crate::native_world::Level2EconomyEvent::CastleDefenderCollectedSphere {
+                        ..
+                    } => true,
+                    crate::native_world::Level2EconomyEvent::ManaCarrierArrived {
+                        mana, ..
+                    }
+                    | crate::native_world::Level2EconomyEvent::CastleDefenderArrived {
+                        mana, ..
+                    } => *mana != 0,
+                    _ => false,
+                })
+                .collect::<Vec<_>>();
+            eprintln!(
+                "CASTLE_DEPOSIT_REFUSAL tick={} sphere={:?} castle={:?} player=(life={},mana={},max={},regen={}) carriers={:?} defenders={:?} events={events:?}",
+                session.identity().tick,
+                economy
+                    .spheres()
+                    .iter()
+                    .find(|sphere| sphere.source_entity_index == sphere_slot),
+                economy.castle(),
+                session.snapshot().value.player_vitals.life,
+                session
+                    .backend()
+                    .campaign
+                    .level2_compatibility()
+                    .shared_spells()
+                    .player_entity()
+                    .mana,
+                session
+                    .backend()
+                    .campaign
+                    .level2_compatibility()
+                    .shared_spells()
+                    .player_entity()
+                    .max_mana,
+                session
+                    .backend()
+                    .campaign
+                    .level2_compatibility()
+                    .shared_spells()
+                    .player_entity()
+                    .mana_regen,
+                economy.carriers(),
+                economy
+                    .castle_children()
+                    .iter()
+                    .filter(|child| child.active
+                        && child.source_class == 3
+                        && child.model == 3
+                        && child.action == 9)
+                    .map(|child| (
+                        child.source_entity_index,
+                        economy.slot_generation(child.source_entity_index),
+                        child.id_entity_index,
+                        child.player_entity_index,
+                        child.target_sphere_slot,
+                        child.life,
+                        child.mana,
+                        child.position,
+                    ))
+                    .collect::<Vec<_>>(),
+            );
+        }
         assert!(
             deposited_mana >= minimum_mana,
             "the ordinary stage-one carrier must deposit at least claimed sphere {sphere_slot}: before={mana_before}, sphere={sphere_mana}, after={deposited_mana}"
@@ -16560,6 +21374,9 @@ pub(crate) mod tests {
             castle_deposit >= sphere_mana,
             "the persistent root/carrier/defender deposit events must account for the claimed payload: sphere={sphere_slot}, claimed={sphere_mana}, deposited={castle_deposit}"
         );
+        if contested_level_two {
+            fly_real_castle_charge_leg_for_test(session, castle_position, true);
+        }
         deposited_mana
     }
 
@@ -16567,23 +21384,15 @@ pub(crate) mod tests {
         session: &mut GameSession<Mc2CampaignBackend>,
         expected_level: u8,
     ) {
-        let (player_entity, castle_position) = {
+        let castle_position = {
             let compatibility = session.backend().campaign.level2_compatibility();
-            (
-                compatibility.state.entity_index,
-                compatibility
-                    .economy()
-                    .castle()
-                    .expect("the Castle remains live before its upgrade")
-                    .position,
-            )
+            compatibility
+                .economy()
+                .castle()
+                .expect("the Castle remains live before its upgrade")
+                .position
         };
-        session
-            .backend_mut()
-            .campaign
-            .level2_compatibility_mut()
-            .set_level2_entity_position(player_entity, castle_position)
-            .unwrap();
+        fly_real_castle_charge_leg_for_test(session, castle_position, true);
         session
             .step(
                 guard(session),
@@ -16638,9 +21447,33 @@ pub(crate) mod tests {
     pub(crate) fn drive_real_level_three_carried_castle_to_revealed_way_for_test(
         session: &mut GameSession<Mc2CampaignBackend>,
     ) {
+        drive_real_level_three_carried_castle_to_guardian_completion_for_test(session);
+        drive_real_level_three_owned_castle_charge_to_revealed_way_for_test(session);
+    }
+
+    pub(crate) fn drive_real_level_three_carried_castle_to_guardian_completion_for_test(
+        session: &mut GameSession<Mc2CampaignBackend>,
+    ) {
         drive_real_level_three_skeleton_horde_to_guardian_dragons_for_test(session);
         build_real_level_three_carried_castle_for_test(session);
         drive_real_level_three_guardian_dragons_to_reveal_entrance_for_test(session);
+    }
+
+    /// Continue from the authoritative post-Guardian boundary. Unlike the
+    /// full prefix, this helper never repeats the Skeleton or Guardian fight.
+    pub(crate) fn drive_real_level_three_owned_castle_charge_to_revealed_way_for_test(
+        session: &mut GameSession<Mc2CampaignBackend>,
+    ) {
+        assert_eq!(
+            &session
+                .backend()
+                .campaign
+                .level2_compatibility()
+                .runtime()
+                .objectives[0]
+                .stage_selectors[..5],
+            &[2, 2, 1, 1, 1],
+        );
         activate_and_retire_real_level_three_group_five_archers_for_test(session);
         for expected_level in 1..=2 {
             for _ in 0..40 {
@@ -16723,6 +21556,2031 @@ pub(crate) mod tests {
             2,
             "the production Castle route must satisfy the exact 30% objective"
         );
+    }
+
+    fn public_bee_pending_attacker_is_qualified_for_test(
+        before: &crate::native_world::BeeCreatureRuntime,
+        after: &crate::native_world::BeeCreatureRuntime,
+        generation_before: u32,
+        generation_after: u32,
+        player: u16,
+        attacker: u16,
+    ) -> bool {
+        // sub_1C310/sub_1CE80 queues the current authored Bee's subspell200.
+        // Its typed carrier is authoritative; the imported numeric row can
+        // already be inactive. Neither a recycled slot nor a dead carrier
+        // establishes ownership of a pending player mailbox.
+        bee_is_public_target_for_test(before)
+            && bee_is_public_target_for_test(after)
+            && before.authored_index().is_some()
+            && before.origin == after.origin
+            && before.source_entity_index == attacker
+            && before.entity_id == attacker
+            && after.source_entity_index == attacker
+            && after.entity_id == attacker
+            && generation_before == generation_after
+            && before.action == 18
+            && before.target_entity_index == Some(player)
+            && before.subspell_index == 200
+            && after.subspell_index == 200
+            && attacker != player
+    }
+
+    fn public_bee_retained_receipt_occurrence_is_qualified_for_test(
+        before: &crate::native_world::BeeCreatureRuntime,
+        after: &crate::native_world::BeeCreatureRuntime,
+        generation_before: u32,
+        generation_after: u32,
+        player: u16,
+        attacker: u16,
+    ) -> bool {
+        // This attests the prior DamageApplied receipt's retained occurrence,
+        // not a new contact. Its scalar payload survives the producer's real
+        // death callback. Reclaim/reuse or a different authored origin cannot
+        // borrow this attestation; the current publisher is checked separately.
+        let retained = |row: &crate::native_world::BeeCreatureRuntime| {
+            row.active
+                && row.authored_index().is_some()
+                && row.source_class == 5
+                && row.model == 2
+                && row.source_entity_index == attacker
+                && row.entity_id == attacker
+                && row.target_entity_index == Some(player)
+                && row.subspell_index == 200
+                && ((row.life >= 0 && matches!(row.action, 16..=19 | 23))
+                    || (row.life < 0 && matches!(row.action, 20 | 21)))
+        };
+        attacker != player
+            && generation_before == generation_after
+            && before.origin == after.origin
+            && retained(before)
+            && retained(after)
+    }
+
+    #[test]
+    #[ignore = "requires MC_LEVEL2_BEE_CONTACT_REPLAY from the actual tick4745 failure"]
+    fn campaign_backend_public_bee_consumes_verified_lower_slot_contact_same_pass() {
+        let bytes = std::fs::read(
+            std::env::var_os("MC_LEVEL2_BEE_CONTACT_REPLAY")
+                .expect("set the actual Level2 contact frontier replay"),
+        )
+        .unwrap();
+        let resolver = Mc2RuntimePackageResolver::load([
+            Mc2CampaignInputs::new(level_one_descriptor_fixture_path()),
+            Mc2CampaignInputs::new(descriptor_fixture_path()),
+            Mc2CampaignInputs::new(level_three_descriptor_fixture_path()),
+        ])
+        .unwrap();
+        let mut runtime = crate::game_runtime::GameRuntime::title(346).unwrap();
+        let runtime_guard = runtime.identity().guard();
+        resolver
+            .load_replay(&mut runtime, runtime_guard, 346, &bytes)
+            .unwrap();
+        let session = runtime.session_mut().unwrap();
+        assert_eq!(session.identity().tick, 4_745);
+        let before = session.backend().campaign.level2_compatibility();
+        assert_eq!(before.state.entity_index, 111);
+        assert_eq!(level_three_player_raw_mailbox_for_test(before), (0, 0));
+        let source = before
+            .economy()
+            .bee_creatures()
+            .iter()
+            .find(|row| row.authored_index() == Some(229))
+            .unwrap();
+        assert_eq!((source.source_entity_index, source.action), (29, 18));
+        assert_eq!(before.economy().slot_generation(29), 11);
+        let life_before = before.shared_spells().player_entity().life;
+        let event_start = before.economy().events().len();
+        step_public_bee_command_for_test(session, GameCommand::default(), &mut BTreeSet::new());
+        let after = session.backend().campaign.level2_compatibility();
+        assert_eq!(after.economy().slot_generation(29), 11);
+        assert_eq!(
+            after.shared_spells().player_entity().life,
+            life_before - 200
+        );
+        assert_eq!(level_three_player_raw_mailbox_for_test(after), (200, 0));
+        assert!(
+            after.economy().events()[event_start..]
+                .iter()
+                .any(|event| matches!(
+                    event,
+                    crate::native_world::Level2EconomyEvent::DamageApplied {
+                        target_entity_index: 111,
+                        attacker_entity_index: 29,
+                        damage: 200,
+                        lethal: false,
+                    }
+                ))
+        );
+    }
+
+    #[test]
+    #[ignore = "requires MC_LEVEL2_BEE_PURSUIT_REPLAY from the actual tick10622 frontier"]
+    fn campaign_backend_public_bee_far_pursuit_closes_verified_wrapped_frontier() {
+        let bytes =
+            std::fs::read(std::env::var_os("MC_LEVEL2_BEE_PURSUIT_REPLAY").unwrap()).unwrap();
+        let resolver = Mc2RuntimePackageResolver::load([
+            Mc2CampaignInputs::new(level_one_descriptor_fixture_path()),
+            Mc2CampaignInputs::new(descriptor_fixture_path()),
+            Mc2CampaignInputs::new(level_three_descriptor_fixture_path()),
+        ])
+        .unwrap();
+        let mut runtime = crate::game_runtime::GameRuntime::title(347).unwrap();
+        let runtime_guard = runtime.identity().guard();
+        resolver
+            .load_replay(&mut runtime, runtime_guard, 347, &bytes)
+            .unwrap();
+        let session = runtime.session_mut().unwrap();
+        assert_eq!(session.identity().tick, 10_622);
+        let compatibility = session.backend().campaign.level2_compatibility();
+        let bee = *compatibility
+            .economy()
+            .bee_creatures()
+            .iter()
+            .find(|bee| bee.authored_index() == Some(236))
+            .unwrap();
+        assert_eq!(bee.source_entity_index, 152);
+        let generation = compatibility.economy().slot_generation(152);
+        let initial = crate::distance_3d_wrapped(compatibility.state.position, bee.position);
+        let mut nearest = initial;
+        for _ in 0..64 {
+            let compatibility = session.backend().campaign.level2_compatibility();
+            let bee = *compatibility
+                .economy()
+                .bee_creatures()
+                .iter()
+                .find(|bee| bee.source_entity_index == 152)
+                .unwrap();
+            assert_eq!(compatibility.economy().slot_generation(152), generation);
+            assert_eq!(bee.life, 3_000);
+            nearest = nearest.min(crate::distance_3d_wrapped(
+                compatibility.state.position,
+                bee.position,
+            ));
+            let mut next = bee.position;
+            crate::move_entity(&mut next, bee.yaw, 0, bee.actual_speed);
+            let lead = public_bee_range_intercept_for_test(
+                compatibility.state.position,
+                bee.position,
+                (
+                    next.x.wrapping_sub(bee.position.x).cast_signed(),
+                    next.y.wrapping_sub(bee.position.y).cast_signed(),
+                ),
+                session
+                    .backend()
+                    .flight_binding
+                    .tuning()
+                    .max_forward_speed
+                    .unsigned_abs()
+                    .into(),
+                public_bee_cast_capture_radius_for_test(
+                    compatibility.state,
+                    &bee,
+                    session.backend().flight_binding.tuning(),
+                ),
+                bee.action_window,
+            );
+            let command =
+                public_bee_navigation_with_pursuit_goal_for_test(session, lead, false, true);
+            step_public_bee_command_for_test(session, command, &mut BTreeSet::new());
+        }
+        assert!(
+            nearest < initial,
+            "actual public source flight closes wrapped Bee range: initial={initial} nearest={nearest}"
+        );
+    }
+
+    fn public_bee_same_pass_contact_is_due_for_test(
+        before: &crate::native_world::BeeCreatureRuntime,
+        after: &crate::native_world::BeeCreatureRuntime,
+        player_position: crate::Position,
+    ) -> bool {
+        // Exact sub_1C310 cadence and signed-16 post-Bee/pre-player distance.
+        // Occurrence, target and source200 qualification is checked by caller.
+        let dx = i64::from(
+            player_position
+                .x
+                .wrapping_sub(after.position.x)
+                .cast_signed(),
+        );
+        let dy = i64::from(
+            player_position
+                .y
+                .wrapping_sub(after.position.y)
+                .cast_signed(),
+        );
+        let dz = i64::from(player_position.z.wrapping_sub(after.position.z));
+        before.action_window > 0
+            && u8::try_from(before.action_window)
+                .is_ok_and(|window| before.source_byte_3e % window == 0)
+            && after.action == 18
+            && dx * dx + dy * dy + dz * dz < 1_024 * 1_024
+    }
+
+    pub(super) fn public_bee_current_dragon_occurrence_is_qualified_for_test(
+        before: &crate::native_world::Level2AuthoredClass5Source,
+        after: &crate::native_world::Level2AuthoredClass5Source,
+        generation_before: u32,
+        generation_after: u32,
+        attacker: u16,
+    ) -> bool {
+        let live = |root: &crate::native_world::Level2AuthoredClass5Source| {
+            root.source_entity_index == attacker
+                && matches!(root.authored_index, 141 | 142)
+                && root.model == 0
+                && root.active
+                && root.drawing_enabled
+                && root.life >= 0
+        };
+        generation_before == generation_after
+            && before.authored_index == after.authored_index
+            && live(before)
+            && live(after)
+    }
+
+    fn public_bee_source_attributed_damage_for_test(
+        before: &crate::native_world::Level2ResetSession,
+        after: &crate::native_world::Level2ResetSession,
+    ) -> Option<u32> {
+        use crate::native_world::Level2EconomyEvent;
+
+        let player = before.shared_spells().player_entity();
+        let current_player = after.shared_spells().player_entity();
+        if player.life <= 0
+            || current_player.life <= 0
+            || current_player.index != player.index
+            || after.shared_spells().local_player().enabled_spell_holders
+                != before.shared_spells().local_player().enabled_spell_holders
+        {
+            return None;
+        }
+        let event_start = before.economy().events().len();
+        let new_events = after.economy().events().get(event_start..)?;
+        let player_damage = new_events
+            .iter()
+            .filter_map(|event| match event {
+                Level2EconomyEvent::DamageApplied {
+                    target_entity_index,
+                    attacker_entity_index,
+                    damage,
+                    lethal,
+                } if *target_entity_index == player.index => {
+                    Some((*attacker_entity_index, *damage, *lethal))
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        if player_damage.is_empty() {
+            return (current_player.life >= player.life).then_some(0);
+        }
+        // Later source slots publish for the following player visit; reused
+        // earlier slots can publish and be consumed in this same pass. Admit
+        // exactly one actual source consumption before flight/upkeep;
+        // other damage, shield outcomes, lethal damage and duplicate receipts
+        // do not acquire permission from a coincident nearby Bee.
+        let [(attacker, applied_damage, false)] = player_damage.as_slice() else {
+            return None;
+        };
+        if *applied_damage == 500 {
+            // The staged strip allocator also creates the real upstream
+            // Dragon. A scheduled owner-qualified impact can be consumed
+            // before the Bee pilot's movement, even with no prior mailbox.
+            // Reuse the owning Dragon effect/impact proof; never infer this
+            // damage from terrain redirection or a nearby hostile creature.
+            let root = before
+                .economy()
+                .authored_class5()
+                .iter()
+                .find(|root| root.source_entity_index == *attacker)?;
+            let current_root = after
+                .economy()
+                .authored_class5()
+                .iter()
+                .find(|root| root.source_entity_index == *attacker)?;
+            if !public_bee_current_dragon_occurrence_is_qualified_for_test(
+                root,
+                current_root,
+                before.economy().slot_generation(*attacker),
+                after.economy().slot_generation(*attacker),
+                *attacker,
+            ) || level_three_source_attributed_retreat_damage_for_test(before, after)
+                != Some(500)
+                || level_three_player_raw_mailbox_for_test(after) != (500, 0)
+            {
+                return None;
+            }
+            let damaged_life = player.life.checked_sub(500)?;
+            let regeneration = before.player_life_regen_for_test().max(0);
+            return (damaged_life..=damaged_life.saturating_add(regeneration))
+                .contains(&current_player.life)
+                .then_some(500);
+        }
+        let (pending_damage, pending_attacker) = level_three_player_raw_mailbox_for_test(before);
+        let source = before
+            .economy()
+            .bee_creatures()
+            .iter()
+            .find(|bee| bee.source_entity_index == *attacker)?;
+        let current = after
+            .economy()
+            .bee_creatures()
+            .iter()
+            .find(|bee| bee.source_entity_index == *attacker)?;
+        if !public_bee_pending_attacker_is_qualified_for_test(
+            source,
+            current,
+            before.economy().slot_generation(*attacker),
+            after.economy().slot_generation(*attacker),
+            player.index,
+            *attacker,
+        ) {
+            return None;
+        }
+        let pulse = i32::from(source.subspell_index);
+        if *attacker < player.index {
+            // A recycled authored slot can precede the local player. The
+            // real action18 publisher then queues and the player consumes in
+            // this same ascending source pass, before the player's movement.
+            // Qualify the actual contact cadence/position and consumed raw
+            // payload; a nearby Bee does not attest another actor's receipt.
+            if pending_damage != 0
+                || pending_attacker != 0
+                || *applied_damage != pulse
+                || level_three_player_raw_mailbox_for_test(after) != (pulse, 0)
+                || !public_bee_same_pass_contact_is_due_for_test(
+                    source,
+                    current,
+                    before.state.position,
+                )
+            {
+                return None;
+            }
+            let damaged_life = player.life.checked_sub(pulse)?;
+            let regeneration = before.player_life_regen_for_test().max(0);
+            return (damaged_life..=damaged_life.saturating_add(regeneration))
+                .contains(&current_player.life)
+                .then_some(u32::try_from(pulse).ok()?);
+        }
+        if *attacker == player.index
+            || pending_attacker != *attacker
+            || pending_damage <= 0
+            || pending_damage != *applied_damage
+        {
+            return None;
+        }
+        if pending_damage != pulse {
+            // sub_5EFA0 leaves its applied payload when clearing the owner.
+            // The first following Bee contact adds200 to that ownerless
+            // residue. A later owned contact overwrites it with200 instead.
+            // Qualify the retained residue with the last actual player receipt
+            // and its retained authored occurrence, including real death;
+            // an unrelated prior attacker cannot
+            // turn a coincident Bee into permission for aggregate damage.
+            let (prior_attacker, prior_damage, prior_lethal) = before
+                .economy()
+                .events()
+                .iter()
+                .rev()
+                .find_map(|event| match event {
+                    Level2EconomyEvent::DamageApplied {
+                        target_entity_index,
+                        attacker_entity_index,
+                        damage,
+                        lethal,
+                    } if *target_entity_index == player.index => {
+                        Some((*attacker_entity_index, *damage, *lethal))
+                    }
+                    _ => None,
+                })?;
+            if prior_lethal
+                || !public_bee_aggregate_payload_matches_source_for_test(
+                    pending_damage,
+                    pulse,
+                    prior_damage,
+                )
+            {
+                return None;
+            }
+            let prior = before
+                .economy()
+                .bee_creatures()
+                .iter()
+                .find(|bee| bee.source_entity_index == prior_attacker)?;
+            let prior_current = after
+                .economy()
+                .bee_creatures()
+                .iter()
+                .find(|bee| bee.source_entity_index == prior_attacker)?;
+            if !public_bee_retained_receipt_occurrence_is_qualified_for_test(
+                prior,
+                prior_current,
+                before.economy().slot_generation(prior_attacker),
+                after.economy().slot_generation(prior_attacker),
+                player.index,
+                prior_attacker,
+            ) {
+                return None;
+            }
+        }
+        // Consume the exact authoritative pending amount, then bound only
+        // source upkeep regeneration. The event amount must already match it.
+        let damaged_life = player.life.checked_sub(pending_damage)?;
+        let regeneration = before.player_life_regen_for_test().max(0);
+        (damaged_life..=damaged_life.saturating_add(regeneration))
+            .contains(&current_player.life)
+            .then_some(u32::try_from(pending_damage).ok()?)
+    }
+
+    fn public_bee_aggregate_payload_matches_source_for_test(
+        pending: i32,
+        pulse: i32,
+        prior_applied: i32,
+    ) -> bool {
+        pulse == 200
+            && prior_applied > 0
+            && prior_applied % pulse == 0
+            && prior_applied.checked_add(pulse) == Some(pending)
+    }
+
+    #[test]
+    fn campaign_backend_public_bee_aggregate_payload_requires_exact_retained_source_amount() {
+        assert!(public_bee_aggregate_payload_matches_source_for_test(
+            400, 200, 200
+        ));
+        assert!(public_bee_aggregate_payload_matches_source_for_test(
+            600, 200, 400
+        ));
+        for (pending, pulse, prior) in [
+            (400, 200, 500),
+            (400, 200, 400),
+            (450, 200, 250),
+            (400, 250, 200),
+            (400, 200, 0),
+            (-400, 200, 200),
+        ] {
+            assert!(!public_bee_aggregate_payload_matches_source_for_test(
+                pending, pulse, prior
+            ));
+        }
+    }
+
+    #[test]
+    fn campaign_backend_public_bee_retained_receipt_survives_terminal_carrier_without_reuse() {
+        let root = level_three_descriptor_fixture_path();
+        let catalog = default_catalog().unwrap();
+        let definition = Arc::new(load_mc2_campaign(&root, &catalog).unwrap());
+        let mut session = GameSession::open(
+            &Mc2CampaignAdapter,
+            definition,
+            65,
+            Mc2CampaignInputs::new(&root),
+        )
+        .unwrap();
+        session
+            .backend_mut()
+            .campaign
+            .level2_compatibility_mut()
+            .activate_authored_group_prerequisite_for_test(3)
+            .unwrap();
+        let compatibility = session.backend().campaign.level2_compatibility();
+        let player = compatibility.state.entity_index;
+        let mut prior = compatibility.economy().bee_creatures()[0];
+        let slot = prior.source_entity_index;
+        let generation = compatibility.economy().slot_generation(slot);
+        // Evidence packets only; the real six-Bee component owns actual
+        // production/consumption and death. No live gameplay state is written.
+        prior.action = 18;
+        prior.target_entity_index = Some(player);
+        let mut terminal = prior;
+        terminal.action = 21;
+        terminal.life = -250;
+        let qualified = |before, after, after_generation| {
+            public_bee_retained_receipt_occurrence_is_qualified_for_test(
+                before,
+                after,
+                generation,
+                after_generation,
+                player,
+                slot,
+            )
+        };
+        assert!(qualified(&prior, &terminal, generation));
+        assert!(qualified(&terminal, &terminal, generation));
+        assert!(
+            !public_bee_pending_attacker_is_qualified_for_test(
+                &terminal, &terminal, generation, generation, player, slot
+            ),
+            "a terminal historical receipt never authorizes a current contact publisher"
+        );
+        assert!(!qualified(&terminal, &terminal, generation.wrapping_add(1)));
+        let mut unrelated = terminal;
+        unrelated.model = 9;
+        assert!(!qualified(&terminal, &unrelated, generation));
+        let mut reused = terminal;
+        reused.origin = crate::native_world::BeeCreatureOrigin::AuthoredRecord {
+            authored_index: 155,
+        };
+        assert!(!qualified(&terminal, &reused, generation));
+        assert!(public_bee_aggregate_payload_matches_source_for_test(
+            1800, 200, 1600
+        ));
+        assert!(!public_bee_aggregate_payload_matches_source_for_test(
+            1800, 200, 1400
+        ));
+    }
+
+    #[test]
+    fn campaign_backend_public_bee_pending_attacker_requires_current_living_player_target() {
+        let root = level_three_descriptor_fixture_path();
+        let catalog = default_catalog().unwrap();
+        let definition = Arc::new(load_mc2_campaign(&root, &catalog).unwrap());
+        let mut session = GameSession::open(
+            &Mc2CampaignAdapter,
+            definition,
+            65,
+            Mc2CampaignInputs::new(&root),
+        )
+        .unwrap();
+        session
+            .backend_mut()
+            .campaign
+            .level2_compatibility_mut()
+            .activate_authored_group_prerequisite_for_test(3)
+            .unwrap();
+        let compatibility = session.backend().campaign.level2_compatibility();
+        let player = compatibility.shared_spells().player_entity().index;
+        let mut source = *compatibility
+            .economy()
+            .bee_creatures()
+            .iter()
+            .find(|bee| bee.authored_index() == Some(153))
+            .unwrap();
+        let attacker = source.source_entity_index;
+        let generation = compatibility.economy().slot_generation(attacker);
+        // These are copied evidence packets only. The owning public-flight
+        // exchange below proves actual mailbox production and consumption.
+        source.action = 18;
+        source.target_entity_index = Some(player);
+        assert_eq!(source.subspell_index, 200);
+        let qualified = |current: &crate::native_world::BeeCreatureRuntime, current_generation| {
+            public_bee_pending_attacker_is_qualified_for_test(
+                &source,
+                current,
+                generation,
+                current_generation,
+                player,
+                attacker,
+            )
+        };
+        assert!(qualified(&source, generation));
+        let mut contact = source;
+        contact.action_window = 30;
+        contact.source_byte_3e = 0;
+        contact.position = crate::Position {
+            x: 41_566,
+            y: 32_980,
+            z: 453,
+        };
+        let player_position = crate::Position {
+            x: 42_238,
+            y: 33_588,
+            z: 413,
+        };
+        assert!(public_bee_same_pass_contact_is_due_for_test(
+            &contact,
+            &contact,
+            player_position
+        ));
+        let mut off_cadence = contact;
+        off_cadence.source_byte_3e = 1;
+        assert!(!public_bee_same_pass_contact_is_due_for_test(
+            &off_cadence,
+            &contact,
+            player_position
+        ));
+        let mut outside = contact;
+        outside.position.x = player_position.x.wrapping_add(1_024);
+        outside.position.y = player_position.y;
+        outside.position.z = player_position.z;
+        assert!(!public_bee_same_pass_contact_is_due_for_test(
+            &contact,
+            &outside,
+            player_position
+        ));
+        assert!(!qualified(&source, generation.wrapping_add(1)));
+        let mut invalid = source;
+        invalid.life = -1;
+        assert!(!qualified(&invalid, generation));
+        invalid = source;
+        invalid.action = 20;
+        assert!(!qualified(&invalid, generation));
+        invalid = source;
+        invalid.drawing_enabled = false;
+        assert!(!qualified(&invalid, generation));
+        invalid = source;
+        invalid.entity_id = player;
+        assert!(!qualified(&invalid, generation));
+        let mut unrelated = source;
+        unrelated.target_entity_index = Some(player.wrapping_add(1));
+        assert!(!public_bee_pending_attacker_is_qualified_for_test(
+            &unrelated, &source, generation, generation, player, attacker,
+        ));
+        unrelated = source;
+        unrelated.subspell_index = 500;
+        assert!(!public_bee_pending_attacker_is_qualified_for_test(
+            &unrelated, &source, generation, generation, player, attacker,
+        ));
+        unrelated = source;
+        unrelated.life = -1;
+        assert!(!public_bee_pending_attacker_is_qualified_for_test(
+            &unrelated, &source, generation, generation, player, attacker,
+        ));
+    }
+
+    fn public_bee_flight_state_is_unmodified_for_test(mut state: crate::FlightState) -> bool {
+        // Lateral input is ordinary source flight, not a spell modifier. The
+        // full source callback and independent replay/hash check own its motion.
+        // Keep the macro's impulse/recoil/Speed/tether/recovery exclusions while
+        // admitting the source-clamped strafe channel used by this public pilot.
+        if !(crate::SOURCE_STRAFE_MINIMUM..=crate::SOURCE_STRAFE_MAXIMUM)
+            .contains(&state.strafe_speed)
+        {
+            return false;
+        }
+        state.strafe_speed = 0;
+        level_three_public_macro_state_is_unmodified(state)
+    }
+
+    #[test]
+    fn public_bee_flight_admits_decoded_positive_strafe_but_rejects_modifiers() {
+        let input = campaign_player_command(&GameCommand {
+            lateral: LateralControl::Positive,
+            ..GameCommand::default()
+        });
+        let mut state = crate::FlightState {
+            speed_spell_holder_index: 256,
+            ..crate::FlightState::default()
+        };
+        crate::decode_movement(input.flags.cast_unsigned(), &mut state);
+        assert_eq!(state.strafe_speed, crate::STRAFE_STEP);
+        assert!(public_bee_flight_state_is_unmodified_for_test(state));
+        assert!(!level_three_public_macro_state_is_unmodified(state));
+        assert!(!public_bee_flight_state_is_unmodified_for_test(
+            crate::FlightState {
+                speed_modifier: 1,
+                ..state
+            }
+        ));
+        assert!(!public_bee_flight_state_is_unmodified_for_test(
+            crate::FlightState {
+                immobilize_counter: 1,
+                ..state
+            }
+        ));
+        assert!(!public_bee_flight_state_is_unmodified_for_test(
+            crate::FlightState {
+                strafe_speed: crate::SOURCE_STRAFE_MAXIMUM + 1,
+                ..state
+            }
+        ));
+    }
+
+    pub(super) fn step_public_bee_command_for_test(
+        session: &mut GameSession<Mc2CampaignBackend>,
+        command: GameCommand,
+        terminal_rows: &mut BTreeSet<u16>,
+    ) {
+        let before = session.backend().campaign.level2_compatibility();
+        let holders = before.shared_spells().local_player().enabled_spell_holders;
+        let mut predicted = session.backend().campaign.clone();
+        let evidence = predicted.step_with_tuning(
+            session.backend().campaign_player_command(&command).unwrap(),
+            CAMPAIGN_SPEED_INDEX,
+            session.backend().flight_binding.tuning(),
+        );
+        let after = predicted.level2_compatibility();
+        assert!(
+            public_bee_source_attributed_damage_for_test(before, after).is_some(),
+            "only a nonlethal, current-generation pending source Bee attack may reduce player life: tick={} command={command:?} life_before={} life_after={} raw_before={:?} raw_after={:?} regen_before={} source_bees_before={:?} source_bees_after={:?} player_damage_events={:?} motion={:?}",
+            session.identity().tick,
+            before.shared_spells().player_entity().life,
+            after.shared_spells().player_entity().life,
+            level_three_player_raw_mailbox_for_test(before),
+            level_three_player_raw_mailbox_for_test(after),
+            before.player_life_regen_for_test(),
+            before.economy().bee_creatures().iter().map(|row| (
+                row.authored_index(), row.source_entity_index,
+                before.economy().slot_generation(row.source_entity_index),
+                row.action, row.life, row.active, row.target_entity_index,
+                row.subspell_index, row.position,
+            )).collect::<Vec<_>>(),
+            after.economy().bee_creatures().iter().map(|row| (
+                row.authored_index(), row.source_entity_index,
+                after.economy().slot_generation(row.source_entity_index),
+                row.action, row.life, row.active, row.target_entity_index,
+                row.subspell_index, row.position,
+            )).collect::<Vec<_>>(),
+            after.economy().events().iter().filter(|event| matches!(event,
+                crate::native_world::Level2EconomyEvent::DamageApplied { target_entity_index, .. }
+                if *target_entity_index == before.state.entity_index
+            )).collect::<Vec<_>>(),
+            evidence.iter().map(|step| (step.movement_resolution, step.before, step.proposed, step.committed)).collect::<Vec<_>>(),
+        );
+        assert_eq!(
+            after.shared_spells().local_player().enabled_spell_holders,
+            holders
+        );
+        assert!(public_bee_flight_state_is_unmodified_for_test(after.state));
+        assert!(!predicted.events().iter().any(|event| matches!(
+            event,
+            crate::native_world::Level2DispatchEvent::Error { .. }
+        )));
+        assert!(evidence.iter().all(|step| !matches!(
+            step.movement_resolution,
+            "rejected" | "rejected-and-stopped" | "recovered-after-reject"
+        )));
+        let predicted_hash = predicted.state_hash();
+        let predicted_state = after.state;
+        session.step(guard(session), command).unwrap();
+        assert_eq!(session.backend().campaign.state_hash(), predicted_hash);
+        assert_eq!(
+            session.backend().campaign.level2_compatibility().state,
+            predicted_state
+        );
+        for bee in session
+            .backend()
+            .campaign
+            .level2_compatibility()
+            .economy()
+            .bee_creatures()
+        {
+            if bee.life < 0 && bee.action == 20 {
+                if let Some(row) = bee.authored_index() {
+                    terminal_rows.insert(row);
+                }
+            }
+        }
+    }
+
+    fn public_bee_source_roll_for_test(state: crate::FlightState, desired: i16) -> i8 {
+        let turn = i32::from(crate::turn_toward(state.yaw, desired, 24));
+        // derive_input_delta = (2*axis - accumulator)/4, followed by
+        // yaw += updated_accumulator/8. Invert that source feedback instead
+        // of treating a heading error as an already-decoded roll input.
+        ((32 * turn - 3 * i32::from(state.roll_accumulator)) / 2).clamp(-127, 127) as i8
+    }
+
+    #[test]
+    fn campaign_backend_final_bee_roll_inverts_source_accumulator_and_wraps() {
+        let state = crate::FlightState {
+            yaw: 2_040,
+            ..crate::FlightState::default()
+        };
+        let axis = public_bee_source_roll_for_test(state, 8);
+        assert_eq!(axis, 127);
+        let accumulated = state
+            .roll_accumulator
+            .wrapping_add(crate::derive_input_delta(axis, state.roll_accumulator));
+        assert_eq!((state.yaw + accumulated / 8) & 0x07ff, 2_047);
+        for accumulated in [-80, 80] {
+            let aligned = crate::FlightState {
+                yaw: 8,
+                roll_accumulator: accumulated,
+                ..state
+            };
+            let axis = public_bee_source_roll_for_test(aligned, 8);
+            assert_eq!(
+                accumulated + crate::derive_input_delta(axis, accumulated),
+                0
+            );
+        }
+    }
+
+    fn bee_is_public_target_for_test(bee: &crate::native_world::BeeCreatureRuntime) -> bool {
+        bee.active
+            && bee.drawing_enabled
+            && bee.life >= 0
+            && bee.source_class == 5
+            && bee.model == 2
+            // The qualified L2 swarm also reaches the source's living
+            // StageVar action23. Its damage mailbox is consumed before the
+            // action switch, just like actions16..19; death20/21 remain out.
+            && matches!(bee.action, 16..=19 | 23)
+    }
+
+    fn public_bee_navigation_command_for_test(
+        session: &GameSession<Mc2CampaignBackend>,
+        target: crate::Position,
+        stop: bool,
+    ) -> GameCommand {
+        public_bee_navigation_with_pursuit_goal_for_test(session, target, stop, false)
+    }
+
+    fn public_bee_navigation_with_pursuit_goal_for_test(
+        session: &GameSession<Mc2CampaignBackend>,
+        target: crate::Position,
+        stop: bool,
+        pursuing: bool,
+    ) -> GameCommand {
+        let compatibility = session.backend().campaign.level2_compatibility();
+        let state = compatibility.state;
+        let desired = crate::heading_for_positions(state.position, target) as i16;
+        let heading_error = crate::turn_toward(state.yaw, desired, 1_024).unsigned_abs();
+        let brake = if state.target_speed < 0 {
+            LongitudinalControl::Accelerate
+        } else if state.target_speed > 0 {
+            LongitudinalControl::Decelerate
+        } else {
+            LongitudinalControl::Coast
+        };
+        let longitudinal = if stop || heading_error > 256 {
+            brake
+        } else {
+            LongitudinalControl::Accelerate
+        };
+        let roll_axis = public_bee_source_roll_for_test(state, desired);
+        let mut command = GameCommand {
+            longitudinal,
+            roll_axis,
+            ..GameCommand::default()
+        };
+
+        // Pitch is terrain-relative and retains its previous effective angle
+        // when the signed accumulator is zero. Use the actual source flight
+        // routine to choose the next height, including admission/floor/ceiling.
+        if !stop {
+            let mut best_pitch = None;
+            for axis in -127_i16..=127 {
+                let candidate = GameCommand {
+                    pitch_axis: axis as i8,
+                    ..command.clone()
+                };
+                let mut motion = state;
+                let mut context = crate::FlightContext::default();
+                // Integer pitch integration can leave the first committed
+                // height unchanged. Hold the proposed ordinary input across a
+                // short source horizon so zero does not win that initial tie.
+                let mut admitted = true;
+                for _ in 0..8 {
+                    let evidence = crate::step_outer_turn_with_context_and_tuning(
+                        &mut motion,
+                        campaign_player_command(&candidate),
+                        CAMPAIGN_SPEED_INDEX,
+                        compatibility.profile(),
+                        compatibility.canonical_terrain(),
+                        &mut context,
+                        session.backend().flight_binding.tuning(),
+                    );
+                    if evidence.iter().any(|step| {
+                        matches!(
+                            step.movement_resolution,
+                            "rejected" | "rejected-and-stopped" | "recovered-after-reject"
+                        )
+                    }) {
+                        admitted = false;
+                        break;
+                    }
+                }
+                if !admitted {
+                    continue;
+                }
+                let mut planar_before = state.position;
+                planar_before.z = target.z;
+                let far_pursuit =
+                    pursuing && crate::distance_3d_wrapped(planar_before, target) > 3_072;
+                let mut planar_after = motion.position;
+                planar_after.z = target.z;
+                let planar_error = crate::distance_3d_wrapped(planar_after, target);
+                let height_error = i32::from(motion.position.z).abs_diff(i32::from(target.z));
+                // A far moving target requires closing XY range. Greedily
+                // minimizing only height can spend the entire pursuit horizon
+                // diving/climbing with little source forward translation.
+                // Preserve height priority for explicit climbs/route settlement.
+                let score = (
+                    if far_pursuit {
+                        planar_error
+                    } else {
+                        height_error
+                    },
+                    if far_pursuit { height_error } else { 0 },
+                    motion.pitch_accumulator.unsigned_abs(),
+                    axis.unsigned_abs(),
+                );
+                if best_pitch.as_ref().is_none_or(|(best, _)| score < *best) {
+                    best_pitch = Some((score, axis as i8));
+                }
+            }
+            command.pitch_axis = best_pitch
+                .expect("source flight admits a next Bee pursuit height")
+                .1;
+        }
+
+        let mut rejection_census = Vec::new();
+        let mut safe = |candidate: &GameCommand| {
+            let mut predicted = session.backend().campaign.clone();
+            let evidence = predicted.step_with_tuning(
+                campaign_player_command(candidate),
+                CAMPAIGN_SPEED_INDEX,
+                session.backend().flight_binding.tuning(),
+            );
+            let after = predicted.level2_compatibility();
+            let attributed_damage =
+                public_bee_source_attributed_damage_for_test(compatibility, after);
+            if attributed_damage.is_none()
+                || after.shared_spells().local_player().enabled_spell_holders
+                    != compatibility
+                        .shared_spells()
+                        .local_player()
+                        .enabled_spell_holders
+                || !public_bee_flight_state_is_unmodified_for_test(after.state)
+                || predicted.events().iter().any(|event| {
+                    matches!(
+                        event,
+                        crate::native_world::Level2DispatchEvent::Error { .. }
+                    )
+                })
+                || evidence.iter().any(|step| {
+                    matches!(
+                        step.movement_resolution,
+                        "rejected" | "rejected-and-stopped" | "recovered-after-reject"
+                    )
+                })
+            {
+                rejection_census.push(format!(
+                    "candidate={candidate:?}; attributed_bee_damage={attributed_damage:?} life_guard={} player_before=(life={},mana={},max={},regen={},flags={:#x}) player_after=(life={},mana={},max={},regen={},flags={:#x}); holder_guard={} holders_after={:?}; modifier_guard={} state_after={:?}; movement={:?}; dispatch_errors={:?}; bees_after={:?}",
+                    attributed_damage.is_some(),
+                    compatibility.shared_spells().player_entity().life,
+                    compatibility.shared_spells().player_entity().mana,
+                    compatibility.shared_spells().player_entity().max_mana,
+                    compatibility.shared_spells().player_entity().mana_regen,
+                    compatibility.shared_spells().player_entity().control_flags,
+                    after.shared_spells().player_entity().life,
+                    after.shared_spells().player_entity().mana,
+                    after.shared_spells().player_entity().max_mana,
+                    after.shared_spells().player_entity().mana_regen,
+                    after.shared_spells().player_entity().control_flags,
+                    after.shared_spells().local_player().enabled_spell_holders == compatibility.shared_spells().local_player().enabled_spell_holders,
+                    after.shared_spells().local_player().enabled_spell_holders,
+                    public_bee_flight_state_is_unmodified_for_test(after.state),
+                    after.state,
+                    evidence.iter().map(|step| (step.movement_resolution, step.before, step.proposed, step.committed)).collect::<Vec<_>>(),
+                    predicted.events().iter().filter(|event| matches!(event, crate::native_world::Level2DispatchEvent::Error { .. })).collect::<Vec<_>>(),
+                    after.economy().bee_creatures().iter().map(|bee| (
+                        bee.authored_index(), bee.source_entity_index,
+                        after.economy().slot_generation(bee.source_entity_index),
+                        bee.action, bee.life, bee.position, bee.pending_damage,
+                        bee.pending_attacker_entity_index, bee.damage_attacker_entity_index,
+                    )).collect::<Vec<_>>(),
+                ));
+                rejection_census.push(format!(
+                    "damage_packet raw_before={:?} raw_after={:?} shared_before={:?} shared_after={:?} new_economy_events={:?}",
+                    level_three_player_raw_mailbox_for_test(compatibility),
+                    level_three_player_raw_mailbox_for_test(after),
+                    compatibility.shared_spells().player_entity(),
+                    after.shared_spells().player_entity(),
+                    after.economy().events().get(compatibility.economy().events().len()..),
+                ));
+                return None;
+            }
+            Some((
+                u32::from(crate::turn_toward(after.state.yaw, desired, 1_024).unsigned_abs()),
+                crate::distance_3d_wrapped(after.state.position, target),
+                after.state.roll_accumulator.unsigned_abs(),
+            ))
+        };
+        if safe(&command).is_some() {
+            return command;
+        }
+        // Every fallback still passes the complete live callback preview and
+        // the independent existing assertions in the actual step consumer.
+        let selected = [
+            brake,
+            LongitudinalControl::Coast,
+            LongitudinalControl::Accelerate,
+        ]
+        .into_iter()
+        .flat_map(|longitudinal| {
+            let base = command.clone();
+            [roll_axis, 0, -127, 127]
+                .into_iter()
+                .map(move |roll_axis| GameCommand {
+                    longitudinal,
+                    roll_axis,
+                    ..base.clone()
+                })
+        })
+        .filter_map(|candidate| safe(&candidate).map(|score| (score, candidate)))
+        .min_by_key(|(score, _)| *score);
+        selected.unwrap_or_else(|| {
+            panic!(
+                "no source-safe ordinary Bee navigation command: tick={} target={target:?} desired={desired} stop={stop} state_before={state:?} holders_before={:?} raw_player={:?}; rejected ideal plus12 stencil candidates={rejection_census:#?}",
+                session.identity().tick,
+                compatibility.shared_spells().local_player().enabled_spell_holders,
+                compatibility.entities().get(usize::from(state.entity_index)),
+            )
+        }).1
+    }
+
+    #[test]
+    fn campaign_backend_public_bee_climb_pitch_integrates_across_source_visits() {
+        let root = level_three_descriptor_fixture_path();
+        let catalog = default_catalog().unwrap();
+        let definition = Arc::new(load_mc2_campaign(&root, &catalog).unwrap());
+        let session = GameSession::open(
+            &Mc2CampaignAdapter,
+            definition,
+            65,
+            Mc2CampaignInputs::new(&root),
+        )
+        .unwrap();
+        let compatibility = session.backend().campaign.level2_compatibility();
+        let mut target = compatibility.state.position;
+        crate::move_entity(&mut target, compatibility.state.yaw, 0, 4_096);
+        target.z = target.z.saturating_add(1_024);
+        let command = public_bee_navigation_command_for_test(&session, target, false);
+        assert_ne!(
+            command.pitch_axis, 0,
+            "ordinary climb must hold a pitch input beyond the first integer-height tie"
+        );
+        let predict = |pitch_axis| {
+            let mut motion = compatibility.state;
+            let mut context = crate::FlightContext::default();
+            for _ in 0..8 {
+                let evidence = crate::step_outer_turn_with_context_and_tuning(
+                    &mut motion,
+                    campaign_player_command(&GameCommand {
+                        pitch_axis,
+                        ..command.clone()
+                    }),
+                    CAMPAIGN_SPEED_INDEX,
+                    compatibility.profile(),
+                    compatibility.canonical_terrain(),
+                    &mut context,
+                    session.backend().flight_binding.tuning(),
+                );
+                assert!(evidence.iter().all(|step| !matches!(
+                    step.movement_resolution,
+                    "rejected" | "rejected-and-stopped" | "recovered-after-reject"
+                )));
+            }
+            motion.position.z
+        };
+        assert!(
+            predict(command.pitch_axis) > predict(0),
+            "the selected actual source trajectory gains height over neutral pitch"
+        );
+    }
+
+    fn public_bee_cast_capture_radius_for_test(
+        state: crate::FlightState,
+        bee: &crate::native_world::BeeCreatureRuntime,
+        tuning: crate::FlightTuning,
+    ) -> u32 {
+        let speed = u32::from(
+            state
+                .target_speed
+                .unsigned_abs()
+                .max(state.actual_speed.unsigned_abs()),
+        );
+        let brake_turns =
+            speed.div_ceil(u32::from(tuning.forward_acceleration.unsigned_abs()).max(1));
+        let bee_speed = u32::from(
+            bee.actual_speed
+                .unsigned_abs()
+                .max(bee.minimum_speed.unsigned_abs())
+                .max(bee.maximum_speed.unsigned_abs()),
+        )
+        .saturating_add(u32::from(bee.vertical_step.unsigned_abs()));
+        // Both source bodies can translate throughout braking. Start inside
+        // this margin and finish the chosen stop instead of switching back to
+        // acceleration each time the moving Bee crosses the outer launch edge.
+        3_072_u32.saturating_sub(speed.saturating_add(bee_speed).saturating_mul(brake_turns))
+    }
+
+    fn public_bee_range_intercept_for_test(
+        from: crate::Position,
+        target: crate::Position,
+        velocity: (i16, i16),
+        cruise_speed: u32,
+        capture_radius: u32,
+        action_window: i16,
+    ) -> crate::Position {
+        let mut future = target;
+        // The real Bee reconsiders steering on its authored action window.
+        // Predict only that horizon, and solve entry into cast range rather
+        // than pursuing an unnecessary full-contact intercept far beyond it.
+        for turn in 1_i32..=i32::from(action_window.max(1)) {
+            future = crate::Position {
+                x: target
+                    .x
+                    .wrapping_add_signed((i32::from(velocity.0) * turn) as i16),
+                y: target
+                    .y
+                    .wrapping_add_signed((i32::from(velocity.1) * turn) as i16),
+                z: target.z,
+            };
+            if crate::distance_3d_wrapped(from, future)
+                <= capture_radius.saturating_add(cruise_speed.saturating_mul(turn as u32))
+            {
+                break;
+            }
+        }
+        future
+    }
+
+    #[test]
+    fn campaign_backend_public_bee_intercept_leads_to_cast_range_before_contact() {
+        let from = crate::Position {
+            x: 10_000,
+            y: 10_000,
+            z: 3_000,
+        };
+        let target = crate::Position {
+            x: 10_000,
+            y: 16_000,
+            z: 3_000,
+        };
+        let lead = public_bee_range_intercept_for_test(from, target, (0, 64), 80, 2_352, 30);
+        // No cast-range solution occurs inside this moving Bee's30-turn
+        // steering horizon, so lead stops there instead of extrapolating375.
+        assert_eq!(lead.y, 17_920);
+        let lead = public_bee_range_intercept_for_test(from, target, (0, -64), 80, 2_352, 30);
+        assert!(crate::distance_3d_wrapped(from, lead) < 6_000);
+        assert!(crate::distance_3d_wrapped(from, lead) >= 2_352);
+        assert_ne!(lead, target);
+    }
+
+    // Forecast the actual public cast and its following stationary callbacks.
+    // Acquisition may select any current Bee; only a real250 consumption admits
+    // a shot. A terrain impact without damage does not qualify a line of fire.
+    fn public_bee_escape_command_for_test(
+        compatibility: &crate::native_world::Level2ResetSession,
+    ) -> GameCommand {
+        let state = compatibility.state;
+        let Some(target) = compatibility
+            .economy()
+            .bee_creatures()
+            .iter()
+            .filter(|bee| bee_is_public_target_for_test(bee))
+            .min_by_key(|bee| crate::distance_3d_wrapped(state.position, bee.position))
+        else {
+            return GameCommand::default();
+        };
+        let away = (crate::heading_for_positions(state.position, target.position) as i16)
+            .wrapping_add(1_024);
+        // Same ordinary source strafe/forward geometry as the public Firefly
+        // escape: compensate lateral drift rather than orbiting the attacker.
+        let mut forward = crate::Position { x: 0, y: 0, z: 0 };
+        crate::move_entity(
+            &mut forward,
+            0,
+            state.effective_pitch,
+            state.actual_speed.max(1),
+        );
+        let drift = crate::legacy_atan(state.strafe_speed, forward.y.cast_signed());
+        GameCommand {
+            longitudinal: LongitudinalControl::Accelerate,
+            lateral: LateralControl::Positive,
+            roll_axis: public_bee_source_roll_for_test(state, away.wrapping_sub(drift)),
+            pitch_axis: -127,
+            ..GameCommand::default()
+        }
+    }
+
+    fn public_bee_clear_shot_for_test(
+        session: &GameSession<Mc2CampaignBackend>,
+    ) -> Option<GameCommand> {
+        let compatibility = session.backend().campaign.level2_compatibility();
+        let player = compatibility.state.entity_index;
+        let holders = compatibility
+            .shared_spells()
+            .local_player()
+            .enabled_spell_holders;
+        let tuning = session.backend().flight_binding.tuning();
+        let motion = public_bee_escape_command_for_test(compatibility);
+        let mut aim_forecast = session.backend().campaign.clone();
+        for lead in 1..=8 {
+            aim_forecast.step_with_tuning(
+                campaign_player_command(&public_bee_escape_command_for_test(
+                    aim_forecast.level2_compatibility(),
+                )),
+                CAMPAIGN_SPEED_INDEX,
+                tuning,
+            );
+            if ![1, 4, 8].contains(&lead) {
+                continue;
+            }
+            // Cast emission uses the next parent callback and always left256.
+            let mut body = session.backend().campaign.clone();
+            body.step_with_tuning(
+                campaign_player_command(&motion),
+                CAMPAIGN_SPEED_INDEX,
+                tuning,
+            );
+            let state = body.level2_compatibility().state;
+            let mut launch = state.position;
+            crate::move_entity(&mut launch, state.yaw.wrapping_sub(512), 0, 256);
+            if crate::FlightWorld::ground_height(compatibility.canonical_terrain(), launch)
+                > launch.z
+            {
+                launch = state.position;
+            }
+            launch.z = launch.z.wrapping_add(state.entity_fov);
+            for target in aim_forecast
+                .level2_compatibility()
+                .economy()
+                .bee_creatures()
+                .iter()
+                .filter(|bee| bee_is_public_target_for_test(bee))
+            {
+                let mut aim = target.position;
+                aim.z = aim
+                    .z
+                    .wrapping_sub(crate::level1_mission::FIREBALL_COLLISION_VERTICAL_OFFSET);
+                let (yaw, pitch) = crate::level1_mission::projectile_guidance_angles(launch, aim);
+                // Source acquisition can replace pitch immediately. These
+                // offsets are only candidates; full callbacks decide whether
+                // acquisition or the retained ballistic path delivers250.
+                for loft in [0_i16, -128, -256, -384, -512] {
+                    let command = GameCommand {
+                        select_spell: Some(SemanticId::parse("spell.fireball").unwrap()),
+                        cast_selected: true,
+                        look_yaw: yaw.wrapping_sub(state.yaw),
+                        look_pitch: pitch.wrapping_add(loft).wrapping_sub(state.display_pitch),
+                        ..motion.clone()
+                    };
+                    let trace = std::env::var_os("MC_PUBLIC_BEE_MISS_DIAGNOSTIC").is_some()
+                        && lead == 1
+                        && target.authored_index() == Some(149)
+                        && [0, -512].contains(&loft);
+                    if trace {
+                        eprintln!(
+                            "BEE_MISS_AIM tick={} lead={lead} loft={loft} actual_parent={:?} predicted_parent={state:?} launch={launch:?} target={:?} aim={aim:?} command={command:?}",
+                            session.identity().tick,
+                            compatibility.state,
+                            target
+                        );
+                    }
+                    let mut predicted = session.backend().campaign.clone();
+                    let mut hit = false;
+                    let mut safe = true;
+                    for callback in 0..=24 {
+                        let before = predicted.level2_compatibility().clone();
+                        let input = if callback == 0 {
+                            session.backend().campaign_player_command(&command).unwrap()
+                        } else {
+                            campaign_player_command(&public_bee_escape_command_for_test(&before))
+                        };
+                        let evidence =
+                            predicted.step_with_tuning(input, CAMPAIGN_SPEED_INDEX, tuning);
+                        let after = predicted.level2_compatibility();
+                        safe &= public_bee_source_attributed_damage_for_test(&before, after)
+                            .is_some()
+                            && after.shared_spells().player_entity().life > 0
+                            && after.shared_spells().local_player().enabled_spell_holders
+                                == holders
+                            && public_bee_flight_state_is_unmodified_for_test(after.state)
+                            && !predicted.events().iter().any(|event| {
+                                matches!(
+                                    event,
+                                    crate::native_world::Level2DispatchEvent::Error { .. }
+                                )
+                            })
+                            && evidence.iter().all(|step| {
+                                !matches!(
+                                    step.movement_resolution,
+                                    "rejected" | "rejected-and-stopped" | "recovered-after-reject"
+                                )
+                            });
+                        if trace {
+                            eprintln!(
+                                "BEE_MISS_CALLBACK callback={callback} safe={safe} damage_admission={:?} alive={} holders={} modifier={} parent={:?} motion={:?} errors={:?} flyers={:?} impacts={:?} bees={:?}",
+                                public_bee_source_attributed_damage_for_test(&before, after),
+                                after.shared_spells().player_entity().life > 0,
+                                after.shared_spells().local_player().enabled_spell_holders
+                                    == holders,
+                                public_bee_flight_state_is_unmodified_for_test(after.state),
+                                after.state,
+                                evidence
+                                    .iter()
+                                    .map(|step| (
+                                        step.movement_resolution,
+                                        step.before,
+                                        step.proposed,
+                                        step.committed
+                                    ))
+                                    .collect::<Vec<_>>(),
+                                predicted
+                                    .events()
+                                    .iter()
+                                    .filter(|event| matches!(
+                                        event,
+                                        crate::native_world::Level2DispatchEvent::Error { .. }
+                                    ))
+                                    .collect::<Vec<_>>(),
+                                after
+                                    .economy()
+                                    .fireball_projectiles()
+                                    .iter()
+                                    .filter(|row| row.owner_entity_index == player)
+                                    .map(|row| (
+                                        row.source_entity_index,
+                                        after.economy().slot_generation(row.source_entity_index),
+                                        row.position,
+                                        (row.yaw, row.pitch, row.roll, row.fov, row.actual_speed),
+                                        row.target_source_entity_index,
+                                        row.acquisition_attempted,
+                                        row.life,
+                                        row.active,
+                                        crate::FlightWorld::ground_height(
+                                            after.canonical_terrain(),
+                                            row.position
+                                        ),
+                                    ))
+                                    .collect::<Vec<_>>(),
+                                after
+                                    .economy()
+                                    .model17_spawned_children()
+                                    .iter()
+                                    .filter(|row| row.source_class == 10
+                                        && row.model == 0
+                                        && row.parent_entity_id == player)
+                                    .map(|row| (
+                                        row.source_entity_index,
+                                        row.position,
+                                        row.life,
+                                        row.active,
+                                        row.parent_entity_index,
+                                        row.target_source_entity_index,
+                                        row.subspell_index,
+                                        crate::FlightWorld::ground_height(
+                                            after.canonical_terrain(),
+                                            row.position
+                                        ),
+                                    ))
+                                    .collect::<Vec<_>>(),
+                                after
+                                    .economy()
+                                    .bee_creatures()
+                                    .iter()
+                                    .map(|row| (
+                                        row.authored_index(),
+                                        row.source_entity_index,
+                                        after.economy().slot_generation(row.source_entity_index),
+                                        row.position,
+                                        row.action,
+                                        row.life,
+                                        row.pending_damage,
+                                        row.pending_attacker_entity_index,
+                                        row.damage_attacker_entity_index,
+                                    ))
+                                    .collect::<Vec<_>>(),
+                            );
+                        }
+                        if !safe {
+                            break;
+                        }
+                        hit |= before.economy().bee_creatures().iter().any(|bee| {
+                            bee_is_public_target_for_test(bee)
+                                && after.economy().bee_creatures().iter().any(|current| {
+                                    current.source_entity_index == bee.source_entity_index
+                                        && after
+                                            .economy()
+                                            .slot_generation(current.source_entity_index)
+                                            == before
+                                                .economy()
+                                                .slot_generation(bee.source_entity_index)
+                                        && current.life == bee.life.wrapping_sub(250)
+                                        && current.damage_attacker_entity_index == player
+                                })
+                        });
+                        // The source makes one acquisition attempt. Once both
+                        // the real own flyer and its impact have retired, later
+                        // neutral callbacks cannot turn this candidate into a hit.
+                        if !hit
+                            && callback >= 2
+                            && !after
+                                .economy()
+                                .fireball_projectiles()
+                                .iter()
+                                .any(|row| row.owner_entity_index == player)
+                            && !after
+                                .economy()
+                                .model17_spawned_children()
+                                .iter()
+                                .any(|row| {
+                                    row.source_class == 10
+                                        && row.model == 0
+                                        && row.parent_entity_id == player
+                                })
+                        {
+                            break;
+                        }
+                    }
+                    if hit && safe {
+                        return Some(command);
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    pub(super) fn public_bee_needs_castle_recovery_for_test(
+        compatibility: &crate::native_world::Level2ResetSession,
+        cost: i32,
+    ) -> bool {
+        let player = compatibility.shared_spells().player_entity();
+        let (pending, _) = level_three_player_raw_mailbox_for_test(compatibility);
+        let mut contact_visits = BTreeSet::new();
+        for bee in compatibility
+            .economy()
+            .bee_creatures()
+            .iter()
+            .filter(|bee| bee_is_public_target_for_test(bee))
+        {
+            if let Ok(window) = u8::try_from(bee.action_window) {
+                if window != 0 {
+                    for visit in 0_u8..24 {
+                        if bee.source_byte_3e.wrapping_add(visit) % window == 0 {
+                            contact_visits.insert(visit);
+                        }
+                    }
+                }
+            }
+        }
+        compatibility.shared_spells().player_mana() < cost
+            || public_bee_contact_reserve_for_visits_for_test(
+                player.life,
+                pending,
+                contact_visits.len().max(2),
+            )
+    }
+
+    fn public_bee_contact_reserve_is_exhausted_for_test(life: i32, retained: i32) -> bool {
+        public_bee_contact_reserve_for_visits_for_test(life, retained, 2)
+    }
+
+    fn public_bee_contact_reserve_for_visits_for_test(
+        life: i32,
+        retained: i32,
+        visits: usize,
+    ) -> bool {
+        // Reserve the growing ownerless source packets over the same24-visit
+        // departure horizon used by actual shot safety. The live source
+        // cadence determines distinct publication visits; simultaneous owners
+        // overwrite rather than adding another consumed packet. Include
+        // living steering Bees that can enter action18 during departure.
+        // This is an early pilot decision, not permission to consume damage:
+        // every executed callback still requires the exact nonlethal proof.
+        let mut packet = retained.max(0);
+        let mut reserve = 0_i32;
+        for _ in 0..visits {
+            packet = packet.saturating_add(200);
+            reserve = reserve.saturating_add(packet);
+        }
+        life <= reserve
+    }
+
+    #[test]
+    fn public_bee_departure_reserves_the_live_swarm_contact_horizon() {
+        assert!(!public_bee_contact_reserve_for_visits_for_test(
+            9_800, 200, 6
+        ));
+        assert!(public_bee_contact_reserve_for_visits_for_test(
+            6_400, 1_200, 6
+        ));
+        assert!(public_bee_contact_reserve_for_visits_for_test(
+            1_610, 2_000, 6
+        ));
+        assert!(!public_bee_contact_reserve_for_visits_for_test(
+            10_000, 0, 6
+        ));
+    }
+
+    #[test]
+    fn public_bee_recovery_distinguishes_retained_payload_from_contact_danger() {
+        assert!(!public_bee_contact_reserve_is_exhausted_for_test(
+            9_800, 200
+        ));
+        assert!(!public_bee_contact_reserve_is_exhausted_for_test(
+            5_570, 1_200
+        ));
+        assert!(public_bee_contact_reserve_is_exhausted_for_test(
+            3_170, 1_600
+        ));
+        assert!(public_bee_contact_reserve_is_exhausted_for_test(
+            1_370, 1_800
+        ));
+        assert!(!public_bee_contact_reserve_is_exhausted_for_test(10_000, 0));
+    }
+
+    pub(super) fn recover_public_bee_at_owned_castle_for_test(
+        session: &mut GameSession<Mc2CampaignBackend>,
+        cost: i32,
+        terminal_rows: &mut BTreeSet<u16>,
+    ) {
+        let mut clearing_contact = true;
+        for _ in 0..1_280 {
+            let compatibility = session.backend().campaign.level2_compatibility();
+            let player = compatibility.shared_spells().player_entity();
+            let overlap = compatibility
+                .economy()
+                .player_castle_shift_aabb_overlap(player);
+            let castle = compatibility
+                .economy()
+                .castle()
+                .expect("owned recovery Castle");
+            if overlap
+                && (
+                    compatibility.state.target_speed,
+                    compatibility.state.actual_speed,
+                ) == (0, 0)
+            {
+                break;
+            }
+            let inside_contact_clearance = compatibility
+                .economy()
+                .bee_creatures()
+                .iter()
+                .filter(|bee| bee_is_public_target_for_test(bee))
+                .any(|bee| {
+                    crate::distance_3d_wrapped(compatibility.state.position, bee.position) < 2_048
+                });
+            clearing_contact &= !overlap && inside_contact_clearance;
+            // Do not brake/reorient toward a distant Castle while still in
+            // the contact swarm. Carry the same ordinary escape motion used
+            // by real projectile safety until two source contact radii clear.
+            // These commands count inside the existing1280 return budget.
+            let command = if clearing_contact {
+                public_bee_escape_command_for_test(compatibility)
+            } else {
+                public_bee_navigation_command_for_test(session, castle.position, overlap)
+            };
+            step_public_bee_command_for_test(session, command, terminal_rows);
+        }
+        for _ in 0..64 {
+            let compatibility = session.backend().campaign.level2_compatibility();
+            assert!(
+                compatibility.economy().player_castle_shift_aabb_overlap(
+                    compatibility.shared_spells().player_entity()
+                )
+            );
+            if compatibility.shared_spells().player_mana() >= cost
+                && compatibility.shared_spells().player_entity().life
+                    >= compatibility.shared_spells().player_entity().max_life
+                && level_three_player_raw_mailbox_for_test(compatibility) == (0, 0)
+            {
+                break;
+            }
+            step_public_bee_command_for_test(session, GameCommand::default(), terminal_rows);
+        }
+        assert!(
+            session
+                .backend()
+                .campaign
+                .level2_compatibility()
+                .shared_spells()
+                .player_mana()
+                >= cost
+        );
+        let recovered = session.backend().campaign.level2_compatibility();
+        assert!(
+            recovered.shared_spells().player_entity().life
+                >= recovered.shared_spells().player_entity().max_life
+        );
+        assert_eq!(level_three_player_raw_mailbox_for_test(recovered), (0, 0));
+        assert!(
+            !public_bee_needs_castle_recovery_for_test(
+                session.backend().campaign.level2_compatibility(),
+                cost
+            ),
+            "real Castle recovery must clear the entire contact payload and heal before the next shot"
+        );
+    }
+
+    fn fire_public_bee_exchange_for_test(
+        session: &mut GameSession<Mc2CampaignBackend>,
+        authored_index: u16,
+        terminal_rows: &mut BTreeSet<u16>,
+    ) -> Vec<BeeFireballDamageReceipt> {
+        let holder_index = session
+            .backend()
+            .campaign
+            .level2_compatibility()
+            .shared_spells()
+            .local_player()
+            .enabled_spell_holders[0];
+        // Readiness and mana come from the acquired source holder. If needed,
+        // fly to the existing owned Castle and observe its real upkeep.
+        let cost = {
+            let shared = session
+                .backend()
+                .campaign
+                .level2_compatibility()
+                .shared_spells();
+            shared
+                .pickups()
+                .iter()
+                .chain(shared.holders())
+                .chain(shared.dynamic_pickups())
+                .find(|holder| holder.index == holder_index)
+                .expect("carried Fireball holder")
+                .mana_cost
+        };
+        if public_bee_needs_castle_recovery_for_test(
+            session.backend().campaign.level2_compatibility(),
+            cost,
+        ) {
+            recover_public_bee_at_owned_castle_for_test(session, cost, terminal_rows);
+        }
+        for _ in 0..=24 {
+            let compatibility = session.backend().campaign.level2_compatibility();
+            let player = compatibility.state.entity_index;
+            let shared = compatibility.shared_spells();
+            let holder = shared
+                .pickups()
+                .iter()
+                .chain(shared.holders())
+                .chain(shared.dynamic_pickups())
+                .find(|holder| holder.index == holder_index)
+                .expect("live Fireball holder");
+            if holder.active_value == 0
+                && !compatibility
+                    .economy()
+                    .fireball_projectiles()
+                    .iter()
+                    .any(|row| row.owner_entity_index == player)
+                && !compatibility
+                    .economy()
+                    .model17_spawned_children()
+                    .iter()
+                    .any(|row| {
+                        row.source_class == 10 && row.model == 0 && row.parent_entity_id == player
+                    })
+            {
+                break;
+            }
+            let command = public_bee_escape_command_for_test(
+                session.backend().campaign.level2_compatibility(),
+            );
+            step_public_bee_command_for_test(session, command, terminal_rows);
+        }
+        let mut aimed = None;
+        let mut selected_shot = None;
+        let mut previous_target: Option<(u16, u32, crate::Position)> = None;
+        let mut braking_for_cast = false;
+        let mut source_route: Option<Vec<crate::Position>> = None;
+        let mut route_index = 0_usize;
+        let mut attempted_sites = BTreeSet::new();
+        let trace_navigation = std::env::var_os("MC_PUBLIC_BEE_NAVIGATION_DIAGNOSTIC").is_some();
+        for _ in 0..640 {
+            let compatibility = session.backend().campaign.level2_compatibility();
+            let Some(bee) = compatibility
+                .economy()
+                .bee_creatures()
+                .iter()
+                .find(|bee| bee.authored_index() == Some(authored_index) && bee.life >= 0)
+                .copied()
+            else {
+                return Vec::new();
+            };
+            if public_bee_needs_castle_recovery_for_test(compatibility, cost) {
+                if trace_navigation {
+                    eprintln!(
+                        "BEE_EXCHANGE_RECOVERY tick={} authored={} life={} mana={} mailbox={:?}",
+                        session.identity().tick,
+                        authored_index,
+                        compatibility.shared_spells().player_entity().life,
+                        compatibility.shared_spells().player_mana(),
+                        level_three_player_raw_mailbox_for_test(compatibility)
+                    );
+                }
+                recover_public_bee_at_owned_castle_for_test(session, cost, terminal_rows);
+                // Replan from the real recovered pose. Never retain a stale
+                // stopped casting site beside the swarm through a Castle leg.
+                source_route = None;
+                route_index = 0;
+                previous_target = None;
+                braking_for_cast = false;
+                continue;
+            }
+            let state = compatibility.state;
+            let close = crate::distance_3d_wrapped(state.position, bee.position) <= 3_072;
+            if close && bee_is_public_target_for_test(&bee) && source_route.is_none() {
+                if trace_navigation {
+                    eprintln!(
+                        "BEE_SHOT_ATTEMPT tick={} authored={} player={:?} bee={:?}",
+                        session.identity().tick,
+                        authored_index,
+                        state.position,
+                        bee.position
+                    );
+                }
+                if let Some(command) = public_bee_clear_shot_for_test(session) {
+                    selected_shot = Some(command);
+                    aimed = Some(bee);
+                    break;
+                }
+                attempted_sites.insert((
+                    state.position.x.to_be_bytes()[0],
+                    state.position.y.to_be_bytes()[0],
+                ));
+                // A flying Bee's occupied tile need not admit player movement.
+                // Reach a nearby source-admitted firing site instead; actual
+                // arrival must still pass the complete public cast forecast.
+                let mut sites = Vec::new();
+                for radius in [512_i16, 1_024, 1_536, 2_048] {
+                    for heading in [0_i16, 256, 512, 768, 1_024, 1_280, 1_536, 1_792] {
+                        let mut site = bee.position;
+                        crate::move_entity(&mut site, heading, 0, radius);
+                        let tile = (site.x.to_be_bytes()[0], site.y.to_be_bytes()[0]);
+                        if attempted_sites.contains(&tile) {
+                            continue;
+                        }
+                        site.z = crate::FlightWorld::ground_height(
+                            compatibility.canonical_terrain(),
+                            site,
+                        )
+                        .wrapping_add(compatibility.profile().ground_clearance);
+                        if crate::distance_3d_wrapped(site, bee.position) > 3_072 {
+                            continue;
+                        }
+                        // The observed miss hits an intervening terrain probe,
+                        // not the Bee. Do not route to another low site behind
+                        // that same ridge. Filter the actual source straight
+                        // guidance corridor before spending public flight on it;
+                        // the full cast forecast at arrival still owns admission.
+                        let mut top = bee.position;
+                        top.z = top.z.wrapping_add(
+                            compatibility.entities()[usize::from(bee.source_entity_index)]
+                                .collision_target()
+                                .collision_vertical_offset,
+                        );
+                        let (yaw, pitch) =
+                            crate::level1_mission::projectile_guidance_angles(site, top);
+                        let mut probe = site;
+                        let mut clear = true;
+                        let mut reached = false;
+                        for _ in 0..12 {
+                            if crate::distance_3d_wrapped(probe, top) <= 384 {
+                                reached = true;
+                                break;
+                            }
+                            crate::move_entity(
+                                &mut probe,
+                                yaw,
+                                pitch,
+                                crate::level1_mission::FIREBALL_SPEED,
+                            );
+                            if crate::FlightWorld::ground_height(
+                                compatibility.canonical_terrain(),
+                                probe,
+                            ) > probe.z
+                                || crate::FlightWorld::ceiling_height(
+                                    compatibility.canonical_terrain(),
+                                    probe,
+                                )
+                                .is_some_and(|ceiling| probe.z > ceiling)
+                            {
+                                clear = false;
+                                break;
+                            }
+                        }
+                        if clear && reached {
+                            sites.push(site);
+                        }
+                    }
+                }
+                let (waypoints, edges, _) = level_three_source_route_to_sites_for_test(
+                    session, state.position, sites, &[], 0,
+                ).unwrap_or_else(|| panic!("no untried firing site near the current living Bee lies in the source-admitted terrain component: player={:?} bee={:?} attempted={attempted_sites:?}", state.position, bee.position));
+                if trace_navigation {
+                    eprintln!(
+                        "BEE_SOURCE_ROUTE tick={} edges={edges} waypoints={waypoints:?}",
+                        session.identity().tick
+                    );
+                }
+                source_route = Some(waypoints);
+                route_index = 0;
+                braking_for_cast = false;
+            }
+            let generation = compatibility
+                .economy()
+                .slot_generation(bee.source_entity_index);
+            let velocity = if let Some((slot, prior_generation, position)) = previous_target {
+                if slot == bee.source_entity_index && prior_generation == generation {
+                    (
+                        bee.position.x.wrapping_sub(position.x).cast_signed(),
+                        bee.position.y.wrapping_sub(position.y).cast_signed(),
+                    )
+                } else {
+                    (0, 0)
+                }
+            } else {
+                let mut next = bee.position;
+                crate::move_entity(&mut next, bee.yaw, 0, bee.actual_speed);
+                (
+                    next.x.wrapping_sub(bee.position.x).cast_signed(),
+                    next.y.wrapping_sub(bee.position.y).cast_signed(),
+                )
+            };
+            let tuning = session.backend().flight_binding.tuning();
+            let capture_radius = public_bee_cast_capture_radius_for_test(state, &bee, tuning);
+            if previous_target.is_some_and(|(slot, prior_generation, _)| {
+                slot != bee.source_entity_index || prior_generation != generation
+            }) {
+                braking_for_cast = false;
+            }
+            if !braking_for_cast
+                && source_route.is_none()
+                && crate::distance_3d_wrapped(state.position, bee.position) <= capture_radius
+            {
+                braking_for_cast = false;
+                if trace_navigation {
+                    eprintln!(
+                        "BEE_CLIMB_BRAKE tick={} player={:?} bee={:?}",
+                        session.identity().tick,
+                        state.position,
+                        bee.position
+                    );
+                }
+            }
+            if braking_for_cast && !close && (state.target_speed, state.actual_speed) == (0, 0) {
+                braking_for_cast = false;
+            }
+            let lead = public_bee_range_intercept_for_test(
+                state.position,
+                bee.position,
+                velocity,
+                tuning.max_forward_speed.unsigned_abs().into(),
+                capture_radius,
+                bee.action_window,
+            );
+            let mut destination = if braking_for_cast { bee.position } else { lead };
+            let mut stop = braking_for_cast;
+            if let Some(waypoints) = source_route.as_ref() {
+                let mut waypoint = waypoints[route_index];
+                let mut planar_player = state.position;
+                planar_player.z = waypoint.z;
+                let near = crate::distance_3d_wrapped(planar_player, waypoint) <= 384;
+                let advanced = near && (state.target_speed, state.actual_speed) == (0, 0);
+                if advanced {
+                    route_index += 1;
+                    if route_index == waypoints.len() {
+                        source_route = None;
+                    }
+                }
+                if let Some(waypoints) = source_route.as_ref() {
+                    waypoint = waypoints[route_index];
+                    // Follow the actual terrain component, not an absolute
+                    // height beyond the source's terrain-relative envelope.
+                    waypoint.z = crate::FlightWorld::ground_height(
+                        compatibility.canonical_terrain(),
+                        waypoint,
+                    )
+                    .wrapping_add(compatibility.profile().ground_clearance);
+                    destination = waypoint;
+                    stop = near && !advanced;
+                    braking_for_cast = false;
+                }
+            }
+            let command = public_bee_navigation_with_pursuit_goal_for_test(
+                session,
+                destination,
+                stop,
+                source_route.is_none(),
+            );
+            previous_target = Some((bee.source_entity_index, generation, bee.position));
+            step_public_bee_command_for_test(session, command, terminal_rows);
+        }
+        let _bee = aimed.unwrap_or_else(|| {
+            let compatibility = session.backend().campaign.level2_compatibility();
+            panic!(
+                "ordinary public flight reaches a current living final Bee within640 steps: state={:?} bee={:?}",
+                compatibility.state,
+                compatibility.economy().bee_creatures().iter().find(|bee| bee.authored_index() == Some(authored_index)),
+            );
+        });
+        let compatibility = session.backend().campaign.level2_compatibility();
+        let state = compatibility.state;
+        let player = state.entity_index;
+        let before = compatibility
+            .economy()
+            .bee_creatures()
+            .iter()
+            .map(|bee| {
+                (
+                    bee.authored_index(),
+                    bee.source_entity_index,
+                    compatibility
+                        .economy()
+                        .slot_generation(bee.source_entity_index),
+                    bee.life,
+                )
+            })
+            .collect::<Vec<_>>();
+        let prior_projectiles = compatibility
+            .economy()
+            .fireball_projectiles()
+            .iter()
+            .map(|row| {
+                (
+                    row.source_entity_index,
+                    compatibility
+                        .economy()
+                        .slot_generation(row.source_entity_index),
+                )
+            })
+            .collect::<BTreeSet<_>>();
+        let prior_impacts = compatibility
+            .economy()
+            .model17_spawned_children()
+            .iter()
+            .map(|row| {
+                (
+                    row.source_entity_index,
+                    compatibility
+                        .economy()
+                        .slot_generation(row.source_entity_index),
+                )
+            })
+            .collect::<BTreeSet<_>>();
+        step_public_bee_command_for_test(
+            session,
+            selected_shot.expect("navigation admits an actual source hit forecast"),
+            terminal_rows,
+        );
+        let mut saw_projectile = false;
+        let mut saw_impact = false;
+        let mut receipts = Vec::new();
+        for _ in 0..=24 {
+            let economy = session.backend().campaign.level2_compatibility().economy();
+            saw_projectile |= economy.fireball_projectiles().iter().any(|row| {
+                row.owner_entity_index == player
+                    && !prior_projectiles.contains(&(
+                        row.source_entity_index,
+                        economy.slot_generation(row.source_entity_index),
+                    ))
+            });
+            saw_impact |= economy.model17_spawned_children().iter().any(|row| {
+                row.source_class == 10
+                    && row.model == 0
+                    && row.parent_entity_id == player
+                    && !prior_impacts.contains(&(
+                        row.source_entity_index,
+                        economy.slot_generation(row.source_entity_index),
+                    ))
+            });
+            for (authored, slot, generation, life) in &before {
+                if let Some(current) = economy.bee_creatures().iter().find(|row| {
+                    row.source_entity_index == *slot
+                        && economy.slot_generation(*slot) == *generation
+                        && row.life == life.wrapping_sub(250)
+                        && row.damage_attacker_entity_index == player
+                }) {
+                    if !receipts
+                        .iter()
+                        .any(|receipt: &BeeFireballDamageReceipt| receipt.source_slot == *slot)
+                    {
+                        receipts.push(BeeFireballDamageReceipt {
+                            authored_index: authored.expect("final Bee authored row"),
+                            source_slot: *slot,
+                            generation: *generation,
+                            life_before: *life,
+                            life_after: current.life,
+                        });
+                    }
+                }
+            }
+            if !receipts.is_empty() {
+                assert!(
+                    saw_projectile && saw_impact,
+                    "damage needs real new player flyer and impact"
+                );
+                if trace_navigation {
+                    let compatibility = session.backend().campaign.level2_compatibility();
+                    eprintln!(
+                        "BEE_EXCHANGE_HIT tick={} requested={} life={} mailbox={:?} receipts={:?}",
+                        session.identity().tick,
+                        authored_index,
+                        compatibility.shared_spells().player_entity().life,
+                        level_three_player_raw_mailbox_for_test(compatibility),
+                        receipts
+                    );
+                }
+                return receipts;
+            }
+            let command = public_bee_escape_command_for_test(
+                session.backend().campaign.level2_compatibility(),
+            );
+            step_public_bee_command_for_test(session, command, terminal_rows);
+        }
+        assert!(
+            saw_projectile,
+            "the ordinary final Bee Fireball request must construct its source flyer"
+        );
+        receipts
     }
 
     pub(crate) fn drive_real_level_three_revealed_way_through_final_bees_for_test(
@@ -16883,45 +23741,20 @@ pub(crate) mod tests {
             1
         );
 
-        let first_life = compatibility
-            .economy()
-            .bee_creatures()
-            .iter()
-            .find(|bee| bee.authored_index() == Some(BEE_ROWS[0]))
-            .expect("the first final Bee is live")
-            .life;
-        let first_hit = fire_real_player_fireball_at_bee_for_test(session, BEE_ROWS[0]);
-        assert_eq!(first_hit.life, first_life.wrapping_sub(250));
+        let _ = retire_real_level_three_final_bees_with_public_commands_for_test(session);
+    }
 
-        let retreat = {
-            let first = session
-                .backend()
-                .campaign
-                .level2_compatibility()
-                .economy()
-                .bee_creatures()
-                .iter()
-                .find(|bee| bee.authored_index() == Some(BEE_ROWS[0]))
-                .expect("the first final Bee remains after its public hit");
-            crate::Position {
-                x: first.position.x.wrapping_add(20_000),
-                y: first.position.y.wrapping_add(20_000),
-                z: first.position.z,
-            }
-        };
-        position_player_at_bee_fireball_boundary_for_test(session, retreat);
-
-        let attacker = session
-            .backend()
-            .campaign
-            .level2_compatibility()
-            .state
-            .entity_index;
+    pub(super) fn retire_real_level_three_final_bees_with_public_commands_for_test(
+        session: &mut GameSession<Mc2CampaignBackend>,
+    ) -> Vec<BeeFireballDamageReceipt> {
+        const BEE_ROWS: [u16; 6] = [149, 150, 152, 153, 154, 155];
+        const FINAL_BEE_STAGE: usize = 4;
+        let mut all_receipts = Vec::new();
         let mut terminal_rows = BTreeSet::new();
         let mut reclaimed_rows = BTreeSet::new();
         for authored_index in BEE_ROWS {
             for _ in 0..16 {
-                let Some(bee) = session
+                let bee = session
                     .backend()
                     .campaign
                     .level2_compatibility()
@@ -16929,72 +23762,52 @@ pub(crate) mod tests {
                     .bee_creatures()
                     .iter()
                     .find(|bee| bee.authored_index() == Some(authored_index))
-                    .copied()
-                else {
+                    .copied();
+                let Some(bee) = bee else {
+                    assert!(
+                        terminal_rows.contains(&authored_index),
+                        "absent final Bee needs observed action20"
+                    );
+                    reclaimed_rows.insert(authored_index);
                     break;
                 };
                 if bee.life < 0 {
-                    terminal_rows.insert(authored_index);
+                    assert!(
+                        terminal_rows.contains(&authored_index),
+                        "negative Bee needs observed action20"
+                    );
                     break;
                 }
+                let receipts =
+                    fire_public_bee_exchange_for_test(session, authored_index, &mut terminal_rows);
                 assert!(
-                    session
-                        .backend_mut()
-                        .campaign
-                        .level2_compatibility_mut()
-                        .economy_mut()
-                        .stage_bee_mailbox_damage_for_test(bee.source_entity_index, attacker, 250,)
-                );
-                let life_before = bee.life;
-                let mut consumed = false;
-                for _ in 0..4 {
-                    session
-                        .step(guard(session), GameCommand::default())
-                        .unwrap();
-                    let current = session
-                        .backend()
-                        .campaign
-                        .level2_compatibility()
-                        .economy()
-                        .bee_creatures()
+                    receipts
                         .iter()
-                        .find(|candidate| candidate.authored_index() == Some(authored_index))
-                        .copied()
-                        .expect("the source-arrived pulse is consumed before Bee reclaim");
-                    if current.life == life_before.wrapping_sub(250) {
-                        consumed = true;
-                        if current.life < 0 {
-                            assert_eq!(current.action, 20);
-                            terminal_rows.insert(authored_index);
-                        }
-                        break;
-                    }
-                }
-                assert!(
-                    consumed,
-                    "Bee {authored_index} did not consume its source mailbox"
+                        .all(|receipt| receipt.life_after == receipt.life_before.wrapping_sub(250))
                 );
+                all_receipts.extend(receipts);
                 if terminal_rows.contains(&authored_index) {
                     break;
                 }
             }
-
             for _ in 0..24 {
-                if session
+                let remaining = session
                     .backend()
                     .campaign
                     .level2_compatibility()
                     .economy()
-                    .bee_creatures()
+                    .bee_creatures();
+                if remaining
                     .iter()
                     .all(|bee| bee.authored_index() != Some(authored_index))
                 {
                     reclaimed_rows.insert(authored_index);
                     break;
                 }
-                session
-                    .step(guard(session), GameCommand::default())
-                    .unwrap();
+                let command = public_bee_escape_command_for_test(
+                    session.backend().campaign.level2_compatibility(),
+                );
+                step_public_bee_command_for_test(session, command, &mut terminal_rows);
             }
         }
 
@@ -17036,6 +23849,257 @@ pub(crate) mod tests {
             2
         );
         assert_eq!(compatibility.runtime().objectives[0].is_level_end, 1);
+        all_receipts
+    }
+
+    // Qualified component prerequisite: execute row146's actual close producer
+    // and its ordinary terrain/controller/reclaim lifecycle before staging Bees.
+    // This does not prove earned group2 mission progress.
+    pub(super) fn close_real_level_three_strip_for_staged_bees_for_test(
+        session: &mut GameSession<Mc2CampaignBackend>,
+    ) {
+        // Source "close" lowers the raised strip and restores its surrounding
+        // material. The direct group3 fixture previously left that ridge and
+        // movement barrier in place across every real projectile trajectory.
+        let terrain_before_close = session
+            .backend()
+            .campaign
+            .level2_compatibility()
+            .canonical_terrain()
+            .planes()
+            .clone();
+        let controller_before =
+            session.backend().campaign.level2_compatibility().entities()[94].clone();
+        assert_eq!(
+            (
+                controller_before.class,
+                controller_before.model,
+                controller_before.action,
+                controller_before.life,
+                controller_before.subspell_index
+            ),
+            (14, 1, 6, 3, 48)
+        );
+        assert!(
+            terrain_before_close
+                .terrain_types
+                .iter()
+                .any(|kind| *kind == 8),
+            "the staged component must retain the pre-close source strip obstruction"
+        );
+        session
+            .backend_mut()
+            .campaign
+            .level2_compatibility_mut()
+            .activate_authored_group_prerequisite_for_test(2)
+            .unwrap();
+        let close_slot = session
+            .backend()
+            .campaign
+            .level2_compatibility()
+            .economy()
+            .terrain_strip_close_triggers()
+            .iter()
+            .find(|row| row.authored_index == 146 && row.active)
+            .expect("normal authored allocator constructs the real row146 close command")
+            .source_entity_index;
+        let mut close_terminal_rows = BTreeSet::new();
+        for _ in 0..=50 {
+            let compatibility = session.backend().campaign.level2_compatibility();
+            if compatibility.entities()[94].life == 4
+                && compatibility.entities()[94].subspell_index == 0
+                && compatibility
+                    .economy()
+                    .terrain_strip_close_triggers()
+                    .iter()
+                    .all(|row| row.source_entity_index != close_slot)
+            {
+                break;
+            }
+            step_public_bee_command_for_test(
+                session,
+                GameCommand::default(),
+                &mut close_terminal_rows,
+            );
+        }
+        let compatibility = session.backend().campaign.level2_compatibility();
+        assert_eq!(
+            (
+                compatibility.entities()[94].life,
+                compatibility.entities()[94].subspell_index
+            ),
+            (4, 0),
+            "actual48 source close visits finish the controller lifecycle"
+        );
+        assert!(
+            compatibility
+                .economy()
+                .terrain_strip_close_triggers()
+                .iter()
+                .all(|row| row.source_entity_index != close_slot),
+            "the real close command reaches following-pass reclaim"
+        );
+        let terrain_after_close = compatibility.canonical_terrain().planes();
+        assert!(
+            terrain_before_close
+                .terrain_types
+                .iter()
+                .enumerate()
+                .any(|(index, kind)| *kind == 8
+                    && terrain_after_close.terrain_types[index] != 8
+                    && terrain_after_close.ground_heights[index]
+                        < terrain_before_close.ground_heights[index]),
+            "the producer must lower a previously obstructing ridge cell and restore its source material"
+        );
+    }
+
+    #[test]
+    fn campaign_backend_staged_final_level_three_bees_receive_public_flight_fireball_exchange() {
+        // Qualified component start only: carried inventory and the authored
+        // group2 close producer, followed by its real terrain lifecycle, then
+        // group3. This does not prove earned Castle-charge/revealed-way progress.
+        // Combat uses live package carriers and ordinary commands.
+        let root = level_three_descriptor_fixture_path();
+        let catalog = default_catalog().unwrap();
+        let definition = Arc::new(load_mc2_campaign(&root, &catalog).unwrap());
+        let mut session = GameSession::open(
+            &Mc2CampaignAdapter,
+            definition,
+            65,
+            Mc2CampaignInputs::new(&root),
+        )
+        .unwrap();
+        session
+            .backend_mut()
+            .campaign
+            .level2_compatibility_mut()
+            .apply_carried_spell_families(&[0, 2], Some(0))
+            .unwrap();
+        build_real_level_three_carried_castle_for_test(&mut session);
+        close_real_level_three_strip_for_staged_bees_for_test(&mut session);
+        session
+            .backend_mut()
+            .campaign
+            .level2_compatibility_mut()
+            .activate_authored_group_prerequisite_for_test(3)
+            .unwrap();
+        let mut classified = *session
+            .backend()
+            .campaign
+            .level2_compatibility()
+            .economy()
+            .bee_creatures()
+            .iter()
+            .find(|bee| bee.authored_index() == Some(149))
+            .unwrap();
+        classified.action = 18;
+        assert!(bee_is_public_target_for_test(&classified));
+        classified.action = 23;
+        assert!(bee_is_public_target_for_test(&classified));
+        classified.action = 20;
+        assert!(!bee_is_public_target_for_test(&classified));
+        classified.action = 21;
+        assert!(!bee_is_public_target_for_test(&classified));
+        classified.action = 18;
+        classified.life = -1;
+        assert!(!bee_is_public_target_for_test(&classified));
+        classified.life = 3_000;
+        classified.drawing_enabled = false;
+        assert!(!bee_is_public_target_for_test(&classified));
+        let bee_event_start = session
+            .backend()
+            .campaign
+            .level2_compatibility()
+            .economy()
+            .events()
+            .len();
+        let player_index = session
+            .backend()
+            .campaign
+            .level2_compatibility()
+            .shared_spells()
+            .player_entity()
+            .index;
+        let mut terminal = BTreeSet::new();
+        let mut hit = None;
+        for _ in 0..16 {
+            let receipts = fire_public_bee_exchange_for_test(&mut session, 149, &mut terminal);
+            if !receipts.is_empty() {
+                hit = Some(receipts);
+                break;
+            }
+        }
+        let receipts = hit.expect("a real final Bee consumes a real public Fireball");
+        // Cast admission deliberately stops outside contact range. Qualify
+        // the separate live200 producer by ordinary approach and its following
+        // player consumption, rather than requiring the shot to cause contact.
+        for _ in 0..24 {
+            let compatibility = session.backend().campaign.level2_compatibility();
+            if compatibility.economy().events()[bee_event_start..]
+                .iter()
+                .any(|event| {
+                    matches!(event,
+                        crate::native_world::Level2EconomyEvent::DamageApplied {
+                            target_entity_index, damage: 200, lethal: false, ..
+                        } if *target_entity_index == player_index
+                    )
+                })
+            {
+                break;
+            }
+            let bee = compatibility
+                .economy()
+                .bee_creatures()
+                .iter()
+                .filter(|row| bee_is_public_target_for_test(row))
+                .min_by_key(|row| {
+                    crate::distance_3d_wrapped(compatibility.state.position, row.position)
+                })
+                .expect("the component retains real living source Bees for contact");
+            let (pending_damage, pending_attacker) =
+                level_three_player_raw_mailbox_for_test(compatibility);
+            let contact_pending = pending_damage == 200 && pending_attacker != 0;
+            let command = if contact_pending {
+                GameCommand::default()
+            } else {
+                public_bee_navigation_command_for_test(&session, bee.position, false)
+            };
+            // This unchanged consumer previews the entire source pass,
+            // qualifies the current attacker occurrence and exact mailbox,
+            // then verifies the independent predicted hash after the real step.
+            step_public_bee_command_for_test(&mut session, command, &mut terminal);
+        }
+        assert!(
+            session
+                .backend()
+                .campaign
+                .level2_compatibility()
+                .economy()
+                .events()[bee_event_start..]
+                .iter()
+                .any(|event| matches!(
+                    event,
+                    crate::native_world::Level2EconomyEvent::DamageApplied {
+                        target_entity_index, damage: 200, lethal: false, ..
+                    } if *target_entity_index == player_index
+                )),
+            "the real public pursuit also consumes a source Bee contact mailbox"
+        );
+        assert!(
+            receipts
+                .iter()
+                .all(|receipt| receipt.life_after == receipt.life_before.wrapping_sub(250))
+        );
+        assert!(
+            session
+                .backend()
+                .campaign
+                .level2_compatibility()
+                .shared_spells()
+                .player_entity()
+                .life
+                >= 0
+        );
     }
 
     #[test]

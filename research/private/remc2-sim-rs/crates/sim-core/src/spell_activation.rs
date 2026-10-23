@@ -2362,7 +2362,10 @@ mod tests {
 
     #[test]
     fn level_two_generic_acquisition_rejects_unauthored_duplicate_and_no_overlap() {
-        let mut unauthored = SpellHolderAcquisitionState::new(3, 200, 111, 10, 0);
+        // Family3 is the supported Speed pickup (action10 -> holder9).
+        // Family5 has a valid physical pickup action but no supported profile.
+        let mut unauthored = SpellHolderAcquisitionState::new(5, 200, 111, 16, 0);
+        let unauthored_before = unauthored;
         assert_eq!(
             acquire_level2_spell_holder(
                 &mut unauthored,
@@ -2373,6 +2376,7 @@ mod tests {
                 SpellHolderAcquisitionFailure::UnsupportedFamily
             )
         );
+        assert_eq!(unauthored, unauthored_before);
 
         let mut no_overlap = SpellHolderAcquisitionState::new(11, 201, 111, 34, 0);
         assert_eq!(

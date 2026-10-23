@@ -1,65 +1,116 @@
 #[test]
-fn level_two_imported_model1_root_hides_after_inverse_overlap_success() {
-    let inspection =
-        NativeWorld::inspect_level2(level_two_fixture_path()).expect("qualified Level 2 package");
-    let mut session = inspection
-        .level2_reset_session()
-        .expect("Level 2 imported model-1 switch session");
-    // The qualified Level 2 owner fixture currently imports only the
-    // model-0 members of this source family. Rebind one imported root to
-    // the pinned `CheckpointArrived_6F070` model-1 callback so this
-    // production-turn test exercises the inverse-overlap branch without
-    // fabricating a second owner package or weakening its manifest.
-    let root = session
-        .level2_imported_switch_roots
-        .iter()
-        .find(|root| root.model == 0)
-        .copied()
-        .expect("fixture has an imported model-0 root switch");
-    let source = &mut session.economy.entities[usize::from(root.source_slot)];
-    source.model = 1;
-    source.set_source_action(1);
-    session.state.position = Position {
-        x: root.position.x.wrapping_add(4_096),
-        y: root.position.y,
-        z: root.position.z,
-    };
-
-    for _ in 0..16 {
-        session.step_outer_turn(PlayerCommand::default(), 0);
-        if !session
-            .level2_imported_switch_roots
-            .iter()
-            .find(|candidate| candidate.source_slot == root.source_slot)
-            .expect("imported model-1 root state")
-            .drawing_enabled
-        {
-            break;
+fn level_two_qualified_area_exit_hides_after_inverse_overlap_success() {
+    let mut session = level_two_campaign_session();
+    let baseline_hash = session.campaign_state_hash();
+    let drive_exit = |session: &mut Level2ResetSession| {
+        let feature = session.mission().authored_features().iter()
+            .find(|feature| feature.index == 41).copied()
+            .expect("qualified AreaExit row41");
+        assert_eq!((feature.kind, feature.subtype, feature.stage_tag), (11, 1, 2));
+        let terrain = session.canonical_terrain().clone();
+        let position = feature.world_position(terrain.ground_height(feature.world_position(0)));
+        let root = session.economy_mut().allocate_authored_switch_producer(
+            feature.index, 1, 2, i16::try_from(feature.word_10).expect("source overlap extent"),
+            position, &terrain,
+        ).expect("real qualified AreaExit constructor");
+        let generation = session.economy().slot_generation(root.source_entity_index);
+        assert!(generation > 0);
+        assert_eq!((root.source_class, root.model, root.action), (11, 1, 1));
+        // An ordinary overlapping visit must leave the real inverse trigger live.
+        for _ in 0..level_two_switch_turns_until_cadence(root.phase) {
+            session.set_level2_entity_position(session.state.entity_index, root.position)
+                .expect("authoritative overlapping player carrier");
+            session.step_outer_turn(PlayerCommand::default(), 0);
+            assert!(!session.dispatch_events().iter().any(|event| matches!(event,
+                Level2DispatchEvent::AuthoredGroupActivated { source_slot, group: 2, .. }
+                    if *source_slot == root.source_entity_index)));
         }
-    }
-
-    assert!(
-        !session
-            .level2_imported_switch_roots
-            .iter()
-            .find(|candidate| candidate.source_slot == root.source_slot)
-            .expect("imported model-1 root state")
-            .drawing_enabled
-    );
-    assert!(session.economy.entities()[usize::from(root.source_slot)].drawing_disabled());
+        let overlapping = session.economy().authored_switch_producers().iter()
+            .find(|source| source.source_entity_index == root.source_entity_index)
+            .copied().expect("overlap retains the actual AreaExit occurrence");
+        assert!(!overlapping.fired && overlapping.drawing_enabled);
+        let mut exit_position = root.position;
+        exit_position.x = exit_position.x.wrapping_add(0x8000);
+        let mut receipts = Vec::new();
+        for _ in 0..16 {
+            session.set_level2_entity_position(session.state.entity_index, exit_position)
+                .expect("authoritative player leaves the inverse-overlap extent");
+            session.step_outer_turn(PlayerCommand::default(), 0);
+            receipts.extend_from_slice(session.dispatch_events());
+            if session.dispatch_events().iter().any(|event| matches!(event,
+                Level2DispatchEvent::AuthoredGroupActivated { source_slot, group: 2, .. }
+                    if *source_slot == root.source_entity_index)) {
+                break;
+            }
+        }
+        assert_eq!(receipts.iter().filter(|event| matches!(event,
+            Level2DispatchEvent::AuthoredGroupActivated { source_slot, group: 2, .. }
+                if *source_slot == root.source_entity_index)).count(), 1,
+            "AREA_EXIT_REFUSAL root_before={root:?} root_after={:?} gen={generation}->{} player={:?} model0={:?} errors={:?} root_schedule={:?}",
+            session.economy().authored_switch_producers().iter()
+                .find(|source| source.source_entity_index == root.source_entity_index),
+            session.economy().slot_generation(root.source_entity_index),
+            session.state,
+            session.entities().iter().filter(|entity| entity.active && entity.class == 3 && entity.model == 0)
+                .map(|entity| (entity.index, entity.life, entity.position,
+                    i16::from_le_bytes(entity.record_bytes()[88..90].try_into().expect("width")),
+                    i16::from_le_bytes(entity.record_bytes()[90..92].try_into().expect("depth"))))
+                .collect::<Vec<_>>(),
+            receipts.iter().filter(|event| matches!(event, Level2DispatchEvent::Error { .. })).take(8).collect::<Vec<_>>(),
+            session.cf10_production_schedule_receipts().iter().filter(|receipt| matches!(receipt,
+                crate::campaign::schedule::ScheduleReceipt::SlotResolved { slot, .. }
+                | crate::campaign::schedule::ScheduleReceipt::CallbackCompleted { slot, .. }
+                | crate::campaign::schedule::ScheduleReceipt::EpilogueCompleted { slot, .. }
+                    if *slot == root.source_entity_index)).collect::<Vec<_>>());
+        let hidden = session.economy().authored_switch_producers().iter()
+            .find(|source| source.source_entity_index == root.source_entity_index)
+            .expect("AreaExit remains through its callback pass");
+        assert!(hidden.fired && !hidden.drawing_enabled);
+        assert_eq!(session.economy().slot_generation(root.source_entity_index), generation);
+        assert!(session.economy().map_chains().is_linked(root.source_entity_index));
+        assert!(session.cf10_production_schedule_receipts().iter().any(|receipt| matches!(receipt,
+            crate::campaign::schedule::ScheduleReceipt::CallbackCompleted { slot, selector, .. }
+                if *slot == root.source_entity_index
+                    && selector.registry_key().selector == crate::campaign::spec::BehaviorSelector::ClassAction {
+                        class: 11, action: 1,
+                    })));
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        assert!(!session.economy().authored_switch_producers().iter()
+            .any(|source| source.source_entity_index == root.source_entity_index));
+        assert!(!session.economy().map_chains().is_linked(root.source_entity_index));
+        assert!(!session.dispatch_events().iter().any(|event| matches!(event,
+            Level2DispatchEvent::AuthoredGroupActivated { source_slot, group: 2, .. }
+                if *source_slot == root.source_entity_index)));
+        receipts
+    };
+    let first_receipts = drive_exit(&mut session);
+    let first_hash = session.campaign_state_hash();
+    session.reset();
+    assert_eq!(session.campaign_state_hash(), baseline_hash);
+    assert_eq!(drive_exit(&mut session), first_receipts);
+    assert_eq!(session.campaign_state_hash(), first_hash);
 }
 
 #[test]
 fn level_two_model76_producers_activate_rows_116_120_124_only() {
-    let inspection =
-        NativeWorld::inspect_level2(level_two_fixture_path()).expect("qualified Level 2 package");
-    let mut session = inspection
-        .level2_reset_session()
-        .expect("Level 2 model-76 producer session");
+    let mut session = level_two_campaign_session();
     let baseline_hash = session.campaign_state_hash();
 
     assert!(session.economy().authored_model76().is_empty());
-    session.step_outer_turn(PlayerCommand::default(), 0);
+    let mut source_trace = Vec::new();
+    for group in [12_u16, 14, 16] {
+        let root = session.level2_imported_switch_roots.iter()
+            .find(|root| root.target_group == group)
+            .copied().expect("package model-0 producer for each model-76 group");
+        assert_eq!(root.model, 0);
+        for _ in 0..level_two_switch_turns_until_cadence(root.phase) {
+            session
+                .set_level2_entity_position(session.state.entity_index, root.position)
+                .expect("public player input enters the actual source producer overlap");
+            session.step_outer_turn(PlayerCommand::default(), 0);
+            source_trace.extend_from_slice(session.dispatch_events());
+        }
+    }
 
     let authored = session
         .economy()
@@ -68,11 +119,11 @@ fn level_two_model76_producers_activate_rows_116_120_124_only() {
         .map(|source| source.authored_index)
         .collect::<BTreeSet<_>>();
     assert_eq!(authored, BTreeSet::from([116_u16, 120, 124]));
-    assert!(!session.dispatch_events().iter().any(|event| matches!(
+    assert!(!source_trace.iter().any(|event| matches!(
         event,
         Level2DispatchEvent::AuthoredGroupActivated { group: 10, .. }
     )));
-    assert!(session.dispatch_events().iter().any(|event| matches!(
+    assert!(source_trace.iter().any(|event| matches!(
         event,
         Level2DispatchEvent::AuthoredGroupActivated {
             group: 12,
@@ -80,7 +131,7 @@ fn level_two_model76_producers_activate_rows_116_120_124_only() {
             ..
         } if authored_indices.as_ref() == [116]
     )));
-    assert!(session.dispatch_events().iter().any(|event| matches!(
+    assert!(source_trace.iter().any(|event| matches!(
         event,
         Level2DispatchEvent::AuthoredGroupActivated {
             group: 14,
@@ -88,7 +139,7 @@ fn level_two_model76_producers_activate_rows_116_120_124_only() {
             ..
         } if authored_indices.as_ref() == [120]
     )));
-    assert!(session.dispatch_events().iter().any(|event| matches!(
+    assert!(source_trace.iter().any(|event| matches!(
         event,
         Level2DispatchEvent::AuthoredGroupActivated {
             group: 16,
@@ -96,7 +147,7 @@ fn level_two_model76_producers_activate_rows_116_120_124_only() {
             ..
         } if authored_indices.as_ref() == [124]
     )));
-    assert!(session.dispatch_events().iter().any(|event| matches!(
+    assert!(source_trace.iter().any(|event| matches!(
         event,
         Level2DispatchEvent::DynamicArena {
             kind: Level2DynamicArenaKind::AuthoredModel76,
@@ -104,7 +155,7 @@ fn level_two_model76_producers_activate_rows_116_120_124_only() {
         }
     )));
     assert!(
-        !session.dispatch_events().iter().any(|event| matches!(
+        !source_trace.iter().any(|event| matches!(
             event,
             Level2DispatchEvent::Economy {
                 source_slot: 25,
@@ -164,20 +215,20 @@ fn level_two_model76_switch25_stays_latent_without_overlap() {
 
 #[test]
 fn level_two_model76_switch25_rejects_far_and_strict_boundary_positions() {
-    let inspection =
-        NativeWorld::inspect_level2(level_two_fixture_path()).expect("qualified Level 2 package");
-    let mut far = inspection
-        .level2_reset_session()
-        .expect("Level 2 model-76 switch25 far session");
+    let mut far = level_two_campaign_session();
     let switch = far
         .level2_group10_switch25
         .expect("live group-10 switch slot 25");
     let activation_turns = level_two_model76_switch25_activation_turns(switch.phase);
-    far.state.position = Position {
-        x: switch.position.x.wrapping_add(4_096),
-        y: switch.position.y,
-        z: switch.position.z,
-    };
+    far.set_level2_entity_position(
+        far.state.entity_index,
+        Position {
+            x: switch.position.x.wrapping_add(4_096),
+            y: switch.position.y,
+            z: switch.position.z,
+        },
+    )
+    .expect("fixture player position updates the authoritative row and map link");
     for _ in 0..activation_turns {
         far.step_outer_turn(PlayerCommand::default(), 0);
     }
@@ -192,18 +243,32 @@ fn level_two_model76_switch25_rejects_far_and_strict_boundary_positions() {
         Level2DispatchEvent::AuthoredGroupActivated { group: 10, .. }
     )));
 
-    let mut boundary = inspection
-        .level2_reset_session()
-        .expect("Level 2 model-76 switch25 boundary session");
+    let mut boundary = level_two_campaign_session();
     let switch = boundary
         .level2_group10_switch25
         .expect("live group-10 switch slot 25");
     let activation_turns = level_two_model76_switch25_activation_turns(switch.phase);
-    boundary.state.position = Position {
-        x: switch.position.x,
-        y: switch.position.y.wrapping_add(242),
-        z: switch.position.z,
-    };
+    let switch_half_depth = i16::from_le_bytes(
+        boundary.economy.entities()[usize::from(switch.source_slot)].record_bytes()[90..92]
+            .try_into().expect("source switch half-depth"),
+    );
+    let player_half_depth = i16::from_le_bytes(
+        boundary.economy.entities()[usize::from(boundary.state.entity_index)].record_bytes()[90..92]
+            .try_into().expect("source player half-depth"),
+    );
+    let boundary_distance = u16::try_from(i32::from(switch_half_depth) + i32::from(player_half_depth))
+        .expect("qualified positive overlap boundary");
+    assert!(boundary_distance > 0 && boundary_distance < 0x8000);
+    boundary
+        .set_level2_entity_position(
+            boundary.state.entity_index,
+            Position {
+                x: switch.position.x,
+                y: switch.position.y.wrapping_add(boundary_distance),
+                z: switch.position.z,
+            },
+        )
+        .expect("fixture player position updates the authoritative row and map link");
     for _ in 0..activation_turns {
         boundary.step_outer_turn(PlayerCommand::default(), 0);
     }
@@ -1312,11 +1377,7 @@ fn level_two_shield_damage_consumer_updates_parent_and_holder_projection() {
 
 #[test]
 fn level_two_automatic_bee_contact_consumes_shield_status_at_player_visit() {
-    let inspection =
-        NativeWorld::inspect_level2(level_two_fixture_path()).expect("qualified Level 2 package");
-    let mut session = inspection
-        .level2_reset_session()
-        .expect("Level 2 automatic Shield contact session");
+    let mut session = level_two_campaign_session();
     session
         .set_level2_selected_objective_stage_state(2)
         .expect("source objective completion sentinel");
@@ -1952,11 +2013,7 @@ fn level_two_ordinary_invisible_acquisition_reconciles_command_latch_and_reset()
 
 #[test]
 fn level_two_invisible_active_holder_ticks_through_outer_turn_and_reset() {
-    let inspection =
-        NativeWorld::inspect_level2(level_two_fixture_path()).expect("qualified Level 2 package");
-    let mut session = inspection
-        .level2_reset_session()
-        .expect("Level 2 Invisible production session");
+    let mut session = level_two_campaign_session();
     session
         .set_level2_selected_objective_stage_state(2)
         .expect("source objective completion sentinel");
@@ -1969,7 +2026,9 @@ fn level_two_invisible_active_holder_ticks_through_outer_turn_and_reset() {
         .find(|source| source.authored_index == 156)
         .copied()
         .expect("authored family-11 source");
-    session.state.position = source.position;
+    session
+        .set_level2_entity_position(session.state.entity_index, source.position)
+        .expect("fixture player position updates the authoritative row and map link");
     let acquired = (0..4).find_map(|_| {
         session.step_outer_turn(PlayerCommand::default(), 0);
         session
@@ -2031,6 +2090,12 @@ fn level_two_invisible_active_holder_ticks_through_outer_turn_and_reset() {
             .expect("cold Invisible state")
             .parent_mana = 5_000;
     }
+    // The player callback refreshes the typed holder's parent from this
+    // numeric source row. Seed the same declared unit-fixture mana there.
+    session.economy.entities[usize::from(parent_entity_index)].set_mana(5_000);
+    session.shared_spells_mut().local_player.record[345..347]
+        .copy_from_slice(&0x1234_u16.to_le_bytes());
+    session.players[0].record[345..347].copy_from_slice(&0x1234_u16.to_le_bytes());
     assert!(session.shared_spells_mut().activate_invisible(256, false));
     let active = session
         .shared_spells()
@@ -2066,6 +2131,9 @@ fn level_two_invisible_active_holder_ticks_through_outer_turn_and_reset() {
     // unpaused source pass.
     session.shared_spells_mut().players[0].record[345..347]
         .copy_from_slice(&0x5678_u16.to_le_bytes());
+    session.shared_spells_mut().local_player.record[345..347]
+        .copy_from_slice(&0x5678_u16.to_le_bytes());
+    session.players[0].record[345..347].copy_from_slice(&0x5678_u16.to_le_bytes());
     session.step_outer_turn(PlayerCommand::default(), 0);
     assert_eq!(
         session.shared_spells().players[0].record_bytes()[345..347],
@@ -2393,11 +2461,7 @@ fn level_two_invisible_expiry_replays_queued_setspell_word() {
 
 #[test]
 fn level_two_beyond_sight_active_holder_ticks_through_outer_turn_and_reset() {
-    let inspection =
-        NativeWorld::inspect_level2(level_two_fixture_path()).expect("qualified Level 2 package");
-    let mut session = inspection
-        .level2_reset_session()
-        .expect("Level 2 Beyond Sight production session");
+    let mut session = level_two_campaign_session();
     let baseline_hash = session.shared_spells().reset_hash();
     let outcome = acquire_level_two_beyond_sight_from_ordinary_route(&mut session);
     let cold = session
@@ -2497,11 +2561,7 @@ fn level_two_beyond_sight_active_holder_ticks_through_outer_turn_and_reset() {
 
 #[test]
 fn level_two_beyond_sight_threshold_crossing_emits_improvement_after_award() {
-    let inspection =
-        NativeWorld::inspect_level2(level_two_fixture_path()).expect("qualified Level 2 package");
-    let mut session = inspection
-        .level2_reset_session()
-        .expect("Level 2 Beyond Sight threshold session");
+    let mut session = level_two_campaign_session();
     let outcome = acquire_level_two_beyond_sight_from_ordinary_route(&mut session);
     let local_entity_index = session.state.entity_index;
     session
@@ -2630,11 +2690,7 @@ fn level_two_beyond_sight_threshold_crossing_emits_improvement_after_award() {
 
 #[test]
 fn level_two_beyond_sight_threshold_without_source_enabled_array_or_holder_is_silent() {
-    let inspection =
-        NativeWorld::inspect_level2(level_two_fixture_path()).expect("qualified Level 2 package");
-    let mut session = inspection
-        .level2_reset_session()
-        .expect("Level 2 Beyond Sight gate session");
+    let mut session = level_two_campaign_session();
     let outcome = acquire_level_two_beyond_sight_from_ordinary_route(&mut session);
     let local_entity_index = session.state.entity_index;
 
@@ -2715,11 +2771,7 @@ fn level_two_beyond_sight_threshold_without_source_enabled_array_or_holder_is_si
 
 #[test]
 fn level_two_beyond_sight_wrapping_level_drop_still_emits_source_improvement() {
-    let inspection =
-        NativeWorld::inspect_level2(level_two_fixture_path()).expect("qualified Level 2 package");
-    let mut session = inspection
-        .level2_reset_session()
-        .expect("Level 2 Beyond Sight wrapping session");
+    let mut session = level_two_campaign_session();
     acquire_level_two_beyond_sight_from_ordinary_route(&mut session);
     let local_entity_index = session.state.entity_index;
     {
@@ -3072,11 +3124,7 @@ fn level_two_beyond_sight_core_opcode31_applies_profile_at_zero_unlocked_tier() 
 
 #[test]
 fn level_two_beyond_sight_expiry_replays_queued_setspell_word() {
-    let inspection =
-        NativeWorld::inspect_level2(level_two_fixture_path()).expect("qualified Level 2 package");
-    let mut session = inspection
-        .level2_reset_session()
-        .expect("Level 2 Beyond Sight cleanup session");
+    let mut session = level_two_campaign_session();
     let source_slot =
         acquire_level_two_beyond_sight_from_ordinary_route(&mut session).source_slot;
     {
@@ -3225,8 +3273,6 @@ fn level_two_persistent_replacement_reaches_production_acquisition_and_reallocat
 
 #[test]
 fn level_two_persistent_replacement_boundary_is_complete() {
-    let inspection =
-        NativeWorld::inspect_level2(level_two_fixture_path()).expect("qualified Level 2 package");
 
     let persistent_spell_sources = |session: &Level2ResetSession| {
         session
@@ -3243,9 +3289,7 @@ fn level_two_persistent_replacement_boundary_is_complete() {
             .collect::<Vec<_>>()
     };
 
-    let package_session = inspection
-        .level2_reset_session()
-        .expect("qualified Level 2 package session");
+    let package_session = level_two_campaign_session();
     let ordinary_authored_spell_rows = package_session
         .mission()
         .authored_features()
@@ -3355,9 +3399,7 @@ fn level_two_persistent_replacement_boundary_is_complete() {
     for (authored_index, family, source_action, holder_action) in
         [(155, 6, 19, 18), (156, 11, 34, 33)]
     {
-        let mut session = inspection
-            .level2_reset_session()
-            .expect("qualified authored spell session");
+        let mut session = level_two_campaign_session();
         let baseline_campaign_hash = session.campaign_state_hash();
         let baseline_shared_hash = session.shared_spells().reset_hash();
         let baseline_economy_hash = session.economy().reset_hash();
@@ -3396,9 +3438,7 @@ fn level_two_persistent_replacement_boundary_is_complete() {
         assert!(persistent_spell_sources(&session).is_empty());
     }
 
-    let mut family12_session = inspection
-        .level2_reset_session()
-        .expect("qualified family-12 spell session");
+    let mut family12_session = level_two_campaign_session();
     let baseline_campaign_hash = family12_session.campaign_state_hash();
     let baseline_shared_hash = family12_session.shared_spells().reset_hash();
     let baseline_economy_hash = family12_session.economy().reset_hash();

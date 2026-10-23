@@ -1,13 +1,14 @@
 #[test]
 fn level_two_local_player_unboosted_mana_upkeep_follows_entity_pass_count_and_reset() {
-    let inspection =
-        NativeWorld::inspect_level2(level_two_fixture_path()).expect("qualified Level 2 package");
-    let mut session = inspection
-        .level2_reset_session()
-        .expect("qualified Level 2 reset session");
+    let mut session = level_two_campaign_session();
     let baseline_campaign_hash = session.campaign_state_hash();
     let seed = |session: &mut Level2ResetSession, mana: i32, mana_regen: i32| {
-        let mut shared = &mut session.shared_spells;
+        // The numeric player owns the next source visit; presentation copies
+        // alone are overwritten when that authoritative carrier is read.
+        let player_slot = usize::from(session.state.entity_index);
+        session.economy.entities[player_slot].set_mana(mana);
+        session.economy.entities[player_slot].set_mana_regen(mana_regen);
+        let shared = &mut session.shared_spells;
         shared.player_entity.mana = mana;
         shared.player_entity.record[148..152].copy_from_slice(&mana.to_le_bytes());
         shared.player_entity.mana_regen = mana_regen;
@@ -901,11 +902,7 @@ fn level_two_stage_tag_materializes_authored_spell_sources_through_shared_arena(
 
 #[test]
 fn level_two_spell_owner_scan_and_source_gates_are_complete() {
-    let inspection =
-        NativeWorld::inspect_level2(level_two_fixture_path()).expect("qualified Level 2 package");
-    let mut session = inspection
-        .level2_reset_session()
-        .expect("Level 2 source-ordered spell session");
+    let mut session = level_two_campaign_session();
     let baseline_hash = session.campaign_state_hash();
     let local_entity_index = session.state.entity_index;
     let local_player_index = session
@@ -1006,7 +1003,9 @@ fn level_two_spell_owner_scan_and_source_gates_are_complete() {
         // player 0 first.
         remote.next_relation = Some(local_entity_index);
         remote.record[4..8].copy_from_slice(&(u32::from(local_entity_index) + 1).to_le_bytes());
-        session.state.position = local_position;
+        session
+            .set_level2_entity_position(session.state.entity_index, local_position)
+            .expect("fixture player position updates the authoritative row and map link");
 
         if full_hand {
             let player = &mut session.shared_spells.players[remote_player_index];
@@ -1033,7 +1032,9 @@ fn level_two_spell_owner_scan_and_source_gates_are_complete() {
         .expect("source objective completion sentinel");
     let mut positive = None;
     for _ in 0..4 {
-        session.state.position = source_155_position;
+        session
+            .set_level2_entity_position(session.state.entity_index, source_155_position)
+            .expect("fixture player position updates the authoritative row and map link");
         session.step_outer_turn(PlayerCommand::default(), 0);
         positive = session
             .dispatch_events()
@@ -1138,7 +1139,9 @@ fn level_two_spell_owner_scan_and_source_gates_are_complete() {
         .expect("source objective completion sentinel");
     let mut replay = None;
     for _ in 0..4 {
-        session.state.position = source_155_position;
+        session
+            .set_level2_entity_position(session.state.entity_index, source_155_position)
+            .expect("fixture player position updates the authoritative row and map link");
         session.step_outer_turn(PlayerCommand::default(), 0);
         replay = session
             .dispatch_events()
@@ -1264,7 +1267,23 @@ fn level_two_spell_owner_scan_and_source_gates_are_complete() {
     // A full source arena rejects authored construction without leaving a
     // partial row or holder relation behind.
     session.reset();
-    session.economy_mut().free_slots.clear();
+    let reset_free_slots = session.economy().free_slots.clone();
+    // The group consumer rebuilds the free arena. Occupy its real reset-free
+    // slots using the package's protected portal constructor so that rebuild
+    // cannot recover the slots or a flagged replacement candidate.
+    for _ in 1_u16..1_000 {
+        if session.allocate_level2_authored_class14(244).is_none() {
+            break;
+        }
+    }
+    assert!(session.allocate_level2_authored_class14(244).is_none());
+    assert!(session.economy().free_slots.is_empty());
+    assert!(
+        reset_free_slots
+            .iter()
+            .all(|slot| session.economy().live_arena_cursor_row(*slot).is_some()),
+        "every reset-free source slot has a real live carrier before arena rebuild"
+    );
     session
         .set_level2_selected_objective_stage_state(2)
         .expect("source objective completion sentinel");
@@ -1284,11 +1303,7 @@ fn level_two_spell_owner_scan_and_source_gates_are_complete() {
 
 #[test]
 fn level_two_experience_scroll_uses_wrapping_runtime_xp_and_downward_selection() {
-    let inspection =
-        NativeWorld::inspect_level2(level_two_fixture_path()).expect("qualified Level 2 package");
-    let mut session = inspection
-        .level2_reset_session()
-        .expect("Level 2 experience-scroll projection session");
+    let mut session = level_two_campaign_session();
     let source = session
         .allocate_level2_authored_class14(248)
         .expect("authored subtype-5 row");
@@ -1422,17 +1437,17 @@ fn level_two_materialized_authored_spell_reaches_generic_acquisition_path() {
 
 #[test]
 fn level_two_setspell_clamps_holder_payload_but_preserves_raw_hand_tier() {
-    let inspection =
-        NativeWorld::inspect_level2(level_two_fixture_path()).expect("qualified Level 2 package");
-    let mut session = inspection
-        .level2_reset_session()
-        .expect("Level 2 raw-tier acquisition session");
+    let mut session = level_two_campaign_session();
     let pickup_position = session.shared_spells().pickups()[0].position;
     session.shared_spells_mut().players[0].family_selected_tiers[12] = 7;
     session.shared_spells_mut().players[0].record[528 + 12] = 7;
     session.shared_spells_mut().pickups[0].phase = 0;
     session.shared_spells_mut().pickups[0].record[66] = 0;
-    session.state.position = pickup_position;
+    let pickup_slot = session.shared_spells().pickups()[0].index;
+    session.economy.entities[usize::from(pickup_slot)].set_phase(0);
+    session
+        .set_level2_entity_position(session.state.entity_index, pickup_position)
+        .expect("fixture player position updates the authoritative row and map link");
 
     session.step_outer_turn(PlayerCommand::default(), 0);
     assert!(session.dispatch_events().iter().any(|event| {
@@ -1478,20 +1493,14 @@ fn level_two_setspell_clamps_holder_payload_but_preserves_raw_hand_tier() {
 
 #[test]
 fn level_two_setspell_options_tier_and_hand_state_are_exact() {
-    let inspection =
-        NativeWorld::inspect_level2(level_two_fixture_path()).expect("qualified Level 2 package");
-    let mut session = inspection
-        .level2_reset_session()
-        .expect("Level 2 SetSpell options session");
+    let mut session = level_two_campaign_session();
     let baseline_hash = session.campaign_state_hash();
 
     // Drive two otherwise identical zero-pass outer-turn sequences so
     // the option bit is the only shared-spell state difference. This
     // proves both hash binding and the source's second-command OFF
     // transition without manufacturing an options setter.
-    let mut option_control = inspection
-        .level2_reset_session()
-        .expect("Level 2 SetSpell option control session");
+    let mut option_control = level_two_campaign_session();
     session.step_outer_turn(
         PlayerCommand {
             opcode: 0x1e,
@@ -1539,7 +1548,11 @@ fn level_two_setspell_options_tier_and_hand_state_are_exact() {
         player.record[562] = 2;
         session.shared_spells_mut().pickups[0].phase = 0;
         session.shared_spells_mut().pickups[0].record[66] = 0;
-        session.state.position = pickup_position;
+        let pickup_slot = session.shared_spells().pickups()[0].index;
+        session.economy.entities[usize::from(pickup_slot)].set_phase(0);
+        session
+            .set_level2_entity_position(session.state.entity_index, pickup_position)
+            .expect("fixture player position updates the authoritative row and map link");
     };
 
     configure_cold_pickup(&mut session);
@@ -1623,10 +1636,15 @@ fn level_two_setspell_options_tier_and_hand_state_are_exact() {
     // The source active-holder branch only queues word 0x2c. Even while
     // free-spell usage is enabled it must not rewrite the retained cold
     // payload.
-    let mut active = inspection
-        .level2_reset_session()
-        .expect("Level 2 active SetSpell option session");
+    let mut active = level_two_campaign_session();
     configure_cold_pickup(&mut active);
+    let active_slot = active.shared_spells().pickups()[0].index;
+    // The imported callback refreshes its projection from the numeric row.
+    // Seed the retained active-holder branch on that authoritative carrier.
+    let active_source = &mut active.economy.entities[usize::from(active_slot)];
+    active_source.active_value = 7;
+    active_source.record[50..52].copy_from_slice(&7_u16.to_le_bytes());
+    active.shared_spells_mut().pickups[0].active_value = 7;
     active.shared_spells_mut().pickups[0].record[50..52].copy_from_slice(&7_u16.to_le_bytes());
     let active_payload_before =
         active.shared_spells().pickups()[0].record_bytes()[52..152].to_vec();
@@ -2161,11 +2179,7 @@ fn level_two_raw_source_phase_sidecars_initialize_hash_and_reset_for_exact_carri
 
 #[test]
 fn level_two_mana_attraction_field_targets_spheres_in_source_order_and_expires() {
-    let inspection =
-        NativeWorld::inspect_level2(level_two_fixture_path()).expect("qualified Level 2 package");
-    let mut session = inspection
-        .level2_reset_session()
-        .expect("Level 2 mana-attraction session");
+    let mut session = level_two_campaign_session();
     let baseline_hash = session.campaign_state_hash();
     let authored = session
         .mission
@@ -2217,6 +2231,15 @@ fn level_two_mana_attraction_field_targets_spheres_in_source_order_and_expires()
             .expect("far sphere allocation"),
     )
     .expect("far sphere slot fits u16");
+    let field_producer_position = session
+        .level2_imported_switch_roots
+        .iter()
+        .find(|source| source.authored_index == 11)
+        .map(|source| source.position)
+        .expect("actual group-1 overlap producer for authored field row 16");
+    session
+        .set_level2_entity_position(session.state.entity_index, field_producer_position)
+        .expect("public player-position input activates the field's actual group-1 producer");
     session.step_outer_turn(PlayerCommand::default(), 0);
     let field = session
         .economy()
@@ -2314,9 +2337,7 @@ fn level_two_mana_attraction_field_targets_spheres_in_source_order_and_expires()
     assert_eq!(session.campaign_state_hash(), baseline_hash);
     assert!(session.economy().mana_attraction_fields().is_empty());
 
-    let mut alias = inspection
-        .level2_reset_session()
-        .expect("Level 2 alias session");
+    let mut alias = level_two_campaign_session();
     let alias_slot = alias
         .allocate_level2_mana_attraction_field(16, MANA_ATTRACTION_ALIAS_ACTION)
         .expect("action-76 alias allocation");

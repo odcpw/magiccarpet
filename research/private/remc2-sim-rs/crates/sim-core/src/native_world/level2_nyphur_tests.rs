@@ -1,4 +1,4 @@
-use super::super::tests::level_two_fixture_path;
+use super::super::tests::{level_two_campaign_session, level_two_fixture_path};
 use super::*;
 use crate::native_world::{
     LEVEL2_NYPHUR_ENTITY_INDEX, POSSESSION_PROJECTILE_MODEL, level2_possession_guidance_target_top,
@@ -105,11 +105,7 @@ fn level_two_nyphur_participant_chain_is_source_bound_and_reset_isolated() {
 
 #[test]
 fn level_two_sub_159e0_accounts_an_ordinary_possession_relation_once() {
-    let inspection =
-        NativeWorld::inspect_level2(level_two_fixture_path()).expect("qualified Level 2 package");
-    let mut session = inspection
-        .level2_reset_session()
-        .expect("Level 2 projectile-threat session");
+    let mut session = level_two_campaign_session();
     session.select_level2_campaign_entry_stage();
     let baseline_hash = session.campaign_state_hash();
 
@@ -1326,11 +1322,7 @@ fn level_two_nyphur_sub_148e0_source_order_and_fail_closed_are_exact() {
 
 #[test]
 fn level_two_nyphur_sub_148e0_selects_authored_model39_from_ordinary_route() {
-    let inspection =
-        NativeWorld::inspect_level2(level_two_fixture_path()).expect("qualified Level 2 package");
-    let mut session = inspection
-        .level2_reset_session()
-        .expect("qualified ordinary Nyphur model-39 route");
+    let mut session = level_two_campaign_session();
     let authored_features = session.mission().authored_features().to_vec();
     let feature_position = |index: u16| {
         authored_features
@@ -1518,11 +1510,7 @@ fn level_two_nyphur_sub_148e0_selects_authored_model39_from_ordinary_route() {
 
 #[test]
 fn level_two_nyphur_authored_target_crosses_3328_from_ordinary_state6_route() {
-    let inspection =
-        NativeWorld::inspect_level2(level_two_fixture_path()).expect("qualified Level 2 package");
-    let mut session = inspection
-        .level2_reset_session()
-        .expect("qualified ordinary Nyphur pursuit route");
+    let mut session = level_two_campaign_session();
     let baseline_campaign_hash = session.campaign_state_hash();
     let authored_features = session.mission().authored_features().to_vec();
     let feature_position = |index: u16| {
@@ -1538,6 +1526,13 @@ fn level_two_nyphur_authored_target_crosses_3328_from_ordinary_state6_route() {
     session
         .set_level2_entity_position(local_player, row342_position)
         .expect("public player input for imported row 342");
+    let before_group24 = session
+        .economy()
+        .spheres()
+        .iter()
+        .filter(|sphere| sphere.active)
+        .map(|sphere| sphere.source_entity_index)
+        .collect::<BTreeSet<_>>();
     let mut group23_activated = false;
     for _ in 0..8 {
         session
@@ -1564,16 +1559,37 @@ fn level_two_nyphur_authored_target_crosses_3328_from_ordinary_state6_route() {
     session
         .set_level2_entity_position(local_player, row344_position)
         .expect("public player moves to authored row 344");
-    let before_group24 = session
-        .economy()
-        .spheres()
-        .iter()
-        .filter(|sphere| sphere.active)
-        .map(|sphere| sphere.source_entity_index)
-        .collect::<BTreeSet<_>>();
     let mut authored_model39_slots = BTreeSet::new();
-    let mut group24_activated = false;
+    // Row 344 can occupy a later source slot whose NewEvent seed is already
+    // on cadence. The same group-23 pass then creates and consumes that
+    // group-24 producer; observe its receipt before another pass reclaims it.
+    let mut group24_activated = session.dispatch_events().iter().any(|event| {
+        matches!(
+            event,
+            Level2DispatchEvent::AuthoredGroupActivated {
+                group: 24,
+                authored_indices,
+                ..
+            } if authored_indices.as_ref()
+                == [345, 346, 347, 348, 349, 350, 351, 352, 353, 354, 355, 361, 362, 363, 364]
+        )
+    });
+    if group24_activated {
+        authored_model39_slots.extend(
+            session
+                .economy()
+                .spheres()
+                .iter()
+                .filter(|sphere| {
+                    sphere.active && !before_group24.contains(&sphere.source_entity_index)
+                })
+                .map(|sphere| sphere.source_entity_index),
+        );
+    }
     for _ in 0..16 {
+        if group24_activated {
+            break;
+        }
         session
             .set_level2_entity_position(local_player, row344_position)
             .expect("public player remains on authored row 344");
@@ -1603,7 +1619,36 @@ fn level_two_nyphur_authored_target_crosses_3328_from_ordinary_state6_route() {
             break;
         }
     }
-    assert!(group24_activated, "authored row 344 must activate group 24");
+    assert!(
+        group24_activated,
+        "authored row 344 must activate group 24: player {:?}, authoritative player {:?}, sources {:?}, imported roots {:?}, dispatch {:?}",
+        (
+            session.state.position,
+            session.state.actual_speed,
+            session.state.yaw,
+            session.state.display_pitch
+        ),
+        session
+            .economy
+            .entities
+            .get(usize::from(local_player))
+            .map(|player| (
+                player.active,
+                player.class,
+                player.model,
+                player.action,
+                player.life,
+                player.position,
+                player.actual_speed
+            )),
+        session.economy().authored_switch_producers(),
+        session
+            .level2_imported_switch_roots
+            .iter()
+            .filter(|source| source.authored_index == 342)
+            .collect::<Vec<_>>(),
+        session.dispatch_events(),
+    );
     assert_eq!(authored_model39_slots.len(), 10);
 
     let row348_position = feature_position(348);
@@ -4420,11 +4465,7 @@ fn level_two_ai_cast_eligibility_owned_rows_are_exact() {
 /// following-pass reclaim, and reset/replay isolation.
 #[test]
 fn level_two_nyphur_family0_activation_reaches_projectile_consumer_ordinarily() {
-    let inspection =
-        NativeWorld::inspect_level2(level_two_fixture_path()).expect("qualified Level 2 package");
-    let mut session = inspection
-        .level2_reset_session()
-        .expect("qualified ordinary Nyphur family-0 route");
+    let mut session = level_two_campaign_session();
     let baseline_campaign_hash = session.campaign_state_hash();
     let mut replay = session.clone();
 
@@ -4555,8 +4596,9 @@ fn level_two_nyphur_family0_activation_reaches_projectile_consumer_ordinarily() 
         .slot_generation(projectile.source_entity_index);
     assert!(projectile.active);
     assert_eq!(
-        projectile.phase, 1,
-        "the scheduled class-9 consumer advances byte 0x3e once on its own pass"
+        projectile.phase,
+        (projectile.source_entity_index as u8).wrapping_add(1),
+        "the scheduled class-9 consumer advances its NewEvent slot-seeded byte 0x3e once on its own pass"
     );
     assert_eq!(projectile.owner_entity_index, 112);
     assert_eq!(
@@ -4686,11 +4728,7 @@ fn level_two_nyphur_family0_activation_reaches_projectile_consumer_ordinarily() 
 /// This is deliberately not an ordinary-selection claim for mode 7.
 #[test]
 fn level_two_nyphur_mode7_cadence_gate_and_family0_cast_are_exact() {
-    let inspection =
-        NativeWorld::inspect_level2(level_two_fixture_path()).expect("qualified Level 2 package");
-    let mut session = inspection
-        .level2_reset_session()
-        .expect("qualified Level 2 mode-7 session");
+    let mut session = level_two_campaign_session();
     let baseline_campaign_hash = session.campaign_state_hash();
 
     // Let the ordinary selector and pursuit establish the genuine target
@@ -4801,8 +4839,9 @@ fn level_two_nyphur_mode7_cadence_gate_and_family0_cast_are_exact() {
         .expect("the mode-7 cast reaches the genuine holder-113 producer");
     assert!(projectile.active);
     assert_eq!(
-        projectile.phase, 1,
-        "the scheduled class-9 consumer runs on the same pass"
+        projectile.phase,
+        (projectile.source_entity_index as u8).wrapping_add(1),
+        "the scheduled class-9 consumer advances its NewEvent slot-seeded byte 0x3e once on the same pass"
     );
     assert_eq!(
         session
@@ -4830,9 +4869,7 @@ fn level_two_nyphur_mode7_cadence_gate_and_family0_cast_are_exact() {
     // Direct body vectors discriminate the branches that the dispatched
     // flow above cannot isolate. They reuse the ordinary 53-turn relation
     // and rewrite only detached geometry/phase carriers.
-    let mut related = inspection
-        .level2_reset_session()
-        .expect("Level 2 mode-7 vector session");
+    let mut related = level_two_campaign_session();
     for _ in 0..53 {
         related.step_outer_turn(PlayerCommand::default(), 0);
     }

@@ -48,11 +48,7 @@ fn level_two_outer_turn_dispatches_typed_source_rows() {
 
 #[test]
 fn level_two_group31_tree_constructor_preserves_source_order_and_draws() {
-    let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
-        .expect("qualified Level 2 tree producer package");
-    let mut session = inspection
-        .level2_reset_session()
-        .expect("Level 2 tree producer session");
+    let mut session = level_two_campaign_session();
     let initial_global = session.economy().global_rng;
     session.runtime.set_level2_is_level_end(1);
     session.step_outer_turn(PlayerCommand::default(), 0);
@@ -161,11 +157,7 @@ fn level_two_group31_tree_constructor_preserves_source_order_and_draws() {
 
 #[test]
 fn level_two_group31_tree_callback_consumes_rng_after_following_pass_gate() {
-    let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
-        .expect("qualified Level 2 tree callback package");
-    let mut session = inspection
-        .level2_reset_session()
-        .expect("Level 2 tree callback session");
+    let mut session = level_two_campaign_session();
     session.runtime.set_level2_is_level_end(1);
 
     // The first pass is the ordinary producer transition and source walk.
@@ -260,11 +252,7 @@ fn level_two_group31_tree_callback_consumes_rng_after_following_pass_gate() {
 
 #[test]
 fn level_two_group31_tree_callback_rejects_nonlethal_and_failed_sphere_without_rng() {
-    let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
-        .expect("qualified Level 2 tree negative package");
-    let mut nonlethal = inspection
-        .level2_reset_session()
-        .expect("nonlethal tree callback session");
+    let mut nonlethal = level_two_campaign_session();
     nonlethal.runtime.set_level2_is_level_end(1);
     nonlethal.step_outer_turn(PlayerCommand::default(), 0);
     let nonlethal_before = nonlethal
@@ -305,11 +293,21 @@ fn level_two_group31_tree_callback_rejects_nonlethal_and_failed_sphere_without_r
         } if *source_entity_index == nonlethal_before.source_entity_index
     )));
 
-    let mut allocation_failure = inspection
-        .level2_reset_session()
-        .expect("sphere-allocation failure session");
+    let mut allocation_failure = level_two_campaign_session();
     allocation_failure.runtime.set_level2_is_level_end(1);
     allocation_failure.step_outer_turn(PlayerCommand::default(), 0);
+    // Complete ordinary following-pass reclamation before establishing the
+    // failed-allocation prestate; clearing a free stack cannot occupy a row
+    // that the next source prologue will lawfully release.
+    allocation_failure.step_outer_turn(PlayerCommand::default(), 0);
+    allocation_failure.economy_mut().replacement_cursor_exclusions = (1_u16..1_000).collect();
+    for _ in 1_u16..1_000 {
+        if allocation_failure.allocate_level2_authored_class14(244).is_none() {
+            break;
+        }
+    }
+    assert!(allocation_failure.allocate_level2_authored_class14(244).is_none());
+    assert!(allocation_failure.economy().free_slots.is_empty());
     let allocation_before = allocation_failure
         .economy()
         .authored_trees()
@@ -317,7 +315,6 @@ fn level_two_group31_tree_callback_rejects_nonlethal_and_failed_sphere_without_r
         .find(|source| source.authored_index == 260)
         .copied()
         .expect("allocation-failure group-31 tree");
-    allocation_failure.economy_mut().free_slots.clear();
     let allocation_failure_owner = allocation_failure.state.entity_index;
     {
         let mut economy_view = allocation_failure.economy_mut();
@@ -359,11 +356,8 @@ fn level_two_group31_tree_callback_rejects_nonlethal_and_failed_sphere_without_r
 
 #[test]
 fn level_two_group31_reclaimed_lower_slot_defers_until_next_pass() {
-    let inspection =
-        NativeWorld::inspect_level2(level_two_fixture_path()).expect("qualified Level 2 package");
-    let mut session = inspection
-        .level2_reset_session()
-        .expect("Level 2 group-31 reclaimed-slot session");
+    let mut session = level_two_campaign_session();
+    let reset_free_slots = session.economy().free_slots.clone();
     let row_248 = session
         .mission()
         .authored_features()
@@ -382,6 +376,7 @@ fn level_two_group31_reclaimed_lower_slot_defers_until_next_pass() {
         .allocate_level2_authored_class14(row_248.index)
         .expect("source-shaped class-14 allocation");
     let reclaimed_slot = reclaimed_source.source_entity_index;
+    let reclaimed_generation = session.economy().slot_generation(reclaimed_slot);
     session.runtime.set_level2_is_level_end(1);
     session
         .set_level2_entity_position(111, reclaimed_source.position)
@@ -421,6 +416,18 @@ fn level_two_group31_reclaimed_lower_slot_defers_until_next_pass() {
         .map(|source| source.phase)
         .expect("row 274 remains live after the reclaim boundary");
 
+    // The real sub_4A1E0 rebuild chooses the lowest current free row.
+    // Earlier imported source reclamation may add a still-lower neighbor;
+    // occupy only those actual candidates through the qualified protected
+    // portal constructor so this fixture isolates reuse of its own scroll.
+    session.economy_mut().rebuild_free_arena(&reset_free_slots);
+    while session.economy().free_slots.last().is_some_and(|slot| *slot < reclaimed_slot) {
+        let expected_slot = *session.economy().free_slots.last().expect("lower free source row");
+        let occupied = session.allocate_level2_authored_class14(244)
+            .expect("real protected carrier occupies the lower free neighbor");
+        assert_eq!(occupied.source_entity_index, expected_slot);
+    }
+    assert_eq!(session.economy().free_slots.last(), Some(&reclaimed_slot));
     session
         .set_level2_entity_position(111, row_274.world_position(0))
         .expect("move public player input onto row 274");
@@ -442,6 +449,8 @@ fn level_two_group31_reclaimed_lower_slot_defers_until_next_pass() {
         .copied()
         .expect("reclaimed lower-slot child remains for the next cursor pass");
     assert_eq!(deferred_row.source_entity_index, reclaimed_slot);
+    assert_eq!(session.economy().slot_generation(reclaimed_slot),
+        reclaimed_generation.wrapping_add(1), "NewEvent advances the real reclaimed occurrence exactly once");
     assert!(deferred_row.source_entity_index < runtime_switch_slot);
     assert!(!session.dispatch_events().iter().any(|event| matches!(
         event,
@@ -469,11 +478,7 @@ fn level_two_group31_reclaimed_lower_slot_defers_until_next_pass() {
 
 #[test]
 fn level_two_bee_row229_action17_moves_on_outer_cursor_and_reset_restores_hash() {
-    let inspection =
-        NativeWorld::inspect_level2(level_two_fixture_path()).expect("qualified Level 2 package");
-    let mut session = inspection
-        .level2_reset_session()
-        .expect("Level 2 row-229 Bee session");
+    let mut session = level_two_campaign_session();
     let baseline_hash = session.campaign_state_hash();
     fire_level_two_model32_group(&mut session, 21);
     let row229_slot = session
@@ -526,11 +531,7 @@ fn level_two_bee_row229_action17_moves_on_outer_cursor_and_reset_restores_hash()
 
 #[test]
 fn level_two_authored_bee_death_runs_through_production_cursor() {
-    let inspection =
-        NativeWorld::inspect_level2(level_two_fixture_path()).expect("qualified Level 2 package");
-    let mut session = inspection
-        .level2_reset_session()
-        .expect("Level 2 group-21 Bee session");
+    let mut session = level_two_campaign_session();
 
     // Complete the real row-228 model-32 objective gate and materialize row
     // 229 in source order. Mutating only
@@ -629,11 +630,7 @@ fn level_two_authored_bee_death_runs_through_production_cursor() {
 
 #[test]
 fn level_two_authored_bee_action23_selector10_rearms_through_production_cursor() {
-    let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
-        .expect("qualified Level 2 owner package");
-    let mut session = inspection
-        .level2_reset_session()
-        .expect("Level 2 scripted Bee session");
+    let mut session = level_two_campaign_session();
     let baseline_hash = session.campaign_state_hash();
 
     // Materialize the authored row through the real group-21 producer,
@@ -683,11 +680,7 @@ fn level_two_authored_bee_action23_selector10_rearms_through_production_cursor()
 
 #[test]
 fn level_two_authored_bee_actions17_to18_run_through_production_cursor() {
-    let inspection =
-        NativeWorld::inspect_level2(level_two_fixture_path()).expect("qualified Level 2 package");
-    let mut session = inspection
-        .level2_reset_session()
-        .expect("Level 2 group-21 Bee session");
+    let mut session = level_two_campaign_session();
     let baseline_hash = session.campaign_state_hash();
 
     // Complete the real row-228 model-32 objective gate and materialize row
@@ -837,11 +830,7 @@ fn level_two_authored_bee_actions17_to18_run_through_production_cursor() {
 
 #[test]
 fn level_two_authored_bee_actions16_and19_run_through_production_cursor() {
-    let inspection =
-        NativeWorld::inspect_level2(level_two_fixture_path()).expect("qualified Level 2 package");
-    let mut session = inspection
-        .level2_reset_session()
-        .expect("Level 2 group-21 Bee session");
+    let mut session = level_two_campaign_session();
     let baseline_hash = session.campaign_state_hash();
 
     // Complete the real row-228/model-32 objective gate. Mutating the resulting live row only selects the
@@ -934,11 +923,7 @@ fn level_two_authored_bee_actions16_and19_run_through_production_cursor() {
 
 #[test]
 fn level_two_model53_action58_runs_through_production_cursor() {
-    let inspection =
-        NativeWorld::inspect_level2(level_two_fixture_path()).expect("qualified Level 2 package");
-    let mut session = inspection
-        .level2_reset_session()
-        .expect("Level 2 group-3 production session");
+    let mut session = level_two_campaign_session();
     let baseline_hash = session.campaign_state_hash();
     let authored_features = session.mission().authored_features().to_vec();
     let feature_position = |index: u16| {
@@ -1109,11 +1094,7 @@ fn level_two_model53_action58_runs_through_production_cursor() {
 
 #[test]
 fn level_two_outer_turn_reaches_family12_pickup_at_source_slot38() {
-    let inspection =
-        NativeWorld::inspect_level2(level_two_fixture_path()).expect("qualified Level 2 package");
-    let mut session = inspection
-        .level2_reset_session()
-        .expect("Level 2 family-12 production session");
+    let mut session = level_two_campaign_session();
     let baseline_hash = session.shared_spells().reset_hash();
     let pickup_position = session.shared_spells().pickups()[0].position;
     let player_entity_index = session.state.entity_index;
@@ -1395,9 +1376,7 @@ fn level_two_scheduler_global_rng_draws_follow_source_boundaries() {
     let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
         .expect("qualified Level 2 scheduler/global RNG package");
     let initial_global = inspection.runtime().random_state;
-    let mut session = inspection
-        .level2_reset_session()
-        .expect("qualified Level 2 scheduler/global RNG session");
+    let mut session = level_two_campaign_session();
     let baseline = (
         session.campaign_state_hash(),
         session.dispatch_observability_hash(),

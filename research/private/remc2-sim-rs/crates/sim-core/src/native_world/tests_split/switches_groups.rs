@@ -244,11 +244,7 @@ fn level_two_type5_objective_advances_from_player_point_before_group8() {
 
 #[test]
 fn level_two_objective_type5_stage_zero_uses_source_gate_and_advances_text() {
-    let inspection =
-        NativeWorld::inspect_level2(level_two_fixture_path()).expect("qualified Level 2 package");
-    let mut session = inspection
-        .level2_reset_session()
-        .expect("Level 2 objective stage-zero session");
+    let mut session = level_two_campaign_session();
     let stage = session.runtime().stages[0].clone();
     assert_eq!(stage.kind, 5);
     assert_eq!(session.runtime().objectives[0].text_selector, 0);
@@ -337,11 +333,7 @@ fn level_two_objective_type3_ignores_text_selector_and_uses_bound_player_state()
 
 #[test]
 fn level_two_objective_progression_sets_level_end_after_final_stage() {
-    let inspection =
-        NativeWorld::inspect_level2(level_two_fixture_path()).expect("qualified Level 2 package");
-    let mut session = inspection
-        .level2_reset_session()
-        .expect("Level 2 objective level-end session");
+    let mut session = level_two_campaign_session();
     let stage = session.runtime().stages[0].clone();
     for stage_index in 1..usize::from(session.runtime().stage_index) {
         session
@@ -536,11 +528,7 @@ fn level_two_model_zero_one_switches_use_strict_xy_predicates() {
 
 #[test]
 fn level_two_root_switch_materializes_authored_wind_on_production_turn() {
-    let inspection =
-        NativeWorld::inspect_level2(level_two_fixture_path()).expect("qualified Level 2 package");
-    let mut session = inspection
-        .level2_reset_session()
-        .expect("Level 2 rooted wind-switch session");
+    let mut session = level_two_campaign_session();
     let root = session
         .level2_imported_switch_roots
         .iter()
@@ -555,7 +543,9 @@ fn level_two_root_switch_materializes_authored_wind_on_production_turn() {
         .copied()
         .expect("authored row 110 wind feature");
     assert_eq!((wind_feature.kind, wind_feature.subtype), (10, 22));
-    session.state.position = root.position;
+    session
+        .set_level2_entity_position(session.state.entity_index, root.position)
+        .expect("fixture player position updates the authoritative row and map link");
 
     for _ in 0..16 {
         session.step_outer_turn(PlayerCommand::default(), 0);
@@ -627,15 +617,22 @@ fn level_two_root_switch_materializes_authored_wind_on_production_turn() {
         .iter()
         .all(|source| source.authored_index != 110));
     assert!(!session.economy().map_chains().is_linked(wind_slot));
-    session.state.position = Position {
-        x: root.position.x.wrapping_add(4_096),
-        y: root.position.y,
-        z: root.position.z,
-    };
+    session
+        .set_level2_entity_position(
+            session.state.entity_index,
+            Position {
+                x: root.position.x.wrapping_add(4_096),
+                y: root.position.y,
+                z: root.position.z,
+            },
+        )
+        .expect("fixture player position updates the authoritative row and map link");
     for _ in 0..12 {
         session.step_outer_turn(PlayerCommand::default(), 0);
     }
-    session.state.position = root.position;
+    session
+        .set_level2_entity_position(session.state.entity_index, root.position)
+        .expect("fixture player position updates the authoritative row and map link");
     let mut second_activation = false;
     for _ in 0..16 {
         session.step_outer_turn(PlayerCommand::default(), 0);
@@ -661,14 +658,28 @@ fn level_two_root_switch_materializes_authored_wind_on_production_turn() {
             .all(|source| source.authored_index != 110)
     );
 
-    let mut boundary = inspection
-        .level2_reset_session()
-        .expect("Level 2 rooted wind-switch boundary session");
-    boundary.state.position = Position {
-        x: root.position.x,
-        y: root.position.y.wrapping_add(242),
-        z: root.position.z,
-    };
+    let mut boundary = level_two_campaign_session();
+    let switch_half_depth = i16::from_le_bytes(
+        boundary.economy.entities()[usize::from(root.source_slot)].record_bytes()[90..92]
+            .try_into().expect("source switch half-depth"),
+    );
+    let player_half_depth = i16::from_le_bytes(
+        boundary.economy.entities()[usize::from(boundary.state.entity_index)].record_bytes()[90..92]
+            .try_into().expect("source player half-depth"),
+    );
+    let boundary_distance = u16::try_from(i32::from(switch_half_depth) + i32::from(player_half_depth))
+        .expect("qualified positive overlap boundary");
+    assert!(boundary_distance > 0 && boundary_distance < 0x8000);
+    boundary
+        .set_level2_entity_position(
+            boundary.state.entity_index,
+            Position {
+                x: root.position.x,
+                y: root.position.y.wrapping_add(boundary_distance),
+                z: root.position.z,
+            },
+        )
+        .expect("fixture player position updates the authoritative row and map link");
     for _ in 0..16 {
         boundary.step_outer_turn(PlayerCommand::default(), 0);
     }
@@ -682,10 +693,9 @@ fn level_two_root_switch_materializes_authored_wind_on_production_turn() {
             .drawing_enabled
     );
 
-    let mut dead = inspection
-        .level2_reset_session()
-        .expect("Level 2 rooted wind-switch dead-player session");
-    dead.state.position = root.position;
+    let mut dead = level_two_campaign_session();
+    dead.set_level2_entity_position(dead.state.entity_index, root.position)
+        .expect("fixture player position updates the authoritative row and map link");
     dead.economy.entities[111].life = -1;
     for _ in 0..16 {
         dead.step_outer_turn(PlayerCommand::default(), 0);
@@ -795,11 +805,7 @@ fn level_two_model4_group31_stays_latent_before_player_level_end() {
 
 #[test]
 fn level_two_model4_group31_activates_for_level_end_local_model_zero_player() {
-    let inspection =
-        NativeWorld::inspect_level2(level_two_fixture_path()).expect("qualified Level 2 package");
-    let mut session = inspection
-        .level2_reset_session()
-        .expect("Level 2 model-4 exit-switch session");
+    let mut session = level_two_campaign_session();
     assert_eq!(
         session.economy.entities()[usize::from(session.state.entity_index)].model,
         0
@@ -881,11 +887,7 @@ fn level_two_model4_group31_activates_for_level_end_local_model_zero_player() {
 
 #[test]
 fn level_two_model12_group31_materializes_row209_without_empty_group32_work() {
-    let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
-        .expect("qualified Level 2 model-12 session");
-    let mut session = inspection
-        .level2_reset_session()
-        .expect("Level 2 model-12 group-31 session");
+    let mut session = level_two_campaign_session();
     let baseline_hash = session.campaign_state_hash();
     session.runtime.set_level2_is_level_end(1);
     session.step_outer_turn(PlayerCommand::default(), 0);
@@ -950,11 +952,7 @@ fn level_two_model12_group31_materializes_row209_without_empty_group32_work() {
 
 #[test]
 fn level_two_model12_group31_rolls_back_when_row244_cannot_allocate() {
-    let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
-        .expect("qualified Level 2 model-12 rollback session");
-    let mut session = inspection
-        .level2_reset_session()
-        .expect("Level 2 model-12 rollback group-31 session");
+    let mut session = level_two_campaign_session();
     // Let unrelated reset-time producers consume their ordinary first-pass
     // work before constraining the arena. Group 31 is still latent because no
     // player has reached the level-end objective yet.
@@ -1026,11 +1024,7 @@ fn level_two_model4_group31_requires_a_model_zero_local_player() {
 
 #[test]
 fn level_two_model4_group31_scans_each_live_player_objective() {
-    let inspection =
-        NativeWorld::inspect_level2(level_two_fixture_path()).expect("qualified Level 2 package");
-    let mut session = inspection
-        .level2_reset_session()
-        .expect("Level 2 model-4 exit-switch session");
+    let mut session = level_two_campaign_session();
     let local_index = usize::from(session.state.entity_index);
     session.economy.entities[local_index].model = 1;
 
@@ -1115,11 +1109,7 @@ fn level_two_model4_group31_ignores_dead_player_objective() {
 
 #[test]
 fn level_two_group31_switch274_activates_group28_on_strict_overlap() {
-    let inspection =
-        NativeWorld::inspect_level2(level_two_fixture_path()).expect("qualified Level 2 package");
-    let mut session = inspection
-        .level2_reset_session()
-        .expect("Level 2 group-31 switch session");
+    let mut session = level_two_campaign_session();
     let row_274 = session
         .mission()
         .authored_features()
@@ -1174,29 +1164,56 @@ fn level_two_group31_switch274_activates_group28_on_strict_overlap() {
         } if *source_slot == runtime_switch_slot
             && authored_indices.as_ref() == expected_group28.as_slice()
     )));
-    let collected_scroll_slots = session
-        .shared_spells()
-        .pickup_events()
-        .iter()
+    // Pickup observability is pass-local (RngPrepass clears it). Retain
+    // actual collected occurrences before advancing the lower-slot birth.
+    let birth_generations = session.economy().authored_class14().iter()
+        .filter(|source| expected_group28.contains(&source.authored_index))
+        .map(|source| (source.source_entity_index,
+            session.economy().slot_generation(source.source_entity_index)))
+        .collect::<BTreeMap<_, _>>();
+    assert_eq!(birth_generations.len(), expected_group28.len());
+    let mut collected_scroll_slots = session.shared_spells().pickup_events().iter()
         .filter_map(|event| match event {
-            Level2SharedSpellEvent::ExperienceScrollCollected { source_slot, .. } => {
-                Some(*source_slot)
-            }
+            Level2SharedSpellEvent::ExperienceScrollCollected { source_slot, .. } => Some(*source_slot),
             _ => None,
-        })
-        .collect::<BTreeSet<_>>();
+        }).collect::<BTreeSet<_>>();
+    assert!(collected_scroll_slots.iter().all(|slot| birth_generations.contains_key(slot)));
+    let deferred_scrolls = session.economy().authored_class14().iter()
+        .filter(|source| source.active && source.drawing_enabled
+            && expected_group28.contains(&source.authored_index))
+        .map(|source| (source.source_entity_index,
+            session.economy().slot_generation(source.source_entity_index)))
+        .collect::<Vec<_>>();
+    assert!(deferred_scrolls.iter().all(|(slot, _)| *slot < runtime_switch_slot),
+        "only actual births below the advancing source cursor may await collection: {deferred_scrolls:?}");
+    if !deferred_scrolls.is_empty() {
+        session
+            .set_level2_entity_position(111, row_274.world_position(0))
+            .expect("keep the public player input on the source scroll overlap");
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        for event in session.shared_spells().pickup_events() {
+            if let Level2SharedSpellEvent::ExperienceScrollCollected { source_slot, .. } = event {
+                assert_eq!(Some(&session.economy().slot_generation(*source_slot)),
+                    birth_generations.get(source_slot));
+                assert!(collected_scroll_slots.insert(*source_slot),
+                    "one authored scroll occurrence cannot be collected twice");
+            }
+        }
+        for (slot, generation) in &deferred_scrolls {
+            assert_eq!(session.economy().slot_generation(*slot), *generation);
+            assert!(session.shared_spells().pickup_events().iter().any(|event| {
+                matches!(event, Level2SharedSpellEvent::ExperienceScrollCollected {
+                    source_slot, ..
+                } if source_slot == slot)
+            }), "the following ordinary visit must collect the generation-qualified lower-slot birth");
+        }
+    }
     assert_eq!(collected_scroll_slots.len(), expected_group28.len());
-    let hidden_scroll = session
-        .economy()
-        .authored_class14()
-        .iter()
+    let hidden_scroll = session.economy().authored_class14().iter()
         .find(|row| row.authored_index == 275)
         .expect("collected group-28 row remains through the callback pass");
     assert!(!hidden_scroll.drawing_enabled);
-    assert!(session
-        .economy()
-        .map_chains()
-        .is_linked(hidden_scroll.source_entity_index));
+    assert!(session.economy().map_chains().is_linked(hidden_scroll.source_entity_index));
     session.step_outer_turn(PlayerCommand::default(), 0);
     assert!(!session
         .economy()
@@ -1211,11 +1228,7 @@ fn level_two_group31_switch274_activates_group28_on_strict_overlap() {
 
 #[test]
 fn level_two_group31_switch274_rejects_the_strict_boundary() {
-    let inspection =
-        NativeWorld::inspect_level2(level_two_fixture_path()).expect("qualified Level 2 package");
-    let mut session = inspection
-        .level2_reset_session()
-        .expect("Level 2 group-31 switch boundary session");
+    let mut session = level_two_campaign_session();
     let row_274 = session
         .mission()
         .authored_features()
@@ -1223,9 +1236,17 @@ fn level_two_group31_switch274_rejects_the_strict_boundary() {
         .find(|feature| feature.index == 274)
         .copied()
         .expect("group-31 row-274 switch");
+    let switch_half_depth = row_274.word_10.wrapping_shl(8) as i16;
+    let player_half_depth = i16::from_le_bytes(
+        session.economy.entities()[usize::from(session.state.entity_index)].record_bytes()[90..92]
+            .try_into().expect("source player half-depth"),
+    );
+    let boundary_distance = u16::try_from(i32::from(switch_half_depth) + i32::from(player_half_depth))
+        .expect("qualified positive overlap boundary");
+    assert!(boundary_distance > 0 && boundary_distance < 0x8000);
     let strict_boundary = Position {
         x: row_274.world_position(0).x,
-        y: row_274.world_position(0).y.wrapping_add(242),
+        y: row_274.world_position(0).y.wrapping_add(boundary_distance),
         z: 0,
     };
     session.runtime.set_level2_is_level_end(1);
@@ -1276,11 +1297,7 @@ fn level_two_group31_switch274_rejects_the_strict_boundary() {
 
 #[test]
 fn level_two_group31_switch274_and_group28_reset_to_baseline() {
-    let inspection =
-        NativeWorld::inspect_level2(level_two_fixture_path()).expect("qualified Level 2 package");
-    let mut session = inspection
-        .level2_reset_session()
-        .expect("Level 2 group-31 reset session");
+    let mut session = level_two_campaign_session();
     let baseline_hash = session.campaign_state_hash();
     let row_274 = session
         .mission()
@@ -1322,11 +1339,7 @@ fn level_two_group31_switch274_and_group28_reset_to_baseline() {
 
 #[test]
 fn level_two_group21_day_bees_inherit_l2_06_from_ordinary_production() {
-    let inspection =
-        NativeWorld::inspect_level2(level_two_fixture_path()).expect("qualified Level 2 package");
-    let mut session = inspection
-        .level2_reset_session()
-        .expect("Level 2 group-21 Bee session");
+    let mut session = level_two_campaign_session();
     let baseline_hash = session.campaign_state_hash();
     assert_eq!(session.runtime().stage_variables[6].word_2, 0);
 
@@ -1412,11 +1425,7 @@ fn level_two_group21_day_bees_inherit_l2_06_from_ordinary_production() {
 
 #[test]
 fn level_two_group21_bee_extinction_advances_type7_objective_on_production_path() {
-    let inspection =
-        NativeWorld::inspect_level2(level_two_fixture_path()).expect("qualified Level 2 package");
-    let mut session = inspection
-        .level2_reset_session()
-        .expect("Level 2 group-21 Bee objective session");
+    let mut session = level_two_campaign_session();
     let baseline_hash = session.campaign_state_hash();
     assert_eq!(
         session.runtime().stages[LEVEL2_BEE_OBJECTIVE_STAGE_INDEX].kind,
@@ -1626,11 +1635,7 @@ fn level_two_group21_bee_extinction_advances_type7_objective_on_production_path(
 
 #[test]
 fn level_two_group2_row42_materializes_from_row41_production_route() {
-    let inspection =
-        NativeWorld::inspect_level2(level_two_fixture_path()).expect("qualified Level 2 package");
-    let mut session = inspection
-        .level2_reset_session()
-        .expect("Level 2 group-2 production session");
+    let mut session = level_two_campaign_session();
     let baseline_hash = session.campaign_state_hash();
     let local_player = session.state.entity_index;
     let authored_features = session.mission().authored_features().to_vec();
@@ -1703,11 +1708,7 @@ fn level_two_group2_row42_materializes_from_row41_production_route() {
 
 #[test]
 fn level_two_switch_band_a_is_complete_and_tamper_sensitive() {
-    let inspection =
-        NativeWorld::inspect_level2(level_two_fixture_path()).expect("qualified Level 2 package");
-    let mut session = inspection
-        .level2_reset_session()
-        .expect("Level 2 switch-band production session");
+    let mut session = level_two_campaign_session();
     // This is the same campaign-entry seam used by sim-capi before the
     // first generation is exposed; it is not a test-only runtime edit.
     session.select_level2_campaign_entry_stage();
@@ -1772,7 +1773,7 @@ fn level_two_switch_band_a_is_complete_and_tamper_sensitive() {
         }
     };
     let wait_for_row42 = |session: &mut Level2ResetSession,
-                          row11_position: Position,
+                          _row11_position: Position,
                           trace: &mut Vec<(u16, u16)>| {
         if !session
             .economy()
@@ -1780,20 +1781,36 @@ fn level_two_switch_band_a_is_complete_and_tamper_sensitive() {
             .iter()
             .any(|source| source.authored_index == 42)
         {
-            let row41_phase = session
+            let row41 = session
                 .economy()
                 .authored_switch_producers()
                 .iter()
                 .find(|source| source.authored_index == 41)
-                .map(|source| source.phase)
+                .copied()
                 .expect("row 41 producer remains live before its cadence");
+            assert_eq!(row41.model, 1);
+            let mut inverse_position = row41.position;
+            inverse_position.x = inverse_position.x.wrapping_add(0x8000);
             step_at(
                 session,
-                row11_position,
-                level_two_switch_turns_until_cadence(row41_phase),
+                inverse_position,
+                level_two_switch_turns_until_cadence(row41.phase),
                 trace,
             );
         }
+    };
+
+    let step_source = |session: &mut Level2ResetSession,
+                       authored_index: u16,
+                       trace: &mut Vec<(u16, u16)>| {
+        let source = session.economy().authored_switch_producers().iter()
+            .find(|source| source.authored_index == authored_index)
+            .copied().expect("next authored producer is live before its source cadence");
+        let mut position = source.position;
+        if source.model == 1 {
+            position.x = position.x.wrapping_add(0x8000);
+        }
+        step_at(session, position, level_two_switch_turns_until_cadence(source.phase), trace);
     };
 
     // Ordinary public input follows the rooted row-11 -> row-41 -> row-42
@@ -1807,12 +1824,15 @@ fn level_two_switch_band_a_is_complete_and_tamper_sensitive() {
         16,
         &mut activation_trace,
     );
+    step_source(&mut session, 64, &mut activation_trace);
     step_at(
         &mut session,
         feature_position(65),
         16,
         &mut activation_trace,
     );
+    step_source(&mut session, 83, &mut activation_trace);
+    step_source(&mut session, 84, &mut activation_trace);
     let objective_input_position = objective_position(&session);
     step_at(
         &mut session,
@@ -1908,12 +1928,15 @@ fn level_two_switch_band_a_is_complete_and_tamper_sensitive() {
         16,
         &mut activation_trace,
     );
+    step_source(&mut session, 64, &mut activation_trace);
     step_at(
         &mut session,
         feature_position(65),
         16,
         &mut activation_trace,
     );
+    step_source(&mut session, 83, &mut activation_trace);
+    step_source(&mut session, 84, &mut activation_trace);
     let objective_input_position = objective_position(&session);
     step_at(
         &mut session,
@@ -1941,9 +1964,7 @@ fn level_two_switch_band_a_is_complete_and_tamper_sensitive() {
         .stage_tag = 8;
     assert!(checked_in_level2_activation_plan(&tampered_edge).is_err());
 
-    let mut allocation_failure = inspection
-        .level2_reset_session()
-        .expect("allocation-failure session");
+    let mut allocation_failure = level_two_campaign_session();
     allocation_failure.select_level2_campaign_entry_stage();
     let mut allocation_trace = Vec::new();
     step_at(
@@ -2025,11 +2046,15 @@ fn level_two_switch_band_a_is_complete_and_tamper_sensitive() {
             _ => None,
         })
         .collect::<Vec<_>>();
-    let established_group3_batch = group3_main_batches
-        .iter()
-        .find(|batch| batch.as_ref() == expected_group3_main_indices.as_slice())
-        .expect("group-3 established main batch");
-    assert_eq!(established_group3_batch.len(), 22);
+    let expected_group3_consumed_indices = allocation_failure.mission().authored_features().iter()
+        .filter(|feature| feature.activation_group == 3)
+        .map(|feature| feature.index).collect::<Vec<_>>();
+    let established_group3_batch = group3_main_batches.iter()
+        .find(|batch| batch.as_ref() == expected_group3_consumed_indices.as_slice())
+        .expect("the source group scan publishes its complete consumed-row receipt");
+    assert_eq!(established_group3_batch.iter()
+        .filter(|index| expected_group3_main_indices.contains(index)).count(), 22,
+        "the full group3 receipt still contains every established main row");
     assert_eq!(
         allocation_failure
             .economy
@@ -2086,17 +2111,16 @@ fn level_two_switch_band_a_is_complete_and_tamper_sensitive() {
 
 #[test]
 fn level_two_switch_band_b_is_complete_and_tamper_sensitive() {
-    let inspection =
-        NativeWorld::inspect_level2(level_two_fixture_path()).expect("qualified Level 2 package");
-    let mut session = inspection
-        .level2_reset_session()
-        .expect("Level 2 switch-band-B production session");
+    let mut session = level_two_campaign_session();
     let baseline_hash = session.campaign_state_hash();
     let local_player = session.state.entity_index;
 
     let drive_band = |session: &mut Level2ResetSession| {
         let mut trace = Vec::<(u16, u16)>::new();
-        let step_at = |session: &mut Level2ResetSession,
+        let mut source_trace = Vec::new();
+        let mut model32_history = BTreeMap::<u16, (Level2AuthoredModel32Source, u32)>::new();
+        let mut completed_model32_history = BTreeMap::new();
+        let mut step_at = |session: &mut Level2ResetSession,
                        position: Position,
                        turns: usize,
                        trace: &mut Vec<(u16, u16)>| {
@@ -2105,6 +2129,49 @@ fn level_two_switch_band_b_is_complete_and_tamper_sensitive() {
                     .set_level2_entity_position(local_player, position)
                     .expect("public local-player position input");
                 session.step_outer_turn(PlayerCommand::default(), 0);
+                source_trace.extend_from_slice(session.dispatch_events());
+                // Row208 can construct, consume group18, hide and be
+                // reclaimed before this outer-turn observation. Retain its
+                // actual scheduled source occurrence, not an invented live copy.
+                let schedule = session.cf10_production_schedule_receipts();
+                for event in session.dispatch_events() {
+                    if let Level2DispatchEvent::AuthoredGroupActivated {
+                        group: 18, source_slot, authored_indices, ..
+                    } = event {
+                        assert!(authored_indices.contains(&213));
+                        let selector = schedule.iter().find_map(|receipt| match receipt {
+                            crate::campaign::schedule::ScheduleReceipt::CallbackCompleted {
+                                slot, selector, ..
+                            } if slot == source_slot => Some(selector),
+                            _ => None,
+                        }).expect("group18 is produced by the actual row208 callback");
+                        let cursor = selector.observed_dynamic_cursor_row()
+                            .expect("row208 is a real dynamic source occurrence");
+                        assert_eq!(cursor.source_slot, *source_slot);
+                        assert_eq!(cursor.kind, Level2DynamicArenaKind::AuthoredModel32);
+                        assert!(cursor.generation > 0);
+                        assert_eq!(selector.registry_key().selector,
+                            crate::campaign::spec::BehaviorSelector::ClassAction { class: 11, action: 32 });
+                        assert!(schedule.iter().any(|receipt| matches!(receipt,
+                            crate::campaign::schedule::ScheduleReceipt::EpilogueCompleted {
+                                slot, original, ..
+                            } if slot == source_slot
+                                && original.observed_dynamic_cursor_row() == Some(cursor))),
+                            "the actual completed row208 generation receives its source epilogue");
+                        assert!(completed_model32_history.insert(208_u16, (cursor, selector.registry_key().clone())).is_none(),
+                            "the one-shot source occurrence consumes group18 exactly once");
+                    }
+                }
+                for source in session.economy().authored_model32().iter()
+                    .filter(|source| source.active && matches!(source.authored_index, 208 | 213)) {
+                    let generation = session.economy().slot_generation(source.source_entity_index);
+                    if let Some((previous, previous_generation)) = model32_history.get(&source.authored_index) {
+                        assert_eq!(previous.source_entity_index, source.source_entity_index);
+                        assert_eq!(*previous_generation, generation,
+                            "one-shot model32 history remains on its actual source occurrence");
+                    }
+                    model32_history.insert(source.authored_index, (*source, generation));
+                }
                 for event in session.dispatch_events() {
                     if let Level2DispatchEvent::AuthoredGroupActivated {
                         group,
@@ -2181,10 +2248,10 @@ fn level_two_switch_band_b_is_complete_and_tamper_sensitive() {
         // row-208 producer below the current numeric cursor. One following
         // source pass is then required before it can consume group 18.
         step_at(session, row11.position, 1, &mut trace);
-        trace
+        (trace, model32_history, completed_model32_history, source_trace)
     };
 
-    let first_trace = drive_band(&mut session);
+    let (first_trace, first_model32_history, first_completed_history, first_source_trace) = drive_band(&mut session);
     let first_final_hash = session.campaign_state_hash();
     let plan = session
         .mission()
@@ -2234,6 +2301,25 @@ fn level_two_switch_band_b_is_complete_and_tamper_sensitive() {
             .collect::<BTreeSet<_>>(),
         BTreeSet::from([112, 116, 120, 124])
     );
+    assert_eq!(first_model32_history.keys().copied()
+        .chain(first_completed_history.keys().copied()).collect::<BTreeSet<_>>(),
+        BTreeSet::from([208, 213]));
+    assert_eq!(first_completed_history.keys().copied().collect::<BTreeSet<_>>(),
+        BTreeSet::from([208]));
+    for (source, generation) in first_model32_history.values() {
+        assert_eq!((source.source_class, source.model, source.action), (11, 32, 32));
+        assert!(*generation > 0);
+    }
+    let (completed208, _) = first_completed_history.get(&208)
+        .expect("actual row208 generation-qualified source callback was observed");
+    assert!(session.level2_model32_activated.contains(&208),
+        "the real successful callback records its one-shot completion");
+    assert!(first_source_trace.iter().any(|event| matches!(event,
+        Level2DispatchEvent::AuthoredGroupActivated { group: 18, source_slot, authored_indices, .. }
+            if *source_slot == completed208.source_slot && authored_indices.contains(&213))),
+        "the observed row208 occurrence must consume its actual group18/row213 child");
+    // Its successful one-shot callback hides row208; the following source
+    // prologue reclaims it while the not-yet-completed row213 stays live.
     assert_eq!(
         session
             .economy()
@@ -2242,7 +2328,7 @@ fn level_two_switch_band_b_is_complete_and_tamper_sensitive() {
             .map(|source| source.authored_index)
             .filter(|index| matches!(index, 208 | 213))
             .collect::<BTreeSet<_>>(),
-        BTreeSet::from([208, 213])
+        BTreeSet::from([213])
     );
     assert_eq!(
         session
@@ -2257,8 +2343,14 @@ fn level_two_switch_band_b_is_complete_and_tamper_sensitive() {
 
     session.reset();
     assert_eq!(session.campaign_state_hash(), baseline_hash);
-    let replay_trace = drive_band(&mut session);
+    let (replay_trace, replay_model32_history, replay_completed_history, replay_source_trace) = drive_band(&mut session);
     assert_eq!(replay_trace, first_trace, "reset preserves source order");
+    assert_eq!(replay_model32_history, first_model32_history,
+        "reset preserves actual construction, generation and hide history");
+    assert_eq!(replay_completed_history, first_completed_history,
+        "reset preserves the completed source occurrence, generation and selector");
+    assert_eq!(replay_source_trace, first_source_trace,
+        "reset preserves every actual source dispatch receipt");
     assert_eq!(session.campaign_state_hash(), first_final_hash);
 
     let mut tampered_member = session.mission().authored_features().to_vec();
@@ -2279,11 +2371,7 @@ fn level_two_switch_band_b_is_complete_and_tamper_sensitive() {
 
 #[test]
 fn level_two_group1_row41_materializes_latent_from_row11_production_route() {
-    let inspection =
-        NativeWorld::inspect_level2(level_two_fixture_path()).expect("qualified Level 2 package");
-    let mut session = inspection
-        .level2_reset_session()
-        .expect("Level 2 group-1 row-41 production session");
+    let mut session = level_two_campaign_session();
     let baseline_hash = session.campaign_state_hash();
     let authored_features = session.mission().authored_features().to_vec();
     let feature = |index: u16| {
@@ -2338,10 +2426,12 @@ fn level_two_group1_row41_materializes_latent_from_row11_production_route() {
         )
     });
     if !row41.fired {
+        let mut row41_exit_position = row41.position;
+        row41_exit_position.x = row41_exit_position.x.wrapping_add(0x8000);
         for _ in 0..level_two_switch_turns_until_cadence(row41.phase) {
             session
-                .set_level2_entity_position(local_player, row11_position)
-                .expect("public player-position input remains on row 11");
+                .set_level2_entity_position(local_player, row41_exit_position)
+                .expect("public player-position input leaves the row-41 inverse-overlap extent");
             session.step_outer_turn(PlayerCommand::default(), 0);
         }
     }
@@ -2374,8 +2464,9 @@ fn level_two_group1_row41_materializes_latent_from_row11_production_route() {
         )
     );
     assert!(row41.active);
-    // Model-1 uses the inverse-overlap callback: the player remains on
-    // row 11 while the live row-41 producer reaches its source cadence.
+    // Model-1 uses the inverse-overlap callback. Row 11 is only one tile
+    // from row 41, inside its authored 34-cell extent; leave that extent
+    // while the live row-41 producer reaches its source cadence.
     assert!(row41.fired);
     assert_eq!(row41.cooldown, 0);
     assert!(!row41.drawing_enabled);
@@ -2470,11 +2561,7 @@ fn level_two_group1_row41_materializes_latent_from_row11_production_route() {
 
 #[test]
 fn level_two_group6_row84_materializes_from_row83_production_route() {
-    let inspection =
-        NativeWorld::inspect_level2(level_two_fixture_path()).expect("qualified Level 2 package");
-    let mut session = inspection
-        .level2_reset_session()
-        .expect("Level 2 group-6 production session");
+    let mut session = level_two_campaign_session();
     let baseline_hash = session.campaign_state_hash();
     let authored_features = session.mission().authored_features().to_vec();
     let feature = |index: u16| {
@@ -2486,8 +2573,8 @@ fn level_two_group6_row84_materializes_from_row83_production_route() {
     };
 
     // Follow the real source walk into row 83: row 11 -> row 41 -> row
-    // 42 -> row 64 -> row 65 -> row 83.  The player remains on row 65 so
-    // the model-1 inverse-overlap callback can select group 6.
+    // 42 -> row 64 -> row 65 -> row 83. Enter each model-0 source and
+    // leave each model-1 source's authored inverse-overlap extent.
     let local_player = session.state.entity_index;
     level_two_reach_row42(
         &mut session,
@@ -2508,20 +2595,23 @@ fn level_two_group6_row84_materializes_from_row83_production_route() {
             .expect("public player-position input remains on row 42");
         session.step_outer_turn(PlayerCommand::default(), 0);
     }
-    let row65_position = feature(65).world_position(0);
     let mut group6_activated = false;
     for source_index in [64_u16, 65, 83] {
-        let source_phase = session
+        let source = session
             .economy()
             .authored_switch_producers()
             .iter()
             .find(|source| source.authored_index == source_index)
-            .map(|source| source.phase)
+            .copied()
             .expect("group-6 producer remains live before its cadence");
-        for _ in 0..level_two_switch_turns_until_cadence(source_phase) {
+        let mut input_position = source.position;
+        if source.model == 1 {
+            input_position.x = input_position.x.wrapping_add(0x8000);
+        }
+        for _ in 0..level_two_switch_turns_until_cadence(source.phase) {
             session
-                .set_level2_entity_position(local_player, row65_position)
-                .expect("public player-position input remains on row 65");
+                .set_level2_entity_position(local_player, input_position)
+                .expect("public player-position input satisfies the current source overlap predicate");
             session.step_outer_turn(PlayerCommand::default(), 0);
             group6_activated |= session.dispatch_events().iter().any(|event| {
                 matches!(
@@ -2547,7 +2637,7 @@ fn level_two_group6_row84_materializes_from_row83_production_route() {
         .copied()
         .expect("group 5 must materialize row 83");
     assert!(row83.fired);
-    assert!(row83.drawing_enabled);
+    assert!(!row83.drawing_enabled);
 
     let row84 = session
         .economy()
@@ -2556,6 +2646,26 @@ fn level_two_group6_row84_materializes_from_row83_production_route() {
         .find(|source| source.authored_index == 84)
         .copied()
         .expect("group 6 must materialize row 84");
+    // Leaving row 83's wide inverse-overlap extent puts the player outside
+    // row 84. Enter its actual overlap before asserting downstream hide.
+    let mut group7_activated = false;
+    for _ in 0..level_two_switch_turns_until_cadence(row84.phase) {
+        session
+            .set_level2_entity_position(local_player, row84.position)
+            .expect("public player-position input overlaps the new row-84 producer");
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        group7_activated |= session.dispatch_events().iter().any(|event| {
+            matches!(event, Level2DispatchEvent::AuthoredGroupActivated { group: 7, .. })
+        });
+    }
+    assert!(group7_activated, "row 84 must consume group 7 on its source cadence");
+    let row84 = session
+        .economy()
+        .authored_switch_producers()
+        .iter()
+        .find(|source| source.authored_index == 84)
+        .copied()
+        .expect("row 84 remains addressable through its callback pass");
     assert_eq!(
         (
             row84.source_class,
@@ -2578,10 +2688,8 @@ fn level_two_group6_row84_materializes_from_row83_production_route() {
         )
     );
     assert!(row84.active);
-    // The source runagain cursor visits the newly allocated row 84 in
-    // this same pass.  Because the player is still on row 65's authored
-    // tile (which is row 84's tile), the downstream group-7 callback
-    // consumes it immediately and hides the source drawing bit.
+    // The ordinary overlap visit consumes the downstream group once and
+    // hides the source drawing bit after the synchronous scan.
     assert!(!row84.drawing_enabled);
     assert!(row84.fired);
 
@@ -2592,11 +2700,7 @@ fn level_two_group6_row84_materializes_from_row83_production_route() {
 
 #[test]
 fn level_two_group3_model39_rows_materialize_from_row42_production_route() {
-    let inspection =
-        NativeWorld::inspect_level2(level_two_fixture_path()).expect("qualified Level 2 package");
-    let mut session = inspection
-        .level2_reset_session()
-        .expect("Level 2 group-3 production session");
+    let mut session = level_two_campaign_session();
     let baseline_hash = session.campaign_state_hash();
     let baseline_stages = session.runtime().stages.to_vec();
     let baseline_sphere_count = session.economy().spheres().len();
@@ -2829,11 +2933,7 @@ fn model53_sub58da0_stage_binding_preserves_source_relation_encodings() {
 
 #[test]
 fn level_two_authored_switch_chain_reaches_group5_consumers_from_production_turns() {
-    let inspection =
-        NativeWorld::inspect_level2(level_two_fixture_path()).expect("qualified Level 2 package");
-    let mut session = inspection
-        .level2_reset_session()
-        .expect("Level 2 authored switch session");
+    let mut session = level_two_campaign_session();
     let baseline_hash = session.campaign_state_hash();
     let baseline_sphere_count = session.economy().spheres().len();
     let baseline_owner_mana_global = session.economy().owner_mana_global();
@@ -3438,11 +3538,7 @@ fn level_two_authored_switch_chain_reaches_group5_consumers_from_production_turn
 
 #[test]
 fn level_two_authored_model32_switch_reaches_group17_bees_from_production_turns() {
-    let inspection =
-        NativeWorld::inspect_level2(level_two_fixture_path()).expect("qualified Level 2 package");
-    let mut session = inspection
-        .level2_reset_session()
-        .expect("Level 2 authored model-32 session");
+    let mut session = level_two_campaign_session();
     let baseline_hash = session.campaign_state_hash();
     let authored_features = session.mission().authored_features().to_vec();
     let feature_position = |index: u16| {
@@ -3516,11 +3612,7 @@ fn level_two_authored_model32_switch_reaches_group17_bees_from_production_turns(
 
 #[test]
 fn level_two_group18_row213_materializes_from_model32_production_route() {
-    let inspection =
-        NativeWorld::inspect_level2(level_two_fixture_path()).expect("qualified Level 2 package");
-    let mut session = inspection
-        .level2_reset_session()
-        .expect("Level 2 group-18 production session");
+    let mut session = level_two_campaign_session();
     let baseline_hash = session.campaign_state_hash();
     let authored_features = session.mission().authored_features().to_vec();
     let feature_position = |index: u16| {
@@ -3606,11 +3698,7 @@ fn level_two_group18_row213_materializes_from_model32_production_route() {
 
 #[test]
 fn level_two_authored_model32_chain_continues_through_group18_and_group19() {
-    let inspection =
-        NativeWorld::inspect_level2(level_two_fixture_path()).expect("qualified Level 2 package");
-    let mut session = inspection
-        .level2_reset_session()
-        .expect("Level 2 authored model-32 continuation session");
+    let mut session = level_two_campaign_session();
     let baseline_hash = session.campaign_state_hash();
     let authored_features = session.mission().authored_features().to_vec();
     let feature_position = |index: u16| {
@@ -4073,11 +4161,7 @@ fn level_two_group20_materializes_model1_and_archer_rows_from_row214() {
 
 #[test]
 fn level_two_reset_model32_producer_reaches_group21_bees_from_production_turns() {
-    let inspection =
-        NativeWorld::inspect_level2(level_two_fixture_path()).expect("qualified Level 2 package");
-    let mut session = inspection
-        .level2_reset_session()
-        .expect("Level 2 group-21 Bee session");
+    let mut session = level_two_campaign_session();
     let baseline_hash = session.campaign_state_hash();
 
     // The qualified reset contains a live class-11/model-32 producer at
@@ -4132,11 +4216,7 @@ fn level_two_reset_model32_producer_reaches_group21_bees_from_production_turns()
 
 #[test]
 fn level_two_reset_model32_producer_reaches_group29_bees_from_production_turns() {
-    let inspection =
-        NativeWorld::inspect_level2(level_two_fixture_path()).expect("qualified Level 2 package");
-    let mut session = inspection
-        .level2_reset_session()
-        .expect("Level 2 group-29 Bee session");
+    let mut session = level_two_campaign_session();
     let baseline_hash = session.campaign_state_hash();
 
     let producer_slot = fire_level_two_model32_group(&mut session, 29);
@@ -4338,11 +4418,7 @@ fn level_two_group23_model59_materializes_from_rooted_production_turns() {
 
 #[test]
 fn level_two_group26_model39_materializes_from_production_switch_chain() {
-    let inspection =
-        NativeWorld::inspect_level2(level_two_fixture_path()).expect("qualified Level 2 package");
-    let mut session = inspection
-        .level2_reset_session()
-        .expect("Level 2 group-26 model-39 session");
+    let mut session = level_two_campaign_session();
     let baseline_hash = session.campaign_state_hash();
     let baseline_sphere_count = session.economy().spheres().len();
     let baseline_owner_mana_global = session.economy().owner_mana_global();
@@ -4356,25 +4432,75 @@ fn level_two_group26_model39_materializes_from_production_switch_chain() {
             .world_position(0)
     };
     let expected_group25_indices = [356_u16];
-    let expected_group26_indices = [357_u16, 358, 359, 360];
+    let expected_group26_sphere_indices = [357_u16, 358, 359, 360];
+    let expected_group26_indices = authored_features
+        .iter()
+        .filter(|feature| feature.activation_group == 26)
+        .map(|feature| feature.index)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        expected_group26_indices,
+        [357_u16, 358, 359, 360, 365, 366, 367, 368],
+        "the source group includes exactly four spheres and four model-13 rows"
+    );
 
     // Rebind one real imported model-0 root to the authored group-25
     // source position. The callback, arena allocation, and downstream
     // group-26 switch still execute through ordinary outer turns.
     let root_position = feature_position(355);
-    let root = session
+    let root_slot = session
         .level2_imported_switch_roots
-        .iter_mut()
+        .iter()
         .find(|root| root.authored_index == 11 && root.model == 0)
+        .map(|root| root.source_slot)
         .expect("imported model-0 root for production chain");
-    root.position = root_position;
-    root.target_group = 25;
-    root.cooldown = 0;
-    session.state.position = root_position;
+    session
+        .set_level2_entity_position(root_slot, root_position)
+        .expect("fixture root position updates the authoritative row and map link");
+    // This component fixture rebinds the source root's group. The raw
+    // class-11 row owns dispatch; its imported-root view is an epilogue projection.
+    let root = &mut session.economy.entities[usize::from(root_slot)];
+    root.source_id = 25;
+    root.record[30..32].copy_from_slice(&25_u16.to_le_bytes());
+    root.set_source_dword_10(0);
+    session
+        .set_level2_entity_position(session.state.entity_index, root_position)
+        .expect("fixture player position updates the authoritative row and map link");
 
+    let model13_indices = BTreeSet::from([365_u16, 366, 367, 368]);
+    let mut model13_activated = BTreeSet::new();
+    let mut group26_activated = false;
+    let mut group26_owner_mana_global_at_boundary = None;
+    let mut group26_owner_mana_global_after = None;
     let mut group25_activated = false;
     for _ in 0..16 {
+        let (_, owner_mana_global_at_boundary) =
+            level2_owner_mana_projection(&session.economy().owner_mana_rows);
         session.step_outer_turn(PlayerCommand::default(), 0);
+        // Observe all source births now: a newly constructed later-slot
+        // row 356 can consume group 26 in this same ordinary source pass.
+        if let Some(authored_indices) = session.dispatch_events().iter().find_map(|event| {
+            match event {
+                Level2DispatchEvent::AuthoredGroupActivated {
+                    group: 26,
+                    authored_indices,
+                    ..
+                } if authored_indices.as_ref() == expected_group26_indices.as_slice() => {
+                    Some(authored_indices.as_ref())
+                }
+                _ => None,
+            }
+        }) {
+            group26_activated = true;
+            group26_owner_mana_global_at_boundary = Some(owner_mana_global_at_boundary);
+            group26_owner_mana_global_after = Some(session.economy().owner_mana_global());
+            model13_activated.extend(
+                authored_indices
+                    .iter()
+                    .copied()
+                    .filter(|index| model13_indices.contains(index)),
+            );
+        }
         group25_activated |= session.dispatch_events().iter().any(|event| {
             matches!(
                 event,
@@ -4397,11 +4523,13 @@ fn level_two_group26_model39_materializes_from_production_switch_chain() {
     assert!(group25_activated, "group 25 must allocate row 356");
 
     let row356_position = feature_position(356);
-    session.state.position = row356_position;
-    let mut group26_activated = false;
-    let mut group26_owner_mana_global_at_boundary = None;
-    let mut group26_owner_mana_global_after = None;
+    session
+        .set_level2_entity_position(session.state.entity_index, row356_position)
+        .expect("fixture player position updates the authoritative row and map link");
     for _ in 0..16 {
+        if group26_activated {
+            break;
+        }
         let (_, owner_mana_global_at_boundary) =
             level2_owner_mana_projection(&session.economy().owner_mana_rows);
         session.step_outer_turn(PlayerCommand::default(), 0);
@@ -4418,9 +4546,23 @@ fn level_two_group26_model39_materializes_from_production_switch_chain() {
         if activated_this_turn {
             group26_owner_mana_global_at_boundary = Some(owner_mana_global_at_boundary);
             group26_owner_mana_global_after = Some(session.economy().owner_mana_global());
+            for event in session.dispatch_events() {
+                if let Level2DispatchEvent::AuthoredGroupActivated {
+                    group: 26,
+                    authored_indices,
+                    ..
+                } = event {
+                    model13_activated.extend(
+                        authored_indices
+                            .iter()
+                            .copied()
+                            .filter(|index| model13_indices.contains(index)),
+                    );
+                }
+            }
         }
         group26_activated |= activated_this_turn;
-        if expected_group26_indices.iter().all(|index| {
+        if expected_group26_sphere_indices.iter().all(|index| {
             session.economy().spheres().iter().any(|sphere| {
                 sphere.active && sphere.mana == 512 && {
                     let position = feature_position(*index);
@@ -4435,7 +4577,7 @@ fn level_two_group26_model39_materializes_from_production_switch_chain() {
         group26_activated,
         "row 356 must activate group 26 through production turns"
     );
-    let expected_positions = expected_group26_indices
+    let expected_positions = expected_group26_sphere_indices
         .iter()
         .map(|index| {
             let position = feature_position(*index);
@@ -4474,12 +4616,10 @@ fn level_two_group26_model39_materializes_from_production_switch_chain() {
         "group 26 spheres cannot publish sub_60F00's global counter in their allocation pass"
     );
 
-    // The generic class-11 producer bridge runs at the next source-pass
-    // boundary after row 356's switch callback. Keep this follow-up
-    // turn outside the model-39 sphere assertions above so those checks
-    // remain about the direct group-26 allocation turn.
-    let model13_indices = BTreeSet::from([365_u16, 366, 367, 368]);
-    let mut model13_activated = BTreeSet::new();
+    // sub_4A1E0 consumes all eight authored rows synchronously, including
+    // the four class-10/model-13 constructors. Retain their actual source
+    // birth receipts while advancing the ordinary denominator publication
+    // outside the direct model-39 sphere allocation assertions above.
     for _ in 0..4 {
         session.step_outer_turn(PlayerCommand::default(), 0);
         for event in session.dispatch_events() {
@@ -4489,11 +4629,12 @@ fn level_two_group26_model39_materializes_from_production_switch_chain() {
                 ..
             } = event
             {
-                if let [authored_index] = authored_indices.as_ref() {
-                    if model13_indices.contains(authored_index) {
-                        model13_activated.insert(*authored_index);
-                    }
-                }
+                model13_activated.extend(
+                    authored_indices
+                        .iter()
+                        .copied()
+                        .filter(|index| model13_indices.contains(index)),
+                );
             }
         }
         if model13_activated == model13_indices {
@@ -4552,11 +4693,7 @@ fn level_two_group26_model39_materializes_from_production_switch_chain() {
 
 #[test]
 fn level_two_group24_model39_and_model6_materialize_from_row344_production_chain() {
-    let inspection =
-        NativeWorld::inspect_level2(level_two_fixture_path()).expect("qualified Level 2 package");
-    let mut session = inspection
-        .level2_reset_session()
-        .expect("Level 2 group-24 model-39/model-6 session");
+    let mut session = level_two_campaign_session();
     let baseline_hash = session.campaign_state_hash();
     let authored_features = session.mission().authored_features().to_vec();
     let feature_position = |index: u16| {
@@ -4597,10 +4734,19 @@ fn level_two_group24_model39_and_model6_materialize_from_row344_production_chain
     root.position = root_position;
     root.target_group = 23;
     root.cooldown = 0;
-    session.state.position = root_position;
+    session
+        .set_level2_entity_position(session.state.entity_index, root_position)
+        .expect("fixture player position updates the authoritative row and map link");
+    // NewEvent can place row 344 later in the constructing source pass.
+    // Retain its actual group-24 receipt before any following pass replaces
+    // dispatch_events; the constructors and consumers remain ordinary.
+    let mut group24_receipts = Vec::new();
     let mut group23_activated = false;
     for _ in 0..16 {
         session.step_outer_turn(PlayerCommand::default(), 0);
+        group24_receipts.extend(session.dispatch_events().iter().filter(|event| {
+            matches!(event, Level2DispatchEvent::AuthoredGroupActivated { group: 24, .. })
+        }).cloned());
         group23_activated |= session.dispatch_events().iter().any(|event| {
             matches!(
                 event,
@@ -4624,10 +4770,22 @@ fn level_two_group24_model39_and_model6_materialize_from_row344_production_chain
 
     // Position the local player over the newly-created row 344 and let
     // the normal source cursor consume its every-eighth-pass overlap.
-    session.state.position = feature_position(344);
-    let mut group24_activated = false;
+    session
+        .set_level2_entity_position(session.state.entity_index, feature_position(344))
+        .expect("fixture player position updates the authoritative row and map link");
+    let mut group24_activated = group24_receipts.iter().any(|event| {
+        matches!(event, Level2DispatchEvent::AuthoredGroupActivated {
+            group: 24, authored_indices, ..
+        } if authored_indices.as_ref() == expected_group24_indices)
+    });
     for _ in 0..16 {
+        if group24_activated {
+            break;
+        }
         session.step_outer_turn(PlayerCommand::default(), 0);
+        group24_receipts.extend(session.dispatch_events().iter().filter(|event| {
+            matches!(event, Level2DispatchEvent::AuthoredGroupActivated { group: 24, .. })
+        }).cloned());
         group24_activated |= session.dispatch_events().iter().any(|event| {
             matches!(
                 event,
@@ -4661,11 +4819,12 @@ fn level_two_group24_model39_and_model6_materialize_from_row344_production_chain
         }
     }
     assert!(group24_activated, "row 344 must allocate group 24");
+    assert_eq!(group24_receipts.len(), 1, "the source group is consumed exactly once");
     assert!(
         expected_group24_indices
             .iter()
             .all(
-                |index| session.dispatch_events().iter().any(|event| matches!(
+                |index| group24_receipts.iter().any(|event| matches!(
                     event,
                     Level2DispatchEvent::AuthoredGroupActivated {
                         group: 24,
@@ -4719,11 +4878,7 @@ fn level_two_group24_model39_and_model6_materialize_from_row344_production_chain
 
 #[test]
 fn level_two_group25_row356_materializes_from_row355_production_route() {
-    let inspection =
-        NativeWorld::inspect_level2(level_two_fixture_path()).expect("qualified Level 2 package");
-    let mut session = inspection
-        .level2_reset_session()
-        .expect("Level 2 group-25 production session");
+    let mut session = level_two_campaign_session();
     let baseline_hash = session.campaign_state_hash();
     let authored_features = session.mission().authored_features().to_vec();
     let feature = |index: u16| {
@@ -4774,9 +4929,9 @@ fn level_two_group25_row356_materializes_from_row355_production_route() {
     );
 
     // Row 344's model-0 overlap activates group 24. The newly allocated
-    // row 355 is model-1 at the adjacent authored tile, so its inverse
-    // overlap fires at its live source cadence and selects group 25/row
-    // 356.
+    // row 355 is model-1 at the adjacent authored tile. Its 31-cell
+    // extent includes row 344, so leave that extent before its live source
+    // cadence selects group 25/row 356.
     let row344_position = feature(344).world_position(0);
     session
         .set_level2_entity_position(local_player, row344_position)
@@ -4809,17 +4964,19 @@ fn level_two_group25_row356_materializes_from_row355_production_route() {
         group25_activated |= saw_group25_activation(&session);
     }
     if !group25_activated {
-        let row355_phase = session
+        let row355 = session
             .economy()
             .authored_switch_producers()
             .iter()
             .find(|source| source.authored_index == 355)
-            .map(|source| source.phase)
+            .copied()
             .expect("row 355 producer remains live before its cadence");
-        for _ in 0..level_two_switch_turns_until_cadence(row355_phase) {
+        let mut row355_exit_position = row355.position;
+        row355_exit_position.x = row355_exit_position.x.wrapping_add(0x8000);
+        for _ in 0..level_two_switch_turns_until_cadence(row355.phase) {
             session
-                .set_level2_entity_position(local_player, row344_position)
-                .expect("public player-position input remains on row 344");
+                .set_level2_entity_position(local_player, row355_exit_position)
+                .expect("public player-position input leaves the row-355 inverse-overlap extent");
             session.step_outer_turn(PlayerCommand::default(), 0);
             group25_activated |= saw_group25_activation(&session);
         }
@@ -4838,7 +4995,9 @@ fn level_two_group25_row356_materializes_from_row355_production_route() {
         .expect("group 24 must materialize row 355");
     assert_eq!((row355.model, row355.action, row355.stage_tag), (1, 1, 25));
     assert!(row355.fired);
-    assert!(row355.drawing_enabled);
+    // CompleteAuthoredSwitch hides the one-shot producer after its group
+    // scan; firing never leaves its drawing bit enabled.
+    assert!(!row355.drawing_enabled);
 
     let row356 = session
         .economy()

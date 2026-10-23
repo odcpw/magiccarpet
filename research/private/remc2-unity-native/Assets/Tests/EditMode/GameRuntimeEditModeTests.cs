@@ -9,6 +9,78 @@ namespace MagicCarpet.Native.Tests
 {
     public sealed class GameRuntimeEditModeTests
     {
+        [Test]
+        public void OwnerCampaignMapUsesSourceMissionNamesAndRejectsAlteredPixels()
+        {
+            var source = Path.Combine(PrivateRoot, "generated/mc2-campaign-menu-cache");
+            using (var cache = new OwnerCampaignMenuCache(source))
+            {
+                Assert.That(cache.World.width, Is.EqualTo(1280));
+                Assert.That(cache.World.height, Is.EqualTo(960));
+                Assert.That(cache.ForMission("level.magic_carpet_2.night_spire").name, Is.EqualTo("1. Jahwl"));
+                Assert.That(cache.ForMission("level.magic_carpet_2.payahandra_ruins").name, Is.EqualTo("2. Kopahk"));
+                Assert.That(cache.ForMission("level.magic_carpet_2.revealed_way").name, Is.EqualTo("3. Myrnan Gor"));
+                Assert.That(cache.ForMission("level.magic_carpet_2.payahandra_ruins").briefing, Is.Not.Empty);
+            }
+            var fixture = Path.Combine(Path.GetTempPath(), "mc-campaign-menu-negative-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(fixture);
+            foreach (var file in Directory.GetFiles(source)) File.Copy(file, Path.Combine(fixture, Path.GetFileName(file)));
+            var pixels = Path.Combine(fixture, "world-map.indices.u8");
+            using (var file = File.Open(pixels, FileMode.Open, FileAccess.ReadWrite))
+            {
+                var value = file.ReadByte();
+                file.Position = 0;
+                file.WriteByte((byte)(value ^ 1));
+            }
+            try { Assert.Throws<InvalidDataException>(() => new OwnerCampaignMenuCache(fixture)); }
+            finally { Directory.Delete(fixture, true); }
+        }
+
+        [Test]
+        public void CampaignResultsAndMissionSelectionKeepLoadingAndGameplayUnavailable()
+        {
+            const string first = "level.magic_carpet_2.night_spire";
+            const string second = "level.magic_carpet_2.payahandra_ruins";
+            const string third = "level.magic_carpet_2.revealed_way";
+            var identity = new GameRuntimeTransport.Identity {
+                runtime_contract = GameRuntimeTransport.RuntimeContract, runtime_id = "771", generation = "4",
+                mode = GameRuntimeTransport.CampaignMode,
+                active_runtime_flow = new GameRuntimeTransport.RuntimeFlowDefinition {
+                    game_id = "game.magic_carpet_2", bound_level_id = first, entry_level_id = first,
+                    entries = new[] {
+                        new GameRuntimeTransport.RuntimeFlowEntry { level_id = first, completion_destination = new GameRuntimeTransport.RuntimeFlowDestination { kind = "level", level_id = second } },
+                        new GameRuntimeTransport.RuntimeFlowEntry { level_id = second, completion_destination = new GameRuntimeTransport.RuntimeFlowDestination { kind = "level", level_id = third } },
+                        new GameRuntimeTransport.RuntimeFlowEntry { level_id = third, completion_destination = new GameRuntimeTransport.RuntimeFlowDestination { kind = "title", node_id = "flow.magic_carpet_2.return_to_title" } }
+                    }
+                },
+                presentation = new GameRuntimeTransport.RuntimePresentationCue {
+                    cue_id = "presentation.magic_carpet_2.night_spire.completion", phase = GameRuntimeTransport.LevelCompletionPresentationPhase,
+                    level_id = first, completion_destination = new GameRuntimeTransport.RuntimeFlowDestination { kind = "level", level_id = second }
+                },
+                campaign_menu = new GameRuntimeTransport.CampaignMenuSnapshot {
+                    phase = "results", completed_level_id = first, completed_levels = new[] { first },
+                    available_levels = new[] { first, second }, briefing_level_id = second
+                }
+            };
+            Assert.DoesNotThrow(() => GameRuntimeTransport.ValidateIdentity(identity, 771));
+            identity.campaign_menu.selected_level_id = second;
+            Assert.Throws<InvalidOperationException>(() => GameRuntimeTransport.ValidateIdentity(identity, 771),
+                "Results have not yet selected a mission on the campaign map");
+            identity.campaign_menu.selected_level_id = null;
+            Assert.That(CampaignMenuPresenter.Allows(identity.mode, CampaignMenuPresenter.Action.NewGame, false, false, false), Is.False);
+            identity.mode = GameRuntimeTransport.LoadingMode;
+            Assert.Throws<InvalidOperationException>(() => GameRuntimeTransport.ValidateIdentity(identity, 771));
+            identity.mode = GameRuntimeTransport.CampaignMode;
+            identity.campaign_menu.phase = "mission_select";
+            identity.campaign_menu.selected_level_id = second;
+            identity.presentation = new GameRuntimeTransport.RuntimePresentationCue {
+                cue_id = "presentation.campaign.map", phase = GameRuntimeTransport.CampaignMapPresentationPhase, level_id = second
+            };
+            Assert.DoesNotThrow(() => GameRuntimeTransport.ValidateIdentity(identity, 771));
+            identity.campaign_menu.selected_level_id = third;
+            Assert.Throws<InvalidOperationException>(() => GameRuntimeTransport.ValidateIdentity(identity, 771));
+        }
+
         [TestCase(2, "objective.reach.payahandra_ruins", "Fly to Payahandra's ruins.")]
         [TestCase(3, "objective.clear.undead_horde", "Destroy the undead horde.")]
         [Timeout(180000)]

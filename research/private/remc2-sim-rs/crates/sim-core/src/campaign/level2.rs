@@ -700,6 +700,14 @@ impl Level2ResolvedSourcePlan {
     pub(crate) fn observed_phase(&self) -> Option<u8> {
         self.phase()
     }
+
+    #[cfg(test)]
+    pub(crate) fn observed_dynamic_cursor_row(&self) -> Option<Level2DynamicArenaCursorRow> {
+        match self.route() {
+            Level2SourceRoute::Dynamic(row) => Some(row),
+            _ => None,
+        }
+    }
 }
 
 impl SourceSchedulerWorld for Level2SourceSchedulerWorld<'_, '_> {

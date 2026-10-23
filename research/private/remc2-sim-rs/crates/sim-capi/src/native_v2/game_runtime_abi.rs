@@ -20,7 +20,7 @@ use sim_core::{
 };
 use sim_session::{GameSession, OpenSessionError, SessionGuard};
 
-const GAME_RUNTIME_TRANSPORT_CONTRACT: &str = "carpet-flight-native-game-runtime-json/v10";
+const GAME_RUNTIME_TRANSPORT_CONTRACT: &str = "carpet-flight-native-game-runtime-json/v11";
 const INSTALLED_PACKAGE_SET_CONTRACT: &str = "carpet-flight-installed-package-set-bootstrap/v1";
 const MAX_INSTALLED_PACKAGE_SET_JSON_BYTES: u32 = 64 * 1024;
 const MAX_INSTALLED_PACKAGE_COUNT: usize = 16;
@@ -412,6 +412,7 @@ impl RuntimeRecord {
             )
             .map_err(map_transition_error)?;
         self.completion_transition_receipt = Some(receipt);
+        self.campaign_presentation = None;
         Ok(())
     }
 
@@ -423,6 +424,77 @@ impl RuntimeRecord {
                 "NO_COMPLETION_TRANSITION_RECEIPT: no completion transition has been accepted",
             )
         })
+    }
+
+    fn campaign_menu_command(
+        &mut self,
+        handle: u64,
+        generation: u64,
+        request: &str,
+    ) -> AbiResult<()> {
+        self.validate_transition(handle, generation, RuntimeMode::Campaign)?;
+        let command = serde_json::from_str::<sim_core::game_runtime::CampaignMenuCommand>(request)
+            .map_err(|error| {
+                AbiError::new(
+                    MC_STATUS_INVALID_ARGUMENT,
+                    format!("INVALID_CAMPAIGN_ACTION: {error}"),
+                )
+            })?;
+        let resolver = self.resolver.as_ref().ok_or_else(|| {
+            AbiError::new(
+                MC_STATUS_INVALID_ARGUMENT,
+                "MISSING_RUNTIME_RESOLVER: campaign requires installed packages",
+            )
+        })?;
+        resolver
+            .campaign_menu_command(
+                &mut self.runtime,
+                RuntimeGuard {
+                    runtime_id: handle,
+                    generation,
+                },
+                command,
+            )
+            .map_err(map_transition_error)?;
+        Ok(())
+    }
+
+    fn finish_mission_if_ready(
+        &mut self,
+        handle: u64,
+        runtime_generation: u64,
+        session_generation: u64,
+        expected_tick: u64,
+    ) -> AbiResult<()> {
+        self.validate_transition(handle, runtime_generation, RuntimeMode::Playing)?;
+        let completion = self
+            .session()?
+            .completion_status(SessionGuard {
+                session_id: handle,
+                generation: session_generation,
+                expected_tick,
+            })
+            .map_err(|error| {
+                map_transition_error(RuntimeTransitionError::SessionGuard(Box::new(error)))
+            })?
+            .value;
+        match completion {
+            sim_session::GameCompletionStatus::InProgress => Ok(()),
+            sim_session::GameCompletionStatus::Completed { .. } => self.accept_transition(
+                handle,
+                runtime_generation,
+                session_generation,
+                expected_tick,
+            ),
+            sim_session::GameCompletionStatus::Unsupported => Err(map_transition_error(
+                RuntimeTransitionError::InvalidCompletion {
+                    message: "gameplay backend does not expose semantic completion".to_owned(),
+                },
+            )),
+            sim_session::GameCompletionStatus::Invalid { message } => Err(map_transition_error(
+                RuntimeTransitionError::InvalidCompletion { message },
+            )),
+        }
     }
 
     fn close(
@@ -765,13 +837,13 @@ pub extern "C" fn mc_game_runtime_contract_json_v1(
         let contract = serde_json::json!({
             "runtime_contract": sim_core::game_runtime::GAME_RUNTIME_CONTRACT,
             "transport_contract": GAME_RUNTIME_TRANSPORT_CONTRACT,
-            "transport_version": 10,
+            "transport_version": 11,
             "definition_contract": sim_core::game_definition::GAME_DEFINITION_SCHEMA,
             "semantic_contract_version": sim_core::game_definition::SEMANTIC_CONTRACT_VERSION,
             "encoding": "utf-8-json",
             "u64_counter_encoding": "decimal-string",
-            "modes": ["title", "loading", "playing", "paused"],
-            "transitions": ["bootstrap_package_set", "restart_new_game", "open_level", "load_replay_save", "pause", "paused_frame", "resume", "accept_completion_transition", "close"],
+            "modes": ["title", "campaign", "loading", "playing", "paused"],
+            "transitions": ["bootstrap_package_set", "restart_new_game", "open_level", "load_replay_save", "pause", "paused_frame", "resume", "accept_completion_transition", "finish_mission_if_ready", "campaign_menu_command", "close"],
             "playing_session_transport": "mc_game_session_*_v1 on the same handle",
             "package_profile": "mc2-campaign",
             "installed_package_set": {
@@ -1025,6 +1097,46 @@ pub extern "C" fn mc_game_runtime_accept_transition_v1(
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn mc_game_runtime_finish_mission_if_ready_v1(
+    handle: u64,
+    runtime_generation: u64,
+    session_generation: u64,
+    expected_tick: u64,
+) -> i32 {
+    boundary(|| {
+        with_runtime_mut(handle, |runtime| {
+            runtime.finish_mission_if_ready(
+                handle,
+                runtime_generation,
+                session_generation,
+                expected_tick,
+            )
+        })
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn mc_game_runtime_campaign_menu_command_json_v1(
+    handle: u64,
+    generation: u64,
+    request: *const u8,
+    request_len: u32,
+) -> i32 {
+    boundary(|| {
+        if request_len > MAX_INSTALLED_PACKAGE_SET_JSON_BYTES {
+            return Err(AbiError::new(
+                MC_STATUS_BOUNDS,
+                "campaign action JSON exceeds the negotiated bound",
+            ));
+        }
+        let request = utf8_input(request, request_len, "campaign action JSON")?;
+        with_runtime_mut(handle, |runtime| {
+            runtime.campaign_menu_command(handle, generation, &request)
+        })
+    })
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn mc_game_runtime_completion_transition_receipt_json_v1(
     handle: u64,
     buffer: *mut u8,
@@ -1208,13 +1320,13 @@ mod tests {
         });
         assert_eq!(
             contract["runtime_contract"],
-            "carpet-flight-game-runtime/v10"
+            "carpet-flight-game-runtime/v11"
         );
         assert_eq!(
             contract["transport_contract"],
-            "carpet-flight-native-game-runtime-json/v10"
+            "carpet-flight-native-game-runtime-json/v11"
         );
-        assert_eq!(contract["transport_version"], 10);
+        assert_eq!(contract["transport_version"], 11);
         assert_eq!(
             contract["definition_contract"],
             "carpet-flight-game-definition/v11"
@@ -1222,7 +1334,7 @@ mod tests {
         assert_eq!(contract["semantic_contract_version"], "36.0");
         assert_eq!(
             contract["modes"],
-            serde_json::json!(["title", "loading", "playing", "paused"])
+            serde_json::json!(["title", "campaign", "loading", "playing", "paused"])
         );
         assert_eq!(
             contract["transitions"],
@@ -1235,6 +1347,8 @@ mod tests {
                 "paused_frame",
                 "resume",
                 "accept_completion_transition",
+                "finish_mission_if_ready",
+                "campaign_menu_command",
                 "close"
             ])
         );
@@ -1901,6 +2015,35 @@ mod tests {
             .parse()
             .unwrap();
         let tick = before["session"]["tick"].as_str().unwrap().parse().unwrap();
+
+        assert_eq!(
+            mc_game_runtime_finish_mission_if_ready_v1(
+                handle,
+                runtime_generation,
+                session_generation,
+                tick
+            ),
+            MC_STATUS_OK
+        );
+        assert_eq!(
+            identity(handle),
+            before,
+            "an unfinished boundary neither advances gameplay nor changes mode"
+        );
+        assert_ne!(
+            mc_game_runtime_finish_mission_if_ready_v1(
+                handle,
+                runtime_generation,
+                session_generation,
+                tick + 1
+            ),
+            MC_STATUS_OK
+        );
+        assert_eq!(
+            identity(handle),
+            before,
+            "a stale finish boundary is atomic"
+        );
 
         assert_eq!(
             mc_game_runtime_completion_transition_receipt_json_v1(

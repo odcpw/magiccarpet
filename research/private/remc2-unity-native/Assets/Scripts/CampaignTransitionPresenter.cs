@@ -24,6 +24,7 @@ namespace MagicCarpet.Native
             StringComparer.Ordinal)
         {
             GameRuntimeTransport.TitlePresentationCue,
+            "presentation.campaign.map",
             "presentation.magic_carpet_2.night_spire.loading",
             "presentation.magic_carpet_2.night_spire.entry",
             "presentation.magic_carpet_2.night_spire.completion",

@@ -382,11 +382,7 @@ fn level_two_wind_sub33340_filters_and_moves_model0_target_on_production_turn() 
 
 #[test]
 fn level_two_day_bee_l2_06_selector2_boundaries_and_handoff_are_source_shaped() {
-    let inspection =
-        NativeWorld::inspect_level2(level_two_fixture_path()).expect("qualified Level 2 package");
-    let mut session = inspection
-        .level2_reset_session()
-        .expect("Level 2 selector-2 Bee session");
+    let mut session = level_two_campaign_session();
     fire_level_two_model32_group(&mut session, 21);
     let source_slot = session
         .economy()
@@ -630,11 +626,7 @@ fn level_two_day_bee_l2_06_selector2_boundaries_and_handoff_are_source_shaped() 
 
 #[test]
 fn level_two_day_bee_l2_06_terminal_selector2_defers_action20_until_next_callback() {
-    let inspection =
-        NativeWorld::inspect_level2(level_two_fixture_path()).expect("qualified Level 2 package");
-    let mut session = inspection
-        .level2_reset_session()
-        .expect("Level 2 terminal selector-2 Bee session");
+    let mut session = level_two_campaign_session();
 
     // The primary witness is still the ordinary row-228/group-21 route;
     // this test changes no action or StageVar field after construction.
@@ -858,11 +850,7 @@ fn level_two_bee_action17_terrain_death_enters_uncredited_action20_on_following_
 
 #[test]
 fn level_two_bee_action17_moves_before_acquisition_rng() {
-    let inspection =
-        NativeWorld::inspect_level2(level_two_fixture_path()).expect("qualified Level 2 package");
-    let mut session = inspection
-        .level2_reset_session()
-        .expect("Level 2 Bee movement session");
+    let mut session = level_two_campaign_session();
     let source = session
         .allocate_level2_authored_bee(210)
         .expect("authored Day Bee row 210");
@@ -932,11 +920,7 @@ fn level_two_bee_action17_moves_before_acquisition_rng() {
 
 #[test]
 fn level_two_bee_action17_blocked_heading_retries_source_order() {
-    let inspection =
-        NativeWorld::inspect_level2(level_two_fixture_path()).expect("qualified Level 2 package");
-    let mut session = inspection
-        .level2_reset_session()
-        .expect("Level 2 Bee retry session");
+    let mut session = level_two_campaign_session();
     let source = session
         .allocate_level2_authored_bee(210)
         .expect("authored Day Bee row 210");
@@ -1032,11 +1016,7 @@ fn level_two_bee_action17_blocked_heading_retries_source_order() {
 
 #[test]
 fn level_two_bee_action18_moves_and_steers_off_cadence_without_damage_or_rng() {
-    let inspection =
-        NativeWorld::inspect_level2(level_two_fixture_path()).expect("qualified Level 2 package");
-    let mut session = inspection
-        .level2_reset_session()
-        .expect("Level 2 Bee action-18 movement session");
+    let mut session = level_two_campaign_session();
     let source = session
         .allocate_level2_authored_bee(210)
         .expect("authored Day Bee row 210");
@@ -1084,11 +1064,7 @@ fn level_two_bee_action18_moves_and_steers_off_cadence_without_damage_or_rng() {
 
 #[test]
 fn level_two_authored_bee_constructor_and_action18_target_band() {
-    let inspection =
-        NativeWorld::inspect_level2(level_two_fixture_path()).expect("qualified Level 2 package");
-    let mut session = inspection
-        .level2_reset_session()
-        .expect("Level 2 authored Bee session");
+    let mut session = level_two_campaign_session();
     let baseline_hash = session.campaign_state_hash();
     let source = session
         .allocate_level2_authored_bee(210)
@@ -1301,11 +1277,7 @@ fn level_two_authored_bee_constructor_and_action18_target_band() {
 
 #[test]
 fn level_two_authored_bee_actions20_to23_preserve_death_and_no_call_semantics() {
-    let inspection =
-        NativeWorld::inspect_level2(level_two_fixture_path()).expect("qualified Level 2 package");
-    let mut session = inspection
-        .level2_reset_session()
-        .expect("Level 2 authored Bee session");
+    let mut session = level_two_campaign_session();
     let baseline_hash = session.campaign_state_hash();
 
     let dying = session
@@ -1470,11 +1442,7 @@ fn level_two_authored_bee_actions20_to23_preserve_death_and_no_call_semantics() 
 
 #[test]
 fn level_two_authored_bee_action23_invalid_selector_is_production_noop() {
-    let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
-        .expect("qualified Level 2 owner package");
-    let mut session = inspection
-        .level2_reset_session()
-        .expect("Level 2 scripted Bee session");
+    let mut session = level_two_campaign_session();
     let baseline_hash = session.campaign_state_hash();
 
     // The real group-21 producer materializes action 23. The following
@@ -1532,11 +1500,7 @@ fn level_two_authored_bee_action23_invalid_selector_is_production_noop() {
 
 #[test]
 fn level_two_authored_bee_action18_target_loss_uses_source_validity_and_cadence() {
-    let inspection =
-        NativeWorld::inspect_level2(level_two_fixture_path()).expect("qualified Level 2 package");
-    let mut session = inspection
-        .level2_reset_session()
-        .expect("Level 2 Bee target-loss session");
+    let mut session = level_two_campaign_session();
     let baseline_hash = session.campaign_state_hash();
     let local_index = usize::from(session.state.entity_index);
 
@@ -1703,11 +1667,7 @@ fn level_two_authored_bee_action18_target_loss_uses_source_validity_and_cadence(
 
 #[test]
 fn level_two_authored_bee_action18_contact_is_strictly_below_1024_and_cadence_gated() {
-    let inspection =
-        NativeWorld::inspect_level2(level_two_fixture_path()).expect("qualified Level 2 package");
-    let mut session = inspection
-        .level2_reset_session()
-        .expect("Level 2 Bee contact session");
+    let mut session = level_two_campaign_session();
 
     fire_level_two_model32_group(&mut session, 21);
     let row229_slot = session
@@ -1814,11 +1774,7 @@ fn level_two_authored_bee_action18_contact_is_strictly_below_1024_and_cadence_ga
 
 #[test]
 fn level_two_authored_bee_action18_contact_is_consumed_at_next_player_source_visit() {
-    let inspection =
-        NativeWorld::inspect_level2(level_two_fixture_path()).expect("qualified Level 2 package");
-    let mut session = inspection
-        .level2_reset_session()
-        .expect("Level 2 Bee contact ordering session");
+    let mut session = level_two_campaign_session();
     fire_level_two_model32_group(&mut session, 21);
     let row229_slot = session
         .economy()
@@ -2605,11 +2561,7 @@ fn level_two_player_death_reset_replays_hash_events_and_audio_exactly() {
 
 #[test]
 fn level_two_authored_bee_action17_overwrites_stale_target_on_production_reacquisition() {
-    let inspection =
-        NativeWorld::inspect_level2(level_two_fixture_path()).expect("qualified Level 2 package");
-    let mut session = inspection
-        .level2_reset_session()
-        .expect("Level 2 Bee reacquisition session");
+    let mut session = level_two_campaign_session();
     let baseline_hash = session.campaign_state_hash();
     fire_level_two_model32_group(&mut session, 21);
     let row229_slot = session
@@ -2724,11 +2676,7 @@ fn level_two_authored_bee_action17_overwrites_stale_target_on_production_reacqui
 
 #[test]
 fn level_two_authored_bee_action17_naturally_acquires_source_order_target() {
-    let inspection =
-        NativeWorld::inspect_level2(level_two_fixture_path()).expect("qualified Level 2 package");
-    let mut session = inspection
-        .level2_reset_session()
-        .expect("Level 2 group-21 Bee session");
+    let mut session = level_two_campaign_session();
     let baseline_hash = session.campaign_state_hash();
     fire_level_two_model32_group(&mut session, 21);
     let row229_slot = session
@@ -2954,11 +2902,7 @@ fn level_two_authored_bee_action17_naturally_acquires_source_order_target() {
 
 #[test]
 fn level_two_bee_activation_filters_kind_subtype_and_preserves_source_order() {
-    let inspection =
-        NativeWorld::inspect_level2(level_two_fixture_path()).expect("qualified Level 2 package");
-    let mut session = inspection
-        .level2_reset_session()
-        .expect("Level 2 authored Bee session");
+    let mut session = level_two_campaign_session();
     fire_level_two_model32_group(&mut session, 21);
     let bees = session.economy().bee_creatures();
     assert!(
@@ -4934,14 +4878,9 @@ fn level_two_public_fireball_hits_qualified_water_without_fabricating_an_impact(
 
 #[test]
 fn level_two_public_family0_fireball_reaches_authored_bee_mailbox() {
-    let package = level_two_fixture_path();
     let gameplay_cache = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../../../generated/level2-day-owner-cache/components/gameplay");
-    let inspection = NativeWorld::inspect_level2_with_owner_cache(&package, &gameplay_cache)
-        .expect("qualified Level 2 gameplay component");
-    let mut session = inspection
-        .level2_reset_session()
-        .expect("qualified Level 2 session");
+    let mut session = level_two_campaign_session_with_owner_cache(&gameplay_cache);
     let baseline_hash = session.campaign_state_hash();
     // Fire the package's actual group-21 objective producer, then let the
     // authored Bee's 23 -> 18 -> 17 callbacks run normally.
@@ -5328,14 +5267,7 @@ fn cast_level_two_family0_fireball_at_bee(
 
 #[test]
 fn level_two_public_fireball_lethal_bee_waits_for_phase_zero_and_credits_kill() {
-    let inspection = NativeWorld::inspect_level2_with_owner_cache(
-        &level_two_fixture_path(),
-        &level_two_gameplay_cache_path(),
-    )
-    .expect("qualified Level 2 gameplay component");
-    let mut session = inspection
-        .level2_reset_session()
-        .expect("qualified Level 2 session");
+    let mut session = level_two_campaign_session();
     let baseline_hash = session.campaign_state_hash();
     session
         .runtime
