@@ -1,6 +1,5 @@
 {
   "schema_version": 1,
-  "bead": "mc-dl0r.19.2",
   "project": "research/private/remc2-unity-presentation-lab",
   "profiles": {
     "flat-disabled": {

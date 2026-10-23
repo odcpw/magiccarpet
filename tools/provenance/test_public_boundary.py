@@ -14,7 +14,7 @@ HERE = Path(__file__).resolve().parent
 SCANNER = HERE / "audit_public_tree.py"
 PROJECT_ROOT = HERE.parent.parent
 PUBLIC_POLICY = PROJECT_ROOT / "provenance/public-boundary-policy.json"
-PRIVATE_POLICY = PROJECT_ROOT / "docs/provenance/public-boundary-policy.json"
+PRIVATE_POLICY = HERE / "public-boundary-policy.json"
 POLICY = PUBLIC_POLICY if PUBLIC_POLICY.is_file() else PRIVATE_POLICY
 
 

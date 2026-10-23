@@ -610,9 +610,6 @@ mod tests {
     use std::collections::BTreeMap;
     use std::path::PathBuf;
 
-    const OMEGA: &str =
-        include_str!("../../../../level2-conformance/fold/campaign-fold-omega-v1.1.json");
-
     fn level_two_fixture_path() -> PathBuf {
         std::env::var_os("MC_LEVEL2_PACKAGE_V5").map_or_else(
             || {
@@ -1011,10 +1008,7 @@ mod tests {
     }
 
     #[test]
-    fn cf10_registry_scheduler_preserves_omega() {
-        assert!(OMEGA.contains("\"schema_version\": \"campaign-fold-omega-v1.1\""));
-        assert!(OMEGA.contains("\"json_byte_identical\": true"));
-
+    fn registry_scheduler_preserves_campaign_observations() {
         let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
             .expect("qualified Level 2 Omega fixture loads");
         let mut session = inspection

@@ -592,8 +592,6 @@ mod tests {
     );
     const DIFF: &str =
         include_str!("../../../../../remc2-atlas/campaign_registry_probe/rust-diff.json");
-    const OMEGA: &str =
-        include_str!("../../../../level2-conformance/fold/campaign-fold-omega-v1.1.json");
 
     fn level_two_fixture_path() -> PathBuf {
         std::env::var_os("MC_LEVEL2_PACKAGE_V5").map_or_else(
@@ -850,10 +848,7 @@ mod tests {
     }
 
     #[test]
-    fn cf03_existing_handlers_preserve_omega() {
-        assert!(OMEGA.contains("\"schema_version\": \"campaign-fold-omega-v1.1\""));
-        assert!(OMEGA.contains("\"json_byte_identical\": true"));
-
+    fn existing_handlers_preserve_campaign_observations() {
         let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
             .expect("qualified Level 2 Omega fixture loads");
         let mut session: Level2ResetSession = inspection

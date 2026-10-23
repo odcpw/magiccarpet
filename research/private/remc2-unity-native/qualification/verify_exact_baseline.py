@@ -8,8 +8,8 @@ as drift instead of being overwritten or silently absorbed into the baseline.
 The C header is handled semantically. Existing ABI v2 function declarations
 and their signatures must remain byte-for-byte equivalent after whitespace
 normalization. New declarations are reported as additive symbols, while any
-other header change is forbidden ABI drift. Additive APIs belong in a later
-bead and must not mutate the existing Rust/C#/Unity Exact paths.
+other header change is forbidden ABI drift. Additive APIs must not mutate the
+existing Rust/C#/Unity Exact paths.
 """
 
 from __future__ import annotations

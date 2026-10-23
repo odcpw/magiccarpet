@@ -8019,7 +8019,7 @@ def _build_profiled_day_material_cache(
     This intentionally stops at indexed palette/table/tile/sky/TMAP material
     descriptors.  Sprites and web banks are bound as roots for the later
     presentation slice; gameplay, HUD, audio, and Unity scene files remain out
-    of this bead.
+    of this material builder.
     """
     output = validate_output_path(output)
     profile, _, closure, catalog_rows = profile_bundle

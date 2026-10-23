@@ -8,7 +8,6 @@ import unittest
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURE_CODE = ROOT / "Assets" / "Editor" / "VoxelMode" / "VoxelHouseRenderFixture.cs"
 FIXTURE_MENU = ROOT / "Assets" / "Editor" / "VoxelMode" / "VoxelHouseRenderFixtureMenu.cs"
-README = ROOT / "Assets" / "Editor" / "VoxelMode" / "README.md"
 
 
 def fixture_report() -> Path | None:
@@ -27,7 +26,6 @@ class VoxelHouseFixtureTests(unittest.TestCase):
     def test_fixture_is_pure_and_stateful(self) -> None:
         source = FIXTURE_CODE.read_text(encoding="utf-8")
         menu = FIXTURE_MENU.read_text(encoding="utf-8")
-        readme = README.read_text(encoding="utf-8")
         for state in ("Intact", "Opposite", "NightWindow", "Cutaway", "Breach"):
             self.assertIn(state, source)
         self.assertIn("Replay", source)
@@ -38,7 +36,6 @@ class VoxelHouseFixtureTests(unittest.TestCase):
         self.assertNotIn("new GameObject", source)
         self.assertNotIn("using UnityEngine;", source)
         self.assertIn("Build deterministic BUILD-29 state fixture report", menu)
-        self.assertIn("reset/replay trace must hash identically twice", readme)
 
     @unittest.skipUnless(fixture_report(), "fixture report is not mounted")
     def test_golden_fixture_report_has_all_states_and_replay_evidence(self) -> None:

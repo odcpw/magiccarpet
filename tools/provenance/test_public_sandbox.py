@@ -12,7 +12,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 SCANNER = HERE / "audit_public_tree.py"
 BOUNDARY_TEST = HERE / "test_public_boundary.py"
-POLICY = HERE.parent.parent / "docs/provenance/public-boundary-policy.json"
+POLICY = HERE / "public-boundary-policy.json"
 
 
 def main() -> int:

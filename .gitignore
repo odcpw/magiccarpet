@@ -1,8 +1,7 @@
-# Local agent, task-graph, editor, and build state.
+# Local agent, editor, and build state.
 /.agents/
 /.bv/
 /.codex/
-/.ntm/
 /.repo_janitor_workspace/
 /log.txt
 __pycache__/
@@ -23,10 +22,7 @@ Thumbs.db
 # Private evidence is deny-by-default. Only authored source, tests, and
 # operational documentation for the private lab are tracked below.
 /research/private/*
-!/research/private/boundary/
 !/research/private/lab-storage/
-!/research/private/protocol-smoke/
-!/research/private/registry/
 !/research/private/remc2-atlas/
 !/research/private/remc2-audio/
 !/research/private/remc2-frame-trace/
@@ -37,10 +33,6 @@ Thumbs.db
 !/research/private/remc2-unity-native/
 !/research/private/tools/
 !/research/private/wasm-probes/
-
-# Only the remote-service policy is versioned from the boundary evidence.
-/research/private/boundary/*
-!/research/private/boundary/approved-services.md
 
 # Generated/private atlas data and owned asset extracts.
 /research/private/remc2-atlas/generated/

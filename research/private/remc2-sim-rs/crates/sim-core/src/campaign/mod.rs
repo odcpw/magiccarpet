@@ -643,9 +643,6 @@ mod tests {
         sync::atomic::{AtomicBool, Ordering},
     };
 
-    const OMEGA: &str =
-        include_str!("../../../../level2-conformance/fold/campaign-fold-omega-v1.1.json");
-
     fn level_two_fixture_path() -> PathBuf {
         std::env::var_os("MC_LEVEL2_PACKAGE_V5").map_or_else(
             || {
@@ -5857,14 +5854,7 @@ mod tests {
     }
 
     #[test]
-    fn cf01_pure_extraction_preserves_omega() {
-        assert!(OMEGA.contains("\"schema_version\": \"campaign-fold-omega-v1.1\""));
-        assert!(OMEGA.contains("\"bead_id\": \"mc-cf00-omega-reseal-3dxle\""));
-        assert!(OMEGA.contains("\"sealed_from_bead\": \"mc-cf00-seal-fold-inputs-omega-iplbq\""));
-        assert!(OMEGA.contains("\"current_open_question_count\": 229"));
-        assert!(OMEGA.contains("\"unmapped_open_question_count\": 0"));
-        assert!(OMEGA.contains("\"json_byte_identical\": true"));
-
+    fn campaign_step_reset_and_replay_preserve_observations() {
         let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
             .expect("qualified Level 2 Omega fixture loads");
         let mut session: Level2ResetSession = inspection

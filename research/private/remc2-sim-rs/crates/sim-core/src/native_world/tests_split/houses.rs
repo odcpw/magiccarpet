@@ -535,7 +535,7 @@ fn level_two_authored_class14_rows_dispatch_source_terrain_callbacks() {
 
     // The pinned corpus contains one subtype-3 row (244) and subtype-5
     // rows (248+).  Materialize one of each through the explicit
-    // constructor seam; group-trigger callbacks remain a separate bead.
+    // constructor seam; group-trigger callbacks are outside this check.
     let model3 = session
         .allocate_level2_authored_class14(244)
         .expect("authored subtype-3 row");

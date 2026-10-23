@@ -52,14 +52,10 @@ class VoxelHouseImporterStaticTests(unittest.TestCase):
         self.assertNotIn("Assets/Scripts", importer)
         self.assertIn("duplicate object key", json_code)
 
-    def test_generated_output_is_ignored_and_documented(self) -> None:
+    def test_generated_output_is_ignored(self) -> None:
         ignore = (VOXEL_EDITOR / "Generated" / ".gitignore").read_text(encoding="utf-8")
-        readme = (VOXEL_EDITOR / "README.md").read_text(encoding="utf-8")
         self.assertIn("*", ignore)
         self.assertIn("!.gitignore", ignore)
-        self.assertIn("cells[]` remain serialized records", readme)
-        self.assertIn("Assets/Resources", readme)
-        self.assertIn("source_aabb_center_bottom", readme)
 
     @unittest.skipUnless(owner_root(), "qualified owner package is not mounted")
     def test_golden_package_hashes_caps_and_authority(self) -> None:

@@ -318,7 +318,7 @@ pub enum SpellHand {
 /// Mutable, renderer-free state for the generic Level 2 holder acquisition
 /// transition. It mirrors only the source fields touched by `sub_68FF0` and
 /// `sub_69250`/`sub_692A0`; active Shield/Invisible/Beyond Sight lifecycles
-/// remain owned by their dedicated beads.
+/// are implemented by their respective runtime handlers.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct SpellHolderAcquisitionState {
     pub family: u8,
@@ -929,7 +929,7 @@ pub const fn shield_tier_profile(tier: u8) -> Option<ShieldTierProfile> {
 
 /// The renderer-free production seam for class-15/model-6 Shield action 18.
 ///
-/// The holder is still acquired by the separate Level 2 spell-holder bead.
+/// Holder acquisition is separate from this state machine.
 /// Once a holder exists, this state owns the exact source countdown/status
 /// transition (`sub_6A480`), and the damage consumer's two Shield branches.
 /// `parent_status_flags` uses the source dword layout: byte 1 bit 6 is the
@@ -2191,7 +2191,7 @@ mod tests {
             0
         );
         // Action-20 persistence/acquisition is owned by the separate holder
-        // indexing bead; action-18 cleanup itself does not rewrite it.
+        // index; action-18 cleanup itself does not rewrite it.
         assert_eq!(shield.action, SHIELD_ACTIVE_ACTION);
     }
 

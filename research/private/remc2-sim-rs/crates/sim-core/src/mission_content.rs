@@ -1250,8 +1250,8 @@ impl MissionContentSession {
         format!("{:x}", hasher.finalize())
     }
 
-    /// Explicit fail-closed boundary for behavior not yet owned by a Level 2
-    /// bead.  A valid source slot still returns an error; it is never silently
+    /// Explicit fail-closed boundary for unimplemented Level 2 behavior.
+    /// A valid source slot still returns an error; it is never silently
     /// skipped.
     pub fn dispatch_source_slot(&mut self, source_slot: u16) -> Result<(), MissionContentError> {
         if !self.profile.is_level2() {

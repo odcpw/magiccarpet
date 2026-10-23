@@ -3706,8 +3706,8 @@ impl Level2EconomyState {
 
         // sub_5C870 updates the local player's minimum distance sidecar. The
         // typed economy does not own that nested player record, so preserve
-        // the callback's state mutation here and leave the sidecar bridge to
-        // the cross-entity Level 2 integration bead.
+        // the callback's state mutation here. The cross-entity sidecar bridge
+        // is not implemented in this handler.
         if source.life < 12 {
             if source.dword_0x10 > 0 {
                 source.dword_0x10 -= 1;
@@ -5652,7 +5652,7 @@ impl Level2EconomyState {
     /// Return the currently live dynamic source rows in ascending source-slot
     /// order. This is the bounded arena-cursor seam: allocations and releases
     /// are observed from live projections on every pass rather than captured
-    /// once at reset. Per-object movement remains owned by the economy bead.
+    /// once at reset. Per-object movement belongs to the economy runtime.
     #[must_use]
     pub fn live_arena_slots(&self) -> Vec<(u16, Level2DynamicArenaKind)> {
         let mut slots = BTreeMap::new();

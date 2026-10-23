@@ -4230,7 +4230,7 @@ impl NativeWorldInspection {
     }
 
     /// Mission construction is intentionally fail-closed until the Level 2
-    /// content profile is implemented by the later mission beads.
+    /// content profile is implemented by the mission runtime.
     pub fn mission_unimplemented(&self) -> Result<()> {
         Err(NativeWorldError::new(format!(
             "mission behavior is unsupported for {:?} owner profile",

@@ -97,7 +97,7 @@ class RuntimeProfileTests(unittest.TestCase):
         profile["sealed_level1"]["historical_receipts"]["matrix"]["sha256"] = "0" * 64
         profile["sealed_level1"]["historical_receipts"]["matrix"]["rows"] = -1
         profile["sealed_level1"]["current_checks"]["commands"] = ["edited tracker history"]
-        profile["beads"] = {"mc-gsqrl.4": {"description": "edited historical tracker text"}}
+        profile["unused_metadata"] = {"description": "unrelated metadata"}
         result = self.run_cli(profile)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 

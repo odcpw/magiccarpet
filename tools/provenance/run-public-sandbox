@@ -39,7 +39,7 @@ esac
 }
 
 scanner="$private_root/tools/provenance/audit_public_tree.py"
-policy="$private_root/docs/provenance/public-boundary-policy.json"
+policy="$private_root/tools/provenance/public-boundary-policy.json"
 asset_manifest="$resolved_root/provenance/assets.json"
 
 if [ -f "$asset_manifest" ]; then

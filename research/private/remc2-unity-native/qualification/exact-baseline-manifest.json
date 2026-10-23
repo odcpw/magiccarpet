@@ -35,7 +35,10 @@
         "height": 480,
         "aspect": "corrected 4:3"
       },
-      "startup_arguments": ["-mc-qualified", "-mc-debug"]
+      "startup_arguments": [
+        "-mc-qualified",
+        "-mc-debug"
+      ]
     }
   },
   "protected_files": {
@@ -72,8 +75,6 @@
       "research/private/remc2-unity-native/Assets/Scripts/NativeSim.cs"
     ],
     "level1_readiness": [
-      "research/private/remc2-unity-native/LEVEL1-READINESS.md",
-      "research/private/remc2-sim-rs/LEVEL1-GOAT-CONTRACT.md",
       "research/private/remc2-sim-rs/level1-conformance/level1-conformance-matrix.json",
       "research/private/remc2-sim-rs/level1-conformance/plan29-final-qualification-policy.json"
     ],
@@ -82,8 +83,6 @@
       "research/private/remc2-unity-native/qualification/presentation-correspondence.json"
     ],
     "qualification_scripts": [
-      "research/private/remc2-unity-native/README.md",
-      "research/private/remc2-unity-native/qualification/README.md",
       "research/private/remc2-unity-native/qualification/verify_reference_corpus.py",
       "research/private/remc2-unity-native/qualification/verify_presentation_correspondence.py",
       "research/private/remc2-unity-native/qualification/verify_unity_lifecycle_privacy.py",

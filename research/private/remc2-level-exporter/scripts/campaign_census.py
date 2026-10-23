@@ -25,7 +25,6 @@ from collections.abc import Iterable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
-BEAD = "mc-iol7n"
 COMMIT = "6806c7204d17220ecc0430759f784aea8ee2ddb2"
 SCHEMA = "mc2-campaign-census/v1"
 PACKAGE_SCHEMA = "mc2-owner-level-export/v5"
@@ -734,7 +733,6 @@ def compare_twins(first: Mapping[str, Any], second: Mapping[str, Any]) -> None:
 
 def validate_receipt(value: Mapping[str, Any]) -> None:
     require(value.get("schema") == SCHEMA, "census schema mismatch")
-    require(value.get("bead") == BEAD, "census bead mismatch")
     scope = value.get("scope", {})
     require(scope.get("external_levels") == list(range(3, 25)), "census scope is not exactly Levels 3..24")
     require(scope.get("source_commit") == COMMIT and scope.get("original_executable_run") is False and scope.get("implementation_changes") is False, "census scope claims are malformed")
@@ -802,7 +800,6 @@ def build_receipt(args: argparse.Namespace, root: Path) -> dict[str, Any]:
     }
     receipt = {
         "schema": SCHEMA,
-        "bead": BEAD,
         "scope": {"external_levels": levels, "source_commit": COMMIT, "original_executable_run": False, "implementation_changes": False, "generated_packages": "private ignored output only"},
         "inputs": {"exporter": {"path": repo_relative(exporter, root), "sha256": sha256_file(exporter)}, "owner_root": {"path": repo_relative(owner_root, root), "required_directories": ["GAME/NETHERW", "CD_Files"], "profile": "remc2-native-runtime"}, "run_a": repo_relative(run_a, root), "run_b": repo_relative(run_b, root), "dispatch_atlas": {"path": repo_relative(args.dispatch_atlas, root), "sha256": atlas[2]}, "accepted_capability": capability},
         "implemented_capability": {"profiles": capability["profiles"], "accepted_tuple_key_count": len(capability["tuple_keys"]), "accepted_objective_forms": capability["objective_forms"], "accepted_source_fact_kinds": capability["source_fact_kinds"], "nonclaim": "A Level 2 evidence match is not a Level 3 implementation claim; every remaining profile is reported separately as unsupported until a later fold slice lands."},
@@ -816,7 +813,7 @@ def build_receipt(args: argparse.Namespace, root: Path) -> dict[str, Any]:
 
 def summary_markdown(receipt: Mapping[str, Any]) -> str:
     lines = [
-        "# Remaining campaign census (`mc-iol7n`)",
+        "# Remaining campaign census",
         "",
         "This is a source-shaped, bounded census of external Levels 3–24. Each package was produced twice by the pinned private exporter and the complete package trees matched byte-for-byte. No original executable, DOSBox session, decompiler, simulation implementation, or ABI change is part of this receipt.",
         "",
@@ -844,13 +841,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--exporter", type=Path, default=Path("/tmp/magiccarpet-remc2-level-exporter-build/remc2-level-exporter"))
     parser.add_argument("--owner-root", type=Path, default=Path("research/private/remc2-native-runtime"))
-    parser.add_argument("--run-a", type=Path, default=Path("research/private/generated/mc-iol7n-campaign-census-run-a"))
-    parser.add_argument("--run-b", type=Path, default=Path("research/private/generated/mc-iol7n-campaign-census-run-b"))
+    parser.add_argument("--run-a", type=Path, default=Path("research/private/generated/campaign-census-run-a"))
+    parser.add_argument("--run-b", type=Path, default=Path("research/private/generated/campaign-census-run-b"))
     parser.add_argument("--dispatch-atlas", type=Path, default=Path("research/private/remc2-atlas/semantics/generated/runtime-dispatch-rows.csv"))
     parser.add_argument("--baseline-census", type=Path, default=Path("research/private/remc2-sim-rs/level2-conformance/census/level2-authored-reset-census.json"))
     parser.add_argument("--baseline-package", type=Path, default=Path("research/private/generated/l2-debug3.fJ3PaM/level2"))
-    parser.add_argument("--receipt", type=Path, default=Path("research/private/remc2-level-exporter/census/campaign-census-mc-iol7n.json"))
-    parser.add_argument("--summary", type=Path, default=Path("research/private/remc2-level-exporter/census/campaign-census-mc-iol7n.md"))
+    parser.add_argument("--receipt", type=Path, default=Path("research/private/remc2-level-exporter/census/campaign-census.json"))
+    parser.add_argument("--summary", type=Path, default=Path("research/private/generated/campaign-census.md"))
     parser.add_argument("--levels", default="3-24")
     parser.add_argument("--validate", type=Path, help="validate an existing committed receipt without exporting")
     return parser

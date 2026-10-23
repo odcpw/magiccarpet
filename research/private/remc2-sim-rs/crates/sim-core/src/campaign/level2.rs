@@ -7530,8 +7530,8 @@ impl Level2ResetSession {
 
     /// Materialize one authored class-10/model-6 row through the pinned
     /// `NewAdd0A06_4E5F0` constructor. The Level 2 census contains four such
-    /// rows (indices 361..=364); their mission trigger remains owned by the
-    /// aggregate authored-switch bead, while this seam performs the real
+    /// rows (indices 361..=364); their mission trigger belongs to the
+    /// authored-switch runtime, while this seam performs the real
     /// source-arena allocation and callback setup.
     pub fn allocate_level2_authored_model6(
         &mut self,

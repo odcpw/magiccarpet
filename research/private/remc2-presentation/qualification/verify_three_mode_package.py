@@ -1177,7 +1177,6 @@ def validate_classic_hd_visual_capture_tooling() -> list[str]:
     errors: list[str] = []
     presentation_path = LAB_ROOT / "Assets" / "Scripts" / "ClassicHdPresentation.cs"
     editor_path = LAB_ROOT / "Assets" / "Editor" / "CreatePresentationLabAssets.cs"
-    readme_path = LAB_ROOT / "README.md"
     required_snippets = {
         presentation_path: (
             "CaptureResolvedFramePng",
@@ -1191,11 +1190,6 @@ def validate_classic_hd_visual_capture_tooling() -> list[str]:
             "captured-for-human-review",
             "visual_review_status=not-reviewed",
             "owner_inputs_external=true",
-        ),
-        readme_path: (
-            "RunOwnerClassicHdVisualCaptureProbe",
-            "classic-hd-owner-visual-capture-receipt.json",
-            "placeholder corpus manifests",
         ),
     }
     for path, snippets in required_snippets.items():
@@ -1215,7 +1209,6 @@ def validate_unity_enhanced_visual_capture_tooling() -> list[str]:
     errors: list[str] = []
     root_path = LAB_ROOT / "Assets" / "Scripts" / "UnityEnhancedWorldRoot.cs"
     editor_path = LAB_ROOT / "Assets" / "Editor" / "CreatePresentationLabAssets.cs"
-    readme_path = LAB_ROOT / "README.md"
     required_snippets = {
         root_path: (
             "CapturePresentationFramePng",
@@ -1230,11 +1223,6 @@ def validate_unity_enhanced_visual_capture_tooling() -> list[str]:
             "captured-for-human-review",
             "visual_review_status=not-reviewed",
             "owner_inputs_external=true",
-        ),
-        readme_path: (
-            "RunOwnerUnityEnhancedVisualCaptureProbe",
-            "unity-enhanced-owner-visual-capture-receipt.json",
-            "placeholder corpus manifests",
         ),
     }
     for path, snippets in required_snippets.items():
@@ -1254,7 +1242,6 @@ def validate_classic_hd_os_window_lifecycle_tooling() -> list[str]:
     errors: list[str] = []
     router_path = LAB_ROOT / "Assets" / "Scripts" / "PresentationModeRouter.cs"
     recorder_path = LAB_ROOT / "Assets" / "Scripts" / "ClassicHdWindowLifecycleRecorder.cs"
-    readme_path = LAB_ROOT / "README.md"
     required_snippets = {
         router_path: (
             "OnApplicationFocus",
@@ -1269,11 +1256,6 @@ def validate_classic_hd_os_window_lifecycle_tooling() -> list[str]:
             "RequiredStableFrames = 2",
             "File.WriteAllText",
             "classic-hd-owner-os-window-lifecycle/v1",
-        ),
-        readme_path: (
-            "-mc-lifecycle-receipt",
-            "classic-hd-owner-os-window-lifecycle.json",
-            "external window-manager action",
         ),
     }
     for path, snippets in required_snippets.items():
@@ -1292,7 +1274,6 @@ def validate_standalone_player_build_tooling() -> list[str]:
     """Ensure the optional presentation lab has a reproducible player build path."""
     errors: list[str] = []
     editor_path = LAB_ROOT / "Assets" / "Editor" / "CreatePresentationLabAssets.cs"
-    readme_path = LAB_ROOT / "README.md"
     required_snippets = {
         editor_path: (
             "BuildStandaloneLinuxPlayer",
@@ -1300,11 +1281,6 @@ def validate_standalone_player_build_tooling() -> list[str]:
             "BuildTarget.StandaloneLinux64",
             "BuildOptions.StrictMode",
             "refusing to overwrite an existing standalone player output",
-        ),
-        readme_path: (
-            "BuildStandaloneLinuxPlayer",
-            "StandaloneLinux64",
-            "owner package, closure, and asset-cache paths remain runtime arguments",
         ),
     }
     for path, snippets in required_snippets.items():

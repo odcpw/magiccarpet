@@ -3320,7 +3320,7 @@ impl Level2SharedSpellResetSession {
     /// Dispatch one of the two reset-census pickup rows in source order.
     ///
     /// Slot 38 is returned as a mechanical exclusion (`None`) because its
-    /// model-12 family is owned by a later Level 2 bead. Unknown slots fail
+    /// model-12 family is not implemented here. Unknown slots fail
     /// closed instead of being treated as a nearby Level 1 family.
     pub fn step_shared_pickup(
         &mut self,
