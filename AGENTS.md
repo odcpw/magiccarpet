@@ -4,7 +4,8 @@ Follow `/home/oliver/.codex/AGENTS.md` for machine-wide guidance.
 
 ## Purpose
 
-Port the full Magic Carpet 2 game from remc2 into the existing Rust engine.
+Port the full Magic Carpet 2 single-player game from remc2 into the existing
+Rust engine. Multiplayer is a separate later deliverable.
 Build its enemy classes, properties, rules and asset bindings so they can be
 modified and replaced. Complete playable MC2 behavior is the immediate work;
 the reusable flying-carpet game engine grows through that implementation.
@@ -15,6 +16,19 @@ Select implementation work with `br ready --json --label worker-ready` and
 `xhigh`. Epics retain the full outcomes; deferred `needs-scope` items are not
 worker assignments. Each implementation bead names its positive runtime result
 and direct self-verification.
+
+The full-game outcome is `mc-xa7`: startup through all 25 ordinary and five
+secret missions to the real ending. Port shared source systems; missions
+configure and exercise them. Keep one worker on opening delivery `mc-zdo.5`
+using `br ready --json --label first-playable` and
+`bv --robot-next --label first-playable` until normal startup and continuous
+Levels 1–3 work. Other workers may take independent ready families in parallel.
+This first milestone does not close full source fidelity or full-game assembly
+`mc-xa7.1`.
+Each family owns its real runtime integration, typed properties/rules and
+asset/observation bindings. Serialize edits to shared scheduler, ABI and client
+surfaces. Extend the existing implementation directly when needed; do not
+restart planning or build an AI player as a prerequisite to delivery.
 
 ## Checkout and stack
 
