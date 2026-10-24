@@ -444,6 +444,19 @@ pub struct Level2SetSpellProfile {
 /// the initial `mana` by dividing it by `word_0x30` when that word is nonzero.
 #[must_use]
 pub const fn level2_set_spell_profile(family: u8, tier: u8) -> Option<Level2SetSpellProfile> {
+    if family == 25 && tier < 3 {
+        let tier = tier as usize;
+        let cost = [11_000, 13_000, 26_000][tier];
+        let duration = [31, 41, 51][tier];
+        return Some(Level2SetSpellProfile {
+            subspell_index: [100, 480, 1_200][tier],
+            word_0x30: duration,
+            byte_0x3b: 1,
+            mana_regen: [100_000, 150_000, 250_000][tier],
+            max_mana: cost,
+            mana: cost / duration as i32,
+        });
+    }
     if let Some(profile) = support_spell_profile(family, tier) {
         return Some(profile);
     }
@@ -791,7 +804,7 @@ pub fn acquire_level2_spell_holder_with_return_side(
     overlaps: bool,
     return_side: i16,
 ) -> SpellHolderAcquisitionResult {
-    if !matches!(state.family, 0..=6 | 8 | 10..=12) {
+    if !matches!(state.family, 0..=6 | 8 | 10..=12 | 25) {
         return SpellHolderAcquisitionResult::Rejected(
             SpellHolderAcquisitionFailure::UnsupportedFamily,
         );
