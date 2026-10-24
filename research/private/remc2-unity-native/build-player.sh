@@ -197,6 +197,7 @@ def main():
             raise RuntimeError(f'Build inputs changed during Cargo; retry at a stable source point. Logs: {logs}')
         reject_running()
         atomic_copy(artifact, ASSET_PLUGIN)
+        print(f'Native build captured: {native_hash}; Rust source edits may resume.', flush=True)
         if options.native_only:
             # Validate again after Cargo in case something outside the launcher touched the player.
             check_install()
@@ -213,7 +214,9 @@ def main():
                      '-executeMethod', 'MagicCarpet.Native.Editor.BuildNativePlayer.BuildLinuxPlayer',
                      '-logFile', str(logs / 'unity.log')], PROJECT, logs / 'unity-command.log', environment,
                     diagnostic_log=logs / 'unity.log')
-            if before != unity_inputs() or contract != native_contract() or rust_before != rust_inputs():
+            # Rust source may advance after the checked native artifact was captured.
+            # This install records rust_before and still verifies the bundled bytes.
+            if before != unity_inputs() or contract != native_contract():
                 raise RuntimeError(f'Unity build changed authored inputs or source moved; installed player preserved. Read {logs}')
             if (not os.access(stage / PLAYER, os.X_OK) or not (stage / PLUGIN).is_file()
                     or digest(stage / PLUGIN) != native_hash):

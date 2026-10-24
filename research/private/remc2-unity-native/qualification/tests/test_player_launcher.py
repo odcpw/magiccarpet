@@ -141,6 +141,63 @@ class PlayerLauncherTests(unittest.TestCase):
         self.assertIn("concrete failure", log.read_text())
         self.assertEqual(before, self.api["payload"](self.binary.parent))
 
+    def build_with_rust_edit(self, phase):
+        sim = self.header.parents[3]
+        for name in ("Cargo.toml", "Cargo.lock", "rust-toolchain.toml"):
+            (sim / name).write_text("fixture build input\n")
+        artifact = self.root / "captured-native.so"
+        artifact.write_bytes(b"captured fixture native bytes")
+        editor = self.root / "fixture-editor"
+        editor.write_text("#!/bin/sh\nexit 0\n")
+        editor.chmod(0o700)
+        player_bytes = self.binary.read_bytes()
+        changed = sim / "crates/after_capture.rs"
+        self.build_commands = []
+
+        def command(arguments, cwd, log, environment=None, diagnostic_log=None):
+            self.build_commands.append(arguments[0])
+            if arguments[0] == "cargo":
+                log.write_text(json.dumps({"reason": "compiler-artifact",
+                    "target": {"name": "sim_capi"},
+                    "filenames": [str(artifact.with_name("libsim_capi.so"))]}) + "\n")
+                shutil.copy2(artifact, artifact.with_name("libsim_capi.so"))
+                if phase == "cargo":
+                    changed.write_text("Rust changed during Cargo\n")
+            else:
+                stage = Path(environment["MC_PLAYER_BUILD_OUTPUT"])
+                stage.mkdir()
+                (stage / self.binary.name).write_bytes(player_bytes)
+                (stage / self.binary.name).chmod(0o700)
+                plugin = stage / self.api["PLUGIN"]
+                plugin.parent.mkdir(parents=True)
+                shutil.copy2(artifact, plugin)
+                changed.write_text("Rust changed after native capture\n")
+                log.write_text("fixture Unity build\n")
+
+        with patch.dict(self.api["main"].__globals__, {"command": command}), \
+             patch.object(self.api["ctypes"], "CDLL") as library, \
+             patch.object(sys, "argv", ["-", str(self.root)]), \
+             patch.dict(os.environ, {"MC_UNITY_EDITOR": str(editor)}), \
+             contextlib.redirect_stdout(io.StringIO()):
+            library.return_value.mc_native_abi_version.return_value = 2
+            self.api["main"]()
+        return self.api["check_install"]()
+
+    def test_completed_native_capture_allows_later_rust_edits(self):
+        receipt = self.build_with_rust_edit("unity")
+        self.assertEqual(len(self.build_commands), 2)
+        self.assertNotIn("crates/after_capture.rs", receipt["rust_inputs"])
+        self.assertIn("crates/after_capture.rs", self.api["rust_inputs"]())
+        self.assertEqual(self.plugin.read_bytes(), b"captured fixture native bytes")
+        self.assertEqual(receipt["native_sha256"], self.api["digest"](self.plugin))
+
+    def test_rust_edits_during_cargo_are_still_rejected(self):
+        before = self.api["payload"](self.binary.parent)
+        with self.assertRaisesRegex(RuntimeError, "Build inputs changed during Cargo"):
+            self.build_with_rust_edit("cargo")
+        self.assertEqual(self.build_commands, ["cargo"])
+        self.assertEqual(before, self.api["payload"](self.binary.parent))
+
     def campaign_resources(self):
         generated = self.root.parent / "generated"
         for name in ("mc-cf15-level1-package-v3-current", "level2-day-block32-campaign-v2",
