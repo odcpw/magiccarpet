@@ -100,7 +100,7 @@ pub(crate) fn construct_effect(
     if terrain.map_type != MapType::Cave {
         return Ok(None);
     }
-    let Some(slot) = arena.economy.allocate_slot() else {
+    let Some(slot) = arena.allocate_source_slot() else {
         return Ok(None);
     };
     let mut row =
@@ -127,7 +127,7 @@ fn launch(
     parent: &EntitySnapshot,
     particles: &[ParticleParameter],
 ) -> Result<Option<u16>, String> {
-    let Some(slot) = arena.economy.allocate_slot() else {
+    let Some(slot) = arena.allocate_source_slot() else {
         return Ok(None);
     };
     let mut position = parent.position;
@@ -378,7 +378,7 @@ pub(crate) fn step_effect(
     let wizards = arena
         .entities
         .iter()
-        .filter(|row| row.active && row.class == 3 && row.model == 0 && row.life >= 0)
+        .filter(|row| row.active && row.class == 3 && row.model == 0)
         .map(|row| row.position)
         .collect::<Vec<_>>();
     let visit = state.step(&mut Terrain(terrain), &wizards);
@@ -411,7 +411,7 @@ pub(crate) fn step_source(
         (9, 30, 31) => step_projectile(arena, terrain, shared, core, slot, parameters),
         (10, 89, 96) => {
             for (position, yaw) in step_effect(arena, terrain, slot)? {
-                if let Some(child) = arena.economy.allocate_ballistic_death_smoke(position)
+                if let Some(child) = arena.allocate_smoke13(position)
                     && let Some(row) = arena
                         .economy
                         .model59_smoke_children
@@ -1011,6 +1011,58 @@ mod tests {
         }
         let before = session.canonical_terrain().planes().clone();
         let mana = session.shared_spells().player_entity.mana;
+        {
+            // Exercise the actual failed NewEvent branch through ordinary
+            // casting. This isolated clone keeps all pool occupants live and
+            // nonreplaceable, without changing the positive source scenario.
+            let mut exhausted = session.clone();
+            let live = &mut exhausted.session.state.live;
+            live.economy.economy.exhaust_new_event_capacity_for_test();
+            for row in &mut live.economy.entities {
+                row.set_control_flags(row.control_flags & !0x20000);
+            }
+            assert!(
+                construct_effect(&mut live.economy, &live.terrain, start, 0)
+                    .unwrap()
+                    .is_none()
+            );
+            let rng = live.economy.economy.global_rng;
+            assert!(live.economy.allocate_smoke13(start).is_none());
+            assert_eq!(
+                live.economy.economy.global_rng,
+                rng.wrapping_mul(9377).wrapping_add(9439),
+                "smoke draws the source global stream before failed allocation"
+            );
+            exhausted.step_outer_turn(
+                PlayerCommand {
+                    opcode: 6,
+                    argument_1: 25,
+                    flags: 0x40,
+                    ..PlayerCommand::default()
+                },
+                0,
+            );
+            for _ in 0..2 {
+                exhausted.step_outer_turn(PlayerCommand::default(), 0);
+            }
+            no_errors(&exhausted);
+            assert!(
+                !exhausted
+                    .entities()
+                    .iter()
+                    .any(|row| row.active && row.class == 9 && row.model == 30),
+                "full nonreplaceable pool refuses the real flyer"
+            );
+            assert!(
+                exhausted.shared_spells().player_entity.mana < mana,
+                "failed source allocation still charges ordinary cast"
+            );
+            let holder = exhausted.shared_spells().pickup(slot).unwrap();
+            assert!(
+                holder.active_value > 0 && holder.active_value < holder.activation_value as i16,
+                "null allocation retains source active countdown"
+            );
+        }
         session.step_outer_turn(
             PlayerCommand {
                 opcode: 6,

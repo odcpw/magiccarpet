@@ -170,8 +170,8 @@ impl CaveInEffect {
                     if distance < outer && distance >= inner {
                         let weight =
                             (65_536 + SIN_16_16[512 + ((distance << 10) / outer) as usize]) >> 1;
-                        let pulse = ((span.wrapping_mul(weight) >> 16)
-                            .wrapping_mul(65_536 - SIN_16_16[512 + phase as usize]));
+                        let pulse = (span.wrapping_mul(weight) >> 16)
+                            .wrapping_mul(65_536 - SIN_16_16[512 + phase as usize]);
                         let target = (pulse >> 18) + floor;
                         if i32::from(terrain.floor(tx, ty)) < target {
                             terrain.write_floor(tx, ty, target, true);
@@ -201,9 +201,9 @@ impl CaveInEffect {
                     terrain.normalize(tx, ty);
                 }
             }
-            // Literal ix after the outer source loop increments its high byte.
+            // Both source loops advance ix before their termination checks.
             last_tile = (
-                x.wrapping_add((2 * radius - 1) as u8),
+                x.wrapping_add((2 * radius) as u8),
                 y.wrapping_add((2 * radius) as u8),
             );
         }
