@@ -5185,6 +5185,10 @@ pub struct ManaSphere {
     pub incoming_owner_entity_index: u16,
     /// Source dword 0x64 written alongside the pending owner by `sub_112D0`.
     pub incoming_possession_payload: u32,
+    /// Ordinary source str5E damage words are distinct from possession.
+    /// Model39 retains these writes without converting them into mana loss.
+    pub ordinary_damage_payload: i32,
+    pub ordinary_damage_owner: u16,
     /// Source `sub_38D80` temporary attraction target (`word_0x7A_122`).
     /// The field is written by class-10 model-54/69 and consumed by the
     /// mana-sphere movement callback on its next source-cursor visit.
@@ -7223,7 +7227,10 @@ impl Level1MissionState {
         view.active = sphere.active;
         view.visible = sphere.active && !sphere.pending_delete;
         view.position = sphere.position;
+        view.control_flags = sphere.control_flags;
         view.life = sphere.mana;
+        view.pending_damage = sphere.ordinary_damage_payload;
+        view.pending_attacker = sphere.ordinary_damage_owner;
         view.owner_entity_index = sphere.owner_entity_index;
         view.target_entity_index = u16::try_from(sphere.assigned_carrier_id).unwrap_or_default();
         Some(view)
@@ -9494,6 +9501,27 @@ impl Level1MissionState {
                 hash.u32(sphere.incoming_possession_payload);
             }
         }
+        let ordinary_sphere_mailboxes = self
+            .mana_spheres
+            .iter()
+            .filter(|sphere| {
+                sphere.ordinary_damage_payload != 0 || sphere.ordinary_damage_owner != 0
+            })
+            .count();
+        if ordinary_sphere_mailboxes != 0 {
+            hash.bytes(b"mana-sphere-ordinary-damage\0");
+            hash.u32(
+                u32::try_from(ordinary_sphere_mailboxes).expect("sphere mailbox count fits u32"),
+            );
+            for sphere in &self.mana_spheres {
+                if sphere.ordinary_damage_payload == 0 && sphere.ordinary_damage_owner == 0 {
+                    continue;
+                }
+                hash.u16(sphere.source_entity_index);
+                hash.u32(sphere.ordinary_damage_payload.cast_unsigned());
+                hash.u16(sphere.ordinary_damage_owner);
+            }
+        }
         hash.u32(
             u32::try_from(self.authored_allocations.len())
                 .expect("authored allocation count fits u32"),
@@ -10173,12 +10201,14 @@ impl Level1MissionState {
             player_entity_index: 0,
             incoming_owner_entity_index: 0,
             incoming_possession_payload: 0,
+            ordinary_damage_payload: 0,
+            ordinary_damage_owner: 0,
             attraction_source_entity_index: 0,
             attraction_step: 0,
             attraction_distance_high: 0,
             assigned_carrier_id: 0,
             assigned_defender_slot: 0,
-            control_flags: 0,
+            control_flags: 8,
             phase,
             active: true,
             pending_delete: false,
@@ -10329,12 +10359,14 @@ impl Level1MissionState {
             player_entity_index: owner_entity_index,
             incoming_owner_entity_index: 0,
             incoming_possession_payload: 0,
+            ordinary_damage_payload: 0,
+            ordinary_damage_owner: 0,
             attraction_source_entity_index: 0,
             attraction_step: 0,
             attraction_distance_high: 0,
             assigned_carrier_id: 0,
             assigned_defender_slot: 0,
-            control_flags: 0,
+            control_flags: 8,
             phase,
             active: true,
             pending_delete: false,
@@ -17257,12 +17289,14 @@ impl Level1MissionState {
             player_entity_index: self.castle_owner_entity_index,
             incoming_owner_entity_index: 0,
             incoming_possession_payload: 0,
+            ordinary_damage_payload: 0,
+            ordinary_damage_owner: 0,
             attraction_source_entity_index: 0,
             attraction_step: 0,
             attraction_distance_high: 0,
             assigned_carrier_id: 0,
             assigned_defender_slot: 0,
-            control_flags: 0,
+            control_flags: 8,
             phase,
             active: true,
             pending_delete: false,

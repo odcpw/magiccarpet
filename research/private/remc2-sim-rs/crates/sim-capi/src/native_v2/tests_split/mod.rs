@@ -831,6 +831,8 @@ fn presentation_frame_abi_is_revisioned_complete_idempotent_and_fail_closed() {
             player_entity_index: 0,
             incoming_owner_entity_index: 0,
             incoming_possession_payload: 0,
+            ordinary_damage_payload: 0,
+            ordinary_damage_owner: 0,
             attraction_source_entity_index: 0,
             attraction_step: 0,
             attraction_distance_high: 0,

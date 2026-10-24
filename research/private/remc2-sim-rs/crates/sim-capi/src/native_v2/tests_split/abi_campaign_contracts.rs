@@ -919,6 +919,8 @@ fn campaign_mana_sphere_snapshot_exposes_attraction_mailbox_without_layout_chang
         player_entity_index: 111,
         incoming_owner_entity_index: 0,
         incoming_possession_payload: 0,
+        ordinary_damage_payload: 0,
+        ordinary_damage_owner: 0,
         attraction_source_entity_index: 877,
         attraction_step: 42,
         attraction_distance_high: 3,
