@@ -518,6 +518,7 @@ pub(crate) mod creatures;
 mod effects;
 pub(crate) use effects::hidden_slots as hidden_effect_slots;
 mod level2_nyphur;
+mod night_cache;
 mod support_spells;
 mod terrain_strip;
 use creatures::worm::imported as campaign_multipart;
@@ -8877,6 +8878,16 @@ pub(crate) fn qualified_fireball_sound_artifacts(
     Ok(result)
 }
 
+pub(crate) fn qualified_campaign_owner_cache(
+    root: &Path,
+    campaign_sha256: &str,
+    owner_sha256: &str,
+    runtime_sha256: &str,
+) -> Result<()> {
+    let cache = QualifiedOwnerCacheReader::open(root)?;
+    night_cache::require_campaign(&cache, campaign_sha256, owner_sha256, runtime_sha256)
+}
+
 impl QualifiedOwnerCacheReader {
     pub(crate) fn open(root: impl AsRef<Path>) -> Result<Self> {
         let root = root.as_ref();
@@ -8916,14 +8927,15 @@ impl QualifiedOwnerCacheReader {
                     SETTLEMENT_CACHE_CONTENT_SHA256
                 )
         );
-        if require_string(object, "schema", "owner cache manifest")? != AUDIO_CACHE_SCHEMA
-            || require_string(object, "scope", "owner cache manifest")?
-                != "PRIVATE_TRACK_P_OWNER_DATA"
-            || !qualified_identity
+        let schema = require_string(object, "schema", "owner cache manifest")?;
+        if schema == night_cache::SCHEMA {
+            night_cache::validate(object, &manifest_sha256, content_sha256)?;
+        } else if schema != AUDIO_CACHE_SCHEMA || !qualified_identity {
+            return Err(NativeWorldError::new("owner cache identity mismatch"));
+        }
+        if require_string(object, "scope", "owner cache manifest")? != "PRIVATE_TRACK_P_OWNER_DATA"
         {
-            return Err(NativeWorldError::new(
-                "owner cache identity or private scope mismatch",
-            ));
+            return Err(NativeWorldError::new("owner cache private scope mismatch"));
         }
         let mut outputs = BTreeMap::new();
         for output in require_array(object, "outputs", "owner cache manifest")? {

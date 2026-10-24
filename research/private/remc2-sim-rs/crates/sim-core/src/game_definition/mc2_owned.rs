@@ -241,8 +241,10 @@ fn read_selected_cache_binding(
             "owner cache manifest is not an object",
         )
     })?;
-    if object.get("schema").and_then(Value::as_str) != Some("mc2-owner-unity-asset-cache/v1")
-        || object.get("scope").and_then(Value::as_str) != Some("PRIVATE_TRACK_P_OWNER_DATA")
+    if !matches!(
+        object.get("schema").and_then(Value::as_str),
+        Some("mc2-owner-unity-asset-cache/v1" | "mc2-owner-unity-asset-cache/v2")
+    ) || object.get("scope").and_then(Value::as_str) != Some("PRIVATE_TRACK_P_OWNER_DATA")
     {
         return Err(definition_error(
             DefinitionErrorCode::InvalidProvenance,

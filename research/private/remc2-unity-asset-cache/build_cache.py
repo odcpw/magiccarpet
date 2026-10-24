@@ -1080,6 +1080,8 @@ def language_records(payload: bytes) -> list[bytes]:
 
 def qualified_runtime_profile(
     package_dir: Path,
+    *,
+    visual_projection: bytes | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     captures = []
     for name in QUALIFIED_RUNTIME_CAPTURES:
@@ -1101,10 +1103,11 @@ def qualified_runtime_profile(
             }
         )
     package_runtime = (package_dir / "runtime.bin").read_bytes()
+    qualified_runtime = package_runtime if visual_projection is None else visual_projection
     if (
-        len(package_runtime) != 2_754
-        or sha256_bytes(package_runtime) != EXPECTED_RUNTIME_SHA256
-        or package_runtime[49:65] != QUALIFIED_SETTINGS_BYTES
+        len(qualified_runtime) != 2_754
+        or sha256_bytes(qualified_runtime) != EXPECTED_RUNTIME_SHA256
+        or qualified_runtime[49:65] != QUALIFIED_SETTINGS_BYTES
     ):
         raise CacheError("selected Level 1 package runtime profile changed")
     fields = (
@@ -1127,13 +1130,18 @@ def qualified_runtime_profile(
     )
     exporter_layout = exporter_layout_evidence()
     exporter_layout["field_order"] = list(fields)
-    return captures, {
+    profile = {
         "exporter_layout": exporter_layout,
         "values": dict(zip(fields, QUALIFIED_SETTINGS_BYTES, strict=True)),
         "settings_bytes_hex": QUALIFIED_SETTINGS_BYTES.hex(),
         "capture_count": len(captures),
         "capture_sha256": EXPECTED_RUNTIME_SHA256,
     }
+    if visual_projection is not None:
+        profile["selected_capture_sha256"] = sha256_bytes(package_runtime)
+        profile["selected_capture_bytes"] = len(package_runtime)
+        profile["visual_projection_schema"] = "mc2-runtime-state/v1"
+    return captures, profile
 
 
 def source_sprite_tuple(
@@ -8295,6 +8303,9 @@ def build_cache(
     output: Path,
     contract_path: Path = DEFAULT_CONFORMANCE_CONTRACT,
     expected_contract_sha256: str | None = None,
+    *,
+    night_campaign: Path | None = None,
+    qualification_package: Path = DEFAULT_PACKAGE,
 ) -> dict[str, Any]:
     # Existing qualification callers still pass the old receipt hash.  It is
     # deliberately not part of cache identity; the contract validates its own
@@ -8312,7 +8323,35 @@ def build_cache(
         "trusted_identity"
     ]
 
-    package = load_json(package_dir / "manifest.json")
+    night = None
+    night_module = None
+    if night_campaign is not None:
+        spec = importlib.util.spec_from_file_location("night_cache_profile", Path(__file__).with_name("night_profile.py"))
+        if spec is None or spec.loader is None:
+            raise CacheError("cannot load the Night production profile")
+        night_module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(night_module)
+        closure_spec = importlib.util.spec_from_file_location("night_source_closure", PROVEN_CLOSURE)
+        if closure_spec is None or closure_spec.loader is None:
+            raise CacheError("cannot load the canonical Night closure producer")
+        closure_module = importlib.util.module_from_spec(closure_spec)
+        closure_spec.loader.exec_module(closure_module)
+        package_dir = night_campaign.expanduser().resolve()
+        try:
+            night = night_module.prepare(
+                package_dir, qualification_package.expanduser().resolve(),
+                GENERATED / "mc-cf15-level1-package-v3-current", closure_path,
+                catalog_path, owner_root, expected_package=EXPECTED_PACKAGE,
+                expected_runtime=EXPECTED_RUNTIME_SHA256,
+                verify_export=load_proven_export_verifier(),
+                verify_campaign=load_proven_campaign_verifier(),
+                closure_builder=closure_module.build_closure, private=PRIVATE,
+            )
+        except (ValueError, AssertionError) as error:
+            raise CacheError(f"Night production content qualification failed: {error}") from error
+    package = night["owner_manifest"] if night else load_json(package_dir / "manifest.json")
+    package_binding = package["package_sha256"] if night else EXPECTED_PACKAGE
+    closure_binding = night["closure_sha256"] if night else EXPECTED_CLOSURE
     closure = load_json(closure_path)
     catalog = load_json(catalog_path)
     goat_tmap_golden = load_goat_tmap_golden()
@@ -8320,7 +8359,7 @@ def build_cache(
         load_proven_export_verifier()(package_dir, package)
     except ValueError as error:
         raise CacheError(f"package identity verification failed: {error}") from error
-    if package.get("package_sha256") != EXPECTED_PACKAGE:
+    if package.get("package_sha256") != package_binding:
         raise CacheError("wrong Level 1 package hash")
     terrain_export = (package_dir / "terrain.bin").read_bytes()
     if len(terrain_export) < 65536:
@@ -8337,7 +8376,7 @@ def build_cache(
         ).encode("utf-8")
     ) != closure_claim:
         raise CacheError("closure canonical self-hash mismatch")
-    if closure.get("closure_sha256") != EXPECTED_CLOSURE:
+    if closure.get("closure_sha256") != closure_binding:
         raise CacheError("wrong Level 1 closure hash")
     closure_package = closure["source"]["level_export"]["package_sha256"]
     if closure_package != EXPECTED_PACKAGE:
@@ -8375,7 +8414,9 @@ def build_cache(
                 "sha256": row["sha256"],
             }
         )
-    runtime_captures, runtime_profile = qualified_runtime_profile(package_dir)
+    runtime_captures, runtime_profile = qualified_runtime_profile(package_dir,
+        visual_projection=night_module.visual_runtime((package_dir / "runtime.bin").read_bytes())
+        if night else None)
     pinned_source_evidence = pinned_remc2_source_evidence()
 
     frame_ids = {
@@ -10782,14 +10823,14 @@ def build_cache(
             for row in outputs
         )
         manifest = {
-            "schema": SCHEMA,
+            "schema": night_module.SCHEMA if night else SCHEMA,
             "scope": "PRIVATE_TRACK_P_OWNER_DATA",
             "distribution": "owner_local_runtime_supplied_not_redistributable",
             "bindings": {
-                "level_export_package_sha256": EXPECTED_PACKAGE,
-                "level_asset_closure_sha256": EXPECTED_CLOSURE,
+                "level_export_package_sha256": package_binding,
+                "level_asset_closure_sha256": closure_binding,
                 "owner_catalog_sha256": catalog_binding,
-                "qualified_runtime_capture_sha256": EXPECTED_RUNTIME_SHA256,
+                "qualified_runtime_capture_sha256": night["runtime_capture_sha256"] if night else EXPECTED_RUNTIME_SHA256,
                 "qualified_runtime_capture_count": len(runtime_captures),
                 "goat_tmap_golden_file_sha256": EXPECTED_GOAT_TMAP_GOLDEN,
                 "goat_tmap_oracle_manifest_sha256":
@@ -10961,9 +11002,19 @@ def build_cache(
             "outputs": outputs,
             "cache_content_sha256": sha256_bytes(identity_input),
         }
+        if night:
+            manifest["bindings"].update({
+                "campaign_package_sha256": night["campaign_package_sha256"],
+                "owner_catalog_file_sha256": sha256_file(catalog_path),
+                "qualification_level_export_package_sha256": EXPECTED_PACKAGE,
+                "qualification_runtime_capture_sha256": EXPECTED_RUNTIME_SHA256,
+                "runtime_visual_projection_sha256": night["runtime_visual_projection_sha256"],
+                "runtime_visual_projection_schema": "mc2-runtime-state/v1",
+            })
+            manifest["night_metadata_sha256"] = night_module.metadata_sha256(manifest)
         manifest["manifest_payload_sha256"] = sha256_bytes(canonical_json(manifest))
         (stage / "manifest.json").write_bytes(canonical_json(manifest))
-        validate_cache(stage, EXPECTED_PACKAGE, EXPECTED_CLOSURE)
+        validate_cache(stage, package_binding, closure_binding)
         fsync_tree(stage)
 
         commit_stage(output, stage)
@@ -10992,8 +11043,16 @@ def validate_cache(
     manifest_payload.pop("manifest_payload_sha256", None)
     if sha256_bytes(canonical_json(manifest_payload)) != manifest_claim:
         raise CacheError("cache manifest metadata hash mismatch")
-    if manifest.get("schema") != SCHEMA:
+    if manifest.get("schema") not in (SCHEMA, "mc2-owner-unity-asset-cache/v2"):
         raise CacheError("unsupported cache schema")
+    if manifest["schema"] == "mc2-owner-unity-asset-cache/v2":
+        spec = importlib.util.spec_from_file_location("night_cache_validation", Path(__file__).with_name("night_profile.py"))
+        if spec is None or spec.loader is None:
+            raise CacheError("cannot load Night cache validation")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        if module.metadata_sha256(manifest) != manifest.get("night_metadata_sha256"):
+            raise CacheError("Night cache metadata digest mismatch")
     bindings = manifest.get("bindings", {})
     if bindings.get("level_export_package_sha256") != expected_package:
         raise CacheError("cache package binding mismatch")
@@ -11131,6 +11190,14 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help=argparse.SUPPRESS,
     )
+    night = subparsers.add_parser("build-night")
+    night.add_argument("--owner-root", type=Path, default=DEFAULT_OWNER)
+    night.add_argument("--campaign-package", type=Path, required=True)
+    night.add_argument("--qualification-package", type=Path, default=DEFAULT_PACKAGE)
+    night.add_argument("--closure", type=Path, default=DEFAULT_CLOSURE)
+    night.add_argument("--catalog", type=Path, default=DEFAULT_CATALOG)
+    night.add_argument("--contract", type=Path, default=DEFAULT_CONFORMANCE_CONTRACT)
+    night.add_argument("--output", type=Path, required=True)
     build_day = subparsers.add_parser("build-day")
     build_day.add_argument("--owner-root", type=Path, default=DEFAULT_OWNER)
     build_day.add_argument("--package", type=Path, default=DEFAULT_LEVEL2_PACKAGE)
@@ -11245,6 +11312,17 @@ def main() -> int:
                 "cache": str(args.output), "clips": [
                     {"id": clip["id"], "frames": clip["frame_count"]} for clip in manifest["clips"]],
                 "audio_assets": len(manifest["audio"]), "output_count": len(manifest["outputs"])}))
+        elif args.command == "build-night":
+            manifest = build_cache(
+                args.owner_root, args.campaign_package, args.closure,
+                args.catalog, args.output, args.contract,
+                night_campaign=args.campaign_package,
+                qualification_package=args.qualification_package,
+            )
+            print(
+                f"cache={args.output} outputs={len(manifest['outputs'])} "
+                f"content_sha256={manifest['cache_content_sha256']}"
+            )
         elif args.command == "build":
             manifest = build_cache(
                 args.owner_root,

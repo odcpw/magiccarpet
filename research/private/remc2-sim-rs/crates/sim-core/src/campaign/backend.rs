@@ -225,6 +225,19 @@ fn load_mc2_campaign_internal(
     if selection == CampaignSelection::LEVEL1
         && let Some(owner_cache) = owner_cache
     {
+        crate::native_world::qualified_campaign_owner_cache(
+            owner_cache,
+            &descriptor.package_sha256,
+            &export_sha256,
+            &descriptor.campaign_spec.reset_sources.runtime.sha256,
+        )
+        .map_err(|error| {
+            definition_error(
+                DefinitionErrorCode::HashMismatch,
+                "mc2_campaign.owner_cache.bindings",
+                error.to_string(),
+            )
+        })?;
         let audio_artifacts = crate::native_world::qualified_fireball_sound_artifacts(owner_cache)
             .map_err(|error| {
                 definition_error(

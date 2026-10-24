@@ -121,6 +121,62 @@ class SemanticIdentityTests(unittest.TestCase):
                 cache.load_level1_conformance_matrix(path)
 
 
+class NightProductionCacheTests(unittest.TestCase):
+    """Exercise the actual bank-bearing owner contract without rebuilding caches."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        spec = importlib.util.spec_from_file_location("night_profile_tests", TOOL.with_name("night_profile.py"))
+        assert spec and spec.loader
+        cls.night = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(cls.night)
+        cls.package = cache.GENERATED / "mc-bhq8-level1-collision-v5-night"
+        cls.output = cache.GENERATED / "mc2-level1-night-cache-v2"
+        if not cls.package.is_dir() or not cls.output.is_dir():
+            raise unittest.SkipTest("private Night package/cache unavailable")
+
+    def test_canonical_import_binds_actual_runtime_and_retained_visual_view(self) -> None:
+        runtime = (self.package / "runtime.bin").read_bytes()
+        projection = self.night.visual_runtime(runtime)
+        manifest = cache.validate_cache(self.output,
+            "61d2d4962aeafa6325d2d0da3de8d0bcfe5f5d2e6859bdaa5b849cea596eac42",
+            cache.EXPECTED_CLOSURE)
+        bindings = manifest["bindings"]
+        self.assertEqual(bindings["qualified_runtime_capture_sha256"], cache.sha256_bytes(runtime))
+        self.assertNotEqual(cache.sha256_bytes(runtime), cache.EXPECTED_RUNTIME_SHA256)
+        self.assertEqual(projection, (cache.DEFAULT_PACKAGE / "runtime.bin").read_bytes())
+        self.assertEqual(bindings["runtime_visual_projection_sha256"], cache.sha256_bytes(projection))
+        self.assertEqual(bindings["qualification_runtime_capture_sha256"], cache.EXPECTED_RUNTIME_SHA256)
+        self.assertEqual(manifest["night_metadata_sha256"], self.night.metadata_sha256(manifest))
+
+    def test_runtime_projection_rejects_wrong_version_or_truncated_counters(self) -> None:
+        runtime = (self.package / "runtime.bin").read_bytes()
+        for payload in (runtime[:-1], runtime[:4] + b"\x01\x00" + runtime[6:]):
+            with self.assertRaisesRegex(ValueError, "MCR1/v2"):
+                self.night.visual_runtime(payload)
+
+    def test_scalar_digest_binds_raw_runtime_separately_from_qualification(self) -> None:
+        manifest = json.loads((self.output / "manifest.json").read_bytes())
+        original = self.night.metadata_sha256(manifest)
+        manifest["bindings"]["qualified_runtime_capture_sha256"] = cache.EXPECTED_RUNTIME_SHA256
+        self.assertNotEqual(self.night.metadata_sha256(manifest), original)
+        manifest["bindings"]["undeclared_alias"] = cache.EXPECTED_RUNTIME_SHA256
+        with self.assertRaisesRegex(ValueError, "field set"):
+            self.night.metadata_sha256(manifest)
+
+    def test_collision_bank_matches_owner_pixels_and_rejects_changed_pixel(self) -> None:
+        owner = json.loads((self.package / "owner-manifest.json").read_bytes())
+        definition = json.loads((self.package / "campaign-definition.json").read_bytes())
+        self.night._bank(self.package, owner, definition, cache.DEFAULT_OWNER)
+        bank = bytearray((self.package / "collision-masks.bin").read_bytes())
+        bank[-1] ^= 1
+        with tempfile.TemporaryDirectory(prefix="night-collision-pixel.") as directory:
+            root = Path(directory)
+            (root / "collision-masks.bin").write_bytes(bank)
+            with self.assertRaisesRegex(ValueError, "owner pixels"):
+                self.night._bank(root, owner, definition, cache.DEFAULT_OWNER)
+
+
 class OwnerCacheTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
