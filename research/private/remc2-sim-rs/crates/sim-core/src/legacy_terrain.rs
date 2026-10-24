@@ -3,6 +3,73 @@ use crate::{FlightWorld, Position, Tile};
 pub const LEGACY_MAP_CELLS: usize = 256 * 256;
 pub const REGRESSION_TERRAIN_FRAME_BYTES: usize = 0x70000;
 
+/// Source `sub_48F20` / `sub_48FD0`. The parameters are deliberately kept
+/// in source order: the horizontal scan has `height` samples and the vertical
+/// scan has `width` samples. Only the rectangle perimeter participates.
+pub(crate) fn cave_perimeter_extrema(
+    values: &[u8],
+    x: u8,
+    y: u8,
+    width: u16,
+    height: u16,
+) -> (i32, i32) {
+    let mut minimum = 250;
+    let mut maximum = 0;
+    let mut sample = |x, y| {
+        let value = i32::from(values[usize::from(x) + 256 * usize::from(y)]);
+        minimum = minimum.min(value);
+        maximum = maximum.max(value);
+    };
+    for column in 0..height {
+        let column = x.wrapping_add(column as u8);
+        sample(column, y);
+        sample(column, y.wrapping_add(width as u8));
+    }
+    for row in 0..width {
+        let row = y.wrapping_add(row as u8);
+        sample(x.wrapping_add(height as u8), row);
+        sample(x, row);
+    }
+    (minimum, maximum)
+}
+
+/// Source `sub_43C60` uses a fresh local 32-bit stream for every rectangle.
+/// Closed cells consume no draw; the second pass recomputes closure after
+/// unsigned-byte perturbation. Neither session RNG is advanced here.
+pub(crate) fn perturb_cave_ceiling(
+    floor: &[u8],
+    ceiling: &mut [u8],
+    angles: &mut [u8],
+    x: u8,
+    y: u8,
+    width: u16,
+    height: u16,
+) {
+    let mut rng = 37_487_429_u32;
+    for row in 0..width {
+        for column in 0..height {
+            let index = usize::from(x.wrapping_add(column as u8))
+                + 256 * usize::from(y.wrapping_add(row as u8));
+            if angles[index] & 8 == 0 {
+                rng = rng.wrapping_mul(9_377).wrapping_add(9_439);
+                ceiling[index] = ceiling[index].wrapping_add((rng % 7) as u8).wrapping_sub(3);
+            }
+        }
+    }
+    for row in 0..width {
+        for column in 0..height {
+            let index = usize::from(x.wrapping_add(column as u8))
+                + 256 * usize::from(y.wrapping_add(row as u8));
+            if ceiling[index] > floor[index] {
+                angles[index] &= 0xf7;
+            } else {
+                ceiling[index] = floor[index].wrapping_sub(1);
+                angles[index] |= 8;
+            }
+        }
+    }
+}
+
 /// Owner-data terrain arrays with remc2's exact sampling rules.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct LegacyTerrain {
@@ -393,4 +460,38 @@ mod tests {
             (4_043_664, 65_536)
         );
     }
+}
+#[test]
+fn cave_extrema_exclude_interior_and_ceiling_noise_restarts_local_rng() {
+    let mut floor = vec![40; LEGACY_MAP_CELLS];
+    floor[10 + 256 * 10] = 0;
+    let (minimum, maximum) = cave_perimeter_extrema(&floor, 8, 8, 4, 4);
+    assert_eq!((minimum, maximum), (40, 40));
+    let mut first = vec![60; LEGACY_MAP_CELLS];
+    let mut second = first.clone();
+    let mut first_angles = vec![0; LEGACY_MAP_CELLS];
+    let mut second_angles = first_angles.clone();
+    first_angles[8 + 256 * 8] = 8;
+    second_angles[8 + 256 * 8] = 8;
+    perturb_cave_ceiling(&floor, &mut first, &mut first_angles, 8, 8, 4, 4);
+    perturb_cave_ceiling(&floor, &mut second, &mut second_angles, 8, 8, 4, 4);
+    assert_eq!(
+        (first.as_slice(), first_angles.as_slice()),
+        (second.as_slice(), second_angles.as_slice())
+    );
+    assert_eq!(
+        first[8 + 256 * 8],
+        60,
+        "closed cells consume no perturbation draw"
+    );
+    let first_rng = 37_487_429_u32.wrapping_mul(9_377).wrapping_add(9_439);
+    assert_eq!(
+        first[9 + 256 * 8],
+        60_u8.wrapping_add((first_rng % 7) as u8).wrapping_sub(3)
+    );
+    assert_eq!(
+        first_angles[8 + 256 * 8] & 8,
+        0,
+        "closure is recomputed even for previously closed cells"
+    );
 }
