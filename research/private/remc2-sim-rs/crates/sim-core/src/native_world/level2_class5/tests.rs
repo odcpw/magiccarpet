@@ -691,20 +691,35 @@ fn archer_action37_cadence_advances_rng_copies_owner_and_preserves_life() {
         .expect("hidden Archer remains addressable in the current pass");
     assert_ne!(target.control_flags & ENTITY_DRAW_DISABLED_BIT, 0);
 
+    let sphere_id = session
+        .economy()
+        .events()
+        .iter()
+        .find_map(|event| match event {
+            Level2EconomyEvent::ManaSphereSpawned {
+                sphere_id,
+                source_entity_index,
+                ..
+            } if *source_entity_index == root_slot => Some(*sphere_id),
+            _ => None,
+        })
+        .expect("phase-zero Archer records its own mana-sphere product");
     let sphere = session
         .economy()
         .spheres()
         .iter()
-        .find(|sphere| !initial_sphere_slots.contains(&sphere.source_entity_index))
+        .find(|sphere| sphere.id == sphere_id)
         .expect("phase-zero Archer produces one mana sphere");
+    assert!(!initial_sphere_slots.contains(&sphere.source_entity_index));
     assert_eq!(sphere.owner_entity_index, owner_entity_index);
     assert_eq!(sphere.player_entity_index, owner_entity_index);
     let burst = session
         .economy()
         .death_bursts()
         .iter()
-        .find(|burst| !initial_burst_slots.contains(&burst.source_entity_index))
+        .find(|burst| burst.parent_entity_index == root_slot)
         .expect("phase-zero Archer produces the ordered death burst");
+    assert!(!initial_burst_slots.contains(&burst.source_entity_index));
     assert_eq!(burst.parent_entity_index, root_slot);
 }
 

@@ -6,45 +6,661 @@
 //! the shared source arena, hash, reset, and dispatch carrier; this file owns
 //! the source-exact action packet and typed constructor helpers used by it.
 
-use super::super::*;
+use crate::campaign::source_arena::SourceArena;
+use crate::campaign::source_arena::{
+    CreatureRootOrigin, CreatureRuntimeIdentity, CreatureRuntimeRole, SourceEntityHandle,
+};
+use crate::combat::actors::{DamageMailboxMut, DamageWriter, awards_creature_kill, inherit_killer};
+use crate::level_definition::CreatureKind;
+use crate::level1_mission::HouseResidentRequest;
+pub(crate) use crate::native_world::creatures::archer::*;
+use crate::native_world::{
+    ENTITY_DRAW_DISABLED_BIT, EntitySnapshot, Level2AuthoredClass5ArcherChild,
+    Level2AuthoredClass5ArcherState, Level2AuthoredClass5Source, Level2EconomyState,
+    ParticleParameter, RuntimeRelation, RuntimeSnapshot, SessionTerrain, SourceAudioCallTag,
+    level2_dynamic_economy, level2_next_rng16, mark_source_audio_call, source_map_search_slots,
+    source_search_offsets,
+};
+use crate::{FlightWorld, Position, renderable_map_chain::RenderableMapSeed};
+
+impl ArcherStageRuntime for RuntimeSnapshot {
+    fn descriptor(&self, index: u8) -> Option<ArcherStageDescriptor> {
+        let row = self
+            .stage_variables
+            .get(usize::from(index))
+            .filter(|_| index != 0)?;
+        let scalar = match row.relation {
+            RuntimeRelation::AxisScalar(value) => value,
+            _ => 0,
+        };
+        let actor = match row.relation {
+            RuntimeRelation::LiveEntity(slot) | RuntimeRelation::LiveEntityIndex(slot) => slot,
+            _ => 0,
+        };
+        Some(ArcherStageDescriptor {
+            kind: row.kind as u8,
+            flags: row.flags as u8,
+            next: row.word_2 as u8,
+            point: Position {
+                x: scalar as u16,
+                y: (scalar >> 16) as u16,
+                z: 0,
+            },
+            actor,
+            model: scalar as u8,
+            scalar: scalar as u16,
+        })
+    }
+
+    fn bind(&mut self, index: u8) -> Option<ArcherStageDescriptor> {
+        let descriptor = self.descriptor(index)?;
+        let phase = (self.stage_variables[usize::from(index)].word_2 >> 8) as u8 & 3;
+        if !self.advance_level2_stage_variable_counter(index) {
+            return None;
+        }
+        let reject = match descriptor.flags & 0x60 {
+            0x20 => phase == 3,
+            0x40 => phase & 1 != 0,
+            0x60 => phase != 0,
+            _ => false,
+        };
+        (!reject).then_some(descriptor)
+    }
+
+    fn rearm_model_relations(&mut self) {
+        for (index, row) in self.stage_variables.iter_mut().enumerate().skip(1) {
+            if matches!(row.kind, 3 | 4 | 5 | 8 | 9) && row.flags as u8 & 6 == 6 {
+                row.flags = (row.flags as u8 & !4) as i8;
+                self.bytes[392 + index * 12 + 1] = row.flags as u8;
+            }
+        }
+    }
+}
+
+/// Resolve live dynamic occupants before the immutable reset row at the same
+/// slot. This is also the target view used by the ordinary Archer callbacks.
+pub(crate) fn target_in_arena(arena: &SourceArena, slot: u16) -> Option<ArcherTarget> {
+    target_in_arena_with_dynamic_slots(arena, slot, None)
+}
+
+fn target_in_arena_with_dynamic_slots(
+    arena: &SourceArena,
+    slot: u16,
+    dynamic_slots: Option<&std::collections::BTreeSet<u16>>,
+) -> Option<ArcherTarget> {
+    if slot == 0 {
+        return None;
+    }
+    if let Some(source) = arena
+        .authored_class5()
+        .iter()
+        .find(|row| row.active && row.source_entity_index == slot)
+    {
+        let state = arena
+            .authored_class5_archer()
+            .iter()
+            .find(|row| row.source_entity_index == slot);
+        return Some(ArcherTarget {
+            entity_index: slot,
+            class: 5,
+            model: source.model,
+            action: source.action,
+            active: source.active,
+            life: source.life,
+            control_flags: state.map_or(0, |row| row.control_flags)
+                | if source.drawing_enabled {
+                    0
+                } else {
+                    ENTITY_DRAW_DISABLED_BIT
+                },
+            minimum_speed: source.minimum_speed,
+            maximum_speed: source.maximum_speed,
+            actual_speed: source.actual_speed,
+            dword_0x10: source.dword_0x10,
+            word_0x248: 0,
+            word_0x32: state.map_or(0, |row| row.word_0x32),
+            word_0x96_150: source.word_0x96_150,
+            position: source.position,
+        });
+    }
+    if let Some(source) = arena
+        .authored_model45()
+        .iter()
+        .find(|row| row.active && row.source_entity_index == slot)
+    {
+        return Some(ArcherTarget {
+            entity_index: slot,
+            class: source.source_class,
+            model: source.model,
+            action: source.action,
+            active: source.active,
+            life: source.life,
+            control_flags: source.control_flags,
+            minimum_speed: source.minimum_speed,
+            maximum_speed: 0,
+            actual_speed: source.actual_speed,
+            dword_0x10: source.dword_0x10,
+            word_0x248: 0,
+            word_0x32: 0,
+            word_0x96_150: 0,
+            position: source.position,
+        });
+    }
+    if let Some(source) = arena
+        .bee_creatures()
+        .iter()
+        .find(|row| row.active && row.source_entity_index == slot)
+    {
+        return Some(ArcherTarget {
+            entity_index: slot,
+            class: source.source_class,
+            model: source.model,
+            action: source.action,
+            active: source.active,
+            life: i32::from(source.life),
+            control_flags: source.control_flags,
+            minimum_speed: source.minimum_speed,
+            maximum_speed: source.maximum_speed,
+            actual_speed: source.actual_speed,
+            dword_0x10: source.dword_0x10,
+            word_0x248: 0,
+            word_0x32: 0,
+            word_0x96_150: source.target_entity_index.unwrap_or(0),
+            position: source.position,
+        });
+    }
+    // An imported slot that has been replaced must never shadow its current
+    // dynamic occupant, even if that occupant is not a valid Archer target.
+    let replaced = dynamic_slots.map_or_else(
+        || {
+            arena
+                .economy
+                .live_arena_slots()
+                .iter()
+                .any(|(live, _)| *live == slot)
+        },
+        |slots| slots.contains(&slot),
+    );
+    if replaced {
+        return None;
+    }
+    let entity = arena
+        .entities
+        .get(usize::from(slot))
+        .filter(|row| row.active)?;
+    Some(ArcherTarget {
+        entity_index: slot,
+        class: entity.class,
+        model: entity.model,
+        action: entity.action,
+        active: entity.active,
+        life: entity.life,
+        control_flags: entity.control_flags,
+        minimum_speed: entity.minimum_speed(),
+        maximum_speed: i16::from_le_bytes([entity.record_bytes()[138], entity.record_bytes()[139]]),
+        actual_speed: entity.actual_speed,
+        dword_0x10: entity.source_dword_10(),
+        word_0x248: 0,
+        word_0x32: entity.word_32(),
+        word_0x96_150: entity.source_word_96(),
+        position: entity.position,
+    })
+}
+
+pub(crate) fn relations_in_arena(arena: &SourceArena) -> Vec<ArcherRelation> {
+    // Only slot membership is reused within this callback. Every pose,
+    // mailbox and relation below is still read from its current live carrier.
+    let dynamic_slots = arena
+        .economy
+        .live_arena_slots()
+        .into_iter()
+        .map(|(slot, _)| slot)
+        .collect::<std::collections::BTreeSet<_>>();
+    let mut slots = arena
+        .entities
+        .iter()
+        .filter(|row| row.active)
+        .map(|row| row.index)
+        .collect::<std::collections::BTreeSet<_>>();
+    slots.extend(dynamic_slots.iter().copied());
+    slots
+        .into_iter()
+        .filter_map(|slot| {
+            let target = target_in_arena_with_dynamic_slots(arena, slot, Some(&dynamic_slots))?;
+            if let Some(source) = arena
+                .authored_class5()
+                .iter()
+                .find(|row| row.source_entity_index == slot)
+            {
+                let state = arena
+                    .authored_class5_archer()
+                    .iter()
+                    .find(|row| row.source_entity_index == slot);
+                let stage = state.map_or(ArcherStageState::default(), |row| row.stage);
+                return Some(ArcherRelation {
+                    slot,
+                    target,
+                    source_id: state.map_or(slot, |row| row.entity_id),
+                    parent: stage.parent,
+                    stage_index: stage.index,
+                    stage_mode: stage.mode,
+                    stage_relation: stage.relation,
+                    attacker: source.word_0x26,
+                    yaw: source.yaw,
+                    roll: source.roll,
+                    half_width: source.shift_rot_x,
+                    frozen_class5_member: false,
+                });
+            }
+            let raw = arena.entities.get(usize::from(slot))?;
+            let record = raw.record_bytes();
+            Some(ArcherRelation {
+                slot,
+                target,
+                source_id: raw.source_id,
+                parent: u16::from_le_bytes([record[44], record[45]]),
+                stage_index: record[76],
+                stage_mode: record[77],
+                stage_relation: u16::from_le_bytes([record[78], record[79]]),
+                attacker: raw.word_26(),
+                yaw: raw.yaw,
+                roll: raw.source_roll(),
+                half_width: raw.array_pitch(),
+                frozen_class5_member: false,
+            })
+        })
+        .collect()
+}
+
+/// Transfer reset-imported Archer records into the same family carrier used
+/// by authored/House constructors. No allocation, constructor, RNG draw or
+/// incarnation change occurs. The imported row becomes retained input only.
+fn adopt_imported_archers(arena: &mut SourceArena) {
+    let raw = arena
+        .entities
+        .iter()
+        .filter(|row| row.active && row.class == 5 && row.model == ARCHER_MODEL)
+        .filter(|row| {
+            !arena
+                .authored_class5()
+                .iter()
+                .any(|root| root.source_entity_index == row.index)
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    for row in raw {
+        let record = row.record_bytes();
+        let word = |offset| u16::from_le_bytes([record[offset], record[offset + 1]]);
+        let source = Level2AuthoredClass5Source {
+            source_entity_index: row.index,
+            entity_rng: row.entity_rng,
+            authored_index: u16::MAX,
+            model: row.model,
+            action: row.action,
+            minimum_speed: row.minimum_speed(),
+            maximum_speed: word(138) as i16,
+            actual_speed: row.actual_speed,
+            max_life: row.max_life,
+            life: row.life,
+            mana: row.mana,
+            max_mana: row.max_mana,
+            subspell_index: row.subspell_index,
+            dword_0x10: row.source_dword_10(),
+            pending_word_0x62: word(102),
+            word_0x26: row.word_26(),
+            word_0x24: word(40),
+            byte_0x3b: row.byte_3b,
+            word_0x96_150: row.source_word_96(),
+            byte_0x46_70: row.level_gate as u8,
+            particle_index: word(94),
+            source_byte_3e: row.phase,
+            source_byte_39: record[61],
+            yaw: row.yaw,
+            pitch: row.pitch,
+            roll: row.source_roll(),
+            fov: row.fov,
+            shift_rot_x: row.array_pitch(),
+            shift_rot_y: row.array_fov(),
+            position: row.position,
+            phase: row.phase,
+            drawing_enabled: !row.drawing_disabled(),
+            active: true,
+        };
+        let state = Level2AuthoredClass5ArcherState {
+            source_entity_index: row.index,
+            entity_id: row.source_id,
+            origin: ArcherOrigin::InitialPackage,
+            slot_generation: arena.slot_generation(row.index),
+            word_0x32: row.word_32(),
+            word_0x34: word(56),
+            descriptor_index: row.parameter_relation.unwrap_or(ARCHER_DESCRIPTOR_INDEX),
+            byte_0x38: record[60],
+            xtype: record[69],
+            xsubtype: record[70],
+            pending_damage: i32::from_le_bytes(
+                record[98..102]
+                    .try_into()
+                    .expect("validated source damage dword"),
+            ),
+            last_child_root_phase: 0,
+            control_flags: row.control_flags,
+            proximity_delay: record[62],
+            stage: ArcherStageState {
+                index: record[76],
+                mode: record[77],
+                relation: word(78),
+                parent: word(44),
+                remaining: word(50) as i16,
+                duration: word(52) as i16,
+            },
+        };
+        arena.economy.authored_class5.push(source);
+        arena.economy.authored_class5_archer.push(state);
+        // Keep the map/free-stack untouched. All mutable reads now resolve to
+        // the owned typed row before this old package record.
+        let old = &mut arena.entities[usize::from(row.index)];
+        old.active = false;
+        old.record[2] = 0;
+    }
+}
+
+pub(crate) fn creature_runtime_identity(
+    arena: &SourceArena,
+    slot: u16,
+    initial: &std::collections::BTreeMap<u16, CreatureKind>,
+    authored: &std::collections::BTreeMap<u16, CreatureKind>,
+    include_retained: bool,
+) -> Option<CreatureRuntimeIdentity> {
+    let source = arena
+        .authored_class5()
+        .iter()
+        .find(|row| row.source_entity_index == slot && (include_retained || row.active))?;
+    let state = arena
+        .authored_class5_archer()
+        .iter()
+        .find(|row| row.source_entity_index == slot)?;
+    let origin = match state.origin {
+        ArcherOrigin::InitialPackage => {
+            if initial.get(&slot) != Some(&CreatureKind::Archer) {
+                return None;
+            }
+            CreatureRootOrigin::InitialPackage
+        }
+        ArcherOrigin::AuthoredRecord(record) => {
+            if authored.get(&record) != Some(&CreatureKind::Archer) {
+                return None;
+            }
+            CreatureRootOrigin::AuthoredRecord {
+                authored_record: record,
+            }
+        }
+        ArcherOrigin::HouseSpawn(house_slot) => CreatureRootOrigin::HouseSpawn { house_slot },
+    };
+    Some(CreatureRuntimeIdentity {
+        handle: SourceEntityHandle {
+            source_slot: slot,
+            generation: state.slot_generation,
+        },
+        kind: CreatureKind::Archer,
+        root_slot: slot,
+        role: CreatureRuntimeRole::Root,
+        origin,
+        raw_model: Some(ARCHER_MODEL),
+        living: source.active && source.drawing_enabled && source.life >= 0,
+    })
+}
+
+pub(crate) fn prepare_archer_source_pass(
+    arena: &mut SourceArena,
+    runtime: &mut RuntimeSnapshot,
+    frozen: &[Vec<u16>; 29],
+) {
+    adopt_imported_archers(arena);
+    let player = arena
+        .entities
+        .iter()
+        .find(|row| row.active && row.class == 3 && row.model == 0)
+        .map(|row| row.position);
+    let targets = relations_in_arena(arena)
+        .into_iter()
+        .map(|row| row.target)
+        .collect::<Vec<_>>();
+    for slot in &frozen[usize::from(ARCHER_MODEL)] {
+        let Some(source) = arena
+            .economy
+            .authored_class5
+            .iter_mut()
+            .find(|row| row.source_entity_index == *slot)
+        else {
+            continue;
+        };
+        let Some(state) = arena
+            .economy
+            .authored_class5_archer
+            .iter_mut()
+            .find(|row| row.source_entity_index == *slot)
+        else {
+            continue;
+        };
+        prepass_archer_stage(source, &mut state.stage, runtime, &targets);
+        if let Some(player) = player {
+            advance_archer_proximity(source, state, player);
+        }
+    }
+}
+
+pub(crate) fn bind_authored_archer_route(
+    arena: &mut SourceArena,
+    runtime: &mut RuntimeSnapshot,
+    slot: u16,
+    index: u8,
+) {
+    let Some(source) = arena
+        .economy
+        .authored_class5
+        .iter_mut()
+        .find(|row| row.source_entity_index == slot)
+    else {
+        return;
+    };
+    let Some(state) = arena
+        .economy
+        .authored_class5_archer
+        .iter_mut()
+        .find(|row| row.source_entity_index == slot)
+    else {
+        return;
+    };
+    bind_archer_stage(source, &mut state.stage, index, runtime);
+}
+
+pub(crate) fn apply_target_in_arena(arena: &mut SourceArena, target: ArcherTarget) {
+    if let Some(source) = arena
+        .economy
+        .authored_model45
+        .iter_mut()
+        .find(|row| row.active && row.source_entity_index == target.entity_index)
+    {
+        source.dword_0x10 = target.dword_0x10;
+    } else if let Some(source) = arena
+        .economy
+        .authored_class5
+        .iter_mut()
+        .find(|row| row.active && row.source_entity_index == target.entity_index)
+    {
+        source.dword_0x10 = target.dword_0x10;
+    } else if let Some(source) = arena
+        .entities
+        .get_mut(usize::from(target.entity_index))
+        .filter(|row| row.active)
+    {
+        source.set_source_dword_10(target.dword_0x10);
+    }
+}
+
+pub(crate) fn player_target_ticks(arena: &SourceArena, slot: u16) -> u16 {
+    arena
+        .archer_player_feedback
+        .get(&slot)
+        .map_or(0, |feedback| feedback.target_ticks)
+}
+
+/// Alive, unpaused class-3/model-0 action 0 upkeep, after its flight body.
+/// Keep this at the player's actual source visit: an earlier Archer's write
+/// decays now, while a later Archer's write remains 200 until the next visit.
+pub(crate) fn advance_player_target_ticks(arena: &mut SourceArena, player: u16) {
+    if let Some(feedback) = arena.archer_player_feedback.get_mut(&player) {
+        feedback.target_ticks = feedback.target_ticks.saturating_sub(1);
+    }
+}
+
+pub(crate) fn apply_player_effects(
+    arena: &mut SourceArena,
+    player: u16,
+    effects: &ArcherActionEffects,
+) {
+    if effects.player_alert_entity == Some(player) {
+        arena
+            .archer_player_feedback
+            .entry(player)
+            .or_default()
+            .target_ticks = 200;
+    }
+}
+
+/// Compose the narrow Archer kernel with its actual arena, shared StageVars,
+/// frozen target memberships and source effect constructors. Shared roots
+/// supply domains and consume the returned player/experience effects.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn step_source_runtime(
+    arena: &mut SourceArena,
+    runtime: &mut RuntimeSnapshot,
+    terrain: &SessionTerrain,
+    particles: &[ParticleParameter],
+    slot: u16,
+    frozen_models: &[Vec<u16>; 29],
+    frozen_players: &[u16],
+    player_alerts: &[(u16, u16)],
+) -> Result<ArcherStepResult, String> {
+    let source = arena
+        .authored_class5()
+        .iter()
+        .find(|row| row.active && row.source_entity_index == slot)
+        .copied()
+        .ok_or_else(|| format!("Archer source slot {slot} is absent"))?;
+    let state = arena
+        .authored_class5_archer()
+        .iter()
+        .find(|row| row.source_entity_index == slot)
+        .copied()
+        .ok_or_else(|| format!("Archer slot {slot} has no owned state"))?;
+    let mut relations = relations_in_arena(arena);
+    for row in &mut relations {
+        row.frozen_class5_member = row.target.class == 5
+            && frozen_models
+                .get(usize::from(row.target.model))
+                .is_some_and(|slots| slots.contains(&row.slot));
+        if let Some((_, alert)) = player_alerts.iter().find(|(player, _)| *player == row.slot) {
+            row.target.word_0x248 = *alert;
+        }
+    }
+    let resolve = |slot| {
+        relations
+            .iter()
+            .find(|row| row.slot == slot)
+            .map(|row| row.target)
+    };
+    let players = frozen_players
+        .iter()
+        .filter_map(|slot| resolve(*slot))
+        .collect::<Vec<_>>();
+    let skeletons = frozen_models[9]
+        .iter()
+        .filter_map(|slot| resolve(*slot))
+        .collect::<Vec<_>>();
+    let peers = frozen_models[4]
+        .iter()
+        .filter_map(|slot| resolve(*slot))
+        .collect::<Vec<_>>();
+    let mut linked = Vec::new();
+    let mut current = state.word_0x34;
+    for _ in 0..=arena.authored_class5_archer_children().len() {
+        if current == 0 {
+            break;
+        }
+        let Some(child) = arena
+            .authored_class5_archer_children()
+            .iter()
+            .find(|row| row.active && row.source_entity_index == current)
+        else {
+            break;
+        };
+        linked.push(ArcherLinkedState {
+            entity_index: current,
+            next_entity_index: child.word_0x34,
+            life: i32::from(child.life),
+            current_attacker: child.word_0x26,
+        });
+        current = child.word_0x34;
+    }
+    let target = resolve(source.word_0x96_150);
+    let context = ArcherActionContext {
+        terrain,
+        control_flags: state.control_flags,
+        pending_damage: state.pending_damage,
+        linked_head: state.word_0x34,
+        linked: &linked,
+        target,
+        entities: &players,
+        fallback_entities: &skeletons,
+        peers: &peers,
+        relations: &relations,
+        stage: state.stage,
+        stage_runtime: Some(runtime),
+    };
+    let result = arena
+        .economy
+        .step_authored_archer_slot(slot, context, terrain)
+        .ok_or_else(|| {
+            format!(
+                "Archer slot {slot} cannot execute source action {}",
+                source.action
+            )
+        })?;
+    if result.effects.target_dword_0x10_incremented
+        && let Some(target) = result.target
+    {
+        apply_target_in_arena(arena, target);
+    }
+    if result.effects.expire_effect {
+        let position = arena
+            .authored_class5()
+            .iter()
+            .find(|row| row.source_entity_index == slot)
+            .map_or(source.position, |row| row.position);
+        if result.effects.summon_expire_effect {
+            crate::native_world::creatures::goat::runtime::spawn_expiry_visual(
+                arena, terrain, position, particles,
+            )?;
+        }
+        if let Some(effect_slot) = arena
+            .economy
+            .allocate_class10_model0_effect(0, 0, 0, 0, position, 400, 0, 0x20000, 128, 128)
+            && let Some(effect) = arena
+                .economy
+                .model17_spawned_children
+                .iter_mut()
+                .find(|row| row.source_entity_index == effect_slot)
+        {
+            // Unparented NewAdd0A00 retains NewEvent's own id.
+            effect.parent_entity_id = effect_slot;
+        }
+    }
+    Ok(result)
+}
 
 /// Group-20 authored Archer rows, in owner package/source order.
 pub(crate) const ARCHER_AUTHORED_ROWS: [u16; 4] = [232, 233, 234, 235];
-
-pub(crate) const ARCHER_SOURCE_CLASS: u8 = 5;
-pub(crate) const ARCHER_MODEL: u8 = 4;
-pub(crate) const ARCHER_ACTION: u8 = 33;
-pub(crate) const ARCHER_ACTION_ATTACK: u8 = 34;
-pub(crate) const ARCHER_ACTION_LINK: u8 = 35;
-pub(crate) const ARCHER_ACTION_HIT: u8 = 36;
-pub(crate) const ARCHER_ACTION_KILL: u8 = 37;
-pub(crate) const ARCHER_ACTION_ATTACK_VISUAL: u8 = 38;
-pub(crate) const ARCHER_ACTION_IDLE_VISUAL: u8 = 39;
-
-pub(crate) const ARCHER_MINIMUM_SPEED: i16 = 30;
-pub(crate) const ARCHER_MAXIMUM_SPEED: i16 = 0;
-pub(crate) const ARCHER_MAX_LIFE: i32 = 1_000;
-pub(crate) const ARCHER_MANA: i32 = 500;
-pub(crate) const ARCHER_MAX_MANA: i32 = 0;
-pub(crate) const ARCHER_SUBSPELL_INDEX: u16 = 500;
-pub(crate) const ARCHER_DESCRIPTOR_INDEX: u16 = 75;
-pub(crate) const ARCHER_DESCRIPTOR_CADENCE: u8 = 30;
-pub(crate) const ARCHER_DESCRIPTOR_RANGE: u32 = 0x1400;
-pub(crate) const ARCHER_DESCRIPTOR_HALF_ANGLE: i16 = 0x0200;
-pub(crate) const ARCHER_PARTICLE_INDEX: u16 = 0;
-pub(crate) const ARCHER_SHIFT_ROT_X: i16 = 128;
-pub(crate) const ARCHER_SHIFT_ROT_Y: i16 = 256;
-// Particle-0 collision extent, not the Archer's body orientation.
-pub(crate) const ARCHER_COLLISION_VERTICAL_OFFSET: i16 = 125;
-
-pub(crate) const ARCHER_CHILD_SOURCE_CLASS: u8 = 9;
-pub(crate) const ARCHER_CHILD_MODEL: u8 = 13;
-pub(crate) const ARCHER_CHILD_ACTION: u8 = 13;
-pub(crate) const ARCHER_CHILD_SPEED: i16 = 384;
-pub(crate) const ARCHER_CHILD_MAX_LIFE: i16 = 5120 / ARCHER_CHILD_SPEED;
-pub(crate) const ARCHER_CHILD_SUBSPELL_INDEX: u16 = 250;
-pub(crate) const ARCHER_CHILD_PARTICLE_INDEX: u16 = 195;
-pub(crate) const ARCHER_CHILD_PARTICLE_FOV: i16 = 60;
 
 #[must_use]
 pub(crate) fn is_authored_archer_row(authored_index: u16) -> bool {
@@ -121,7 +737,7 @@ pub(crate) fn archer_constructor_payload(
         actual_speed: ARCHER_MINIMUM_SPEED,
         max_life,
         life: max_life,
-        mana: ARCHER_MANA,
+        mana: max_life >> 1,
         max_mana: ARCHER_MAX_MANA,
         subspell_index: ARCHER_SUBSPELL_INDEX,
         initial_dword_0x10: i32::from(source_entity_index % 100),
@@ -190,6 +806,39 @@ impl ArcherConstructorPayload {
 }
 
 impl Level2EconomyState {
+    /// A House's ordinary defender/random-resident constructor is the same
+    /// Archer family, including its constructor RNG and real action callbacks.
+    /// `AddHouse0A_2D_38330` only adds a one-point mailbox for a defender;
+    /// neither it nor `GetRandManaSphere_38270` copies the House's owner/id.
+    pub(crate) fn allocate_house_archer(
+        &mut self,
+        parent_house: u16,
+        _house_owner: u16,
+        request: HouseResidentRequest,
+        terrain: &SessionTerrain,
+    ) -> Option<u16> {
+        if request.model != ARCHER_MODEL {
+            return None;
+        }
+        let source =
+            self.allocate_campaign_archer(u16::MAX, request.position, ARCHER_MAX_LIFE, terrain)?;
+        if let Some(state) = self
+            .authored_class5_archer
+            .iter_mut()
+            .find(|row| row.source_entity_index == source.source_entity_index)
+        {
+            state.origin = ArcherOrigin::HouseSpawn(parent_house);
+        }
+        if request.attacker_entity_index != 0 {
+            self.submit_authored_archer_damage(
+                source.source_entity_index,
+                request.attacker_entity_index,
+                1,
+            );
+        }
+        Some(source.source_entity_index)
+    }
+
     fn commit_class9_model13_child(
         &mut self,
         request: ArcherChildRequest,
@@ -354,18 +1003,11 @@ impl Level2EconomyState {
         // retain the previous occupant's owner relation.
         self.source_owner.insert(source_entity_index, 0);
         self.authored_class5.push(source);
-        self.authored_class5_runtime
-            .push(Level2AuthoredClass5RuntimeState {
-                source_entity_index,
-                byte_0x38: payload.byte_0x38,
-                xtype: payload.xtype,
-                descriptor_index: payload.descriptor_index,
-                pending_damage: 0,
-                linked_head: 0,
-            });
         self.authored_class5_archer
             .push(Level2AuthoredClass5ArcherState {
                 source_entity_index,
+                entity_id: source_entity_index,
+                origin: ArcherOrigin::AuthoredRecord(authored_index),
                 slot_generation: self.slot_generation(source_entity_index),
                 word_0x32: 0,
                 word_0x34: 0,
@@ -374,6 +1016,10 @@ impl Level2EconomyState {
                 xtype: payload.xtype,
                 pending_damage: 0,
                 last_child_root_phase: 0,
+                control_flags: 4,
+                xsubtype: u8::MAX,
+                stage: ArcherStageState::default(),
+                proximity_delay: 0,
             });
         Some(source)
     }
@@ -406,9 +1052,11 @@ impl Level2EconomyState {
         else {
             return false;
         };
-        source.pending_word_0x62 = attacker_slot;
-        runtime.pending_damage = damage;
-        true
+        DamageMailboxMut::new(&mut runtime.pending_damage, &mut source.pending_word_0x62).submit(
+            damage,
+            attacker_slot,
+            DamageWriter::Ordinary,
+        )
     }
 
     #[cfg(test)]
@@ -419,694 +1067,6 @@ impl Level2EconomyState {
         damage: i32,
     ) -> bool {
         self.submit_authored_archer_damage(source_slot, attacker_slot, damage)
-    }
-}
-
-/// A linked child observed by the `word_0x34` walk in `sub_1FAA0` and
-/// `sub_1C310`.  The shared runtime already owns the head index; this row is
-/// the narrow model-local view needed by the Archer action helpers.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct ArcherLinkedState {
-    pub(crate) entity_index: u16,
-    pub(crate) next_entity_index: u16,
-    pub(crate) life: i32,
-    pub(crate) current_attacker: u16,
-}
-
-/// Target/candidate fields read by the Archer's source callbacks.  The
-/// enclosing Level 2 session maps its imported entity rows into this narrow
-/// view and applies the returned target mutations to the authoritative arena.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct ArcherTarget {
-    pub(crate) entity_index: u16,
-    pub(crate) class: u8,
-    pub(crate) model: u8,
-    pub(crate) action: u8,
-    pub(crate) active: bool,
-    pub(crate) life: i32,
-    pub(crate) control_flags: u32,
-    pub(crate) minimum_speed: i16,
-    pub(crate) maximum_speed: i16,
-    pub(crate) actual_speed: i16,
-    pub(crate) dword_0x10: i32,
-    pub(crate) word_0x248: u16,
-    pub(crate) word_0x32: u16,
-    pub(crate) word_0x96_150: u16,
-    pub(crate) position: Position,
-}
-
-/// The model-local residual context.  `word_0x32` is the one Archer root
-/// field absent from `Level2AuthoredClass5RuntimeState`; callers pass it by
-/// mutable reference rather than this module creating a duplicate arena.
-pub(crate) struct ArcherActionContext<'a> {
-    pub(crate) pending_damage: i32,
-    pub(crate) linked_head: u16,
-    pub(crate) linked: &'a [ArcherLinkedState],
-    pub(crate) target: Option<ArcherTarget>,
-    pub(crate) entities: &'a [ArcherTarget],
-    pub(crate) fallback_entities: &'a [ArcherTarget],
-    pub(crate) peers: &'a [ArcherTarget],
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct ArcherVisualUpdate {
-    pub(crate) actual_speed: i16,
-    pub(crate) particle_index: u16,
-    pub(crate) shift_rot_x: i16,
-    pub(crate) shift_rot_y: i16,
-    pub(crate) xtype: u8,
-    pub(crate) xsubtype: u8,
-}
-
-/// A source-local request emitted by `sub_1CCE0`.  It is intentionally a
-/// request, not a second child vector: the shared economy must allocate and
-/// retain the returned packet in its canonical child arena.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct ArcherChildRequest {
-    pub(crate) parent_entity_index: u16,
-    pub(crate) parent_entity_id: u16,
-    pub(crate) parent_word_0x96: u16,
-    pub(crate) parent_roll: i16,
-    pub(crate) parent_position: Position,
-    pub(crate) parent_fov: i16,
-    pub(crate) target_entity_index: u16,
-    pub(crate) target_class: u8,
-    pub(crate) target_model: u8,
-    pub(crate) target_position: Position,
-}
-
-/// Exact post-constructor class-9/model-13 child state from
-/// `IfSubtypeCallCreatingManaSphere(..., 9, 13)` and `sub_1CCE0`.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct ArcherChildPacket {
-    pub(crate) source_entity_index: u16,
-    pub(crate) entity_id: u16,
-    pub(crate) entity_rng: u16,
-    pub(crate) parent_entity_index: u16,
-    pub(crate) parent_entity_id: u16,
-    pub(crate) source_class: u8,
-    pub(crate) model: u8,
-    pub(crate) action: u8,
-    pub(crate) minimum_speed: i16,
-    pub(crate) maximum_speed: i16,
-    pub(crate) actual_speed: i16,
-    pub(crate) max_life: i16,
-    pub(crate) life: i16,
-    pub(crate) subspell_index: u16,
-    pub(crate) particle_index: u16,
-    pub(crate) dword_0x10: i32,
-    pub(crate) control_flags: u32,
-    pub(crate) word_0x96: u16,
-    pub(crate) xtype: u8,
-    pub(crate) xsubtype: u8,
-    pub(crate) yaw: i16,
-    pub(crate) pitch: i16,
-    pub(crate) roll: i16,
-    pub(crate) fov: i16,
-    pub(crate) position: Position,
-    pub(crate) source_byte_3e: u8,
-    pub(crate) phase: u8,
-    pub(crate) drawing_enabled: bool,
-    pub(crate) active: bool,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct ArcherActionEffects {
-    pub(crate) moved: bool,
-    pub(crate) consumed_pending_damage: bool,
-    pub(crate) selected_target: Option<u16>,
-    pub(crate) released_target: bool,
-    pub(crate) target_dword_0x10_incremented: bool,
-    pub(crate) target_dword_0x10_entity: Option<u16>,
-    pub(crate) target_feedback_entity: Option<u16>,
-    pub(crate) child_request: Option<ArcherChildRequest>,
-    pub(crate) visual: Option<ArcherVisualUpdate>,
-}
-
-impl Default for ArcherActionEffects {
-    fn default() -> Self {
-        Self {
-            moved: false,
-            consumed_pending_damage: false,
-            selected_target: None,
-            released_target: false,
-            target_dword_0x10_incremented: false,
-            target_dword_0x10_entity: None,
-            target_feedback_entity: None,
-            child_request: None,
-            visual: None,
-        }
-    }
-}
-
-fn archer_target_is_live(target: ArcherTarget) -> bool {
-    target.active && target.life >= 0 && target.control_flags & ENTITY_DRAW_DISABLED_BIT == 0
-}
-
-fn archer_distance_squared_2d(left: Position, right: Position) -> u32 {
-    let dx = i32::from(right.x.wrapping_sub(left.x).cast_signed());
-    let dy = i32::from(right.y.wrapping_sub(left.y).cast_signed());
-    dx.wrapping_mul(dx)
-        .wrapping_add(dy.wrapping_mul(dy))
-        .cast_unsigned()
-}
-
-fn archer_within_cone(source: &Level2AuthoredClass5Source, target: ArcherTarget) -> bool {
-    let heading = heading_for_positions(source.position, target.position);
-    i32::from(angle_distance(i32::from(source.yaw), heading))
-        < i32::from(ARCHER_DESCRIPTOR_HALF_ANGLE)
-}
-
-fn archer_nearest_candidate(
-    source: &Level2AuthoredClass5Source,
-    candidates: &[ArcherTarget],
-    radius_squared: u32,
-    require_cone: bool,
-) -> Option<ArcherTarget> {
-    candidates
-        .iter()
-        .copied()
-        .filter(|candidate| {
-            candidate.entity_index != source.source_entity_index
-                && archer_target_is_live(*candidate)
-                && archer_distance_squared_2d(source.position, candidate.position) <= radius_squared
-                && (!require_cone || archer_within_cone(source, *candidate))
-        })
-        .min_by_key(|candidate| archer_distance_squared_2d(source.position, candidate.position))
-}
-
-fn archer_attack_visual(
-    source: &mut Level2AuthoredClass5Source,
-    target: Option<ArcherTarget>,
-) -> ArcherVisualUpdate {
-    source.entity_rng = level2_next_rng16(source.entity_rng);
-    source.actual_speed = 0;
-    source.particle_index = if source.entity_rng % 0x14 <= 10 {
-        206
-    } else {
-        1
-    };
-    source.shift_rot_x = ARCHER_SHIFT_ROT_X;
-    source.shift_rot_y = ARCHER_SHIFT_ROT_Y;
-    let (xtype, xsubtype) = target.map_or((3, u8::MAX), |target| (target.class, target.model));
-    ArcherVisualUpdate {
-        actual_speed: source.actual_speed,
-        particle_index: source.particle_index,
-        shift_rot_x: source.shift_rot_x,
-        shift_rot_y: source.shift_rot_y,
-        xtype,
-        xsubtype,
-    }
-}
-
-fn archer_idle_visual(source: &mut Level2AuthoredClass5Source) -> ArcherVisualUpdate {
-    source.actual_speed = source.minimum_speed;
-    source.particle_index = ARCHER_PARTICLE_INDEX;
-    source.shift_rot_x = ARCHER_SHIFT_ROT_X;
-    source.shift_rot_y = ARCHER_SHIFT_ROT_Y;
-    ArcherVisualUpdate {
-        actual_speed: source.actual_speed,
-        particle_index: source.particle_index,
-        shift_rot_x: source.shift_rot_x,
-        shift_rot_y: source.shift_rot_y,
-        xtype: 3,
-        xsubtype: u8::MAX,
-    }
-}
-
-fn archer_consume_mailbox(
-    source: &mut Level2AuthoredClass5Source,
-    context: &mut ArcherActionContext<'_>,
-) -> (u8, bool) {
-    let mut state = 0;
-    let mut consumed_pending_damage = false;
-    if source.pending_word_0x62 != 0 {
-        source.life = source.life.wrapping_sub(context.pending_damage);
-        source.word_0x26 = source.pending_word_0x62;
-        source.pending_word_0x62 = 0;
-        context.pending_damage = 0;
-        state = 1;
-        consumed_pending_damage = true;
-    } else {
-        source.word_0x26 = 0;
-    }
-    let mut linked_entity_index = context.linked_head;
-    while linked_entity_index != 0 {
-        let Some(linked) = context
-            .linked
-            .iter()
-            .find(|linked| linked.entity_index == linked_entity_index)
-        else {
-            break;
-        };
-        if linked.life < source.life {
-            source.life = linked.life;
-            source.word_0x26 = linked.current_attacker;
-            state = 1;
-            break;
-        }
-        linked_entity_index = linked.next_entity_index;
-    }
-    if source.life < 0 {
-        source.word_0x24 = source.word_0x26;
-        state = 2;
-    }
-    (state, consumed_pending_damage)
-}
-
-/// Port the pinned class-5/model-4/action-33 (`sub_1FAA0`) body.  The
-/// `word_0x32` reference is explicit because the current shared class-5
-/// runtime carrier does not yet contain it.
-pub(crate) fn step_archer_action33(
-    source: &mut Level2AuthoredClass5Source,
-    word_0x32: &mut u16,
-    context: &mut ArcherActionContext<'_>,
-) -> ArcherActionEffects {
-    debug_assert_eq!(source.model, ARCHER_MODEL);
-    debug_assert_eq!(source.action, ARCHER_ACTION);
-    let mut effects = ArcherActionEffects::default();
-    source.dword_0x10 = 0;
-    let (mailbox_state, consumed_pending_damage) = archer_consume_mailbox(source, context);
-    effects.consumed_pending_damage = consumed_pending_damage;
-    if mailbox_state == 1 {
-        source.word_0x96_150 = source.word_0x26;
-        source.action = ARCHER_ACTION_ATTACK;
-        effects.selected_target = Some(source.word_0x26);
-        effects.visual = Some(archer_attack_visual(
-            source,
-            context
-                .target
-                .filter(|target| target.entity_index == source.word_0x26),
-        ));
-        return effects;
-    }
-    if mailbox_state == 2 {
-        source.action = ARCHER_ACTION_HIT;
-        return effects;
-    }
-
-    crate::move_entity(
-        &mut source.position,
-        source.yaw,
-        source.pitch,
-        source.actual_speed,
-    );
-    effects.moved = true;
-    if !source
-        .source_byte_3e
-        .is_multiple_of(ARCHER_DESCRIPTOR_CADENCE)
-    {
-        return effects;
-    }
-
-    if source.word_0x96_150 != 0 {
-        let tracked_target = context
-            .target
-            .filter(|target| target.entity_index == source.word_0x96_150);
-        match tracked_target {
-            Some(target)
-                if archer_target_is_live(target) && target.class == 10 && target.model == 45 =>
-            {
-                if crate::legacy_sqrt(level2_wrapping_source_distance_3d(
-                    source.position,
-                    target.position,
-                )) > 0x1000
-                {
-                    source.roll =
-                        i16::try_from(heading_for_positions(source.position, target.position))
-                            .expect("Archer target heading fits i16");
-                } else {
-                    source.dword_0x10 = 1;
-                    source.action = ARCHER_ACTION_HIT;
-                    let mut target = target;
-                    target.dword_0x10 = target.dword_0x10.wrapping_add(1);
-                    context.target = Some(target);
-                    effects.target_dword_0x10_incremented = true;
-                    effects.target_dword_0x10_entity = Some(target.entity_index);
-                }
-            }
-            _ => {
-                source.word_0x96_150 = 0;
-                effects.released_target = true;
-            }
-        }
-        return effects;
-    }
-
-    let first_rng = level2_next_rng16(source.entity_rng);
-    source.entity_rng = first_rng;
-    let second_rng = level2_next_rng16(source.entity_rng);
-    source.entity_rng = second_rng;
-    let direction = 2 * (i32::from(first_rng % 0x009d) / 79) - 1;
-    let turn = (i32::from(second_rng & 0x00ff) + 85) * direction;
-    source.roll = i16::try_from((i32::from(source.roll).wrapping_add(turn)) & 0x07ff)
-        .expect("Archer roll fits 11 bits");
-
-    if source
-        .source_byte_3e
-        .is_multiple_of(4 * ARCHER_DESCRIPTOR_CADENCE)
-    {
-        let radius_squared = ARCHER_DESCRIPTOR_RANGE * ARCHER_DESCRIPTOR_RANGE;
-        let preferred = archer_nearest_candidate(source, context.entities, radius_squared, true)
-            .filter(|candidate| {
-                (candidate.model == 0 || candidate.model == 1) && candidate.word_0x248 != 0
-            });
-        let fallback = preferred.or_else(|| {
-            archer_nearest_candidate(source, context.fallback_entities, radius_squared, false)
-        });
-        if let Some(target) = fallback {
-            if !(target.class == 10 && target.model == 45) {
-                source.word_0x96_150 = target.entity_index;
-                source.action = ARCHER_ACTION_ATTACK;
-                effects.selected_target = Some(target.entity_index);
-                return effects;
-            }
-        }
-        if let Some(peer) = archer_nearest_candidate(source, context.peers, radius_squared, true) {
-            *word_0x32 = peer.entity_index;
-            source.action = ARCHER_ACTION_LINK;
-        }
-    }
-    effects
-}
-
-/// Port `AddArcher0504_1FF40` and its `sub_1C310(..., 32, sub_1CCE0)` child
-/// callback.  A successful in-range cadence visit emits one child request;
-/// the request is later passed to `allocate_archer_child_packet` by the
-/// shared arena owner.
-pub(crate) fn step_archer_action34(
-    source: &mut Level2AuthoredClass5Source,
-    context: &mut ArcherActionContext<'_>,
-) -> ArcherActionEffects {
-    debug_assert_eq!(source.model, ARCHER_MODEL);
-    debug_assert_eq!(source.action, ARCHER_ACTION_ATTACK);
-    let mut effects = ArcherActionEffects::default();
-    let (mailbox_state, consumed_pending_damage) = archer_consume_mailbox(source, context);
-    effects.consumed_pending_damage = consumed_pending_damage;
-    if mailbox_state == 1 {
-        source.word_0x96_150 = source.word_0x26;
-        effects.selected_target = Some(source.word_0x26);
-    } else if mailbox_state == 2 {
-        source.action = ARCHER_ACTION_HIT;
-        return effects;
-    } else {
-        crate::move_entity(
-            &mut source.position,
-            source.yaw,
-            source.pitch,
-            source.actual_speed,
-        );
-        effects.moved = true;
-        let Some(target) = context
-            .target
-            .filter(|target| target.entity_index == source.word_0x96_150)
-            .filter(|target| archer_target_is_live(*target))
-        else {
-            source.action = ARCHER_ACTION;
-            effects.visual = Some(archer_idle_visual(source));
-            return effects;
-        };
-        if source.source_byte_3e & 3 == 0 {
-            source.roll = i16::try_from(heading_for_positions(source.position, target.position))
-                .expect("Archer target heading fits i16");
-            if let Some(peer) = context.peers.iter().copied().find(|peer| {
-                peer.entity_index != source.source_entity_index
-                    && peer.class == ARCHER_SOURCE_CLASS
-                    && peer.model == ARCHER_MODEL
-                    && archer_target_is_live(*peer)
-                    && peer.position.x.abs_diff(source.position.x) < 128
-                    && peer.position.y.abs_diff(source.position.y) < 128
-            }) {
-                source.roll = i16::try_from(heading_for_positions(peer.position, source.position))
-                    .expect("Archer peer heading fits i16");
-            }
-        }
-        if source
-            .source_byte_3e
-            .is_multiple_of(ARCHER_DESCRIPTOR_CADENCE)
-        {
-            if crate::legacy_sqrt(level2_wrapping_source_distance_3d(
-                source.position,
-                target.position,
-            )) >= ARCHER_DESCRIPTOR_RANGE
-            {
-                source.action = ARCHER_ACTION;
-                effects.visual = Some(archer_idle_visual(source));
-                return effects;
-            }
-            let request = ArcherChildRequest {
-                parent_entity_index: source.source_entity_index,
-                parent_entity_id: source.source_entity_index,
-                parent_word_0x96: source.word_0x96_150,
-                parent_roll: source.roll,
-                parent_position: source.position,
-                parent_fov: source.shift_rot_y,
-                target_entity_index: target.entity_index,
-                target_class: target.class,
-                target_model: target.model,
-                target_position: target.position,
-            };
-            effects.child_request = Some(request);
-            effects.target_feedback_entity = Some(target.entity_index);
-            let mut target = target;
-            if target.model == 0 || target.model == 1 {
-                target.word_0x248 = 200;
-                context.target = Some(target);
-            }
-        }
-    }
-    effects
-}
-
-/// Port `sub_1FFE0`/`sub_1C560` for the model-local fields.  The linked
-/// relation lives in the caller's explicit `word_0x32` sidecar.
-pub(crate) fn step_archer_action35(
-    source: &mut Level2AuthoredClass5Source,
-    word_0x32: &mut u16,
-    context: &mut ArcherActionContext<'_>,
-) -> ArcherActionEffects {
-    debug_assert_eq!(source.model, ARCHER_MODEL);
-    debug_assert_eq!(source.action, ARCHER_ACTION_LINK);
-    let mut effects = ArcherActionEffects::default();
-    if *word_0x32 == 0 {
-        source.action = ARCHER_ACTION;
-        return effects;
-    }
-    let linked_target = context
-        .entities
-        .iter()
-        .copied()
-        .find(|target| target.entity_index == *word_0x32);
-    let Some(target) = linked_target.filter(|target| {
-        archer_target_is_live(*target)
-            && target.class == ARCHER_SOURCE_CLASS
-            && target.model == ARCHER_MODEL
-    }) else {
-        *word_0x32 = 0;
-        source.action = ARCHER_ACTION;
-        return effects;
-    };
-
-    let (mailbox_state, consumed_pending_damage) = archer_consume_mailbox(source, context);
-    effects.consumed_pending_damage = consumed_pending_damage;
-    if mailbox_state == 1 {
-        source.word_0x96_150 = source.word_0x26;
-        *word_0x32 = 0;
-        source.action = ARCHER_ACTION_ATTACK;
-        effects.selected_target = Some(source.word_0x26);
-        effects.visual = Some(archer_attack_visual(
-            source,
-            context
-                .target
-                .filter(|target| target.entity_index == source.word_0x26),
-        ));
-        return effects;
-    }
-    if mailbox_state == 2 {
-        source.action = ARCHER_ACTION_HIT;
-        return effects;
-    }
-
-    crate::move_entity(
-        &mut source.position,
-        source.yaw,
-        source.pitch,
-        source.actual_speed,
-    );
-    effects.moved = true;
-    if source.source_byte_3e & 3 == 0 {
-        source.roll = i16::try_from(heading_for_positions(source.position, target.position))
-            .expect("Archer peer heading fits i16");
-        for peer in context.peers.iter().copied().filter(|peer| {
-            peer.entity_index != source.source_entity_index
-                && peer.class == ARCHER_SOURCE_CLASS
-                && peer.model == ARCHER_MODEL
-                && archer_target_is_live(*peer)
-                && peer.position.x.abs_diff(source.position.x) < 256
-                && peer.position.y.abs_diff(source.position.y) < 256
-        }) {
-            source.roll = i16::try_from(heading_for_positions(peer.position, source.position))
-                .expect("Archer peer heading fits i16");
-        }
-    }
-    if !source
-        .source_byte_3e
-        .is_multiple_of(ARCHER_DESCRIPTOR_CADENCE)
-    {
-        return effects;
-    }
-    match target.action {
-        ARCHER_ACTION => {}
-        ARCHER_ACTION_ATTACK => {
-            source.word_0x96_150 = target.word_0x96_150;
-            *word_0x32 = 0;
-            source.action = ARCHER_ACTION_ATTACK;
-            effects.visual = Some(archer_attack_visual(source, Some(target)));
-            return effects;
-        }
-        ARCHER_ACTION_LINK => {
-            *word_0x32 = target.word_0x32;
-            let heading_target = context
-                .entities
-                .iter()
-                .copied()
-                .find(|candidate| candidate.entity_index == *word_0x32)
-                .filter(|candidate| archer_target_is_live(*candidate))
-                .unwrap_or(target);
-            source.roll = i16::try_from(heading_for_positions(
-                heading_target.position,
-                source.position,
-            ))
-            .expect("Archer peer heading fits i16");
-            for peer in context.peers.iter().copied().filter(|peer| {
-                peer.entity_index != source.source_entity_index
-                    && peer.class == ARCHER_SOURCE_CLASS
-                    && peer.model == ARCHER_MODEL
-                    && archer_target_is_live(*peer)
-                    && peer.position.x.abs_diff(source.position.x) < 256
-                    && peer.position.y.abs_diff(source.position.y) < 256
-            }) {
-                source.roll = i16::try_from(heading_for_positions(peer.position, source.position))
-                    .expect("Archer peer heading fits i16");
-            }
-        }
-        ARCHER_ACTION_ATTACK_VISUAL => {
-            source.word_0x96_150 = target.word_0x96_150;
-            *word_0x32 = 0;
-            source.action = ARCHER_ACTION_ATTACK_VISUAL;
-            return effects;
-        }
-        _ => {
-            *word_0x32 = 0;
-            source.action = ARCHER_ACTION;
-            return effects;
-        }
-    }
-    source.actual_speed = target.maximum_speed.wrapping_add(target.actual_speed);
-    effects
-}
-
-/// Source action 36 (`HitArcher_20010`).  Pre-kill propagation to a shared
-/// linked child chain remains owned by the caller because the current carrier
-/// does not expose the child rows.
-pub(crate) fn step_archer_action36(source: &mut Level2AuthoredClass5Source) {
-    debug_assert_eq!(source.model, ARCHER_MODEL);
-    debug_assert_eq!(source.action, ARCHER_ACTION_HIT);
-    if source.dword_0x10 != 0 {
-        source.drawing_enabled = false;
-    } else {
-        // `PreKillEntity(event, 32)` stores `state + 5`; class-5 dispatch
-        // therefore enters KillArcher at action 37, not the unrelated action
-        // 41 scroll constructor.
-        source.action = ARCHER_ACTION_KILL;
-    }
-}
-
-/// Build the exact class-9/model-13 child packet after `sub_1CCE0` has
-/// supplied the parent/target relation.  The child constructor itself does
-/// not consume an LCG draw; `child_entity_rng` is the NewEvent value for its
-/// newly allocated source slot.
-#[must_use]
-pub(crate) fn archer_child_packet(
-    child_source_entity_index: u16,
-    child_entity_rng: u16,
-    request: ArcherChildRequest,
-) -> ArcherChildPacket {
-    let yaw = i16::try_from(heading_for_positions(
-        request.parent_position,
-        request.target_position,
-    ))
-    .expect("Archer child heading fits i16");
-    let dx = i32::from(
-        request
-            .target_position
-            .x
-            .wrapping_sub(request.parent_position.x)
-            .cast_signed(),
-    );
-    let dy = i32::from(
-        request
-            .target_position
-            .y
-            .wrapping_sub(request.parent_position.y)
-            .cast_signed(),
-    );
-    let horizontal = crate::legacy_sqrt(
-        dx.wrapping_mul(dx)
-            .wrapping_add(dy.wrapping_mul(dy))
-            .cast_unsigned(),
-    );
-    let pitch = crate::pitch_for_delta(
-        i32::try_from(horizontal).expect("Archer child horizontal distance fits"),
-        i32::from(
-            request
-                .target_position
-                .z
-                .wrapping_sub(request.parent_position.z),
-        ),
-    );
-    let position = Position {
-        x: request.parent_position.x,
-        y: request.parent_position.y,
-        z: request
-            .parent_position
-            .z
-            .wrapping_add(request.parent_fov / 2),
-    };
-    ArcherChildPacket {
-        source_entity_index: child_source_entity_index,
-        entity_id: request.parent_entity_id,
-        entity_rng: child_entity_rng,
-        parent_entity_index: request.parent_entity_index,
-        parent_entity_id: request.parent_entity_id,
-        source_class: ARCHER_CHILD_SOURCE_CLASS,
-        model: ARCHER_CHILD_MODEL,
-        action: ARCHER_CHILD_ACTION,
-        minimum_speed: ARCHER_CHILD_SPEED,
-        maximum_speed: 0,
-        actual_speed: ARCHER_CHILD_SPEED,
-        max_life: ARCHER_CHILD_MAX_LIFE,
-        life: ARCHER_CHILD_MAX_LIFE,
-        subspell_index: ARCHER_CHILD_SUBSPELL_INDEX,
-        particle_index: ARCHER_CHILD_PARTICLE_INDEX,
-        dword_0x10: 0,
-        control_flags: 0,
-        word_0x96: request.parent_word_0x96,
-        xtype: request.target_class,
-        xsubtype: request.target_model,
-        yaw,
-        pitch,
-        // NewEvent clears body roll; neither AddEvent09_0D nor the Archer
-        // sub_1CCE0 tail copies the parent's body orientation into the arrow.
-        roll: 0,
-        fov: ARCHER_CHILD_PARTICLE_FOV,
-        position,
-        // NewEvent seeds byte_0x3E from the fixed arena slot before the
-        // ordinary callback epilogue advances it.
-        source_byte_3e: child_source_entity_index as u8,
-        phase: 0,
-        drawing_enabled: true,
-        active: true,
     }
 }
 
@@ -1157,10 +1117,13 @@ impl Level2EconomyState {
         mut context: ArcherActionContext<'_>,
         terrain: &SessionTerrain,
     ) -> Option<ArcherStepResult> {
-        let source_index = self
-            .authored_class5
-            .iter()
-            .position(|source| source.active && source.source_entity_index == source_slot)?;
+        let source_index = self.authored_class5.iter().position(|source| {
+            // The numeric callback scan tests the current class/action,
+            // without rechecking the hide bit. An earlier Skeleton may hide
+            // this root before its visit; it still executes once now and is
+            // reclaimed by the following pass's prologue.
+            source.active && source.source_entity_index == source_slot
+        })?;
         let archer_index = self
             .authored_class5_archer
             .iter()
@@ -1170,8 +1133,13 @@ impl Level2EconomyState {
         let mut archer_state = self.authored_class5_archer[archer_index];
         let mut word_0x32 = archer_state.word_0x32;
         context.linked_head = archer_state.word_0x34;
+        context.control_flags = archer_state.control_flags;
+        context.stage = archer_state.stage;
 
-        let effects = match source.action {
+        let mut effects = match source.action {
+            ARCHER_ACTION_STATIONARY => {
+                step_archer_action32(&mut source, &mut word_0x32, &mut context)
+            }
             ARCHER_ACTION => step_archer_action33(&mut source, &mut word_0x32, &mut context),
             ARCHER_ACTION_ATTACK => step_archer_action34(&mut source, &mut context),
             ARCHER_ACTION_LINK => step_archer_action35(&mut source, &mut word_0x32, &mut context),
@@ -1179,6 +1147,32 @@ impl Level2EconomyState {
                 step_archer_action36(&mut source);
                 if source.action == ARCHER_ACTION_KILL {
                     self.prekill_archer_chain(&mut source, archer_state.word_0x34);
+                    if let Some(killer) = context
+                        .relations
+                        .iter()
+                        .find(|row| row.slot == source.word_0x24)
+                        .map(|row| row.target)
+                        .or_else(|| {
+                            context
+                                .entities
+                                .iter()
+                                .copied()
+                                .find(|target| target.entity_index == source.word_0x24)
+                        })
+                        && awards_creature_kill(
+                            source.model,
+                            archer_state.entity_id,
+                            context
+                                .relations
+                                .iter()
+                                .find(|row| row.slot == killer.entity_index)
+                                .map_or(killer.entity_index, |row| row.source_id),
+                            killer.class,
+                            killer.model,
+                        )
+                    {
+                        self.record_authored_creature_kill(killer.entity_index);
+                    }
                 }
                 ArcherActionEffects::default()
             }
@@ -1204,33 +1198,73 @@ impl Level2EconomyState {
                         owner_entity_index,
                         terrain,
                     );
-                    let _ = self.spawn_death_burst_from_death_with_id(
-                        source.source_entity_index,
-                        source.source_entity_index,
-                        source.position,
-                    );
+                    if context.control_flags & 0x10_0000 == 0 {
+                        let _ = self.spawn_death_burst_from_death_with_id(
+                            source.source_entity_index,
+                            source.source_entity_index,
+                            source.position,
+                        );
+                    }
                     source.drawing_enabled = false;
                 }
                 ArcherActionEffects::default()
             }
-            ARCHER_ACTION_ATTACK_VISUAL => ArcherActionEffects {
-                visual: Some(archer_attack_visual(&mut source, context.target)),
-                ..ArcherActionEffects::default()
-            },
-            ARCHER_ACTION_IDLE_VISUAL => ArcherActionEffects {
-                visual: Some(archer_idle_visual(&mut source)),
-                ..ArcherActionEffects::default()
-            },
-            _ => ArcherActionEffects::default(),
+            ARCHER_ACTION_IDLE_VISUAL => step_archer_action39(&mut source, &mut context),
+            // str50[38] has no source callback. Never manufacture a visual
+            // update or advance its callback clock for this unsupported slot.
+            _ => return None,
         };
 
         if let Some(request) = effects.child_request {
-            let _ = self.allocate_archer_child_packet(request);
+            if self.allocate_archer_child_packet(request).is_none() {
+                effects.target_feedback_entity = None;
+            }
             archer_state.word_0x34 = self.authored_class5_archer[archer_index].word_0x34;
         }
-        if effects.moved {
-            source.position.z = terrain.ground_height(source.position);
+        if effects.population_decrement {
+            self.decrement_source_creature_population();
         }
+        if let Some(peer) = effects.peer_update {
+            if let Some(root) = self
+                .authored_class5
+                .iter_mut()
+                .find(|root| root.active && root.source_entity_index == peer.entity_index)
+            {
+                root.action = peer.action;
+                root.word_0x96_150 = peer.word_0x96_150;
+            }
+            if let Some(state) = self
+                .authored_class5_archer
+                .iter_mut()
+                .find(|state| state.source_entity_index == peer.entity_index)
+            {
+                state.word_0x32 = peer.word_0x32;
+            }
+        }
+        if let Some(visual) = effects.visual {
+            archer_state.xtype = visual.xtype;
+            archer_state.xsubtype = visual.xsubtype;
+        }
+        if archer_state.stage.mode == 14 {
+            let mut current = archer_state.word_0x34;
+            for _ in 0..=self.authored_class5_archer_children.len() {
+                let Some(child) = self
+                    .authored_class5_archer_children
+                    .iter_mut()
+                    .find(|child| child.source_entity_index == current)
+                else {
+                    break;
+                };
+                child.control_flags =
+                    (child.control_flags & !0x0600_0000) | (context.control_flags & 0x0600_0000);
+                current = child.word_0x34;
+                if current == 0 {
+                    break;
+                }
+            }
+        }
+        archer_state.control_flags = context.control_flags;
+        archer_state.stage = context.stage;
         source.source_byte_3e = source.source_byte_3e.wrapping_add(1);
         source.phase = source.phase.wrapping_add(1);
         archer_state.word_0x32 = word_0x32;
@@ -1271,9 +1305,7 @@ impl Level2EconomyState {
             };
             let child = &mut self.authored_class5_archer_children[child_index];
             child.action = ARCHER_ACTION_KILL;
-            if child.word_0x24 != 0 {
-                source.word_0x24 = child.word_0x24;
-            }
+            inherit_killer(&mut source.word_0x24, child.word_0x24);
             current = child.word_0x34;
             visits = visits.wrapping_add(1);
         }
@@ -1480,6 +1512,7 @@ impl Level2EconomyState {
 mod tests {
     use super::super::super::tests::level_two_fixture_path;
     use super::*;
+    use crate::native_world::{Level2EconomyEvent, NativeWorld, level2_next_rng32};
 
     fn archer_position() -> Position {
         Position {
@@ -1489,8 +1522,10 @@ mod tests {
         }
     }
 
-    fn empty_context<'a>() -> ArcherActionContext<'a> {
+    fn empty_context(terrain: &SessionTerrain) -> ArcherActionContext<'_> {
         ArcherActionContext {
+            terrain,
+            control_flags: 4,
             pending_damage: 0,
             linked_head: 0,
             linked: &[],
@@ -1498,7 +1533,263 @@ mod tests {
             entities: &[],
             fallback_entities: &[],
             peers: &[],
+            relations: &[],
+            stage: ArcherStageState::default(),
+            stage_runtime: None,
         }
+    }
+
+    #[test]
+    fn archer_stationary_damage_and_disabled_callback_use_one_authority() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path()).unwrap();
+        let mut session = inspection.level2_reset_session().unwrap();
+        let attacker = session.state.entity_index;
+        let terrain = session.session.state.live.terrain.clone();
+        let root = session
+            .economy_mut()
+            .allocate_authored_archer(232, archer_position())
+            .unwrap();
+        let mut arena = session.economy().clone();
+        assert!(
+            !arena
+                .authored_class5_runtime
+                .iter()
+                .any(|row| row.source_entity_index == root.source_entity_index)
+        );
+        let index = arena
+            .authored_class5
+            .iter()
+            .position(|row| row.source_entity_index == root.source_entity_index)
+            .unwrap();
+        arena.authored_class5[index].action = ARCHER_ACTION_STATIONARY;
+        assert!(arena.submit_authored_archer_damage(root.source_entity_index, attacker, 20));
+        assert!(arena.submit_authored_archer_damage(root.source_entity_index, attacker, 30));
+        let mut context = empty_context(&terrain);
+        context.pending_damage = arena.authored_class5_archer[0].pending_damage;
+        let result = arena
+            .step_authored_archer_slot(root.source_entity_index, context, &terrain)
+            .unwrap();
+        assert!(result.effects.consumed_pending_damage);
+        let hit = arena.authored_class5[index];
+        assert_eq!(
+            (
+                hit.life,
+                hit.action,
+                hit.word_0x96_150,
+                hit.pending_word_0x62
+            ),
+            (950, 34, attacker, 0)
+        );
+        assert_eq!(
+            arena.authored_class5_archer[0].pending_damage, 50,
+            "source retains the consumed dword payload"
+        );
+        assert_eq!(hit.entity_rng, level2_next_rng16(root.entity_rng));
+        assert_eq!(hit.source_byte_3e, root.source_byte_3e.wrapping_add(1));
+
+        arena.authored_class5[index].action = ARCHER_ACTION_ATTACK_VISUAL;
+        let before = arena.clone();
+        assert!(
+            arena
+                .step_authored_archer_slot(
+                    root.source_entity_index,
+                    empty_context(&terrain),
+                    &terrain
+                )
+                .is_none()
+        );
+        assert_eq!(
+            arena, before,
+            "str50[38] has no callback, RNG or phase epilogue"
+        );
+
+        arena.authored_class5[index].action = ARCHER_ACTION_IDLE_VISUAL;
+        arena.authored_class5[index].dword_0x10 = 91;
+        let before = arena.authored_class5[index];
+        arena
+            .step_authored_archer_slot(root.source_entity_index, empty_context(&terrain), &terrain)
+            .unwrap();
+        let after = arena.authored_class5[index];
+        assert_eq!(
+            (after.position, after.entity_rng, after.action),
+            (before.position, before.entity_rng, 39)
+        );
+        assert_eq!(
+            after.dword_0x10, 0,
+            "20140 resets dword10 even for StageVar's no-op mode0"
+        );
+        assert_eq!(after.source_byte_3e, before.source_byte_3e.wrapping_add(1));
+    }
+
+    #[test]
+    fn archer_stage_target_acquisition_keeps_cadence_and_post_hit_wrapper_order() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path()).unwrap();
+        let mut session = inspection.level2_reset_session().unwrap();
+        let mut root = session
+            .economy_mut()
+            .allocate_authored_archer(232, archer_position())
+            .unwrap();
+        let terrain = session.session.state.live.terrain.clone();
+        let mut runtime = session.runtime.clone();
+        runtime.stage_variables[1].kind = 3;
+        runtime.stage_variables[1].flags = 2;
+        runtime.stage_variables[1].relation = RuntimeRelation::AxisScalar(9);
+        let mut target = target_in_arena(
+            &session.session.state.live.economy,
+            session.state.entity_index,
+        )
+        .unwrap();
+        target.entity_index = 777;
+        target.class = 5;
+        target.model = 9;
+        target.position = root.position;
+        let relations = [ArcherRelation {
+            slot: 777,
+            target,
+            source_id: 777,
+            parent: 0,
+            stage_index: 0,
+            stage_mode: 0,
+            stage_relation: 0,
+            attacker: 0,
+            yaw: 0,
+            roll: 0,
+            half_width: 128,
+            frozen_class5_member: true,
+        }];
+        root.action = ARCHER_ACTION_IDLE_VISUAL;
+        root.actual_speed = 0;
+        root.source_byte_3e = 1;
+        let mut context = empty_context(&terrain);
+        context.stage = ArcherStageState {
+            index: 1,
+            mode: 3,
+            ..ArcherStageState::default()
+        };
+        context.relations = &relations;
+        context.stage_runtime = Some(&mut runtime);
+        step_archer_action39(&mut root, &mut context);
+        assert_eq!(
+            context.stage.relation, 0,
+            "1D8C0 does not acquire outside its eight-visit gate"
+        );
+        root.source_byte_3e = 8;
+        step_archer_action39(&mut root, &mut context);
+        assert_eq!(
+            (context.stage.relation, root.action, root.word_0x96_150),
+            (777, 34, 777)
+        );
+
+        root.action = ARCHER_ACTION_IDLE_VISUAL;
+        root.life = 1;
+        root.pending_word_0x62 = session.state.entity_index;
+        context.pending_damage = 2;
+        context.stage.mode = 3;
+        step_archer_action39(&mut root, &mut context);
+        assert_eq!(root.life, -1);
+        assert_eq!(
+            (root.action, root.word_0x96_150),
+            (34, 777),
+            "1D7C0 performs its target check after the base lethal transition"
+        );
+        assert!(root.pending_word_0x62 == 0);
+    }
+
+    #[test]
+    fn archer_hidden_before_its_visit_executes_then_reclaims_next_pass() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path()).unwrap();
+        let session = inspection.level2_reset_session().unwrap();
+        let terrain = session.session.state.live.terrain.clone();
+        let mut arena = session.economy().clone();
+        let root = arena
+            .allocate_authored_archer(232, archer_position(), &terrain)
+            .unwrap();
+        let row = arena
+            .authored_class5
+            .iter_mut()
+            .find(|row| row.source_entity_index == root.source_entity_index)
+            .unwrap();
+        row.action = ARCHER_ACTION_IDLE_VISUAL;
+        row.drawing_enabled = false;
+        let phase = row.source_byte_3e;
+        arena
+            .step_authored_archer_slot(root.source_entity_index, empty_context(&terrain), &terrain)
+            .expect("hide does not remove an enabled same-pass callback");
+        let retained = arena
+            .authored_class5
+            .iter()
+            .find(|row| row.source_entity_index == root.source_entity_index)
+            .unwrap();
+        assert!(!retained.drawing_enabled);
+        assert_eq!(retained.source_byte_3e, phase.wrapping_add(1));
+        assert!(arena.map_chains.is_linked(root.source_entity_index));
+        arena.reclaim_hidden_archer_rows_at_source_boundary();
+        assert!(
+            !arena
+                .authored_class5
+                .iter()
+                .any(|row| row.source_entity_index == root.source_entity_index)
+        );
+        assert!(
+            !arena
+                .authored_class5_archer
+                .iter()
+                .any(|row| row.source_entity_index == root.source_entity_index)
+        );
+        assert!(!arena.map_chains.is_linked(root.source_entity_index));
+    }
+
+    #[test]
+    fn archer_house_defender_enters_real_family_and_consumes_constructor_mailbox() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path()).unwrap();
+        let session = inspection.level2_reset_session().unwrap();
+        let terrain = session.session.state.live.terrain.clone();
+        let mut arena = session.economy().clone();
+        let attacker = session.state.entity_index;
+        let slot = arena
+            .allocate_house_archer(
+                1,
+                attacker,
+                HouseResidentRequest {
+                    position: archer_position(),
+                    model: 4,
+                    action: 33,
+                    attacker_entity_index: attacker,
+                },
+                &terrain,
+            )
+            .unwrap();
+        assert!(
+            !arena
+                .house_residents
+                .iter()
+                .any(|row| row.source_entity_index == slot)
+        );
+        assert_eq!(
+            arena.source_owner(slot),
+            0,
+            "the House does not copy its owner into AddArchers"
+        );
+        let root = arena
+            .authored_class5
+            .iter()
+            .find(|row| row.source_entity_index == slot)
+            .unwrap();
+        assert_eq!((root.action, root.pending_word_0x62), (33, attacker));
+        let mut context = empty_context(&terrain);
+        context.pending_damage = 1;
+        arena
+            .step_authored_archer_slot(slot, context, &terrain)
+            .unwrap();
+        let root = arena
+            .authored_class5
+            .iter()
+            .find(|row| row.source_entity_index == slot)
+            .unwrap();
+        assert_eq!(
+            (root.life, root.action, root.word_0x96_150),
+            (999, 34, attacker)
+        );
     }
 
     #[test]
@@ -1827,7 +2118,7 @@ mod tests {
                 && source.active
                 && source.drawing_enabled
         }));
-        assert_eq!(session.economy().authored_class5_runtime().len(), 4);
+        assert_eq!(session.economy().authored_class5_archer().len(), 4);
         let collision_targets = session.economy().fireball_collision_targets(&[]);
         let collision = collision_targets
             .iter()
@@ -1871,14 +2162,14 @@ mod tests {
         assert!(
             session
                 .economy()
-                .authored_class5_runtime()
+                .authored_class5_archer()
                 .iter()
                 .all(|state| {
                     state.byte_0x38 == 1
                         && state.xtype == 3
                         && state.descriptor_index == ARCHER_DESCRIPTOR_INDEX
                         && state.pending_damage == 0
-                        && state.linked_head == 0
+                        && state.word_0x34 == 0
                 })
         );
 
@@ -1901,7 +2192,7 @@ mod tests {
         let source_before = source;
         source.source_byte_3e = 1;
         let mut word_0x32 = 0;
-        let mut context = empty_context();
+        let mut context = empty_context(&session.session.state.live.terrain);
         let effects = step_archer_action33(&mut source, &mut word_0x32, &mut context);
         assert!(effects.moved);
         assert_eq!(source.action, ARCHER_ACTION);
@@ -1931,6 +2222,8 @@ mod tests {
         attack_source.source_byte_3e = ARCHER_DESCRIPTOR_CADENCE;
         attack_source.word_0x96_150 = target.entity_index;
         let mut attack_context = ArcherActionContext {
+            terrain: &session.session.state.live.terrain,
+            control_flags: 4,
             pending_damage: 0,
             linked_head: 0,
             linked: &[],
@@ -1938,6 +2231,9 @@ mod tests {
             entities: &[],
             fallback_entities: &[],
             peers: &[],
+            relations: &[],
+            stage: ArcherStageState::default(),
+            stage_runtime: None,
         };
         let attack_effects = step_archer_action34(&mut attack_source, &mut attack_context);
         let request = attack_effects
