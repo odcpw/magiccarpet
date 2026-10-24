@@ -114,6 +114,33 @@ namespace MagicCarpet.Native
         }
         private bool disposed;
         private bool night;
+        private Func<byte[], byte[]> paletteTransform;
+        private byte[] worldPaletteSource;
+        private byte[] entityPaletteSource;
+
+        /// Preferences transform retained source palette bytes; source caches
+        /// and native indexed frames remain immutable presentation inputs.
+        internal void SetPaletteTransform(Func<byte[], byte[]> transform)
+        {
+            paletteTransform = transform;
+            RefreshPreferences();
+        }
+
+        internal void RefreshPreferences()
+        {
+            if (worldPalette != null && worldPaletteSource != null)
+            {
+                worldPalette.LoadRawTextureData(TransformPalette(worldPaletteSource));
+                worldPalette.Apply(false, false);
+            }
+            if (hudPalette != null && entityPaletteSource != null)
+            {
+                hudPalette.LoadRawTextureData(TransformPalette(entityPaletteSource));
+                hudPalette.Apply(false, false);
+            }
+        }
+
+        private byte[] TransformPalette(byte[] source) => paletteTransform?.Invoke(source) ?? source;
 
         [Serializable]
         private sealed class NightMaterials
@@ -471,7 +498,8 @@ namespace MagicCarpet.Native
             }
             worldIndices.LoadRawTextureData(indices);
             worldIndices.Apply(false, false);
-            worldPalette.LoadRawTextureData(palette);
+            worldPaletteSource = palette;
+            worldPalette.LoadRawTextureData(TransformPalette(palette));
             worldPalette.Apply(false, false);
             worldObject.GetComponent<MeshRenderer>().enabled = true;
         }
@@ -542,8 +570,9 @@ namespace MagicCarpet.Native
                     filterMode = FilterMode.Point,
                     wrapMode = TextureWrapMode.Clamp
                 };
-                hudPalette.LoadRawTextureData(paletteBytes);
-                hudPalette.Apply(false, true);
+                entityPaletteSource = paletteBytes;
+                hudPalette.LoadRawTextureData(TransformPalette(paletteBytes));
+                hudPalette.Apply(false, false);
                 foreach (var row in descriptor.bitmap_assets)
                 {
                     var indices = cache.ReadLevel3GameplayOutput(row.indices_path);
@@ -688,8 +717,9 @@ namespace MagicCarpet.Native
                 filterMode = FilterMode.Point,
                 wrapMode = TextureWrapMode.Clamp
             };
-            hudPalette.LoadRawTextureData(bytes);
-            hudPalette.Apply(false, true);
+            entityPaletteSource = bytes;
+            hudPalette.LoadRawTextureData(TransformPalette(bytes));
+            hudPalette.Apply(false, false);
             return hudPalette;
         }
 

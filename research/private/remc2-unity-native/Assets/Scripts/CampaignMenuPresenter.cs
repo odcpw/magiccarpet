@@ -16,6 +16,9 @@ namespace MagicCarpet.Native
         private GUIStyle heading;
         private GUIStyle button;
         private GUIStyle message;
+        private PlayerPreferencesPresenter preferences;
+
+        internal void AttachPreferences(PlayerPreferencesPresenter owner) { preferences = owner; }
 
         internal CampaignMenuPresenter(OwnerAssetCache cache, string campaignCachePath = null)
         {
@@ -63,6 +66,11 @@ namespace MagicCarpet.Native
             var mode = identity.mode;
             if (mode != GameRuntimeTransport.TitleMode && mode != GameRuntimeTransport.PausedMode && mode != GameRuntimeTransport.CampaignMode)
                 return Action.None;
+            if (preferences?.IsOpen == true)
+            {
+                preferences.Draw();
+                return Action.None;
+            }
             heading ??= new GUIStyle(GUI.skin.label) { alignment = TextAnchor.MiddleCenter, fontSize = 28 };
             button ??= new GUIStyle(GUI.skin.button) { fontSize = 19 };
             message ??= new GUIStyle(GUI.skin.label) { alignment = TextAnchor.MiddleCenter, wordWrap = true };
@@ -79,9 +87,10 @@ namespace MagicCarpet.Native
                 else GUI.DrawTexture(new Rect(0, 0, Screen.width, Screen.height), background, ScaleMode.ScaleToFit);
                 var width = Mathf.Min(360, Screen.width - 32);
                 var x = (Screen.width - width) * .5f;
-                var y = Mathf.Max(16, (Screen.height - 480) * .5f);
+                var panelHeight = mode == GameRuntimeTransport.PausedMode ? 590 : 480;
+                var y = Mathf.Max(16, (Screen.height - panelHeight) * .5f);
                 GUI.color = new Color(0, 0, 0, .85f);
-                GUI.DrawTexture(new Rect(x - 16, y, width + 32, 480), Texture2D.whiteTexture);
+                GUI.DrawTexture(new Rect(x - 16, y, width + 32, panelHeight), Texture2D.whiteTexture);
                 GUI.color = Color.white;
                 GUI.Label(new Rect(x, y + 12, width, 44), mode == GameRuntimeTransport.TitleMode ? "MAGIC CARPET II" : mode == GameRuntimeTransport.CampaignMode ? "CAMPAIGN" : "PAUSED", heading);
                 y += 66;
@@ -115,6 +124,7 @@ namespace MagicCarpet.Native
                         }
                     }
                     if (GUI.Button(new Rect(x, y, width, 42), "Main menu", button)) return Action.Title;
+                    if (preferences != null && GUI.Button(new Rect(x, y + 50, width, 42), "Player preferences", button)) preferences.Open();
                     return Action.None;
                 }
                 var choices = mode == GameRuntimeTransport.TitleMode
@@ -127,12 +137,18 @@ namespace MagicCarpet.Native
                     y += 50;
                 }
                 GUI.enabled = true;
+                if (preferences != null)
+                {
+                    if (GUI.Button(new Rect(x, y, width, 42), "Player preferences", button)) preferences.Open();
+                    y += 50;
+                }
                 var help = mode == GameRuntimeTransport.PausedMode
-                    ? "W/S fly · A/D strafe · Mouse steer\n" +
-                      "1 Fireball · 2 Possession · 3 Castle · 4 Speed\n" +
-                      "Space cast · F5 save · R restart"
+                    ? $"{preferences?.Current.preferences.keys[0] ?? "W"}/{preferences?.Current.preferences.keys[1] ?? "S"} fly · Mouse steer\n" +
+                      "Number keys select spells · Space cast\n" +
+                      "Backspace stop · F5 save · R restart"
                     : "";
-                GUI.Label(new Rect(x, y + 8, width, 80), status ?? help, message);
+                if (status != null || preferences?.Current.preferences.show_help != false)
+                    GUI.Label(new Rect(x, y + 8, width, 80), status ?? help, message);
                 return Action.None;
             }
             finally { GUI.color = oldColor; GUI.enabled = oldEnabled; }
