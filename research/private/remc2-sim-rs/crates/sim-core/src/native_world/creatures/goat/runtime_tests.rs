@@ -150,6 +150,14 @@ fn parent_clone_reclaimed_parent_resolves_to_source_null_instead_of_tombstone() 
 
 #[test]
 fn authored_group_goats_use_live_damage_mana_projection_and_following_pass_reclaim() {
+    use crate::{
+        campaign::backend::load_mc2_campaign,
+        game_definition::{
+            ChangeSetBuilder, PublicationFault, RequestedTiming, WorkspaceStore, default_catalog,
+        },
+        level_definition::{CreatureKind, ObjectiveCondition},
+    };
+
     let package = std::env::var_os("MC_CAMPAIGN_PACKAGE_LEVEL3_V1").map_or_else(
         || {
             PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -157,7 +165,50 @@ fn authored_group_goats_use_live_damage_mana_projection_and_following_pass_recla
         },
         PathBuf::from,
     );
+    // Use the normal definition publication path to make the package's first
+    // absence objective observe Goats. The same source objective and group-1
+    // gate must consume the dynamic group-5 roots, rather than a hand-built
+    // presence array or an isolated predicate callback.
+    let catalog = default_catalog().unwrap();
+    let base = load_mc2_campaign(&package, &catalog).unwrap();
+    let workspace = "goat-dynamic-absence";
+    let workspace_path = std::env::temp_dir().join(format!(
+        "{workspace}-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let store = WorkspaceStore::create(&workspace_path, workspace, base.clone()).unwrap();
+    let changes = ChangeSetBuilder::new(
+        workspace,
+        &base,
+        "observe-authored-goat-roots",
+        RequestedTiming::SessionReset,
+    )
+    .put_objective_from(
+        sim_definition::adapter::stable_objective_id("objective.clear.undead_horde").unwrap(),
+        ObjectiveCondition::NoLivingCreatures(CreatureKind::Skeleton),
+        ObjectiveCondition::NoLivingCreatures(CreatureKind::Goat),
+    )
+    .build()
+    .unwrap();
+    let validation = store.validate(&catalog, changes.clone()).unwrap();
+    assert!(validation.accepted, "{:?}", validation.diagnostics);
+    store
+        .apply(
+            &catalog,
+            changes,
+            &validation.receipt_hash,
+            PublicationFault::None,
+        )
+        .unwrap();
+    let published = store.active_definition().unwrap();
     let mut campaign = CampaignSession::open(&package, CampaignSelection::LEVEL3).unwrap();
+    campaign
+        .apply_semantic_level_variant(published.level_definition().unwrap())
+        .unwrap();
     // Stage the actual group-5 producer boundary, not a second constructor.
     // The eleven placements, descriptors and health come from owner content.
     campaign
@@ -256,6 +307,15 @@ fn authored_group_goats_use_live_damage_mana_projection_and_following_pass_recla
         (projected.life, projected.action, projected.word_0x96_150),
         (100, 14, owner)
     );
+    assert_eq!(
+        campaign.level2_compatibility().runtime().objectives[0].stage_selectors[0],
+        1,
+        "a living dynamically constructed Goat blocks the published absence objective"
+    );
+    assert!(campaign.events().iter().all(|event| !matches!(
+        event,
+        crate::native_world::Level2DispatchEvent::AuthoredGroupActivated { group: 1, .. }
+    )));
 
     for slot in &slots {
         let goat = campaign
@@ -294,9 +354,38 @@ fn authored_group_goats_use_live_damage_mana_projection_and_following_pass_recla
             .economy
             .rebuilt_class5_model_presence()[1]
     );
-    for _ in 0..12 {
+    assert_eq!(
+        campaign.level2_compatibility().runtime().objectives[0].stage_selectors[0],
+        1,
+        "the killing pass still observes its frozen living-root census"
+    );
+    step(&mut campaign);
+    assert_eq!(
+        campaign.level2_compatibility().runtime().objectives[0].stage_selectors[0],
+        2,
+        "the following pass releases the actual Goat absence objective"
+    );
+    // Dispatch scratch is cleared each outer turn; retain the actual gate
+    // publication when it is emitted, while the death animation continues.
+    let mut group_one_published = false;
+    for _ in 0..11 {
         step(&mut campaign);
+        group_one_published |= campaign.events().iter().any(|event| {
+            matches!(
+                event,
+                crate::native_world::Level2DispatchEvent::AuthoredGroupActivated {
+                    source_slot: 127,
+                    group: 1,
+                    authored_indices,
+                    ..
+                } if authored_indices.as_ref() == [141, 142]
+            )
+        });
     }
+    assert!(
+        group_one_published,
+        "the source objective-complete producer must publish its real group"
+    );
     let session = campaign.level2_compatibility();
     for slot in slots {
         let goat = session
