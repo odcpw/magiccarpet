@@ -61,6 +61,7 @@ fn mission_audio_census_is_unique_complete_and_compiler_bound() {
         include_str!("native_world/creatures/archer.rs"),
         include_str!("campaign/level2.rs"),
         include_str!("native_world/support_spells.rs"),
+        include_str!("native_world/cave_spells.rs"),
         include_str!("native_world/level2_dynamic_economy.rs"),
     ];
     let metadata_only = concat!(
@@ -150,16 +151,16 @@ fn source_audio_occurrence_bindings_are_unique_and_exhaustive() {
         .map(|(_, hash)| *hash)
         .collect::<BTreeSet<_>>();
 
-    assert_eq!(SourceAudioCallTag::ALL.len(), 57);
-    assert_eq!(SOURCE_AUDIO_CALL_BINDINGS.len(), 57);
-    assert_eq!(all_tags.len(), 57, "every source tag must be distinct");
+    assert_eq!(SourceAudioCallTag::ALL.len(), 58);
+    assert_eq!(SOURCE_AUDIO_CALL_BINDINGS.len(), 58);
+    assert_eq!(all_tags.len(), 58, "every source tag must be distinct");
     assert_eq!(
         bound_tags, all_tags,
         "every source tag must bind exactly once"
     );
     assert_eq!(
         bound_hashes.len(),
-        57,
+        58,
         "each reachable source occurrence must retain a distinct pinned hash"
     );
     assert!(SOURCE_AUDIO_CALL_BINDINGS.iter().all(|(_, hash)| {

@@ -80,6 +80,7 @@ pub mod terrain_grid;
 pub mod terrain_presentation;
 pub mod terrain_reflection;
 pub mod villager;
+pub(crate) mod world;
 pub use sim_voxel::{voxel_collapse, voxel_damage, voxel_snapshot, voxel_state, voxel_structure};
 
 include!(concat!(env!("OUT_DIR"), "/trig_table.rs"));
@@ -702,6 +703,8 @@ pub enum MissionAudioSite {
     TeleportSpell,
     ReboundReflection,
     CaveGroundFeature,
+    CaveInLaunch,
+    CaveInCapture,
     Count,
 }
 
@@ -768,11 +771,12 @@ pub enum SourceAudioCallTag {
     TeleportSpell,
     ReboundReflection,
     CaveGroundFeatureAction93,
+    SpellProjectileCapture,
 }
 
 /// Compiler-checked binding from every reachable source occurrence identity
 /// to the production tag used at its Rust call path.
-pub const SOURCE_AUDIO_CALL_BINDINGS: [(SourceAudioCallTag, &str); 57] = [
+pub const SOURCE_AUDIO_CALL_BINDINGS: [(SourceAudioCallTag, &str); 58] = [
     (
         SourceAudioCallTag::VolumePreviewAdjustVolume,
         "286982557778df1130f462a82b40225bf7e9cff0ef1a128b9d00f0a7a0d6ea2a",
@@ -1005,6 +1009,10 @@ pub const SOURCE_AUDIO_CALL_BINDINGS: [(SourceAudioCallTag, &str); 57] = [
         SourceAudioCallTag::ReboundReflection,
         "0f5e2005195aa14918a40423c8ccb0b8ab19f3f23674f660a82a4cc9dd7dec5b",
     ),
+    (
+        SourceAudioCallTag::SpellProjectileCapture,
+        "a0282605de763727b9a5fabed2776e02f4bfb4b23bb17445169d865a49c2ac47",
+    ),
 ];
 
 #[inline(always)]
@@ -1012,7 +1020,7 @@ pub fn mark_source_audio_call(_tag: SourceAudioCallTag) {}
 
 #[cfg(test)]
 impl SourceAudioCallTag {
-    pub const ALL: [Self; 57] = [
+    pub const ALL: [Self; 58] = [
         Self::VolumePreviewAdjustVolume,
         Self::GoatAction08Bleat,
         Self::GoatAction09Bleat,
@@ -1070,6 +1078,7 @@ impl SourceAudioCallTag {
         Self::TeleportSpell,
         Self::ReboundReflection,
         Self::CaveGroundFeatureAction93,
+        Self::SpellProjectileCapture,
     ];
 }
 
@@ -1137,6 +1146,8 @@ impl MissionAudioSite {
         Self::TeleportSpell,
         Self::ReboundReflection,
         Self::CaveGroundFeature,
+        Self::CaveInLaunch,
+        Self::CaveInCapture,
     ];
 
     #[must_use]
@@ -1532,6 +1543,22 @@ impl MissionAudioSite {
                 "1",
                 "fixed 0",
                 "EventsFunctions.cpp:22845 (sub_31120)",
+                true,
+            ),
+            Self::CaveInLaunch => (
+                "15",
+                "spell parent",
+                "1",
+                "fixed 0",
+                "EventsFunctions.cpp:44280 (sub_6DCA0)",
+                true,
+            ),
+            Self::CaveInCapture => (
+                "26",
+                "captured projectile",
+                "1",
+                "fixed 0",
+                "EventsFunctions.cpp:55477 (sub_68AC0)",
                 true,
             ),
             Self::Count => panic!("sentinel has no audio contract"),
