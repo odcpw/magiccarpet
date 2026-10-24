@@ -20,4 +20,4 @@ case "${MC_WINDOW_BACKEND:-auto}" in
     ;;
 esac
 
-exec "$script_dir/Builds/Linux/MagicCarpetNative.x86_64" "$@"
+exec "$script_dir/build-player.sh" --launch "$@"

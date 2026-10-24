@@ -2,9 +2,9 @@ using System.IO;
 using UnityEditor;
 using UnityEditor.Build;
 using UnityEditor.Build.Reporting;
-using UnityEditor.SceneManagement;
 using UnityEngine;
-using UnityEngine.SceneManagement;
+using System;
+using System.Linq;
 
 namespace MagicCarpet.Native.Editor
 {
@@ -15,19 +15,25 @@ namespace MagicCarpet.Native.Editor
         [MenuItem("Magic Carpet/Build Linux Player")]
         public static void BuildLinuxPlayer()
         {
-            EnsureScene();
-            PlayerSettings.productName = "Magic Carpet Native Harness";
-            PlayerSettings.companyName = "Owner-local preservation lab";
-            PlayerSettings.defaultScreenWidth = 1600;
-            PlayerSettings.defaultScreenHeight = 900;
-            PlayerSettings.fullScreenMode = FullScreenMode.FullScreenWindow;
-            PlayerSettings.runInBackground = true;
+            var scenes = EditorBuildSettings.scenes.Where(scene => scene.enabled)
+                .Select(scene => scene.path).ToArray();
+            if (scenes.Length == 0 || scenes[0] != ScenePath)
+                throw new BuildFailedException(
+                    $"Enable {ScenePath} as the first scene in Build Settings; authored settings were preserved.");
+            foreach (var scene in scenes)
+                if (!File.Exists(scene) || AssetDatabase.LoadAssetAtPath<SceneAsset>(scene) == null)
+                    throw new BuildFailedException(
+                        $"Build scene is missing or invalid: {scene}. Restore or fix the authored scene.");
+            if (!File.Exists("Assets/Plugins/x86_64/libsim_capi.so"))
+                throw new BuildFailedException("Missing native plugin. Run build-player.sh first.");
 
-            Directory.CreateDirectory("Builds/Linux");
+            var outputDirectory = Environment.GetEnvironmentVariable("MC_PLAYER_BUILD_OUTPUT")
+                ?? "Builds/Linux";
+            Directory.CreateDirectory(outputDirectory);
             var report = BuildPipeline.BuildPlayer(new BuildPlayerOptions
             {
-                scenes = new[] { ScenePath },
-                locationPathName = "Builds/Linux/MagicCarpetNative.x86_64",
+                scenes = scenes,
+                locationPathName = Path.Combine(outputDirectory, "MagicCarpetNative.x86_64"),
                 target = BuildTarget.StandaloneLinux64,
                 // The qualified owner presentation must not leak Unity's
                 // default "Development Build" overlay into HUD captures.
@@ -46,17 +52,5 @@ namespace MagicCarpet.Native.Editor
                 $"({report.summary.totalSize} bytes)");
         }
 
-        private static void EnsureScene()
-        {
-            Directory.CreateDirectory("Assets/Scenes");
-            var scene = EditorSceneManager.NewScene(NewSceneSetup.EmptyScene, NewSceneMode.Single);
-            scene.name = "Main";
-            new GameObject("Magic Carpet Runtime").AddComponent<MagicCarpetRuntime>();
-            EditorSceneManager.SaveScene(scene, ScenePath);
-            EditorBuildSettings.scenes = new[]
-            {
-                new EditorBuildSettingsScene(ScenePath, true)
-            };
-        }
     }
 }
