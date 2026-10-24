@@ -147,7 +147,7 @@ pub fn load_mc2_campaign(
     catalog: &SemanticCatalog,
 ) -> crate::game_definition::Result<GameDefinition> {
     load_mc2_campaign_internal(package_root.as_ref(), None, catalog)
-        .map(|(definition, _, _)| definition)
+        .map(|(definition, ..)| definition)
 }
 
 /// Load a campaign definition with exact owner-cache audio artifacts retained
@@ -158,14 +158,14 @@ pub fn load_mc2_campaign_with_owner_cache(
     catalog: &SemanticCatalog,
 ) -> crate::game_definition::Result<GameDefinition> {
     load_mc2_campaign_internal(package_root.as_ref(), Some(owner_cache.as_ref()), catalog)
-        .map(|(definition, _, _)| definition)
+        .map(|(definition, ..)| definition)
 }
 
 fn load_mc2_campaign_internal(
     package_root: &Path,
     owner_cache: Option<&Path>,
     catalog: &SemanticCatalog,
-) -> crate::game_definition::Result<(GameDefinition, CampaignSelection, String)> {
+) -> crate::game_definition::Result<(GameDefinition, CampaignSelection, String, String)> {
     let selection = CampaignDescriptor::declared_selection(package_root).map_err(|error| {
         definition_error(
             DefinitionErrorCode::InvalidSchema,
@@ -447,6 +447,7 @@ fn load_mc2_campaign_internal(
         ),
         descriptor.identity,
         descriptor.package_sha256,
+        descriptor.campaign_spec.reset_sources.runtime.sha256,
     ))
 }
 
@@ -767,6 +768,7 @@ struct ResolvedMc2RuntimePackage {
     inputs: Mc2CampaignInputs,
     selection: CampaignSelection,
     source_package_sha256: String,
+    runtime_capture_sha256: String,
 }
 
 /// Presentation inputs retained from the exact validated installed destination.
@@ -781,6 +783,7 @@ pub struct Mc2LoadingPresentation {
     #[serde(serialize_with = "serialize_loading_revision")]
     pub definition_revision: u64,
     pub source_package_sha256: String,
+    pub runtime_capture_sha256: String,
     pub owner_export_package_sha256: String,
     pub environment: &'static str,
     pub artwork_profile: &'static str,
@@ -908,11 +911,12 @@ impl Mc2RuntimePackageResolver {
         let mut flow: Option<RuntimeFlowDefinition> = None;
         let mut by_level = BTreeMap::new();
         for input in inputs {
-            let (definition, selection, source_package_sha256) = load_mc2_campaign_internal(
-                &input.package_root,
-                input.owner_cache.as_deref(),
-                &catalog,
-            )?;
+            let (definition, selection, source_package_sha256, runtime_capture_sha256) =
+                load_mc2_campaign_internal(
+                    &input.package_root,
+                    input.owner_cache.as_deref(),
+                    &catalog,
+                )?;
             let definition = Arc::new(definition);
             definition.verify_identity()?;
             let candidate = definition.runtime_flow().cloned().ok_or_else(|| {
@@ -945,6 +949,7 @@ impl Mc2RuntimePackageResolver {
                         inputs: input,
                         selection,
                         source_package_sha256,
+                        runtime_capture_sha256,
                     },
                 )
                 .is_some()
@@ -1079,6 +1084,7 @@ impl Mc2RuntimePackageResolver {
             definition_hash: pending.definition_hash.clone(),
             definition_revision: pending.definition_revision,
             source_package_sha256: package.source_package_sha256.clone(),
+            runtime_capture_sha256: package.runtime_capture_sha256.clone(),
             owner_export_package_sha256: owner_export.sha256.clone(),
             environment,
             artwork_profile: loading_artwork_profile(package.selection),
@@ -2550,6 +2556,10 @@ pub(crate) mod tests {
         assert_eq!(
             first.source_package_sha256,
             manifest["package_sha256"].as_str().unwrap()
+        );
+        assert_eq!(
+            first.runtime_capture_sha256,
+            manifest["files"]["runtime.bin"]["sha256"].as_str().unwrap()
         );
         assert_eq!(
             serde_json::to_value(&first).unwrap()["definition_revision"],

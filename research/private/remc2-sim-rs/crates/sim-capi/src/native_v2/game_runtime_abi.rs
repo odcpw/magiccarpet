@@ -1650,16 +1650,22 @@ mod tests {
         );
         assert_eq!(identity(handle), title);
 
-        // The ordinary first step consumes the retained owner collision-mask bank.
-        // Bind the same real Level 1 cache as the installed player, while leaving
-        // the malformed and incomplete package-set requests above unchanged.
+        // The ordinary first step needs the bank-bearing owner package as well
+        // as its owner cache. A cache cannot supply a missing package bank.
+        let level_one = std::env::var_os("MC_CAMPAIGN_LEVEL1_PACKAGE").map_or_else(
+            || {
+                PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../../generated/mc-bhq8-level1-collision-v5-night")
+            },
+            PathBuf::from,
+        );
         let owner_cache = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../../../generated/level1-unity-asset-cache-plan29-final");
         let packages = serde_json::to_vec(&serde_json::json!({
             "request_contract": INSTALLED_PACKAGE_SET_CONTRACT,
             "packages": [
                 { "package_dir": level_three_package(), "owner_cache_path": null },
-                { "package_dir": level_one_package(), "owner_cache_path": owner_cache },
+                { "package_dir": level_one, "owner_cache_path": owner_cache },
                 { "package_dir": level_two_package(), "owner_cache_path": null }
             ]
         }))
@@ -1849,6 +1855,10 @@ mod tests {
         assert_eq!(
             first["value"]["source_package_sha256"],
             manifest["package_sha256"]
+        );
+        assert_eq!(
+            first["value"]["runtime_capture_sha256"],
+            manifest["files"]["runtime.bin"]["sha256"]
         );
         assert_eq!(
             first["value"]["owner_export_package_sha256"],
