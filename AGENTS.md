@@ -79,19 +79,63 @@ request; the normal reference is remc2 source.
 
 ## Build and check
 
-From `research/private/remc2-sim-rs`:
+Use the smallest check that exercises the changed behavior. During iteration,
+check the affected package/target; after a coherent feature change, run relevant
+existing focused tests and its real producer-to-consumer path. An exact test
+filter still compiles the package's test binary, so batch related edits and reuse
+warm artifacts. Do not run a workspace suite or rebuild Unity after every tweak.
+Avoid duplicate Cargo jobs for the same workspace/profile; coordinate shared
+integration checks once against the integrated code and reuse their evidence.
+
+Examples from `research/private/remc2-sim-rs`:
 
 ```sh
-cargo fmt --all -- --check
-cargo check --workspace --all-targets --locked
+cargo fmt -p sim-core -- --check
+cargo check -p sim-core --lib --locked
 cargo test -p sim-core --lib --locked <test-name> -- --exact
-cargo build -p sim-capi --locked
 ```
 
-Use the affected package and an exact existing test name; confirm a nonzero
-test count. Preserve the compiler settings in the workspace manifest.
-Run broader tests when the changed behavior requires them. Do not replace
-runtime verification with document, task-count or agent-agreement checks.
+Substitute the actual owner package and target (`--bin sim-cli` for the CLI).
+Confirm the selected test ran; a generic scheduler test does not prove a new
+creature or spell. Run scheduler/order checks when that shared path or its wiring
+changes. Reuse a successful compile from the relevant test/build; repeat it only
+after changes, failures or a new concern. Add a focused regression check for an
+uncovered defect when useful; do not create a companion test project per bead.
+
+Shared scheduler, arena lifetime, definitions, save/replay, network ordering and
+ABI changes need their affected consumers and failure paths checked together.
+At those integration points, run `cargo check --workspace --all-targets --locked`
+once for the integrated revision when the blast radius warrants it, plus the
+relevant integration tests. Full campaign/multiplayer assembly keeps its real
+end-to-end acceptance. No arbitrary test-count gate or deferred bug cleanup.
+
+For Rust changes exercised in Unity, run `cargo build -p sim-capi --locked` and
+install the matching native library before play, even when the ABI is unchanged.
+Rebuild the Unity player when C#, scenes, packaged assets or the native contract
+require it; a
+Rust-only change does not itself require a Unity rebuild. The current launcher
+only starts the installed player; `mc-zdo.1` owns the reliable build/install and
+native-only refresh command. Do not claim a fresh runtime result using a stale
+plugin. Content-only edits use the affected importer/loader and actual runtime
+path, without an unrelated Rust build.
+
+Preserve the workspace's documented compiler stability settings and lockfile.
+Keep target caches; do not clean or change profiles/flags to force a rebuild.
+Use configured RCH for expensive builds when its worker is healthy; retain the
+local warm path for quick checks. Run RCH from the repository root: build scripts
+read upstream remc2 files outside the Rust workspace. Pin the nested toolchain
+explicitly; for example, after `rch check` confirms the worker is available:
+
+```sh
+RCH_REQUIRE_REMOTE=1 rch exec --source-content-receipt -- cargo +1.98.0 check --manifest-path research/private/remc2-sim-rs/Cargo.toml -p sim-input --locked
+```
+
+Select the actual affected package/target. `.rchignore` retains source tables,
+compile-time regression fixtures and atlas CSVs but omits large owner runtime
+caches and Unity outputs. Run checks needing those omitted assets locally.
+The receipt proves execution/source identity, not a speedup or gameplay result.
+Run changed-source UBS at handoff, with its scope limits. Documentation/Bead-only
+changes need diff/graph checks, not Cargo.
 
 Launch the existing local player from the repository root:
 

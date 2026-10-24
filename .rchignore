@@ -1,0 +1,19 @@
+# Rust offload runs from the repository root to retain build.rs/include_* inputs.
+# Keep upstream/remc2 source, upstream regression fixtures, and atlas semantic CSVs.
+# Owner-cache/runtime playtests run locally; their data is intentionally omitted.
+/.claude/
+/Magic Carpet*/
+/tmp/
+/research/private/.f5-*/
+/research/private/generated/
+/research/private/playtests/
+/research/private/mc2-*/
+/research/private/remc2-native-*/
+/research/private/remc2-regression-runtime/
+/research/private/remc2-unity-*/
+/research/private/remc2-atlas/generated/
+/research/private/remc2-atlas/semantics/owned-assets/
+/upstream/magic-carpet-2-hd/asan/
+/upstream/magic-carpet-2-hd/enhancedassets/
+/upstream/magic-carpet-2-hd/graphics/
+/upstream/magic-carpet-2-hd/EXTRACT/
