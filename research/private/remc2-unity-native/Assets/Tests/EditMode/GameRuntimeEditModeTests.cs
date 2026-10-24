@@ -2516,6 +2516,13 @@ namespace MagicCarpet.Native.Tests
                 var initial = runtime.GameRuntimeProductionCampaignSnapshot;
                 Assert.That(initial.identity.tick, Is.EqualTo("0"));
                 Assert.That(initial.value.presentation_entities, Is.Empty);
+                var fireball = Level2SpellPresenter.FindSpell(initial.value, "spell.fireball");
+                Assert.That(fireball.acquired, Is.True);
+                Assert.That(fireball.tier, Is.Zero);
+                Assert.That(fireball.mana_cost, Is.EqualTo(100));
+                Assert.That(fireball.hand, Is.EqualTo("left"));
+                Assert.That(fireball.availability, Is.EqualTo("ready"));
+                Assert.That(runtime.GameRuntimeProductionFlightHudText, Does.Contain(fireball.display_name));
 
                 Assert.That(
                     runtime.SubmitGameRuntimeSpellKey(1),
@@ -2528,6 +2535,7 @@ namespace MagicCarpet.Native.Tests
                 var selected = runtime.GameRuntimeProductionCampaignSnapshot;
                 Assert.That(selected.identity.tick, Is.EqualTo("1"));
                 Assert.That(selected.value.presentation_entities, Is.Empty);
+                Assert.That(Level2SpellPresenter.FindSpell(selected.value, fireball.id).selected, Is.True);
 
                 Assert.That(runtime.RequestGameRuntimeSelectedSpellCast(), Is.True);
                 runtime.QualificationDriveGameRuntimeFrames(1);
@@ -2538,6 +2546,16 @@ namespace MagicCarpet.Native.Tests
                         cast.value.presentation_entities,
                         entity => entity.kind == "spell.fireball.projectile"),
                     Is.True);
+                runtime.QualificationDriveGameRuntimeFrames(1);
+                Assert.That(runtime.GameRuntimeProductionCampaignSnapshot.value.player_vitals.mana,
+                    Is.EqualTo(initial.value.player_vitals.mana - fireball.mana_cost));
+                runtime.QualificationResetGameRuntimeProduction();
+                var reset = runtime.GameRuntimeProductionCampaignSnapshot;
+                Assert.That(reset.identity.generation, Is.EqualTo("2"));
+                Assert.That(reset.identity.tick, Is.EqualTo("0"));
+                Assert.That(reset.value.state_hash, Is.EqualTo(initial.value.state_hash));
+                Assert.That(JsonUtility.ToJson(Level2SpellPresenter.FindSpell(reset.value, fireball.id)),
+                    Is.EqualTo(JsonUtility.ToJson(fireball)));
             }
             finally
             {
@@ -2561,18 +2579,29 @@ namespace MagicCarpet.Native.Tests
                 var mana = runtime.GameRuntimeProductionCampaignSnapshot.value.player_vitals.mana;
                 Assert.That(runtime.SubmitGameRuntimeSpellKey(0), Is.False);
                 Assert.That(runtime.SubmitGameRuntimeSpellKey(5), Is.False);
-                Assert.That(runtime.SubmitGameRuntimeSpellKey(3), Is.True);
-                Assert.That(runtime.RequestGameRuntimeSelectedSpellCast(), Is.True);
+                Assert.That(runtime.SubmitGameRuntimeSpellKey(3), Is.False,
+                    "number-key choices admit only advertised acquired spells");
                 runtime.QualificationDriveGameRuntimeFrames(1);
                 Assert.That(runtime.GameRuntimeProductionIdentity.runtime_id, Is.EqualTo(before.runtime_id));
                 Assert.That(runtime.GameRuntimeProductionIdentity.session.tick, Is.EqualTo("1"));
                 var after = runtime.GameRuntimeProductionCampaignSnapshot;
                 Assert.That(after.value.presentation_entities, Is.Empty);
                 Assert.That(after.value.player_vitals.mana, Is.EqualTo(mana));
+                // The direct semantic command entry still reaches native
+                // validation. Its failed select+cast must remain atomic and
+                // leave the ordinary flight turn available.
+                Assert.That(runtime.SubmitGameRuntimeSpellSelection("spell.castle"), Is.True);
+                Assert.That(runtime.RequestGameRuntimeSelectedSpellCast(), Is.True);
+                runtime.QualificationDriveGameRuntimeFrames(1);
+                var rejected = runtime.GameRuntimeProductionCampaignSnapshot;
+                Assert.That(rejected.identity.tick, Is.EqualTo("2"));
+                Assert.That(rejected.value.presentation_entities, Is.Empty);
+                Assert.That(rejected.value.player_vitals.mana, Is.EqualTo(mana));
                 var replay = JsonUtility.FromJson<RecordedInputReplay>(Encoding.UTF8.GetString(
                     runtime.QualificationSaveGameRuntimeProductionReplay()));
-                Assert.That(replay.operations, Has.Length.EqualTo(1));
+                Assert.That(replay.operations, Has.Length.EqualTo(2));
                 Assert.That(replay.operations[0].command.cast_selected, Is.False);
+                Assert.That(replay.operations[1].command.cast_selected, Is.False);
                 runtime.QualificationApplyGameRuntimeProductionInput(true, false);
                 Assert.That(runtime.SubmitGameRuntimeSpellKey(1), Is.False);
                 Assert.That(runtime.RequestGameRuntimeSelectedSpellCast(), Is.False);
