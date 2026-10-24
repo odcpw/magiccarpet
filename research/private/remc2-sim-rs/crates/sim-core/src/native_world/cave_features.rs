@@ -28,6 +28,67 @@ pub(crate) struct Allocation {
     pub(crate) reclaim: bool,
 }
 
+/// Runtime group producer (`sub_4A310`), distinct from startup PrepareEvents.
+/// In particular, published80 is a hide-only row, published82 retains its
+/// constructor's room defaults, and only84/85 undo the centered XY placement.
+pub(crate) fn prepare_group(
+    arena: &mut SourceArena,
+    terrain: &mut SessionTerrain,
+    feature: AuthoredFeature,
+    particles: &[ParticleParameter],
+) -> Result<Option<u16>, String> {
+    if (feature.kind, feature.subtype) == (2, 7) {
+        return Ok(None);
+    }
+    if feature.kind != 10 || !(80..=86).contains(&feature.subtype) {
+        return Err("published feature does not belong to cave constructors".to_owned());
+    }
+    let position = feature.world_position(terrain.ground_height(feature.world_position(0)));
+    let Some(allocation) = allocate(arena, terrain, feature.subtype as u8, position)? else {
+        return Ok(None);
+    };
+    if let Some(index) = allocation.particle_index {
+        let Some(particle) = particles.get(usize::from(index)).copied() else {
+            reclaim(arena, terrain, allocation.source_slot);
+            return Err(format!("ground feature needs retained particle {index}"));
+        };
+        if let Err(error) = bind_particle(
+            &mut arena.entities[usize::from(allocation.source_slot)],
+            index,
+            particle,
+        ) {
+            reclaim(arena, terrain, allocation.source_slot);
+            return Err(error);
+        }
+    }
+    if allocation.reclaim {
+        reclaim(arena, terrain, allocation.source_slot);
+        return Ok(None);
+    }
+    let source = &mut arena.entities[usize::from(allocation.source_slot)];
+    match source.model {
+        83 => write_axis(source, 0, feature.word_10 as i16),
+        84 | 85 => {
+            let mut position = source.position;
+            position.x = position.x.wrapping_sub(128);
+            position.y = position.y.wrapping_sub(128);
+            position.z = feature.parameter_3 as i16;
+            source.set_position(position);
+            write_axis(source, 0, feature.word_10 as i16);
+        }
+        _ => {}
+    }
+    Ok(Some(allocation.source_slot))
+}
+
+fn startup_position(feature: AuthoredFeature, z: i16) -> Position {
+    Position {
+        x: feature.tile_x << 8,
+        y: feature.tile_y << 8,
+        z,
+    }
+}
+
 /// SetEntityIndexAndRot_49CD0 consumes the retained package particle row.
 /// The same lossless fields feed ordinary source-sprite observations.
 pub(crate) fn bind_particle(
@@ -121,7 +182,8 @@ pub(crate) fn prepare_authored(
         return Ok(Vec::new());
     }
     if feature.subtype != 80 {
-        let position = feature.world_position(terrain.ground_height(feature.world_position(0)));
+        let position =
+            startup_position(feature, terrain.ground_height(startup_position(feature, 0)));
         let Some(allocation) = allocate(arena, terrain, feature.subtype as u8, position)? else {
             return Ok(Vec::new());
         };
@@ -176,10 +238,10 @@ pub(crate) fn prepare_authored(
             .get(usize::from(current.parameter_2))
             .ok_or_else(|| "cave path target escapes authored table".to_owned())?;
         let widths = ((current.parameter_3 as u8 & 15) << 4) | (next.parameter_3 as u8 & 15);
-        if let Some(allocation) = allocate(arena, terrain, 81, current.world_position(0))? {
+        if let Some(allocation) = allocate(arena, terrain, 81, startup_position(current, 0))? {
             bind_link(
                 &mut arena.entities[usize::from(allocation.source_slot)],
-                next.world_position(0),
+                startup_position(next, 0),
                 widths,
             );
             allocations.push(allocation);
@@ -1080,6 +1142,69 @@ mod tests {
         assert!(!arena.entities[usize::from(allocation.source_slot)].active);
         assert_eq!(arena.economy.free_slot_count(), free);
         assert_eq!(terrain.planes.entity_indices[index(position)], 0);
+    }
+
+    #[test]
+    fn published_cave_features_keep_group_defaults_and_source_coordinate_overrides() {
+        let mut terrain = terrain();
+        let mut arena = arena(&terrain);
+        let feature = |model| AuthoredFeature {
+            index: 1,
+            kind: 10,
+            subtype: model,
+            tile_x: 10,
+            tile_y: 12,
+            activation_group: 51,
+            word_10: 7,
+            stage_tag: 51,
+            parameter_1: 15,
+            parameter_2: 10,
+            parameter_3: 2,
+        };
+        let marker = prepare_group(&mut arena, &mut terrain, feature(80), &[])
+            .expect("published marker")
+            .expect("marker row");
+        assert_eq!(
+            arena.entities[usize::from(marker)].model,
+            80,
+            "group publication never walks the startup linked path"
+        );
+        let room = prepare_group(&mut arena, &mut terrain, feature(82), &[])
+            .expect("published room")
+            .expect("room row");
+        let room = &arena.entities[usize::from(room)];
+        assert_eq!(
+            (room.record[71], room.record[72], room.record[74]),
+            (3, 3, 2),
+            "sub4A310 does not copy room parameters"
+        );
+        assert_eq!(
+            (room.position.x, room.position.y),
+            ((10 << 8) + 128, (12 << 8) + 128)
+        );
+        for model in 83..=85 {
+            let slot = prepare_group(&mut arena, &mut terrain, feature(model), &[])
+                .expect("published shaped feature")
+                .expect("shape row");
+            let row = &arena.entities[usize::from(slot)];
+            assert_eq!(axis(row, 0), 7);
+            let offset = if model == 83 { 128 } else { 0 };
+            assert_eq!(
+                (row.position.x, row.position.y),
+                ((10 << 8) + offset, (12 << 8) + offset)
+            );
+            assert_eq!(row.position.z, if model == 83 { 0 } else { 2 });
+        }
+        let mut barrel = feature(80);
+        barrel.kind = 2;
+        barrel.subtype = 7;
+        let free = arena.economy.free_slot_count();
+        assert!(
+            prepare_group(&mut arena, &mut terrain, barrel, &[])
+                .expect("source cave barrel no-op")
+                .is_none()
+        );
+        assert_eq!(arena.economy.free_slot_count(), free);
     }
 
     #[test]
