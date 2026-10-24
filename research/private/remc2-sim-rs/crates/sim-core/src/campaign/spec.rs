@@ -27,9 +27,11 @@ use std::{
 pub const CAMPAIGN_PACKAGE_SCHEMA: &str = "mc2-owner-campaign-package/v1";
 pub const LEVEL2_CAMPAIGN_PACKAGE_SCHEMA: &str = "mc2-owner-campaign-package/v2";
 pub const LEVEL1_ASSET_CAMPAIGN_PACKAGE_SCHEMA: &str = "mc2-owner-campaign-package/v3";
+pub const LEVEL1_COLLISION_CAMPAIGN_PACKAGE_SCHEMA: &str = "mc2-owner-campaign-package/v5";
 pub const CAMPAIGN_DEFINITION_SCHEMA: &str = "mc2-campaign-definition/v1";
 pub const LEVEL2_CAMPAIGN_DEFINITION_SCHEMA: &str = "mc2-campaign-definition/v2";
 pub const LEVEL1_ASSET_CAMPAIGN_DEFINITION_SCHEMA: &str = "mc2-campaign-definition/v3";
+pub const LEVEL1_COLLISION_CAMPAIGN_DEFINITION_SCHEMA: &str = "mc2-campaign-definition/v5";
 pub const ORDINARY_CAMPAIGN_PACKAGE_SCHEMA: &str = "mc2-owner-campaign-package/v4";
 pub const ORDINARY_CAMPAIGN_DEFINITION_SCHEMA: &str = "mc2-campaign-definition/v4";
 pub const LEVEL2_REMC2_COMMIT: &str = "6806c7204d17220ecc0430759f784aea8ee2ddb2";
@@ -78,6 +80,27 @@ const LEVEL2_CAMPAIGN_MEMBERS: [&str; 16] = [
 const LEVEL1_CAMPAIGN_MEMBERS: [&str; 17] = [
     "authored-level.bin",
     "campaign-definition.json",
+    "entities-post-features.bin",
+    "entities.bin",
+    "feature-allocator.bin",
+    "feature-construction-inputs.bin",
+    "feature-end.bin",
+    "feature-start.bin",
+    "fireball-projectile-base.indexed-sprite.json",
+    "fireball-projectile-fade.indexed-sprite.json",
+    "owner-manifest.json",
+    "players.bin",
+    "presentation.bin",
+    "runtime.bin",
+    "terrain-post-features.bin",
+    "terrain-pre-features.bin",
+    "terrain.bin",
+];
+
+const LEVEL1_COLLISION_CAMPAIGN_MEMBERS: [&str; 18] = [
+    "authored-level.bin",
+    "campaign-definition.json",
+    "collision-masks.bin",
     "entities-post-features.bin",
     "entities.bin",
     "feature-allocator.bin",
@@ -900,7 +923,7 @@ impl CampaignDefinition {
             "manifest",
             ValidationStage::OuterManifest,
         )?;
-        let Some(profile) = campaign_package_profile(caller) else {
+        let Some(mut profile) = campaign_package_profile(caller) else {
             return fail(
                 ValidationStage::OuterManifest,
                 format!(
@@ -909,6 +932,17 @@ impl CampaignDefinition {
                 ),
             );
         };
+        // Version 5 adds one real source-data carrier to the sealed Level 1
+        // contract. Keep the old v3 member/fact set exact and independently
+        // accepted; a bank may enter only through the explicit new profile.
+        if caller == CampaignSelection::LEVEL1
+            && manifest["schema"].as_str() == Some(LEVEL1_COLLISION_CAMPAIGN_PACKAGE_SCHEMA)
+        {
+            profile.members = &LEVEL1_COLLISION_CAMPAIGN_MEMBERS;
+            profile.package_schema = LEVEL1_COLLISION_CAMPAIGN_PACKAGE_SCHEMA;
+            profile.definition_schema = LEVEL1_COLLISION_CAMPAIGN_DEFINITION_SCHEMA;
+            profile.has_collision_bank = true;
+        }
         require_string_eq(
             &manifest["schema"],
             profile.package_schema,
@@ -1338,6 +1372,7 @@ impl CampaignDefinition {
             &SourceFactContext {
                 files: &files,
                 members: &members,
+                map_type_id: caller.map_type_id,
                 authored_collision_provenance: &authored_collision_provenance,
                 building_objective_provenance: &building_objective_provenance,
                 collision_bank: profile.has_collision_bank.then(|| {
@@ -1354,6 +1389,16 @@ impl CampaignDefinition {
             stage: ValidationStage::SourceFacts,
             message,
         })?;
+        if profile.package_schema == LEVEL1_COLLISION_CAMPAIGN_PACKAGE_SCHEMA
+            && !source_facts.iter().any(|fact| {
+                fact.kind == super::source_facts::SourceFactKind::CollisionMask && fact.version == 2
+            })
+        {
+            return fail(
+                ValidationStage::SourceFacts,
+                "Level 1 collision profile requires map-specific collision provenance v2",
+            );
+        }
 
         // Stage 7: the declared operations must match the authored stage row
         // that supplied the Stage-6 SourceFact provenance.
@@ -4805,6 +4850,83 @@ mod tests {
             Mc2LevelDefinition::creature_for_house_resident(12, 105),
             None
         );
+    }
+
+    #[test]
+    #[ignore = "requires the real owner-data Level 1 collision-bank export"]
+    fn level_one_collision_profile_loads_real_bank_and_keeps_legacy_contract() {
+        let package = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../generated/mc-bhq8-level1-collision-v5-night");
+        let definition = CampaignDefinition::preflight(
+            &package,
+            CampaignSelection::LEVEL1,
+            &|_: &super::BehaviorKey| true,
+        )
+        .expect("actual Level 1 collision-bank export preflights");
+        let collision = definition
+            .source_facts
+            .iter()
+            .find(|fact| fact.kind == super::super::source_facts::SourceFactKind::CollisionMask)
+            .expect("the new profile requires the real collision SourceFact");
+        assert_eq!(collision.version, 2);
+        assert_eq!(
+            collision
+                .source_artifacts
+                .iter()
+                .map(|artifact| artifact.logical_path.as_str())
+                .collect::<Vec<_>>(),
+            ["CD_Files/DATA/MSPRN0-0.DAT", "CD_Files/DATA/MSPRN0-0.TAB"]
+        );
+        assert_eq!(
+            collision.member_sha256,
+            super::sha256_hex(&fs::read(package.join("collision-masks.bin")).unwrap())
+        );
+        let inspection = crate::native_world::NativeWorld::inspect_campaign_definition(&definition)
+            .expect("the ordinary campaign loader consumes the declared bank");
+        let bank = inspection
+            .collision_mask_bank()
+            .expect("real collision content reaches the live world");
+        let mut selectors = collision
+            .selector_provenance
+            .iter()
+            .map(|source| source.selector_value as u16)
+            .collect::<Vec<_>>();
+        selectors.sort_unstable();
+        selectors.dedup();
+        assert_eq!(
+            bank.masks()
+                .iter()
+                .map(|mask| mask.selector())
+                .collect::<Vec<_>>(),
+            selectors
+        );
+        assert_eq!(inspection.players().len(), 8);
+        assert_eq!(
+            definition.campaign_spec.reset_sources.players.record_bytes,
+            Some(573)
+        );
+
+        let manifest: serde_json::Value =
+            serde_json::from_slice(&fs::read(package.join("manifest.json")).unwrap()).unwrap();
+        let mut missing_bank = manifest["files"].clone();
+        missing_bank
+            .as_object_mut()
+            .unwrap()
+            .remove("collision-masks.bin");
+        super::exact_object(
+            &missing_bank,
+            &super::LEVEL1_COLLISION_CAMPAIGN_MEMBERS,
+            "new Level 1 file set without its bank",
+            ValidationStage::OuterManifest,
+        )
+        .expect_err("new v5 must not silently accept a missing collision bank");
+        super::exact_object(
+            &manifest["files"],
+            &super::LEVEL1_CAMPAIGN_MEMBERS,
+            "legacy Level 1 file set with a new bank",
+            ValidationStage::OuterManifest,
+        )
+        .expect_err("legacy v3 remains its exact historical member contract");
     }
 
     #[test]

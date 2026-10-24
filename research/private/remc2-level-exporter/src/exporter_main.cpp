@@ -560,6 +560,17 @@ struct CollisionMaskCapture {
     json metadata;
 };
 
+std::string collision_bank_name(std::uint8_t map_type_id) {
+    // Level.cpp redirects the MSPRD global pointers to the environment's
+    // bank before loading. The variable name does not identify its file.
+    switch (map_type_id) {
+        case 0: return "MSPRD0-0";
+        case 1: return "MSPRN0-0";
+        case 2: return "MSPRC0-0";
+        default: throw std::runtime_error("collision bank has an unknown map type");
+    }
+}
+
 CollisionMaskCapture capture_collision_masks(
     const fs::path& owner_root,
     const std::vector<std::uint16_t>& selectors,
@@ -579,8 +590,12 @@ CollisionMaskCapture capture_collision_masks(
     }
     const std::size_t table_count = static_cast<std::size_t>(
         MSPRD00TAB_END_BUFFER - MSPRD00TAB_BEGIN_BUFFER);
-    const fs::path tab_path = owner_root / "CD_Files/DATA/MSPRD0-0.TAB";
-    const fs::path dat_path = owner_root / "CD_Files/DATA/MSPRD0-0.DAT";
+    const std::string bank = collision_bank_name(
+        static_cast<std::uint8_t>(D41A0_0.terrain_2FECE.MapType));
+    const std::string tab_logical = "CD_Files/DATA/" + bank + ".TAB";
+    const std::string dat_logical = "CD_Files/DATA/" + bank + ".DAT";
+    const fs::path tab_path = owner_root / tab_logical;
+    const fs::path dat_path = owner_root / dat_logical;
     if (!fs::is_regular_file(tab_path) || !fs::is_regular_file(dat_path)) {
         throw std::runtime_error("MSPRD0-0 owner source files are unavailable");
     }
@@ -638,7 +653,7 @@ CollisionMaskCapture capture_collision_masks(
         {"version", 1},
         {"header_bytes", kCollisionMaskHeaderBytes},
         {"record_header_bytes", kCollisionMaskRecordHeaderBytes},
-        {"bank", "MSPRD0-0"},
+        {"bank", bank},
         {"vga_resolution_selector", x_WORD_180660_VGA_type_resolution},
         {"selector_source", "authored class-10/model-45 par1 selectors"},
         {"pixel_encoding", "signed i16 little-endian"},
@@ -646,12 +661,12 @@ CollisionMaskCapture capture_collision_masks(
         {"transparent_value", -1},
         {"source_files", {
             {"tab", {
-                {"logical_path", "CD_Files/DATA/MSPRD0-0.TAB"},
+                {"logical_path", tab_logical},
                 {"bytes", fs::file_size(tab_path)},
                 {"sha256", sha256_file(tab_path)}
             }},
             {"dat", {
-                {"logical_path", "CD_Files/DATA/MSPRD0-0.DAT"},
+                {"logical_path", dat_logical},
                 {"bytes", fs::file_size(dat_path)},
                 {"sha256", sha256_file(dat_path)}
             }}
@@ -1751,8 +1766,9 @@ json make_owner_sources(
         candidates.push_back("CD_Files/DATA/BL32C0-0.DAT");
     }
     if (include_collision_masks) {
-        candidates.push_back("CD_Files/DATA/MSPRD0-0.DAT");
-        candidates.push_back("CD_Files/DATA/MSPRD0-0.TAB");
+        const std::string collision_bank = collision_bank_name(map_profile.id);
+        candidates.push_back("CD_Files/DATA/" + collision_bank + ".DAT");
+        candidates.push_back("CD_Files/DATA/" + collision_bank + ".TAB");
     }
     if (include_building_parameters) {
         candidates.push_back("CD_Files/DATA/BLDGPRM.DAT");
@@ -2094,6 +2110,7 @@ canonical_json campaign_source_facts(
     const json& owner_sources,
     const std::vector<CampaignBehaviorRow>& behavior_rows,
     const canonical_json& objective_operations,
+    std::uint8_t map_type_id,
     bool include_collision_masks,
     bool include_building_parameters) {
     canonical_json selector_provenance = canonical_json::array();
@@ -2154,6 +2171,9 @@ canonical_json campaign_source_facts(
         });
     }
     if (include_collision_masks) {
+        const std::string bank = "CD_Files/DATA/" + collision_bank_name(map_type_id);
+        const std::string dat_logical = bank + ".DAT";
+        const std::string tab_logical = bank + ".TAB";
         facts.push_back({
             {"fact_id", "collision-mask-bank"},
             {"kind", 3},
@@ -2163,8 +2183,8 @@ canonical_json campaign_source_facts(
             {"selector_provenance", selector_provenance},
             {"source_artifacts", campaign_source_artifacts(
                 owner_sources,
-                {"CD_Files/DATA/MSPRD0-0.DAT", "CD_Files/DATA/MSPRD0-0.TAB"})},
-            {"version", 1}
+                {dat_logical.c_str(), tab_logical.c_str()})},
+            {"version", 2}
         });
     }
     facts.push_back({
@@ -2292,6 +2312,7 @@ canonical_json build_campaign_definition(
             owner_sources,
             behavior_rows,
             objective_operations,
+            profile.map_type_id,
             profile.includes_collision_masks,
             profile.external == 2 || profile.external > 3)}
     };
