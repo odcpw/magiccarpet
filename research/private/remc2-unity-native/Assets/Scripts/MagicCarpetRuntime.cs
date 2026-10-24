@@ -664,6 +664,7 @@ namespace MagicCarpet.Native
         private Camera gameRuntimeTransitionCamera;
         private CampaignMenuPresenter gameRuntimeMenu;
         private FrontendMediaPresenter frontendMedia;
+        private AudioListener gameRuntimeAudioListener;
         private PlayerPreferencesPresenter playerPreferences;
         private bool preferenceRecenterRequested, preferenceFullStopRequested;
         private bool gameRuntimeSpellMenuOpen;
@@ -2453,6 +2454,11 @@ namespace MagicCarpet.Native
                 if (gameRuntimeRequested)
                 {
                     OpenGameRuntimeFromStartupArguments(arguments);
+                    // All ordinary runtime routes bypass the legacy flight
+                    // camera constructor. Compose one device listener here.
+                    if (!FindObjectsByType<AudioListener>(FindObjectsSortMode.None)
+                        .Any(listener => listener.isActiveAndEnabled))
+                        gameRuntimeAudioListener = gameObject.AddComponent<AudioListener>();
                     if (HasArgument(arguments, "-mc-runtime-menu"))
                     {
                         ApplyGameRuntimeProductionInput(false, true, false);
@@ -14723,6 +14729,8 @@ namespace MagicCarpet.Native
             DestroyGameRuntimeTransitionPresentation();
             frontendMedia?.Dispose();
             frontendMedia = null;
+            if (gameRuntimeAudioListener != null) Destroy(gameRuntimeAudioListener);
+            gameRuntimeAudioListener = null;
             playerPreferences = null;
             gameRuntimeSpellMenuOpen = false;
             gameRuntimeMenu?.Dispose();
