@@ -225,6 +225,12 @@ const PLAN29_FINAL_CACHE_MANIFEST_SHA256: &str =
     "1050b4f1e3f0e63fa292fe7798d19f4b390c063aa5afd5a350fba9e300298082";
 const PLAN29_FINAL_CACHE_CONTENT_SHA256: &str =
     "b664ad00c94e3f9393bc92ecac91a821673222cd365ed47617c4fab63db733bf";
+const SETTLEMENT_CACHE_MANIFEST_SHA256: &str =
+    "394ac75217d03995913f50ab144b014259f8984b7471d7fde297e5c0bbcd332e";
+const SETTLEMENT_CACHE_CONTENT_SHA256: &str =
+    "50ca7c5acf5a386d6cdfed912ead5a3324c0d197963d002a0cffdae22647d4f3";
+const SETTLEMENT_CLOSURE_SHA256: &str =
+    "ae375e8257b4d4aa701d71e77d37a165ae58de26a3a2415571024f3f3122435e";
 pub const FINAL_LEVEL1_CACHE_DIRECTORY: &str = "level1-unity-asset-cache-plan29-final";
 const RESET_SCHEMA: &str = "mc2-flight-reset-projection/v1";
 const ENTITY_COUNT: usize = 1_000;
@@ -500,11 +506,13 @@ mod world_types;
 use world_types::Result;
 pub use world_types::*;
 
+pub(crate) mod area_damage;
 mod ballistic_scenery;
 #[path = "campaign/level2.rs"]
 mod campaign;
 mod campaign_shared_families;
-mod cave_features;
+pub(crate) mod cave_features;
+mod cave_spells;
 mod countdown_switch;
 pub(crate) mod creatures;
 mod level2_nyphur;
@@ -1092,6 +1100,7 @@ pub enum FireballProjectileOrigin {
     Firefly,
     Dragon,
     Worm,
+    Eruption,
 }
 
 /// The shared class-9/model-0 Fireball flyer. Its callback owns target
@@ -2659,28 +2668,7 @@ pub struct Level2AuthoredClass5Model3Child {
 
 pub use creatures::archer::{Level2AuthoredClass5ArcherChild, Level2AuthoredClass5ArcherState};
 
-/// A resident constructed by an ordinary Level 2 House source callback.
-/// The row is owned by the shared Level 2 arena, preserving source-slot,
-/// owner, parent, map, and reset identity with the other dynamic families.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct Level2HouseResidentSource {
-    pub source_entity_index: u16,
-    pub entity_rng: u16,
-    pub parent_house_entity_index: u16,
-    pub owner_entity_index: u16,
-    pub attacker_entity_index: u16,
-    /// Immutable semantic identity fixed by the house constructor. The raw
-    /// model/action fields remain the MC2 dispatch selectors and may evolve
-    /// independently during the resident lifecycle.
-    pub semantic_kind: CreatureKind,
-    pub position: Position,
-    pub model: u8,
-    pub action: u8,
-    pub life: i32,
-    pub phase: u8,
-    pub drawing_enabled: bool,
-    pub active: bool,
-}
+pub use creatures::settlements::Level2HouseResidentSource;
 
 /// The separately named class-10/model-74/action-72 effect payload. The
 /// class-15/action-36 `sub_6B310` callback never constructs or dispatches this
@@ -2873,7 +2861,7 @@ pub struct Level2EconomyState {
     /// sentinel. Its rand_0x14 stream is independent of the Castle root.
     sentinel_rng: u16,
 
-    source_rng: BTreeMap<u16, u16>,
+    pub(crate) source_rng: BTreeMap<u16, u16>,
 
     /// Raw common-header byte 0x3E for Level 2 carriers whose reused typed
     /// domain payload does not otherwise expose that source coordinate.
@@ -2987,7 +2975,7 @@ pub struct Level2EconomyState {
 
     authored_class5_archer_children: Vec<Level2AuthoredClass5ArcherChild>,
 
-    house_residents: Vec<Level2HouseResidentSource>,
+    house_residents: creatures::settlements::SettlementPopulation,
 
     class5_model0_constructor_phase: u8,
 
@@ -3041,7 +3029,7 @@ pub struct Level2EconomyState {
     /// TAB records can be installed through `set_castle_stage_footprint`.
     castle_stage_footprints: BTreeMap<u8, CastleBuildFootprint>,
 
-    map_chains: RenderableMapChains,
+    pub(crate) map_chains: RenderableMapChains,
 
     player_mana: i32,
 
@@ -3105,6 +3093,7 @@ const fn level2_direct_starting_spell_profile(
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Level2OrdinaryResetSession {
     house_build_footprints: BTreeMap<u8, CastleBuildFootprint>,
+    house_parameters: BTreeMap<u8, HouseParameter>,
 
     houses: HouseFamily,
 
@@ -8874,6 +8863,10 @@ impl QualifiedOwnerCacheReader {
                     PLAN29_FINAL_CACHE_MANIFEST_SHA256,
                     PLAN29_FINAL_CACHE_CONTENT_SHA256
                 )
+                | (
+                    SETTLEMENT_CACHE_MANIFEST_SHA256,
+                    SETTLEMENT_CACHE_CONTENT_SHA256
+                )
         );
         if require_string(object, "schema", "owner cache manifest")? != AUDIO_CACHE_SCHEMA
             || require_string(object, "scope", "owner cache manifest")?
@@ -9262,8 +9255,14 @@ fn load_level2_castle_stage_footprints(
         previous_end = Some(data_end);
     }
     let mut house_footprints = BTreeMap::new();
-    for building_index in [26_u8, 29, 30, 44, 50, 55, 59, 60, 64] {
-        if HouseParameter::level_two(building_index).is_none() {
+    for building_index in [
+        17_u8, 19, 22, 26, 29, 30, 31, 32, 33, 34, 35, 39, 40, 42, 44, 47, 50, 55, 59, 60, 62, 64,
+        74,
+    ] {
+        if HouseParameter::level_two(building_index)
+            .or_else(|| HouseParameter::level_one(building_index))
+            .is_none()
+        {
             return Err(NativeWorldError::new(format!(
                 "Level 2 House BUILD selector {building_index} has no qualified BLDGPRM row"
             )));
@@ -9525,7 +9524,13 @@ fn append_level_one_cache_assets(
             "house BUILD descriptor cell binding changed",
         ));
     }
-    let expected_house_indices = [17_u8, 26, 29, 30, 31, 34, 42, 47, 50, 51, 52, 53];
+    let expected_house_indices: &[u8] = if closure_sha256 == SETTLEMENT_CLOSURE_SHA256 {
+        &[
+            17, 19, 22, 26, 29, 30, 31, 32, 33, 34, 35, 39, 40, 42, 47, 50, 51, 52, 53, 62, 74,
+        ]
+    } else {
+        &[17, 26, 29, 30, 31, 34, 42, 47, 50, 51, 52, 53]
+    };
     let house_rows = require_array(house_descriptor, "footprints", "house BUILD descriptor")?;
     if house_rows.len() != expected_house_indices.len() {
         return Err(NativeWorldError::new(
@@ -9533,7 +9538,7 @@ fn append_level_one_cache_assets(
         ));
     }
     let mut house_build_footprints = BTreeMap::new();
-    for (row, expected_index) in house_rows.iter().zip(expected_house_indices) {
+    for (row, &expected_index) in house_rows.iter().zip(expected_house_indices) {
         let row = as_object(row, "house BUILD row")?;
         let build_index = as_u8(
             require_value(row, "build_index", "house BUILD row")?,

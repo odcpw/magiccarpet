@@ -47,13 +47,23 @@ impl Level2SharedSpellResetSession {
             .collect::<Vec<_>>();
         let pickups = class15
             .iter()
-            .filter(|row| matches!(row.action, 16 | 17 | 19 | 25 | 26 | 31 | 32 | 34 | 37))
+            .filter(|row| {
+                matches!(
+                    row.action,
+                    16 | 17 | 19 | 25 | 26 | 31 | 32 | 34 | 37 | 76 | 77
+                )
+            })
             .cloned()
             .collect::<Vec<_>>()
             .into_boxed_slice();
         let holders = class15
             .iter()
-            .filter(|row| !matches!(row.action, 16 | 17 | 19 | 25 | 26 | 31 | 32 | 34 | 37))
+            .filter(|row| {
+                !matches!(
+                    row.action,
+                    16 | 17 | 19 | 25 | 26 | 31 | 32 | 34 | 37 | 76 | 77
+                )
+            })
             .cloned()
             .collect::<Vec<_>>()
             .into_boxed_slice();
@@ -1509,6 +1519,7 @@ impl Level2SharedSpellResetSession {
             8 => 8,
             10 => 10,
             11 => 11,
+            25 => 25,
             _ => {
                 return Err(NativeWorldError::new(format!(
                     "unsupported authored spell subtype {} at row {}",
@@ -2274,7 +2285,7 @@ impl Level2SharedSpellResetSession {
 
     /// Apply the shared `sub_6D8B0` spell-experience transition for a
     /// package-backed physical spell family.
-    pub(super) fn award_spell_experience(
+    pub(crate) fn award_spell_experience(
         &mut self,
         parent_entity_index: u16,
         family: u8,
@@ -3750,6 +3761,7 @@ impl Level2OrdinaryResetSession {
             .into_boxed_slice();
         Ok(Self {
             house_build_footprints,
+            house_parameters: house_parameters.clone(),
             houses,
             villagers,
             dolmens,
@@ -3820,7 +3832,13 @@ impl Level2OrdinaryResetSession {
         .expect("Level 2 ordinary population census fits u32");
         Ok(Self {
             house_build_footprints,
-
+            house_parameters: (0..=u8::MAX)
+                .filter_map(|index| {
+                    HouseParameter::level_two(index)
+                        .or_else(|| HouseParameter::level_one(index))
+                        .map(|parameter| (index, parameter))
+                })
+                .collect(),
             houses,
 
             villagers,
@@ -3836,6 +3854,40 @@ impl Level2OrdinaryResetSession {
     #[must_use]
     pub fn houses(&self) -> &[HouseState] {
         self.houses.houses()
+    }
+
+    pub(crate) fn step_settlement_source(
+        &mut self,
+        arena: &mut crate::campaign::source_arena::SourceArena,
+        terrain: &SessionTerrain,
+        source_slot: u16,
+        frozen_building_slots: &[u16],
+    ) -> std::result::Result<Option<creatures::settlements::SettlementPopulationStep>, String> {
+        arena.step_settlement_resident_slot(
+            source_slot,
+            terrain,
+            &mut self.houses,
+            self.villagers.villagers(),
+            frozen_building_slots,
+            &self.house_parameters,
+            &self.house_build_footprints,
+        )
+    }
+
+    pub(crate) fn settlement_building_slots(
+        &self,
+        arena: &crate::campaign::source_arena::SourceArena,
+    ) -> Vec<u16> {
+        arena
+            .settlement_source_views(
+                &self.houses,
+                self.villagers.villagers(),
+                &self.house_parameters,
+            )
+            .into_iter()
+            .filter(|row| row.active && row.class == 10 && row.model == 45)
+            .map(|row| row.source_entity_index)
+            .collect()
     }
 
     #[cfg(test)]
@@ -4035,12 +4087,17 @@ impl Level2OrdinaryResetSession {
                     // resident; earlier products, House RNG/occupants, and
                     // terrain mutations remain committed.
                     for (parent_house_entity_index, owner_entity_index, request) in requests {
-                        let _ = economy.allocate_house_resident(
+                        if let Some(slot) = economy.allocate_house_resident(
                             parent_house_entity_index,
                             owner_entity_index,
                             request,
                             terrain,
-                        );
+                        ) {
+                            economy.initialize_demolition_resident_mailbox(
+                                slot,
+                                attacker_entity_index,
+                            );
+                        }
                     }
                     self.houses
                         .commit_removal_state(
