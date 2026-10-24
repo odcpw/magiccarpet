@@ -18,9 +18,11 @@ use sha2::{Digest, Sha256};
 use std::{error::Error, fmt, num::NonZeroU64, sync::Arc};
 
 mod campaign_menu;
+mod loading;
 pub mod media;
 pub mod preferences;
 pub use campaign_menu::{CampaignMenuCommand, CampaignMenuPhase, CampaignMenuSnapshot};
+use loading::LoadingOrigin;
 
 // GOLDEN-CHANGE candidate: v11 adds the campaign owner required by remc2's
 // sub_46830_main_loop -> NewGameDialog_77350 return path. Completion releases
@@ -387,6 +389,7 @@ enum RuntimeState<B> {
     Loading {
         definition: Arc<GameDefinition>,
         session_generation: NonZeroU64,
+        origin: LoadingOrigin,
     },
     Campaign {
         definition: Arc<GameDefinition>,
@@ -561,10 +564,11 @@ impl<B: GameSessionBackend> GameRuntime<B> {
         self.validate_guard(guard)
             .map_err(Box::new)
             .map_err(RuntimeTransitionError::Guard)?;
-        let session_generation = match &self.state {
+        let (session_generation, presentation_cue) = match &self.state {
             RuntimeState::Title {
-                session_generation, ..
-            } => *session_generation,
+                session_generation,
+                presentation_cue,
+            } => (*session_generation, presentation_cue.clone()),
             _ => {
                 return Err(RuntimeTransitionError::InvalidMode {
                     expected: RuntimeMode::Title,
@@ -590,6 +594,7 @@ impl<B: GameSessionBackend> GameRuntime<B> {
         self.state = RuntimeState::Loading {
             definition,
             session_generation,
+            origin: LoadingOrigin::Title { presentation_cue },
         };
         self.completed_levels.clear();
         self.generation = next_generation;
@@ -652,6 +657,7 @@ impl<B: GameSessionBackend> GameRuntime<B> {
             RuntimeState::Loading {
                 definition,
                 session_generation,
+                ..
             } => (Arc::clone(definition), *session_generation),
             _ => {
                 return Err(OpenLevelError::Transition(
@@ -1673,6 +1679,7 @@ mod tests {
             state: RuntimeState::Loading {
                 definition,
                 session_generation: NonZeroU64::new(2).unwrap(),
+                origin: LoadingOrigin::default(),
             },
         };
         let loading = runtime.identity();
@@ -1716,6 +1723,7 @@ mod tests {
             state: RuntimeState::Loading {
                 definition,
                 session_generation: NonZeroU64::new(3).unwrap(),
+                origin: LoadingOrigin::default(),
             },
         };
         let loading = runtime.identity();
@@ -2015,6 +2023,77 @@ mod tests {
             "level.magic_carpet_2.revealed_way"
         );
         source_spell_state
+    }
+
+    #[test]
+    fn runtime_failed_loading_can_cancel_to_title_and_retry_without_session_aba() {
+        let definition =
+            Arc::new(load_mc2_campaign(level_one_package(), &default_catalog().unwrap()).unwrap());
+        let mut runtime = GameRuntime::<Mc2CampaignBackend>::title(43).unwrap();
+        let title = runtime.identity();
+        let loading = runtime
+            .new_game(title.guard(), Arc::clone(&definition))
+            .unwrap();
+        assert!(
+            runtime
+                .open_level(
+                    loading.guard(),
+                    &Mc2CampaignAdapter,
+                    Mc2CampaignInputs::new(level_two_package()),
+                    75,
+                )
+                .is_err()
+        );
+        assert_eq!(runtime.identity(), loading);
+        assert!(runtime.session().is_none());
+        assert!(matches!(
+            runtime.cancel_loading(title.guard()),
+            Err(RuntimeTransitionError::Guard(_))
+        ));
+        assert_eq!(runtime.identity(), loading);
+        let restored = runtime.cancel_loading(loading.guard()).unwrap();
+        assert_eq!(restored.mode, RuntimeMode::Title);
+        assert_eq!(restored.presentation, title.presentation);
+        assert!(runtime.session().is_none());
+        assert!(runtime.cancel_loading(loading.guard()).is_err());
+        assert!(runtime.cancel_loading(restored.guard()).is_err());
+        assert_eq!(runtime.identity(), restored);
+        // Service the ordinary Title input handoff before accepting NewGame.
+        runtime
+            .frontend_media_command(
+                restored.guard(),
+                media::MediaCommand::Frame {
+                    elapsed_us: 50_000,
+                    input: false,
+                    escape: false,
+                },
+            )
+            .unwrap();
+        let loading_again = runtime
+            .new_game(runtime.identity().guard(), definition)
+            .unwrap();
+        assert!(
+            runtime
+                .open_level(
+                    loading.guard(),
+                    &Mc2CampaignAdapter,
+                    Mc2CampaignInputs::new(level_one_package()),
+                    75,
+                )
+                .is_err()
+        );
+        assert_eq!(runtime.identity(), loading_again);
+        let playing = runtime
+            .open_level(
+                loading_again.guard(),
+                &Mc2CampaignAdapter,
+                Mc2CampaignInputs::new(level_one_package()),
+                75,
+            )
+            .unwrap();
+        assert_eq!(playing.session.as_ref().unwrap().generation, 1);
+        assert!(runtime.cancel_loading(playing.guard()).is_err());
+        assert_eq!(runtime.identity(), playing);
     }
 
     #[test]
@@ -2733,6 +2812,7 @@ mod tests {
                 state: RuntimeState::Loading {
                     definition,
                     session_generation: NonZeroU64::new(3).unwrap(),
+                    origin: LoadingOrigin::default(),
                 },
             };
             let guard = source.identity().guard();
@@ -2843,6 +2923,7 @@ mod tests {
             state: RuntimeState::Loading {
                 definition,
                 session_generation: NonZeroU64::new(3).unwrap(),
+                origin: LoadingOrigin::default(),
             },
         };
         let guard = source.identity().guard();
@@ -4074,6 +4155,7 @@ mod tests {
             state: RuntimeState::Loading {
                 definition: reissued_level_two,
                 session_generation: NonZeroU64::new(2).unwrap(),
+                origin: LoadingOrigin::default(),
             },
         };
         let spliced_before = spliced.identity();

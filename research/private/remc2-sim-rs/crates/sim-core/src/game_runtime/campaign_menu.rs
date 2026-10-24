@@ -152,7 +152,7 @@ impl<B: GameSessionBackend> GameRuntime<B> {
             selected_definition,
             session_generation,
             phase,
-            ..
+            completed_level,
         } = &mut self.state
         else {
             unreachable!()
@@ -192,6 +192,12 @@ impl<B: GameSessionBackend> GameRuntime<B> {
                 self.state = RuntimeState::Loading {
                     definition: Arc::clone(selected),
                     session_generation: *session_generation,
+                    origin: LoadingOrigin::Campaign {
+                        definition: Arc::clone(definition),
+                        selected_definition: selected_definition.clone(),
+                        phase: *phase,
+                        completed_level: completed_level.clone(),
+                    },
                 };
             }
             CampaignMenuCommand::ReturnTitle => {
@@ -375,6 +381,25 @@ mod tests {
                 .bound_level_id(),
             &second
         );
+        let stale_cancel = runtime.cancel_loading(map.guard());
+        assert!(matches!(
+            stale_cancel,
+            Err(RuntimeTransitionError::Guard(_))
+        ));
+        assert_eq!(runtime.identity(), loading);
+        let restored_map = runtime.cancel_loading(loading.guard()).unwrap();
+        assert_eq!(restored_map.mode, RuntimeMode::Campaign);
+        assert_eq!(restored_map.campaign_menu, map.campaign_menu);
+        assert!(runtime.session().is_none());
+        assert!(runtime.cancel_loading(loading.guard()).is_err());
+        assert_eq!(runtime.identity(), restored_map);
+        let loading = resolver
+            .campaign_menu_command(
+                &mut runtime,
+                restored_map.guard(),
+                CampaignMenuCommand::StartMission,
+            )
+            .unwrap();
         let playing = resolver
             .open_pending(&mut runtime, loading.guard(), 771)
             .unwrap();
