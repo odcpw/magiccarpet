@@ -231,6 +231,10 @@ mod tests {
             behavior_flags: 9,
             partner_entity_index: None,
             target_entity_index: None,
+            parent_entity_index: 0,
+            stage_target: 0,
+            lifetime: 0,
+            initial_lifetime: 0,
         }
     }
 

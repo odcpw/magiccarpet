@@ -521,7 +521,10 @@ impl Level2EconomyState {
         source.roll = goat.roll;
         source.position = goat.position;
         source.drawing_enabled = drawing_enabled;
-        source.active = goat.active && drawing_enabled;
+        // Hide is not reclaim. Keep the numeric occupant allocated until the
+        // following UpdateEntities prologue, including later group producers
+        // which rebuild NewEvent's free arena in this same pass.
+        source.active = goat.active;
         self.source_rng.insert(goat.entity_index, goat.rng);
         if let Some(runtime) = self.authored_class5_runtime_mut(goat.entity_index) {
             runtime.pending_damage = goat.pending_damage;
@@ -529,11 +532,34 @@ impl Level2EconomyState {
         self.map_chains
             .sync_entity(RenderableMapSeed {
                 entity_index: goat.entity_index,
-                active: drawing_enabled,
+                active: goat.active,
                 x: goat.position.x,
                 y: goat.position.y,
             })
             .is_ok()
+    }
+
+    pub(super) fn reclaim_hidden_goat_rows_at_source_boundary(&mut self) {
+        let mut hidden = self
+            .authored_class5
+            .iter()
+            .filter(|source| source.model == crate::goat::GOAT_MODEL && !source.drawing_enabled)
+            .map(|source| (source.source_entity_index, source.entity_rng))
+            .collect::<Vec<_>>();
+        hidden.sort_by_key(|(slot, _)| *slot);
+        for (slot, rng) in hidden {
+            self.authored_class5
+                .retain(|source| source.source_entity_index != slot);
+            self.authored_class5_runtime
+                .retain(|source| source.source_entity_index != slot);
+            let _ = self.map_chains.sync_entity(RenderableMapSeed {
+                entity_index: slot,
+                active: false,
+                x: 0,
+                y: 0,
+            });
+            self.release_slot(slot, Some(rng));
+        }
     }
 
     /// Advance one authored class-5 root through the live source cursor.
