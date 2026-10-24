@@ -473,6 +473,16 @@ namespace MagicCarpet.Native
                 worldMaterial.SetTexture("_Coverage", Texture2D.whiteTexture);
                 worldMaterial.SetTexture("_Palette", worldPalette);
                 renderer.sharedMaterial = worldMaterial;
+                // The indexed frame keeps MC2's display aspect. Clear the
+                // whole target first so its letterbox cannot retain Title,
+                // Loading, or earlier world pixels outside that viewport.
+                var backgroundCamera = new GameObject("Campaign background camera").AddComponent<Camera>();
+                backgroundCamera.transform.SetParent(root, false);
+                backgroundCamera.clearFlags = CameraClearFlags.SolidColor;
+                backgroundCamera.backgroundColor = Color.black;
+                backgroundCamera.cullingMask = 0;
+                backgroundCamera.depth = -101f;
+                backgroundCamera.enabled = !Application.isBatchMode;
                 frameCamera = new GameObject("Campaign indexed frame camera").AddComponent<Camera>();
                 frameCamera.transform.SetParent(root, false);
                 frameCamera.transform.localPosition = new Vector3(0f, 0f, -1f);
