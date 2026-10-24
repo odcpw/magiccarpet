@@ -20,6 +20,7 @@ HELP = """Usage: run-campaign.sh [campaign options] [Unity player arguments]
   --owner-cache DIR       Native owner cache for the preceding package
   --presentation-cache DIR  Presentation cache for the preceding package
   --loading-cache DIR     Frontend/loading cache (required with explicit packages)
+  --loading-assets DIR    Optional destination loading artwork cache override
   --menu-cache DIR        Optional original campaign-map/menu cache override
   --media-cache DIR       Optional original intro/frontend media cache override
 
@@ -53,12 +54,14 @@ def main(arguments):
     resources, player = [], []
     route, replay, save, loading, media = None, None, None, None, None
     menu_cache = None
+    loading_assets = None
     aliases = {
         '--package': 'package', '-mc-runtime-package': 'package',
         '--owner-cache': 'owner', '-mc-runtime-owner-cache': 'owner',
         '--presentation-cache': 'presentation',
         '-mc-runtime-presentation-cache': 'presentation',
         '--loading-cache': 'loading', '-mc-runtime-loading-cache': 'loading',
+        '--loading-assets': 'loading_assets', '-mc-runtime-loading-assets': 'loading_assets',
         '--menu-cache': 'menu', '-mc-runtime-menu-cache': 'menu',
         '--media-cache': 'media', '-mc-runtime-media-cache': 'media',
         '--save': 'save', '-mc-runtime-replay-save': 'save',
@@ -121,6 +124,10 @@ def main(arguments):
                 if menu_cache is not None:
                     raise LaunchError('Specify the menu cache only once')
                 menu_cache = value
+            elif kind == 'loading_assets':
+                if loading_assets is not None:
+                    raise LaunchError('Specify the loading artwork cache only once')
+                loading_assets = value
             else:
                 if media is not None:
                     raise LaunchError('Specify the media cache only once')
@@ -180,6 +187,9 @@ def main(arguments):
     if media is not None:
         directory(media, 'media cache')
         native.extend(('-mc-runtime-media-cache', str(media)))
+    if loading_assets is not None:
+        # The runtime owns missing-artwork recovery and retry for this selection.
+        native.extend(('-mc-runtime-loading-assets', str(loading_assets)))
     if menu_cache is not None:
         directory(menu_cache, 'menu cache')
         native.extend(('-mc-runtime-menu-cache', str(menu_cache)))

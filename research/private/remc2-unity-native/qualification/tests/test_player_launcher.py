@@ -220,6 +220,19 @@ class PlayerLauncherTests(unittest.TestCase):
         return subprocess.run(["sh", str(self.root / "run-campaign.sh"), *arguments],
                               env=env, text=True, capture_output=True, check=False, timeout=10)
 
+    def test_campaign_loading_assets_recovery_path_is_forwarded(self):
+        generated = self.campaign_resources()
+        missing = generated / "selected missing loading artwork"
+        for option in ("--loading-assets", "-mc-runtime-loading-assets"):
+            with self.subTest(option=option):
+                result = self.campaign("--new-game", option, str(missing))
+                self.assertEqual(result.returncode, 0, result.stderr)
+                arguments = json.loads(result.stdout.splitlines()[-1])
+                self.assertEqual(arguments.count("-mc-runtime-loading-assets"), 1)
+                self.assertEqual(arguments[arguments.index("-mc-runtime-loading-assets") + 1],
+                                 str(missing))
+        self.assertFalse(missing.exists(), "the runtime owns missing-artwork recovery")
+
     def test_campaign_defaults_and_new_game_do_not_require_canned_replays(self):
         generated = self.campaign_resources()
         for options, menu in (([], True), (["--new-game"], False)):
