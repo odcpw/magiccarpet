@@ -109,51 +109,18 @@ namespace MagicCarpet.Native.Tests
                 presenter.Present(runtime.Pause());
                 Assert.That(presenter.IsVisible, Is.False, "paused hides loading");
 
-                var destination = new GameRuntimeTransport.RuntimeFlowDestination
-                {
-                    kind = "level",
-                    level_id = "level.magic_carpet_2.payahandra_ruins"
-                };
-                var completionCue = new GameRuntimeTransport.RuntimePresentationCue
-                {
-                    cue_id =
-                        "presentation.magic_carpet_2.night_spire.completion",
-                    phase = GameRuntimeTransport.LevelCompletionPresentationPhase,
-                    level_id = "level.magic_carpet_2.night_spire",
-                    completion_destination = destination
-                };
-                var nextLoadingCue = new GameRuntimeTransport.RuntimePresentationCue
-                {
-                    cue_id =
-                        "presentation.magic_carpet_2.payahandra_ruins.loading",
-                    phase = GameRuntimeTransport.LoadingPresentationPhase,
-                    level_id = "level.magic_carpet_2.payahandra_ruins"
-                };
-                presenter.Present(new GameRuntimeTransport.CompletionTransitionReceipt
-                {
-                    completed_level_id = "level.magic_carpet_2.night_spire",
-                    completion_destination = destination,
-                    after = new GameRuntimeTransport.Identity
-                    {
-                        presentation = nextLoadingCue
-                    },
-                    presentation_sequence = new[]
-                    {
-                        completionCue,
-                        nextLoadingCue
-                    }
-                });
-                Assert.That(
-                    presenter.LastPresentationSequence,
-                    Is.EqualTo(new[]
-                    {
-                        "presentation.magic_carpet_2.night_spire.completion",
-                        "presentation.magic_carpet_2.payahandra_ruins.loading"
-                    }));
-                Assert.That(presenter.LastPresentedCueId,
-                    Is.EqualTo(nextLoadingCue.cue_id));
-                Assert.That(presenter.IsVisible, Is.True,
-                    "the ordered Rust receipt ends on its selected Loading cue");
+                presenter.Present(runtime.Close());
+                Assert.That(presenter.IsVisible, Is.False, "returning releases the loading surface");
+                var retry = runtime.BeginRestartNewGame();
+                presenter.Present(retry);
+                Assert.That(presenter.Destination.environment, Is.EqualTo("night"));
+                Assert.That(presenter.Destination.definition_hash,
+                    Is.EqualTo(retry.pending_definition.definition_hash));
+                Assert.That(presenter.IsVisible, Is.True);
+                presenter.Present(GameRuntimeTransport.CancelLoading(retry));
+                Assert.That(presenter.IsVisible, Is.False);
+                Assert.That(runtime.IdentitySnapshot().mode, Is.EqualTo(GameRuntimeTransport.TitleMode));
+
             }
             finally
             {
@@ -162,50 +129,103 @@ namespace MagicCarpet.Native.Tests
         }
 
         [Test]
-        public void UnknownAndMalformedRustCuesFailClosed()
+        public void DefinitionBoundCuesAcceptNewDestinationsAndRejectMismatches()
         {
-            var parent = new GameObject("unknown transition cue test parent");
+            // A supplemental binding-validation check, not an installed-mission
+            // or secret-playback claim. No closed list of level/cue IDs is used.
+            var parent = new GameObject("definition-bound loading validation");
             try
             {
-                using var presenter = new CampaignTransitionPresenter(
-                    parent.transform,
-                    new byte[CampaignTransitionPresenter.FrameWidth *
-                             CampaignTransitionPresenter.FrameHeight],
+                using var presenter = new CampaignTransitionPresenter(parent.transform,
+                    new byte[CampaignTransitionPresenter.FrameWidth * CampaignTransitionPresenter.FrameHeight],
                     new byte[256 * 3]);
-                Assert.Throws<InvalidDataException>(() => presenter.Present(
-                    new GameRuntimeTransport.Identity
-                    {
-                        mode = GameRuntimeTransport.LoadingMode,
-                        presentation = new GameRuntimeTransport.RuntimePresentationCue
-                        {
-                            cue_id =
-                                "presentation.magic_carpet_2.unknown.loading",
-                            phase = GameRuntimeTransport.LoadingPresentationPhase,
-                            level_id = "level.magic_carpet_2.unknown"
-                        },
-                        pending_definition = new GameRuntimeTransport.DefinitionIdentity
-                        {
-                            runtime_flow = new GameRuntimeTransport.RuntimeFlowDefinition
-                            {
-                                bound_level_id = "level.magic_carpet_2.unknown"
-                            }
+                var identity = new GameRuntimeTransport.Identity {
+                    mode = GameRuntimeTransport.LoadingMode, runtime_id = "7", generation = "2",
+                    presentation = new GameRuntimeTransport.RuntimePresentationCue {
+                        cue_id = "presentation.authored.new_destination.loading",
+                        phase = GameRuntimeTransport.LoadingPresentationPhase,
+                        level_id = "level.authored.new_destination"
+                    },
+                    pending_definition = new GameRuntimeTransport.DefinitionIdentity {
+                        definition_hash = new string('a', 64), package_graph_hash = new string('b', 64),
+                        definition_revision = "1",
+                        runtime_flow = new GameRuntimeTransport.RuntimeFlowDefinition {
+                            bound_level_id = "level.authored.new_destination"
                         }
-                    }));
-                Assert.That(presenter.IsVisible, Is.False);
-
+                    }
+                };
+                var binding = new GameRuntimeTransport.LoadingPresentationBinding {
+                    schema = "mc2-loading-presentation/v1", level_id = identity.presentation.level_id,
+                    cue_id = identity.presentation.cue_id, definition_revision = "1",
+                    definition_hash = identity.pending_definition.definition_hash,
+                    package_graph_hash = identity.pending_definition.package_graph_hash,
+                    source_package_sha256 = new string('c', 64), owner_export_package_sha256 = new string('d', 64),
+                    environment = "cave", artwork_profile = "ordinary"
+                };
+                presenter.Present(identity, binding);
+                Assert.That(presenter.IsVisible, Is.True);
+                binding.definition_hash = new string('e', 64);
+                Assert.Throws<InvalidDataException>(() => presenter.Present(identity, binding));
+                Assert.That(presenter.IsVisible, Is.False, "a failed binding hides the previous frame");
                 Assert.Throws<InvalidOperationException>(() =>
-                    GameRuntimeTransport.ValidatePresentationCue(
-                        new GameRuntimeTransport.RuntimePresentationCue
-                        {
-                            cue_id = "presentation.magic_carpet_2.night_spire.loading",
-                            phase = "invented",
-                            level_id = "level.magic_carpet_2.night_spire"
-                        }));
+                    GameRuntimeTransport.ValidatePresentationCue(new GameRuntimeTransport.RuntimePresentationCue {
+                        cue_id = identity.presentation.cue_id, phase = "invented", level_id = binding.level_id
+                    }));
+            }
+            finally { UnityEngine.Object.DestroyImmediate(parent); }
+        }
+
+        [Test]
+        [Timeout(180000)]
+        public void MissingLoadingAssetsRetainRealDestinationThenRetryAndOpenOnce()
+        {
+            var directory = Path.Combine(Path.GetTempPath(), "mc-paj5-loading-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(directory);
+            var parent = new GameObject("real loading retry");
+            try
+            {
+                using var presenter = new CampaignTransitionPresenter(parent.transform, directory);
+                using var runtime = new GameRuntimeTransport();
+                var loading = runtime.BootstrapPackageSet(Package(LevelOnePackage, LevelOneAssetCache),
+                    Package(LevelTwoPackage), Package(LevelThreePackage));
+                var error = Assert.Catch<IOException>(() => presenter.Present(loading));
+                presenter.Failed(error);
+                Assert.That(presenter.HasFailure, Is.True);
                 Assert.That(presenter.IsVisible, Is.False);
+                var retained = runtime.IdentitySnapshot();
+                Assert.That(retained.mode, Is.EqualTo(GameRuntimeTransport.LoadingMode));
+                Assert.That(retained.generation, Is.EqualTo(loading.generation));
+                Assert.That(retained.pending_definition.definition_hash, Is.EqualTo(loading.pending_definition.definition_hash));
+                Assert.That(retained.session?.session_id, Is.Null.Or.Empty);
+
+                var source = Path.Combine(PrivateRoot, "generated/mc2-loading-asset-cache");
+                foreach (var file in Directory.GetFiles(source, "*", SearchOption.AllDirectories))
+                {
+                    var destination = Path.Combine(directory, Path.GetRelativePath(source, file));
+                    Directory.CreateDirectory(Path.GetDirectoryName(destination));
+                    File.Copy(file, destination);
+                }
+                presenter.Present(retained);
+                Assert.That(presenter.HasFailure, Is.False);
+                Assert.That(presenter.IndicesSha256, Is.EqualTo(ExpectedIndicesSha256));
+                var gate = new CampaignTransitionPresenter.LoadingGate();
+                gate.Begin(retained, presenter.Destination.level_id);
+                Assert.That(gate.TryClaimOpen(retained, presenter.IsVisible), Is.False);
+                gate.Observe(retained, presenter.IsVisible);
+                Assert.That(gate.TryClaimOpen(retained, presenter.IsVisible), Is.True);
+                var playing = runtime.OpenLevel();
+                gate.Complete(playing);
+                presenter.Present(playing);
+                Assert.That(playing.session.tick, Is.EqualTo("0"));
+                Assert.That(presenter.IsVisible, Is.False);
+                Assert.Throws<InvalidOperationException>(() => runtime.OpenLevel());
+                Assert.That(runtime.IdentitySnapshot().session.generation, Is.EqualTo(playing.session.generation));
             }
             finally
             {
                 UnityEngine.Object.DestroyImmediate(parent);
+                // Only this test's newly created temporary copy is disposable.
+                Directory.Delete(directory, true);
             }
         }
 

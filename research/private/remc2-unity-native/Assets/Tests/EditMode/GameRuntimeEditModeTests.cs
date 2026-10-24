@@ -1575,7 +1575,7 @@ namespace MagicCarpet.Native.Tests
                     root.transform,
                     cache);
                 using var transport = new GameRuntimeTransport();
-                var gate = new MagicCarpetRuntime.GameRuntimeLoadingPresentationGate();
+                var gate = new CampaignTransitionPresenter.LoadingGate();
 
                 var title = transport.IdentitySnapshot();
                 presenter.Present(title);

@@ -11059,9 +11059,62 @@ def validate_cache(
     return manifest
 
 
+def build_loading_cache(owner_root: Path, output: Path) -> dict[str, Any]:
+    """Decode the source's ordinary/secret loading pairs, independently of a mission.
+
+    sub_47FC0_load_screen uses SMATITLE for every ordinary map type and
+    SMATITL2 for secrets. The Rust destination binding chooses the profile;
+    this cache contains assets, never mission IDs or control-flow decisions.
+    """
+    owner_root = owner_root.expanduser().resolve()
+    output = output.expanduser().absolute()
+    if output.exists():
+        raise CacheError(f"loading cache already exists; choose a fresh output: {output}")
+    output.parent.mkdir(parents=True, exist_ok=True)
+    stage = Path(tempfile.mkdtemp(prefix=f".{output.name}.", dir=output.parent))
+    outputs: list[dict[str, Any]] = []
+    frames = []
+    sources = []
+    with tempfile.TemporaryDirectory(prefix="mc2-loading-rnc-", dir=output.parent) as work:
+        directory = Path(work)
+        decoder, provenance = compile_rnc_decoder(directory)
+        for profile, stem in (("ordinary", "SMATITLE"), ("secret", "SMATITL2")):
+            decoded = {}
+            for suffix, size in (("DAT", 320 * 200), ("PAL", 256 * 3)):
+                relative = f"DATA/{stem}.{suffix}"
+                source = owner_root / relative
+                if not source.is_file() or source.is_symlink():
+                    raise CacheError(f"loading source must be an installed regular file: {source}")
+                payload = source.read_bytes()
+                sources.append({"path": relative, "bytes": len(payload),
+                                "sha256": sha256_bytes(payload)})
+                decoded[suffix] = decode_container_blob(decoder, payload, 0, size,
+                                                       directory, f"{profile}-{suffix.lower()}")
+            if any(value > 63 for value in decoded["PAL"]):
+                raise CacheError(f"{profile} loading palette contains a non-RGB6 channel")
+            indices = write_output(stage, outputs, f"{profile}/indices.u8", decoded["DAT"],
+                kind="indexed_image_u8", source_asset_ids=[f"owner_data:DATA/{stem}.DAT"])
+            palette = write_output(stage, outputs, f"{profile}/palette.rgb6", decoded["PAL"],
+                kind="ordered_palette_rgb6", source_asset_ids=[f"owner_data:DATA/{stem}.PAL"])
+            frames.append({"profile": profile, "width": 320, "height": 200,
+                           "indices": indices, "palette_rgb6": palette})
+    manifest = {"schema": "mc2-loading-asset-cache/v1", "remc2_commit": PINNED_REMC2_COMMIT,
+                "decoder": provenance, "source_files": sources, "frames": frames,
+                "outputs": outputs}
+    (stage / "manifest.json").write_bytes(canonical_json(manifest))
+    fsync_tree(stage)
+    # A fresh destination is required: never overwrite a live owner cache.
+    stage.rename(output)
+    fsync_parent(output)
+    return manifest
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest="command", required=True)
+    loading = subparsers.add_parser("build-loading")
+    loading.add_argument("--owner-root", type=Path, default=DEFAULT_OWNER)
+    loading.add_argument("--output", type=Path, required=True)
     media = subparsers.add_parser("build-media")
     media.add_argument("--owner-root", type=Path, default=DEFAULT_OWNER)
     media.add_argument("--output", type=Path, required=True)
@@ -11173,7 +11226,12 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
     args = parse_args()
     try:
-        if args.command == "build-media":
+        if args.command == "build-loading":
+            manifest = build_loading_cache(args.owner_root, args.output)
+            print(json.dumps({"schema": "mc2-loading-import-result/v1", "ok": True,
+                "cache": str(args.output), "profiles": [row["profile"] for row in manifest["frames"]],
+                "output_count": len(manifest["outputs"])}))
+        elif args.command == "build-media":
             import sys
             sys.modules.setdefault("build_cache", sys.modules[__name__])
             from build_media_cache import build as build_media

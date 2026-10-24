@@ -152,6 +152,89 @@ namespace MagicCarpet.Native
         }
 
         [Serializable]
+        internal sealed class LoadingPresentationBinding
+        {
+            public string schema;
+            public string level_id;
+            public string cue_id;
+            public string package_graph_hash;
+            public string definition_hash;
+            public string definition_revision;
+            public string source_package_sha256;
+            public string owner_export_package_sha256;
+            public string environment;
+            public string artwork_profile;
+        }
+
+        [Serializable]
+        private sealed class LoadingPresentationObservation
+        {
+            public Identity identity;
+            public LoadingPresentationBinding value;
+        }
+
+        [DllImport("sim_capi", CallingConvention = CallingConvention.Cdecl)]
+        private static extern int mc_game_runtime_loading_presentation_json_v1(
+            ulong handle, ulong generation, IntPtr buffer, uint capacity, out uint length);
+
+        [DllImport("sim_capi", CallingConvention = CallingConvention.Cdecl)]
+        private static extern int mc_game_runtime_cancel_loading_v1(ulong handle, ulong generation);
+
+        internal static LoadingPresentationBinding ReadLoadingPresentation(Identity loading)
+        {
+            ValidateIdentityPresentation(loading);
+            if (loading.mode != LoadingMode || loading.pending_definition == null)
+                throw new InvalidOperationException("loading assets require the pending Rust definition");
+            var handle = ParseCounter(loading.runtime_id, "runtime_id");
+            var generation = ParseCounter(loading.generation, "generation");
+            var observation = ReadJson<LoadingPresentationObservation>(
+                (IntPtr buffer, uint capacity, out uint length) =>
+                    mc_game_runtime_loading_presentation_json_v1(handle, generation, buffer, capacity, out length),
+                "read destination loading presentation");
+            if (observation?.identity?.runtime_id != loading.runtime_id ||
+                observation.identity.generation != loading.generation)
+                throw new InvalidDataException("loading asset observation changed its runtime identity");
+            ValidateLoadingPresentation(loading, observation.value);
+            return observation.value;
+        }
+
+        internal static void ValidateLoadingPresentation(Identity loading, LoadingPresentationBinding binding)
+        {
+            ValidateIdentityPresentation(loading);
+            var definition = loading.pending_definition;
+            if (loading.mode != LoadingMode || definition?.runtime_flow == null ||
+                binding?.schema != "mc2-loading-presentation/v1" ||
+                binding.level_id != definition.runtime_flow.bound_level_id ||
+                binding.cue_id != loading.presentation.cue_id ||
+                binding.package_graph_hash != definition.package_graph_hash ||
+                binding.definition_hash != definition.definition_hash ||
+                binding.definition_revision != definition.definition_revision ||
+                !IsLoadingHash(binding.source_package_sha256) ||
+                !IsLoadingHash(binding.owner_export_package_sha256) ||
+                !IsLoadingHash(binding.definition_hash) || !IsLoadingHash(binding.package_graph_hash) ||
+                binding.environment is not ("day" or "night" or "cave") ||
+                binding.artwork_profile is not ("ordinary" or "secret"))
+                throw new InvalidDataException("loading assets do not bind the exact pending destination definition");
+        }
+
+        private static bool IsLoadingHash(string value) => value?.Length == 64 &&
+            value.All(c => c is >= '0' and <= '9' or >= 'a' and <= 'f');
+
+        internal static Identity CancelLoading(Identity loading)
+        {
+            var handle = ParseCounter(loading.runtime_id, "runtime_id");
+            var generation = ParseCounter(loading.generation, "generation");
+            Check(mc_game_runtime_cancel_loading_v1(handle, generation), "cancel loading");
+            var after = ReadIdentity(handle);
+            if (after.runtime_id != loading.runtime_id ||
+                ParseCounter(after.generation, "generation") != checked(generation + 1) ||
+                after.mode is not (TitleMode or CampaignMode) || HasDefinitionIdentityData(after.pending_definition) ||
+                !string.IsNullOrEmpty(after.session?.session_id))
+                throw new InvalidOperationException("loading cancellation did not return an unbound frontend owner");
+            return after;
+        }
+
+        [Serializable]
         internal sealed class RuntimeFlowDestination
         {
             public string kind;
@@ -859,7 +942,7 @@ namespace MagicCarpet.Native
                     .SequenceEqual(contract.modes) ||
                 contract.transitions == null ||
                 !new[] {
-                    "bootstrap_package_set", "restart_new_game", "open_level",
+                    "bootstrap_package_set", "restart_new_game", "open_level", "cancel_loading",
                     "load_replay_save", "pause", "paused_frame", "resume",
                     "accept_completion_transition", "finish_mission_if_ready", "campaign_menu_command", "close"
                 }
@@ -1566,7 +1649,7 @@ namespace MagicCarpet.Native
             }
         }
 
-        private static ulong ParseCounter(string value, string field)
+        internal static ulong ParseCounter(string value, string field)
         {
             if (string.IsNullOrEmpty(value) ||
                 (value.Length > 1 && value[0] == '0') ||
