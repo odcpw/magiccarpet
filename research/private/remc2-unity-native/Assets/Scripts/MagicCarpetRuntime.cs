@@ -13290,6 +13290,7 @@ namespace MagicCarpet.Native
             if (gameRuntimeMode && session != null && fatalError == null)
             {
                 var mode = session.GameRuntimeIdentity().mode;
+                if (mode == GameRuntimeTransport.LoadingMode) return;
                 if (mode == GameRuntimeTransport.TitleMode || mode == GameRuntimeTransport.PausedMode || mode == GameRuntimeTransport.CampaignMode)
                 {
                     // Existing headless qualification routes need no GUI cache.
