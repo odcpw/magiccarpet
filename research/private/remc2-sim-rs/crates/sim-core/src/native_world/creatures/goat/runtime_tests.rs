@@ -30,6 +30,35 @@ fn authored_group_goats_use_live_damage_mana_projection_and_following_pass_recla
         .map(|goat| goat.entity_index)
         .collect::<Vec<_>>();
     assert_eq!(slots.len(), 11);
+    // The ordinary class-9 Fireball mover consumes this target list before
+    // its area pulse can reach the same canonical Goat damage mailbox.
+    let arena = &campaign.level2_compatibility().session.state.live.economy;
+    let collision_targets = arena.fireball_collision_targets(&arena.entities);
+    for slot in &slots {
+        let target = collision_targets
+            .iter()
+            .find(|target| target.source_slot == *slot)
+            .expect("authored Goat participates in ordinary Fireball collision");
+        let goat = campaign
+            .level2_compatibility()
+            .goats()
+            .iter()
+            .find(|goat| goat.entity_index == *slot)
+            .unwrap();
+        assert_eq!(target.position, goat.position);
+        assert_eq!(
+            (
+                target.half_width,
+                target.half_height,
+                target.vertical_offset
+            ),
+            (
+                goat.collision_half_width,
+                goat.collision_half_height,
+                goat.collision_vertical_offset
+            )
+        );
+    }
     assert!(
         campaign
             .level2_compatibility()

@@ -874,7 +874,7 @@ impl Level2EconomyState {
     /// class-3 rows first, followed by class-5 model buckets in numeric model
     /// order.  The imported rows retain their package link order; typed Bee
     /// rows join their model-2 bucket by fixed source slot.
-    fn fireball_guidance_targets(
+    pub(super) fn fireball_guidance_targets(
         &self,
         imported_entities: &[EntitySnapshot],
     ) -> Vec<Level2FireballGuidanceTarget> {
@@ -1074,7 +1074,9 @@ impl Level2EconomyState {
                 && source.life >= 0
                 && matches!(
                     source.model,
-                    level2_class5::archer::ARCHER_MODEL | level2_class5::firefly::FIREFLY_MODEL
+                    crate::goat::GOAT_MODEL
+                        | level2_class5::archer::ARCHER_MODEL
+                        | level2_class5::firefly::FIREFLY_MODEL
                 )
                 && self.map_chains.is_linked(source.source_entity_index))
             .then_some(Level2FireballCollisionTarget {
@@ -1084,6 +1086,8 @@ impl Level2EconomyState {
                 half_width: source.shift_rot_x,
                 vertical_offset: if source.model == level2_class5::archer::ARCHER_MODEL {
                     level2_class5::archer::ARCHER_COLLISION_VERTICAL_OFFSET
+                } else if source.model == crate::goat::GOAT_MODEL {
+                    crate::goat::GOAT_CONSTRUCTOR_COLLISION_HALF_EXTENT
                 } else {
                     0
                 },
