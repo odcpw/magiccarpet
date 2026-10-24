@@ -482,8 +482,8 @@ impl Stream {
                 self.runtime
                     .paused_frame(guard.into(), session_guard.into())
                     .map_err(|error| match error {
-                        PausedFrameError::Transition(error) => error.into(),
-                        PausedFrameError::Session(error) => error.into(),
+                        PausedFrameError::Transition(error) => StreamError::from(error),
+                        PausedFrameError::Session(error) => StreamError::from(error),
                     })?;
                 let observation = self
                     .runtime
