@@ -91,6 +91,7 @@ pub const fn supports_complete_creature_lifecycle(kind: CreatureKind) -> bool {
         kind,
         CreatureKind::Bee
             | CreatureKind::Dragon
+            | CreatureKind::Goat
             | CreatureKind::Archer
             | CreatureKind::Firefly
             | CreatureKind::Skeleton
@@ -2140,6 +2141,37 @@ impl LevelDefinition {
 #[cfg(test)]
 mod tests {
     use super::{ObjectiveCondition, RivalWizardId};
+
+    #[test]
+    fn goat_absence_objective_requires_a_package_present_root() {
+        use super::{
+            CreatureKind, LevelDefinition, LevelEntityId, LevelEntityKind,
+            LevelObjectiveConditionAccess, LevelObjectiveId, TilePosition,
+        };
+        use crate::adapter::{entity_definition, objective_definition};
+        let goat = entity_definition(
+            LevelEntityId::parse("creature.goat.test").unwrap(),
+            LevelEntityKind::Creature(CreatureKind::Goat),
+            TilePosition { x: 10, y: 11 },
+            None,
+        );
+        let objective = objective_definition(
+            LevelObjectiveId::parse("objective.goat.absence").unwrap(),
+            ObjectiveCondition::NoLivingCreatures(CreatureKind::Goat),
+            LevelObjectiveConditionAccess::SessionReset,
+        );
+        let level = LevelDefinition::new(vec![goat], vec![objective.clone()], vec![]).unwrap();
+        assert!(
+            level
+                .no_living_creatures_objective_kinds()
+                .contains(&CreatureKind::Goat)
+        );
+        assert!(level.verify_session_reset_variant_of(&level).is_ok());
+        assert!(LevelDefinition::new(vec![], vec![objective], vec![]).is_err());
+        assert!(!super::supports_complete_creature_lifecycle(
+            CreatureKind::Worm
+        ));
+    }
 
     #[test]
     fn activation_switch_properties_require_their_live_rule_and_survive_variants() {
