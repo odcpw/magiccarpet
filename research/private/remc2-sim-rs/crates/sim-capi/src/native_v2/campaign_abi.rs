@@ -2993,6 +2993,40 @@ pub extern "C" fn mc_native_campaign_entities_copy(
                         }
                         rows[slot] = campaign_live_class5_entity_snapshot(source);
                     }
+                    for source in reset.economy().castle_defenders() {
+                        let slot = usize::from(source.source_entity_index);
+                        if slot >= rows.len() || !occupied.insert(source.source_entity_index) {
+                            return Err(AbiError::new(
+                                MC_STATUS_VALIDATION_FAILED,
+                                format!(
+                                    "campaign Castle defender source slot {} is invalid or duplicated",
+                                    source.source_entity_index
+                                ),
+                            ));
+                        }
+                        rows[slot] = McCampaignEntitySnapshotV2 {
+                            abi_version: MC_NATIVE_ABI_VERSION,
+                            struct_size: struct_size::<McCampaignEntitySnapshotV2>(),
+                            entity_index: source.source_entity_index,
+                            source_id: source.id_entity_index,
+                            next_relation: u16::MAX,
+                            parameter_relation: 83,
+                            authority: MC_AUTHORITY_CAMPAIGN_LIVE,
+                            active: u8::from(source.active && !source.drawing_disabled()),
+                            class_id: 5,
+                            model: 15,
+                            action: source.action,
+                            phase: source.source_byte_3e,
+                            x: source.position.x,
+                            y: source.position.y,
+                            z: source.position.z,
+                            yaw: source.yaw.cast_signed(),
+                            pitch: source.pitch,
+                            fov: source.orientation_fov,
+                            actual_speed: source.speed,
+                            reserved: [0; 4],
+                        };
+                    }
                     let live_rows =
                         reset
                             .economy()

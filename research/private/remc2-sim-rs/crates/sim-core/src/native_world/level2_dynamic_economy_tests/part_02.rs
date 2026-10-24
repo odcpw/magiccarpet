@@ -1347,7 +1347,7 @@
         let free_before = session.economy().free_slots.len();
         let phase_before = session
             .economy()
-            .castle_children()
+            .castle_defenders()
             .iter()
             .find(|child| child.source_entity_index == auxiliary_slot)
             .expect("live auxiliary before ordinary callback")
@@ -1360,7 +1360,7 @@
 
         let auxiliary = session
             .economy()
-            .castle_children()
+            .castle_defenders()
             .iter()
             .find(|child| child.source_entity_index == auxiliary_slot)
             .expect("ordinary action121 callback retains the auxiliary");
@@ -1417,14 +1417,14 @@
         assert_eq!(&castle.auxiliary_slots[1..4], &[0, 0, 0]);
         let child = session
             .economy()
-            .castle_children()
+            .castle_defenders()
             .iter()
             .find(|child| child.source_entity_index == auxiliary_slot)
             .expect("created model-15 auxiliary child");
         assert_eq!(
             (
-                child.source_class,
-                child.model,
+                child.target_view().class,
+                child.target_view().model,
                 child.action,
                 child.id_entity_index,
                 child.player_entity_index,
@@ -1498,7 +1498,7 @@
             .map(|slot| {
                 let child = session
                     .economy()
-                    .castle_children()
+                    .castle_defenders()
                     .iter()
                     .find(|child| child.source_entity_index == *slot)
                     .expect("constructor-counter auxiliary");
@@ -1546,7 +1546,7 @@
         let auxiliary_slot = session.economy().castle().expect("Castle").auxiliary_slots[0];
         let auxiliary_id = session
             .economy()
-            .castle_children()
+            .castle_defenders()
             .iter()
             .find(|child| child.source_entity_index == auxiliary_slot)
             .expect("auxiliary")
@@ -1619,7 +1619,7 @@
             let child = session
                 .economy
                 .economy
-                .castle_children
+                .castle_defenders
                 .iter_mut()
                 .find(|child| child.source_entity_index == auxiliary_slot)
                 .expect("mutable auxiliary");
@@ -1644,7 +1644,7 @@
         }
         let child = session
             .economy()
-            .castle_children()
+            .castle_defenders()
             .iter()
             .find(|child| child.source_entity_index == auxiliary_slot)
             .expect("retained auxiliary");
@@ -1669,7 +1669,7 @@
         let child = stale
             .economy
             .economy
-            .castle_children
+            .castle_defenders
             .iter_mut()
             .find(|child| child.source_entity_index == auxiliary_slot)
             .expect("stale-generation auxiliary");
@@ -1686,7 +1686,7 @@
         assert_eq!(
             stale
                 .economy()
-                .castle_children()
+                .castle_defenders()
                 .iter()
                 .find(|child| child.source_entity_index == auxiliary_slot)
                 .expect("stale-generation auxiliary retained")
@@ -1735,7 +1735,7 @@
             let child = session
                 .economy
                 .economy
-                .castle_children
+                .castle_defenders
                 .iter_mut()
                 .find(|child| child.source_entity_index == auxiliary_slot)
                 .expect("mutable auxiliary");
@@ -1752,7 +1752,7 @@
             .step_castle_child_terminal_slot(auxiliary_slot));
         let auxiliary = session
             .economy()
-            .castle_children()
+            .castle_defenders()
             .iter()
             .find(|child| child.source_entity_index == auxiliary_slot)
             .expect("rejected-target auxiliary");
@@ -1829,7 +1829,7 @@
         {
             let economy = &mut session.economy.economy;
             let earlier = economy
-                .castle_children
+                .castle_defenders
                 .iter_mut()
                 .find(|child| child.source_entity_index == earlier_slot)
                 .expect("earlier auxiliary");
@@ -1838,7 +1838,7 @@
             earlier.position = auxiliary_position;
             earlier.source_byte_3e = 0;
             let later = economy
-                .castle_children
+                .castle_defenders
                 .iter_mut()
                 .find(|child| child.source_entity_index == later_slot)
                 .expect("later auxiliary");
@@ -1876,7 +1876,7 @@
         }
         let ordinary_later = ordinary
             .economy()
-            .castle_children()
+            .castle_defenders()
             .iter()
             .find(|child| child.source_entity_index == later_slot)
             .expect("later auxiliary after ordinary allocation");
@@ -1911,7 +1911,7 @@
         }
         let later = session
             .economy()
-            .castle_children()
+            .castle_defenders()
             .iter()
             .find(|child| child.source_entity_index == later_slot)
             .expect("later auxiliary retained");
@@ -1925,7 +1925,7 @@
             let later = session
                 .economy
                 .economy
-                .castle_children
+                .castle_defenders
                 .iter_mut()
                 .find(|child| child.source_entity_index == later_slot)
                 .expect("later auxiliary for rebuilt list");
@@ -1950,7 +1950,7 @@
         ));
         let later = session
             .economy()
-            .castle_children()
+            .castle_defenders()
             .iter()
             .find(|child| child.source_entity_index == later_slot)
             .expect("later auxiliary after rebuilt list");
@@ -2003,7 +2003,7 @@
             let child = session
                 .economy
                 .economy
-                .castle_children
+                .castle_defenders
                 .iter_mut()
                 .find(|child| child.source_entity_index == source_slot)
                 .expect("damage auxiliary");
@@ -2022,7 +2022,7 @@
             .step_castle_child_terminal_slot(source_slot));
         let child = session
             .economy()
-            .castle_children()
+            .castle_defenders()
             .iter()
             .find(|child| child.source_entity_index == source_slot)
             .expect("nonlethal auxiliary");
@@ -2043,7 +2043,7 @@
         {
             let economy = &mut lethal.economy.economy;
             let source = economy
-                .castle_children
+                .castle_defenders
                 .iter_mut()
                 .find(|child| child.source_entity_index == source_slot)
                 .expect("chain source auxiliary");
@@ -2056,7 +2056,7 @@
             source.source_byte_3e = 1;
             source.chain_next_slot = linked_slot;
             let linked = economy
-                .castle_children
+                .castle_defenders
                 .iter_mut()
                 .find(|child| child.source_entity_index == linked_slot)
                 .expect("lethal linked auxiliary");
@@ -2068,7 +2068,7 @@
             .step_castle_child_terminal_slot(source_slot));
         let child = lethal
             .economy()
-            .castle_children()
+            .castle_defenders()
             .iter()
             .find(|child| child.source_entity_index == source_slot)
             .expect("lethal auxiliary retained for action124");
@@ -2086,6 +2086,13 @@
 
     #[test]
     fn level_two_castle_auxiliary_roam_rng_peer_and_cave_probe_are_exact() {
+        let roam = |actor: &mut creatures::creature_15::CastleDefenderState,
+                    peers: &[creatures::creature_15::DefenderTarget], terrain: &SessionTerrain| {
+            let slots = peers.iter().map(|peer| peer.slot).collect::<Vec<_>>();
+            creatures::creature_15::roam(actor, &creatures::creature_15::DefenderContext {
+                terrain, targets: peers, class3: &[], model15: &slots, class5: &[], stage_runtime: None,
+            });
+        };
         let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
             .expect("qualified Level 2 package");
         let mut session = inspection
@@ -2100,7 +2107,7 @@
         let auxiliary_slot = session.economy().castle().expect("Castle").auxiliary_slots[0];
         let mut child = session
             .economy()
-            .castle_children()
+            .castle_defenders()
             .iter()
             .find(|child| child.source_entity_index == auxiliary_slot)
             .copied()
@@ -2125,7 +2132,7 @@
         for _ in 0..4 {
             expected_rng = level2_next_rng16(expected_rng);
         }
-        level2_castle_auxiliary_roam(&mut child, &[], &terrain);
+        roam(&mut child, &[], &terrain);
         assert_eq!(child.entity_rng, expected_rng);
         assert_eq!((child.action, child.yaw), (121, 0));
         assert_ne!(child.position, position);
@@ -2136,7 +2143,7 @@
         material_rejected.source_byte_3e = 8;
         let rng_before = material_rejected.entity_rng;
         terrain.planes.terrain_types[terrain_index(0x20, 0x20)] = 0;
-        level2_castle_auxiliary_roam(&mut material_rejected, &[], &terrain);
+        roam(&mut material_rejected, &[], &terrain);
         assert_eq!((material_rejected.action, material_rejected.entity_rng), (124, rng_before));
 
         let mut cave = session.canonical_terrain().clone();
@@ -2145,18 +2152,18 @@
         cave.planes.ground_heights.fill(0);
         cave.planes.secondary_heights.fill(4);
         cave.planes.angles.fill(0);
-        assert!(!level2_castle_auxiliary_probe_blocked(&cave, position));
+        assert!(!creatures::creature_15::probe_blocked(&cave, position, 125));
         cave.planes.secondary_heights.fill(3);
-        assert!(level2_castle_auxiliary_probe_blocked(&cave, position));
+        assert!(creatures::creature_15::probe_blocked(&cave, position, 125));
         cave.planes.secondary_heights.fill(255);
         cave.planes.angles[terrain_index(0x20, 0x20)] = 8;
-        assert!(level2_castle_auxiliary_probe_blocked(&cave, position));
+        assert!(creatures::creature_15::probe_blocked(&cave, position, 125));
         cave.planes.angles[terrain_index(0x20, 0x20)] = 0;
         cave.planes.terrain_types[terrain_index(0x20, 0x20)] = 0;
-        assert!(level2_castle_auxiliary_probe_blocked(&cave, position));
+        assert!(creatures::creature_15::probe_blocked(&cave, position, 125));
 
-        let peer = Level2CastleAuxiliaryTarget {
-            source_entity_index: auxiliary_slot.wrapping_add(1),
+        let peer = creatures::creature_15::DefenderTarget {
+            slot: auxiliary_slot.wrapping_add(1),
             source_id: child.id_entity_index.wrapping_add(1),
             class: 5,
             model: 15,
@@ -2166,7 +2173,7 @@
                 x: position.x.wrapping_add(100),
                 ..position
             },
-            imported: false,
+            ..Default::default()
         };
         let expected_roll = u16::try_from(heading_for_positions(peer.position, position))
             .expect("peer avoidance heading");
@@ -2183,7 +2190,7 @@
         peer_moves.entity_rng = 3;
         let moving_rng = level2_next_rng16(peer_moves.entity_rng);
         assert!(moving_rng % 20 <= 10);
-        level2_castle_auxiliary_roam(&mut peer_moves, &[peer], session.canonical_terrain());
+        roam(&mut peer_moves, &[peer], session.canonical_terrain());
         assert_eq!((peer_moves.roll, peer_moves.entity_rng), (expected_roll, moving_rng));
         assert_ne!(peer_moves.position, position);
 
@@ -2193,7 +2200,7 @@
         peer_stays.entity_rng = 0;
         let staying_rng = level2_next_rng16(peer_stays.entity_rng);
         assert!(staying_rng % 20 > 10);
-        level2_castle_auxiliary_roam(&mut peer_stays, &[peer], session.canonical_terrain());
+        roam(&mut peer_stays, &[peer], session.canonical_terrain());
         assert_eq!((peer_stays.roll, peer_stays.entity_rng), (expected_roll, staying_rng));
         assert_eq!(peer_stays.position, position);
     }
@@ -2217,7 +2224,7 @@
             let child = session
                 .economy
                 .economy
-                .castle_children
+                .castle_defenders
                 .iter_mut()
                 .find(|child| child.source_entity_index == auxiliary_slot)
                 .expect("action124 auxiliary");
@@ -2230,7 +2237,7 @@
             .step_castle_child_terminal_slot(auxiliary_slot));
         let child = session
             .economy()
-            .castle_children()
+            .castle_defenders()
             .iter()
             .find(|child| child.source_entity_index == auxiliary_slot)
             .expect("action125 auxiliary");
@@ -2242,7 +2249,7 @@
             .step_castle_child_terminal_slot(auxiliary_slot));
         let child = session
             .economy()
-            .castle_children()
+            .castle_defenders()
             .iter()
             .find(|child| child.source_entity_index == auxiliary_slot)
             .expect("hidden action125 auxiliary");
@@ -2258,7 +2265,7 @@
         session.step_outer_turn(PlayerCommand::default(), 0);
         let retained_generation = session
             .economy()
-            .castle_children()
+            .castle_defenders()
             .iter()
             .find(|child| child.source_entity_index == auxiliary_slot)
             .map(|_| session.economy().slot_generation(auxiliary_slot));
@@ -2303,7 +2310,7 @@
         {
             let economy = &mut session.economy.economy;
             let child = economy
-                .castle_children
+                .castle_defenders
                 .iter_mut()
                 .find(|child| child.source_entity_index == auxiliary_slot)
                 .expect("mutable auxiliary");
@@ -2331,7 +2338,7 @@
         );
         assert!(session
             .economy()
-            .castle_children()
+            .castle_defenders()
             .iter()
             .all(|child| child.source_entity_index != auxiliary_slot));
         let projectile = session
@@ -2441,7 +2448,7 @@
         {
             let economy = &mut session.economy.economy;
             let child = economy
-                .castle_children
+                .castle_defenders
                 .iter_mut()
                 .find(|child| child.source_entity_index == auxiliary_slot)
                 .expect("production action122 auxiliary");
@@ -2472,7 +2479,7 @@
         );
         assert!(session
             .economy()
-            .castle_children()
+            .castle_defenders()
             .iter()
             .all(|child| child.source_entity_index != auxiliary_slot));
         let replacement = session
@@ -2530,7 +2537,7 @@
         {
             let economy = &mut session.economy.economy;
             let child = economy
-                .castle_children
+                .castle_defenders
                 .iter_mut()
                 .find(|child| child.source_entity_index == auxiliary_slot)
                 .expect("mutable auxiliary");
@@ -2633,7 +2640,7 @@
         {
             let economy = &mut session.economy.economy;
             let child = economy
-                .castle_children
+                .castle_defenders
                 .iter_mut()
                 .find(|child| child.source_entity_index == auxiliary_slot)
                 .expect("production action125 auxiliary");
@@ -2743,7 +2750,7 @@
         {
             let economy = &mut session.economy.economy;
             let child = economy
-                .castle_children
+                .castle_defenders
                 .iter_mut()
                 .find(|child| child.source_entity_index == auxiliary_slot)
                 .expect("mutable auxiliary");
@@ -2823,7 +2830,7 @@
         {
             let economy = &mut exhausted.economy.economy;
             let child = economy
-                .castle_children
+                .castle_defenders
                 .iter_mut()
                 .find(|child| child.source_entity_index == auxiliary_slot)
                 .expect("failure-path auxiliary");
@@ -2847,7 +2854,7 @@
             .is_empty());
         let auxiliary = exhausted
             .economy()
-            .castle_children()
+            .castle_defenders()
             .iter()
             .find(|child| child.source_entity_index == auxiliary_slot)
             .expect("allocator failure retains auxiliary");
@@ -2865,7 +2872,7 @@
         {
             let economy = &mut death_failure.economy.economy;
             let child = economy
-                .castle_children
+                .castle_defenders
                 .iter_mut()
                 .find(|child| child.source_entity_index == auxiliary_slot)
                 .expect("death failure-path auxiliary");
@@ -2886,7 +2893,7 @@
         assert_eq!(death_failure.economy().events().len(), events_before);
         let auxiliary = death_failure
             .economy()
-            .castle_children()
+            .castle_defenders()
             .iter()
             .find(|child| child.source_entity_index == auxiliary_slot)
             .expect("failed burst retains source row until the next boundary");
@@ -2901,7 +2908,7 @@
         death_failure.step_outer_turn(PlayerCommand::default(), 0);
         assert!(death_failure
             .economy()
-            .castle_children()
+            .castle_defenders()
             .iter()
             .all(|child| child.source_entity_index != auxiliary_slot));
         assert!(
@@ -2938,7 +2945,7 @@
                 .expect("created auxiliary Castle")
                 .auxiliary_slots[0];
             economy
-                .castle_children
+                .castle_defenders
                 .iter_mut()
                 .find(|child| child.source_entity_index == invalid_slot)
                 .expect("created auxiliary child")
@@ -2968,7 +2975,7 @@
         assert!(
             session
                 .economy()
-                .castle_children()
+                .castle_defenders()
                 .iter()
                 .find(|child| child.source_entity_index == invalid_slot)
                 .is_some_and(|child| child.active && child.action == 125)

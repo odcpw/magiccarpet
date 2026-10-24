@@ -92,6 +92,29 @@ fn target_in_arena_with_dynamic_slots(
         return None;
     }
     if let Some(source) = arena
+        .castle_defenders()
+        .iter()
+        .find(|row| row.active && row.source_entity_index == slot)
+    {
+        return Some(ArcherTarget {
+            entity_index: slot,
+            class: 5,
+            model: 15,
+            action: source.action,
+            active: source.active,
+            life: source.life,
+            control_flags: source.control_flags,
+            minimum_speed: source.minimum_speed,
+            maximum_speed: source.maximum_speed,
+            actual_speed: source.speed,
+            dword_0x10: source.source_dword_10,
+            word_0x248: 0,
+            word_0x32: source.chain_previous_slot,
+            word_0x96_150: source.target_sphere_slot,
+            position: source.position,
+        });
+    }
+    if let Some(source) = arena
         .authored_class5()
         .iter()
         .find(|row| row.active && row.source_entity_index == slot)
@@ -227,6 +250,26 @@ pub(crate) fn relations_in_arena(arena: &SourceArena) -> Vec<ArcherRelation> {
         .into_iter()
         .filter_map(|slot| {
             let target = target_in_arena_with_dynamic_slots(arena, slot, Some(&dynamic_slots))?;
+            if let Some(source) = arena
+                .castle_defenders()
+                .iter()
+                .find(|row| row.active && row.source_entity_index == slot)
+            {
+                return Some(ArcherRelation {
+                    slot,
+                    target,
+                    source_id: source.id_entity_index,
+                    parent: source.stage.parent,
+                    stage_index: source.stage.index,
+                    stage_mode: source.stage.mode,
+                    stage_relation: source.stage.relation,
+                    attacker: source.damage_attacker_entity_index,
+                    yaw: source.yaw as i16,
+                    roll: source.roll as i16,
+                    half_width: source.shift_rot_x,
+                    frozen_class5_member: false,
+                });
+            }
             if let Some(source) = arena
                 .authored_class5()
                 .iter()
@@ -1318,6 +1361,13 @@ impl Level2EconomyState {
         slot: u16,
         imported: &[EntitySnapshot],
     ) -> Option<(u8, u8, u32, i32)> {
+        if let Some(actor) = self
+            .castle_defenders
+            .iter()
+            .find(|row| row.active && row.source_entity_index == slot)
+        {
+            return Some((5, 15, actor.control_flags, actor.mana));
+        }
         if let Some(part) = self
             .authored_dragon_parts
             .iter()
