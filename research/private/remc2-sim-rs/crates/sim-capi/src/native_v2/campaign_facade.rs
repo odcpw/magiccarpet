@@ -871,6 +871,8 @@ mod tests {
             cast_right: false,
             cast_selected: true,
             select_spell: None,
+            recenter: false,
+            full_stop: false,
             look_yaw: -17,
             look_pitch: 23,
         });
