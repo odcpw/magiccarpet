@@ -59,6 +59,11 @@ V4_FILES = V3_FILES | {"collision-masks.bin"}
 V5_FILES = V4_FILES
 CAMPAIGN_ENVELOPE_FILES = {"campaign-definition.json", "owner-manifest.json"}
 CAMPAIGN_FILES = V5_FILES | {"campaign-definition.json"}
+ORDINARY_CAMPAIGN_PACKAGE_SCHEMA = "mc2-owner-campaign-package/v4"
+ORDINARY_CAMPAIGN_FILES = CAMPAIGN_FILES | {
+    "building-parameters.bin", "source-record.bin", "source-record.json", "source-record.packed",
+}
+ORDINARY_MAPS = (1, 0, 0, 2, 0, 2, 1, 2, 0, 1, 1, 2, 0, 1, 2, 2, 0, 1, 1, 0, 2, 1, 0, 2, 1)
 LEVEL2_CAMPAIGN_FILES = CAMPAIGN_FILES | {"building-parameters.bin"}
 LEVEL1_ASSET_FILES = V3_FILES | CAMPAIGN_ENVELOPE_FILES | {
     "fireball-projectile-base.indexed-sprite.json",
@@ -1653,6 +1658,7 @@ def _campaign_decode_behavior_rows(
     entities: bytes,
     expected_active_entities: int,
     expected_map_type_id: int = 0,
+    wide_parameters: bool = False,
 ) -> list[dict]:
     require(
         len(authored) == 0x6604 and authored[6] == expected_map_type_id,
@@ -1666,7 +1672,7 @@ def _campaign_decode_behavior_rows(
             continue
         class_id, subtype, _x, _y, action, _word10, _stage, model, _par2, _par3 = struct.unpack("<HhHHhHhHHH", record)
         require(
-            class_id <= 255 and 0 <= subtype <= 255 and model <= 255 and -1 <= action <= 255,
+            class_id <= 255 and 0 <= subtype <= 255 and (wide_parameters or model <= 255) and -1 <= action <= 255,
             f"authored behavior row {index} exceeds schema-v1 width",
         )
         rows.append({
@@ -1775,6 +1781,7 @@ def _campaign_validate_reset_members(package: Path, spec: dict, files: dict, pro
         entities,
         profile["active_entities"],
         profile["map_type_id"],
+        bool(profile.get("ordinary")),
     )
     require(_strict_equal(spec["authored_behavior_rows"], expected_rows), "authored_behavior_rows differ from fresh authored/reset decode")
 
@@ -1815,7 +1822,7 @@ def _campaign_validate_reset_members(package: Path, spec: dict, files: dict, pro
     terrain = (package / terrain_descriptor["member"]).read_bytes()
     require(
         len(terrain) == 0x70000
-        and terrain[0x40000:0x50000] == bytes(0x10000),
+        and (profile["map_type_id"] == 2 or terrain[0x40000:0x50000] == bytes(0x10000)),
         "campaign terrain extent/non-Cave normalization changed",
     )
 
@@ -1832,17 +1839,17 @@ def _campaign_validate_reset_members(package: Path, spec: dict, files: dict, pro
         == (0, profile["runtime_player_count"], profile["runtime_music_selector"]),
         "campaign runtime census profile scalars changed",
     )
-    accepted_stage_types = {0, 3, 5, 7, 9}
+    accepted_stage_types = set(range(10)) if profile.get("ordinary") else {0, 3, 5, 7, 9}
     for index in range(8):
         offset = 192 + index * 14
         stage_type, flags = runtime[offset], runtime[offset + 1]
         require(stage_type in accepted_stage_types, f"runtime stage {index} has an unproven type")
         require(runtime[offset + 7 : offset + 10] == bytes(3), f"runtime stage {index} relation padding is nonzero")
         domain, relation = runtime[offset + 6], u32(runtime, offset + 10)
-        expected_domain = 2 if stage_type == 3 and flags & 1 else 0
+        expected_domain = (2 if flags & 1 else 1) if stage_type in {1, 2, 4} else 2 if stage_type == 3 and flags & 1 else (3 if flags & 1 else 1) if stage_type == 6 else 0
         require(domain == expected_domain, f"runtime stage {index} relation domain differs")
         require(
-            domain == 0 or 1 <= relation <= 1000,
+            domain == 0 or (domain == 1 and 0 <= relation <= 1200) or (domain == 2 and 0 <= relation <= 1000) or (domain == 3 and 0 <= relation < 1000),
             f"runtime stage {index} relation is out of bounds",
         )
     for index in range(8):
@@ -1856,7 +1863,7 @@ def _campaign_validate_reset_members(package: Path, spec: dict, files: dict, pro
         domain, relation = runtime[offset + 4], u32(runtime, offset + 8)
         require(domain == expected_domain, f"runtime stage variable {index} relation domain differs")
         require(
-            domain == 0 or 1 <= relation <= 1000,
+            domain == 0 or 0 <= relation <= 1000,
             f"runtime stage variable {index} relation is out of bounds",
         )
     for index in range(50):
@@ -1888,7 +1895,7 @@ def _campaign_validate_reset_members(package: Path, spec: dict, files: dict, pro
         content = (package / name).read_bytes()
         require(
             len(content) == 0x70000
-            and content[0x40000:0x50000] == bytes(0x10000),
+            and (profile["map_type_id"] == 2 or content[0x40000:0x50000] == bytes(0x10000)),
             f"{name} layout/non-Cave normalization changed",
         )
     post_entities = (package / "entities-post-features.bin").read_bytes()
@@ -1988,13 +1995,20 @@ def _campaign_validate_source_facts(package: Path, facts_value: object, files: d
     stage, standing_selector, _axis_x, _axis_y = struct.unpack_from(
         "<bhhh", authored, 25972 + 4 * 7
     )
-    if "building-parameters" in source_fact_ids:
+    if "building-parameters" in source_fact_ids and not profile.get("ordinary"):
         require(
             stage == 9 and standing_selector == 153,
             "standing-building objective operation differs from qualified Level 2",
         )
-    else:
+    elif "building-parameters" not in source_fact_ids:
         standing_selector = None
+    standing_selectors = {standing_selector}
+    if profile.get("ordinary"):
+        standing_selectors = {
+            selector for stage, selector, _x, _y in
+            (struct.unpack_from("<bhhh", authored, 25972 + index * 7) for index in range(8))
+            if stage == 9
+        }
     building_objective_provenance = [
         {
             "authored_record": row["authored_record"],
@@ -2005,12 +2019,12 @@ def _campaign_validate_source_facts(package: Path, facts_value: object, files: d
             "source_subtype": row["subtype"],
         }
         for row in behavior_rows
-        if row["authored_record"] == standing_selector
+        if row["authored_record"] in standing_selectors
         and row["initial_source_slot"] is None
         and row["class"] == 10
         and row["subtype"] == 45
     ]
-    if "building-parameters" in source_fact_ids:
+    if "building-parameters" in source_fact_ids and not profile.get("ordinary"):
         require(
             building_objective_provenance == [{
                 "authored_record": 153,
@@ -2093,7 +2107,7 @@ def _campaign_validate_operations(spec: dict, authored: bytes, files: dict, pack
         stage, selector, axis_x, axis_y = struct.unpack_from("<bhhh", authored, offset)
         if stage == -1:
             inactive_seen = True
-            require((selector, axis_x, axis_y) == (0, 0, 0), f"inactive objective row {index} has payload")
+            require(profile.get("ordinary") or (selector, axis_x, axis_y) == (0, 0, 0), f"inactive objective row {index} has payload")
             continue
         require(not inactive_seen and stage in profile["objective_stage_forms"], f"objective row {index} has an unproven operation form")
         expected_objectives.append({
@@ -2121,6 +2135,8 @@ def _campaign_validate_presentation(
     files: dict,
     *,
     owner_manifest: dict | None = None,
+    selection: tuple[int, int, int] | None = None,
+    source_flags: int = 0,
 ) -> None:
     keys = {"block_bank", "cursor", "map_type", "member", "palette", "resolved_files", "sky_bank", "sound_bank", "sprite_bank", "terrain_bank", "terrain_graphics_flag_2", "terrain_graphics_flags", "texture_size", "vga_resolution_selector", "web_bank"}
     corrected_blocks = isinstance(recipe_value, dict) and "schema" in recipe_value
@@ -2143,6 +2159,14 @@ def _campaign_validate_presentation(
         "terrain_bank": "TMAPS0-0", "texture_size": 32, "vga_resolution_selector": 1,
         "web_bank": "MWEBD0-0",
     }
+    if selection is not None:
+        map_id = selection[2]
+        code = ("D", "N", "C")[map_id]
+        blocks = "BLOCK32" if map_id == 0 else "BL32C0-0" if map_id == 2 else "BL32F0-0" if source_flags & 2 else "BL32N0-0"
+        expected.update(block_bank=blocks, map_type=("Day", "Night", "Cave")[map_id],
+                        palette="PALF-0" if source_flags & 2 else f"PAL{code}-0",
+                        sky_bank=f"SKY{code}0-0", sprite_bank=f"MSPR{code}0-0",
+                        terrain_bank=f"TMAPS{map_id}-0", web_bank=f"MWEB{code}0-0")
     for name, value in expected.items():
         require(_strict_equal(recipe[name], value), f"presentation recipe {name} differs from Level 2")
     require(
@@ -2153,7 +2177,7 @@ def _campaign_validate_presentation(
     require(
         _strict_equal(
             (recipe["terrain_graphics_flags"], recipe["terrain_graphics_flag_2"]),
-            (0, False),
+            (source_flags, bool(source_flags & 2)),
         ),
         "presentation terrain flags differ from proven Level 2",
     )
@@ -2171,6 +2195,10 @@ def _campaign_validate_presentation(
         "font_bank": "owner:CD_Files/DATA/FONT1.DAT",
         "language": "owner:CD_Files/LANGUAGE/L1.TXT",
     }
+    if selection is not None:
+        for key in ("block_bank", "palette", "sky_bank", "sprite_bank", "web_bank"):
+            expected_resolved[key] = f"owner:CD_Files/DATA/{expected[key]}.DAT"
+        expected_resolved["terrain_bank"] = f"owner:GAME/NETHERW/CDATA/{expected['terrain_bank']}.DAT"
     require(resolved == expected_resolved, "presentation recipe resolved asset identities differ")
 
 
@@ -2343,6 +2371,53 @@ def _campaign_validate_presentation_assets(
     require(observed == set(LEVEL1_PRESENTATION_ASSETS), "presentation artifact set is incomplete")
 
 
+def _campaign_validate_source_record(package: Path, selection: tuple[int, int, int]) -> None:
+    record = _exact_object(json.loads((package / "source-record.json").read_text()), {
+        "schema", "internal_level", "encoding", "container", "offset_table", "packed_offset",
+        "packed_bytes", "packed_sha256", "decoded_bytes", "decoded_sha256", "owner_artifacts",
+    }, "source record")
+    require(record["schema"] == "mc2-source-level-record/v1" and record["internal_level"] == selection[1], "source record schema/identity differs")
+    _bounded_integer(record["internal_level"], 0xFFFF, "source internal identity")
+    _bounded_integer(record["packed_offset"], (1 << 64) - 1, "source packed offset")
+    require(isinstance(record["encoding"], str), "source record encoding is not a string")
+    artifacts = {}
+    for raw in record["owner_artifacts"]:
+        owner = _exact_object(raw, {"logical_path", "bytes", "sha256"}, "source owner artifact")
+        path = _normalized_source_path(owner["logical_path"], "source owner path")
+        require(path not in artifacts or artifacts[path] == owner, "conflicting source owner artifact")
+        _bounded_integer(owner["bytes"], (1 << 64) - 1, "source owner bytes")
+        _lower_hex(owner["sha256"], 64, "source owner hash")
+        artifacts[path] = owner
+    for name, suffix, size, digest in (
+        ("container", "DAT", 3063856, "3b7fae5d7c350486a4f62ad4b2e9fa2e4e52023a216b8a7f043ce02439b50222"),
+        ("offset_table", "TAB", 4000, "179a65f04d4aa7bc147cfd56ffb63a0da400dfd85542eb0fbda10265d6bc1bea"),
+    ):
+        owner = _exact_object(record[name], {"logical_path", "bytes", "sha256"}, name)
+        require(owner["logical_path"] in {f"GAME/NETHERW/CLEVELS/LEVELS.{suffix}", f"CD_Files/LEVELS/LEVELS.{suffix}"}, "source container logical path differs")
+        require((owner["bytes"], owner["sha256"]) == (size, digest), "source container identity differs")
+        require(artifacts.get(owner["logical_path"]) == owner, "source container provenance differs")
+    packed = (package / "source-record.packed").read_bytes()
+    decoded = (package / "source-record.bin").read_bytes()
+    pins_path = Path(__file__).resolve().parents[2] / "remc2-sim-rs/crates/sim-core/src/campaign/mc2_ordinary_source_records.tsv"
+    pins = {int(fields[0]): fields for fields in (
+        line.split("\t") for line in pins_path.read_text().splitlines() if line and not line.startswith("#")
+    )}
+    pin = pins[selection[0]]
+    actual = (record["packed_offset"], len(packed), hashlib.sha256(packed).hexdigest(), hashlib.sha256(decoded).hexdigest())
+    require(actual == (int(pin[1]), int(pin[2]), pin[3], pin[4]), "source packed span/decoded payload differs from pinned ordinary record")
+    require(actual[0] + actual[1] <= record["container"]["bytes"], "source span exceeds container")
+    require((record["packed_bytes"], record["packed_sha256"], record["decoded_bytes"], record["decoded_sha256"]) == (len(packed), actual[2], len(decoded), actual[3]), "source member extents/hashes differ")
+    require(len(decoded) == 0x6604 and decoded == (package / "authored-level.bin").read_bytes(), "decoded source payload differs from authored adapter")
+    if record["encoding"] == "raw":
+        require(not packed.startswith(b"RNC") and packed == decoded, "raw source record was substituted for RNC")
+    else:
+        require(record["encoding"] in {"rnc1", "rnc2"}, "unknown source encoding")
+        method = int(record["encoding"][-1])
+        require(len(packed) >= 18 and packed[:4] == b"RNC" + bytes([method]), "source RNC method differs")
+        unpacked_bytes, packed_bytes = struct.unpack_from(">II", packed, 4)
+        require(unpacked_bytes == len(decoded) and packed_bytes + 18 == len(packed), "source RNC extents differ")
+
+
 def verify_campaign_package(
     package: Path,
     manifest: dict,
@@ -2369,6 +2444,24 @@ def verify_campaign_package(
         _bounded_integer(map_type["id"], 0xFF, "map type id"),
     )
     profile = CAMPAIGN_PROFILES.get(outer_selection)
+    if profile is None and 4 <= outer_selection[0] <= 25:
+        external, internal, map_id = outer_selection
+        require(internal == external - 1 and map_id == ORDINARY_MAPS[internal], "ordinary source identity differs")
+        authored = (package / "authored-level.bin").read_bytes()
+        runtime = (package / "runtime.bin").read_bytes()
+        entities = (package / "entities.bin").read_bytes()
+        collision = (package / "collision-masks.bin").read_bytes()
+        count = u16(runtime, 18)
+        require(1 <= count <= 8, "ordinary runtime player count is outside arena")
+        profile = dict(CAMPAIGN_PROFILES[(2, 1, 0)],
+            ordinary=True, package_schema=ORDINARY_CAMPAIGN_PACKAGE_SCHEMA,
+            definition_schema="mc2-campaign-definition/v4", files=ORDINARY_CAMPAIGN_FILES,
+            map_type_id=map_id, map_type_name=("Day", "Night", "Cave")[map_id],
+            active_entities=sum(entities[12 + slot * 176 + 2] != 0 for slot in range(1000)), bound_player_slots=count,
+            runtime_player_count=count, runtime_music_selector=u32(runtime, 32),
+            collision_bank_bytes=len(collision), collision_bank_sha256=hashlib.sha256(collision).hexdigest(),
+            objective_stage_forms=set(range(10)),
+            objective_count=sum(authored[25972 + index * 7] != 255 for index in range(8)))
     require(profile is not None, "campaign outer selection has no census-proven profile")
     require(manifest["schema"] == profile["package_schema"], "campaign outer schema differs")
     require(
@@ -2454,7 +2547,15 @@ def verify_campaign_package(
         spec["presentation_recipe"],
         files,
         owner_manifest=owner_manifest,
+        selection=outer_selection if profile.get("ordinary") else None,
+        source_flags=authored[4] if profile.get("ordinary") else 0,
     )
+    if profile.get("ordinary"):
+        _campaign_validate_source_record(package, outer_selection)
+        source_record = json.loads((package / "source-record.json").read_text())
+        artifact_paths = {owner["logical_path"] for owner in source_record["owner_artifacts"]}
+        for resource in spec["presentation_recipe"]["resolved_files"].values():
+            require(isinstance(resource, str) and resource.startswith("owner:") and resource[6:] in artifact_paths, f"environment resource {resource} lacks owner provenance")
 
     # Stage 8: source-derived post-GenerateEvents runtime roots, then compiled
     # capabilities. Later selectors remain fail-closed at the source scheduler.
@@ -2487,6 +2588,7 @@ def verify(
         CAMPAIGN_PACKAGE_SCHEMA,
         LEVEL2_CAMPAIGN_PACKAGE_SCHEMA,
         LEVEL1_ASSET_CAMPAIGN_PACKAGE_SCHEMA,
+        ORDINARY_CAMPAIGN_PACKAGE_SCHEMA,
     }:
         return verify_campaign_package(
             package,

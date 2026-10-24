@@ -434,11 +434,14 @@ def test_campaign_package_additional_closed_union_and_carrier_negatives(
         )
 
 
-def test_campaign_package_flag_is_census_profiled_only(tmp_path: Path) -> None:
+def test_campaign_package_accepts_ordinary_domain_and_preserves_source_spans(tmp_path: Path) -> None:
     exporter = Path(os.environ.get("MC2_LEVEL_EXPORTER_BIN", "/tmp/magiccarpet-remc2-level-exporter-build/remc2-level-exporter"))
     owner_root = Path(os.environ.get("MC2_OWNER_ROOT", str(ROOT / "research/private/remc2-native-runtime")))
-    for level in ("4",):
-        output = tmp_path / f"level{level}"
+    generated_root = ROOT / "research/private/generated"
+    generated_root.mkdir(parents=True, exist_ok=True)
+    scratch = Path(tempfile.mkdtemp(prefix="mc-ordinary-package-", dir=generated_root))
+    for level in ("4", "23", "25"):
+        output = scratch / f"level{level}"
         result = subprocess.run(
             [
                 str(exporter), "--owner-root", str(owner_root), "--output", str(output),
@@ -448,9 +451,38 @@ def test_campaign_package_flag_is_census_profiled_only(tmp_path: Path) -> None:
             text=True,
             timeout=30,
         )
+        assert result.returncode == 0, result.stderr
+        verify(output)
+        record = json.loads((output / "source-record.json").read_text())
+        assert record["internal_level"] == int(level) - 1
+        assert record["encoding"] == "rnc1"
+        assert (output / "source-record.bin").read_bytes() == (output / "authored-level.bin").read_bytes()
+        definition = json.loads((output / "campaign-definition.json").read_text())
+        recipe = definition["campaign_spec"]["presentation_recipe"]
+        expected_flags = {"4": 0, "23": 4, "25": 2}[level]
+        assert recipe["terrain_graphics_flags"] == expected_flags
+        assert recipe["terrain_graphics_flag_2"] is bool(expected_flags & 2)
+        assert recipe["palette"] == ("PALF-0" if level == "25" else "PALD-0" if level == "23" else "PALC-0")
+
+    altered = tmp_path / "substituted-raw"
+    shutil.copytree(output, altered)
+    raw = (altered / "source-record.bin").read_bytes()
+    rewrite_member(altered, "source-record.packed", raw)
+    metadata = json.loads((altered / "source-record.json").read_text())
+    metadata.update(encoding="raw", packed_bytes=len(raw), packed_sha256=hashlib.sha256(raw).hexdigest())
+    rewrite_member(altered, "source-record.json", (json.dumps(metadata) + "\n").encode())
+    with pytest.raises(AssertionError, match="pinned ordinary record"):
+        verify(altered)
+
+    for level in ("0", "26", "31", "50"):
+        invalid_output = tmp_path / f"reserved{level}"
+        result = subprocess.run([
+            str(exporter), "--owner-root", str(owner_root), "--output", str(invalid_output),
+            "--level", level, "--campaign-package",
+        ], capture_output=True, text=True, timeout=30)
         assert result.returncode != 0
-        assert "admits only census-profiled external levels" in result.stderr
-        assert not output.exists()
+        assert "integer from 1 through 25" in result.stderr
+        assert not invalid_output.exists()
 
 
 @pytest.fixture(scope="module")

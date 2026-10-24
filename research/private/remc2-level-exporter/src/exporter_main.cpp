@@ -12,6 +12,7 @@
 #include "engine/engine_support.h"
 #include "portability/port_sdl_vga_mouse.h"
 #include "sub_main.h"
+#include "utilities/DataFileRNC.h"
 
 #include <SDL.h>
 #include <nlohmann/json.hpp>
@@ -417,7 +418,7 @@ Arguments parse_arguments(int argc, char** argv) {
     if (result.campaign_package &&
         campaign_emission_profile(result.level.external) == nullptr) {
         throw std::runtime_error(
-            "--campaign-package admits only census-profiled external levels 1, 2, and 3");
+            "--campaign-package requires an ordinary external level from 1 through 25");
     }
     return result;
 }
@@ -1591,6 +1592,82 @@ Bytes serialize_authored_level(const Type_Level_2FECE& level) {
     return result;
 }
 
+// Retain the actual selected container span as well as the complete decoded
+// source record. The authored adapter is useful, but cannot replace provenance.
+void write_bytes(const fs::path& path, const std::vector<std::uint8_t>& bytes);
+
+void capture_source_record(
+    const fs::path& owner_root,
+    const fs::path& staging,
+    std::uint16_t internal,
+    const Bytes& authored,
+    const json& owner_sources,
+    json& file_manifest) {
+    const auto select = [&](const char* name) {
+        const fs::path game = fs::path("GAME/NETHERW/CLEVELS") / name;
+        return fs::is_regular_file(owner_root / game)
+            ? game : fs::path("CD_Files/LEVELS") / name;
+    };
+    const auto read = [&](const fs::path& logical) {
+        std::ifstream stream(owner_root / logical, std::ios::binary);
+        if (!stream) throw std::runtime_error("cannot read source level container " + logical.string());
+        return std::vector<std::uint8_t>(std::istreambuf_iterator<char>(stream), {});
+    };
+    const fs::path dat_path = select("LEVELS.DAT");
+    const fs::path tab_path = select("LEVELS.TAB");
+    const auto dat = read(dat_path);
+    Bytes tab;
+    tab.data = read(tab_path);
+    if (tab.data.size() != 4000) throw std::runtime_error("source LEVELS.TAB extent changed");
+    const auto offset_at = [&](std::size_t index) {
+        const auto offset = index * 4;
+        return std::uint32_t(tab.data.at(offset)) | (std::uint32_t(tab.data.at(offset + 1)) << 8) |
+               (std::uint32_t(tab.data.at(offset + 2)) << 16) | (std::uint32_t(tab.data.at(offset + 3)) << 24);
+    };
+    const std::uint32_t begin = offset_at(internal);
+    const std::uint32_t end = offset_at(internal + 1);
+    if (begin >= end || end > dat.size()) throw std::runtime_error("source level container span is invalid");
+    std::vector<std::uint8_t> packed(dat.begin() + begin, dat.begin() + end);
+    const bool rnc = packed.size() >= 3 && std::memcmp(packed.data(), "RNC", 3) == 0;
+    std::vector<std::uint8_t> decoded(kAuthoredLevelBytes);
+    if (rnc) {
+        const auto be32 = [&](std::size_t offset) {
+            return (std::uint32_t(packed.at(offset)) << 24) |
+                   (std::uint32_t(packed.at(offset + 1)) << 16) |
+                   (std::uint32_t(packed.at(offset + 2)) << 8) | packed.at(offset + 3);
+        };
+        if (packed.size() < 18 || (packed[3] != 1 && packed[3] != 2) ||
+            be32(4) != decoded.size() || be32(8) + 18ULL != packed.size()) {
+            throw std::runtime_error("source RNC header disagrees with selected span/decoded extent");
+        }
+        if (DataFileRNC::Decompress(packed.data(), decoded.data()) < 0) {
+            throw std::runtime_error("source RNC record failed pinned decoder");
+        }
+    } else {
+        if (packed.size() != decoded.size()) throw std::runtime_error("raw source record extent differs");
+        decoded = packed;
+    }
+    if (decoded != authored.data) throw std::runtime_error("decoded source payload differs from authored serialization");
+    const auto emit = [&](const char* name, const std::vector<std::uint8_t>& content) {
+        write_bytes(staging / name, content);
+        file_manifest[name] = {{"bytes", content.size()}, {"sha256", sha256(content)}};
+    };
+    emit("source-record.packed", packed);
+    emit("source-record.bin", decoded);
+    const json metadata = {
+        {"schema", "mc2-source-level-record/v1"},
+        {"internal_level", internal},
+        {"encoding", rnc ? (packed[3] == 1 ? "rnc1" : "rnc2") : "raw"},
+        {"container", {{"logical_path", dat_path.generic_string()}, {"bytes", dat.size()}, {"sha256", sha256(dat)}}},
+        {"offset_table", {{"logical_path", tab_path.generic_string()}, {"bytes", tab.data.size()}, {"sha256", sha256(tab.data)}}},
+        {"packed_offset", begin}, {"packed_bytes", packed.size()},
+        {"packed_sha256", sha256(packed)}, {"decoded_bytes", decoded.size()},
+        {"decoded_sha256", sha256(decoded)}, {"owner_artifacts", owner_sources}
+    };
+    const std::string text = metadata.dump(2) + "\n";
+    emit("source-record.json", std::vector<std::uint8_t>(text.begin(), text.end()));
+}
+
 json make_owner_sources(
     const fs::path& owner_root,
     const MapTypeProfile& map_profile,
@@ -1740,7 +1817,7 @@ struct CampaignBehaviorRow {
     std::uint16_t initial_source_slot = 0;
     std::uint8_t class_id = 0;
     std::uint8_t action = 0;
-    std::uint8_t model = 0;
+    std::uint16_t model = 0;
     std::uint8_t subtype = 0;
     std::vector<std::uint16_t> initial_dispatch_sites;
 };
@@ -1748,8 +1825,8 @@ struct CampaignBehaviorRow {
 // Census-proven per-level campaign emission facts. Level 1 retains its sealed
 // 573-byte player component and has no collision-mask carrier. Level 2 values
 // are the preserved Day reset census; Level 3 values are the mc-iol7n
-// byte-identical twin exports. Any external level without an entry fails
-// closed before any campaign envelope is staged.
+// byte-identical twin exports. Further ordinary records use the complete source
+// catalog dialect; runtime capability admission remains a separate consumer.
 struct CampaignEmissionProfile {
     std::uint16_t external = 0;
     std::uint16_t internal = 0;
@@ -1771,6 +1848,23 @@ const CampaignEmissionProfile* campaign_emission_profile(std::uint16_t external)
     for (const auto& profile : kProfiles) {
         if (profile.external == external) return &profile;
     }
+    // Catalog identities are source record identities, not a gameplay allowlist.
+    // Their runtime closure is independently checked by the Rust importer.
+    static const auto ordinary = [] {
+        std::array<CampaignEmissionProfile, 25> profiles{};
+        constexpr std::uint8_t maps[] = {
+            1, 0, 0, 2, 0, 2, 1, 2, 0, 1, 1, 2, 0,
+            1, 2, 2, 0, 1, 1, 0, 2, 1, 0, 2, 1};
+        for (std::size_t index = 0; index < profiles.size(); ++index) {
+            profiles[index].external = static_cast<std::uint16_t>(index + 1);
+            profiles[index].internal = static_cast<std::uint16_t>(index);
+            profiles[index].map_type_id = maps[index];
+            profiles[index].player_schema = "mc2-player-arena/v4";
+            profiles[index].includes_collision_masks = true;
+        }
+        return profiles;
+    }();
+    if (external >= 4 && external <= ordinary.size()) return &ordinary[external - 1];
     return nullptr;
 }
 
@@ -1810,7 +1904,8 @@ canonical_json campaign_row_provenance(const CampaignBehaviorRow& row) {
 
 std::vector<CampaignBehaviorRow> decode_campaign_behavior_rows(
     const Bytes& authored,
-    const Bytes& entities) {
+    const Bytes& entities,
+    bool wide_parameters) {
     if (authored.data.size() != kAuthoredLevelBytes) {
         throw std::runtime_error("campaign authored-level member extent changed");
     }
@@ -1827,7 +1922,7 @@ std::vector<CampaignBehaviorRow> decode_campaign_behavior_rows(
         const std::int16_t subtype = read_i16_le(authored, offset + 2, "authored subtype");
         const std::int16_t action = read_i16_le(authored, offset + 8, "authored action");
         const std::uint16_t model = read_u16_le(authored, offset + 14, "authored model");
-        if (class_id > 255 || subtype < 0 || subtype > 255 || model > 255 || action < -1 ||
+        if (class_id > 255 || subtype < 0 || subtype > 255 || (!wide_parameters && model > 255) || action < -1 ||
             action > 255) {
             throw std::runtime_error("campaign authored behavior row exceeds schema-v1 selector width");
         }
@@ -1835,7 +1930,7 @@ std::vector<CampaignBehaviorRow> decode_campaign_behavior_rows(
         row.authored_record = static_cast<std::uint16_t>(index);
         row.class_id = static_cast<std::uint8_t>(class_id);
         row.action = action == -1 ? 255 : static_cast<std::uint8_t>(action);
-        row.model = static_cast<std::uint8_t>(model);
+        row.model = model;
         row.subtype = static_cast<std::uint8_t>(subtype);
         row.initial_dispatch_sites = action == -1
             ? std::vector<std::uint16_t>{4}
@@ -1935,7 +2030,7 @@ canonical_json campaign_objective_operations(
         const std::int16_t axis_y = read_i16_le(authored, offset + 5, "objective y");
         if (stage == -1) {
             inactive_seen = true;
-            if (selector != 0 || axis_x != 0 || axis_y != 0) {
+            if (profile.external <= 3 && (selector != 0 || axis_x != 0 || axis_y != 0)) {
                 throw std::runtime_error("inactive campaign objective row contains payload");
             }
             continue;
@@ -1944,7 +2039,7 @@ canonical_json campaign_objective_operations(
             profile.objective_stage_forms.begin(),
             profile.objective_stage_forms.end(),
             stage) != profile.objective_stage_forms.end();
-        if (inactive_seen || !proven_form) {
+        if (inactive_seen || (profile.external <= 3 ? !proven_form : (stage < 0 || stage > 9))) {
             throw std::runtime_error(
                 "campaign objective rows exceed the census-proven schema-v1 forms");
         }
@@ -1960,7 +2055,7 @@ canonical_json campaign_objective_operations(
             {"operation_version", 1}
         });
     }
-    if (result.size() != profile.objective_count) {
+    if (profile.external <= 3 && result.size() != profile.objective_count) {
         throw std::runtime_error(
             "campaign objective operation count differs from the census receipt");
     }
@@ -1989,54 +2084,43 @@ canonical_json campaign_source_facts(
             {"source_subtype", row.subtype}
         });
     }
-    if (selector_provenance.empty()) {
-        throw std::runtime_error("campaign source facts require authored collision selectors");
-    }
-
     canonical_json facts = canonical_json::array();
     if (include_building_parameters) {
-        const canonical_json* standing_operation = nullptr;
+        canonical_json building_provenance = canonical_json::array();
         for (const auto& operation : objective_operations) {
             const auto& operands = operation.at("operands");
             if (operands.at("stage_index").get<int>() == 9) {
-                if (standing_operation != nullptr) {
-                    throw std::runtime_error(
-                        "Level 2 has multiple standing-building objective operations");
+                const auto authored_record = operands.at("objective_selector").get<std::uint16_t>();
+                const auto objective = std::find_if(
+                    behavior_rows.begin(), behavior_rows.end(), [authored_record](const auto& row) {
+                        return row.authored_record == authored_record && !row.has_initial_source_slot;
+                    });
+                if (objective == behavior_rows.end() || objective->class_id != 10 ||
+                    objective->subtype != 45) {
+                    throw std::runtime_error("standing-building objective lacks its authored BLDGPRM root");
                 }
-                standing_operation = &operation;
+                building_provenance.push_back({
+                    {"authored_record", objective->authored_record},
+                    {"selector_value", objective->model},
+                    {"source_class", objective->class_id},
+                    {"source_field", "par1_14"},
+                    {"source_model", objective->model},
+                    {"source_subtype", objective->subtype}
+                });
             }
         }
-        if (standing_operation == nullptr ||
-            standing_operation->at("operands").at("objective_slot").get<int>() != 4 ||
-            standing_operation->at("operands").at("objective_selector").get<int>() != 153) {
-            throw std::runtime_error(
-                "Level 2 standing-building objective operation differs from its qualified binding");
-        }
-        const auto authored_record = standing_operation->at("operands")
-            .at("objective_selector").get<std::uint16_t>();
-        const auto objective = std::find_if(
-            behavior_rows.begin(), behavior_rows.end(), [authored_record](const auto& row) {
-                return row.authored_record == authored_record && !row.has_initial_source_slot;
-            });
-        if (objective == behavior_rows.end() || objective->class_id != 10 ||
-            objective->subtype != 45 || objective->model != 21) {
-            throw std::runtime_error(
-                "Level 2 standing-building objective lacks its exact BLDGPRM root provenance");
-        }
+        std::sort(building_provenance.begin(), building_provenance.end(), [](const auto& a, const auto& b) {
+            return a.at("authored_record").template get<unsigned>() <
+                   b.at("authored_record").template get<unsigned>();
+        });
+        building_provenance.erase(std::unique(building_provenance.begin(), building_provenance.end()), building_provenance.end());
         facts.push_back({
             {"fact_id", "building-parameters"},
             {"kind", 4},
             {"lifetime", "immutable-through-session"},
             {"member", "building-parameters.bin"},
             {"member_sha256", file_manifest.at("building-parameters.bin").at("sha256")},
-            {"selector_provenance", canonical_json::array({{
-                {"authored_record", objective->authored_record},
-                {"selector_value", objective->model},
-                {"source_class", objective->class_id},
-                {"source_field", "par1_14"},
-                {"source_model", objective->model},
-                {"source_subtype", objective->subtype}
-            }})},
+            {"selector_provenance", building_provenance},
             {"source_artifacts", campaign_source_artifacts(
                 owner_sources, {"CD_Files/DATA/BLDGPRM.DAT"})},
             {"version", 1}
@@ -2093,7 +2177,7 @@ canonical_json build_campaign_definition(
     const Bytes& entities,
     std::uint16_t entity_record_size,
     std::uint16_t player_record_size) {
-    const auto behavior_rows = decode_campaign_behavior_rows(authored, entities);
+    const auto behavior_rows = decode_campaign_behavior_rows(authored, entities, profile.external > 3);
     const json& owner_sources = legacy_manifest.at("source").at("owner_files");
 
     canonical_json authored_records = typed_campaign_member(
@@ -2170,7 +2254,7 @@ canonical_json build_campaign_definition(
             {"map_type_id", profile.map_type_id}
         }},
         {"required_behaviors", campaign_required_behaviors(behavior_rows)},
-        {"schema", profile.external == 1
+        {"schema", profile.external > 3 ? "mc2-campaign-definition/v4" : profile.external == 1
             ? "mc2-campaign-definition/v3"
             : (profile.external == 2
                 ? "mc2-campaign-definition/v2"
@@ -2182,7 +2266,7 @@ canonical_json build_campaign_definition(
             behavior_rows,
             objective_operations,
             profile.includes_collision_masks,
-            profile.external == 2)}
+            profile.external == 2 || profile.external > 3)}
     };
     if (profile.external == 1) {
         const auto presentation_asset = [&](
@@ -2647,7 +2731,7 @@ int run(const Arguments& arguments) {
             authored_model_45_row_count,
             level_one);
     Bytes building_parameters;
-    if (arguments.level.external == 2) {
+    if (arguments.level.external == 2 || arguments.level.external > 3) {
         building_parameters = capture_building_parameters(owner_root);
     }
     CollisionMaskCapture collision_masks;
@@ -2706,7 +2790,7 @@ int run(const Arguments& arguments) {
     std::vector<std::pair<const char*, const Bytes*>> files;
     files.reserve(level_one ? 13 : (arguments.level.external == 2 ? 15 : 14));
     files.emplace_back("authored-level.bin", &authored_bytes);
-    if (arguments.level.external == 2) {
+    if (arguments.level.external == 2 || arguments.level.external > 3) {
         files.emplace_back("building-parameters.bin", &building_parameters);
     }
     if (!level_one) files.emplace_back("collision-masks.bin", &collision_masks.bytes);
@@ -3176,7 +3260,7 @@ int run(const Arguments& arguments) {
                 owner_root,
                 map_profile,
                 !level_one,
-                arguments.level.external == 2)}
+                arguments.level.external == 2 || arguments.level.external > 3)}
         }},
         {"reference", {
             {"terrain_frame0_sha256", level_one ? kExpectedTerrainSha256 : sha256(terrain.data)},
@@ -3301,18 +3385,23 @@ int run(const Arguments& arguments) {
             throw std::runtime_error(
                 "live level identity disagrees with the census campaign emission profile");
         }
-        if (active_entities != campaign_profile->active_entities) {
+        if (arguments.level.external <= 3 && active_entities != campaign_profile->active_entities) {
             throw std::runtime_error(
                 "campaign active entity count differs from the census receipt (actual " +
                 std::to_string(active_entities) + ")");
         }
         if (D41A0_0.LevelIndex_0xc != 0 ||
-            D41A0_0.NumberOfPlayers_0xe != campaign_profile->number_of_players) {
+            (arguments.level.external <= 3 &&
+             D41A0_0.NumberOfPlayers_0xe != campaign_profile->number_of_players)) {
             throw std::runtime_error(
                 "campaign local player slot/count differs from the census receipt");
         }
         const std::string owner_export_package_sha256 =
             manifest.at("package_sha256").get<std::string>();
+        if (arguments.level.external > 3) {
+            capture_source_record(owner_root, staging, arguments.level.internal,
+                                  authored_bytes, manifest.at("source").at("owner_files"), file_manifest);
+        }
         if (level_one) {
             const std::string owner_manifest_text = manifest.dump(2) + "\n";
             const std::vector<std::uint8_t> owner_manifest_bytes(
@@ -3368,7 +3457,7 @@ int run(const Arguments& arguments) {
             };
         } else {
             manifest = {
-                {"schema", arguments.level.external == 2
+                {"schema", arguments.level.external > 3 ? "mc2-owner-campaign-package/v4" : arguments.level.external == 2
                     ? "mc2-owner-campaign-package/v2"
                     : "mc2-owner-campaign-package/v1"},
                 {"byte_order", "little-endian"},
