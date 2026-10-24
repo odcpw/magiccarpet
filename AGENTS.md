@@ -10,6 +10,12 @@ Complete single-player first. Rust-to-Rust multiplayer is the separate
 Build its enemy classes, properties, rules and asset bindings so they can be
 modified and replaced. Complete playable MC2 behavior is the immediate work;
 the reusable flying-carpet game engine grows through that implementation.
+Agents should readily change each aspect in its canonical owner: typed content
+and asset bindings for maps, items and definitions; focused modules with owned
+state and narrow interfaces for behavior. MC2 is the first game implemented
+with those components. This does not require an editing API for every constant,
+a mod editor or a scripting runtime. Existing authoring tools are later useful
+capabilities, not prerequisites for the complete MC2 single-player release.
 Oliver can playtest. An AI player is optional tooling.
 
 Select implementation work with `br ready --json --label worker-ready` and

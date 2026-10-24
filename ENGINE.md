@@ -1,10 +1,12 @@
 # Flying-carpet engine and MC2 source map
 
 MC2 is the first complete game delivered by this engine. Finish its complete
-single-player game first; deliver Rust-to-Rust multiplayer separately. Preserve
-the original mechanics while making their classes, supported rules, properties,
-worlds and assets editable. New behavior belongs in a focused Rust module;
-existing behavior can be configured through typed content.
+single-player game first; deliver Rust-to-Rust multiplayer separately. Build the
+engine so agents can readily change assets, maps, items, rules and behavior.
+Content belongs in clear typed definitions; behavior belongs in focused modules
+with owned state and narrow interfaces. MC2 is the first game using those
+components. Agents may edit code or content directly. An external editing API
+for every constant, a mod editor and a scripting runtime are not required.
 
 This map is for implementation workers locating the real owner and consumer of
 a feature. Beads hold deliverables and dependencies; this file holds source and
@@ -71,6 +73,15 @@ owner, then leaves thin registrations in shared roots. A module with unrestricte
 whole-session access or only methods on the same god object does not satisfy this
 boundary. Do not block the port on a wholesale rewrite or copy a second runtime.
 
+An agent should find an aspect's definition, constructor, behavior owner and
+runtime consumers from this map and its feature bead. Changes belong in those
+owners and their necessary typed interfaces, without editing unrelated families
+or implementing gameplay in a client. MC2 formats, numeric selectors and default
+bindings stay in the compatibility adapter. Algorithms and constants may remain
+ordinary code in their domain module; use editable data where it represents
+content usefully. This is an engine architecture, not a requirement to build a
+separate mod-authoring product.
+
 ## Source-order invariants
 
 Keep producer/constructor, dispatch identity, handler, common epilogue, next-pass
@@ -100,9 +111,11 @@ Legacy interoperability is a separate deferred outcome. A TCP implementation in
 remc2 is source evidence, not evidence that its experimental multiplayer path was
 played successfully in this inspection.
 
-`mc-hkm` and `mc-b9s` are shared engine outcomes. Their existing MC2 leaves remain
-part of single-player delivery. Later authored standalone games and multiplayer
-participant support do not become new prerequisites for the opening milestone.
+`mc-hkm` and `mc-b9s` are shared engine outcomes. The `mc-b9s` observation/control
+contracts help agents inspect and exercise the real game. The `mc-hkm` workspace,
+variant-authoring and standalone-game tools remain later capabilities; they do
+not block the complete MC2 single-player release. Domain ownership and typed
+content still belong to each ordinary gameplay feature, not to a later rewrite.
 The existing authoring API is useful but incomplete: `BindAsset` selects retained
 content, operations do not yet create/remove placements or author terrain, and
 current runnable packages still depend on MC2 adapters. The new beads supply real
@@ -116,11 +129,20 @@ player-status tiers before `mc-k5k.7` integrates their acquisition/rewards.
 completion; the original standalone-game outcome remains `mc-hkm.7`.
 Optional human-report tooling `mc-xks` is separate from full-game completion.
 
-An agent uses discover → edit → validate → publish → reopen → play/observe through
-the same authority as a human client. The initial CLI owns its runtime; attachment
-to another running Unity process is not implied. Compiled behavior modules plus
-supported typed configuration are the present extension mechanism; arbitrary
-script execution is not an implemented feature. An AI player is optional.
+Secret delivery has an explicit producer/consumer order: `mc-6qf.3` admits the
+real source31 witness after its known content owners land; `mc-6qf.6` supplies
+ordinary portal/return results; `mc-paj.2` consumes them to load and return from
+all five secret worlds; `mc-6qf.4` retains complete entry-and-return integration.
+This keeps the original outcome open without making its producer wait for its
+own downstream loading consumer.
+
+Existing authoring operations use discover → edit → validate → publish → reopen
+→ play/observe through the same authority as a human client. Direct repository
+code/content edits are also a normal engine workflow. The initial CLI owns its
+runtime; attachment to another running Unity process is not implied. Compiled
+behavior modules plus supported typed configuration are the present extension
+mechanism; arbitrary script execution is not an implemented feature. An AI player
+is optional.
 
 ## remc2 source and function families
 
