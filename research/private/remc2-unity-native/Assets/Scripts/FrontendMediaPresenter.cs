@@ -38,6 +38,7 @@ namespace MagicCarpet.Native
         private Catalog catalog;
         private GameObject audioRoot;
         private AudioSource music;
+        private AudioListener ownedListener;
         private FileStream frames;
         private Texture2D texture;
         private byte[] pixels, palette;
@@ -240,6 +241,14 @@ namespace MagicCarpet.Native
         {
             audioRoot ??= new GameObject("MC2 frontend media audio");
             audioRoot.transform.SetParent(parent, false);
+            var otherListener = UnityEngine.Object.FindObjectsByType<AudioListener>(FindObjectsSortMode.None)
+                .Any(listener => listener != ownedListener && listener.isActiveAndEnabled);
+            if (!otherListener)
+            {
+                ownedListener ??= audioRoot.AddComponent<AudioListener>();
+                ownedListener.enabled = true;
+            }
+            else if (ownedListener != null) ownedListener.enabled = false;
             music ??= audioRoot.AddComponent<AudioSource>();
             music.playOnAwake = false;
             music.spatialBlend = 0;
@@ -349,6 +358,8 @@ namespace MagicCarpet.Native
         }
         internal void StopAudio()
         {
+            // The ordinary game-runtime path also uses this listener after
+            // leaving the frontend. Its lifetime is the runtime instance.
             foreach (var source in samples.Values) { source.Stop(); UnityEngine.Object.Destroy(source); }
             samples.Clear();
             sampleUnits.Clear();
@@ -360,7 +371,7 @@ namespace MagicCarpet.Native
         {
             ReleaseSegment(); StopAudio();
             if (audioRoot != null) UnityEngine.Object.Destroy(audioRoot);
-            audioRoot = null; music = null; current = null;
+            audioRoot = null; music = null; ownedListener = null; current = null;
         }
     }
 }

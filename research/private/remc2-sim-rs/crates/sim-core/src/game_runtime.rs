@@ -1096,6 +1096,7 @@ impl<B: GameSessionBackend> GameRuntime<B> {
                 .expect("session lifecycle generations are non-zero"),
             presentation_cue: title_presentation_cue,
         };
+        self.frontend_media.return_to_title();
         self.generation = next_runtime_generation;
         Ok(self.identity())
     }

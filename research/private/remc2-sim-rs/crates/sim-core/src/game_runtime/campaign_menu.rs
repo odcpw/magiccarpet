@@ -204,6 +204,7 @@ impl<B: GameSessionBackend> GameRuntime<B> {
                         .title_cue()
                         .clone(),
                 };
+                self.frontend_media.return_to_title();
             }
             _ => {
                 return Err(RuntimeTransitionError::InvalidRuntimeFlow {

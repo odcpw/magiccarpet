@@ -122,6 +122,7 @@ pub struct FrontendMedia {
     sample_fades: Vec<(i32, i32, i32)>,
     sample_timer_hz: u64,
     sample_timer_fraction: u64,
+    title_entry_pending: bool,
 }
 fn safe_path(path: &str) -> bool {
     !path.is_empty()
@@ -187,7 +188,15 @@ impl FrontendMedia {
         (self.catalog.is_some() || self.view.error.is_some()).then(|| self.view.clone())
     }
     pub fn active(&self) -> bool {
-        self.view.active || self.awaiting_release
+        self.view.active || self.awaiting_release || self.title_entry_pending
+    }
+    /// Reset source MainMenu entry state; the next scheduled frontend frame
+    /// consumes its audio actions, so an intervening identity read cannot lose
+    /// the menu-music restoration.
+    pub fn return_to_title(&mut self) {
+        if self.catalog.is_some() {
+            self.title_entry_pending = true;
+        }
     }
     pub fn command(&mut self, command: MediaCommand) -> Result<(), String> {
         self.view.actions.clear();
@@ -206,6 +215,7 @@ impl FrontendMedia {
                 self.fading = false;
                 self.startup = false;
                 self.prepared = None;
+                self.title_entry_pending = false;
                 self.finish();
                 // A broken optional media source cannot trap the user in an
                 // idle/retry loop. A new runtime can bind corrected resources.
@@ -219,6 +229,15 @@ impl FrontendMedia {
             } => {
                 if elapsed_us > 5_000_000 {
                     return Err("media frame elapsed_us exceeds 5 seconds".into());
+                }
+                if self.title_entry_pending {
+                    self.title_entry_pending = false;
+                    self.next_attract = false;
+                    self.fading = false;
+                    self.startup = false;
+                    self.prepared = None;
+                    self.finish();
+                    return Ok(());
                 }
                 self.step(u64::from(elapsed_us), input, escape)?;
             }
@@ -626,6 +645,35 @@ mod tests {
         frame(&mut owner, 1_000_000, false);
         assert_eq!(owner.view.clip_id, "intro2");
     }
+    #[test]
+    fn title_reentry_restores_music_on_scheduled_frame_and_restarts_idle() {
+        let mut owner = media();
+        skip(&mut owner);
+        skip(&mut owner);
+        skip(&mut owner);
+        frame(&mut owner, 5_000_000, false);
+        owner.next_attract = true;
+        owner.return_to_title();
+        let _observation = owner.snapshot();
+        assert!(owner.active());
+        frame(&mut owner, 0, false);
+        assert!(owner.view.clear_input);
+        assert!(
+            owner
+                .view
+                .actions
+                .iter()
+                .any(|a| a.op == 'M' && a.value == 4)
+        );
+        frame(&mut owner, 50_000, false);
+        for _ in 0..12 {
+            frame(&mut owner, 5_000_000, false);
+        }
+        assert!(!owner.view.active);
+        frame(&mut owner, 1_000_000, false);
+        assert_eq!(owner.view.clip_id, "intro1");
+    }
+
     #[test]
     fn malformed_binding_and_device_failure_leave_recoverable_title() {
         let mut owner = media();
