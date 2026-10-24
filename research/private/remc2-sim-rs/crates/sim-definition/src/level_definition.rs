@@ -13,6 +13,8 @@ mod cave_features;
 pub use cave_features::{CaveFeatureDefinition, CaveFeatureKind};
 mod effects;
 pub use effects::{EffectDefinition, EffectKind};
+mod terrain_disasters;
+pub use terrain_disasters::{TerrainDisasterDefinition, TerrainDisasterKind};
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -22,6 +24,7 @@ pub enum CreatureKind {
     Bee,
     Worm,
     Archer,
+    CastleDefender,
     Skeleton,
     Builder,
     Villager,
@@ -65,6 +68,93 @@ pub const ARCHER_CLASS_PROPERTIES: ArcherClassProperties = ArcherClassProperties
     collision_half_height: 256,
 };
 
+/// Properties of the Castle's ground defender. Source parameter and asset
+/// identities remain in the MC2 adapter; the behavior owner consumes these.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct CastleDefenderClassProperties {
+    pub max_life: u32,
+    pub mana: i32,
+    pub max_mana: i32,
+    pub minimum_speed: i16,
+    pub maximum_speed: i16,
+    pub attack_damage: u16,
+    pub arrow_damage: u16,
+    pub scan_period: u8,
+    pub target_range: u32,
+    pub target_half_angle: i16,
+    pub turn_limit: i16,
+    pub descent: i16,
+    pub terrain_mask: u32,
+    pub maximum_slope: i32,
+    pub collision_half_width: i16,
+    pub collision_half_height: i16,
+}
+
+pub const CASTLE_DEFENDER_CLASS_PROPERTIES: CastleDefenderClassProperties =
+    CastleDefenderClassProperties {
+        max_life: 1000,
+        mana: 0,
+        max_mana: 0,
+        minimum_speed: 30,
+        maximum_speed: 0,
+        attack_damage: 500,
+        arrow_damage: 100,
+        scan_period: 15,
+        target_range: 3840,
+        target_half_angle: 512,
+        turn_limit: 22,
+        descent: -256,
+        terrain_mask: 0x20000,
+        maximum_slope: 20,
+        collision_half_width: 128,
+        collision_half_height: 128,
+    };
+
+/// Shared settlement ground rules, consumed by the population constructor
+/// and its movement, household and damage callbacks.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct SettlementClassProperties {
+    pub max_life: i32,
+    pub mana: i32,
+    pub minimum_speed: i16,
+    pub maximum_speed: i16,
+    pub scan_period: u8,
+    pub target_range: u16,
+    pub separation_radius: i16,
+    pub turn_limit: i16,
+    pub ground_clearance: i16,
+    pub descent: i16,
+    pub terrain_mask: u32,
+    pub maximum_slope: i32,
+    pub behavior_flags: u8,
+    pub collision_half_width: i16,
+    pub collision_half_height: i16,
+}
+
+pub const VILLAGER_CLASS_PROPERTIES: SettlementClassProperties = SettlementClassProperties {
+    max_life: 1000,
+    mana: 0,
+    minimum_speed: 54,
+    maximum_speed: 18,
+    scan_period: 40,
+    target_range: 3584,
+    separation_radius: 512,
+    turn_limit: 22,
+    ground_clearance: 0,
+    descent: -256,
+    terrain_mask: 0xffff_fefe,
+    maximum_slope: 15,
+    behavior_flags: 9,
+    collision_half_width: 128,
+    collision_half_height: 128,
+};
+
+pub const TRADER_CLASS_PROPERTIES: SettlementClassProperties = VILLAGER_CLASS_PROPERTIES;
+pub const BUILDER_CLASS_PROPERTIES: SettlementClassProperties = SettlementClassProperties {
+    maximum_speed: 24,
+    ..VILLAGER_CLASS_PROPERTIES
+};
+
 impl CreatureKind {
     #[must_use]
     pub const fn as_str(self) -> &'static str {
@@ -74,6 +164,7 @@ impl CreatureKind {
             Self::Bee => "bee",
             Self::Worm => "worm",
             Self::Archer => "archer",
+            Self::CastleDefender => "castle_defender",
             Self::Skeleton => "skeleton",
             Self::Builder => "builder",
             Self::Villager => "villager",
@@ -116,6 +207,7 @@ pub const fn creature_max_life_upper_bound(kind: CreatureKind) -> Option<u32> {
     match kind {
         CreatureKind::Bee => Some(32_767),
         CreatureKind::Archer
+        | CreatureKind::CastleDefender
         | CreatureKind::Dragon
         | CreatureKind::Firefly
         | CreatureKind::Goat
@@ -171,6 +263,7 @@ pub enum MechanicKind {
     CaveCorridor,
     CaveFeature { kind: CaveFeatureKind },
     EnvironmentalEffect { kind: EffectKind },
+    TerrainDisaster { kind: TerrainDisasterKind },
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
@@ -300,6 +393,7 @@ impl MechanicKind {
             Self::CaveCorridor => "cave_corridor",
             Self::CaveFeature { kind } => kind.as_str(),
             Self::EnvironmentalEffect { kind } => kind.as_str(),
+            Self::TerrainDisaster { kind } => kind.as_str(),
         }
     }
 
@@ -307,9 +401,10 @@ impl MechanicKind {
     pub const fn creature(self) -> Option<CreatureKind> {
         match self {
             Self::AbsenceCountdown { creature } => Some(creature),
-            Self::CaveCorridor | Self::CaveFeature { .. } | Self::EnvironmentalEffect { .. } => {
-                None
-            }
+            Self::CaveCorridor
+            | Self::CaveFeature { .. }
+            | Self::EnvironmentalEffect { .. }
+            | Self::TerrainDisaster { .. } => None,
         }
     }
 }
@@ -828,6 +923,8 @@ pub struct LevelEntityDefinition {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     effect: Option<EffectDefinition>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    terrain_disaster: Option<TerrainDisasterDefinition>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     creature_health: Option<CreatureHealthDefinition>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     experience_scroll: Option<ExperienceScrollDefinition>,
@@ -861,6 +958,7 @@ impl LevelEntityDefinition {
             cave_corridor: None,
             cave_feature: None,
             effect: None,
+            terrain_disaster: None,
             creature_health,
             experience_scroll,
             house_construction,
@@ -935,6 +1033,16 @@ impl LevelEntityDefinition {
     }
 
     #[must_use]
+    pub const fn terrain_disaster(&self) -> Option<TerrainDisasterDefinition> {
+        self.terrain_disaster
+    }
+
+    pub(crate) const fn with_terrain_disaster(mut self, config: TerrainDisasterDefinition) -> Self {
+        self.terrain_disaster = Some(config);
+        self
+    }
+
+    #[must_use]
     pub const fn creature_health(&self) -> Option<CreatureHealthDefinition> {
         self.creature_health
     }
@@ -974,6 +1082,29 @@ impl LevelDefinition {
     ) -> Result<Self, String> {
         let mut ids = BTreeSet::new();
         for entity in &entities {
+            match (entity.kind, entity.terrain_disaster) {
+                (
+                    LevelEntityKind::Mechanic(MechanicKind::TerrainDisaster { kind }),
+                    Some(config),
+                ) if kind == config.kind()
+                    && config.max_life() >= 0
+                    && config.lifetime() >= 0
+                    && config.half_width() >= 0
+                    && config.half_height() >= 0 => {}
+                (LevelEntityKind::Mechanic(MechanicKind::TerrainDisaster { .. }), _) => {
+                    return Err(format!(
+                        "terrain disaster {} lacks valid matching construction properties",
+                        entity.id.as_str()
+                    ));
+                }
+                (_, Some(_)) => {
+                    return Err(format!(
+                        "non-terrain entity {} carries disaster properties",
+                        entity.id.as_str()
+                    ));
+                }
+                (_, None) => {}
+            }
             match (entity.kind, entity.effect) {
                 (
                     LevelEntityKind::Mechanic(MechanicKind::EnvironmentalEffect { kind }),
@@ -1650,6 +1781,7 @@ impl LevelDefinition {
                 || candidate.position_access != original.position_access
                 || candidate.cave_corridor != original.cave_corridor
                 || candidate.effect != original.effect
+                || candidate.terrain_disaster != original.terrain_disaster
                 || candidate.cave_feature != original.cave_feature
             {
                 return Err(format!(

@@ -5,6 +5,103 @@
 
 use std::{collections::BTreeMap, path::Path};
 
+mod terrain_disasters;
+pub use terrain_disasters::{
+    mc2_authored_terrain_disaster_definition, mc2_grouped_terrain_disaster_definition,
+    mc2_terrain_disaster_definition, terrain_disaster_entity_definition,
+};
+
+/// Retained MC2 constructor and presentation selectors. Gameplay properties
+/// live in the semantic class definitions rather than these source bindings.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SettlementSourceBinding {
+    pub model: u8,
+    pub descriptor: u16,
+    pub action: u8,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SettlementAppearanceBinding {
+    pub particle: u16,
+    pub base_tmap: u16,
+    pub logical_height: u16,
+}
+
+pub const BUILDER_SOURCE_BINDING: SettlementSourceBinding = SettlementSourceBinding {
+    model: 12,
+    descriptor: 101,
+    action: 97,
+};
+pub const VILLAGER_SOURCE_BINDING: SettlementSourceBinding = SettlementSourceBinding {
+    model: 13,
+    descriptor: 100,
+    action: 105,
+};
+pub const TRADER_SOURCE_BINDING: SettlementSourceBinding = SettlementSourceBinding {
+    model: 14,
+    descriptor: 100,
+    action: 113,
+};
+pub const BUILDER_APPEARANCE: SettlementAppearanceBinding = SettlementAppearanceBinding {
+    particle: 221,
+    base_tmap: 141,
+    logical_height: 250,
+};
+pub const TRADER_APPEARANCE: SettlementAppearanceBinding = SettlementAppearanceBinding {
+    particle: 219,
+    base_tmap: 138,
+    logical_height: 250,
+};
+
+/// Ordered outcomes of AddVilliger's single modulo-nine appearance draw.
+pub const VILLAGER_APPEARANCES: [SettlementAppearanceBinding; 9] = [
+    SettlementAppearanceBinding {
+        particle: 242,
+        base_tmap: 183,
+        logical_height: 250,
+    },
+    SettlementAppearanceBinding {
+        particle: 242,
+        base_tmap: 183,
+        logical_height: 250,
+    },
+    SettlementAppearanceBinding {
+        particle: 242,
+        base_tmap: 183,
+        logical_height: 250,
+    },
+    SettlementAppearanceBinding {
+        particle: 271,
+        base_tmap: 199,
+        logical_height: 300,
+    },
+    SettlementAppearanceBinding {
+        particle: 271,
+        base_tmap: 199,
+        logical_height: 300,
+    },
+    SettlementAppearanceBinding {
+        particle: 271,
+        base_tmap: 199,
+        logical_height: 300,
+    },
+    SettlementAppearanceBinding {
+        particle: 241,
+        base_tmap: 180,
+        logical_height: 250,
+    },
+    SettlementAppearanceBinding {
+        particle: 241,
+        base_tmap: 180,
+        logical_height: 250,
+    },
+    SettlementAppearanceBinding {
+        particle: 239,
+        base_tmap: 155,
+        logical_height: 200,
+    },
+];
+
 use crate::{
     ArtifactKind, ArtifactNode, DefinitionError, DefinitionErrorCode, GameDefinition, GamePackage,
     PackageProvenance, RequiredCapability, SemanticId, SemanticValue,
