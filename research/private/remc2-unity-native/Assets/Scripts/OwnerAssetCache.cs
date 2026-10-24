@@ -11,6 +11,15 @@ namespace MagicCarpet.Native
     public sealed class OwnerAssetCache
     {
         public const string Schema = "mc2-owner-unity-asset-cache/v1";
+        internal const string NightSchema = "mc2-owner-unity-asset-cache/v2";
+        private const string QualifiedNightRuntimeHash =
+            "b078dbed443e2cc3bf3bfd08a0f519492546d9f939db74a3d9c185d58f9c559f";
+        private const string CurrentNightClosureHash =
+            "ae375e8257b4d4aa701d71e77d37a165ae58de26a3a2415571024f3f3122435e";
+        // The current import includes all 21 source BUILD rows and records its
+        // actual v2 capture in the census. Qualified frame/palette bytes stay exact.
+        private const string CurrentNightContentHash =
+            "d63e748f0fa6550e8c0e451d81163ff71cfb3c8cdad1f516d97ea34644985569";
 
         // These are the pinned Day owner-sprite roots consumed by the HUD
         // path. They are membership/root-bound checks only: the carried Rust
@@ -148,9 +157,11 @@ namespace MagicCarpet.Native
         private sealed class Manifest
         {
             public string schema;
+            public string scope;
             public Bindings bindings;
             public Output[] outputs;
             public string cache_content_sha256;
+            public string night_metadata_sha256;
         }
 
         [Serializable]
@@ -160,6 +171,24 @@ namespace MagicCarpet.Native
             public string level_asset_closure_sha256;
             public string plan29_contract_file_sha256;
             public string plan29_contract_self_sha256;
+            public string campaign_package_sha256;
+            public string owner_catalog_sha256;
+            public string owner_catalog_file_sha256;
+            public string qualified_runtime_capture_sha256;
+            public int qualified_runtime_capture_count;
+            public string qualification_level_export_package_sha256;
+            public string qualification_runtime_capture_sha256;
+            public string runtime_visual_projection_sha256;
+            public string runtime_visual_projection_schema;
+            public string goat_tmap_golden_file_sha256;
+            public string goat_tmap_oracle_manifest_sha256;
+        }
+
+        [Serializable]
+        private sealed class NightPackageManifest
+        {
+            public string package_sha256;
+            public string owner_export_package_sha256;
         }
 
         [Serializable]
@@ -574,7 +603,8 @@ namespace MagicCarpet.Native
         public static OwnerAssetCache OpenAndValidate(
             string rootPath,
             string expectedPackageHash,
-            string expectedClosureHash)
+            string expectedClosureHash,
+            string campaignPackagePath = null)
         {
             var root = Path.GetFullPath(rootPath);
             var manifestPath = ConfinedPath(root, "manifest.json");
@@ -584,19 +614,40 @@ namespace MagicCarpet.Native
                 throw new InvalidDataException("owner asset cache manifest is missing");
             if ((File.GetAttributes(manifestPath) & FileAttributes.ReparsePoint) != 0)
                 throw new InvalidDataException("owner asset cache manifest is a symlink");
-            if (Sha256File(manifestPath) != ExactManifestFileHash)
-                throw new InvalidDataException("owner asset cache manifest metadata mismatch");
-            var manifest = JsonUtility.FromJson<Manifest>(File.ReadAllText(manifestPath));
-            if (manifest == null || manifest.schema != Schema)
+            if (new FileInfo(manifestPath).Length > 16 * 1024 * 1024)
+                throw new InvalidDataException("owner asset cache manifest exceeds its bounded extent");
+            Manifest manifest;
+            try { manifest = JsonUtility.FromJson<Manifest>(File.ReadAllText(manifestPath)); }
+            catch (ArgumentException error)
+            { throw new InvalidDataException("owner asset cache manifest is malformed", error); }
+            var currentNight = manifest?.schema == NightSchema;
+            if (manifest == null || !currentNight && manifest.schema != Schema)
                 throw new InvalidDataException("unsupported owner asset cache schema");
+            if (currentNight)
+                ValidateNightMetadata(manifest, expectedPackageHash);
+            else if (Sha256File(manifestPath) != ExactManifestFileHash)
+                throw new InvalidDataException("owner asset cache manifest metadata mismatch");
             if (manifest.bindings == null ||
-                manifest.bindings.level_export_package_sha256 != expectedPackageHash)
+                (currentNight ? manifest.bindings.qualification_level_export_package_sha256 :
+                    manifest.bindings.level_export_package_sha256) != expectedPackageHash)
                 throw new InvalidDataException("owner asset cache package binding mismatch");
-            if (manifest.bindings.level_asset_closure_sha256 != expectedClosureHash)
+            if (manifest.bindings.level_asset_closure_sha256 !=
+                (currentNight ? CurrentNightClosureHash : expectedClosureHash))
                 throw new InvalidDataException("owner asset cache closure binding mismatch");
             if (manifest.bindings.plan29_contract_file_sha256 != ExactContractFileHash ||
                 manifest.bindings.plan29_contract_self_sha256 != ExactContractSelfHash)
                 throw new InvalidDataException("owner asset cache PLAN29 contract binding mismatch");
+            if (campaignPackagePath != null)
+            {
+                var packageRoot = Path.GetFullPath(campaignPackagePath);
+                var package = JsonUtility.FromJson<NightPackageManifest>(
+                    File.ReadAllText(ConfinedPath(packageRoot, "manifest.json")));
+                if (package == null ||
+                    currentNight && (package.package_sha256 != manifest.bindings.campaign_package_sha256 ||
+                        package.owner_export_package_sha256 != manifest.bindings.level_export_package_sha256) ||
+                    Sha256File(ConfinedPath(packageRoot, "runtime.bin")) != manifest.bindings.qualified_runtime_capture_sha256)
+                    throw new InvalidDataException("Night cache does not bind the selected campaign package");
+            }
             if (manifest.outputs == null || manifest.outputs.Length == 0)
                 throw new InvalidDataException("owner asset cache has no outputs");
 
@@ -648,7 +699,7 @@ namespace MagicCarpet.Native
             var identityHash = Sha256Bytes(Encoding.ASCII.GetBytes(identity.ToString()));
             if (!identityHash.Equals(manifest.cache_content_sha256, StringComparison.Ordinal))
                 throw new InvalidDataException("owner asset cache identity mismatch");
-            if (identityHash != ExactContentHash)
+            if (identityHash != (currentNight ? CurrentNightContentHash : ExactContentHash))
                 throw new InvalidDataException("owner asset cache is not the qualified Level 1 cache");
             var seal = JsonUtility.FromJson<ConformanceSeal>(
                 File.ReadAllText(ConfinedPath(root, "conformance-identity.json")));
@@ -660,6 +711,57 @@ namespace MagicCarpet.Native
                 throw new InvalidDataException("owner asset cache PLAN29 conformance seal mismatch");
             return new OwnerAssetCache(root, identityHash, manifest.outputs.Length, paths);
         }
+
+        private static void ValidateNightMetadata(Manifest manifest, string qualifiedExport)
+        {
+            var b = manifest.bindings;
+            if (manifest.scope != "PRIVATE_TRACK_P_OWNER_DATA" || b == null ||
+                b.qualification_level_export_package_sha256 != qualifiedExport ||
+                b.qualification_runtime_capture_sha256 != QualifiedNightRuntimeHash ||
+                b.runtime_visual_projection_sha256 != QualifiedNightRuntimeHash ||
+                b.runtime_visual_projection_schema != "mc2-runtime-state/v1" ||
+                b.qualified_runtime_capture_count != 8 ||
+                b.owner_catalog_sha256 != Level2CatalogHash ||
+                b.owner_catalog_file_sha256 != Level2CatalogFileHash ||
+                b.goat_tmap_golden_file_sha256 != "a5c3d430ba22c3503453124d76119ed7b93ff6ea8445e23cd616faa1015b5f64" ||
+                b.goat_tmap_oracle_manifest_sha256 != "cad16d830ece1f6422ec4f3f6a0a5ab4954fe6c20344e2e03c6ce1f0bc41e73b")
+                throw new InvalidDataException("Night cache visual qualification mismatch");
+
+            // The raw capture belongs to the current package. Its independently
+            // qualified visual projection is a different identity, never an alias.
+            var fields = new SortedDictionary<string, string>(StringComparer.Ordinal) {
+                { "campaign_package_sha256", b.campaign_package_sha256 },
+                { "goat_tmap_golden_file_sha256", b.goat_tmap_golden_file_sha256 },
+                { "goat_tmap_oracle_manifest_sha256", b.goat_tmap_oracle_manifest_sha256 },
+                { "level_asset_closure_sha256", b.level_asset_closure_sha256 },
+                { "level_export_package_sha256", b.level_export_package_sha256 },
+                { "owner_catalog_file_sha256", b.owner_catalog_file_sha256 },
+                { "owner_catalog_sha256", b.owner_catalog_sha256 },
+                { "plan29_contract_file_sha256", b.plan29_contract_file_sha256 },
+                { "plan29_contract_self_sha256", b.plan29_contract_self_sha256 },
+                { "qualification_level_export_package_sha256", b.qualification_level_export_package_sha256 },
+                { "qualification_runtime_capture_sha256", b.qualification_runtime_capture_sha256 },
+                { "qualified_runtime_capture_count", "8" },
+                { "qualified_runtime_capture_sha256", b.qualified_runtime_capture_sha256 },
+                { "runtime_visual_projection_schema", b.runtime_visual_projection_schema },
+                { "runtime_visual_projection_sha256", b.runtime_visual_projection_sha256 }
+            };
+            var metadata = new StringBuilder(NightSchema).Append('\n');
+            foreach (var field in fields)
+            {
+                if (field.Key.EndsWith("_sha256", StringComparison.Ordinal) && !IsLowerSha256(field.Value))
+                    throw new InvalidDataException("Night cache binding has an invalid digest: " + field.Key);
+                metadata.Append(field.Key).Append('\0').Append(field.Value).Append('\n');
+            }
+            if (!IsLowerSha256(manifest.cache_content_sha256))
+                throw new InvalidDataException("Night cache content digest is invalid");
+            metadata.Append("cache_content_sha256\0").Append(manifest.cache_content_sha256).Append('\n');
+            if (Sha256Bytes(Encoding.ASCII.GetBytes(metadata.ToString())) != manifest.night_metadata_sha256)
+                throw new InvalidDataException("Night cache metadata identity mismatch");
+        }
+
+        private static bool IsLowerSha256(string value) => value?.Length == 64 &&
+            value.All(c => c is >= '0' and <= '9' or >= 'a' and <= 'f');
 
         public static OwnerAssetCache OpenAndValidateLevel2(string rootPath)
         {

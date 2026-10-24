@@ -150,7 +150,7 @@ namespace MagicCarpet.Native.Tests
                 System.Reflection.BindingFlags.NonPublic).Invoke(runtime,
                 new object[] { new[] { "-mc-preferences-profile", preferencesProfile } });
             var generated = Path.Combine(PrivateRoot, "generated");
-            var cache = Path.Combine(generated, "level1-unity-asset-cache-plan29-final");
+            var cache = LevelOneOwnerCache;
             try
             {
                 runtime.QualificationInitializeGameRuntimeProductionFromArguments(new[] {
@@ -182,6 +182,10 @@ namespace MagicCarpet.Native.Tests
                 Assert.That(runtime.GameRuntimeProductionIdentity.mode, Is.EqualTo(GameRuntimeTransport.PlayingMode));
                 Assert.That(runtime.GameRuntimeProductionIdentity.session.tick, Is.EqualTo("0"));
                 Assert.That(runtime.GameRuntimeProductionIdentity.player_preferences.installed, Is.True);
+                Assert.DoesNotThrow(() => installPreferences(),
+                    "repeated preparation observes the already installed Rust profile");
+                Assert.That(runtime.GameRuntimeProductionIdentity.generation, Is.EqualTo(opened.generation),
+                    "hydrating preferences must not pause or resume an already prepared owner");
                 Assert.That(runtime.GameRuntimeNightPresentationReady, Is.True);
                 Assert.That(runtime.GameRuntimeNightMinimapReady, Is.True);
                 Assert.That(runtime.Level2ProductionDayHudPresenterReady, Is.True);
@@ -490,6 +494,7 @@ namespace MagicCarpet.Native.Tests
             Path.Combine(PrivateRoot, "generated/level3-day-material-cache");
 
         private static string LevelOneOwnerCache =>
+            Environment.GetEnvironmentVariable("MC_CAMPAIGN_LEVEL1_CACHE") ??
             Path.Combine(
                 PrivateRoot,
                 "generated/level1-unity-asset-cache-plan29-final");

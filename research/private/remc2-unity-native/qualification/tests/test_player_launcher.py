@@ -206,7 +206,7 @@ class PlayerLauncherTests(unittest.TestCase):
             package.mkdir(parents=True, exist_ok=True)
             # Only argument routing is under test; Rust owns content validation.
             (package / "manifest.json").write_text("{}")
-        for name in ("level1-unity-asset-cache-plan29-final",
+        for name in ("mc2-level1-night-cache-v2",
                      "level2-day-spell-owner-cache-v3/components/material",
                      "level3-day-spell-owner-cache-v3/components/material"):
             (generated / name).mkdir(parents=True, exist_ok=True)
@@ -301,7 +301,7 @@ class PlayerLauncherTests(unittest.TestCase):
     def test_campaign_rejects_missing_conflicting_and_duplicate_inputs_before_player(self):
         generated = self.campaign_resources()
         package = str(generated / "mc-bhq8-level1-collision-v5-night")
-        cache = str(generated / "level1-unity-asset-cache-plan29-final")
+        cache = str(generated / "mc2-level1-night-cache-v2")
         cases = [
             (["--package"], "requires a path"),
             (["--package", ""], "nonblank path"),

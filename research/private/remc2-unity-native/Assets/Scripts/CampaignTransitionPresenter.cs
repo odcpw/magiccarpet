@@ -484,6 +484,17 @@ namespace MagicCarpet.Native
             var rootPath = Path.GetFullPath(match.presentation_cache_path);
             var cache = JsonUtility.FromJson<CacheManifest>(System.Text.Encoding.UTF8.GetString(
                 ReadBounded(ConfinedFile(rootPath, "manifest.json"), 16 * 1024 * 1024)));
+            if (cache?.schema == OwnerAssetCache.NightSchema)
+            {
+                if (cache.bindings == null ||
+                    cache.bindings.level_export_package_sha256 != binding.owner_export_package_sha256 ||
+                    cache.bindings.campaign_package_sha256 != binding.source_package_sha256 ||
+                    cache.bindings.qualified_runtime_capture_sha256 != binding.runtime_capture_sha256)
+                    throw new InvalidDataException("The Night presentation cache does not bind the selected mission package.");
+                OwnerAssetCache.OpenAndValidate(rootPath, MagicCarpetRuntime.ExpectedPackageHash,
+                    MagicCarpetRuntime.ExpectedOwnerAssetClosureHash);
+                return match;
+            }
             // The qualified cache predates additive owner-export members
             // (such as gameplay collision masks). Its declared provenance is
             // the exact reset capture, retained and validated by Rust. Other

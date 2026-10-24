@@ -34,9 +34,36 @@ namespace MagicCarpet.Native.Tests
                 "generated/mc-cf14-campaign-package-v1-a/qualified-level3");
 
         private static string LevelOneAssetCache =>
+            Environment.GetEnvironmentVariable("MC_CAMPAIGN_LEVEL1_CACHE") ??
             Path.Combine(
                 PrivateRoot,
                 "generated/level1-unity-asset-cache-plan29-final");
+
+        [Serializable]
+        private sealed class NightMetadataIdentity
+        {
+            public string night_metadata_sha256;
+        }
+
+        [Test]
+        public void CurrentNightCacheRejectsAlteredMetadataBeforeReadingAssets()
+        {
+            var source = Path.Combine(PrivateRoot, "generated/mc2-level1-night-cache-v2/manifest.json");
+            var original = File.ReadAllText(source);
+            var digest = JsonUtility.FromJson<NightMetadataIdentity>(original).night_metadata_sha256;
+            Assert.That(digest?.Length, Is.EqualTo(64));
+            var directory = Path.Combine(Path.GetTempPath(), "mc-night-metadata-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(directory);
+            try
+            {
+                File.WriteAllText(Path.Combine(directory, "manifest.json"), original.Replace(digest, new string('f', 64)));
+                var error = Assert.Throws<InvalidDataException>(() => OwnerAssetCache.OpenAndValidate(
+                    directory, MagicCarpetRuntime.ExpectedPackageHash, MagicCarpetRuntime.ExpectedOwnerAssetClosureHash));
+                Assert.That(error.Message, Does.Contain("Night cache metadata identity mismatch"),
+                    "metadata must be rejected before the deliberately absent output tree is read");
+            }
+            finally { Directory.Delete(directory, true); }
+        }
 
         [Test]
         [Timeout(180000)]
@@ -45,7 +72,12 @@ namespace MagicCarpet.Native.Tests
             var cache = OwnerAssetCache.OpenAndValidate(
                 LevelOneAssetCache,
                 MagicCarpetRuntime.ExpectedPackageHash,
-                MagicCarpetRuntime.ExpectedOwnerAssetClosureHash);
+                MagicCarpetRuntime.ExpectedOwnerAssetClosureHash,
+                LevelOnePackage);
+            Assert.Throws<InvalidDataException>(() => OwnerAssetCache.OpenAndValidate(
+                LevelOneAssetCache, MagicCarpetRuntime.ExpectedPackageHash,
+                MagicCarpetRuntime.ExpectedOwnerAssetClosureHash, LevelTwoPackage),
+                "restored Night presentation must reject a different selected package");
             var parent = new GameObject("campaign transition presenter test parent");
             try
             {
@@ -228,7 +260,9 @@ namespace MagicCarpet.Native.Tests
                 presenter.Present(playing);
                 Assert.That(playing.session.tick, Is.EqualTo("0"));
                 Assert.That(presenter.IsVisible, Is.False);
-                Assert.Throws<InvalidOperationException>(() => runtime.OpenLevel());
+                var duplicate = Assert.Throws<GameRuntimeTransport.TransitionException>(() => runtime.OpenLevel());
+                Assert.That(duplicate.Status, Is.EqualTo(3));
+                Assert.That(duplicate.Message, Does.Contain("INVALID_RUNTIME_MODE"));
                 Assert.That(runtime.IdentitySnapshot().session.generation, Is.EqualTo(playing.session.generation));
             }
             finally

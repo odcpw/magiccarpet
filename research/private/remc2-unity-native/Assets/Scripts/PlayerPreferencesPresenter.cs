@@ -66,10 +66,15 @@ namespace MagicCarpet.Native
         internal float SteeringRoll => roll;
         internal float SteeringPitch => pitch;
 
-        internal PlayerPreferencesPresenter(Func<string, PlayerPreferencesSnapshot> command, string profileDir)
+        internal PlayerPreferencesPresenter(Func<string, PlayerPreferencesSnapshot> command, string profileDir,
+            PlayerPreferencesSnapshot installed = null)
         {
             this.command = command ?? throw new ArgumentNullException(nameof(command));
-            Synchronize(command(JsonUtility.ToJson(new InstallCommand {
+            if (installed != null && !installed.installed)
+                throw new InvalidOperationException("preferences hydration requires an installed Rust profile");
+            // A restored owner may already have its operational profile. Observe
+            // that authority; the native one-time installation guard stays intact.
+            Synchronize(installed ?? command(JsonUtility.ToJson(new InstallCommand {
                 profile_dir = Path.GetFullPath(profileDir) })));
         }
 

@@ -9541,8 +9541,9 @@ namespace MagicCarpet.Native
         {
             var profile = ArgumentValue(arguments, "-mc-preferences-profile");
             var before = session.GameRuntimeIdentity();
-            var restorePlaying = before.mode == GameRuntimeTransport.PlayingMode &&
-                (before.session.tick != "0" || before.player_preferences?.installed == true);
+            var installed = before.player_preferences?.installed == true ? before.player_preferences : null;
+            var restorePlaying = installed == null && before.mode == GameRuntimeTransport.PlayingMode &&
+                before.session.tick != "0";
             // A restored or directly opened world is already Playing. Install
             // operational preferences through the ordinary paused-menu gate,
             // before any gameplay update, then preserve its original mode.
@@ -9552,7 +9553,7 @@ namespace MagicCarpet.Native
                 playerPreferences = new PlayerPreferencesPresenter(
                     json => GameRuntimeTransport.PreferencesCommand(session.Handle,
                         session.GameRuntimeIdentity(), json),
-                    string.IsNullOrWhiteSpace(profile) ? Application.persistentDataPath : profile);
+                    string.IsNullOrWhiteSpace(profile) ? Application.persistentDataPath : profile, installed);
             }
             finally
             {
@@ -9764,7 +9765,7 @@ namespace MagicCarpet.Native
                 return;
             var resource = ResolveGameRuntimePresentationResource(selection);
             ownerAssetCache = OwnerAssetCache.OpenAndValidate(resource.presentation_cache_path,
-                ExpectedPackageHash, ExpectedOwnerAssetClosureHash);
+                ExpectedPackageHash, ExpectedOwnerAssetClosureHash, resource.package_dir);
             campaignSession = NativeCampaignSession.BorrowGameRuntime(session.Handle, identity,
                 resource.package_dir, selection);
             gameRuntimeNightSurface = new CampaignPresentationSurface(transform);

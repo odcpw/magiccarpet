@@ -151,8 +151,8 @@ def main(arguments):
         # Local installed owner content. A supplied set replaces this entire list.
         resources = [
             {'package': GENERATED / 'mc-bhq8-level1-collision-v5-night',
-             'owner': GENERATED / 'level1-unity-asset-cache-plan29-final',
-             'presentation': GENERATED / 'level1-unity-asset-cache-plan29-final'},
+             'owner': GENERATED / 'mc2-level1-night-cache-v2',
+             'presentation': GENERATED / 'mc2-level1-night-cache-v2'},
             {'package': GENERATED / 'level2-day-block32-campaign-v2',
              'owner': GENERATED / 'level2-day-spell-owner-cache-v3/components/material',
              'presentation': GENERATED / 'level2-day-spell-owner-cache-v3'},
@@ -180,7 +180,7 @@ def main(arguments):
         if explicit_resources:
             raise LaunchError('An explicit package set requires --loading-cache DIR '
                               'for the campaign frontend and level transitions')
-        loading = GENERATED / 'level1-unity-asset-cache-plan29-final'
+        loading = GENERATED / 'mc2-level1-night-cache-v2'
     if loading is not None:
         directory(loading, 'loading cache')
         native.extend(('-mc-runtime-loading-cache', str(loading)))

@@ -130,7 +130,7 @@ GameObject:
   - component: {fileID: 285476723}
   - component: {fileID: 285476722}
   m_Layer: 0
-  m_Name: Magic Carpet Runtime
+  m_Name: Magic Carpet II Runtime
   m_TagString: Untagged
   m_Icon: {fileID: 0}
   m_NavMeshLayer: 0

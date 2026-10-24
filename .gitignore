@@ -4,6 +4,7 @@
 /.codex/
 /.ntm/logs/
 /.ntm/pids/
+/.ntm/human_inbox/
 /.ntm/rate_limits.json
 /.repo_janitor_workspace/
 /log.txt
