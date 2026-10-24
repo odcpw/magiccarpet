@@ -173,6 +173,51 @@ impl RuntimeRecord {
         Ok(())
     }
 
+    fn loading_presentation(
+        &self,
+        handle: u64,
+        generation: u64,
+    ) -> AbiResult<sim_core::campaign::backend::Mc2LoadingPresentation> {
+        self.validate_transition(handle, generation, RuntimeMode::Loading)?;
+        self.resolver
+            .as_ref()
+            .ok_or_else(|| {
+                AbiError::new(
+                    MC_STATUS_INVALID_ARGUMENT,
+                    "MISSING_RUNTIME_RESOLVER: loading presentation requires installed packages",
+                )
+            })?
+            .loading_presentation(
+                &self.runtime,
+                RuntimeGuard {
+                    runtime_id: handle,
+                    generation,
+                },
+            )
+            .map_err(map_transition_error)
+    }
+
+    fn cancel_loading(&mut self, handle: u64, generation: u64) -> AbiResult<()> {
+        self.validate_transition(handle, generation, RuntimeMode::Loading)?;
+        self.resolver
+            .as_ref()
+            .ok_or_else(|| {
+                AbiError::new(
+                    MC_STATUS_INVALID_ARGUMENT,
+                    "MISSING_RUNTIME_RESOLVER: cancel loading requires installed packages",
+                )
+            })?
+            .cancel_loading(
+                &mut self.runtime,
+                RuntimeGuard {
+                    runtime_id: handle,
+                    generation,
+                },
+            )
+            .map_err(map_transition_error)?;
+        Ok(())
+    }
+
     fn restart_new_game(&mut self, handle: u64, generation: u64) -> AbiResult<()> {
         self.validate_transition(handle, generation, RuntimeMode::Title)?;
         self.resolver
@@ -865,7 +910,7 @@ pub extern "C" fn mc_game_runtime_contract_json_v1(
             "encoding": "utf-8-json",
             "u64_counter_encoding": "decimal-string",
             "modes": ["title", "campaign", "loading", "playing", "paused"],
-            "transitions": ["bootstrap_package_set", "restart_new_game", "open_level", "load_replay_save", "pause", "paused_frame", "resume", "accept_completion_transition", "finish_mission_if_ready", "campaign_menu_command", "close"],
+            "transitions": ["bootstrap_package_set", "restart_new_game", "open_level", "cancel_loading", "load_replay_save", "pause", "paused_frame", "resume", "accept_completion_transition", "finish_mission_if_ready", "campaign_menu_command", "close"],
             "playing_session_transport": "mc_game_session_*_v1 on the same handle",
             "package_profile": "mc2-campaign",
             "installed_package_set": {
@@ -907,6 +952,13 @@ pub extern "C" fn mc_game_runtime_contract_json_v1(
                 "loading": "pending_definition.runtime_flow",
                 "playing_and_paused": "active_runtime_flow",
                 "presentation_cue": "identity.presentation"
+            },
+            "loading_presentation": {
+                "schema": "mc2-loading-presentation/v1",
+                "transport": "mc_game_runtime_loading_presentation_json_v1",
+                "cancel_transport": "mc_game_runtime_cancel_loading_v1",
+                "destination_authority": "exact_installed_pending_definition",
+                "guards": ["runtime_generation", "loading_mode"]
             },
             "completion_transition": {
                 "receipt_contract": COMPLETION_TRANSITION_RECEIPT,
@@ -1072,6 +1124,31 @@ pub extern "C" fn mc_game_runtime_load_replay_json_v1(
 #[unsafe(no_mangle)]
 pub extern "C" fn mc_game_runtime_open_level_v1(handle: u64, generation: u64) -> i32 {
     boundary(|| with_runtime_mut(handle, |runtime| runtime.open_level(handle, generation)))
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn mc_game_runtime_loading_presentation_json_v1(
+    handle: u64,
+    generation: u64,
+    buffer: *mut u8,
+    capacity: u32,
+    out_length: *mut u32,
+) -> i32 {
+    boundary(|| {
+        with_runtime(handle, |record| {
+            let value = record.loading_presentation(handle, generation)?;
+            let observation = serde_json::json!({
+                "identity": record.runtime.identity(),
+                "value": value,
+            });
+            super::game_session_abi::write_json(&observation, buffer, capacity, out_length)
+        })
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn mc_game_runtime_cancel_loading_v1(handle: u64, generation: u64) -> i32 {
+    boundary(|| with_runtime_mut(handle, |record| record.cancel_loading(handle, generation)))
 }
 
 #[unsafe(no_mangle)]
@@ -1450,6 +1527,7 @@ mod tests {
                 "bootstrap_package_set",
                 "restart_new_game",
                 "open_level",
+                "cancel_loading",
                 "load_replay_save",
                 "pause",
                 "paused_frame",
@@ -1572,11 +1650,20 @@ mod tests {
         );
         assert_eq!(identity(handle), title);
 
-        let packages = installed_package_set_json(&[
-            level_three_package(),
-            level_one_package(),
-            level_two_package(),
-        ]);
+        // The ordinary first step consumes the retained owner collision-mask bank.
+        // Bind the same real Level 1 cache as the installed player, while leaving
+        // the malformed and incomplete package-set requests above unchanged.
+        let owner_cache = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../generated/level1-unity-asset-cache-plan29-final");
+        let packages = serde_json::to_vec(&serde_json::json!({
+            "request_contract": INSTALLED_PACKAGE_SET_CONTRACT,
+            "packages": [
+                { "package_dir": level_three_package(), "owner_cache_path": null },
+                { "package_dir": level_one_package(), "owner_cache_path": owner_cache },
+                { "package_dir": level_two_package(), "owner_cache_path": null }
+            ]
+        }))
+        .unwrap();
         assert_eq!(
             mc_game_runtime_bootstrap_package_set_json_v1(
                 handle,
@@ -1717,6 +1804,105 @@ mod tests {
         // entry opening. It does not expose completion acceptance, prove later
         // L2/L3 materialization, discover/install packages, migrate production
         // presentation, or implement paused frames, save/load, replay, or UI.
+    }
+
+    #[test]
+    fn loading_presentation_and_cancel_use_the_exact_guarded_destination() {
+        let mut handle = 0;
+        assert_eq!(mc_game_runtime_create_v1(&raw mut handle), MC_STATUS_OK);
+        assert_eq!(
+            bootstrap_package_set(
+                handle,
+                1,
+                &[
+                    level_three_package(),
+                    level_one_package(),
+                    level_two_package()
+                ]
+            ),
+            MC_STATUS_OK
+        );
+        let loading = identity(handle);
+        let first = read_json(|buffer, capacity, length| {
+            mc_game_runtime_loading_presentation_json_v1(handle, 2, buffer, capacity, length)
+        });
+        assert_eq!(first["identity"], loading);
+        assert_eq!(first["value"]["schema"], "mc2-loading-presentation/v1");
+        assert_eq!(
+            first["value"]["level_id"],
+            loading["presentation"]["level_id"]
+        );
+        assert_eq!(first["value"]["cue_id"], loading["presentation"]["cue_id"]);
+        for field in [
+            "package_graph_hash",
+            "definition_hash",
+            "definition_revision",
+        ] {
+            assert_eq!(first["value"][field], loading["pending_definition"][field]);
+        }
+        assert!(first["value"]["definition_revision"].is_string());
+        assert_eq!(first["value"]["environment"], "night");
+        assert_eq!(first["value"]["artwork_profile"], "ordinary");
+        let manifest: Value =
+            serde_json::from_slice(&fs::read(level_one_package().join("manifest.json")).unwrap())
+                .unwrap();
+        assert_eq!(
+            first["value"]["source_package_sha256"],
+            manifest["package_sha256"]
+        );
+        assert_eq!(
+            first["value"]["owner_export_package_sha256"],
+            manifest["owner_export_package_sha256"]
+        );
+        assert_eq!(
+            read_json(|buffer, capacity, length| {
+                mc_game_runtime_loading_presentation_json_v1(handle, 2, buffer, capacity, length)
+            }),
+            first
+        );
+        assert_eq!(identity(handle), loading);
+        assert!(loading.get("session").is_none());
+
+        let mut length = 123;
+        assert_eq!(
+            mc_game_runtime_loading_presentation_json_v1(
+                handle,
+                1,
+                std::ptr::null_mut(),
+                0,
+                &raw mut length
+            ),
+            MC_STATUS_GENERATION_MISMATCH
+        );
+        assert_eq!(length, 123);
+        assert_eq!(
+            mc_game_runtime_cancel_loading_v1(handle, 1),
+            MC_STATUS_GENERATION_MISMATCH
+        );
+        assert_eq!(identity(handle), loading);
+        assert_eq!(mc_game_runtime_cancel_loading_v1(handle, 2), MC_STATUS_OK);
+        let title = identity(handle);
+        assert_eq!(title["mode"], "title");
+        assert_eq!(title["generation"], "3");
+        assert!(title.get("session").is_none());
+        assert_eq!(
+            mc_game_runtime_cancel_loading_v1(handle, 2),
+            MC_STATUS_GENERATION_MISMATCH
+        );
+        assert_eq!(
+            mc_game_runtime_cancel_loading_v1(handle, 3),
+            MC_STATUS_INVALID_ARGUMENT
+        );
+        assert_eq!(identity(handle), title);
+
+        assert_eq!(mc_game_runtime_restart_new_game_v1(handle, 3), MC_STATUS_OK);
+        let retry = read_json(|buffer, capacity, length| {
+            mc_game_runtime_loading_presentation_json_v1(handle, 4, buffer, capacity, length)
+        });
+        assert_eq!(retry["value"], first["value"]);
+        assert_eq!(mc_game_runtime_open_level_v1(handle, 4), MC_STATUS_OK);
+        assert_eq!(identity(handle)["mode"], "playing");
+        assert_eq!(mc_game_runtime_destroy_v1(handle), MC_STATUS_OK);
     }
 
     #[test]
@@ -2377,12 +2563,34 @@ mod tests {
         );
         let failed_open_loading = identity(failed_open_handle);
         assert_eq!(failed_open_loading["mode"], "loading");
+        let binding = read_json(|buffer, capacity, length| {
+            mc_game_runtime_loading_presentation_json_v1(
+                failed_open_handle,
+                2,
+                buffer,
+                capacity,
+                length,
+            )
+        });
         fs::remove_file(failed_open_root.join("runtime.bin")).unwrap();
         assert_eq!(
             mc_game_runtime_open_level_v1(failed_open_handle, 2),
             MC_STATUS_VALIDATION_FAILED
         );
         assert_eq!(identity(failed_open_handle), failed_open_loading);
+        assert_eq!(
+            read_json(|buffer, capacity, length| {
+                mc_game_runtime_loading_presentation_json_v1(
+                    failed_open_handle,
+                    2,
+                    buffer,
+                    capacity,
+                    length,
+                )
+            }),
+            binding,
+            "failed open retains the exact installed loading metadata for retry"
+        );
         assert_eq!(
             mc_game_runtime_open_level_v1(failed_open_handle, 1),
             MC_STATUS_GENERATION_MISMATCH
@@ -2393,6 +2601,11 @@ mod tests {
             MC_STATUS_VALIDATION_FAILED
         );
         assert_eq!(identity(failed_open_handle), failed_open_loading);
+        assert_eq!(
+            mc_game_runtime_cancel_loading_v1(failed_open_handle, 2),
+            MC_STATUS_OK
+        );
+        assert_eq!(identity(failed_open_handle)["mode"], "title");
         assert_eq!(mc_game_runtime_destroy_v1(failed_open_handle), MC_STATUS_OK);
         fs::remove_dir_all(failed_open_root).unwrap();
     }

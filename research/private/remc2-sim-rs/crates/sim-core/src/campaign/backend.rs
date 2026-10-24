@@ -147,6 +147,7 @@ pub fn load_mc2_campaign(
     catalog: &SemanticCatalog,
 ) -> crate::game_definition::Result<GameDefinition> {
     load_mc2_campaign_internal(package_root.as_ref(), None, catalog)
+        .map(|(definition, _, _)| definition)
 }
 
 /// Load a campaign definition with exact owner-cache audio artifacts retained
@@ -157,13 +158,14 @@ pub fn load_mc2_campaign_with_owner_cache(
     catalog: &SemanticCatalog,
 ) -> crate::game_definition::Result<GameDefinition> {
     load_mc2_campaign_internal(package_root.as_ref(), Some(owner_cache.as_ref()), catalog)
+        .map(|(definition, _, _)| definition)
 }
 
 fn load_mc2_campaign_internal(
     package_root: &Path,
     owner_cache: Option<&Path>,
     catalog: &SemanticCatalog,
-) -> crate::game_definition::Result<GameDefinition> {
+) -> crate::game_definition::Result<(GameDefinition, CampaignSelection, String)> {
     let selection = CampaignDescriptor::declared_selection(package_root).map_err(|error| {
         definition_error(
             DefinitionErrorCode::InvalidSchema,
@@ -436,13 +438,16 @@ fn load_mc2_campaign_internal(
         artifact_payloads,
     )?;
     let runtime_flow = mc2_runtime_flow(selection, descriptor.level_definition())?;
-    GameDefinition::from_package(package, &engine_capabilities()?, catalog).map(|definition| {
+    let definition = GameDefinition::from_package(package, &engine_capabilities()?, catalog)?;
+    Ok((
         with_level_and_runtime_flow(
             definition,
             descriptor.level_definition().clone(),
             runtime_flow,
-        )
-    })
+        ),
+        descriptor.identity,
+        descriptor.package_sha256,
+    ))
 }
 
 fn mc2_runtime_flow(
@@ -760,6 +765,42 @@ impl Error for Mc2CampaignReplaySaveError {}
 struct ResolvedMc2RuntimePackage {
     definition: Arc<GameDefinition>,
     inputs: Mc2CampaignInputs,
+    selection: CampaignSelection,
+    source_package_sha256: String,
+}
+
+/// Presentation inputs retained from the exact validated installed destination.
+/// Reading this value never opens a gameplay session or reselects a mission.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct Mc2LoadingPresentation {
+    pub schema: &'static str,
+    pub level_id: SemanticLevelId,
+    pub cue_id: SemanticPresentationCueId,
+    pub package_graph_hash: String,
+    pub definition_hash: String,
+    #[serde(serialize_with = "serialize_loading_revision")]
+    pub definition_revision: u64,
+    pub source_package_sha256: String,
+    pub owner_export_package_sha256: String,
+    pub environment: &'static str,
+    pub artwork_profile: &'static str,
+}
+
+fn serialize_loading_revision<S: serde::Serializer>(
+    value: &u64,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    serializer.serialize_str(&value.to_string())
+}
+
+fn loading_artwork_profile(selection: CampaignSelection) -> &'static str {
+    // sub_46830_main_loop passes the zero-based levelnumber_43w predicate
+    // to sub_47FC0_load_screen; ordinary source24 is NOT secret artwork.
+    if selection.internal_level > 24 && selection.internal_level < 50 {
+        "secret"
+    } else {
+        "ordinary"
+    }
 }
 
 /// Immutable installed-package resolver for one closed semantic MC2 flow.
@@ -867,7 +908,12 @@ impl Mc2RuntimePackageResolver {
         let mut flow: Option<RuntimeFlowDefinition> = None;
         let mut by_level = BTreeMap::new();
         for input in inputs {
-            let definition = Arc::new(load_mc2_campaign_inputs(&input, &catalog)?);
+            let (definition, selection, source_package_sha256) = load_mc2_campaign_internal(
+                &input.package_root,
+                input.owner_cache.as_deref(),
+                &catalog,
+            )?;
+            let definition = Arc::new(definition);
             definition.verify_identity()?;
             let candidate = definition.runtime_flow().cloned().ok_or_else(|| {
                 definition_error(
@@ -897,6 +943,8 @@ impl Mc2RuntimePackageResolver {
                     ResolvedMc2RuntimePackage {
                         definition,
                         inputs: input,
+                        selection,
+                        source_package_sha256,
                     },
                 )
                 .is_some()
@@ -964,6 +1012,100 @@ impl Mc2RuntimePackageResolver {
             .package(self.flow.entry_level_id())
             .expect("closed installed package set contains its entry level");
         runtime.new_game(guard, Arc::clone(&package.definition))
+    }
+
+    /// Observe the current Loading destination without opening or mutating it.
+    pub fn loading_presentation(
+        &self,
+        runtime: &crate::game_runtime::GameRuntime<Mc2CampaignBackend>,
+        guard: crate::game_runtime::RuntimeGuard,
+    ) -> Result<Mc2LoadingPresentation, crate::game_runtime::RuntimeTransitionError> {
+        use crate::game_runtime::{RuntimeMode, RuntimeTransitionError};
+        runtime
+            .validate_guard(guard)
+            .map_err(Box::new)
+            .map_err(RuntimeTransitionError::Guard)?;
+        let identity = runtime.identity();
+        if identity.mode != RuntimeMode::Loading {
+            return Err(RuntimeTransitionError::InvalidMode {
+                expected: RuntimeMode::Loading,
+                actual: identity.mode,
+            });
+        }
+        let invalid = |message: &str| RuntimeTransitionError::InvalidRuntimeFlow {
+            message: message.to_owned(),
+        };
+        let pending = identity
+            .pending_definition
+            .as_ref()
+            .ok_or_else(|| invalid("Loading has no pending definition"))?;
+        let flow = pending
+            .runtime_flow
+            .as_ref()
+            .ok_or_else(|| invalid("pending definition has no runtime flow"))?;
+        let package = self
+            .package(flow.bound_level_id())
+            .ok_or_else(|| invalid("pending level is not installed"))?;
+        if pending.package_graph_hash != package.definition.package_graph_hash()
+            || pending.definition_hash != package.definition.definition_hash()
+            || pending.definition_revision != package.definition.revision()
+            || package.definition.runtime_flow() != Some(flow)
+        {
+            return Err(invalid(
+                "pending definition is not the exact installed loading binding",
+            ));
+        }
+        let environment = match package.selection.map_type_id {
+            0 => "day",
+            1 => "night",
+            2 => "cave",
+            _ => {
+                return Err(invalid(
+                    "installed loading binding has an invalid environment",
+                ));
+            }
+        };
+        let owner_export = package
+            .definition
+            .artifacts()
+            .iter()
+            .find(|artifact| artifact.id == "campaign.owner_export")
+            .ok_or_else(|| invalid("installed loading binding has no owner-export artifact"))?;
+        Ok(Mc2LoadingPresentation {
+            schema: "mc2-loading-presentation/v1",
+            level_id: flow.bound_level_id().clone(),
+            cue_id: identity.presentation.cue_id,
+            package_graph_hash: pending.package_graph_hash.clone(),
+            definition_hash: pending.definition_hash.clone(),
+            definition_revision: pending.definition_revision,
+            source_package_sha256: package.source_package_sha256.clone(),
+            owner_export_package_sha256: owner_export.sha256.clone(),
+            environment,
+            artwork_profile: loading_artwork_profile(package.selection),
+        })
+    }
+
+    /// Restore the generic Loading origin atomically with resolver carry state.
+    pub fn cancel_loading(
+        &self,
+        runtime: &mut crate::game_runtime::GameRuntime<Mc2CampaignBackend>,
+        guard: crate::game_runtime::RuntimeGuard,
+    ) -> Result<crate::game_runtime::RuntimeIdentity, crate::game_runtime::RuntimeTransitionError>
+    {
+        runtime
+            .validate_guard(guard)
+            .map_err(Box::new)
+            .map_err(crate::game_runtime::RuntimeTransitionError::Guard)?;
+        let mut pending = self.pending_spell_carries.lock().map_err(|_| {
+            crate::game_runtime::RuntimeTransitionError::InvalidRuntimeFlow {
+                message: "resolver spell-carry state is unavailable".to_owned(),
+            }
+        })?;
+        let identity = runtime.cancel_loading(guard)?;
+        if identity.mode == crate::game_runtime::RuntimeMode::Title {
+            pending.remove(&guard.runtime_id);
+        }
+        Ok(identity)
     }
 
     /// Open the currently pending resolver-owned package through the ordinary
@@ -2361,6 +2503,106 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn loading_artwork_profile_uses_source_internal_identity() {
+        for (internal_level, expected) in [
+            (24, "ordinary"),
+            (25, "secret"),
+            (49, "secret"),
+            (50, "ordinary"),
+        ] {
+            assert_eq!(
+                loading_artwork_profile(CampaignSelection {
+                    external_level: internal_level + 1,
+                    internal_level,
+                    map_type_id: 0,
+                }),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn runtime_loading_presentation_binds_installed_identity_and_cancel() {
+        use crate::game_runtime::{GameRuntime, RuntimeMode, RuntimeTransitionError};
+        let mut resolver = Mc2RuntimePackageResolver::load([
+            Mc2CampaignInputs::new(level_one_descriptor_fixture_path()),
+            Mc2CampaignInputs::new(descriptor_fixture_path()),
+            Mc2CampaignInputs::new(level_three_descriptor_fixture_path()),
+        ])
+        .unwrap();
+        let mut runtime = GameRuntime::<Mc2CampaignBackend>::title(195).unwrap();
+        let title = runtime.identity();
+        assert!(matches!(
+            resolver.loading_presentation(&runtime, title.guard()),
+            Err(RuntimeTransitionError::InvalidMode { .. })
+        ));
+        let loading = resolver.new_game(&mut runtime, title.guard()).unwrap();
+        let first = resolver
+            .loading_presentation(&runtime, loading.guard())
+            .unwrap();
+        assert_eq!(first.environment, "night");
+        assert_eq!(first.artwork_profile, "ordinary");
+        assert_eq!(first.cue_id, loading.presentation.cue_id);
+        let manifest: serde_json::Value = serde_json::from_slice(
+            &fs::read(level_one_descriptor_fixture_path().join("manifest.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            first.source_package_sha256,
+            manifest["package_sha256"].as_str().unwrap()
+        );
+        assert_eq!(
+            serde_json::to_value(&first).unwrap()["definition_revision"],
+            first.definition_revision.to_string()
+        );
+        assert_eq!(runtime.identity(), loading);
+        assert!(runtime.session().is_none());
+        assert!(matches!(
+            resolver.loading_presentation(&runtime, title.guard()),
+            Err(RuntimeTransitionError::Guard(_))
+        ));
+        assert!(matches!(
+            resolver.cancel_loading(&mut runtime, title.guard()),
+            Err(RuntimeTransitionError::Guard(_))
+        ));
+        assert_eq!(runtime.identity(), loading);
+
+        let entry = resolver.flow.entry_level_id().clone();
+        let original = Arc::clone(&resolver.by_level[&entry].definition);
+        resolver.by_level.get_mut(&entry).unwrap().definition =
+            Arc::new(reissue_at_revision(&original, original.revision() + 1).unwrap());
+        assert!(matches!(
+            resolver.loading_presentation(&runtime, loading.guard()),
+            Err(RuntimeTransitionError::InvalidRuntimeFlow { .. })
+        ));
+        assert_eq!(runtime.identity(), loading);
+        resolver.by_level.get_mut(&entry).unwrap().definition = original;
+        assert_eq!(
+            resolver
+                .loading_presentation(&runtime, loading.guard())
+                .unwrap(),
+            first
+        );
+
+        let title = resolver
+            .cancel_loading(&mut runtime, loading.guard())
+            .unwrap();
+        assert_eq!(title.mode, RuntimeMode::Title);
+        assert!(runtime.session().is_none());
+        let retry = resolver.new_game(&mut runtime, title.guard()).unwrap();
+        assert_eq!(
+            resolver
+                .loading_presentation(&runtime, retry.guard())
+                .unwrap(),
+            first
+        );
+        let playing = resolver
+            .open_pending(&mut runtime, retry.guard(), 195)
+            .unwrap();
+        assert_eq!(playing.mode, RuntimeMode::Playing);
+    }
+
+    #[test]
     fn runtime_package_resolver_stale_guard_precedes_pending_spell_carry() {
         use crate::game_runtime::{
             GameRuntime, RuntimeGuardErrorCode, RuntimeMode, RuntimeTransitionError,
@@ -2410,6 +2652,20 @@ pub(crate) mod tests {
             .insert(loading.runtime_id, pending.clone());
         assert_eq!(loading.mode, RuntimeMode::Loading);
         assert!(runtime.session().is_none());
+
+        assert!(matches!(
+            resolver.cancel_loading(&mut runtime, playing.guard()),
+            Err(RuntimeTransitionError::Guard(_))
+        ));
+        assert_eq!(runtime.identity(), loading);
+        assert_eq!(
+            resolver
+                .pending_spell_carries
+                .lock()
+                .unwrap()
+                .get(&loading.runtime_id),
+            Some(&pending)
+        );
 
         let rejected = resolver.accept_transition(&mut runtime, playing.guard(), session_guard);
         assert!(matches!(
