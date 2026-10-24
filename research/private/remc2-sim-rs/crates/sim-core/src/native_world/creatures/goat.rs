@@ -4286,6 +4286,14 @@ mod tests {
     fn action11_partner_action10_dispatches_hit_goat_next_turn() {
         let world = MaterialBoundaryWorld { all_water: false };
         let mut family = level_two_family();
+        // Damage identities resolve in this Level 2 arena, not Level 1's
+        // fixed player slot 152. A supplied target cannot revive a free row.
+        let player_slot = family
+            .source_entities
+            .iter()
+            .find(|actor| actor.active && actor.class == 3 && actor.model == 0)
+            .expect("live Level 2 player")
+            .entity_index;
         let primary_index = family
             .goats
             .iter()
@@ -4300,12 +4308,15 @@ mod tests {
         family.goats[primary_index].partner_entity_index = Some(66);
         family.goats[partner_index].behavior_flags = 0;
         family
-            .inject_damage(39, 100, 152)
+            .inject_damage(39, 100, player_slot.cast_signed())
             .expect("nonlethal action-11 partner hit");
 
         family.step_source_slot(39, &world, &[]);
         assert_eq!(family.goats[partner_index].action, 10);
-        assert_eq!(family.goats[partner_index].target_entity_index, Some(152));
+        assert_eq!(
+            family.goats[partner_index].target_entity_index,
+            Some(player_slot)
+        );
 
         let target_position = Position {
             x: family.goats[partner_index].position.x.wrapping_add(120),
@@ -4313,7 +4324,7 @@ mod tests {
             z: family.goats[partner_index].position.z,
         };
         let players = [GoatPlayerTarget {
-            entity_index: 152,
+            entity_index: player_slot,
             position: target_position,
             control_flags: 0,
         }];
