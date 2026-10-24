@@ -1714,6 +1714,49 @@ namespace MagicCarpet.Native.Tests
         }
 
         [Test]
+        public void ProductionStartupRejectsConflictingAndIncompleteArgumentsBeforeOpeningOwner()
+        {
+            var nativeSessions = NativeSession.ActiveSessionCount;
+            var campaignSessions = NativeCampaignSession.ActiveSessionCount;
+            var cases = new[]
+            {
+                new[] { "-mc-game-runtime", "-mc-runtime-menu", "-mc-runtime-replay-load", "unused-save.json" },
+                new[] { "-mc-game-runtime", "-mc-runtime-package" },
+                new[] { "-mc-game-runtime", "-mc-runtime-package", "-mc-runtime-menu" },
+                new[] { "-mc-game-runtime", "-mc-runtime-owner-cache", "unused-cache" },
+                new[] { "-mc-game-runtime", "-mc-runtime-package", "unused-package",
+                    "-mc-runtime-owner-cache", "first-cache", "-mc-runtime-owner-cache", "second-cache" },
+                new[] { "-mc-game-runtime", "-mc-runtime-package", "unused-package",
+                    "-mc-runtime-presentation-cache", "first-cache", "-mc-runtime-presentation-cache", "second-cache" },
+                new[] { "-mc-game-runtime", "-mc-runtime-replay-save", "first-save.json",
+                    "-mc-runtime-replay-save", "second-save.json" },
+                new[] { "-mc-game-runtime", "-mc-runtime-loading-cache", "-mc-runtime-menu" },
+                new[] { "-mc-game-runtime", "-mc-runtime-menu-cache" },
+                new[] { "-mc-game-runtime", "-mc-runtime-media-cache" }
+            };
+            foreach (var arguments in cases)
+            {
+                var root = new GameObject("invalid startup argument owner");
+                root.SetActive(false);
+                var runtime = root.AddComponent<MagicCarpetRuntime>();
+                try
+                {
+                    Assert.Throws<InvalidDataException>(() =>
+                        runtime.QualificationInitializeGameRuntimeProductionFromArguments(arguments),
+                        string.Join(" ", arguments));
+                    Assert.That(runtime.GameRuntimeProductionStartupReady, Is.False);
+                    Assert.That(NativeSession.ActiveSessionCount, Is.EqualTo(nativeSessions));
+                    Assert.That(NativeCampaignSession.ActiveSessionCount, Is.EqualTo(campaignSessions));
+                }
+                finally
+                {
+                    runtime.QualificationDisposeGameRuntimeProduction();
+                    UnityEngine.Object.DestroyImmediate(root);
+                }
+            }
+        }
+
+        [Test]
         [Timeout(180000)]
         public void ProductionMagicCarpetRuntimeRestoresItsReplayIntoOneFreshOwner()
         {

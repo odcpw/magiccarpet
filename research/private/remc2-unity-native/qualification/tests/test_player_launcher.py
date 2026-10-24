@@ -183,7 +183,10 @@ class PlayerLauncherTests(unittest.TestCase):
         loading.mkdir()
         media = generated / "original intro media"
         media.mkdir()
-        options = ["--new-game", "--loading-cache", str(loading), "--media-cache", str(media)]
+        menu = generated / "original campaign map"
+        menu.mkdir()
+        options = ["--new-game", "--loading-cache", str(loading), "--media-cache", str(media),
+                   "--menu-cache", str(menu)]
         packages = []
         for index in (4, 2, 1, 3):
             package = generated / f"explicit mission {index}"
@@ -208,6 +211,7 @@ class PlayerLauncherTests(unittest.TestCase):
         self.assertNotIn("-mc-runtime-menu", arguments)
         self.assertEqual(arguments[arguments.index("-mc-runtime-replay-save") + 1], str(save))
         self.assertEqual(arguments[arguments.index("-mc-runtime-media-cache") + 1], str(media))
+        self.assertEqual(arguments[arguments.index("-mc-runtime-menu-cache") + 1], str(menu))
         self.assertEqual(arguments[-2:], ["-screen-width", "1280"])
 
     def test_campaign_current_save_and_native_arguments_use_the_same_route(self):
