@@ -24,6 +24,42 @@ pub enum CreatureKind {
     Firefly,
 }
 
+/// Typed class properties consumed by Archer construction, ground motion,
+/// target selection and its real arrow producer. MC2 numeric selectors and
+/// retained sprite/audio bindings remain in the package adapter.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct ArcherClassProperties {
+    pub minimum_speed: i16,
+    pub maximum_speed: i16,
+    pub attack_damage: u16,
+    pub arrow_damage: u16,
+    pub scan_period: u8,
+    pub target_range: u32,
+    pub target_half_angle: i16,
+    pub turn_limit: i16,
+    pub descent: i16,
+    pub terrain_mask: u32,
+    pub maximum_slope: i32,
+    pub collision_half_width: i16,
+    pub collision_half_height: i16,
+}
+
+pub const ARCHER_CLASS_PROPERTIES: ArcherClassProperties = ArcherClassProperties {
+    minimum_speed: 30,
+    maximum_speed: 0,
+    attack_damage: 500,
+    arrow_damage: 250,
+    scan_period: 30,
+    target_range: 5120,
+    target_half_angle: 512,
+    turn_limit: 22,
+    descent: -128,
+    terrain_mask: 0xfff0_80fe,
+    maximum_slope: 20,
+    collision_half_width: 128,
+    collision_half_height: 256,
+};
+
 impl CreatureKind {
     #[must_use]
     pub const fn as_str(self) -> &'static str {
@@ -93,7 +129,10 @@ pub enum SpellKind {
     Castle,
     Speed,
     Morph,
+    Heal,
     Shield,
+    Rebound,
+    Teleport,
     Invisibility,
     BeyondSight,
 }
@@ -107,7 +146,10 @@ impl SpellKind {
             Self::Castle => "castle",
             Self::Speed => "speed",
             Self::Morph => "morph",
+            Self::Heal => "heal",
             Self::Shield => "shield",
+            Self::Rebound => "rebound",
+            Self::Teleport => "teleport",
             Self::Invisibility => "invisibility",
             Self::BeyondSight => "beyond_sight",
         }
@@ -118,6 +160,42 @@ impl SpellKind {
 #[serde(rename_all = "snake_case")]
 pub enum MechanicKind {
     AbsenceCountdown { creature: CreatureKind },
+    CaveCorridor,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CorridorOrientation {
+    AlongX,
+    AlongY,
+}
+
+/// Immutable corridor construction properties. The source length is twice
+/// `extent + 2` tiles; retaining the signed extent also preserves source no-ops.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct CaveCorridorDefinition {
+    orientation: CorridorOrientation,
+    extent: i16,
+}
+
+impl CaveCorridorDefinition {
+    pub(crate) const fn new(orientation: CorridorOrientation, extent: i16) -> Self {
+        Self {
+            orientation,
+            extent,
+        }
+    }
+
+    #[must_use]
+    pub const fn orientation(self) -> CorridorOrientation {
+        self.orientation
+    }
+
+    #[must_use]
+    pub const fn extent(self) -> i16 {
+        self.extent
+    }
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
@@ -174,9 +252,15 @@ impl BuildingKind {
 pub enum SwitchKind {
     AreaEntryTrigger,
     AreaExitTrigger,
+    RepeatingAreaEntryTrigger,
+    RepeatingAreaExitTrigger,
     LevelExitGate,
     ExitSequenceTrigger,
+    SecretEntryTrigger,
     ObjectiveGate,
+    CreatureAbsenceTrigger,
+    PopulationAbsenceTrigger,
+    EmptyTrigger,
 }
 
 impl SwitchKind {
@@ -185,9 +269,15 @@ impl SwitchKind {
         match self {
             Self::AreaEntryTrigger => "area_entry_trigger",
             Self::AreaExitTrigger => "area_exit_trigger",
+            Self::RepeatingAreaEntryTrigger => "repeating_area_entry_trigger",
+            Self::RepeatingAreaExitTrigger => "repeating_area_exit_trigger",
             Self::LevelExitGate => "level_exit_gate",
             Self::ExitSequenceTrigger => "exit_sequence_trigger",
+            Self::SecretEntryTrigger => "secret_entry_trigger",
             Self::ObjectiveGate => "objective_gate",
+            Self::CreatureAbsenceTrigger => "creature_absence_trigger",
+            Self::PopulationAbsenceTrigger => "population_absence_trigger",
+            Self::EmptyTrigger => "empty_trigger",
         }
     }
 }
@@ -197,13 +287,15 @@ impl MechanicKind {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::AbsenceCountdown { .. } => "absence_countdown",
+            Self::CaveCorridor => "cave_corridor",
         }
     }
 
     #[must_use]
-    pub const fn creature(self) -> CreatureKind {
+    pub const fn creature(self) -> Option<CreatureKind> {
         match self {
-            Self::AbsenceCountdown { creature } => creature,
+            Self::AbsenceCountdown { creature } => Some(creature),
+            Self::CaveCorridor => None,
         }
     }
 }
@@ -716,6 +808,8 @@ pub struct LevelEntityDefinition {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     absence_countdown: Option<AbsenceCountdownDefinition>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    cave_corridor: Option<CaveCorridorDefinition>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     creature_health: Option<CreatureHealthDefinition>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     experience_scroll: Option<ExperienceScrollDefinition>,
@@ -746,6 +840,7 @@ impl LevelEntityDefinition {
             activation_group,
             position_access,
             absence_countdown,
+            cave_corridor: None,
             creature_health,
             experience_scroll,
             house_construction,
@@ -787,6 +882,16 @@ impl LevelEntityDefinition {
     #[must_use]
     pub const fn absence_countdown(&self) -> Option<AbsenceCountdownDefinition> {
         self.absence_countdown
+    }
+
+    #[must_use]
+    pub const fn cave_corridor(&self) -> Option<CaveCorridorDefinition> {
+        self.cave_corridor
+    }
+
+    pub(crate) const fn with_cave_corridor(mut self, config: CaveCorridorDefinition) -> Self {
+        self.cave_corridor = Some(config);
+        self
     }
 
     #[must_use]
@@ -835,19 +940,50 @@ impl LevelDefinition {
                     entity.id.as_str()
                 ));
             }
+            match (entity.kind, entity.cave_corridor) {
+                (LevelEntityKind::Mechanic(MechanicKind::CaveCorridor), Some(_)) => {}
+                (LevelEntityKind::Mechanic(MechanicKind::CaveCorridor), None) => {
+                    return Err(format!(
+                        "semantic cave corridor {} has no geometry configuration",
+                        entity.id.as_str()
+                    ));
+                }
+                (_, Some(_)) => {
+                    return Err(format!(
+                        "non-corridor entity {} carries cave-corridor configuration",
+                        entity.id.as_str()
+                    ));
+                }
+                (_, None) => {}
+            }
             match (entity.kind, entity.absence_countdown) {
                 (
-                    LevelEntityKind::Mechanic(MechanicKind::AbsenceCountdown { .. }),
+                    LevelEntityKind::Mechanic(MechanicKind::AbsenceCountdown { .. })
+                    | LevelEntityKind::Switch(
+                        SwitchKind::CreatureAbsenceTrigger | SwitchKind::PopulationAbsenceTrigger,
+                    ),
                     Some(config),
                 ) if (1..=i32::MAX.cast_unsigned()).contains(&config.default_arming_ticks)
                     && (1..=i32::MAX.cast_unsigned()).contains(&config.arming_ticks) => {}
-                (LevelEntityKind::Mechanic(MechanicKind::AbsenceCountdown { .. }), Some(_)) => {
+                (
+                    LevelEntityKind::Mechanic(MechanicKind::AbsenceCountdown { .. })
+                    | LevelEntityKind::Switch(
+                        SwitchKind::CreatureAbsenceTrigger | SwitchKind::PopulationAbsenceTrigger,
+                    ),
+                    Some(_),
+                ) => {
                     return Err(format!(
                         "semantic absence countdown {} has an invalid arming delay",
                         entity.id.as_str()
                     ));
                 }
-                (LevelEntityKind::Mechanic(MechanicKind::AbsenceCountdown { .. }), None) => {
+                (
+                    LevelEntityKind::Mechanic(MechanicKind::AbsenceCountdown { .. })
+                    | LevelEntityKind::Switch(
+                        SwitchKind::CreatureAbsenceTrigger | SwitchKind::PopulationAbsenceTrigger,
+                    ),
+                    None,
+                ) => {
                     return Err(format!(
                         "semantic absence countdown {} has no arming configuration",
                         entity.id.as_str()
@@ -940,6 +1076,9 @@ impl LevelDefinition {
                     LevelEntityKind::Switch(
                         SwitchKind::AreaEntryTrigger
                         | SwitchKind::AreaExitTrigger
+                        | SwitchKind::RepeatingAreaEntryTrigger
+                        | SwitchKind::RepeatingAreaExitTrigger
+                        | SwitchKind::SecretEntryTrigger
                         | SwitchKind::ExitSequenceTrigger,
                     ),
                     Some(config),
@@ -949,6 +1088,9 @@ impl LevelDefinition {
                     LevelEntityKind::Switch(
                         SwitchKind::AreaEntryTrigger
                         | SwitchKind::AreaExitTrigger
+                        | SwitchKind::RepeatingAreaEntryTrigger
+                        | SwitchKind::RepeatingAreaExitTrigger
+                        | SwitchKind::SecretEntryTrigger
                         | SwitchKind::ExitSequenceTrigger,
                     ),
                     Some(_),
@@ -958,7 +1100,15 @@ impl LevelDefinition {
                         entity.id.as_str()
                     ));
                 }
-                (LevelEntityKind::Switch(SwitchKind::ExitSequenceTrigger), None) => {
+                (
+                    LevelEntityKind::Switch(
+                        SwitchKind::ExitSequenceTrigger
+                        | SwitchKind::RepeatingAreaEntryTrigger
+                        | SwitchKind::RepeatingAreaExitTrigger
+                        | SwitchKind::SecretEntryTrigger,
+                    ),
+                    None,
+                ) => {
                     return Err(format!(
                         "semantic switch {} has no overlap configuration",
                         entity.id.as_str()
@@ -1419,6 +1569,7 @@ impl LevelDefinition {
                 || candidate.default_position != original.default_position
                 || candidate.activation_group != original.activation_group
                 || candidate.position_access != original.position_access
+                || candidate.cave_corridor != original.cave_corridor
             {
                 return Err(format!(
                     "semantic level variant changes entity identity or structure at {}",
@@ -1909,6 +2060,89 @@ impl LevelDefinition {
 #[cfg(test)]
 mod tests {
     use super::{ObjectiveCondition, RivalWizardId};
+
+    #[test]
+    fn activation_switch_properties_require_their_live_rule_and_survive_variants() {
+        use super::{
+            LevelDefinition, LevelEntityId, LevelEntityParameterAccess, LevelEntityPositionAccess,
+            SwitchKind, TilePosition,
+        };
+        use crate::adapter::{absence_countdown_definition, activation_switch_entity_definition};
+        for kind in [
+            SwitchKind::RepeatingAreaEntryTrigger,
+            SwitchKind::RepeatingAreaExitTrigger,
+            SwitchKind::SecretEntryTrigger,
+            SwitchKind::CreatureAbsenceTrigger,
+            SwitchKind::PopulationAbsenceTrigger,
+        ] {
+            let id = LevelEntityId::parse(&format!("switch.{}.test", kind.as_str())).unwrap();
+            let absence = matches!(
+                kind,
+                SwitchKind::CreatureAbsenceTrigger | SwitchKind::PopulationAbsenceTrigger
+            );
+            let entity = activation_switch_entity_definition(
+                id.clone(),
+                kind,
+                TilePosition { x: 4, y: 5 },
+                None,
+                LevelEntityPositionAccess::ReadOnly,
+                (!absence).then_some(3),
+                absence.then(|| {
+                    absence_countdown_definition(16, LevelEntityParameterAccess::SessionReset)
+                }),
+            );
+            let base = LevelDefinition::new(vec![entity.clone()], vec![], vec![]).unwrap();
+            let candidate = if absence {
+                base.with_countdown_arming_ticks(&id, 7).unwrap()
+            } else {
+                base.with_switch_overlap_extent_tiles(&id, 7).unwrap()
+            };
+            assert!(candidate.verify_session_reset_variant_of(&base).is_ok());
+            let mut missing = entity.clone();
+            missing.absence_countdown = None;
+            missing.switch_overlap = None;
+            assert!(LevelDefinition::new(vec![missing], vec![], vec![]).is_err());
+            let mut wrong_kind = entity;
+            wrong_kind.kind = super::LevelEntityKind::Switch(SwitchKind::EmptyTrigger);
+            assert!(LevelDefinition::new(vec![wrong_kind], vec![], vec![]).is_err());
+        }
+    }
+
+    #[test]
+    fn cave_corridor_configuration_requires_its_kind_and_is_retained_in_variants() {
+        use super::{
+            CaveCorridorDefinition, CorridorOrientation, LevelDefinition, LevelEntityDefinition,
+            LevelEntityId, LevelEntityKind, LevelEntityPositionAccess, MechanicKind, SceneryKind,
+            TilePosition,
+        };
+        let entity = LevelEntityDefinition::new(
+            LevelEntityId::parse("mechanic.cave_corridor.at_182_43").unwrap(),
+            LevelEntityKind::Mechanic(MechanicKind::CaveCorridor),
+            TilePosition { x: 182, y: 43 },
+            None,
+            LevelEntityPositionAccess::ReadOnly,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+        assert!(LevelDefinition::new(vec![entity.clone()], vec![], vec![]).is_err());
+        let configured =
+            entity.with_cave_corridor(CaveCorridorDefinition::new(CorridorOrientation::AlongX, 2));
+        let base = LevelDefinition::new(vec![configured.clone()], vec![], vec![]).unwrap();
+        let encoded = serde_json::to_value(&base).unwrap();
+        let decoded: LevelDefinition = serde_json::from_value(encoded).unwrap();
+        assert_eq!(decoded, base);
+        assert!(decoded.verify_session_reset_variant_of(&base).is_ok());
+        let mut changed = configured.clone();
+        changed.cave_corridor = Some(CaveCorridorDefinition::new(CorridorOrientation::AlongY, 2));
+        let changed = LevelDefinition::new(vec![changed], vec![], vec![]).unwrap();
+        assert!(changed.verify_session_reset_variant_of(&base).is_err());
+        let mut wrong_kind = configured;
+        wrong_kind.kind = LevelEntityKind::Scenery(SceneryKind::Tree);
+        assert!(LevelDefinition::new(vec![wrong_kind], vec![], vec![]).is_err());
+    }
 
     #[test]
     fn rival_wizard_objective_uses_a_closed_semantic_target_identity() {

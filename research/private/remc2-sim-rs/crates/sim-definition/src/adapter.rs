@@ -9,11 +9,12 @@ use crate::{
     ArtifactKind, ArtifactNode, DefinitionError, DefinitionErrorCode, GameDefinition, GamePackage,
     PackageProvenance, RequiredCapability, SemanticId, SemanticValue,
     level_definition::{
-        AbsenceCountdownDefinition, ActivationGroupId, CreatureHealthDefinition, CreatureKind,
-        ExperienceScrollDefinition, HouseConstructionDefinition, LevelDefinition,
-        LevelEntityDefinition, LevelEntityId, LevelEntityKind, LevelEntityParameterAccess,
-        LevelEntityPositionAccess, LevelObjectiveConditionAccess, LevelObjectiveDefinition,
-        LevelObjectiveId, ObjectiveCondition, RivalWizardId, SwitchOverlapDefinition, TilePosition,
+        AbsenceCountdownDefinition, ActivationGroupId, CaveCorridorDefinition, CorridorOrientation,
+        CreatureHealthDefinition, CreatureKind, ExperienceScrollDefinition,
+        HouseConstructionDefinition, LevelDefinition, LevelEntityDefinition, LevelEntityId,
+        LevelEntityKind, LevelEntityParameterAccess, LevelEntityPositionAccess,
+        LevelObjectiveConditionAccess, LevelObjectiveDefinition, LevelObjectiveId, MechanicKind,
+        ObjectiveCondition, RivalWizardId, SwitchOverlapDefinition, TilePosition,
     },
     runtime_flow::RuntimeFlowDefinition,
 };
@@ -153,6 +154,37 @@ pub const fn absence_countdown_definition(
 }
 
 #[must_use]
+pub const fn cave_corridor_definition(
+    orientation: CorridorOrientation,
+    extent: i16,
+) -> CaveCorridorDefinition {
+    CaveCorridorDefinition::new(orientation, extent)
+}
+
+#[must_use]
+pub const fn cave_corridor_entity_definition(
+    id: LevelEntityId,
+    position: TilePosition,
+    activation_group: Option<ActivationGroupId>,
+    position_access: LevelEntityPositionAccess,
+    config: CaveCorridorDefinition,
+) -> LevelEntityDefinition {
+    LevelEntityDefinition::new(
+        id,
+        LevelEntityKind::Mechanic(MechanicKind::CaveCorridor),
+        position,
+        activation_group,
+        position_access,
+        None,
+        None,
+        None,
+        None,
+        None,
+    )
+    .with_cave_corridor(config)
+}
+
+#[must_use]
 pub const fn absence_countdown_entity_definition(
     id: LevelEntityId,
     kind: LevelEntityKind,
@@ -172,6 +204,39 @@ pub const fn absence_countdown_entity_definition(
         None,
         None,
         None,
+    )
+}
+
+/// Bind an activation-family rule and its live overlap/countdown properties.
+/// Level validation rejects missing or incompatible configuration by kind.
+#[must_use]
+pub const fn activation_switch_entity_definition(
+    id: LevelEntityId,
+    kind: crate::level_definition::SwitchKind,
+    position: TilePosition,
+    activation_group: Option<ActivationGroupId>,
+    position_access: LevelEntityPositionAccess,
+    overlap_extent_tiles: Option<u16>,
+    countdown: Option<AbsenceCountdownDefinition>,
+) -> LevelEntityDefinition {
+    let overlap = match overlap_extent_tiles {
+        Some(extent) => Some(SwitchOverlapDefinition::new(
+            extent,
+            LevelEntityParameterAccess::SessionReset,
+        )),
+        None => None,
+    };
+    LevelEntityDefinition::new(
+        id,
+        LevelEntityKind::Switch(kind),
+        position,
+        activation_group,
+        position_access,
+        countdown,
+        None,
+        None,
+        None,
+        overlap,
     )
 }
 
