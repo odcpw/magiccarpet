@@ -23,7 +23,7 @@ class PlayerLauncherTests(unittest.TestCase):
         self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name) / "unity project"
         self.root.mkdir()
-        for script in ("run-player.sh", "build-player.sh"):
+        for script in ("run-player.sh", "build-player.sh", "run-campaign.sh"):
             shutil.copy2(SOURCE / script, self.root / script)
         for directory in ("Assets/Scenes", "Packages", "ProjectSettings"):
             (self.root / directory).mkdir(parents=True)
@@ -140,6 +140,118 @@ class PlayerLauncherTests(unittest.TestCase):
                 self.api["command"](["sh", "-c", "echo concrete failure >&2; exit 17"], self.root, log)
         self.assertIn("concrete failure", log.read_text())
         self.assertEqual(before, self.api["payload"](self.binary.parent))
+
+    def campaign_resources(self):
+        generated = self.root.parent / "generated"
+        for name in ("mc-cf15-level1-package-v3-current", "level2-day-block32-campaign-v2",
+                     "level3-day-block32-campaign-recipe-v2"):
+            package = generated / name
+            package.mkdir(parents=True, exist_ok=True)
+            # Only argument routing is under test; Rust owns content validation.
+            (package / "manifest.json").write_text("{}")
+        for name in ("level1-unity-asset-cache-plan29-final",
+                     "level2-day-spell-owner-cache-v3/components/material",
+                     "level3-day-spell-owner-cache-v3/components/material"):
+            (generated / name).mkdir(parents=True, exist_ok=True)
+        return generated
+
+    def campaign(self, *arguments, environment=None):
+        env = {**os.environ, "MC_WINDOW_BACKEND": "default"}
+        for name in ("MC_CAMPAIGN_REPLAY", "MC_CAMPAIGN_SAVE"):
+            env.pop(name, None)
+        env.update(environment or {})
+        return subprocess.run(["sh", str(self.root / "run-campaign.sh"), *arguments],
+                              env=env, text=True, capture_output=True, check=False, timeout=10)
+
+    def test_campaign_defaults_and_new_game_do_not_require_canned_replays(self):
+        generated = self.campaign_resources()
+        for options, menu in (([], True), (["--new-game"], False)):
+            with self.subTest(options=options):
+                result = self.campaign(*options)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                arguments = json.loads(result.stdout.splitlines()[-1])
+                self.assertEqual(arguments.count("-mc-runtime-package"), 3)
+                self.assertEqual("-mc-runtime-menu" in arguments, menu)
+                self.assertNotIn("-mc-runtime-replay-load", arguments)
+                self.assertEqual(arguments[arguments.index("-mc-runtime-replay-save") + 1],
+                                 str(generated / "campaign-save.json"))
+        self.assertFalse(list(generated.glob("opened-*.json")))
+
+    def test_campaign_complete_override_preserves_whitespace_and_unordered_resources(self):
+        generated = self.campaign_resources()
+        loading = generated / "loading cache with spaces"
+        loading.mkdir()
+        media = generated / "original intro media"
+        media.mkdir()
+        options = ["--new-game", "--loading-cache", str(loading), "--media-cache", str(media)]
+        packages = []
+        for index in (4, 2, 1, 3):
+            package = generated / f"explicit mission {index}"
+            package.mkdir()
+            (package / "manifest.json").write_text("{}")
+            owner, presentation = package / "owner cache", package / "presentation cache"
+            owner.mkdir()
+            presentation.mkdir()
+            packages.append(str(package))
+            options.extend(("--package", str(package), "--owner-cache", str(owner),
+                            "--presentation-cache", str(presentation)))
+        save = generated / "fresh player save.json"
+        result = self.campaign(*options, "--save", str(save), "-screen-width", "1280")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        arguments = json.loads(result.stdout.splitlines()[-1])
+        actual = [arguments[index + 1] for index, value in enumerate(arguments)
+                  if value == "-mc-runtime-package"]
+        self.assertEqual(actual, packages)
+        self.assertEqual(arguments.count("-mc-runtime-owner-cache"), 4)
+        self.assertEqual(arguments.count("-mc-runtime-presentation-cache"), 4)
+        self.assertNotIn(str(generated / "mc-cf15-level1-package-v3-current"), arguments)
+        self.assertNotIn("-mc-runtime-menu", arguments)
+        self.assertEqual(arguments[arguments.index("-mc-runtime-replay-save") + 1], str(save))
+        self.assertEqual(arguments[arguments.index("-mc-runtime-media-cache") + 1], str(media))
+        self.assertEqual(arguments[-2:], ["-screen-width", "1280"])
+
+    def test_campaign_current_save_and_native_arguments_use_the_same_route(self):
+        generated = self.campaign_resources()
+        save = generated / "current player save.json"
+        save.write_text("routing fixture, not a runtime save")
+        for option in ("--load-save", "-mc-runtime-replay-load"):
+            result = self.campaign(option, str(save), "-mc-runtime-replay-save", str(save))
+            self.assertEqual(result.returncode, 0, result.stderr)
+            arguments = json.loads(result.stdout.splitlines()[-1])
+            self.assertNotIn("-mc-runtime-menu", arguments)
+            self.assertEqual(arguments[arguments.index("-mc-runtime-replay-load") + 1], str(save))
+        result = self.campaign("--new-game", environment={"MC_CAMPAIGN_REPLAY": "/missing"})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("-mc-runtime-replay-load", json.loads(result.stdout.splitlines()[-1]))
+
+    def test_campaign_rejects_missing_conflicting_and_duplicate_inputs_before_player(self):
+        generated = self.campaign_resources()
+        package = str(generated / "mc-cf15-level1-package-v3-current")
+        cache = str(generated / "level1-unity-asset-cache-plan29-final")
+        cases = [
+            (["--package"], "requires a path"),
+            (["--package", ""], "nonblank path"),
+            (["--package", "/missing/owner/package"], "Missing campaign package"),
+            (["--package", package], "requires --loading-cache"),
+            (["--owner-cache", cache], "must follow a --package"),
+            (["--package", package, "--owner-cache", "/missing/cache"], "Missing owner cache"),
+            (["--package", package, "--owner-cache", cache, "--owner-cache", cache],
+             "Duplicate owner cache"),
+            (["--package", package, "--package", package + "/."], "Duplicate campaign package"),
+            (["--load-save", "/missing/save.json"], "Missing runtime save"),
+            (["--new-game", "--load-save", "/missing/save.json"], "Choose only one"),
+            (["--menu", "--new-game"], "Choose only one"),
+            (["-mc-runtime-menu", "-mc-runtime-replay-load", "/missing/save.json"], "Choose only one"),
+            (["--save", str(generated / "missing parent/save.json")], "Invalid save destination"),
+            (["--level", "2"], "--new-game"),
+            (["--packge", package], "Unknown campaign option"),
+        ]
+        for options, message in cases:
+            with self.subTest(options=options):
+                result = self.campaign(*options)
+                self.assertEqual(result.returncode, 64, result.stderr)
+                self.assertIn(message, result.stderr)
+                self.assertNotIn("Native plugin SHA256", result.stdout)
 
 
 if __name__ == "__main__":

@@ -1,62 +1,198 @@
 #!/bin/sh
 set -eu
-
 script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
-generated=$(CDPATH= cd -- "$script_dir/../generated" && pwd -P)
-entry_level=
-entry_replay=${MC_CAMPAIGN_REPLAY:-}
-case "${1:-}" in
-  --help)
-    echo "Usage: $0 [--level 1|2|3] [Unity player arguments]"
-    echo "Default: campaign menu. --level: direct owner-level entry for play."
-    exit 0
-    ;;
-  --level)
-    case "${2:-}" in
-      1|2|3) entry_level=$2; shift 2 ;;
-      *) echo "--level requires 1, 2 or 3" >&2; exit 64 ;;
-    esac
-    if [ -n "$entry_replay" ]; then
-      echo "Use either --level or MC_CAMPAIGN_REPLAY" >&2
-      exit 64
-    fi
-    if [ "$entry_level" != 1 ]; then
-      # Rust-generated entry saves retain one neutral opening turn. Level 3
-      # also carries the four earlier spells for independent owner-local play.
-      if [ "$entry_level" = 3 ]; then
-        entry_replay="$generated/opened-l3-block32-castle-boot-c330992-20261005.json"
-      else
-        entry_replay="$generated/opened-l2-block32-castle-boot-c330992-20261005.json"
-      fi
-      if [ ! -f "$entry_replay" ]; then
-        echo "Missing owner-level entry replay: $entry_replay" >&2
-        exit 1
-      fi
-    fi
-    ;;
-esac
+# Keep resources as argument arrays, including owner paths containing spaces.
+exec python3 - "$script_dir" "$@" <<'PY'
+import os
+from pathlib import Path
+import sys
+import tempfile
 
-if [ -n "$entry_replay" ]; then
-  set -- -mc-runtime-replay-load "$entry_replay" "$@"
-elif [ -z "$entry_level" ]; then
-  set -- -mc-runtime-menu "$@"
-fi
+PROJECT = Path(sys.argv[1])
+GENERATED = PROJECT.parent / 'generated'
+HELP = """Usage: run-campaign.sh [campaign options] [Unity player arguments]
 
-run_dir=$(mktemp -d "$generated/campaign-play.XXXXXX")
-echo "Campaign log: $run_dir/player.log"
-exec sh "$script_dir/run-player.sh" \
-  -mc-game-runtime \
-  -mc-runtime-loading-cache "$generated/level1-unity-asset-cache-plan29-final" \
-  -mc-runtime-replay-save "${MC_CAMPAIGN_SAVE:-$generated/campaign-save.json}" \
-  -mc-runtime-package "$generated/mc-cf15-level1-package-v3-current" \
-  -mc-runtime-owner-cache "$generated/level1-unity-asset-cache-plan29-final" \
-  -mc-runtime-presentation-cache "$generated/level1-unity-asset-cache-plan29-final" \
-  -mc-runtime-package "$generated/level2-day-block32-campaign-v2" \
-  -mc-runtime-owner-cache "$generated/level2-day-spell-owner-cache-v3/components/material" \
-  -mc-runtime-presentation-cache "$generated/level2-day-spell-owner-cache-v3" \
-  -mc-runtime-package "$generated/level3-day-block32-campaign-recipe-v2" \
-  -mc-runtime-owner-cache "$generated/level3-day-spell-owner-cache-v3/components/material" \
-  -mc-runtime-presentation-cache "$generated/level3-day-spell-owner-cache-v3" \
-  -screen-fullscreen "${MC_FULLSCREEN:-0}" \
-  -screen-width "${MC_WIDTH:-1600}" -screen-height "${MC_HEIGHT:-900}" \
-  -logFile "$run_dir/player.log" "$@"
+  --menu                  Open the campaign menu (default)
+  --new-game              Start at the installed campaign's resolver-owned entry
+  --load-save PATH        Resume a current runtime save (also --replay PATH)
+  --save PATH             Save destination for F5 and the in-game Save action
+  --package DIR           Install a package; repeat for the complete campaign set
+  --owner-cache DIR       Native owner cache for the preceding package
+  --presentation-cache DIR  Presentation cache for the preceding package
+  --loading-cache DIR     Frontend/loading cache (required with explicit packages)
+  --media-cache DIR       Optional original intro/frontend media cache override
+
+An explicit package set replaces all defaults; Rust validates its semantic flow
+and content identities. There is no fixed package count or canned entry replay.
+The existing -mc-runtime-* resource/save options are also accepted. Paths are
+relative to the current directory. Use -- before unparsed Unity arguments.
+MC_CAMPAIGN_SAVE and MC_CAMPAIGN_REPLAY set save/load defaults; explicit options
+take precedence. MC_WIDTH, MC_HEIGHT and MC_FULLSCREEN set the window defaults.
+"""
+
+
+class LaunchError(Exception):
+    pass
+
+
+def path_value(value, option):
+    if not value.strip():
+        raise LaunchError(f'{option} requires a nonblank path')
+    return Path(value).absolute()
+
+
+def directory(path, purpose):
+    if not path.is_dir():
+        raise LaunchError(f'Missing {purpose} directory: {path}. '
+                          'Supply the installed owner resources with --package, '
+                          '--owner-cache and --presentation-cache.')
+
+
+def main(arguments):
+    resources, player = [], []
+    route, replay, save, loading, media = None, None, None, None, None
+    aliases = {
+        '--package': 'package', '-mc-runtime-package': 'package',
+        '--owner-cache': 'owner', '-mc-runtime-owner-cache': 'owner',
+        '--presentation-cache': 'presentation',
+        '-mc-runtime-presentation-cache': 'presentation',
+        '--loading-cache': 'loading', '-mc-runtime-loading-cache': 'loading',
+        '--media-cache': 'media', '-mc-runtime-media-cache': 'media',
+        '--save': 'save', '-mc-runtime-replay-save': 'save',
+        '--load-save': 'replay', '--replay': 'replay',
+        '-mc-runtime-replay-load': 'replay',
+    }
+    index = 0
+    while index < len(arguments):
+        option = arguments[index]
+        index += 1
+        if option == '--':
+            player.extend(arguments[index:])
+            break
+        if option in ('--help', '-h'):
+            print(HELP)
+            return
+        if option == '--level':
+            raise LaunchError('--level replay shortcuts have been removed. Use '
+                              '--new-game for the campaign entry or --load-save PATH '
+                              'to resume earned progress.')
+        if option in ('--menu', '-mc-runtime-menu', '--new-game'):
+            selected = 'new' if option == '--new-game' else 'menu'
+            if route is not None:
+                raise LaunchError('Choose only one of --menu, --new-game and --load-save')
+            route = selected
+            continue
+        if option == '-mc-game-runtime':
+            continue
+        if option in aliases:
+            if index >= len(arguments) or arguments[index].startswith('-'):
+                raise LaunchError(f'{option} requires a path')
+            value = path_value(arguments[index], option)
+            index += 1
+            kind = aliases[option]
+            if kind == 'package':
+                resources.append({'package': value})
+            elif kind in ('owner', 'presentation'):
+                if not resources:
+                    raise LaunchError(f'{option} must follow a --package')
+                if kind in resources[-1]:
+                    raise LaunchError(f'Duplicate {kind} cache for {resources[-1]["package"]}')
+                resources[-1][kind] = value
+            elif kind == 'replay':
+                if route is not None:
+                    raise LaunchError('Choose only one of --menu, --new-game and --load-save')
+                route, replay = 'replay', value
+            elif kind == 'save':
+                if save is not None:
+                    raise LaunchError('Specify the save destination only once')
+                save = value
+            elif kind == 'loading':
+                if loading is not None:
+                    raise LaunchError('Specify the loading cache only once')
+                loading = value
+            else:
+                if media is not None:
+                    raise LaunchError('Specify the media cache only once')
+                media = value
+            continue
+        if option.startswith('--') or option.startswith('-mc-runtime-'):
+            raise LaunchError(f'Unknown campaign option: {option}. See --help.')
+        player.append(option)
+
+    if route is None:
+        if os.environ.get('MC_CAMPAIGN_REPLAY'):
+            replay = path_value(os.environ['MC_CAMPAIGN_REPLAY'], 'MC_CAMPAIGN_REPLAY')
+            route = 'replay'
+        else:
+            route = 'menu'
+    if save is None:
+        save = path_value(os.environ.get('MC_CAMPAIGN_SAVE') or
+                          str(GENERATED / 'campaign-save.json'), '--save')
+    explicit_resources = bool(resources)
+    if not resources:
+        # Local installed owner content. A supplied set replaces this entire list.
+        resources = [
+            {'package': GENERATED / 'mc-cf15-level1-package-v3-current',
+             'owner': GENERATED / 'level1-unity-asset-cache-plan29-final',
+             'presentation': GENERATED / 'level1-unity-asset-cache-plan29-final'},
+            {'package': GENERATED / 'level2-day-block32-campaign-v2',
+             'owner': GENERATED / 'level2-day-spell-owner-cache-v3/components/material',
+             'presentation': GENERATED / 'level2-day-spell-owner-cache-v3'},
+            {'package': GENERATED / 'level3-day-block32-campaign-recipe-v2',
+             'owner': GENERATED / 'level3-day-spell-owner-cache-v3/components/material',
+             'presentation': GENERATED / 'level3-day-spell-owner-cache-v3'},
+        ]
+    seen = set()
+    native = ['-mc-game-runtime']
+    for resource in resources:
+        package = resource['package']
+        directory(package, 'campaign package')
+        if not (package / 'manifest.json').is_file():
+            raise LaunchError(f'Missing campaign package manifest: {package / "manifest.json"}')
+        canonical = package.resolve()
+        if canonical in seen:
+            raise LaunchError(f'Duplicate campaign package: {package}')
+        seen.add(canonical)
+        native.extend(('-mc-runtime-package', str(package)))
+        for kind in ('owner', 'presentation'):
+            if kind in resource:
+                directory(resource[kind], f'{kind} cache')
+                native.extend((f'-mc-runtime-{kind}-cache', str(resource[kind])))
+    if loading is None:
+        if explicit_resources:
+            raise LaunchError('An explicit package set requires --loading-cache DIR '
+                              'for the campaign frontend and level transitions')
+        loading = GENERATED / 'level1-unity-asset-cache-plan29-final'
+    if loading is not None:
+        directory(loading, 'loading cache')
+        native.extend(('-mc-runtime-loading-cache', str(loading)))
+    if media is not None:
+        directory(media, 'media cache')
+        native.extend(('-mc-runtime-media-cache', str(media)))
+    if replay is not None:
+        if not replay.is_file():
+            raise LaunchError(f'Missing runtime save: {replay}. Use --new-game to start a campaign.')
+        native.extend(('-mc-runtime-replay-load', str(replay)))
+    elif route == 'menu':
+        native.append('-mc-runtime-menu')
+    GENERATED.mkdir(parents=True, exist_ok=True)
+    if not save.parent.is_dir() or save.is_dir():
+        raise LaunchError(f'Invalid save destination: {save}. Its parent directory must exist.')
+    native.extend(('-mc-runtime-replay-save', str(save)))
+    run_dir = Path(tempfile.mkdtemp(prefix='campaign-play.', dir=GENERATED))
+    print(f'Campaign log: {run_dir / "player.log"}', flush=True)
+    print(f'Campaign save: {save}', flush=True)
+    native.extend(('-screen-fullscreen', os.environ.get('MC_FULLSCREEN', '0'),
+                   '-screen-width', os.environ.get('MC_WIDTH', '1600'),
+                   '-screen-height', os.environ.get('MC_HEIGHT', '900'),
+                   '-logFile', str(run_dir / 'player.log')))
+    # No shell parsing: each caller-supplied path remains exactly one argument.
+    os.execv('/bin/sh', ['sh', str(PROJECT / 'run-player.sh'), *native, *player])
+
+
+try:
+    main(sys.argv[2:])
+except (LaunchError, OSError) as error:
+    print(f'Campaign launch failed: {error}', file=sys.stderr)
+    sys.exit(64 if isinstance(error, LaunchError) else 1)
+PY
