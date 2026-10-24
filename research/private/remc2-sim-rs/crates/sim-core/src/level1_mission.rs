@@ -6166,7 +6166,7 @@ impl Level1MissionTemplate {
             player_archer_target_ticks: 0,
             player_killer_entity_index: 0,
             player_scores_by_entity: BTreeMap::new(),
-            pending_creature_kill_credits: Vec::new(),
+            player_creature_kills: BTreeMap::new(),
             pending_player_hit_reaction: None,
             last_player_hit_reaction: None,
             player_action0_prepared_for_flight: false,
@@ -6415,8 +6415,8 @@ pub struct Level1MissionState {
     player_archer_target_ticks: u16,
     player_killer_entity_index: u16,
     player_scores_by_entity: BTreeMap<u16, [u16; 8]>,
-    /// PreKill effects awaiting the runtime-owned player counter sink.
-    pending_creature_kill_credits: Vec<u16>,
+    /// Source Type_str_164::creaturesKilledPercent, owned by this NativeSession.
+    player_creature_kills: BTreeMap<u16, i32>,
     /// Future-driving reaction waiting to be installed into the current
     /// action-0 flight invocation.
     pending_player_hit_reaction: Option<PlayerHitReaction>,
@@ -8947,9 +8947,13 @@ impl Level1MissionState {
             .map_or(0, |scores| scores[usize::from(victim_color.min(7))])
     }
 
-    /// Drain once after a source callback into the canonical player counters.
-    pub fn take_creature_kill_credits(&mut self) -> Vec<u16> {
-        std::mem::take(&mut self.pending_creature_kill_credits)
+    /// Source counter awarded once by the actual PreKill transition.
+    #[must_use]
+    pub fn player_creature_kills(&self, player_entity_index: u16) -> i32 {
+        self.player_creature_kills
+            .get(&player_entity_index)
+            .copied()
+            .unwrap_or(0)
     }
 
     pub fn set_player_menu_state(&mut self, menu_state: u8) {
@@ -9150,11 +9154,14 @@ impl Level1MissionState {
     pub fn source_arena_hash_v1(&self) -> u64 {
         let mut hash = Level1Fnv1a64::new();
         hash.bytes(b"mc2-level1-source-arena-v1\0");
-        if !self.pending_creature_kill_credits.is_empty() {
-            hash.bytes(b"pending-creature-kill-credits\0");
-            hash.u32(self.pending_creature_kill_credits.len() as u32);
-            for killer in &self.pending_creature_kill_credits {
+        if !self.player_creature_kills.is_empty() {
+            hash.bytes(b"player-creature-kills\0");
+            hash.u32(
+                u32::try_from(self.player_creature_kills.len()).expect("bounded player count"),
+            );
+            for (killer, count) in &self.player_creature_kills {
                 hash.u16(*killer);
+                hash.u32(count.cast_unsigned());
             }
         }
         hash.u32(u32::try_from(self.source_slots.len()).expect("source arena size fits u32"));
@@ -15091,7 +15098,8 @@ impl Level1MissionState {
                                 )
                         })
                     {
-                        self.pending_creature_kill_credits.push(killer);
+                        let count = self.player_creature_kills.entry(killer).or_default();
+                        *count = count.wrapping_add(1);
                     }
                 }
             } else if actor.action == final_kill_action && actor.phase & 7 == 0 {
@@ -15448,7 +15456,8 @@ impl Level1MissionState {
                         )
                 })
             {
-                self.pending_creature_kill_credits.push(killer);
+                let count = self.player_creature_kills.entry(killer).or_default();
+                *count = count.wrapping_add(1);
             }
         }
         if let Some((damage, attacker)) = player_contact_damage {
@@ -30227,6 +30236,8 @@ mod tests {
     fn fireball_uses_source_constructor_constants_and_kills_after_five_hits() {
         let template = Level1MissionTemplate::decode(&authored_bytes(), &FlatWorld).unwrap();
         let mut mission = template.session(10_000, 1_000);
+        install_test_player_source(&mut mission, 152);
+        mission.source_ids[152] = 152;
         mission.activate_group(3);
         let target = mission
             .actors()
@@ -30278,6 +30289,7 @@ mod tests {
         assert_eq!(mission.fireball_tier, 0);
         assert!(target.active);
         assert_eq!(target.action, 36);
+        assert_eq!(mission.player_creature_kills(player.entity_index), 0);
 
         for _ in 0..9 {
             mission.step(&FlatWorld, &player);
@@ -30289,6 +30301,13 @@ mod tests {
             .unwrap();
         assert!(!target.active);
         assert_eq!(target.action, 37);
+        assert_eq!(mission.player_creature_kills(player.entity_index), 1);
+        mission.step(&FlatWorld, &player);
+        assert_eq!(
+            mission.player_creature_kills(player.entity_index),
+            1,
+            "only PreKill awards credit, never hide/reclaim or a repeated dead visit"
+        );
     }
 
     #[test]
