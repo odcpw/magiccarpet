@@ -88,6 +88,7 @@ pub struct CampaignDefinition {
     authored_switches: BTreeMap<u16, SwitchKind>,
     authored_switch_entities: BTreeMap<u16, LevelEntityId>,
     initial_source_switches: BTreeMap<u16, SwitchKind>,
+    initial_source_switch_entities: BTreeMap<u16, LevelEntityId>,
     authored_mechanics: BTreeMap<u16, MechanicKind>,
     initial_source_mechanics: BTreeMap<u16, MechanicKind>,
     authored_mechanic_entities: BTreeMap<u16, LevelEntityId>,
@@ -120,6 +121,7 @@ pub(crate) struct SemanticLevelBindings {
     pub(crate) authored_switches: BTreeMap<u16, SwitchKind>,
     pub(crate) authored_switch_entities: BTreeMap<u16, LevelEntityId>,
     pub(crate) initial_source_switches: BTreeMap<u16, SwitchKind>,
+    pub(crate) initial_source_switch_entities: BTreeMap<u16, LevelEntityId>,
     pub(crate) authored_mechanics: BTreeMap<u16, MechanicKind>,
     pub(crate) initial_source_mechanics: BTreeMap<u16, MechanicKind>,
     pub(crate) authored_mechanic_entities: BTreeMap<u16, LevelEntityId>,
@@ -390,6 +392,7 @@ impl CampaignDefinition {
             authored_switches: BTreeMap::new(),
             authored_switch_entities: BTreeMap::new(),
             initial_source_switches: BTreeMap::new(),
+            initial_source_switch_entities: BTreeMap::new(),
             authored_mechanics: BTreeMap::new(),
             initial_source_mechanics: BTreeMap::new(),
             authored_mechanic_entities: BTreeMap::new(),
@@ -419,6 +422,7 @@ impl CampaignDefinition {
         self.authored_switches = bindings.authored_switches;
         self.authored_switch_entities = bindings.authored_switch_entities;
         self.initial_source_switches = bindings.initial_source_switches;
+        self.initial_source_switch_entities = bindings.initial_source_switch_entities;
         self.authored_mechanics = bindings.authored_mechanics;
         self.initial_source_mechanics = bindings.initial_source_mechanics;
         self.authored_mechanic_entities = bindings.authored_mechanic_entities;
@@ -561,6 +565,23 @@ impl CampaignDefinition {
 
     pub(crate) fn switch_for_initial_source_slot(&self, source_slot: u16) -> Option<SwitchKind> {
         self.initial_source_switches.get(&source_slot).copied()
+    }
+
+    pub(crate) fn switch_countdown_arming_ticks(
+        &self,
+        authored_record: Option<u16>,
+        source_slot: u16,
+    ) -> Option<u32> {
+        let entity_id = if let Some(record) = authored_record {
+            self.authored_switch_entities.get(&record)?
+        } else {
+            self.initial_source_switch_entities.get(&source_slot)?
+        };
+        self.semantic_level
+            .as_ref()?
+            .entity(entity_id)?
+            .absence_countdown()
+            .map(|config| config.arming_ticks())
     }
 
     pub(crate) fn mechanic_for_authored_record(

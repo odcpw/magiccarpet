@@ -87,6 +87,7 @@ pub enum ExistingHandler {
     CountdownSwitch = 28,
     TerrainStripController = 29,
     DragonFamily = 30,
+    CaveFeatures = 31,
 }
 
 impl ExistingHandler {
@@ -126,6 +127,7 @@ impl ExistingHandler {
             Self::DragonFamily => {
                 "accepted Dragon constructor, ordinary roam, and player-target fireball"
             }
+            Self::CaveFeatures => "authored cave geometry and ground-feature descendants",
         }
     }
 
@@ -162,6 +164,7 @@ impl ExistingHandler {
             Self::CountdownSwitch => "absence-countdown-switch",
             Self::TerrainStripController => "terrain-strip-controller",
             Self::DragonFamily => "dragon-family",
+            Self::CaveFeatures => "cave-features",
         }
     }
 }
@@ -320,10 +323,10 @@ compiled_registry! {
         (CastleRoot, 3, [4, 5, 6]);
         (ManaCarrier, 3, [9]);
         (DragonFamily, 5, [1, 2, 3, 4, 5]);
-        (GoatFamily, 5, [9, 10, 11, 12, 13, 14, 15]);
+        (GoatFamily, 5, [8, 9, 10, 11, 12, 13, 14, 15]);
         (BeeFamily, 5, [16, 17, 18, 19, 20, 21, 22, 23]);
         (MultipartFamily, 5, [25, 26, 27, 28, 29, 30, 31]);
-        (ArcherFamily, 5, [33, 34, 35, 36, 37, 38, 39]);
+        (ArcherFamily, 5, [32, 33, 34, 35, 36, 37, 39]);
         (Model9Family, 5, [72, 73, 74, 76, 77]);
         (BuilderFamily, 5, [96, 97, 98, 99, 100, 101, 102, 103]);
         (VillagerFamily, 5, [104]);
@@ -336,18 +339,19 @@ compiled_registry! {
         (ProjectileFamily, 9, [0, 1, 10, 13]);
         (Model6ProjectileChild, 9, [15]);
         (ProjectileFamily, 9, [18]);
-        (Class10Effects, 10, [0, 1, 2, 5, 6, 12, 13, 14, 17, 19, 22, 41, 42, 43, 44, 45, 48, 51, 52, 53, 58, 59, 64, 65, 76, 77, 83, 86, 98]);
-        (SwitchProducers, 11, [0, 1, 4, 12]);
+        (Class10Effects, 10, [0, 1, 2, 5, 6, 12, 13, 14, 17, 19, 22, 41, 42, 43, 44, 45, 48, 51, 52, 53, 58, 59, 64, 65, 76, 77, 80, 83, 86, 98]);
+        (SwitchProducers, 11, [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 31]);
         (ObjectiveSwitch, 11, [32]);
-        (Class14Events, 14, [8, 10]);
-        (SpellHolderAndPickup, 15, [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 18, 19, 20, 33, 34, 35, 36, 37, 38, 78]);
+        (Class14Events, 14, [8, 9, 10]);
+        (SpellHolderAndPickup, 15, [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 15, 16, 17, 18, 19, 20, 24, 25, 26, 30, 31, 32, 33, 34, 35, 36, 37, 38, 78]);
     }
     update_only_actions {
         (BallisticScenery, 2, [21]);
         (Model9Family, 5, [79]);
         (TerrainStripController, 10, [68, 69]);
-        (CountdownSwitch, 11, [16, 17]);
-        (TerrainStripController, 14, [6]);
+        (CaveFeatures, 10, [87, 88, 89, 90, 91, 92, 93, 94]);
+        (CountdownSwitch, 11, [13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44]);
+        (TerrainStripController, 14, [6, 7]);
         (SpellHolderAndPickup, 15, [12, 13]);
     }
     constructors {
@@ -376,12 +380,13 @@ compiled_registry! {
         (ProjectileFamily, 9, [17]);
         (Class10Effects, 10, [0, 1, 2, 5, 6, 12, 13, 14, 17, 19, 22, 39, 40, 41, 42, 43, 45, 53, 54, 59, 60, 70, 76, 79, 91]);
         (TerrainStripController, 10, [63, 64]);
-        (SwitchProducers, 11, [0, 1, 4, 12]);
-        (CountdownSwitch, 11, [16, 17]);
+        (CaveFeatures, 10, [80, 81, 82, 83, 84, 85, 86]);
+        (SwitchProducers, 11, [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 31]);
+        (CountdownSwitch, 11, [13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44]);
         (ObjectiveSwitch, 11, [32]);
-        (TerrainStripController, 14, [1]);
-        (Class14Events, 14, [3, 5]);
-        (SpellHolderAndPickup, 15, [0, 1, 2, 3, 6, 11, 12]);
+        (TerrainStripController, 14, [1, 2]);
+        (Class14Events, 14, [3, 4, 5]);
+        (SpellHolderAndPickup, 15, [0, 1, 2, 3, 5, 6, 8, 10, 11, 12]);
     }
 }
 
@@ -624,8 +629,21 @@ mod tests {
                 "level2-bee-family",
             ),
             (5, &[74, 76, 77][..], "level2-model9-family"),
+            (5, &[8][..], "goat-family"),
+            (5, &[32][..], "archer-family"),
             (5, &[121, 122, 124, 125][..], "level2-castle-auxiliary"),
-            (11, &[4][..], "level2-switch-producers"),
+            (10, &[80][..], "class10-effects"),
+            (
+                11,
+                &[2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 31][..],
+                "level2-switch-producers",
+            ),
+            (14, &[9][..], "level2-class14-events"),
+            (
+                15,
+                &[15, 16, 17, 24, 25, 26, 30, 31, 32][..],
+                "spell-holder-and-pickup-family",
+            ),
         ] {
             for action in actions {
                 for site in ["ApplyEvents", "UpdateEntities"] {
@@ -639,16 +657,20 @@ mod tests {
             "Constructor:ClassModel:5:15".to_owned(),
             "level2-castle-auxiliary",
         );
-        expected.insert(
-            "Constructor:ClassModel:11:4".to_owned(),
-            "level2-switch-producers",
-        );
         for (class, actions, handler) in [
             (2_u16, &[21_u16][..], "ballistic-scenery"),
             (5, &[79][..], "level2-model9-family"),
             (10, &[68, 69][..], "terrain-strip-controller"),
-            (11, &[16, 17][..], "absence-countdown-switch"),
-            (14, &[6][..], "terrain-strip-controller"),
+            (10, &[87, 88, 89, 90, 91, 92, 93, 94][..], "cave-features"),
+            (
+                11,
+                &[
+                    13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 33, 34,
+                    35, 36, 37, 38, 39, 40, 41, 42, 43, 44,
+                ][..],
+                "absence-countdown-switch",
+            ),
+            (14, &[6, 7][..], "terrain-strip-controller"),
             (15, &[12, 13][..], "spell-holder-and-pickup-family"),
         ] {
             for action in actions {
@@ -661,8 +683,23 @@ mod tests {
         for (class, models, handler) in [
             (2_u16, &[8_u16][..], "ballistic-scenery"),
             (10, &[63, 64][..], "terrain-strip-controller"),
-            (11, &[16, 17][..], "absence-countdown-switch"),
-            (14, &[1][..], "terrain-strip-controller"),
+            (10, &[80, 81, 82, 83, 84, 85, 86][..], "cave-features"),
+            (
+                11,
+                &[2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 31][..],
+                "level2-switch-producers",
+            ),
+            (
+                11,
+                &[
+                    13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 33, 34,
+                    35, 36, 37, 38, 39, 40, 41, 42, 43, 44,
+                ][..],
+                "absence-countdown-switch",
+            ),
+            (14, &[1, 2][..], "terrain-strip-controller"),
+            (14, &[4][..], "level2-class14-events"),
+            (15, &[5, 8, 10][..], "spell-holder-and-pickup-family"),
         ] {
             for model in models {
                 expected.insert(format!("Constructor:ClassModel:{class}:{model}"), handler);
@@ -689,16 +726,35 @@ mod tests {
         assert_eq!(registry["action_dispatch_sites"][0], "ApplyEvents");
         assert_eq!(registry["action_dispatch_sites"][1], "UpdateEntities");
         assert_eq!(registry["constructor_dispatch_site"], "Constructor");
-        assert_eq!(CAMPAIGN_BEHAVIOR_REGISTRY.entries().len(), 386);
+        assert_eq!(CAMPAIGN_BEHAVIOR_REGISTRY.entries().len(), 517);
         validate_against_source(CAMPAIGN_BEHAVIOR_REGISTRY.entries(), &source_keys)
             .expect("compiled entries retain exact pinned sites and selector shapes");
 
-        let report_keys = diff["matching_site_keys"]
+        let mut report_keys = diff["matching_site_keys"]
             .as_array()
             .expect("matching_site_keys array")
             .iter()
             .map(|item| item.as_str().expect("report key").to_owned())
             .collect::<BTreeSet<_>>();
+        // The archaeology receipt advertised Archer action 38, whose source
+        // address 0x201130 has no implemented callback. Its default descriptor
+        // cannot select the bit-8 flee branch. Keep the receipt intact while
+        // explicitly rejecting that unsupported callback at both source sites.
+        for site in [DispatchSite::ApplyEvents, DispatchSite::UpdateEntities] {
+            let key = BehaviorKey {
+                dispatch_site: site.id(),
+                selector: BehaviorSelector::ClassAction {
+                    class: 5,
+                    action: 38,
+                },
+            };
+            assert!(report_keys.remove(&source_key(&key)));
+            assert!(CAMPAIGN_BEHAVIOR_REGISTRY.entry(&key).is_none());
+            assert!(matches!(
+                CAMPAIGN_BEHAVIOR_REGISTRY.validate_declared_closure(&BTreeSet::from([key])),
+                Err(RegistryValidationError::UnknownImplementedKey(_))
+            ));
+        }
         let compiled_keys = CAMPAIGN_BEHAVIOR_REGISTRY
             .entries()
             .iter()
@@ -706,7 +762,7 @@ mod tests {
             .collect::<BTreeSet<_>>();
         assert!(
             report_keys.is_subset(&compiled_keys),
-            "the sealed CF03 archaeology receipt remains a compiled subset"
+            "all supported CF03 receipt entries remain compiled"
         );
         let supplemental_keys = compiled_keys
             .difference(&report_keys)
@@ -762,8 +818,14 @@ mod tests {
             );
         }
         assert_eq!(expected_handlers.len(), 315);
+        for site in ["ApplyEvents", "UpdateEntities"] {
+            assert_eq!(
+                expected_handlers.remove(&format!("{site}:ClassAction:5:38")),
+                Some("archer-family")
+            );
+        }
         expected_handlers.extend(supplemental_handlers);
-        assert_eq!(expected_handlers.len(), 386);
+        assert_eq!(expected_handlers.len(), 517);
 
         for entry in CAMPAIGN_BEHAVIOR_REGISTRY.entries() {
             assert_eq!(

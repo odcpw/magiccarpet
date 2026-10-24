@@ -338,6 +338,15 @@ impl SourceArena {
         if let Some(source) = self.economy.authored_class5().iter().find(|source| {
             (include_retained || source.active) && source.source_entity_index == source_slot
         }) {
+            if source.model == crate::native_world::creatures::archer::ARCHER_MODEL {
+                return crate::native_world::archer_creature_runtime_identity(
+                    self,
+                    source_slot,
+                    initial_bindings,
+                    authored_bindings,
+                    include_retained,
+                );
+            }
             let &kind = authored_bindings.get(&source.authored_index)?;
             return Some(CreatureRuntimeIdentity {
                 handle: dynamic_handle,

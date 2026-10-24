@@ -504,11 +504,14 @@ mod ballistic_scenery;
 #[path = "campaign/level2.rs"]
 mod campaign;
 mod campaign_shared_families;
+mod cave_features;
 mod countdown_switch;
-mod creatures;
+pub(crate) mod creatures;
 mod level2_nyphur;
+mod support_spells;
 mod terrain_strip;
 use creatures::worm::imported as campaign_multipart;
+pub(crate) use level2_class5::archer::creature_runtime_identity as archer_creature_runtime_identity;
 pub(crate) use level2_nyphur::level2_nyphur_source_identity_parts;
 pub use level2_nyphur::{
     Level2NyphurCommonUpkeepSnapshot, Level2NyphurDispatchCall, Level2NyphurDispatchHelper,
@@ -1872,31 +1875,7 @@ fn select_level2_bee_class3_target(
     selected.map(|(target_index, _)| target_index)
 }
 
-/// Authored class-11 model-0/model-1/model-12/model-17 switch producer materialized by
-/// the source `sub_4A1E0` group scan.  The authored `stage_tag` is copied into
-/// the live entity id and is therefore the next activation group, while the
-/// source phase/cooldown words remain mutable across outer turns.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct Level2AuthoredSwitchProducerSource {
-    pub source_entity_index: u16,
-    pub entity_id: u16,
-    pub entity_rng: u16,
-    pub authored_index: u16,
-    pub source_class: u8,
-    pub model: u8,
-    pub action: u8,
-    pub stage_tag: u16,
-    pub word_10: i16,
-    /// `AddSwitchXX_50A90` initializes the source dword to zero before the
-    /// class-11 stage-tag constructor copies its group id.
-    pub dword_0x10: i32,
-    pub position: Position,
-    pub phase: u8,
-    pub cooldown: u8,
-    pub fired: bool,
-    pub drawing_enabled: bool,
-    pub active: bool,
-}
+pub use countdown_switch::Level2AuthoredSwitchProducerSource;
 
 /// Authored class-2/model-0/action-0 trees created by the group-31
 /// `sub_4A310` producer.  The constructor is the pinned `AddTree_4AC40`
@@ -2678,67 +2657,7 @@ pub struct Level2AuthoredClass5Model3Child {
     pub active: bool,
 }
 
-/// The model-4-only words owned by `AddArchers_4BA10`.  The root remains in
-/// `authored_class5`; this typed sidecar supplies the linked-peer/head words,
-/// constructor generation, and child-cursor guard without manufacturing a
-/// second root arena.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct Level2AuthoredClass5ArcherState {
-    pub source_entity_index: u16,
-    pub slot_generation: u32,
-    pub word_0x32: u16,
-    pub word_0x34: u16,
-    pub descriptor_index: u16,
-    pub byte_0x38: u8,
-    pub xtype: u8,
-    pub pending_damage: i32,
-    pub last_child_root_phase: u8,
-}
-
-/// Retained class-9/model-13 child emitted by Archer `sub_1CCE0`.  This is a
-/// real shared source-arena row: its parent, source RNG, slot generation,
-/// chain words, signed rotations, map position, cursor phase, and lifecycle
-/// are all reset/hash/reclaim inputs.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct Level2AuthoredClass5ArcherChild {
-    pub source_entity_index: u16,
-    pub entity_id: u16,
-    pub entity_rng: u16,
-    pub parent_entity_index: u16,
-    pub parent_entity_id: u16,
-    pub slot_generation: u32,
-    pub word_0x32: u16,
-    pub word_0x34: u16,
-    pub word_0x24: u16,
-    pub pending_word_0x62: u16,
-    pub word_0x26: u16,
-    pub word_0x96: u16,
-    pub dword_0x10: i32,
-    pub source_class: u8,
-    pub model: u8,
-    pub action: u8,
-    pub minimum_speed: i16,
-    pub maximum_speed: i16,
-    pub actual_speed: i16,
-    pub max_life: i16,
-    pub life: i16,
-    pub subspell_index: u16,
-    pub particle_index: u16,
-    pub control_flags: u32,
-    pub xtype: u8,
-    pub xsubtype: u8,
-    pub yaw: i16,
-    pub pitch: i16,
-    pub roll: i16,
-    pub fov: i16,
-    pub shift_rot_x: i16,
-    pub shift_rot_y: i16,
-    pub position: Position,
-    pub source_byte_3e: u8,
-    pub phase: u8,
-    pub drawing_enabled: bool,
-    pub active: bool,
-}
+pub use creatures::archer::{Level2AuthoredClass5ArcherChild, Level2AuthoredClass5ArcherState};
 
 /// A resident constructed by an ordinary Level 2 House source callback.
 /// The row is owned by the shared Level 2 arena, preserving source-slot,
@@ -3064,6 +2983,7 @@ pub struct Level2EconomyState {
     authored_class5_model3_children: Vec<Level2AuthoredClass5Model3Child>,
 
     authored_class5_archer: Vec<Level2AuthoredClass5ArcherState>,
+    archer_player_feedback: BTreeMap<u16, creatures::archer::ArcherPlayerFeedback>,
 
     authored_class5_archer_children: Vec<Level2AuthoredClass5ArcherChild>,
 
@@ -3087,6 +3007,9 @@ pub struct Level2EconomyState {
     /// Source `word_0x36DFE`, written by `sub_51570` for the latest model-3
     /// event and left unchanged by model 5.
     class14_model3_handle: u16,
+    /// Source word_0x36DFC, retained from the latest secret portal constructor.
+    class14_model4_handle: u16,
+    activation_settings: countdown_switch::ActivationSettings,
 
     beyond_sight_effects: Vec<Level2BeyondSightPulseEffect>,
 

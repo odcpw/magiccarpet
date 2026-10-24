@@ -213,6 +213,7 @@ impl Level2EconomyState {
             deferred_bee_reclaims: BTreeSet::new(),
 
             authored_switch_producers: Vec::new(),
+            archer_player_feedback: BTreeMap::new(),
 
             authored_trees: Vec::new(),
 
@@ -285,6 +286,8 @@ impl Level2EconomyState {
             castle_auxiliary_constructor_phase: counters[15],
 
             class14_model3_handle: 0,
+            class14_model4_handle: 0,
+            activation_settings: countdown_switch::ActivationSettings::default(),
 
             beyond_sight_effects: Vec::new(),
 
@@ -534,7 +537,9 @@ impl Level2EconomyState {
     /// pool or changing any live relation.
     pub(super) fn rebuild_free_arena(&mut self, reset_free_slots: &[u16]) {
         self.replacement_cursor_exclusions.clear();
-        self.reclaim_inactive_slots();
+        // sub_49F90 scans class-zero slots; it does not run sub_57F20 on
+        // switches hidden earlier in this same source pass.
+        self.reclaim_inactive_slots_with_policy(true, false);
         let occupied = self
             .live_arena_cursor_rows()
             .into_iter()
@@ -574,6 +579,16 @@ impl Level2EconomyState {
                     .map(|burst| burst.source_entity_index),
             )
             .chain(self.authored_house_record_by_source.keys().copied())
+            .chain(
+                self.authored_switch_producers
+                    .iter()
+                    .map(|source| source.source_entity_index),
+            )
+            .chain(
+                self.authored_model32
+                    .iter()
+                    .map(|source| source.source_entity_index),
+            )
             .collect::<BTreeSet<_>>();
         // The source scans current class-zero rows. `free_slots` is the
         // canonical Rust projection of that live set, including slots freed
@@ -1262,7 +1277,7 @@ impl Level2EconomyState {
         family: u8,
         position: Position,
     ) -> Option<Level2StartingSpellHolderSource> {
-        if family > 3 || self.free_slot_count() == 0 {
+        if !matches!(family, 0..=3 | 5 | 8 | 10) || self.free_slot_count() == 0 {
             return None;
         }
         let source_entity_index = self.allocate_slot()?;
@@ -1788,7 +1803,7 @@ impl Level2EconomyState {
         selected
     }
 
-    /// Allocate one authored class-11 model-0/model-1/model-12/model-16/model-17 switch producer using
+    /// Allocate an implemented authored class-11 switch producer using
     /// the shared `NewEvent_4A050` source arena.  `stage_tag` is the source
     /// entity id consumed by the next `sub_4A1E0` group scan.
     pub fn allocate_authored_switch_producer(
@@ -1800,7 +1815,9 @@ impl Level2EconomyState {
         position: Position,
         terrain: &SessionTerrain,
     ) -> Option<Level2AuthoredSwitchProducerSource> {
-        if !matches!(model, 0 | 1 | 12 | 16 | 17) || stage_tag == 0 {
+        if !countdown_switch::mc2::has_constructor(model)
+            || (model == 31 && self.activation_settings.secret_entry_suppressed)
+        {
             return None;
         }
         let source_entity_index = self.allocate_slot()?;
@@ -1820,28 +1837,15 @@ impl Level2EconomyState {
             self.release_slot(source_entity_index, None);
             return None;
         }
-        let source = Level2AuthoredSwitchProducerSource {
+        let source = countdown_switch::mc2::authored_controller(
             source_entity_index,
-            entity_id: stage_tag,
             entity_rng,
             authored_index,
-            source_class: 11,
             model,
-            action: model,
             stage_tag,
             word_10,
-            dword_0x10: 0,
             position,
-            // NewEvent_4A050 initializes byte_0x3E from the allocated source
-            // entity slot. AddSwitchXX_50A90 and sub_4A310 preserve it for
-            // class-11 producers, so the typed phase carries that runtime
-            // seed rather than an authored-row or zero-based substitute.
-            phase: source_entity_index as u8,
-            cooldown: 0,
-            fired: false,
-            drawing_enabled: true,
-            active: true,
-        };
+        );
         self.source_rng.insert(source_entity_index, entity_rng);
         self.authored_switch_producers.push(source);
         Some(source)
@@ -3093,6 +3097,7 @@ impl Level2EconomyState {
     ) -> Option<Level2AuthoredClass14Source> {
         let (action, particle, control_flags, shift_rot_x, shift_rot_y) = match model {
             3 => (8, 338, 1, 0, 0),
+            4 => (9, 339, 1, 0, 0),
             5 => (10, 280, 0, 768, 1280),
             _ => return None,
         };
@@ -3136,6 +3141,8 @@ impl Level2EconomyState {
         self.authored_class14.push(source);
         if model == 3 {
             self.class14_model3_handle = source_entity_index;
+        } else if model == 4 {
+            self.class14_model4_handle = source_entity_index;
         }
         Some(source)
     }
@@ -3145,7 +3152,16 @@ impl Level2EconomyState {
         parent_house_entity_index: u16,
         owner_entity_index: u16,
         request: HouseResidentRequest,
+        terrain: &SessionTerrain,
     ) -> Option<u16> {
+        if request.model == 4 {
+            return self.allocate_house_archer(
+                parent_house_entity_index,
+                owner_entity_index,
+                request,
+                terrain,
+            );
+        }
         let semantic_kind =
             crate::campaign::mc2_level_definition::Mc2LevelDefinition::creature_for_house_resident(
                 request.model,
@@ -4937,7 +4953,9 @@ impl Level2EconomyState {
     /// authority consumed by presentation.
     pub fn reveal_authored_class14_slot(&mut self, source_slot: u16) -> bool {
         let Some(source) = self.authored_class14.iter_mut().find(|source| {
-            source.source_entity_index == source_slot && source.active && source.model == 3
+            source.source_entity_index == source_slot
+                && source.active
+                && matches!(source.model, 3 | 4)
         }) else {
             return false;
         };
@@ -6162,14 +6180,14 @@ impl Level2EconomyState {
     }
 
     pub fn reclaim_inactive_slots(&mut self) {
-        self.reclaim_inactive_slots_with_policy(true);
+        self.reclaim_inactive_slots_with_policy(true, true);
     }
 
     /// Reclaim inactive rows at the following `UpdateEntities_57730`
     /// prologue. Callback-hidden rows remain allocated and map-linked through
     /// the remainder of their dispatch pass.
     pub(super) fn reclaim_inactive_slots_at_source_boundary(&mut self) {
-        self.reclaim_inactive_slots_with_policy(true);
+        self.reclaim_inactive_slots_with_policy(true, true);
     }
 
     /// Reclaim a phase-zero Bee hidden during the preceding source pass. This
@@ -6243,7 +6261,12 @@ impl Level2EconomyState {
         self.authored_class5_archer_children
             .retain(|child| child.drawing_enabled);
 
-        for (slot, entity_rng) in hidden_roots.into_iter().chain(hidden_children) {
+        let mut hidden_rows = hidden_roots
+            .into_iter()
+            .chain(hidden_children)
+            .collect::<Vec<_>>();
+        hidden_rows.sort_unstable_by_key(|(slot, _)| *slot);
+        for (slot, entity_rng) in hidden_rows {
             let _ = self.map_chains.sync_entity(RenderableMapSeed {
                 entity_index: slot,
                 active: false,
@@ -6317,7 +6340,11 @@ impl Level2EconomyState {
         true
     }
 
-    fn reclaim_inactive_slots_with_policy(&mut self, defer_bee_creatures: bool) {
+    fn reclaim_inactive_slots_with_policy(
+        &mut self,
+        defer_bee_creatures: bool,
+        at_source_boundary: bool,
+    ) {
         // Castle projectiles are disabled by their source callback and
         // reclaimed only by reclaim_hidden_castle_rows_at_source_boundary at
         // the following UpdateEntities prologue. Same-pass reclamation would
@@ -6495,22 +6522,24 @@ impl Level2EconomyState {
             });
             self.release_slot(slot, Some(entity_rng));
         }
-        let reclaimed_switch_producers = self
-            .authored_switch_producers
-            .iter()
-            .filter(|source| !source.active || !source.drawing_enabled)
-            .map(|source| (source.source_entity_index, source.entity_rng))
-            .collect::<Vec<_>>();
-        self.authored_switch_producers
-            .retain(|source| source.active && source.drawing_enabled);
-        for (slot, entity_rng) in reclaimed_switch_producers {
-            let _ = self.map_chains.sync_entity(RenderableMapSeed {
-                entity_index: slot,
-                active: false,
-                x: 0,
-                y: 0,
-            });
-            self.release_slot(slot, Some(entity_rng));
+        if at_source_boundary {
+            let reclaimed_switch_producers = self
+                .authored_switch_producers
+                .iter()
+                .filter(|source| !source.active || !source.drawing_enabled)
+                .map(|source| (source.source_entity_index, source.entity_rng))
+                .collect::<Vec<_>>();
+            self.authored_switch_producers
+                .retain(|source| source.active && source.drawing_enabled);
+            for (slot, entity_rng) in reclaimed_switch_producers {
+                let _ = self.map_chains.sync_entity(RenderableMapSeed {
+                    entity_index: slot,
+                    active: false,
+                    x: 0,
+                    y: 0,
+                });
+                self.release_slot(slot, Some(entity_rng));
+            }
         }
         let reclaimed_trees = self
             .authored_trees
@@ -6528,21 +6557,23 @@ impl Level2EconomyState {
             });
             self.release_slot(slot, Some(entity_rng));
         }
-        let reclaimed_model32 = self
-            .authored_model32
-            .iter()
-            .filter(|source| !source.active)
-            .map(|source| (source.source_entity_index, source.entity_rng))
-            .collect::<Vec<_>>();
-        self.authored_model32.retain(|source| source.active);
-        for (slot, entity_rng) in reclaimed_model32 {
-            let _ = self.map_chains.sync_entity(RenderableMapSeed {
-                entity_index: slot,
-                active: false,
-                x: 0,
-                y: 0,
-            });
-            self.release_slot(slot, Some(entity_rng));
+        if at_source_boundary {
+            let reclaimed_model32 = self
+                .authored_model32
+                .iter()
+                .filter(|source| !source.active)
+                .map(|source| (source.source_entity_index, source.entity_rng))
+                .collect::<Vec<_>>();
+            self.authored_model32.retain(|source| source.active);
+            for (slot, entity_rng) in reclaimed_model32 {
+                let _ = self.map_chains.sync_entity(RenderableMapSeed {
+                    entity_index: slot,
+                    active: false,
+                    x: 0,
+                    y: 0,
+                });
+                self.release_slot(slot, Some(entity_rng));
+            }
         }
         let reclaimed_model59 = self
             .authored_model59
@@ -7735,6 +7766,8 @@ impl Level2EconomyState {
         }
         hasher.update(b"authored-class14-v2");
         hasher.update(self.class14_model3_handle.to_le_bytes());
+        hasher.update(self.class14_model4_handle.to_le_bytes());
+        hasher.update([u8::from(self.activation_settings.secret_entry_suppressed)]);
         for source in &self.authored_class14 {
             hasher.update(source.source_entity_index.to_le_bytes());
             hasher.update(source.entity_rng.to_le_bytes());
@@ -7945,13 +7978,11 @@ impl Level2EconomyState {
         }
         hasher.update(b"authored-class5-archer-v1");
         for state in &self.authored_class5_archer {
-            hasher.update(state.source_entity_index.to_le_bytes());
-            hasher.update(state.slot_generation.to_le_bytes());
-            hasher.update(state.word_0x32.to_le_bytes());
-            hasher.update(state.word_0x34.to_le_bytes());
-            hasher.update(state.descriptor_index.to_le_bytes());
-            hasher.update([state.byte_0x38, state.xtype, state.last_child_root_phase]);
-            hasher.update(state.pending_damage.to_le_bytes());
+            state.hash_source_state(&mut hasher);
+        }
+        for (slot, feedback) in &self.archer_player_feedback {
+            hasher.update(slot.to_le_bytes());
+            hasher.update(feedback.target_ticks.to_le_bytes());
         }
         for child in &self.authored_class5_archer_children {
             hasher.update(child.source_entity_index.to_le_bytes());
