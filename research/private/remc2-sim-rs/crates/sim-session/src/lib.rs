@@ -59,6 +59,43 @@ pub struct PlayerVitals {
     pub max_mana: i32,
 }
 
+/// Current hand assignment; an acquired spell may also be selected without
+/// occupying either hand. This is observed authority, not a client preference.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SpellHand {
+    None,
+    Left,
+    Right,
+    Both,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SpellAvailability {
+    Ready,
+    NotAcquired,
+    InvalidHolder,
+    Active,
+    InsufficientMana,
+}
+
+/// One supported semantic action at this observation's generation and tick.
+/// Tier/cost describe the live acquired holder (zero when absent). Readiness
+/// uses the gameplay activation gate at this boundary, before the next source
+/// pass; it does not promise a future target, allocation or hit will succeed.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct SpellObservation {
+    pub id: SemanticId,
+    pub display_name: String,
+    pub acquired: bool,
+    pub selected: bool,
+    pub tier: i8,
+    pub mana_cost: i32,
+    pub hand: SpellHand,
+    pub availability: SpellAvailability,
+}
+
 /// Authoritative progress through the bound level's semantic objectives.
 ///
 /// The optional current objective is the semantic identity selected by the
@@ -137,6 +174,7 @@ pub struct CampaignSnapshot {
     pub player_pose: PlayerPose,
     pub player_motion: PlayerMotion,
     pub player_vitals: PlayerVitals,
+    pub player_spells: Vec<SpellObservation>,
     pub objective_progress: ObjectiveProgress,
     pub presentation_entities: Vec<PresentationEntity>,
 }
@@ -175,8 +213,16 @@ pub struct GameCommand {
     /// Select one acquired spell through its package-neutral semantic ID
     /// before this command's cast flags are consumed.
     pub select_spell: Option<SemanticId>,
+    #[serde(skip_serializing_if = "is_false")]
+    pub recenter: bool,
+    #[serde(skip_serializing_if = "is_false")]
+    pub full_stop: bool,
     pub look_yaw: i16,
     pub look_pitch: i16,
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize)]

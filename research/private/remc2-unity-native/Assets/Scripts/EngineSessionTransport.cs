@@ -24,12 +24,12 @@ namespace MagicCarpet.Native
         private const string CampaignDescriptorEnvelope = "campaign-definition.json";
         private static readonly string[] RequiredCapabilities =
             { "snapshot", "step", "reset", "events", "audio", "presentation_assets",
-              "presentation_entities", "semantic_spell_selection" };
+              "presentation_entities", "semantic_spell_selection", "spell_observations" };
         private static readonly string[] RequiredOwnedCapabilities =
             { "snapshot", "step", "reset", "events", "audio", "presentation_assets" };
         private static readonly string[] RequiredCampaignCapabilities =
             { "snapshot", "step", "reset", "events", "presentation_assets",
-              "presentation_entities", "semantic_spell_selection" };
+              "presentation_entities", "semantic_spell_selection", "spell_observations" };
 
         private delegate int JsonRead(IntPtr buffer, uint capacity, out uint length);
 
@@ -117,6 +117,19 @@ namespace MagicCarpet.Native
         }
 
         [Serializable]
+        internal sealed class SpellObservation
+        {
+            public string id;
+            public string display_name;
+            public bool acquired;
+            public bool selected;
+            public sbyte tier;
+            public int mana_cost;
+            public string hand;
+            public string availability;
+        }
+
+        [Serializable]
         internal sealed class SnapshotValue
         {
             public string tick;
@@ -148,6 +161,7 @@ namespace MagicCarpet.Native
             public Pose player_pose;
             public Motion player_motion;
             public PlayerVitals player_vitals;
+            public SpellObservation[] player_spells;
             public ObjectiveProgress objective_progress;
             public PresentationEntity[] presentation_entities;
         }
@@ -302,6 +316,8 @@ namespace MagicCarpet.Native
             public bool cast_left;
             public bool cast_right;
             public bool cast_selected;
+            public bool recenter;
+            public bool full_stop;
             public int look_yaw;
             public int look_pitch;
         }
@@ -459,10 +475,12 @@ namespace MagicCarpet.Native
             sbyte flags,
             ushort lookYaw,
             ushort lookPitch,
-            string selectSpell = null)
+            string selectSpell = null,
+            bool recenter = false,
+            bool fullStop = false)
         {
             RequireProfile(CampaignProfile, "the campaign step observation");
-            StepNative(roll, pitch, flags, lookYaw, lookPitch, selectSpell);
+            StepNative(roll, pitch, flags, lookYaw, lookPitch, selectSpell, recenter, fullStop);
             return CampaignSnapshot();
         }
 
@@ -472,7 +490,9 @@ namespace MagicCarpet.Native
             sbyte flags,
             ushort lookYaw,
             ushort lookPitch,
-            string selectSpell = null)
+            string selectSpell = null,
+            bool recenter = false,
+            bool fullStop = false)
         {
             StepHandle(
                 Handle,
@@ -483,7 +503,9 @@ namespace MagicCarpet.Native
                 lookYaw,
                 lookPitch,
                 NegotiatedContract.limits.maximum_command_json_bytes,
-                selectSpell);
+                selectSpell,
+                recenter,
+                fullStop);
         }
 
         internal static void StepHandle(
@@ -495,7 +517,9 @@ namespace MagicCarpet.Native
             ushort lookYaw,
             ushort lookPitch,
             uint maximumCommandJsonBytes,
-            string selectSpell = null)
+            string selectSpell = null,
+            bool recenter = false,
+            bool fullStop = false)
         {
             ValidateIdentityForHandle(handle, identity);
             var bits = unchecked((byte)flags);
@@ -517,6 +541,8 @@ namespace MagicCarpet.Native
             command.cast_left = (bits & 0x10) != 0;
             command.cast_right = (bits & 0x20) != 0;
             command.cast_selected = (bits & 0x40) != 0;
+            command.recenter = recenter;
+            command.full_stop = fullStop;
             command.look_yaw = unchecked((short)lookYaw);
             command.look_pitch = unchecked((short)lookPitch);
             var bytes = Encoding.UTF8.GetBytes(JsonUtility.ToJson(command));
@@ -805,7 +831,7 @@ namespace MagicCarpet.Native
             ValidateProfile(
                 contract,
                 CampaignProfile,
-                "campaign_snapshot/v4",
+                "campaign_snapshot/v5",
                 RequiredCampaignCapabilities);
         }
 
@@ -877,6 +903,7 @@ namespace MagicCarpet.Native
         {
             if (value == null || value.player_pose == null || value.player_motion == null ||
                 value.player_vitals == null ||
+                value.player_spells == null ||
                 value.objective_progress == null ||
                 value.presentation_entities == null ||
                 value.tick != identity.tick)
@@ -903,6 +930,28 @@ namespace MagicCarpet.Native
             ParseCounter(value.effect_head, "effect_head");
             ParseHash(value.state_hash, "state_hash");
             ParseHash(value.terrain_hash, "terrain_hash");
+            var spellIds = new System.Collections.Generic.HashSet<string>();
+            var selectedSpells = 0;
+            foreach (var spell in value.player_spells)
+            {
+                if (spell == null || string.IsNullOrWhiteSpace(spell.id) ||
+                    string.IsNullOrWhiteSpace(spell.display_name) ||
+                    !spellIds.Add(spell.id) ||
+                    (spell.hand != "none" && spell.hand != "left" &&
+                     spell.hand != "right" && spell.hand != "both") ||
+                    (spell.availability != "ready" && spell.availability != "not_acquired" &&
+                     spell.availability != "invalid_holder" && spell.availability != "active" &&
+                     spell.availability != "insufficient_mana") ||
+                    (!spell.acquired && (spell.selected || spell.hand != "none" ||
+                     (spell.availability != "not_acquired" && spell.availability != "invalid_holder"))) ||
+                    (spell.acquired && (spell.availability == "not_acquired" ||
+                     spell.availability == "invalid_holder")))
+                {
+                    throw new InvalidOperationException("neutral spell observation is invalid");
+                }
+                if (spell.selected && ++selectedSpells > 1)
+                    throw new InvalidOperationException("neutral spell selection is ambiguous");
+            }
             foreach (var entity in value.presentation_entities)
             {
                 if (entity == null || entity.pose == null || entity.asset == null ||

@@ -9,6 +9,9 @@
 //! number, and no source slot or class/model/action value crosses the
 //! neutral contract.
 
+mod spells;
+use spells::{mc2_spell_family, mc2_spell_kind_for_family, semantic_spell_kind};
+
 use std::{
     collections::BTreeMap,
     error::Error,
@@ -1756,6 +1759,7 @@ impl GameSessionBackend for Mc2CampaignBackend {
                 mana: shared_spells.player_mana(),
                 max_mana: player_entity.max_mana,
             },
+            player_spells: spells::observe(shared_spells),
             objective_progress: ObjectiveProgress {
                 current_objective,
                 completed_count,
@@ -1937,19 +1941,7 @@ impl Mc2CampaignBackend {
                     ),
                 }
             })?;
-            let valid = shared
-                .pickups()
-                .iter()
-                .chain(shared.holders())
-                .chain(shared.dynamic_pickups())
-                .find(|holder| holder.index == holder_index)
-                .is_some_and(|holder| {
-                    holder.active
-                        && holder.class == 15
-                        && holder.model == family
-                        && holder.source_spell_parent_entity_index() == player.entity_index
-                });
-            if !valid {
+            if spells::acquired_holder(shared, family).is_none() {
                 return Err(
                     crate::game_runtime::RuntimeTransitionError::InvalidRuntimeFlow {
                         message: format!(
@@ -2210,6 +2202,9 @@ impl Mc2CampaignBackend {
         command: &GameCommand,
     ) -> Result<PlayerCommand, CampaignBackendError> {
         let mut player_command = campaign_player_command(command);
+        if command.recenter || command.full_stop {
+            return Ok(player_command);
+        }
         let Some(selection) = command.select_spell.as_ref() else {
             return Ok(player_command);
         };
@@ -2229,22 +2224,7 @@ impl Mc2CampaignBackend {
             ),
         })?;
         let shared = compatibility.shared_spells();
-        let player = shared.local_player();
-        let holder_index = player.enabled_spell_holders[usize::from(family)];
-        if holder_index == 0
-            || !shared
-                .pickups()
-                .iter()
-                .chain(shared.holders())
-                .chain(shared.dynamic_pickups())
-                .find(|holder| holder.index == holder_index)
-                .is_some_and(|holder| {
-                    holder.active
-                        && holder.class == 15
-                        && holder.model == family
-                        && holder.source_spell_parent_entity_index() == player.entity_index
-                })
-        {
+        if spells::acquired_holder(shared, family).is_none() {
             return Err(CampaignBackendError::StepRejected {
                 message: format!(
                     "spell selection {} is not acquired by the local player",
@@ -2263,47 +2243,6 @@ impl Mc2CampaignBackend {
     }
 }
 
-fn semantic_spell_kind(id: &SemanticId) -> Option<SpellKind> {
-    match id.as_str() {
-        "spell.fireball" => Some(SpellKind::Fireball),
-        "spell.possession" => Some(SpellKind::Possession),
-        "spell.castle" => Some(SpellKind::Castle),
-        "spell.speed" => Some(SpellKind::Speed),
-        "spell.morph" => Some(SpellKind::Morph),
-        "spell.shield" => Some(SpellKind::Shield),
-        "spell.invisibility" => Some(SpellKind::Invisibility),
-        "spell.beyond_sight" => Some(SpellKind::BeyondSight),
-        _ => None,
-    }
-}
-
-const fn mc2_spell_family(kind: SpellKind) -> Option<u8> {
-    Some(match kind {
-        SpellKind::Fireball => 0,
-        SpellKind::Possession => 1,
-        SpellKind::Castle => 2,
-        SpellKind::Speed => 3,
-        SpellKind::Morph => 4,
-        SpellKind::Shield => 6,
-        SpellKind::Invisibility => 11,
-        SpellKind::BeyondSight => 12,
-    })
-}
-
-const fn mc2_spell_kind_for_family(family: u8) -> Option<SpellKind> {
-    match family {
-        0 => Some(SpellKind::Fireball),
-        1 => Some(SpellKind::Possession),
-        2 => Some(SpellKind::Castle),
-        3 => Some(SpellKind::Speed),
-        4 => Some(SpellKind::Morph),
-        6 => Some(SpellKind::Shield),
-        11 => Some(SpellKind::Invisibility),
-        12 => Some(SpellKind::BeyondSight),
-        _ => None,
-    }
-}
-
 fn campaign_player_command(command: &GameCommand) -> PlayerCommand {
     let mut flags = match command.longitudinal {
         LongitudinalControl::Coast => 0,
@@ -2319,6 +2258,12 @@ fn campaign_player_command(command: &GameCommand) -> PlayerCommand {
     flags |= u8::from(command.cast_right) * 0x20;
     flags |= u8::from(command.cast_selected) * 0x40;
     PlayerCommand {
+        opcode: if command.recenter || command.full_stop {
+            0x27
+        } else {
+            0
+        },
+        argument_1: i8::from(command.full_stop),
         roll: command.roll_axis,
         pitch: command.pitch_axis,
         flags: flags.cast_signed(),
@@ -32025,6 +31970,44 @@ pub(crate) mod tests {
             18
         );
 
+        // Consume the ordinary pickup through the same semantic snapshot and
+        // command used by native/Unity clients, without installing a holder.
+        let acquired = session.snapshot();
+        let shield = acquired
+            .value
+            .player_spells
+            .iter()
+            .find(|spell| spell.id.as_str() == "spell.shield")
+            .unwrap();
+        assert!(shield.acquired);
+        assert_eq!(shield.tier, 0);
+        assert_eq!(shield.mana_cost, 1_000);
+        assert_eq!(shield.availability, sim_session::SpellAvailability::Ready);
+        session
+            .step(
+                guard(&session),
+                GameCommand {
+                    select_spell: Some(shield.id.clone()),
+                    cast_selected: true,
+                    ..GameCommand::default()
+                },
+            )
+            .unwrap();
+        let activated = session.snapshot();
+        let shield = activated
+            .value
+            .player_spells
+            .iter()
+            .find(|spell| spell.id.as_str() == "spell.shield")
+            .unwrap();
+        assert!(shield.selected);
+        assert_eq!(shield.availability, sim_session::SpellAvailability::Active);
+        assert_eq!(
+            session.snapshot(),
+            activated,
+            "observing an active Shield must not execute its cancellation writes"
+        );
+
         session.reset(guard(&session)).unwrap();
         assert_eq!(session.backend().campaign.state_hash(), authored_reset_hash);
         let reset_live = &session.backend().campaign.level2.session.state.live;
@@ -35129,6 +35112,8 @@ pub(crate) mod tests {
             cast_right: false,
             cast_selected: true,
             select_spell: None,
+            recenter: false,
+            full_stop: false,
             look_yaw: -17,
             look_pitch: 23,
         });

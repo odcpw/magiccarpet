@@ -230,7 +230,7 @@ namespace MagicCarpet.Native.Tests
             Assert.That(contract.transport_contract, Is.EqualTo(EngineSessionTransport.TransportContract));
             Assert.That(contract.capabilities, Is.EqualTo(new[]
                 { "snapshot", "step", "reset", "events", "audio", "presentation_assets",
-                  "presentation_entities", "semantic_spell_selection" }));
+                  "presentation_entities", "semantic_spell_selection", "spell_observations" }));
 
             var unsupported = new EngineSessionTransport.Contract
             {
@@ -365,12 +365,12 @@ namespace MagicCarpet.Native.Tests
                 var campaignProfile = transport.NegotiatedContract.session_profiles
                     .Single(profile =>
                         profile.profile == EngineSessionTransport.CampaignProfile);
-                Assert.That(campaignProfile.snapshot_value, Is.EqualTo("campaign_snapshot/v4"));
+                Assert.That(campaignProfile.snapshot_value, Is.EqualTo("campaign_snapshot/v5"));
                 Assert.That(
                     campaignProfile.capabilities,
                     Is.EqualTo(new[]
                         { "snapshot", "step", "reset", "events", "presentation_assets",
-                          "presentation_entities" }));
+                          "presentation_entities", "semantic_spell_selection", "spell_observations" }));
 
                 var initial = transport.CampaignSnapshot();
                 Assert.That(initial.identity.generation, Is.EqualTo("1"));
@@ -512,6 +512,46 @@ namespace MagicCarpet.Native.Tests
                 campaign.Destroy();
             }
             Assert.That(owned.EngineSnapshot().identity.generation, Is.EqualTo("1"));
+        }
+
+        [Test]
+        public void NeutralManagedSpellInventorySelectsCastsAndResetsWithoutReadMutation()
+        {
+            var transport = MagicCarpetRuntime.OpenEngineSessionForPackage(
+                LevelOneCampaignPackagePath, null, null);
+            try
+            {
+                var initial = transport.CampaignSnapshot();
+                var fireball = Level2SpellPresenter.SpellForKey(initial.value, 1);
+                Assert.That(fireball.id, Is.EqualTo("spell.fireball"));
+                Assert.That(fireball.acquired, Is.True);
+                Assert.That(fireball.tier, Is.Zero);
+                Assert.That(fireball.mana_cost, Is.EqualTo(100));
+                Assert.That(fireball.hand, Is.EqualTo("left"));
+                Assert.That(fireball.availability, Is.EqualTo("ready"));
+                Assert.That(Level2SpellPresenter.FindSpell(initial.value, "spell.castle").acquired, Is.False);
+                Assert.That(Level2SpellPresenter.SpellMenuText(initial.value), Does.Contain("Fireball"));
+                for (var read = 0; read < 3; read++)
+                    Assert.That(JsonUtility.ToJson(transport.CampaignSnapshot()),
+                        Is.EqualTo(JsonUtility.ToJson(initial)));
+
+                var selected = transport.CampaignStep(0, 0, 0, 0, 0, fireball.id);
+                Assert.That(Level2SpellPresenter.FindSpell(selected.value, fireball.id).selected, Is.True);
+                var cast = transport.CampaignStep(0, 0, 0x40, 0, 0);
+                Assert.That(cast.value.presentation_entities.Any(
+                    entity => entity.kind == "spell.fireball.projectile"), Is.True);
+
+                var reset = transport.CampaignReset();
+                Assert.That(reset.identity.generation, Is.EqualTo("2"));
+                Assert.That(reset.identity.tick, Is.EqualTo("0"));
+                Assert.That(reset.value.state_hash, Is.EqualTo(initial.value.state_hash));
+                Assert.That(JsonUtility.ToJson(Level2SpellPresenter.FindSpell(reset.value, fireball.id)),
+                    Is.EqualTo(JsonUtility.ToJson(fireball)));
+            }
+            finally
+            {
+                transport.Destroy();
+            }
         }
 
         [Test]

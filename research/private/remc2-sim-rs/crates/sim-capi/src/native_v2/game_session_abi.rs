@@ -108,11 +108,7 @@ impl NeutralSession {
                 .step(guard, command)
                 .map(|_| ())
                 .map_err(map_campaign_session_error),
-            Self::Runtime(runtime) => runtime
-                .session_mut()?
-                .step(guard, command)
-                .map(|_| ())
-                .map_err(map_campaign_session_error),
+            Self::Runtime(runtime) => runtime.step_with_preferences(guard, command),
         }
     }
 
@@ -280,7 +276,9 @@ pub(super) fn map_campaign_error(error: CampaignBackendError) -> AbiError {
     AbiError::new(status, error.to_string())
 }
 
-fn map_campaign_session_error(error: GameSessionError<CampaignBackendError>) -> AbiError {
+pub(super) fn map_campaign_session_error(
+    error: GameSessionError<CampaignBackendError>,
+) -> AbiError {
     match error {
         GameSessionError::Backend(error) => map_campaign_error(error),
         GameSessionError::Guard(error) => map_guard_error(error),
@@ -448,7 +446,7 @@ pub extern "C" fn mc_game_session_contract_json_v1(
             "encoding": "utf-8-json",
             "u64_counter_encoding": "decimal-string",
             "u64_hash_encoding": "lowercase-hex-16",
-            "capabilities": ["snapshot", "step", "reset", "events", "audio", "presentation_assets", "presentation_entities", "semantic_spell_selection"],
+            "capabilities": ["snapshot", "step", "reset", "events", "audio", "presentation_assets", "presentation_entities", "semantic_spell_selection", "spell_observations"],
             "session_profiles": [
                 {
                     "profile": "mc2-owned",
@@ -457,8 +455,8 @@ pub extern "C" fn mc_game_session_contract_json_v1(
                 },
                 {
                     "profile": "mc2-campaign",
-                    "snapshot_value": "campaign_snapshot/v4",
-                    "capabilities": ["snapshot", "step", "reset", "events", "presentation_assets", "presentation_entities", "semantic_spell_selection"]
+                    "snapshot_value": "campaign_snapshot/v5",
+                    "capabilities": ["snapshot", "step", "reset", "events", "presentation_assets", "presentation_entities", "semantic_spell_selection", "spell_observations"]
                 }
             ],
             "limits": {
@@ -820,6 +818,16 @@ mod tests {
             MC_STATUS_OK
         );
         handle
+    }
+
+    fn semantic_spell(snapshot: &serde_json::Value, id: &str) -> serde_json::Value {
+        snapshot["value"]["player_spells"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|spell| spell["id"] == id)
+            .unwrap()
+            .clone()
     }
 
     fn campaign_snapshot(handle: u64) -> serde_json::Value {
@@ -1259,7 +1267,7 @@ mod tests {
             ])
         );
         assert_eq!(profiles[1]["profile"], "mc2-campaign");
-        assert_eq!(profiles[1]["snapshot_value"], "campaign_snapshot/v4");
+        assert_eq!(profiles[1]["snapshot_value"], "campaign_snapshot/v5");
         assert_eq!(
             profiles[1]["capabilities"],
             serde_json::json!([
@@ -1269,7 +1277,8 @@ mod tests {
                 "events",
                 "presentation_assets",
                 "presentation_entities",
-                "semantic_spell_selection"
+                "semantic_spell_selection",
+                "spell_observations"
             ])
         );
 
@@ -1636,6 +1645,25 @@ mod tests {
             .join("../../../generated/mc-cf15-level1-package-v3-current");
         let handle = open_campaign_path(&package);
         let initial = campaign_snapshot(handle);
+
+        let spell = semantic_spell;
+        let fireball = spell(&initial, "spell.fireball");
+        assert_eq!(fireball["acquired"], true);
+        assert_eq!(fireball["tier"], 0);
+        assert_eq!(fireball["mana_cost"], 100);
+        assert_eq!(fireball["hand"], "left");
+        assert_eq!(fireball["availability"], "ready");
+        assert_eq!(
+            spell(&initial, "spell.castle")["availability"],
+            "not_acquired"
+        );
+        for _ in 0..3 {
+            assert_eq!(
+                campaign_snapshot(handle),
+                initial,
+                "inventory reads preserve the full state/tick/RNG receipt"
+            );
+        }
         assert_eq!(
             initial["value"]["player_vitals"],
             serde_json::json!({
@@ -1732,6 +1760,14 @@ mod tests {
             .join("../../../generated/mc-cf15-level1-package-v3-current");
         let handle = open_campaign_path(&package);
         let initial = campaign_snapshot(handle);
+        let spell = semantic_spell;
+        let fireball = spell(&initial, "spell.fireball");
+        assert_eq!(fireball["acquired"], true);
+        assert_eq!(fireball["tier"], 0);
+        assert_eq!(fireball["mana_cost"], 100);
+        assert_eq!(fireball["hand"], "left");
+        assert_eq!(fireball["availability"], "ready");
+        assert_eq!(campaign_snapshot(handle), initial);
 
         let unacquired = br#"{"select_spell":"spell.castle"}"#;
         assert_eq!(
@@ -1755,6 +1791,7 @@ mod tests {
             mc_game_session_step_json_v1(handle, 1, 0, select.as_ptr(), select.len() as u32);
         assert_eq!(select_status, MC_STATUS_OK, "{}", native_last_error());
         let selected = campaign_snapshot(handle);
+        assert_eq!(spell(&selected, "spell.fireball")["selected"], true);
         assert_eq!(selected["identity"]["tick"], "1");
         assert_eq!(
             selected["value"]["presentation_entities"],
@@ -1777,6 +1814,14 @@ mod tests {
                     .any(|entity| { entity["kind"] == "spell.fireball.projectile" })),
             "the separately selected acquired semantic Fireball drives the ordinary cast path"
         );
+        assert_eq!(mc_game_session_reset_v1(handle, 1, 2), MC_STATUS_OK);
+        let reset = campaign_snapshot(handle);
+        assert_eq!(reset["identity"]["generation"], "2");
+        assert_eq!(
+            reset["value"]["player_spells"],
+            initial["value"]["player_spells"]
+        );
+        assert_eq!(reset["value"]["state_hash"], initial["value"]["state_hash"]);
         assert_eq!(mc_game_session_destroy_v1(handle), MC_STATUS_OK);
     }
 
