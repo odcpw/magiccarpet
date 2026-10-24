@@ -89,6 +89,7 @@ pub enum ExistingHandler {
     DragonFamily = 30,
     CaveFeatures = 31,
     CaveSpell = 32,
+    TerrainDisasters = 33,
 }
 
 impl ExistingHandler {
@@ -130,6 +131,7 @@ impl ExistingHandler {
             }
             Self::CaveFeatures => "authored cave geometry and ground-feature descendants",
             Self::CaveSpell => "CaveIn projectile and collapse",
+            Self::TerrainDisasters => "authored and spell-produced live terrain disasters",
         }
     }
 
@@ -168,6 +170,7 @@ impl ExistingHandler {
             Self::DragonFamily => "dragon-family",
             Self::CaveFeatures => "cave-features",
             Self::CaveSpell => "cave-spell",
+            Self::TerrainDisasters => "terrain-disasters",
         }
     }
 }
@@ -343,6 +346,7 @@ compiled_registry! {
         (Model6ProjectileChild, 9, [15]);
         (ProjectileFamily, 9, [18]);
         (CaveSpell, 9, [31]);
+        (TerrainDisasters, 10, [11]);
         (Class10Effects, 10, [0, 1, 2, 5, 6, 12, 13, 14, 17, 19, 22, 41, 42, 43, 44, 45, 48, 51, 52, 53, 58, 59, 64, 65, 76, 77, 80, 83, 86, 98]);
         (SwitchProducers, 11, [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 31]);
         (ObjectiveSwitch, 11, [32]);
@@ -388,6 +392,7 @@ compiled_registry! {
         (TerrainStripController, 10, [63, 64]);
         (CaveFeatures, 10, [80, 81, 82, 83, 84, 85, 86]);
         (CaveSpell, 10, [89]);
+        (TerrainDisasters, 10, [11]);
         (SwitchProducers, 11, [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 31]);
         (CountdownSwitch, 11, [13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44]);
         (ObjectiveSwitch, 11, [32]);
@@ -652,6 +657,7 @@ mod tests {
                 "spell-holder-and-pickup-family",
             ),
             (9, &[31][..], "cave-spell"),
+            (10, &[11][..], "terrain-disasters"),
         ] {
             for action in actions {
                 for site in ["ApplyEvents", "UpdateEntities"] {
@@ -711,6 +717,7 @@ mod tests {
             (15, &[5, 8, 10, 25][..], "spell-holder-and-pickup-family"),
             (9, &[30][..], "cave-spell"),
             (10, &[89][..], "cave-spell"),
+            (10, &[11][..], "terrain-disasters"),
         ] {
             for model in models {
                 expected.insert(format!("Constructor:ClassModel:{class}:{model}"), handler);
@@ -737,7 +744,7 @@ mod tests {
         assert_eq!(registry["action_dispatch_sites"][0], "ApplyEvents");
         assert_eq!(registry["action_dispatch_sites"][1], "UpdateEntities");
         assert_eq!(registry["constructor_dispatch_site"], "Constructor");
-        assert_eq!(CAMPAIGN_BEHAVIOR_REGISTRY.entries().len(), 529);
+        assert_eq!(CAMPAIGN_BEHAVIOR_REGISTRY.entries().len(), 532);
         validate_against_source(CAMPAIGN_BEHAVIOR_REGISTRY.entries(), &source_keys)
             .expect("compiled entries retain exact pinned sites and selector shapes");
 
@@ -836,7 +843,7 @@ mod tests {
             );
         }
         expected_handlers.extend(supplemental_handlers);
-        assert_eq!(expected_handlers.len(), 529);
+        assert_eq!(expected_handlers.len(), 532);
 
         for entry in CAMPAIGN_BEHAVIOR_REGISTRY.entries() {
             assert_eq!(

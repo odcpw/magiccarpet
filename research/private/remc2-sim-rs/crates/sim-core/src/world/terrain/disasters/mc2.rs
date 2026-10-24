@@ -31,6 +31,23 @@ pub(crate) struct StepOutcome {
     pub(crate) sound_id: Option<u16>,
 }
 
+impl StepOutcome {
+    pub(crate) fn effects(self, source_slot: u16) -> impl Iterator<Item = crate::FlightEvent> {
+        self.sound_id
+            .map(move |sound_id| {
+                crate::mark_source_audio_call(crate::SourceAudioCallTag::TerrainRingRumble);
+                crate::FlightEvent::PrepareSound {
+                    #[cfg(test)]
+                    audio_site: crate::MissionAudioSite::TerrainDisaster,
+                    entity_index: source_slot,
+                    player_index: -1,
+                    sound_id,
+                }
+            })
+            .into_iter()
+    }
+}
+
 /// NewAdd0A0B_4E840. This controller is intentionally absent from map chains;
 /// it is nevertheless an ordinary live source slot with normal RNG/defaults.
 pub(crate) fn construct(

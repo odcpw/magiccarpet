@@ -6,13 +6,12 @@ use crate::{
     Position,
     campaign::source_arena::SourceArena,
     combat::area::{self, Shape},
-    goat::LiveWorldState,
     native_world::{Level2SharedSpellResetSession, area_damage},
 };
 
 pub(crate) fn apply(
     arena: &mut SourceArena,
-    actors: Option<&mut LiveWorldState>,
+    actors: Option<area_damage::ActorDomains<'_>>,
     player: Option<(u16, Position)>,
     progression: Option<&mut Level2SharedSpellResetSession>,
     experience_enabled: bool,

@@ -698,6 +698,7 @@ pub enum MissionAudioSite {
     ExitOverlap,
     CountdownSwitch,
     TerrainStrip,
+    TerrainDisaster,
     CastleDefenseFirstShot,
     HealSpell,
     TeleportSpell,
@@ -743,6 +744,7 @@ pub enum SourceAudioCallTag {
     CountdownSwitchModel17,
     TerrainStripOpening,
     TerrainStripClosing,
+    TerrainRingRumble,
     SpellPickup,
     PossessionLaunchTiered,
     PossessionLaunchBasic,
@@ -776,7 +778,7 @@ pub enum SourceAudioCallTag {
 
 /// Compiler-checked binding from every reachable source occurrence identity
 /// to the production tag used at its Rust call path.
-pub const SOURCE_AUDIO_CALL_BINDINGS: [(SourceAudioCallTag, &str); 58] = [
+pub const SOURCE_AUDIO_CALL_BINDINGS: [(SourceAudioCallTag, &str); 59] = [
     (
         SourceAudioCallTag::VolumePreviewAdjustVolume,
         "286982557778df1130f462a82b40225bf7e9cff0ef1a128b9d00f0a7a0d6ea2a",
@@ -892,6 +894,10 @@ pub const SOURCE_AUDIO_CALL_BINDINGS: [(SourceAudioCallTag, &str); 58] = [
     (
         SourceAudioCallTag::TerrainStripClosing,
         "ad0cb20ea6469d838fed921f5a0b67e9390c091bb9c605f164f92d504150753c",
+    ),
+    (
+        SourceAudioCallTag::TerrainRingRumble,
+        "917dbe7df9714946b307eb7e5e3c53d0129404abb5d9e5a8d7b4bb37e4ad7dab",
     ),
     (
         SourceAudioCallTag::SpellPickup,
@@ -1020,7 +1026,7 @@ pub fn mark_source_audio_call(_tag: SourceAudioCallTag) {}
 
 #[cfg(test)]
 impl SourceAudioCallTag {
-    pub const ALL: [Self; 58] = [
+    pub const ALL: [Self; 59] = [
         Self::VolumePreviewAdjustVolume,
         Self::GoatAction08Bleat,
         Self::GoatAction09Bleat,
@@ -1050,6 +1056,7 @@ impl SourceAudioCallTag {
         Self::CountdownSwitchModel17,
         Self::TerrainStripOpening,
         Self::TerrainStripClosing,
+        Self::TerrainRingRumble,
         Self::SpellPickup,
         Self::PossessionLaunchTiered,
         Self::PossessionLaunchBasic,
@@ -1141,6 +1148,7 @@ impl MissionAudioSite {
         Self::ExitOverlap,
         Self::CountdownSwitch,
         Self::TerrainStrip,
+        Self::TerrainDisaster,
         Self::CastleDefenseFirstShot,
         Self::HealSpell,
         Self::TeleportSpell,
@@ -1503,6 +1511,14 @@ impl MissionAudioSite {
                 "1",
                 "fixed 0",
                 "EventsFunctions.cpp:41802,42135,42145",
+                true,
+            ),
+            Self::TerrainDisaster => (
+                "10",
+                "terrain lowering ring",
+                "1",
+                "fixed 0",
+                "EventsFunctions.cpp:23540",
                 true,
             ),
             Self::CastleDefenseFirstShot => (

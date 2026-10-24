@@ -863,7 +863,7 @@ impl SourceSchedulerWorld for Level2SourceSchedulerWorld<'_, '_> {
                 economy.reclaim_inactive_slots_at_source_boundary();
             }
             PassPhase::RebuildMemberships => {
-                let selectors = {
+                {
                     let economy = &mut self.owner.session.state.live.economy;
                     economy.rebuild_possession_guidance_source_slots();
                     economy.rebuild_owner_mana_projection_at_source_boundary();
@@ -890,8 +890,14 @@ impl SourceSchedulerWorld for Level2SourceSchedulerWorld<'_, '_> {
                     self.pass_start_class5_model_present = std::array::from_fn(|model| {
                         !self.pass_start_class5_model_slots[model].is_empty()
                     });
-                    economy.rebuilt_model45_building_selectors()
-                };
+                }
+                let live = &self.owner.session.state.live;
+                let selectors = live
+                    .ordinary
+                    .current_building_rows(&live.economy)
+                    .into_iter()
+                    .map(|(_, selector, _)| selector)
+                    .collect::<Vec<_>>();
                 self.owner
                     .session
                     .state
@@ -5499,8 +5505,8 @@ impl Level2ResetSession {
         self.session
             .state
             .live
-            .economy
-            .live_model45_buildings()
+            .ordinary
+            .current_building_rows(&self.session.state.live.economy)
             .into_iter()
             .filter(|(_, selector, _)| chain.contains(selector))
             .map(|(slot, _, position)| (slot, position))
@@ -12713,6 +12719,7 @@ impl Level2ResetSession {
                     | ExistingHandler::Class14Events
                     | ExistingHandler::CaveFeatures
                     | ExistingHandler::CaveSpell
+                    | ExistingHandler::TerrainDisasters
             ),
             Level2SourceRoute::Dynamic(row) => match row.kind {
                 Level2DynamicArenaKind::CastleProjectile
@@ -13102,6 +13109,33 @@ impl Level2ResetSession {
         goat_begin_events: &mut BTreeMap<u16, Vec<GoatStepEvent>>,
     ) -> std::result::Result<(), String> {
         match (visit.handler, visit.route) {
+            (ExistingHandler::TerrainDisasters, Level2SourceRoute::Imported) => {
+                use crate::world::terrain::disasters::mc2;
+                let outcome = {
+                    let live = &mut self.session.state.live;
+                    let actors = &mut live.goats;
+                    let ordinary = &mut live.ordinary;
+                    let progression = &mut live.shared_spells;
+                    mc2::step(
+                        &mut live.economy,
+                        &mut live.terrain,
+                        source_slot,
+                        |arena, request| {
+                            mc2::damage::apply(
+                                arena,
+                                Some(area_damage::ActorDomains::new(&mut *actors, &mut *ordinary)),
+                                Some((player_entity_index, *player_position)),
+                                Some(&mut *progression),
+                                true,
+                                request,
+                            )
+                        },
+                    )?
+                };
+                for effect in outcome.effects(source_slot) {
+                    self.push_flight_effect(effect);
+                }
+            }
             (ExistingHandler::CaveSpell, Level2SourceRoute::Imported) => {
                 let live = &mut self.session.state.live;
                 cave_spells::step_source(
@@ -13349,12 +13383,6 @@ impl Level2ResetSession {
                             self.session.state.live.core.state.position,
                         )
                         .expect("qualified Level 2 local-player map carrier remains valid");
-                        // sub_5D530 writes the source entity yaw itself. Later
-                        // callbacks, including StageVar-12 followers, read it.
-                        let live = &mut self.session.state.live;
-                        let yaw = live.core.state.yaw;
-                        live.economy.entities[usize::from(player_entity_index)].set_yaw(yaw);
-                        live.shared_spells.player_entity.set_yaw(yaw);
                         let player_alive_at_upkeep =
                             self.session.state.live.shared_spells.player_entity.life >= 0;
                         self.session
@@ -13416,6 +13444,14 @@ impl Level2ResetSession {
                     } else if player_action_at_visit == 3 {
                         self.step_level2_player_banished_action();
                     }
+                    // sub_5D530 writes source yaw during ordinary and dying
+                    // flight. Later StageVar-12 followers read this same row.
+                    let live = &mut self.session.state.live;
+                    let yaw = live.core.state.yaw;
+                    live.economy.entities[usize::from(player_entity_index)].set_yaw(yaw);
+                    live.shared_spells.player_entity.set_yaw(yaw);
+                    live.shared_spells
+                        .sync_typed_spell_parent_caches_from_player_entity();
                 }
             }
             (ExistingHandler::SpellHolderAndPickup, Level2SourceRoute::SpeedPickup) => {
