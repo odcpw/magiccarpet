@@ -33852,7 +33852,10 @@ mod tests {
         for source_slot in 1..=player.entity_index {
             lower.dispatch_source_slot(&FlatWorld, &player, source_slot, false, false, None);
         }
-        assert_eq!(lower.player_pending_damage, 0);
+        assert_eq!(
+            lower.player_pending_damage, 500,
+            "5EFA0 clears only the owner word"
+        );
         assert_eq!(lower.player_pending_attacker, 0);
         assert_eq!(lower.player_life, 9_500);
         assert_eq!(lower.player_life_regen_cooldown, 15);
@@ -33878,7 +33881,10 @@ mod tests {
         for source_slot in 1..=player.entity_index {
             higher.dispatch_source_slot(&FlatWorld, &player, source_slot, false, false, None);
         }
-        assert_eq!(higher.player_pending_damage, 0);
+        assert_eq!(
+            higher.player_pending_damage, 500,
+            "5EFA0 retains the source payload residue"
+        );
         assert_eq!(higher.player_pending_attacker, 0);
         assert_eq!(higher.player_life, 9_500);
         assert_eq!(higher.player_life_regen_cooldown, 15);
@@ -34588,7 +34594,10 @@ mod tests {
             expected_rng
         );
         assert_eq!(mission.player_life, 9_500);
-        assert_eq!(mission.player_pending_damage, 0);
+        assert_eq!(
+            mission.player_pending_damage, 500,
+            "nonlethal source hits retain their payload"
+        );
         assert_eq!(mission.player_pending_attacker, 0);
         assert_eq!(mission.player_life_regen_cooldown, 15);
         assert_eq!(mission.player_hit_frame_ticks, 4);
