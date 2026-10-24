@@ -67,6 +67,7 @@ pub struct SourceFact {
 }
 
 pub(crate) struct SourceFactContext<'a> {
+    pub map_type_id: u8,
     pub files: &'a BTreeMap<String, (u64, String)>,
     pub members: &'a BTreeMap<String, Vec<u8>>,
     pub authored_collision_provenance: &'a [SelectorProvenance],
@@ -102,6 +103,26 @@ const SOURCE_ARTIFACTS: &[(&str, u64, &str)] = &[
         "CD_Files/DATA/MSPRD0-0.TAB",
         1_572,
         "47fe03bbd99e1975755a8e47401977965b5ef63fe427a755a2f481ed393117ea",
+    ),
+    (
+        "CD_Files/DATA/MSPRN0-0.DAT",
+        49_353,
+        "2a890388fba9f094604e9f082a1d2dcbd0995a089b39f5442b4841056ed25abc",
+    ),
+    (
+        "CD_Files/DATA/MSPRN0-0.TAB",
+        1_572,
+        "12f79e74ec7c18c7c42bd3430d80831639f86650efceb2c97ccf8786c035f939",
+    ),
+    (
+        "CD_Files/DATA/MSPRC0-0.DAT",
+        49_357,
+        "7e8aa789f585bf3cc64d12f44b9268b609d87e5ca6fe5f22f8be90986f42b627",
+    ),
+    (
+        "CD_Files/DATA/MSPRC0-0.TAB",
+        1_572,
+        "cac2f8c5a7977cfe7303d115e83b7d6b8f44656e33ed8a6cca052c3d32b59c31",
     ),
     (
         "CD_Files/DATA/SPELLS.DAT",
@@ -282,7 +303,7 @@ fn parse_artifact(value: &Value, label: &str) -> Result<SourceArtifact, String> 
 fn decode_feature_construction_inputs(bytes: &[u8]) -> Result<Vec<u16>, String> {
     if bytes.len() < 16
         || bytes.get(..4) != Some(b"MCI3")
-        || read_u16(bytes, 4, "feature-input version")? != 1
+        || !matches!(read_u16(bytes, 4, "feature-input version")?, 1 | 2)
         || read_u16(bytes, 6, "feature-input header")? != 16
         || read_u16(bytes, 10, "feature-input encoding")? != 1
         || read_u32(bytes, 12, "feature-input reserved")? != 0
@@ -323,6 +344,54 @@ fn decode_feature_construction_inputs(bytes: &[u8]) -> Result<Vec<u16>, String> 
         return Err("feature construction member has trailing bytes".to_owned());
     }
     Ok(selectors)
+}
+
+/// MCI3 v2 retains the finite constructor closure as well as every authored
+/// House, including ordinary activation groups. The v1 collision census is
+/// kept as its original distinct contract.
+fn construction_selectors_from_authored(authored: &[u8]) -> Result<Vec<u16>, String> {
+    let features = crate::level1_mission::parse_authored_features(authored)?;
+    let mut selectors = features
+        .iter()
+        .skip(1)
+        .filter(|feature| feature.kind == 10 && feature.subtype == 45)
+        .map(|feature| feature.parameter_1)
+        .collect::<BTreeSet<_>>();
+    let has_settlement = !selectors.is_empty()
+        || features
+            .iter()
+            .skip(1)
+            .any(|feature| feature.kind == 5 && feature.subtype == 12);
+    if has_settlement {
+        selectors.extend(
+            (17_u8..76)
+                .filter(|selector| {
+                    crate::native_world::creatures::settlements::builder_building_spec(*selector)
+                        .is_some()
+                })
+                .map(u16::from),
+        );
+    }
+    Ok(selectors.into_iter().collect())
+}
+
+fn validate_construction_selectors(
+    bytes: &[u8],
+    authored: &[u8],
+    legacy_selectors: &[u16],
+) -> Result<(), String> {
+    let actual = decode_feature_construction_inputs(bytes)?;
+    let expected = if read_u16(bytes, 4, "feature-input version")? == 1 {
+        legacy_selectors.to_vec()
+    } else {
+        construction_selectors_from_authored(authored)?
+    };
+    if actual != expected {
+        return Err(
+            "feature construction selectors differ from versioned source closure".to_owned(),
+        );
+    }
+    Ok(())
 }
 
 fn decode_collision_masks(bytes: &[u8], expected: &[u16]) -> Result<(), String> {
@@ -518,7 +587,7 @@ pub(crate) fn validate_source_facts(
             &format!("{label}.version"),
         )?;
         if kind != expected.1
-            || version != 1
+            || !(version == 1 || (kind == SourceFactKind::CollisionMask && version == 2))
             || string(&object["lifetime"], &format!("{label}.lifetime"))?
                 != "immutable-through-session"
         {
@@ -580,13 +649,25 @@ pub(crate) fn validate_source_facts(
             .iter()
             .map(|artifact| artifact.logical_path.as_str())
             .collect::<Vec<_>>();
-        if actual_paths != expected.3 {
+        // v1 retains the legacy Day provenance contract. v2 names the bank
+        // Level.cpp actually loads for this map, while retaining MCM1 pixels.
+        let expected_paths = if kind == SourceFactKind::CollisionMask && version == 2 {
+            match context.map_type_id {
+                0 => &["CD_Files/DATA/MSPRD0-0.DAT", "CD_Files/DATA/MSPRD0-0.TAB"][..],
+                1 => &["CD_Files/DATA/MSPRN0-0.DAT", "CD_Files/DATA/MSPRN0-0.TAB"][..],
+                2 => &["CD_Files/DATA/MSPRC0-0.DAT", "CD_Files/DATA/MSPRC0-0.TAB"][..],
+                _ => return Err(format!("{label} has an unknown map bank")),
+            }
+        } else {
+            expected.3
+        };
+        if actual_paths != expected_paths {
             return Err(format!("{label} owner artifact set/order differs"));
         }
         result.push(SourceFact {
             fact_id: fact_id.to_owned(),
             kind,
-            version: 1,
+            version: version as u16,
             member: member.to_owned(),
             member_sha256,
             selector_provenance,
@@ -605,9 +686,11 @@ pub(crate) fn validate_source_facts(
         .members
         .get("feature-construction-inputs.bin")
         .ok_or_else(|| "feature construction member is absent".to_owned())?;
-    if decode_feature_construction_inputs(feature_inputs)? != expected_selectors {
-        return Err("feature construction selectors differ from authored provenance".to_owned());
-    }
+    let authored_inputs = context
+        .members
+        .get("authored-level.bin")
+        .ok_or_else(|| "authored construction input member is absent".to_owned())?;
+    validate_construction_selectors(feature_inputs, authored_inputs, &expected_selectors)?;
     if let Some((collision_bank_bytes, collision_bank_sha256)) = context.collision_bank {
         let collision = context
             .members
@@ -646,6 +729,59 @@ pub(crate) fn validate_source_facts(
 #[cfg(test)]
 mod tests {
     use super::{building_parameter_chain, decode_building_parameters, decode_collision_masks};
+
+    #[test]
+    fn full_construction_bank_is_closed_over_real_house_and_builder_inputs() {
+        let generated =
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../generated");
+        let full = std::env::var_os("MC_SETTLEMENT_FULL_PACKAGE")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| generated.join("mc-1pb-16-level2-full-build-v2"));
+        let legacy = generated.join("mc-cf02-campaign-package-v2-b/qualified-level2");
+        let authored =
+            std::fs::read(full.join("authored-level.bin")).expect("fresh owner-authored Level2");
+        let bytes = std::fs::read(full.join("feature-construction-inputs.bin"))
+            .expect("fresh full source BUILD bank");
+        let old = std::fs::read(legacy.join("feature-construction-inputs.bin"))
+            .expect("legacy qualified BUILD bank");
+        let legacy_selectors = super::decode_feature_construction_inputs(&old).unwrap();
+        assert_eq!(u16::from_le_bytes([bytes[4], bytes[5]]), 2);
+        let selectors = super::decode_feature_construction_inputs(&bytes).unwrap();
+        assert_eq!(
+            selectors,
+            [
+                17, 19, 21, 22, 26, 29, 30, 31, 32, 33, 34, 35, 39, 40, 42, 44, 47, 50, 55, 59, 60,
+                62, 64, 70, 74
+            ],
+            "actual all-group House selectors union the finite Builder closure"
+        );
+        assert!(selectors.contains(&19) && selectors.contains(&74));
+        super::validate_construction_selectors(&bytes, &authored, &legacy_selectors).unwrap();
+        super::validate_construction_selectors(&old, &authored, &legacy_selectors).unwrap();
+
+        let mut missing = bytes.clone();
+        let extent = u32::from_le_bytes(missing[24..28].try_into().unwrap()) as usize;
+        missing.drain(16..28 + extent);
+        let count = (selectors.len() as u16 - 1).to_le_bytes();
+        missing[8..10].copy_from_slice(&count);
+        assert!(
+            super::validate_construction_selectors(&missing, &authored, &legacy_selectors).is_err()
+        );
+
+        let mut extra = bytes.clone();
+        extra[16..18].copy_from_slice(&0_u16.to_le_bytes());
+        assert!(
+            super::validate_construction_selectors(&extra, &authored, &legacy_selectors).is_err()
+        );
+
+        let mut mislabeled = bytes;
+        mislabeled[4..6].copy_from_slice(&1_u16.to_le_bytes());
+        assert!(
+            super::validate_construction_selectors(&mislabeled, &authored, &legacy_selectors)
+                .is_err(),
+            "v1 retains its original exact bank contract"
+        );
+    }
 
     #[test]
     fn empty_collision_carrier_matches_zero_authored_rows() {
