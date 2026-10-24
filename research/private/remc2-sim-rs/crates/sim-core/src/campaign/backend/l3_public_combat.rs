@@ -663,23 +663,15 @@ fn staged_group_boundary(group: u16) -> GameSession<Mc2CampaignBackend> {
 
 #[test]
 fn archer_projectile_does_not_join_its_shooters_health_chain() {
-    let mut session = staged_group_boundary(5);
-    let first = targets(&session, CombatFamily::Archer)[0];
-    let compatibility = session.backend_mut().campaign.level2_compatibility_mut();
-    let position = crate::Position {
-        x: first.position.x.wrapping_add(1000),
-        ..first.position
-    };
-    compatibility
-        .set_level2_entity_position(compatibility.state.entity_index, position)
-        .unwrap();
+    let (mut session, shooter) = publicly_provoked_archer_boundary();
     for _ in 0..180 {
-        step(&mut session, GameCommand::default());
+        let command = combat_wait_command(&session, CombatFamily::Archer);
+        step(&mut session, command);
         let economy = session.backend().campaign.level2_compatibility().economy();
         if let Some(child) = economy
             .authored_class5_archer_children()
             .iter()
-            .find(|child| child.parent_entity_index == first.slot)
+            .find(|child| child.parent_entity_index == shooter.slot)
         {
             assert_eq!((child.source_class, child.model), (9, 13));
             assert!(
@@ -689,7 +681,7 @@ fn archer_projectile_does_not_join_its_shooters_health_chain() {
             let parent = economy
                 .authored_class5_archer()
                 .iter()
-                .find(|parent| parent.source_entity_index == first.slot)
+                .find(|parent| parent.source_entity_index == shooter.slot)
                 .unwrap();
             assert_eq!(
                 parent.word_0x34, 0,
@@ -702,39 +694,161 @@ fn archer_projectile_does_not_join_its_shooters_health_chain() {
     panic!("the ordinary Archer callback did not launch its projectile");
 }
 
+/// The package's StageVar1 is mode4/flags3/model9: Archers inherit a
+/// Skeleton's target through `1D700`, rather than attack a nearby player
+/// unconditionally. A real public Fireball supplies the `1D8C0` hostile hit
+/// that selects the player and mode10. No combat state is staged here.
+fn publicly_provoked_archer_boundary() -> (GameSession<Mc2CampaignBackend>, Target) {
+    let mut session = staged_group_boundary(5);
+    let compatibility = session.backend().campaign.level2_compatibility();
+    let stage = &compatibility.runtime().stage_variables[1];
+    assert_eq!((stage.kind, stage.flags), (4, 3));
+    assert_eq!(
+        stage.relation,
+        crate::native_world::RuntimeRelation::AxisScalar(9)
+    );
+    // Preserve the package's original player pose, from which the existing
+    // retirement driver reaches a real Archer on its first public shot.
+    // Repositioning near row177 instead puts that shot into terrain. The
+    // actual receipt below, not the requested aim or first row, owns identity.
+    let receipt = fire_public_combat_for_test(&mut session, CombatFamily::Archer)
+        .into_iter()
+        .next()
+        .expect("a real public Fireball must provoke an Archer before its retaliation");
+    assert_eq!(receipt.life_before - receipt.life_after, 250);
+    assert!(
+        receipt.life_after >= 0,
+        "the provocation must leave a living shooter"
+    );
+    let shooter = targets(&session, CombatFamily::Archer)
+        .into_iter()
+        .find(|root| root.slot == receipt.slot && root.generation == receipt.generation)
+        .expect("the exact Fireball recipient remains the retaliating shooter");
+    let compatibility = session.backend().campaign.level2_compatibility();
+    let source = compatibility
+        .economy()
+        .authored_class5()
+        .iter()
+        .find(|root| root.source_entity_index == shooter.slot)
+        .unwrap();
+    assert_eq!(source.word_0x96_150, compatibility.state.entity_index);
+    assert_eq!(shooter.attacker, compatibility.state.entity_index);
+    assert_eq!(shooter.life, receipt.life_after);
+    assert_eq!(
+        shooter.action, 34,
+        "the actual hostile hit must select attack"
+    );
+    (session, shooter)
+}
+
 #[test]
 fn ordinary_level_three_archer_arrow_damages_player_without_lowering_shooter_health() {
-    let mut session = staged_group_boundary(5);
-    let first = targets(&session, CombatFamily::Archer)[0];
-    let compatibility = session.backend_mut().campaign.level2_compatibility_mut();
+    let (mut session, shooter) = publicly_provoked_archer_boundary();
+    let compatibility = session.backend().campaign.level2_compatibility();
     let player = compatibility.state.entity_index;
-    let position = crate::Position {
-        x: first.position.x.wrapping_add(1000),
-        // A zero-width sub_10C80 pulse searches the rounded centre tile.
-        // Avoid the authored row's exact half-tile boundary, where source
-        // can collide but its subsequent damage scan misses the lower tile.
-        y: first.position.y.wrapping_sub(64),
-        ..first.position
-    };
     let initial_life = compatibility.canonical_player_life_for_test();
-    compatibility
-        .set_level2_entity_position(player, position)
-        .unwrap();
+    let event_start = compatibility.economy().events().len();
+    // The public provocation legitimately costs the recipient 250 life.
+    // Every later arrow visit must preserve this exact health/arena baseline.
+    let health = |session: &GameSession<Mc2CampaignBackend>| {
+        targets(session, CombatFamily::Archer)
+            .into_iter()
+            .map(|root| (root.row, root.slot, root.generation, root.life))
+            .collect::<Vec<_>>()
+    };
+    let shooter_health_after_provocation = health(&session);
     let mut launched = BTreeSet::new();
-    for _ in 0..180 {
-        step(&mut session, GameCommand::default());
+    let mut trajectory = Vec::new();
+    let mut diagnostic_event_start = event_start;
+    for visit in 0..180 {
+        let mut command = combat_wait_command(&session, CombatFamily::Archer);
+        // sub_10780 rounds the arrow's search origin, while the player
+        // is linked by its raw cell. Standing still can repeat a valid source
+        // miss forever even when the physical boxes overlap. Strafe briefly
+        // between shots through public input, then let ordinary decay stop
+        // the player; keep the original bounded retaliation window.
+        if visit % 30 < 4 {
+            command.lateral = crate::game_session::LateralControl::Positive;
+        }
+        step(&mut session, command);
         let compatibility = session.backend().campaign.level2_compatibility();
         let economy = compatibility.economy();
-        for child in economy.authored_class5_archer_children() {
+        for child in economy
+            .authored_class5_archer_children()
+            .iter()
+            .filter(|child| child.parent_entity_index == shooter.slot)
+        {
+            assert_eq!((child.source_class, child.model), (9, 13));
             launched.insert(child.entity_id);
         }
-        assert!(
-            targets(&session, CombatFamily::Archer)
-                .iter()
-                .all(|root| root.life == 1000),
+        let raw_player = &compatibility.entities()[usize::from(player)];
+        let collision = raw_player.collision_target();
+        let position = compatibility.state.position;
+        let children = economy.authored_class5_archer_children().iter()
+            .filter(|child| child.parent_entity_index == shooter.slot)
+            .map(|child| {
+                let mut predicted = child.position;
+                crate::move_entity(&mut predicted, child.yaw, child.pitch, child.actual_speed);
+                serde_json::json!({
+                    "slot": child.source_entity_index,
+                    "generation": economy.slot_generation(child.source_entity_index),
+                    "owner": child.entity_id,
+                    "target": child.word_0x96,
+                    "type": [child.xtype, child.xsubtype],
+                    "yaw_pitch": [child.yaw, child.pitch],
+                    "position": [child.position.x, child.position.y, child.position.z],
+                    "predicted": [predicted.x, predicted.y, predicted.z],
+                    "predicted_ground": crate::FlightWorld::ground_height(compatibility.canonical_terrain(), predicted),
+                    "life": child.life,
+                    "speed": child.actual_speed,
+                    "drawing": child.drawing_enabled,
+                    "flags": child.control_flags,
+                })
+            }).collect::<Vec<_>>();
+        let damage = economy.events()[diagnostic_event_start..]
+            .iter()
+            .filter_map(|event| {
+                if let crate::native_world::Level2EconomyEvent::DamageApplied {
+                    target_entity_index,
+                    attacker_entity_index,
+                    damage: 250,
+                    lethal,
+                } = event
+                {
+                    Some((*target_entity_index, *attacker_entity_index, *lethal))
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>();
+        diagnostic_event_start = economy.events().len();
+        // One frame per existing bounded source step, printed only on failure.
+        // Hidden child positions are the actual arrow pulse/hide frontier;
+        // disappearance in the next frame records following-pass reclaim.
+        trajectory.push(serde_json::json!({
+            "visit": visit, "tick": session.identity().tick,
+            "player": {
+                "slot": player,
+                "position": [position.x, position.y, position.z],
+                "raw_position": [raw_player.position.x, raw_player.position.y, raw_player.position.z],
+                "collision": [collision.collision_half_width, collision.collision_vertical_offset, collision.collision_half_height],
+                "life": compatibility.canonical_player_life_for_test(),
+                "flags": raw_player.control_flags,
+                "linked": economy.map_chains().is_linked(player),
+                "tile": [position.x >> 8, position.y >> 8],
+                "rounded_tile": [position.x.wrapping_add(128) >> 8, position.y.wrapping_add(128) >> 8],
+            },
+            "shooter": economy.authored_class5().iter()
+                .find(|root| root.source_entity_index == shooter.slot).map(|root| format!("{root:?}")),
+            "children": children,
+            "damage250": damage,
+        }));
+        assert_eq!(
+            health(&session),
+            shooter_health_after_provocation,
             "arrows must neither join the health chain nor damage class-5 peers when targeting the player"
         );
-        if economy.events().iter().any(|event| matches!(event,
+        if economy.events()[event_start..].iter().any(|event| matches!(event,
             crate::native_world::Level2EconomyEvent::DamageApplied { target_entity_index, attacker_entity_index, damage: 250, lethal: false }
                 if *target_entity_index == player && launched.contains(attacker_entity_index))) {
             // The source damage consumer starts the sixteen-visit healing
@@ -745,6 +859,9 @@ fn ordinary_level_three_archer_arrow_damages_player_without_lowering_shooter_hea
             );
             return;
         }
+    }
+    for frame in trajectory {
+        eprintln!("Archer trajectory {frame}");
     }
     panic!(
         "ordinary Archer launch never reached the player's damage consumer; shooters={launched:?}"
