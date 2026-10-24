@@ -1475,19 +1475,22 @@ impl GoatFamily {
             DamageResult::None => {
                 self.move_action11_source(index, world);
                 let target = self.alliance_target(index).and_then(|slot| {
-                    self.source_entity_view(slot)
-                        .filter(|target| {
-                            target.active && target.life >= 0 && target.control_flags & 0x400 == 0
-                        })
-                        .map(|target| target.position)
-                        .or_else(|| {
-                            players
-                                .iter()
-                                .find(|target| {
-                                    target.entity_index == slot && target.control_flags & 0x400 == 0
-                                })
-                                .map(|target| target.position)
-                        })
+                    let target = self
+                        .source_entity_view(slot)
+                        .filter(|target| target.active && target.life >= 0)?;
+                    if self.frozen_model_slots.is_none() && target.class == 3 && target.model == 0 {
+                        // The retained Level 1 entry receives current players,
+                        // while its other source views come from the reset.
+                        // Campaign callbacks instead refresh the whole arena.
+                        players
+                            .iter()
+                            .find(|player| {
+                                player.entity_index == slot && player.control_flags & 0x400 == 0
+                            })
+                            .map(|player| player.position)
+                    } else {
+                        (target.control_flags & 0x400 == 0).then_some(target.position)
+                    }
                 });
                 if let Some(position) = target {
                     if self.goats[index].phase & 3 == 0 {
@@ -3039,7 +3042,27 @@ mod tests {
                 .any(|event| matches!(event, GoatStepEvent::EngagementBoundaryReached { .. }))
         );
 
-        for rejected_flags in [0x20, 0x0000_0400] {
+        // sub_1C980 rejects the hide bit, not the perception-only 0x20 bit.
+        let mut perception_hidden = acquired.clone();
+        perception_hidden.step_with_players(
+            world.terrain(),
+            &[GoatPlayerTarget {
+                control_flags: 0x20,
+                ..player
+            }],
+        );
+        for entity_index in &engaged {
+            assert_eq!(
+                perception_hidden
+                    .goats
+                    .iter()
+                    .find(|goat| goat.entity_index == *entity_index)
+                    .unwrap()
+                    .action,
+                14,
+            );
+        }
+        for rejected_flags in [0x0000_0400] {
             let mut following_pass = acquired.clone();
             following_pass.step_with_players(
                 world.terrain(),
@@ -3057,6 +3080,26 @@ mod tests {
                 assert_eq!(goat.action, 9, "ineligible target must leave retaliation");
             }
         }
+
+        let mut moved_player = acquired.clone();
+        let index = moved_player
+            .goats
+            .iter()
+            .position(|goat| goat.entity_index == engaged[0])
+            .unwrap();
+        moved_player.config.perception_cadence = 1;
+        moved_player.config.perception_radius = 1_024;
+        moved_player.goats[index].phase = 0;
+        moved_player.goats[index].actual_speed = 0;
+        let current_player = GoatPlayerTarget {
+            position: moved_player.goats[index].position,
+            ..player
+        };
+        moved_player.step_source_slot(engaged[0], world.terrain(), &[current_player]);
+        assert_eq!(
+            moved_player.goats[index].action, 14,
+            "retaliation reads the current player position"
+        );
 
         let mut missing_target = acquired;
         missing_target.step_with_players(world.terrain(), &[]);
@@ -3279,7 +3322,7 @@ mod tests {
     }
 
     #[test]
-    fn action14_ordinary_and_direct_hit_use_distinct_rng_audio_tails() {
+    fn action14_ordinary_and_direct_hit_share_the_modulo43_tail() {
         let private_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../..");
         let world = NativeWorld::load(
             private_root.join("generated/level1-export-m"),
@@ -3304,7 +3347,8 @@ mod tests {
             control_flags: 0,
         };
 
-        // sub_1F340/sub_1F3C0 consumes one draw and tests modulo 77.
+        // Every action-14 visit calls HitGoat_1F530. A modulo-77-only
+        // seed must not sound, and retained retaliation preserves speed.
         family.goats[goat_index].action = 14;
         family.goats[goat_index].target_entity_index = Some(152);
         family.goats[goat_index].phase = 1;
@@ -3313,10 +3357,21 @@ mod tests {
         let ordinary_events = family.step_source_slot(50, world.terrain(), &[player]);
         assert_eq!(family.goats[goat_index].action, 14);
         assert_eq!(family.goats[goat_index].rng, next_rng(129));
-        assert_eq!(
-            family.goats[goat_index].actual_speed,
-            family.goats[goat_index].minimum_speed
-        );
+        assert_eq!(family.goats[goat_index].actual_speed, 0);
+        assert!(!ordinary_events.iter().any(|event| matches!(
+            event,
+            GoatStepEvent::Bleat {
+                entity_index: 50,
+                sound_id: 46,
+                action: 14,
+                ..
+            }
+        )));
+
+        // The ordinary visit also sounds for a modulo-43 seed.
+        family.goats[goat_index].phase = 1;
+        family.goats[goat_index].rng = 62;
+        let ordinary_events = family.step_source_slot(50, world.terrain(), &[player]);
         assert!(ordinary_events.iter().any(|event| matches!(
             event,
             GoatStepEvent::Bleat {
@@ -3327,7 +3382,7 @@ mod tests {
             }
         )));
 
-        // HitGoat_1F530 uses the independent modulo-43 tail.
+        // Direct damage takes the same wrapper, including its RNG draw.
         family.goats[goat_index].action = 14;
         family.goats[goat_index].target_entity_index = Some(152);
         family.goats[goat_index].phase = 1;
@@ -3685,7 +3740,7 @@ mod tests {
     }
 
     #[test]
-    fn action11_invalid_partner_consumes_damage_before_falling_back_to_roam() {
+    fn action11_invalid_partner_damage_retaliates_against_a_live_non_player_source() {
         let mut family = level_two_family();
         let primary = family
             .goats
@@ -3709,7 +3764,7 @@ mod tests {
         assert_eq!(primary.pending_damage, 100);
         assert_eq!(primary.pending_attacker, 0);
         // A non-zero but invalid relation still takes the damage branch. The
-        // The source row-98 behavior flag preserves the player-engagement bit,
+        // source row-98 behavior flag preserves the player-engagement bit,
         // so `sub_1C560(a2=8)` selects action 14 before the wrapper tail.
         assert_eq!(primary.action, 14);
         assert_eq!(primary.partner_entity_index, None);
@@ -3722,8 +3777,11 @@ mod tests {
             .goats
             .iter()
             .find(|goat| goat.entity_index == 39)
-            .expect("primary roaming Goat");
-        assert_eq!(primary.action, 9);
+            .expect("primary retaliating Goat");
+        // Source slot 7 is a live class-10 row: sub_1C980 accepts a live
+        // non-player target and does not require the player-target slice.
+        assert_eq!(primary.action, 14);
+        assert_eq!(primary.target_entity_index, Some(7));
         assert_eq!(primary.phase, 2);
         assert_eq!(primary.rng, next_rng(rng_after_transition));
     }
@@ -4583,7 +4641,8 @@ mod tests {
         family.move_action11_source(primary_index, &world);
 
         let goat = &family.goats[primary_index];
-        assert_eq!(world.material_calls.get(), 1);
+        // Retry probes run unconditionally, even without another tile cross.
+        assert_eq!(world.material_calls.get(), 2);
         assert_eq!(source_tile(goat.position).0, 0);
         assert_ne!(goat.control_flags & 0x0004_0000, 0);
     }
