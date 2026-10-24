@@ -9,10 +9,10 @@ use super::{
 use crate::{
     FlightWorld, Position,
     campaign::source_arena::SourceArena,
-    house::{HouseParameter, HouseState},
+    house::{HouseConstructionInput as Building, HouseState, decode_house_construction_inputs},
     legacy_terrain::LegacyTerrain,
     level_definition::{CaveCorridorDefinition, CaveFeatureDefinition},
-    level1_mission::{AuthoredFeature, CastleBuildFootprint, parse_authored_features},
+    level1_mission::{AuthoredFeature, parse_authored_features},
     native_world::{
         EntitySnapshot, Level2EconomyState, MapType, SessionTerrain, level1_load_house_base,
         terrain_strip::cave_corridors,
@@ -84,19 +84,12 @@ pub(crate) struct Inputs<'a> {
     pub(crate) corridors: &'a BTreeMap<u16, CaveCorridorDefinition>,
 }
 
-#[derive(Clone)]
-struct Building {
-    parameter: HouseParameter,
-    footprint: CastleBuildFootprint,
-    raw_area: u16,
-}
-
 /// `GenerateEvents_49290` / `ApplyEvents_498A0`. This adapter admits a complete
 /// supported startup family set before writing anything. Other worlds retain
 /// their own owners; an absent constructor is never a successful no-op.
 pub(crate) fn generate(inputs: Inputs<'_>) -> Result<CaveStartupWorld, String> {
     let mut features = parse_authored_features(inputs.authored)?;
-    let buildings = decode_buildings(inputs.construction)?;
+    let buildings = decode_house_construction_inputs(inputs.construction)?;
     for row in features
         .iter()
         .skip(1)
@@ -243,6 +236,26 @@ pub(crate) fn generate(inputs: Inputs<'_>) -> Result<CaveStartupWorld, String> {
             features[index].kind = 0;
         }
         apply_events(&mut arena, &mut terrain, &buildings)?;
+        #[cfg(test)]
+        if let Some(prefix) = std::env::var_os("MC_CAVE_GENERATION_PHASE_DUMP") {
+            let path = std::path::PathBuf::from(prefix).join(format!("phase-{}.bin", phase + 1));
+            let mut bytes = Vec::new();
+            for plane in [
+                &terrain.planes.terrain_types,
+                &terrain.planes.ground_heights,
+                &terrain.planes.shading,
+                &terrain.planes.angles,
+                &terrain.planes.secondary_heights,
+            ] {
+                bytes.extend_from_slice(plane);
+            }
+            for head in &terrain.planes.entity_indices {
+                bytes.extend_from_slice(&head.to_le_bytes());
+            }
+            bytes.extend_from_slice(&terrain.terrain_rng.to_le_bytes());
+            bytes.extend_from_slice(&arena.economy.global_rng.to_le_bytes());
+            std::fs::write(path, bytes).map_err(|e| e.to_string())?;
+        }
     }
     Ok(CaveStartupWorld {
         terrain,
@@ -337,7 +350,7 @@ fn construct_house(
     feature: AuthoredFeature,
     building: &Building,
 ) -> Result<Option<u16>, String> {
-    let Some(slot) = arena.economy.allocate_slot() else {
+    let Some(slot) = arena.allocate_source_slot() else {
         return Ok(None);
     };
     let (x, y, z) = level1_load_house_base(
@@ -395,61 +408,6 @@ fn step_house(
         source.record[162..164].copy_from_slice(&position.z.to_le_bytes());
     }
     Ok(())
-}
-
-fn decode_buildings(bytes: &[u8]) -> Result<BTreeMap<u8, Building>, String> {
-    if bytes.len() < 16
-        || &bytes[..4] != b"MCI3"
-        || word(bytes, 4)? != 1
-        || word(bytes, 6)? != 16
-        || word(bytes, 10)? != 1
-        || dword(bytes, 12)? != 0
-    {
-        return Err("cave construction inputs are malformed".into());
-    }
-    let mut rows = BTreeMap::new();
-    let mut offset = 16;
-    for _ in 0..word(bytes, 8)? {
-        let header = bytes
-            .get(offset..offset + 12)
-            .ok_or("truncated BUILD header")?;
-        let selector = u8::try_from(word(header, 0)?).map_err(|_| "BUILD selector exceeds u8")?;
-        let parameter = HouseParameter::from_source_record(word(header, 2)?, header[4], header[5]);
-        let raw_area = u16::from(header[6]) * u16::from(header[7]);
-        let length = dword(header, 8)? as usize;
-        offset += 12;
-        let data = bytes
-            .get(offset..offset + length)
-            .ok_or("truncated BUILD cells")?;
-        if length != usize::from(raw_area) * 2 || header[6] < 2 || header[7] < 2 {
-            return Err(format!("BUILD {selector} dimensions mismatch"));
-        }
-        let (width, height) = (header[6] >> 1, header[7] >> 1);
-        let footprint = CastleBuildFootprint::from_owner_cells(
-            selector,
-            width,
-            height,
-            &data[..usize::from(width) * usize::from(height) * 2],
-        )?;
-        if rows
-            .insert(
-                selector,
-                Building {
-                    parameter,
-                    footprint,
-                    raw_area,
-                },
-            )
-            .is_some()
-        {
-            return Err(format!("duplicate BUILD {selector}"));
-        }
-        offset += length;
-    }
-    if offset != bytes.len() {
-        return Err("trailing BUILD bytes".into());
-    }
-    Ok(rows)
 }
 
 fn word(bytes: &[u8], offset: usize) -> Result<u16, String> {
