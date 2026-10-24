@@ -185,8 +185,10 @@ namespace MagicCarpet.Native
             Slider("Mouse sensitivity (%)", ref draft.mouse_sensitivity, 10, 400);
             Slider("Joystick dead zone (%)", ref draft.joystick_dead_zone, 0, 75);
             draft.flight_assistance = GUILayout.Toggle(draft.flight_assistance, "Flight assistance (idle recenter)");
-            var labels = new[] { "Forward", "Backward", "Strafe left", "Strafe right", "Spell menu", "Map", "Spell modifier", "Spell level modifier", "Hand spell modifier", "Alternate hand modifier" };
-            for (var i = 0; i < 10; i++)
+            // Present only current operational consumers. All ten source
+            // assignments remain retained in Rust for original-screen owners.
+            var labels = new[] { "Forward", "Backward", "Strafe left", "Strafe right", "Spell menu" };
+            for (var i = 0; i < labels.Length; i++)
             {
                 GUILayout.BeginHorizontal();
                 GUILayout.Label(labels[i]);
