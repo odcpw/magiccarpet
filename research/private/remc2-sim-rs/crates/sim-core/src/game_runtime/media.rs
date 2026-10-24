@@ -194,7 +194,10 @@ impl FrontendMedia {
         (self.catalog.is_some() || self.view.error.is_some()).then(|| self.view.clone())
     }
     pub fn active(&self) -> bool {
-        self.view.active || self.awaiting_release || self.title_entry_pending
+        self.view.active
+    }
+    pub(super) fn blocks_transition(&self) -> bool {
+        self.active() || self.awaiting_release || self.title_entry_pending
     }
     /// Reset source MainMenu entry state; the next scheduled frontend frame
     /// consumes its audio actions, so an intervening identity read cannot lose
@@ -667,7 +670,7 @@ mod tests {
         owner.next_attract = true;
         owner.return_to_title();
         let _observation = owner.snapshot();
-        assert!(owner.active());
+        assert!(owner.blocks_transition());
         frame(&mut owner, 0, false);
         assert!(owner.view.clear_input);
         assert!(
@@ -701,6 +704,11 @@ mod tests {
             })
             .unwrap();
         assert!(!owner.active());
+        assert!(owner.blocks_transition());
+        frame(&mut owner, 49_999, false);
+        assert!(owner.blocks_transition());
+        frame(&mut owner, 1, false);
+        assert!(!owner.blocks_transition());
         assert_eq!(
             owner.view.error.as_deref(),
             Some("missing /override/intro1.frames")
@@ -709,5 +717,6 @@ mod tests {
             frame(&mut owner, 5_000_000, false);
         }
         assert!(!owner.active());
+        assert!(!owner.blocks_transition());
     }
 }

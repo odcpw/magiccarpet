@@ -517,7 +517,9 @@ impl<B: GameSessionBackend> GameRuntime<B> {
         self.validate_guard(guard)
             .map_err(Box::new)
             .map_err(RuntimeTransitionError::Guard)?;
-        if !matches!(self.state, RuntimeState::Title { .. }) || self.frontend_media.active() {
+        if !matches!(self.state, RuntimeState::Title { .. })
+            || self.frontend_media.blocks_transition()
+        {
             return Err(RuntimeTransitionError::InvalidMode {
                 expected: RuntimeMode::Title,
                 actual: self.identity().mode,
