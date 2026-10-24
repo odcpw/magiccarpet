@@ -537,7 +537,7 @@ impl Level2EconomyState {
     /// 32-bit value; NewEvent consumes its low word only after adding the
     /// allocated source slot. Keeping the full stream is required so the
     /// next source pass does not silently repeat after a high-word carry.
-    pub(super) fn advance_global_rng(&mut self) {
+    pub(crate) fn advance_global_rng(&mut self) {
         self.global_rng = level2_next_rng32(self.global_rng);
     }
 
@@ -2102,6 +2102,18 @@ impl Level2EconomyState {
         max_life: i16,
     ) -> Option<u16> {
         let source_entity_index = self.allocate_slot()?;
+        self.initialize_model13_smoke_child(source_entity_index, position, max_life)
+    }
+
+    /// Complete SetSmoke4 after its caller has obtained the canonical slot.
+    /// SourceArena uses this same initializer when raw replacement rows are
+    /// present; it must not return that slot to the free stack and allocate again.
+    pub(crate) fn initialize_model13_smoke_child(
+        &mut self,
+        source_entity_index: u16,
+        position: Position,
+        max_life: i16,
+    ) -> Option<u16> {
         let initial_rng = self.new_event_rng(source_entity_index);
         let entity_rng = level2_next_rng16(initial_rng);
         let actual_speed =
@@ -8464,6 +8476,120 @@ fn step_speed_trail_effect(trail: &mut SpeedTrailEffect) {
     if transition.disable_drawing {
         trail.control_flags |= ENTITY_DRAW_DISABLED_BIT;
         trail.active = false;
+    }
+}
+
+#[cfg(test)]
+mod source_effect_allocator_tests {
+    use super::*;
+    use crate::campaign::{CampaignSession, spec::CampaignSelection};
+
+    fn arena() -> crate::campaign::source_arena::SourceArena {
+        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../generated/mc-cf02-campaign-package-v2-b/qualified-level2");
+        let session = CampaignSession::open(path, CampaignSelection::LEVEL2).unwrap();
+        session.level2_compatibility().source_arena().clone()
+    }
+
+    fn raw_effect(arena: &mut crate::campaign::source_arena::SourceArena) -> u16 {
+        let slot = arena.allocate_source_slot().unwrap();
+        let position = Position {
+            x: 4096,
+            y: 4096,
+            z: 128,
+        };
+        let mut row = cave_features::new_event(slot, arena.economy.new_event_rng(slot), position);
+        row.class = 10;
+        row.model = 0;
+        row.set_control_flags(SOURCE_REPLACEABLE_FLAG);
+        arena
+            .economy
+            .map_chains
+            .sync_entity(RenderableMapSeed {
+                entity_index: slot,
+                active: true,
+                x: position.x,
+                y: position.y,
+            })
+            .unwrap();
+        row.set_map_links(
+            arena.economy.map_chains.old_map_entity(slot),
+            arena.economy.map_chains.next_entity(slot),
+        );
+        arena.entities[usize::from(slot)] = row;
+        slot
+    }
+
+    #[test]
+    fn group_rebuild_preserves_raw_birth_even_after_generation_wrap() {
+        let mut arena = arena();
+        let baseline = arena.economy.free_slots.clone();
+        let expected = *baseline.last().unwrap();
+        arena.economy.slot_generations.insert(expected, u32::MAX);
+        let born = raw_effect(&mut arena);
+        assert_eq!(born, expected);
+        assert_eq!(arena.economy.slot_generation(born), 0);
+        arena.economy.rebuild_free_arena(&baseline);
+        assert!(!arena.economy.free_slots.contains(&born));
+        assert_ne!(arena.allocate_source_slot(), Some(born));
+        assert!(arena.entities[usize::from(born)].active);
+    }
+
+    #[test]
+    fn smoke13_capacity_arbitrates_raw_and_typed_rows_without_free_stack_shim() {
+        let mut arena = arena();
+        for row in &mut arena.entities {
+            row.set_control_flags(row.control_flags & !SOURCE_REPLACEABLE_FLAG);
+        }
+        let raw = raw_effect(&mut arena);
+        let position = arena.entities[usize::from(raw)].position;
+        let typed = arena.allocate_smoke13(position).unwrap();
+        assert!(raw < typed);
+        arena.economy.free_slots.clear();
+        let mut excluded = arena.clone();
+        excluded.economy.replacement_cursor_exclusions.insert(raw);
+        assert_eq!(excluded.allocate_smoke13(position), Some(typed));
+        assert!(excluded.entities[usize::from(raw)].active);
+
+        let rng = arena.economy.global_rng;
+        let generation = arena.economy.slot_generation(raw);
+        let epoch = arena.economy.replacement_list_epoch;
+        assert_eq!(arena.allocate_smoke13(position), Some(raw));
+        assert_eq!(arena.economy.global_rng, level2_next_rng32(rng));
+        assert_eq!(
+            arena.economy.slot_generation(raw),
+            generation.wrapping_add(1)
+        );
+        assert_eq!(arena.economy.replacement_list_epoch, epoch.wrapping_add(1));
+        assert_eq!(arena.economy.free_slot_count(), 0);
+        assert!(!arena.entities[usize::from(raw)].active);
+        assert!(
+            arena
+                .economy
+                .model59_smoke_children
+                .iter()
+                .any(|row| row.active && row.source_entity_index == typed)
+        );
+        let child = arena
+            .economy
+            .model59_smoke_children
+            .iter()
+            .find(|row| row.active && row.source_entity_index == raw)
+            .unwrap();
+        assert_eq!(child.max_life, (arena.economy.global_rng % 23 + 17) as i16);
+        assert_eq!(
+            child.entity_rng,
+            level2_next_rng16(raw.wrapping_add(arena.economy.global_rng as u16))
+        );
+        assert_eq!(arena.economy.map_chains.tile_head(0x1010), raw);
+        arena
+            .economy
+            .replacement_cursor_exclusions
+            .extend([raw, typed]);
+        let rng = arena.economy.global_rng;
+        assert_eq!(arena.allocate_smoke13(position), None);
+        assert_eq!(arena.economy.global_rng, level2_next_rng32(rng));
+        assert_eq!(arena.economy.free_slot_count(), 0);
     }
 }
 

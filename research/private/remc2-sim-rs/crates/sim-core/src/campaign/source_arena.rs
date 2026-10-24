@@ -172,6 +172,32 @@ impl SourceArena {
         Some(slot)
     }
 
+    /// SetParticleSmoke3B -> SetSmoke4 over the real shared source allocator.
+    /// The process-global draw precedes NewEvent and survives allocation failure.
+    pub(crate) fn allocate_smoke13(&mut self, position: Position) -> Option<u16> {
+        self.economy.advance_global_rng();
+        let life = (self.economy.global_rng % 23 + 17) as i16;
+        let slot = self.allocate_source_slot()?;
+        let slot = self
+            .economy
+            .initialize_model13_smoke_child(slot, position, life)?;
+        for neighbor in [
+            self.economy.map_chains.old_map_entity(slot),
+            self.economy.map_chains.next_entity(slot),
+        ] {
+            if let Some(row) = self.entities.get_mut(usize::from(neighbor))
+                && neighbor != 0
+                && row.active
+            {
+                row.set_map_links(
+                    self.economy.map_chains.old_map_entity(neighbor),
+                    self.economy.map_chains.next_entity(neighbor),
+                );
+            }
+        }
+        Some(slot)
+    }
+
     #[must_use]
     pub(crate) fn topology(&self) -> SourceTopology {
         let links = self
