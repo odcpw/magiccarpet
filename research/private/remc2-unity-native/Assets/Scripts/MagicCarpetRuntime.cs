@@ -9536,10 +9536,33 @@ namespace MagicCarpet.Native
         private void PreparePlayerPreferences(string[] arguments)
         {
             var profile = ArgumentValue(arguments, "-mc-preferences-profile");
-            playerPreferences = new PlayerPreferencesPresenter(
-                json => GameRuntimeTransport.PreferencesCommand(session.Handle,
-                    session.GameRuntimeIdentity(), json),
-                string.IsNullOrWhiteSpace(profile) ? Application.persistentDataPath : profile);
+            var before = session.GameRuntimeIdentity();
+            var restorePlaying = before.mode == GameRuntimeTransport.PlayingMode &&
+                (before.session.tick != "0" || before.player_preferences?.installed == true);
+            // A restored or directly opened world is already Playing. Install
+            // operational preferences through the ordinary paused-menu gate,
+            // before any gameplay update, then preserve its original mode.
+            if (restorePlaying) session.GameRuntimePause();
+            try
+            {
+                playerPreferences = new PlayerPreferencesPresenter(
+                    json => GameRuntimeTransport.PreferencesCommand(session.Handle,
+                        session.GameRuntimeIdentity(), json),
+                    string.IsNullOrWhiteSpace(profile) ? Application.persistentDataPath : profile);
+            }
+            finally
+            {
+                if (restorePlaying) session.GameRuntimeResume();
+            }
+            if (before.mode is GameRuntimeTransport.PlayingMode or GameRuntimeTransport.PausedMode)
+            {
+                var after = session.GameRuntimeIdentity();
+                Require(after.mode == before.mode && after.session.tick == before.session.tick &&
+                    after.session.definition_hash == before.session.definition_hash,
+                    "startup preferences preserve the restored world and gameplay tick");
+                gameRuntimeCampaignSnapshot = session.GameRuntimeCampaignSnapshot();
+                campaignSession?.SynchronizeGameRuntimeIdentity(after);
+            }
             gameRuntimeNightSurface?.SetPaletteTransform(bytes => playerPreferences.ApplyBrightnessToPalette(bytes, 1));
             level2DayPresentationSurface?.SetPaletteTransform(bytes => playerPreferences.ApplyBrightnessToPalette(bytes, 0));
             level3PresentationSurface?.SetPaletteTransform(bytes => playerPreferences.ApplyBrightnessToPalette(bytes, 0));
@@ -9588,12 +9611,17 @@ namespace MagicCarpet.Native
                         try
                         {
                             AttachAndValidateGameRuntimeProductionSession(opened);
+                            PreparePlayerPreferences(Environment.GetCommandLineArgs());
+                            gameRuntimeMenu?.AttachPreferences(playerPreferences);
                             titleOwner.Dispose();
                         }
                         catch
                         {
                             // Keep the non-playing Title owner usable if the
                             // saved game's presentation resources cannot load.
+                            DisposeGameRuntimeCampaignPresentation();
+                            DestroyGameRuntimeFireballPresentation();
+                            opened.Dispose();
                             session = titleOwner;
                             gameRuntimeStartupReady = false;
                             gameRuntimeCampaignSnapshot = null;

@@ -144,6 +144,11 @@ namespace MagicCarpet.Native.Tests
             root.SetActive(false);
             var runtime = root.AddComponent<MagicCarpetRuntime>();
             var save = Path.Combine(Path.GetTempPath(), $"mc-night-play-{Guid.NewGuid():N}.json");
+            var preferencesProfile = save + ".preferences";
+            Action installPreferences = () => typeof(MagicCarpetRuntime).GetMethod(
+                "PreparePlayerPreferences", System.Reflection.BindingFlags.Instance |
+                System.Reflection.BindingFlags.NonPublic).Invoke(runtime,
+                new object[] { new[] { "-mc-preferences-profile", preferencesProfile } });
             var generated = Path.Combine(PrivateRoot, "generated");
             var cache = Path.Combine(generated, "level1-unity-asset-cache-plan29-final");
             try
@@ -168,6 +173,12 @@ namespace MagicCarpet.Native.Tests
                 Assert.That(opened.active_runtime_flow.bound_level_id, Is.EqualTo("level.magic_carpet_2.night_spire"));
                 Assert.That(opened.session.session_id, Is.EqualTo(opened.runtime_id));
                 Assert.That(opened.session.tick, Is.EqualTo("0"));
+                Assert.DoesNotThrow(() => installPreferences(),
+                    "the initial tick-zero preference install preserves its existing admission path");
+                Assert.That(runtime.GameRuntimeProductionIdentity.generation, Is.EqualTo(opened.generation));
+                Assert.That(runtime.GameRuntimeProductionIdentity.mode, Is.EqualTo(GameRuntimeTransport.PlayingMode));
+                Assert.That(runtime.GameRuntimeProductionIdentity.session.tick, Is.EqualTo("0"));
+                Assert.That(runtime.GameRuntimeProductionIdentity.player_preferences.installed, Is.True);
                 Assert.That(runtime.GameRuntimeNightPresentationReady, Is.True);
                 Assert.That(runtime.GameRuntimeNightMinimapReady, Is.True);
                 Assert.That(runtime.Level2ProductionDayHudPresenterReady, Is.True);
@@ -197,6 +208,19 @@ namespace MagicCarpet.Native.Tests
                     entity => entity.kind == "spell.fireball.projectile"), Is.True,
                     "New Game's acquired Fireball must create the real Rust semantic product");
 
+                // Exercise the same nonzero Playing save as ordinary F5/cold
+                // restore, before separately checking the paused-save path.
+                runtime.QualificationSaveGameRuntimeProductionReplayToPath(save);
+                runtime.QualificationApplyGameRuntimeProductionInput(true, false);
+                Assert.That(runtime.ExecuteGameRuntimeMenuAction(CampaignMenuPresenter.Action.Title), Is.True);
+                Assert.That(runtime.ExecuteGameRuntimeMenuAction(CampaignMenuPresenter.Action.Load), Is.True);
+                var restoredPlaying = runtime.GameRuntimeProductionCampaignSnapshot;
+                Assert.That(runtime.GameRuntimeProductionIdentity.mode, Is.EqualTo(GameRuntimeTransport.PlayingMode));
+                Assert.That(restoredPlaying.identity.tick, Is.EqualTo(cast.identity.tick));
+                Assert.That(restoredPlaying.value.state_hash, Is.EqualTo(cast.value.state_hash));
+                Assert.That(JsonUtility.ToJson(restoredPlaying.value.player_pose), Is.EqualTo(JsonUtility.ToJson(cast.value.player_pose)));
+                Assert.That(runtime.GameRuntimeProductionIdentity.player_preferences.installed, Is.True);
+
                 runtime.QualificationApplyGameRuntimeProductionInput(true, false);
                 var paused = runtime.GameRuntimeProductionCampaignSnapshot;
                 Assert.That(runtime.GameRuntimeProductionIdentity.mode, Is.EqualTo(GameRuntimeTransport.PausedMode));
@@ -208,6 +232,9 @@ namespace MagicCarpet.Native.Tests
                 Assert.That(runtime.ExecuteGameRuntimeMenuAction(CampaignMenuPresenter.Action.Load), Is.True);
                 var loaded = runtime.GameRuntimeProductionIdentity;
                 var restored = runtime.GameRuntimeProductionCampaignSnapshot;
+                Assert.DoesNotThrow(() => installPreferences());
+                Assert.That(runtime.GameRuntimeProductionIdentity.generation, Is.EqualTo(loaded.generation),
+                    "an already Paused restore stays paused without another transition");
                 Assert.That(loaded.mode, Is.EqualTo(GameRuntimeTransport.PausedMode));
                 Assert.That(loaded.active_runtime_flow.bound_level_id, Is.EqualTo(opened.active_runtime_flow.bound_level_id));
                 Assert.That(loaded.session.session_id, Is.EqualTo(loaded.runtime_id));
@@ -243,6 +270,7 @@ namespace MagicCarpet.Native.Tests
                 runtime.QualificationDisposeGameRuntimeProduction();
                 UnityEngine.Object.DestroyImmediate(root);
                 if (File.Exists(save)) File.Delete(save);
+                if (Directory.Exists(preferencesProfile)) Directory.Delete(preferencesProfile, true);
             }
             Assert.That(NativeSession.ActiveSessionCount, Is.EqualTo(activeBefore));
         }

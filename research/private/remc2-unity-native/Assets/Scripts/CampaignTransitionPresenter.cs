@@ -266,7 +266,7 @@ namespace MagicCarpet.Native
                 renderer.sharedMaterial = material;
                 root.SetActive(false);
             }
-            catch { Dispose(); throw; }
+            catch { Hide(); ReleaseSurface(); throw; }
         }
 
         private void BindFrame(byte[] topDownIndices, byte[] paletteRgb6)
@@ -428,6 +428,11 @@ namespace MagicCarpet.Native
         {
             disposed = true;
             Hide();
+            ReleaseSurface();
+        }
+
+        private void ReleaseSurface()
+        {
             DestroyObject(material);
             DestroyObject(indicesTexture);
             DestroyObject(paletteTexture);
