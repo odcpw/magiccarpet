@@ -150,7 +150,7 @@ def main(arguments):
     if not resources:
         # Local installed owner content. A supplied set replaces this entire list.
         resources = [
-            {'package': GENERATED / 'mc-cf15-level1-package-v3-current',
+            {'package': GENERATED / 'mc-bhq8-level1-collision-v5-night',
              'owner': GENERATED / 'level1-unity-asset-cache-plan29-final',
              'presentation': GENERATED / 'level1-unity-asset-cache-plan29-final'},
             {'package': GENERATED / 'level2-day-block32-campaign-v2',
