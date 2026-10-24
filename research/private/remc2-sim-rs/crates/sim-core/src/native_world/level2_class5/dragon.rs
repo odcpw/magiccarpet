@@ -108,6 +108,10 @@ impl Level2EconomyState {
                 };
                 let next_part = self.authored_dragon_parts[part_index].next_entity_index;
                 self.authored_dragon_parts[part_index].action = DRAGON_KILL_ACTION;
+                crate::combat::actors::inherit_killer(
+                    &mut source.word_0x24,
+                    self.authored_dragon_parts[part_index].word_0x24,
+                );
                 part_slot = next_part;
             }
             let pre_kill_credit = (source.word_0x24 != 0).then_some(source.word_0x24);
@@ -252,6 +256,7 @@ impl Level2EconomyState {
                 word_0x36: speed / 2,
                 pending_word_0x62: 0,
                 pending_damage: 0,
+                word_0x24: source.word_0x24,
                 word_0x26: 0,
                 model: DRAGON_MODEL,
                 action: DRAGON_PART_ACTION,
@@ -972,7 +977,9 @@ fn consume_dragon_damage(
         child_slot = child.next_entity_index;
     }
 
-    if !damaged {
+    // Source 1BF90/1C310 checks negative life even without a fresh mailbox
+    // or lower child: terrain 57390 can write life directly before this visit.
+    if !damaged && source.life >= 0 {
         return false;
     }
     if source.life < 0 {

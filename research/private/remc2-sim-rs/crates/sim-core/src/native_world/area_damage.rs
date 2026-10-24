@@ -60,7 +60,7 @@ impl<'a> ActorDomains<'a> {
                 self.villagers
                     .villagers()
                     .iter()
-                    .find(|row| row.active && row.entity_index == slot)
+                    .find(|row| row.source_retained() && row.entity_index == slot)
                     .map(super::villager_source_entity_view)
             })
     }
@@ -77,7 +77,7 @@ impl<'a> ActorDomains<'a> {
             .villagers
             .villagers()
             .iter()
-            .any(|row| row.active && row.entity_index == slot)
+            .any(|row| row.source_retained() && row.entity_index == slot)
         {
             self.villagers.submit_source_damage(slot, payload, owner)
         } else {
@@ -100,6 +100,122 @@ pub(crate) fn apply(
         },
         request,
     )
+}
+
+/// Read the same current carrier used by damage writers. Terrain owns cell
+/// traversal and admission; it must not consult a previous raw occupant.
+pub(crate) fn source_actor(
+    arena: &mut SourceArena,
+    actors: Option<ActorDomains<'_>>,
+    slot: u16,
+) -> Option<Actor> {
+    ArenaTargets {
+        arena,
+        actors,
+        player: None,
+    }
+    .actor(slot)
+}
+
+/// The direct life/credit write made by source 57390 after terrain admission.
+/// This leaves ordinary pending damage intact for the actual family callback.
+pub(crate) fn apply_construction_kill(
+    arena: &mut SourceArena,
+    mut actors: Option<ActorDomains<'_>>,
+    slot: u16,
+    source_id: u16,
+) -> Result<bool, String> {
+    let Some(target) = source_actor(arena, actors.as_mut().map(ActorDomains::reborrow), slot)
+    else {
+        return Ok(false);
+    };
+    if target.class != 5 || target.source_id == source_id {
+        return Ok(false);
+    }
+    if let Some(domains) = actors.as_mut() {
+        if domains
+            .goats
+            .goats()
+            .iter()
+            .any(|row| row.active && row.entity_index == slot)
+        {
+            domains.goats.apply_house_construction_kill(slot, source_id);
+            let goat = domains
+                .goats
+                .goats()
+                .iter()
+                .find(|row| row.entity_index == slot)
+                .ok_or_else(|| format!("construction burial lost Goat carrier {slot}"))?;
+            arena.economy.sync_authored_goat_projection(goat);
+            return Ok(true);
+        }
+        if domains
+            .villagers
+            .villagers()
+            .iter()
+            .any(|row| row.source_retained() && row.entity_index == slot)
+        {
+            domains
+                .villagers
+                .apply_house_construction_kill(slot, source_id);
+            return Ok(true);
+        }
+    }
+    let economy = &mut arena.economy;
+    if economy.apply_settlement_construction_kill(slot, source_id) {
+        return Ok(true);
+    }
+    if let Some(row) = economy
+        .castle_defenders
+        .iter_mut()
+        .find(|row| row.active && row.source_entity_index == slot)
+    {
+        row.apply_construction_kill(source_id);
+        return Ok(true);
+    }
+    if let Some(row) = economy
+        .authored_class5_model3_children
+        .iter_mut()
+        .find(|row| row.active && row.source_entity_index == slot)
+    {
+        row.life = -1;
+        row.word_0x24 = source_id;
+        row.word_0x26 = source_id;
+        return Ok(true);
+    }
+    if let Some(row) = economy
+        .authored_dragon_parts
+        .iter_mut()
+        .find(|row| row.active && row.source_entity_index == slot)
+    {
+        row.life = -1;
+        row.word_0x24 = source_id;
+        row.word_0x26 = source_id;
+        return Ok(true);
+    }
+    if let Some(row) = economy
+        .authored_class5
+        .iter_mut()
+        .find(|row| row.active && row.source_entity_index == slot)
+    {
+        row.life = -1;
+        row.word_0x24 = source_id;
+        row.word_0x26 = source_id;
+        return Ok(true);
+    }
+    if economy.live_arena_cursor_row(slot).is_some() {
+        return Err(format!(
+            "construction burial has no direct-life writer for live carrier {slot}"
+        ));
+    }
+    let row = arena
+        .entities
+        .get_mut(usize::from(slot))
+        .filter(|row| row.active && row.class == 5)
+        .ok_or_else(|| format!("construction burial lost admitted class5 slot {slot}"))?;
+    row.set_life(-1);
+    row.set_damage_result_words(source_id, source_id);
+    Ok(true)
 }
 
 struct ArenaTargets<'arena, 'actors> {
@@ -804,7 +920,7 @@ mod tests {
 
     fn ring_near(
         arena: &mut SourceArena,
-        terrain: &super::super::SessionTerrain,
+        terrain: &mut super::super::SessionTerrain,
         target: Position,
     ) -> u16 {
         // Choose an actual eligible package tile within the default ring's
@@ -819,7 +935,7 @@ mod tests {
                     };
                     let tile = usize::from(position.x >> 8) + 256 * usize::from(position.y >> 8);
                     if terrain.planes().angles[tile] & 15 != 0 {
-                        let slot = mc2::construct(arena, position, RingProfile::default())
+                        let slot = mc2::construct(arena, terrain, position, RingProfile::default())
                             .expect("ordinary ring allocation");
                         let source = &arena.entities[usize::from(slot)];
                         assert_eq!((source.class, source.model, source.action), (10, 11, 11));
@@ -893,7 +1009,7 @@ mod tests {
                 &terrain,
             )
             .expect("ordinary Firefly constructor");
-        let ring = ring_near(&mut arena, &terrain, position);
+        let ring = ring_near(&mut arena, &mut terrain, position);
         let owner = arena.entities[usize::from(ring)].source_id;
         for expected_payload in [200, 8] {
             let source = &arena.entities[usize::from(ring)];
@@ -1058,6 +1174,123 @@ mod tests {
     }
 
     #[test]
+    fn buried_dragon_parts_transfer_last_nonzero_killer_before_root_credit() {
+        let session = super::super::tests::level_two_campaign_session();
+        let terrain = session.canonical_terrain();
+        let mut arena = session.source_arena().clone();
+        let player = session.state.entity_index;
+        let root = arena
+            .economy
+            .allocate_authored_class5(1, 0, session.state.position, terrain)
+            .expect("ordinary Dragon constructor and copied body chain");
+        let earlier_owner = arena
+            .entities
+            .iter()
+            .find(|row| {
+                row.active
+                    && row.source_id != 0
+                    && row.source_id != player
+                    && row.source_id != root.source_entity_index
+            })
+            .expect("another actual source identity from the owner package")
+            .source_id;
+        let mut slot = arena
+            .economy
+            .authored_class5_runtime
+            .iter()
+            .find(|row| row.source_entity_index == root.source_entity_index)
+            .unwrap()
+            .linked_head;
+        let mut chain = Vec::new();
+        while slot != 0 {
+            let part = arena
+                .economy
+                .authored_dragon_parts
+                .iter()
+                .find(|row| row.source_entity_index == slot)
+                .unwrap();
+            assert_eq!(
+                part.word_0x24, root.word_0x24,
+                "the body copied its root killer word"
+            );
+            chain.push(slot);
+            slot = part.next_entity_index;
+        }
+        assert_eq!(chain.len(), 16);
+        assert!(apply_construction_kill(&mut arena, None, chain[0], earlier_owner).unwrap());
+        assert!(apply_construction_kill(&mut arena, None, chain[15], player).unwrap());
+        assert!(
+            arena
+                .economy
+                .step_authored_dragon_roam_slot(root.source_entity_index, &[], &[], terrain)
+                .unwrap()
+        );
+        let source = arena
+            .economy
+            .authored_class5
+            .iter()
+            .find(|row| row.source_entity_index == root.source_entity_index)
+            .unwrap();
+        assert_eq!(
+            (source.life, source.word_0x24, source.action),
+            (-1, earlier_owner, 4),
+            "minimum life selects the first lower child before PreKill"
+        );
+        let transition = arena
+            .economy
+            .step_authored_dragon_lifecycle_slot(root.source_entity_index, terrain)
+            .unwrap();
+        assert!(transition.handled);
+        assert_eq!(
+            transition.pre_kill_credit,
+            Some(player),
+            "PreKill resolves the last nonzero child killer before the counter consumer"
+        );
+        assert!(
+            arena
+                .economy
+                .authored_dragon_parts
+                .iter()
+                .filter(|row| chain.contains(&row.source_entity_index))
+                .all(|row| row.action == 5)
+        );
+        let direct_root = arena
+            .economy
+            .allocate_authored_class5(2, 0, session.state.position, terrain)
+            .expect("a second ordinary Dragon constructor");
+        assert!(
+            apply_construction_kill(&mut arena, None, direct_root.source_entity_index, player)
+                .unwrap()
+        );
+        assert!(
+            arena
+                .economy
+                .step_authored_dragon_roam_slot(direct_root.source_entity_index, &[], &[], terrain)
+                .unwrap()
+        );
+        let source = arena
+            .economy
+            .authored_class5
+            .iter()
+            .find(|row| row.source_entity_index == direct_root.source_entity_index)
+            .unwrap();
+        assert_eq!(
+            (source.life, source.action),
+            (-1, 4),
+            "direct negative life reaches death without a fresh mailbox or lower child"
+        );
+        assert_eq!(
+            source.word_0x24, 0,
+            "source upkeep clears the ownerless current attacker before assigning root credit"
+        );
+        let transition = arena
+            .economy
+            .step_authored_dragon_lifecycle_slot(direct_root.source_entity_index, terrain)
+            .unwrap();
+        assert_eq!(transition.pre_kill_credit, None);
+    }
+
+    #[test]
     fn raw_model2_timer_precedes_owner_gate_and_does_not_touch_legacy_word() {
         let session = super::super::tests::level_two_campaign_session();
         let mut arena = session.source_arena().clone();
@@ -1152,6 +1385,57 @@ mod tests {
                 .unwrap()
                 .damage_dword_0x5e_94,
             200
+        );
+        let child_slot = body_slots[0];
+        assert!(
+            !apply_construction_kill(&mut arena, None, child_slot, root.source_entity_index)
+                .unwrap()
+        );
+        assert!(apply_construction_kill(&mut arena, None, child_slot, request.owner).unwrap());
+        let child = arena
+            .economy
+            .authored_class5_model3_children
+            .iter()
+            .find(|row| row.source_entity_index == child_slot)
+            .unwrap();
+        assert_eq!(
+            (child.life, child.word_0x24, child.word_0x26),
+            (-1, request.owner, request.owner)
+        );
+        assert_eq!(
+            (child.damage_dword_0x5e_94, child.pending_word_0x62),
+            (200, request.owner),
+            "burial preserves the real ordinary mailbox"
+        );
+        assert!(arena.economy.step_authored_class5_model3_slot_with_target(
+            root.source_entity_index,
+            None,
+            terrain
+        ));
+        let source = arena
+            .economy
+            .authored_class5
+            .iter()
+            .find(|row| row.source_entity_index == root.source_entity_index)
+            .unwrap();
+        assert_eq!(
+            (source.life, source.word_0x24, source.action),
+            (-1, request.owner, 28),
+            "the root consumes its buried child's actual life and credit"
+        );
+        assert!(arena.economy.step_authored_class5_model3_slot_with_target(
+            root.source_entity_index,
+            None,
+            terrain
+        ));
+        assert!(
+            arena
+                .economy
+                .authored_class5_model3_children
+                .iter()
+                .filter(|row| body_slots.contains(&row.source_entity_index))
+                .all(|row| row.action == 29),
+            "the next root callback propagates the linked kill tail"
         );
     }
 }
