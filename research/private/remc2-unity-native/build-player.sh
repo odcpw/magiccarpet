@@ -119,8 +119,11 @@ def command(arguments, cwd, log, environment=None, diagnostic_log=None):
         result = subprocess.run(arguments, cwd=cwd, env=environment,
                                 stdout=stream, stderr=subprocess.STDOUT, check=False)
     if result.returncode:
+        hint = (' Unity Editor has no active license; sign in and activate it in Unity Hub '
+                'or Unity CLI, then rerun this command.'
+                if diagnostic_log is not None and result.returncode == 198 else '')
         raise RuntimeError(f'Command failed ({result.returncode}): {arguments[0]}. '
-                           f'Read {diagnostic_log or log}; command output: {log}')
+                           f'Read {diagnostic_log or log}; command output: {log}.{hint}')
 
 
 def main():
