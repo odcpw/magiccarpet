@@ -28,10 +28,16 @@ pub(crate) fn run() -> ExitCode {
         return game_request_error(
             "game",
             "MISSING_OPERATION",
-            "expected capabilities, describe, entities, objectives, get, workspace-create, set, validate, diff, apply, apply-status, rollback, inspect, or preview",
+            "expected session, capabilities, describe, entities, objectives, get, workspace-create, set, validate, diff, apply, apply-status, rollback, inspect, or preview",
         );
     };
     match operation {
+        "session" if arguments.len() == 3 => crate::game_session::run(),
+        "session" => game_request_error(
+            operation,
+            "UNEXPECTED_ARGUMENT",
+            "session accepts JSONL requests on stdin; start with a discover request",
+        ),
         "capabilities" if arguments.len() == 3 => game_capabilities(),
         "describe" => game_describe(&arguments[3..]),
         "entities" => game_entities(&arguments[3..]),
@@ -54,7 +60,7 @@ pub(crate) fn run() -> ExitCode {
         _ => game_request_error(
             operation,
             "UNKNOWN_OPERATION",
-            "expected capabilities, describe, entities, objectives, get, workspace-create, set, validate, diff, apply, apply-status, rollback, inspect, or preview",
+            "expected session, capabilities, describe, entities, objectives, get, workspace-create, set, validate, diff, apply, apply-status, rollback, inspect, or preview",
         ),
     }
 }
@@ -80,6 +86,7 @@ fn game_capabilities() -> ExitCode {
         "writable_descriptor_count": catalog.descriptors().filter(|descriptor| descriptor.access.as_str() == "writable").count(),
         "limits": {"default_page_size": 100, "maximum_page_size": 100},
         "operations": {
+            "session": crate::game_session::capabilities(),
             "capabilities": {"mutation": "none"},
             "describe": {"mutation": "none", "arguments": ["definition_source", "id", "limit", "cursor"]},
             "entities": {"mutation": "none", "arguments": ["definition_source", "id", "limit", "cursor"]},

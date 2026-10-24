@@ -1,6 +1,7 @@
 use atlas_registry::AtlasRegistry;
 mod game_authoring;
 mod game_contract;
+mod game_session;
 
 use sim_core::legacy_terrain::LegacyTerrain;
 use sim_core::level1_mission::{
