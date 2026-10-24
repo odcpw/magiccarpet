@@ -11058,6 +11058,10 @@ def validate_cache(
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest="command", required=True)
+    media = subparsers.add_parser("build-media")
+    media.add_argument("--owner-root", type=Path, default=DEFAULT_OWNER)
+    media.add_argument("--output", type=Path, required=True)
+    media.add_argument("--language", type=int, default=1)
     build = subparsers.add_parser("build")
     build.add_argument("--owner-root", type=Path, default=DEFAULT_OWNER)
     build.add_argument("--package", type=Path, default=DEFAULT_PACKAGE)
@@ -11165,7 +11169,21 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
     args = parse_args()
     try:
-        if args.command == "build":
+        if args.command == "build-media":
+            import sys
+            sys.modules.setdefault("build_cache", sys.modules[__name__])
+            from build_media_cache import build as build_media
+            try:
+                manifest = build_media(args.owner_root, args.output, args.language)
+            except (CacheError, OSError, subprocess.SubprocessError) as error:
+                print(json.dumps({"schema": "mc2-media-import-result/v1", "ok": False,
+                    "error": {"code": "MEDIA_IMPORT_FAILED", "message": str(error)}}), file=sys.stderr)
+                return 2
+            print(json.dumps({"schema": "mc2-media-import-result/v1", "ok": True,
+                "cache": str(args.output), "clips": [
+                    {"id": clip["id"], "frames": clip["frame_count"]} for clip in manifest["clips"]],
+                "audio_assets": len(manifest["audio"]), "output_count": len(manifest["outputs"])}))
+        elif args.command == "build":
             manifest = build_cache(
                 args.owner_root,
                 args.package,

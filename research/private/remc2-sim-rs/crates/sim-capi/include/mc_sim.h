@@ -1367,6 +1367,13 @@ int32_t mc_game_runtime_completion_transition_receipt_json_v1(
 int32_t mc_game_runtime_campaign_menu_command_json_v1(
     uint64_t handle, uint64_t generation,
     const uint8_t *request, uint32_t request_len);
+/* Bounded JSON commands; observations are in runtime identity. */
+int32_t mc_game_runtime_media_command_json_v1(
+    uint64_t handle, uint64_t generation,
+    const uint8_t *request, uint32_t request_len);
+int32_t mc_game_runtime_preferences_command_json_v1(
+    uint64_t handle, uint64_t generation,
+    const uint8_t *request, uint32_t request_len);
 int32_t mc_game_runtime_finish_mission_if_ready_v1(
     uint64_t handle, uint64_t runtime_generation,
     uint64_t session_generation, uint64_t expected_tick);

@@ -279,6 +279,16 @@ namespace MagicCarpet.Native
         private static int qualificationTransactionalCleanupCount;
         internal bool HadSuppressedUnknown { get; private set; }
         internal bool HadSuppressedUnsupportedPositional { get; private set; }
+        private float preferenceSoundGain = 1f;
+
+        internal void ApplyPreferences(PlayerPreferences preferences)
+        {
+            preferenceSoundGain = preferences.sound_enabled ? preferences.sound_volume / 127f : 0;
+            musicSource.volume = 0.55f * (preferences.music_enabled ? preferences.music_volume / 127f : 0);
+            foreach (var voice in positionalVoices) voice.Source.volume = preferenceSoundGain;
+            foreach (var state in loops.Values)
+                state.Source.volume = state.CurrentUnits / 127f * preferenceSoundGain;
+        }
 
         private OwnerAudioPresentation(
             GameObject root,
@@ -576,7 +586,7 @@ namespace MagicCarpet.Native
                     else if (state.CurrentUnits > state.TargetUnits)
                         state.CurrentUnits = Math.Max(
                             state.TargetUnits, state.CurrentUnits - callbacks);
-                    state.Source.volume = state.CurrentUnits / 127f;
+                    state.Source.volume = state.CurrentUnits / 127f * preferenceSoundGain;
                 }
             }
             if (musicTimerActive)
@@ -1005,7 +1015,7 @@ namespace MagicCarpet.Native
                 rightGain);
             state.Source.clip = state.RenderedClip;
             state.Source.loop = false;
-            state.Source.volume = 1f;
+            state.Source.volume = preferenceSoundGain;
             state.Source.panStereo = 0f;
             state.Source.pitch = command.playbackRateHz / 22050f;
             state.SoundId = command.soundId;
@@ -1441,6 +1451,17 @@ namespace MagicCarpet.Native
             if (source == null) return;
             source.Stop();
             source.clip = null;
+        }
+
+        internal static AudioClip CreateMediaClip(string name, byte[] bytes)
+        {
+            var wave = ParseWave(bytes);
+            if (wave.SampleWidth == 1 && wave.Channels == 1)
+                return CreatePcm8Clip(name, wave);
+            Require(wave.SampleWidth == 2, "media PCM16 or mono PCM8");
+            var stream = new StreamingPcm16(wave.Pcm, wave.Channels);
+            return AudioClip.Create(name, wave.Frames, wave.Channels,
+                wave.SampleRate, true, stream.Read, stream.Seek);
         }
 
         private static AudioClip CreatePcm8Clip(string name, WaveData wave)

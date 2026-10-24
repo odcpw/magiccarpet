@@ -288,6 +288,8 @@ mod tests {
         // Stage only the menu's input boundary. This test exercises real
         // package resolution/loading, not preceding gameplay completion.
         let mut runtime = GameRuntime::<Mc2CampaignBackend> {
+            frontend_media: super::media::FrontendMedia::default(),
+            player_preferences: super::preferences::PreferenceStore::default(),
             runtime_id: 771,
             generation: 4,
             completed_levels: vec![first.clone()],
@@ -386,6 +388,8 @@ mod tests {
         );
 
         let mut terminal = GameRuntime::<Mc2CampaignBackend> {
+            frontend_media: super::media::FrontendMedia::default(),
+            player_preferences: super::preferences::PreferenceStore::default(),
             runtime_id: 772,
             generation: 8,
             completed_levels: resolver

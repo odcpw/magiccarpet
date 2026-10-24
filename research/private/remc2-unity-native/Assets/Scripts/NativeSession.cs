@@ -200,7 +200,9 @@ namespace MagicCarpet.Native
             sbyte flags,
             ushort lookYaw,
             ushort lookPitch,
-            string selectSpell = null)
+            string selectSpell = null,
+            bool recenter = false,
+            bool fullStop = false)
         {
             return gameRuntime?.CampaignStep(
                     roll,
@@ -208,7 +210,7 @@ namespace MagicCarpet.Native
                     flags,
                     lookYaw,
                     lookPitch,
-                    selectSpell) ??
+                    selectSpell, recenter, fullStop) ??
                 throw new InvalidOperationException("session does not own a game runtime");
         }
 

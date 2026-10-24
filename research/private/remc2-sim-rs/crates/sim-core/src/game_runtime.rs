@@ -18,6 +18,8 @@ use sha2::{Digest, Sha256};
 use std::{error::Error, fmt, num::NonZeroU64, sync::Arc};
 
 mod campaign_menu;
+pub mod media;
+pub mod preferences;
 pub use campaign_menu::{CampaignMenuCommand, CampaignMenuPhase, CampaignMenuSnapshot};
 
 // GOLDEN-CHANGE candidate: v11 adds the campaign owner required by remc2's
@@ -143,6 +145,9 @@ pub struct RuntimeIdentity {
     #[serde(serialize_with = "serialize_u64_decimal")]
     pub generation: u64,
     pub mode: RuntimeMode,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub frontend_media: Option<media::MediaSnapshot>,
+    pub player_preferences: preferences::PreferencesSnapshot,
     pub presentation: RuntimePresentationCue,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub campaign_menu: Option<CampaignMenuSnapshot>,
@@ -408,6 +413,8 @@ pub struct GameRuntime<B> {
     generation: u64,
     state: RuntimeState<B>,
     completed_levels: Vec<SemanticLevelId>,
+    frontend_media: media::FrontendMedia,
+    player_preferences: preferences::PreferenceStore,
 }
 
 impl<B: GameSessionBackend> GameRuntime<B> {
@@ -425,6 +432,8 @@ impl<B: GameSessionBackend> GameRuntime<B> {
             runtime_id,
             generation: 1,
             completed_levels: Vec::new(),
+            frontend_media: media::FrontendMedia::default(),
+            player_preferences: preferences::PreferenceStore::default(),
             state: RuntimeState::Title {
                 session_generation: NonZeroU64::MIN,
                 presentation_cue: SemanticPresentationCueId::parse(TITLE_PRESENTATION_CUE_ID)
@@ -488,6 +497,8 @@ impl<B: GameSessionBackend> GameRuntime<B> {
             runtime_id: self.runtime_id,
             generation: self.generation,
             mode,
+            frontend_media: self.frontend_media.snapshot(),
+            player_preferences: self.player_preferences.snapshot(),
             presentation,
             campaign_menu: self.campaign_menu_snapshot(),
             pending_definition,
@@ -506,13 +517,33 @@ impl<B: GameSessionBackend> GameRuntime<B> {
         self.validate_guard(guard)
             .map_err(Box::new)
             .map_err(RuntimeTransitionError::Guard)?;
-        if !matches!(self.state, RuntimeState::Title { .. }) {
+        if !matches!(self.state, RuntimeState::Title { .. }) || self.frontend_media.active() {
             return Err(RuntimeTransitionError::InvalidMode {
                 expected: RuntimeMode::Title,
                 actual: self.identity().mode,
             });
         }
         Ok(())
+    }
+
+    /// Advance presentation-only frontend work using the same guarded owner.
+    pub fn frontend_media_command(
+        &mut self,
+        guard: RuntimeGuard,
+        command: media::MediaCommand,
+    ) -> Result<(), RuntimeTransitionError> {
+        self.validate_guard(guard)
+            .map_err(Box::new)
+            .map_err(RuntimeTransitionError::Guard)?;
+        if !matches!(self.state, RuntimeState::Title { .. }) {
+            return Err(RuntimeTransitionError::InvalidMode {
+                expected: RuntimeMode::Title,
+                actual: self.identity().mode,
+            });
+        }
+        self.frontend_media
+            .command(command)
+            .map_err(|message| RuntimeTransitionError::InvalidRuntimeFlow { message })
     }
 
     /// Enter the loading boundary with one immutable definition.
@@ -526,6 +557,7 @@ impl<B: GameSessionBackend> GameRuntime<B> {
         guard: RuntimeGuard,
         definition: Arc<GameDefinition>,
     ) -> Result<RuntimeIdentity, RuntimeTransitionError> {
+        self.preflight_title_transition(guard)?;
         self.validate_guard(guard)
             .map_err(Box::new)
             .map_err(RuntimeTransitionError::Guard)?;
@@ -1610,6 +1642,8 @@ mod tests {
         let mut runtime = GameRuntime {
             runtime_id,
             generation: 4,
+            frontend_media: media::FrontendMedia::default(),
+            player_preferences: preferences::PreferenceStore::default(),
             completed_levels: vec![resolver.flow().entry_level_id().clone()],
             state: RuntimeState::Loading {
                 definition,
@@ -1645,6 +1679,8 @@ mod tests {
         let mut runtime = GameRuntime {
             runtime_id,
             generation: 6,
+            frontend_media: media::FrontendMedia::default(),
+            player_preferences: preferences::PreferenceStore::default(),
             completed_levels: resolver
                 .flow()
                 .entries()
@@ -2665,6 +2701,8 @@ mod tests {
             // this is not evidence of playing through the preceding levels.
             let mut source = GameRuntime {
                 runtime_id: 523,
+                frontend_media: media::FrontendMedia::default(),
+                player_preferences: preferences::PreferenceStore::default(),
                 generation: 6,
                 completed_levels: Vec::new(),
                 state: RuntimeState::Loading {
@@ -2773,6 +2811,8 @@ mod tests {
         // upkeep, pause and replay work use the ordinary production routes.
         let mut source = GameRuntime {
             runtime_id: 525,
+            frontend_media: media::FrontendMedia::default(),
+            player_preferences: preferences::PreferenceStore::default(),
             generation: 6,
             completed_levels: Vec::new(),
             state: RuntimeState::Loading {
@@ -4001,6 +4041,8 @@ mod tests {
             .unwrap(),
         );
         let mut spliced = GameRuntime::<Mc2CampaignBackend> {
+            frontend_media: media::FrontendMedia::default(),
+            player_preferences: preferences::PreferenceStore::default(),
             runtime_id: 223,
             generation: 4,
             completed_levels: Vec::new(),

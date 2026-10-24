@@ -98,6 +98,28 @@ impl RuntimeRecord {
         })
     }
 
+    pub(super) fn step_with_preferences(
+        &mut self,
+        guard: SessionGuard,
+        command: sim_session::GameCommand,
+    ) -> AbiResult<()> {
+        self.ensure_open()?;
+        self.runtime
+            .step_player_with_preferences(guard, command)
+            .map(|_| ())
+            .map_err(|error| match error {
+                sim_core::game_runtime::preferences::PreferenceStepError::Unavailable => {
+                    AbiError::new(
+                        MC_STATUS_INVALID_ARGUMENT,
+                        "INVALID_RUNTIME_MODE: preferences step requires playing",
+                    )
+                }
+                sim_core::game_runtime::preferences::PreferenceStepError::Session(error) => {
+                    super::game_session_abi::map_campaign_session_error(error)
+                }
+            })
+    }
+
     fn bootstrap_package_set(
         &mut self,
         handle: u64,
@@ -867,6 +889,19 @@ pub extern "C" fn mc_game_runtime_contract_json_v1(
                 "deterministic_work": "package_declared_pre_gate",
                 "replay": "ordered_operation"
             },
+            "frontend_media": {
+                "contract": sim_core::game_runtime::media::MEDIA_CONTRACT,
+                "command_transport": "mc_game_runtime_media_command_json_v1",
+                "observation": "identity.frontend_media",
+                "maximum_command_json_bytes": 256 * 1024,
+                "guards": ["runtime_generation", "title_mode"]
+            },
+            "player_preferences": {
+                "command_transport": "mc_game_runtime_preferences_command_json_v1",
+                "observation": "identity.player_preferences",
+                "maximum_command_json_bytes": 64 * 1024,
+                "guards": ["runtime_generation", "frontend_or_opening_install"]
+            },
             "runtime_flow": {
                 "title": "absent",
                 "loading": "pending_definition.runtime_flow",
@@ -1111,6 +1146,79 @@ pub extern "C" fn mc_game_runtime_finish_mission_if_ready_v1(
                 session_generation,
                 expected_tick,
             )
+        })
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn mc_game_runtime_preferences_command_json_v1(
+    handle: u64,
+    generation: u64,
+    request: *const u8,
+    request_len: u32,
+) -> i32 {
+    boundary(|| {
+        if request_len > 64 * 1024 {
+            return Err(AbiError::new(
+                MC_STATUS_BOUNDS,
+                "preferences JSON exceeds 64KiB",
+            ));
+        }
+        let json = utf8_input(request, request_len, "preferences command")?;
+        let command = serde_json::from_str(&json).map_err(|error| {
+            AbiError::new(
+                MC_STATUS_INVALID_ARGUMENT,
+                format!("invalid preferences command: {error}"),
+            )
+        })?;
+        with_runtime_mut(handle, |record| {
+            record
+                .runtime
+                .preferences_command(
+                    RuntimeGuard {
+                        runtime_id: handle,
+                        generation,
+                    },
+                    command,
+                )
+                .map(|_| ())
+                .map_err(|error| AbiError::new(MC_STATUS_INVALID_ARGUMENT, error))
+        })
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn mc_game_runtime_media_command_json_v1(
+    handle: u64,
+    generation: u64,
+    request: *const u8,
+    request_len: u32,
+) -> i32 {
+    boundary(|| {
+        if request_len > 256 * 1024 {
+            return Err(AbiError::new(
+                MC_STATUS_BOUNDS,
+                "frontend media JSON exceeds 256KiB",
+            ));
+        }
+        let json = utf8_input(request, request_len, "frontend media command")?;
+        let command = serde_json::from_str(&json).map_err(|error| {
+            AbiError::new(
+                MC_STATUS_INVALID_ARGUMENT,
+                format!("invalid frontend media command: {error}"),
+            )
+        })?;
+        with_runtime_mut(handle, |record| {
+            record
+                .runtime
+                .frontend_media_command(
+                    RuntimeGuard {
+                        runtime_id: handle,
+                        generation,
+                    },
+                    command,
+                )
+                .map_err(map_transition_error)
         })
     })
 }

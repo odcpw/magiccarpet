@@ -182,11 +182,70 @@ namespace MagicCarpet.Native
             public string runtime_id;
             public string generation;
             public string mode;
+            public MediaSnapshot frontend_media;
+            public PlayerPreferencesSnapshot player_preferences;
             public RuntimePresentationCue presentation;
             public CampaignMenuSnapshot campaign_menu;
             public DefinitionIdentity pending_definition;
             public RuntimeFlowDefinition active_runtime_flow;
             public EngineSessionTransport.Identity session;
+        }
+
+        [Serializable]
+        internal sealed class MediaSnapshot
+        {
+            public string contract;
+            public uint epoch;
+            public bool active;
+            public string clip_id;
+            // A negative frame index means the Rust owner has no visible frame.
+            public int frame_index;
+            public int fade_in_level;
+            public int fade_out_level;
+            public string frames_path;
+            public int width;
+            public int height;
+            public string subtitle;
+            public int subtitle_viewport_offset;
+            public MediaAction[] actions;
+            public string error;
+            public bool clear_input;
+            public bool retain_previous_frame;
+        }
+
+        [Serializable]
+        internal sealed class MediaAction
+        {
+            public string op;
+            public int value;
+            public string asset_path;
+            public int volume_units;
+        }
+
+        [DllImport("sim_capi", CallingConvention = CallingConvention.Cdecl)]
+        private static extern int mc_game_runtime_preferences_command_json_v1(
+            ulong handle, ulong generation, byte[] request, uint length);
+
+        internal static PlayerPreferencesSnapshot PreferencesCommand(
+            ulong handle, Identity identity, string json)
+        {
+            var bytes = Encoding.UTF8.GetBytes(json);
+            Check(mc_game_runtime_preferences_command_json_v1(handle,
+                ParseCounter(identity.generation, "generation"), bytes,
+                checked((uint)bytes.Length)), "apply player preferences");
+            return ReadIdentity(handle).player_preferences;
+        }
+
+        [DllImport("sim_capi", CallingConvention = CallingConvention.Cdecl)]
+        private static extern int mc_game_runtime_media_command_json_v1(
+            ulong handle, ulong generation, byte[] request, uint length);
+
+        internal static void MediaCommand(ulong handle, Identity identity, string json)
+        {
+            var bytes = Encoding.UTF8.GetBytes(json);
+            Check(mc_game_runtime_media_command_json_v1(handle,
+                ParseCounter(identity.generation, "generation"), bytes,
+                checked((uint)bytes.Length)), "advance frontend media");
         }
 
         [Serializable]
@@ -304,13 +363,18 @@ namespace MagicCarpet.Native
         internal Identity IdentitySnapshot()
         {
             var handle = RequireHandle();
+            Current = ReadIdentity(handle);
+            return Current;
+        }
+
+        internal static Identity ReadIdentity(ulong handle)
+        {
             var identity = ReadJson<Identity>(
                 (IntPtr buffer, uint capacity, out uint length) =>
                     NativeSim.mc_game_runtime_identity_json_v1(
                         handle, buffer, capacity, out length),
                 "read game runtime identity");
             ValidateIdentity(identity, handle);
-            Current = identity;
             return identity;
         }
 
@@ -616,7 +680,9 @@ namespace MagicCarpet.Native
             sbyte flags,
             ushort lookYaw,
             ushort lookPitch,
-            string selectSpell = null)
+            string selectSpell = null,
+            bool recenter = false,
+            bool fullStop = false)
         {
             RequireSessionMode(allowPaused: false, "campaign step");
             var before = Current;
@@ -633,7 +699,7 @@ namespace MagicCarpet.Native
                 lookYaw,
                 lookPitch,
                 NegotiatedSessionContract.limits.maximum_command_json_bytes,
-                selectSpell);
+                selectSpell, recenter, fullStop);
             var identity = IdentitySnapshot();
             if (identity.mode != PlayingMode ||
                 ParseCounter(identity.generation, "generation") != beforeRuntimeGeneration ||
