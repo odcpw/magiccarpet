@@ -147,7 +147,7 @@ namespace MagicCarpet.Native.Tests
                         level_id = "level.authored.new_destination"
                     },
                     pending_definition = new GameRuntimeTransport.DefinitionIdentity {
-                        definition_hash = new string('a', 64), package_graph_hash = new string('b', 64),
+                        definition_hash = "sha256:" + new string('a', 64), package_graph_hash = "sha256:" + new string('b', 64),
                         definition_revision = "1",
                         runtime_flow = new GameRuntimeTransport.RuntimeFlowDefinition {
                             bound_level_id = "level.authored.new_destination"
@@ -164,7 +164,7 @@ namespace MagicCarpet.Native.Tests
                 };
                 presenter.Present(identity, binding);
                 Assert.That(presenter.IsVisible, Is.True);
-                binding.definition_hash = new string('e', 64);
+                binding.definition_hash = "sha256:" + new string('e', 64);
                 Assert.Throws<InvalidDataException>(() => presenter.Present(identity, binding));
                 Assert.That(presenter.IsVisible, Is.False, "a failed binding hides the previous frame");
                 Assert.Throws<InvalidOperationException>(() =>
