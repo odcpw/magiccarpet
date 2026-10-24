@@ -107,6 +107,9 @@ pub(crate) struct Level2AuthoredStageVariable {
     pub flags: u8,
     pub stage: u8,
     pub selector: u16,
+    /// The complete authored union word at +4. For direct entity routes it
+    /// is an authored row index, rather than the low-byte point coordinate.
+    pub relation_word: u16,
     pub point_x: u8,
     pub point_y: u8,
 }
@@ -122,6 +125,13 @@ impl Level2AuthoredStageVariable {
     #[must_use]
     pub fn point(self) -> (u16, u16) {
         (u16::from(self.point_x) << 8, u16::from(self.point_y) << 8)
+    }
+
+    #[must_use]
+    pub const fn references_authored_entity(self, authored_index: u16) -> bool {
+        matches!(self.kind, 3 | 4 | 5 | 8 | 9)
+            && self.flags & 2 == 0
+            && self.relation_word == authored_index
     }
 }
 
@@ -832,6 +842,7 @@ fn parse_level2_authored_stage_variables(
             flags,
             stage: bytes[1],
             selector,
+            relation_word: u16::from_le_bytes([bytes[4], bytes[5]]),
             point_x: bytes[4],
             point_y: bytes[6],
         });
@@ -908,6 +919,85 @@ mod tests {
         assert_ne!(session.state_hash(), baseline);
         session.clone_from(&reset);
         assert_eq!(session.state_hash(), baseline);
+    }
+
+    #[test]
+    fn authored_stage_entity_references_retain_high_word_and_exclude_model_routes() {
+        let authored = std::fs::read(
+            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../../generated/mc-bhq6-ordinary-20261024-b/level14/authored-level.bin"),
+        )
+        .expect("real Level 14 authored map");
+        let features = parse_authored_features(&authored).unwrap();
+        let variables = parse_level2_authored_stage_variables(&authored, &features).unwrap();
+        let direct = variables.iter().find(|stage| stage.index == 5).unwrap();
+        // The source names creature row 0x138, not its low-byte alias 0x38.
+        assert_eq!((features[312].kind, features[312].subtype), (5, 18));
+        assert_eq!(direct.relation_word, 312);
+        assert!(direct.references_authored_entity(312));
+        assert!(!direct.references_authored_entity(56));
+        let model = variables.iter().find(|stage| stage.index == 6).unwrap();
+        assert_eq!(model.relation_word, 518);
+        assert!(
+            !model.references_authored_entity(518),
+            "model routes retain their exemplar instead of binding one live entity"
+        );
+    }
+
+    #[test]
+    fn authored_goat_constructor_publishes_direct_reference_without_own_route() {
+        use crate::campaign::{CampaignSession, spec::CampaignSelection};
+        use crate::native_world::RuntimeRelation;
+        let package = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../generated/mc-cf14-campaign-package-v1-a/qualified-level3");
+        let mut campaign = CampaignSession::open(package, CampaignSelection::LEVEL3).unwrap();
+        // Exercise a direct route to an actual group-5 Goat using the real
+        // producer. The original row is a model route to another family.
+        let authored_index = 166;
+        let live = &mut campaign.level2_compatibility_mut().session.state.live;
+        let authored = live
+            .mission
+            .level2_authored_stage_variables
+            .iter_mut()
+            .find(|stage| stage.index == 1)
+            .unwrap();
+        authored.flags &= !2;
+        authored.raw_type &= !0x40;
+        authored.relation_word = authored_index;
+        let runtime = &mut live.core.runtime;
+        let original_counter = runtime.stage_variables[1].word_2;
+        runtime.stage_variables[1].flags = (runtime.stage_variables[1].flags & !2) | 4;
+        campaign
+            .level2_compatibility_mut()
+            .activate_authored_group_prerequisite_for_test(5)
+            .unwrap();
+        let session = campaign.level2_compatibility();
+        let source = session
+            .economy()
+            .authored_class5()
+            .iter()
+            .find(|source| source.authored_index == authored_index)
+            .unwrap();
+        let goat = session
+            .goats()
+            .iter()
+            .find(|goat| goat.entity_index == source.source_entity_index)
+            .unwrap();
+        assert_eq!((goat.action, goat.stage_var_1), (9, 0));
+        let runtime = session.runtime();
+        assert_eq!(
+            runtime.stage_variables[1].relation,
+            RuntimeRelation::LiveEntity(source.source_entity_index)
+        );
+        assert_eq!(runtime.stage_variables[1].flags & 4, 0);
+        assert_eq!(runtime.stage_variables[1].word_2, original_counter);
+        let bytes = &runtime.bytes()[404..416];
+        assert_eq!(bytes[1], runtime.stage_variables[1].flags as u8);
+        assert_eq!(bytes[4..8], [1, 0, 0, 0]);
+        assert_eq!(
+            u32::from_le_bytes(bytes[8..12].try_into().unwrap()),
+            u32::from(source.source_entity_index) + 1
+        );
     }
 
     #[test]
@@ -1152,6 +1242,18 @@ impl MissionContentSession {
             })
     }
 
+    /// `sub_12100`'s second pass publishes the constructed creature into
+    /// every direct route that names it, independently of its own AI route.
+    pub(crate) fn level2_authored_stage_variable_references_to(
+        &self,
+        authored_index: u16,
+    ) -> impl Iterator<Item = u8> + '_ {
+        self.level2_authored_stage_variables
+            .iter()
+            .filter(move |stage| stage.references_authored_entity(authored_index))
+            .map(|stage| stage.index)
+    }
+
     #[must_use]
     #[cfg(test)]
     pub(crate) fn level2_activation_plan(&self) -> Option<&Level2ActivationPlan> {
@@ -1218,7 +1320,7 @@ impl MissionContentSession {
             hasher.update(settings.record_bytes());
         }
         if !self.level2_authored_stage_variables.is_empty() {
-            hasher.update(b"level2-authored-stage-vars-v1");
+            hasher.update(b"level2-authored-stage-vars-v2");
             for stage_var in &self.level2_authored_stage_variables {
                 hasher.update([
                     stage_var.index,
@@ -1230,6 +1332,7 @@ impl MissionContentSession {
                     stage_var.point_y,
                 ]);
                 hasher.update(stage_var.selector.to_le_bytes());
+                hasher.update(stage_var.relation_word.to_le_bytes());
             }
         }
         if let Some(plan) = &self.level2_activation_plan {

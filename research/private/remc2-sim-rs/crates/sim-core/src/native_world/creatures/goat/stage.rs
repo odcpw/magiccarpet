@@ -233,7 +233,9 @@ impl GoatFamily {
             6 | 7 | 8 | 9 => self.stage_movement(index, world, variables, None, false),
             10 => self.goats[index].action = self.engagement_action(index),
             12 => {
-                let parent = self.source_entity_view(self.goats[index].parent_entity_index);
+                let parent = self
+                    .source_entity_view(self.goats[index].parent_entity_index)
+                    .filter(|parent| parent.active);
                 if parent.is_none_or(|parent| !parent.active || parent.life < 0) {
                     self.goats[index].control_flags |= 0x400;
                 }

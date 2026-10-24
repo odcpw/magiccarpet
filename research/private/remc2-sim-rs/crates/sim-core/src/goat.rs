@@ -258,6 +258,26 @@ impl LiveWorldState {
         event
     }
 
+    pub(crate) fn submit_source_damage(&mut self, slot: u16, payload: u16, owner: u16) -> bool {
+        if self
+            .houses
+            .houses()
+            .iter()
+            .any(|house| house.active && house.entity_index == slot)
+        {
+            self.houses.submit_source_damage(slot, payload, owner)
+        } else if self
+            .villagers
+            .villagers()
+            .iter()
+            .any(|villager| villager.active && villager.entity_index == slot)
+        {
+            self.villagers.submit_source_damage(slot, payload, owner)
+        } else {
+            self.goats.submit_source_damage(slot, payload, owner)
+        }
+    }
+
     pub fn inject_damage(
         &mut self,
         entity_index: u16,

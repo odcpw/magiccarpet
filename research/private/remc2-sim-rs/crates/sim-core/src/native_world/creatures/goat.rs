@@ -841,12 +841,11 @@ impl GoatFamily {
     }
 
     fn source_entity_view(&self, entity_index: u16) -> Option<SourceEntityView> {
-        if let Some((goat_index, goat)) = self
-            .goats
-            .iter()
-            .enumerate()
-            .find(|(_, goat)| goat.entity_index == entity_index)
-        {
+        // Runtime metadata is refreshed from the arena. A reclaimed Goat's
+        // tombstone must not shadow a different occupant reusing its slot.
+        if let Some((goat_index, goat)) = self.goats.iter().enumerate().find(|(_, goat)| {
+            goat.entity_index == entity_index && (goat.active || self.frozen_model_slots.is_none())
+        }) {
             return Some(SourceEntityView {
                 entity_index: goat.entity_index,
                 source_id: goat.source_id,
@@ -2028,6 +2027,26 @@ impl GoatFamily {
             return false;
         };
         self.goats[index] = updated;
+        true
+    }
+
+    /// The source area writer accepts zero payload and owner words. Its
+    /// caller owns overlap selection; this owner retains the real mailbox.
+    pub(crate) fn submit_source_damage(&mut self, slot: u16, payload: u16, owner: u16) -> bool {
+        let Some(goat) = self
+            .goats
+            .iter_mut()
+            .find(|goat| goat.active && goat.entity_index == slot && goat.source_id != owner)
+        else {
+            return false;
+        };
+        let mut pending = goat.pending_attacker.cast_unsigned();
+        DamageMailboxMut::new(&mut goat.pending_damage, &mut pending).submit(
+            i32::from(payload),
+            owner,
+            DamageWriter::Ordinary,
+        );
+        goat.pending_attacker = pending.cast_signed();
         true
     }
 

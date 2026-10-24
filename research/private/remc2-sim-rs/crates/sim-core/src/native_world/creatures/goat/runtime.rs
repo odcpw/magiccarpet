@@ -185,7 +185,10 @@ impl GoatFamily {
             }
         }
         for index in 0..self.goats.len() {
-            if !self.goats[index].active || matches!(self.goats[index].action & 7, 4 | 5) {
+            if !self.goats[index].active
+                || !model_slots[1].contains(&self.goats[index].entity_index)
+                || matches!(self.goats[index].action & 7, 4 | 5)
+            {
                 continue;
             }
             let stage_index = self.goats[index].stage_var_1 as u8;
@@ -239,9 +242,13 @@ impl GoatFamily {
                 }
                 3 | 4 | 5 | 8 | 9 => {
                     if stage.flags as u8 & 4 != 0 {
+                        if stage.kind == 3 {
+                            self.goats[index].stage_target = 0;
+                        }
                         stage.kind != 3 || !attacking
                     } else {
-                        if stage.flags as u8 & 2 != 0
+                        if matches!(stage.kind, 3 | 4 | 5)
+                            && stage.flags as u8 & 2 != 0
                             && self.goats[index].stage_target != 0
                             && self
                                 .source_entity_view(self.goats[index].stage_target)
