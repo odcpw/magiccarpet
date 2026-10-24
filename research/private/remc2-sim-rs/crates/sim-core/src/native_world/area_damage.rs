@@ -35,6 +35,14 @@ impl<'a> ActorDomains<'a> {
         }
     }
 
+    pub(crate) fn reborrow(&mut self) -> ActorDomains<'_> {
+        ActorDomains {
+            goats: &mut *self.goats,
+            houses: &mut *self.houses,
+            villagers: &mut *self.villagers,
+        }
+    }
+
     fn source_view(&self, slot: u16) -> Option<crate::level1_mission::Level1SourceEntityView> {
         self.goats
             .goats()
@@ -45,7 +53,7 @@ impl<'a> ActorDomains<'a> {
                 self.houses
                     .houses()
                     .iter()
-                    .find(|row| row.active && row.entity_index == slot)
+                    .find(|row| row.source_retained() && row.entity_index == slot)
                     .map(super::house_source_entity_view)
             })
             .or_else(|| {
@@ -62,7 +70,7 @@ impl<'a> ActorDomains<'a> {
             .houses
             .houses()
             .iter()
-            .any(|row| row.active && row.entity_index == slot)
+            .any(|row| row.source_retained() && row.entity_index == slot)
         {
             self.houses.submit_source_damage(slot, payload, owner)
         } else if self
@@ -98,6 +106,163 @@ struct ArenaTargets<'arena, 'actors> {
     arena: &'arena mut SourceArena,
     actors: Option<ActorDomains<'actors>>,
     player: Option<(u16, Position)>,
+}
+
+/// The source class/model heads are frozen before the numeric Update scan.
+/// A fallback NewEvent clears those heads; map-chain membership stays live.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct EffectLists {
+    class3: Vec<u16>,
+    model45: Vec<u16>,
+    epoch: u32,
+}
+
+pub(crate) fn capture_effect_lists(
+    arena: &mut SourceArena,
+    actors: Option<ActorDomains<'_>>,
+) -> EffectLists {
+    let targets = ArenaTargets {
+        arena,
+        actors,
+        player: None,
+    };
+    let mut model45 = targets
+        .arena
+        .live_model45_buildings()
+        .into_iter()
+        .map(|(slot, _, _)| slot)
+        .collect::<Vec<_>>();
+    if let Some(domains) = targets.actors.as_ref() {
+        model45.extend(
+            domains
+                .houses
+                .houses()
+                .iter()
+                .filter(|row| row.source_retained())
+                .map(|row| row.entity_index),
+        );
+    }
+    model45.sort_unstable();
+    model45.dedup();
+    EffectLists {
+        class3: targets.class3_slots(),
+        model45,
+        epoch: targets.arena.economy.replacement_list_epoch,
+    }
+}
+
+/// Adapt the same live actor carriers to the distinct 10C80/11400 policies.
+/// No effect-owned victim mirror or second damage mailbox is introduced.
+pub(crate) fn apply_effect(
+    arena: &mut SourceArena,
+    actors: Option<ActorDomains<'_>>,
+    player: Option<(u16, Position)>,
+    masks: Option<&super::CollisionMaskBank>,
+    lists: &EffectLists,
+    request: crate::world::effects::DamagePulse,
+) -> Result<u16, String> {
+    crate::world::effects::apply_damage(
+        &mut EffectTargets {
+            targets: ArenaTargets {
+                arena,
+                actors,
+                player,
+            },
+            masks,
+            lists,
+        },
+        request,
+    )
+}
+
+struct EffectTargets<'arena, 'actors, 'assets> {
+    targets: ArenaTargets<'arena, 'actors>,
+    masks: Option<&'assets super::CollisionMaskBank>,
+    lists: &'assets EffectLists,
+}
+
+impl AreaWorld for EffectTargets<'_, '_, '_> {
+    fn class3_slots(&self) -> Vec<u16> {
+        if self.targets.arena.economy.replacement_list_epoch == self.lists.epoch {
+            self.lists.class3.clone()
+        } else {
+            Vec::new()
+        }
+    }
+
+    fn cell_slots(&self, x: u8, y: u8) -> Vec<u16> {
+        self.targets.cell_slots(x, y)
+    }
+    fn actor(&self, slot: u16) -> Option<Actor> {
+        self.targets.actor(slot)
+    }
+    fn mark_model2(&mut self, slot: u16) -> Result<(), String> {
+        self.targets.mark_model2(slot)
+    }
+    fn ordinary_damage(&mut self, slot: u16, payload: u16, owner: u16) -> Result<(), String> {
+        self.targets.ordinary_damage(slot, payload, owner)
+    }
+}
+
+impl crate::world::effects::DamageWorld for EffectTargets<'_, '_, '_> {
+    fn model45_slots(&self) -> Vec<u16> {
+        if self.targets.arena.economy.replacement_list_epoch == self.lists.epoch {
+            self.lists.model45.clone()
+        } else {
+            Vec::new()
+        }
+    }
+
+    fn model45_contact(
+        &self,
+        request: crate::world::effects::DamagePulse,
+        slot: u16,
+    ) -> Result<bool, String> {
+        let Some(target) = self.targets.actor(slot) else {
+            return Ok(false);
+        };
+        if !super::level2_compare_axis_with_shift(
+            request.position,
+            request.half_width,
+            request.half_width,
+            target.position,
+            target.shape.half_width,
+            target.shape.half_depth,
+        ) {
+            return Ok(false);
+        }
+        let selector = self
+            .targets
+            .actors
+            .as_ref()
+            .and_then(|domains| {
+                domains
+                    .houses
+                    .houses()
+                    .iter()
+                    .find(|row| row.source_retained() && row.entity_index == slot)
+                    .map(|row| row.building_index)
+            })
+            .or_else(|| {
+                self.targets
+                    .arena
+                    .live_model45_buildings()
+                    .into_iter()
+                    .find(|(id, _, _)| *id == slot)
+                    .map(|(_, selector, _)| selector)
+            })
+            .ok_or_else(|| {
+                format!("effect model45 slot {slot} lost its retained building selector")
+            })?;
+        let bank = self.masks.ok_or_else(|| {
+            "effect model45 contact requires the retained collision-mask bank".to_owned()
+        })?;
+        Ok(super::level2_model76_model45_occupancy(
+            bank,
+            u16::from(selector),
+            request.position,
+        ))
+    }
 }
 
 fn shape(width: i16, depth: i16, offset: i16, height: i16) -> Shape {
@@ -186,6 +351,37 @@ impl AreaWorld for ArenaTargets<'_, '_> {
                 ),
                 damage_mask: mask,
                 control_flags: view.control_flags,
+            });
+        }
+        if let Some(row) = economy
+            .spheres
+            .iter()
+            .find(|row| row.active && row.source_entity_index == slot)
+        {
+            let extent = super::level2_mana_sphere_dimension(row.mana);
+            return Some(Actor {
+                source_id: row.source_entity_index,
+                class: 10,
+                model: 39,
+                position: row.position,
+                shape: shape(extent, extent, extent, extent),
+                damage_mask: 3,
+                control_flags: row.control_flags,
+            });
+        }
+        if let Some(row) = economy
+            .castle_defenders
+            .iter()
+            .find(|row| row.active && row.source_entity_index == slot)
+        {
+            return Some(Actor {
+                source_id: row.id_entity_index,
+                class: 5,
+                model: 15,
+                position: row.position,
+                shape: shape(row.shift_rot_x, row.shift_rot_y, 125, row.fov),
+                damage_mask: row.byte_38,
+                control_flags: row.control_flags,
             });
         }
         if let Some(row) = economy
@@ -454,6 +650,30 @@ impl AreaWorld for ArenaTargets<'_, '_> {
             return Ok(());
         }
         let economy = &mut self.arena.economy;
+        if let Some(row) = economy
+            .spheres
+            .iter_mut()
+            .find(|row| row.active && row.source_entity_index == slot)
+        {
+            DamageMailboxMut::new(
+                &mut row.ordinary_damage_payload,
+                &mut row.ordinary_damage_owner,
+            )
+            .submit(i32::from(payload), owner, DamageWriter::Ordinary);
+            return Ok(());
+        }
+        if let Some(row) = economy
+            .castle_defenders
+            .iter_mut()
+            .find(|row| row.active && row.source_entity_index == slot)
+        {
+            DamageMailboxMut::new(
+                &mut row.pending_damage,
+                &mut row.pending_attacker_entity_index,
+            )
+            .submit(i32::from(payload), owner, DamageWriter::Ordinary);
+            return Ok(());
+        }
         if let Some(row) = economy
             .castle
             .as_mut()
@@ -746,6 +966,94 @@ mod tests {
         assert_eq!(
             session.economy().castle().unwrap().life,
             initial_castle_life - 208
+        );
+    }
+
+    #[test]
+    fn ordinary_sphere_birth_retains_area_mailbox_and_hit_count_without_mana_loss() {
+        let session = super::super::tests::level_two_campaign_session();
+        let terrain = session.canonical_terrain();
+        let mut arena = session.source_arena().clone();
+        let sphere = arena
+            .economy
+            .allocate_authored_model39(1, session.state.entity_index, session.state.position)
+            .expect("ordinary authored mana-sphere constructor");
+        assert_eq!(
+            sphere.control_flags & 8,
+            8,
+            "NewEvent's damage admission bit"
+        );
+        assert_eq!(
+            (sphere.ordinary_damage_payload, sphere.ordinary_damage_owner),
+            (0, 0)
+        );
+        let extent = super::super::level2_mana_sphere_dimension(sphere.mana);
+        let mut request = AreaDamage {
+            position: sphere.position,
+            shape: shape(1, 1, extent, 1),
+            owner: sphere.source_entity_index,
+            payload: 200,
+            selector: (10, 39),
+            mode: 0,
+        };
+        assert_eq!(apply(&mut arena, None, None, request).unwrap(), 0);
+        let zero_hash = arena.economy.reset_hash();
+        request.owner = session.state.entity_index;
+        for (payload, total) in [(200, 200), (8, 208)] {
+            request.payload = payload;
+            assert_eq!(apply(&mut arena, None, None, request).unwrap(), 1);
+            let current = arena
+                .economy
+                .spheres()
+                .iter()
+                .find(|row| row.source_entity_index == sphere.source_entity_index)
+                .unwrap();
+            assert_eq!(
+                (
+                    current.ordinary_damage_payload,
+                    current.ordinary_damage_owner
+                ),
+                (total, request.owner)
+            );
+            assert_eq!(current.mana, sphere.mana);
+            assert_eq!(current.owner_entity_index, sphere.owner_entity_index);
+            assert_eq!(current.incoming_possession_payload, 0);
+            assert_eq!(current.incoming_owner_entity_index, 0);
+        }
+        assert_ne!(arena.economy.reset_hash(), zero_hash);
+        assert!(
+            arena
+                .economy
+                .step_mana_sphere_slot(sphere.source_entity_index, terrain)
+        );
+        let current = arena
+            .economy
+            .spheres()
+            .iter()
+            .find(|row| row.source_entity_index == sphere.source_entity_index)
+            .unwrap();
+        assert!(current.active);
+        assert_eq!(
+            (
+                current.ordinary_damage_payload,
+                current.ordinary_damage_owner
+            ),
+            (208, request.owner),
+            "the actual Sphere callback retains ordinary damage words"
+        );
+        assert_eq!(current.mana, sphere.mana);
+        let mut cleared = arena.economy.clone();
+        let current = cleared
+            .spheres
+            .iter_mut()
+            .find(|row| row.source_entity_index == sphere.source_entity_index)
+            .unwrap();
+        current.ordinary_damage_payload = 0;
+        current.ordinary_damage_owner = 0;
+        assert_ne!(
+            cleared.reset_hash(),
+            arena.economy.reset_hash(),
+            "the authoritative retained mailbox participates in the source hash"
         );
     }
 
