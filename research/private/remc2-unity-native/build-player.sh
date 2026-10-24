@@ -212,7 +212,8 @@ def main():
                     diagnostic_log=logs / 'unity.log')
             if before != unity_inputs() or contract != native_contract() or rust_before != rust_inputs():
                 raise RuntimeError(f'Unity build changed authored inputs or source moved; installed player preserved. Read {logs}')
-            if not os.access(stage / PLAYER, os.X_OK) or digest(stage / PLUGIN) != native_hash:
+            if (not os.access(stage / PLAYER, os.X_OK) or not (stage / PLUGIN).is_file()
+                    or digest(stage / PLUGIN) != native_hash):
                 raise RuntimeError(f'Unity output is missing or bundled a different plugin. Read {logs / "unity.log"}')
             receipt = {'schema': 'mc-player-install/v1', 'unity_inputs': before,
                        'native_contract': contract, 'native_sha256': native_hash,
