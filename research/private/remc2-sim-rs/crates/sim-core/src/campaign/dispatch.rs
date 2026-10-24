@@ -339,7 +339,7 @@ compiled_registry! {
         (BuilderVillagerPostBuild, 5, [105]);
         (VillagerFamily, 5, [106, 107, 108, 109, 110, 111]);
         (TraderFamily, 5, [112, 113, 114, 115, 116, 117, 118, 119]);
-        (CastleAuxiliary, 5, [121, 122, 124, 125]);
+        (CastleAuxiliary, 5, [120, 121, 122, 123, 124, 125, 127]);
         (FireflyFamily, 5, [153, 154, 155, 156, 157, 159]);
         (MultipartFamily, 5, [232]);
         (ProjectileFamily, 9, [0, 1, 10, 13]);
@@ -347,7 +347,7 @@ compiled_registry! {
         (ProjectileFamily, 9, [18]);
         (CaveSpell, 9, [31]);
         (TerrainDisasters, 10, [11]);
-        (Class10Effects, 10, [0, 1, 2, 5, 6, 12, 13, 14, 17, 19, 22, 41, 42, 43, 44, 45, 48, 51, 52, 53, 58, 59, 64, 65, 76, 77, 80, 83, 86, 98]);
+        (Class10Effects, 10, [0, 1, 2, 3, 4, 5, 6, 7, 12, 13, 14, 16, 17, 18, 19, 22, 41, 42, 43, 44, 45, 48, 51, 52, 53, 58, 59, 64, 65, 76, 77, 80, 83, 86, 98]);
         (SwitchProducers, 11, [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 31]);
         (ObjectiveSwitch, 11, [32]);
         (Class14Events, 14, [8, 9, 10]);
@@ -357,7 +357,8 @@ compiled_registry! {
         (BallisticScenery, 2, [21]);
         (Model9Family, 5, [79]);
         (TerrainStripController, 10, [68, 69]);
-        (CaveFeatures, 10, [87, 88, 89, 90, 91, 92, 93, 94]);
+        (CaveFeatures, 10, [87, 88, 89, 90, 91, 92, 93]);
+        (Class10Effects, 10, [94]);
         (CaveSpell, 10, [96]);
         (CountdownSwitch, 11, [13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44]);
         (TerrainStripController, 14, [6, 7]);
@@ -388,7 +389,7 @@ compiled_registry! {
         (Model6ProjectileChild, 9, [14]);
         (ProjectileFamily, 9, [17]);
         (CaveSpell, 9, [30]);
-        (Class10Effects, 10, [0, 1, 2, 5, 6, 12, 13, 14, 17, 19, 22, 39, 40, 41, 42, 43, 45, 53, 54, 59, 60, 70, 76, 79, 91]);
+        (Class10Effects, 10, [0, 1, 2, 3, 4, 5, 6, 7, 12, 13, 14, 16, 17, 18, 19, 22, 39, 40, 41, 42, 43, 45, 53, 54, 59, 60, 70, 76, 79, 87, 88, 90, 91]);
         (TerrainStripController, 10, [63, 64]);
         (CaveFeatures, 10, [80, 81, 82, 83, 84, 85, 86]);
         (CaveSpell, 10, [89]);
@@ -643,8 +644,12 @@ mod tests {
             (5, &[74, 76, 77][..], "level2-model9-family"),
             (5, &[8][..], "goat-family"),
             (5, &[32][..], "archer-family"),
-            (5, &[121, 122, 124, 125][..], "level2-castle-auxiliary"),
-            (10, &[80][..], "class10-effects"),
+            (
+                5,
+                &[120, 121, 122, 123, 124, 125, 127][..],
+                "level2-castle-auxiliary",
+            ),
+            (10, &[3, 4, 7, 16, 18, 80][..], "class10-effects"),
             (
                 11,
                 &[2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 31][..],
@@ -675,7 +680,8 @@ mod tests {
             (2_u16, &[21_u16][..], "ballistic-scenery"),
             (5, &[79][..], "level2-model9-family"),
             (10, &[68, 69][..], "terrain-strip-controller"),
-            (10, &[87, 88, 89, 90, 91, 92, 93, 94][..], "cave-features"),
+            (10, &[87, 88, 89, 90, 91, 92, 93][..], "cave-features"),
+            (10, &[94][..], "class10-effects"),
             (10, &[96][..], "cave-spell"),
             (
                 11,
@@ -697,6 +703,7 @@ mod tests {
         }
         for (class, models, handler) in [
             (2_u16, &[8_u16][..], "ballistic-scenery"),
+            (10, &[3, 4, 7, 16, 18, 87, 88, 90][..], "class10-effects"),
             (10, &[63, 64][..], "terrain-strip-controller"),
             (10, &[80, 81, 82, 83, 84, 85, 86][..], "cave-features"),
             (
@@ -744,7 +751,7 @@ mod tests {
         assert_eq!(registry["action_dispatch_sites"][0], "ApplyEvents");
         assert_eq!(registry["action_dispatch_sites"][1], "UpdateEntities");
         assert_eq!(registry["constructor_dispatch_site"], "Constructor");
-        assert_eq!(CAMPAIGN_BEHAVIOR_REGISTRY.entries().len(), 532);
+        assert_eq!(CAMPAIGN_BEHAVIOR_REGISTRY.entries().len(), 556);
         validate_against_source(CAMPAIGN_BEHAVIOR_REGISTRY.entries(), &source_keys)
             .expect("compiled entries retain exact pinned sites and selector shapes");
 

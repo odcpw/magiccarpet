@@ -152,16 +152,16 @@ fn source_audio_occurrence_bindings_are_unique_and_exhaustive() {
         .map(|(_, hash)| *hash)
         .collect::<BTreeSet<_>>();
 
-    assert_eq!(SourceAudioCallTag::ALL.len(), 59);
-    assert_eq!(SOURCE_AUDIO_CALL_BINDINGS.len(), 59);
-    assert_eq!(all_tags.len(), 59, "every source tag must be distinct");
+    assert_eq!(SourceAudioCallTag::ALL.len(), 61);
+    assert_eq!(SOURCE_AUDIO_CALL_BINDINGS.len(), 61);
+    assert_eq!(all_tags.len(), 61, "every source tag must be distinct");
     assert_eq!(
         bound_tags, all_tags,
         "every source tag must bind exactly once"
     );
     assert_eq!(
         bound_hashes.len(),
-        59,
+        61,
         "each reachable source occurrence must retain a distinct pinned hash"
     );
     assert!(SOURCE_AUDIO_CALL_BINDINGS.iter().all(|(_, hash)| {

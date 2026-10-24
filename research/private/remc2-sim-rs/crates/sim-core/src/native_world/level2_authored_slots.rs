@@ -2,6 +2,12 @@
 // This child module preserves native_world's prior effective visibility boundary.
 use super::*;
 
+impl ParticleParameter {
+    pub(crate) fn animation_limit(&self) -> Option<u8> {
+        campaign_shared_families::particle_animation_limit(self.render_mode)
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum AuthoredBeeSound {
     Action17Acquire(u16),
@@ -23,7 +29,7 @@ impl AuthoredBeeStepOutcome {
 
 impl Level2EconomyState {
     #[cfg(test)]
-    pub(super) fn from_parts(
+    pub(crate) fn from_parts(
         terrain: SessionTerrain,
         entities: &[EntitySnapshot],
         player_mana: i32,
@@ -45,7 +51,7 @@ impl Level2EconomyState {
         )
     }
 
-    pub(super) fn from_parts_with_castle_stage_footprints(
+    pub(crate) fn from_parts_with_castle_stage_footprints(
         terrain: SessionTerrain,
         entities: &[EntitySnapshot],
         player_mana: i32,
@@ -312,6 +318,7 @@ impl Level2EconomyState {
             castle: None,
 
             castle_children: Vec::new(),
+            castle_defenders: Vec::new(),
 
             castle_footprint: None,
 
@@ -355,12 +362,11 @@ impl Level2EconomyState {
         &self,
         mut visit: impl FnMut(u16, Level2DynamicArenaKind),
     ) {
-        for child in self.castle_children.iter().filter(|child| {
-            child.active
-                && child.source_class == 5
-                && child.model == 15
-                && child.control_flags & SOURCE_REPLACEABLE_FLAG != 0
-        }) {
+        for child in self
+            .castle_defenders
+            .iter()
+            .filter(|child| child.active && child.control_flags & SOURCE_REPLACEABLE_FLAG != 0)
+        {
             visit(
                 child.source_entity_index,
                 Level2DynamicArenaKind::CastleAuxiliary,
@@ -439,16 +445,14 @@ impl Level2EconomyState {
 
         match kind {
             Level2DynamicArenaKind::CastleAuxiliary => {
-                let Some(index) = self.castle_children.iter().position(|child| {
+                let Some(index) = self.castle_defenders.iter().position(|child| {
                     child.active
                         && child.source_entity_index == slot
-                        && child.source_class == 5
-                        && child.model == 15
                         && child.control_flags & SOURCE_REPLACEABLE_FLAG != 0
                 }) else {
                     return None;
                 };
-                self.castle_children.remove(index);
+                self.castle_defenders.remove(index);
             }
             Level2DynamicArenaKind::ManaSphere => remove_flagged_row!(self.spheres),
             Level2DynamicArenaKind::DeathBurst => remove_flagged_row!(self.death_bursts),
@@ -571,7 +575,7 @@ impl Level2EconomyState {
     /// `sub_49F90`: reclaim rows already marked inactive, then retry the
     /// allocator from descending source-slot order without inventing a new
     /// pool or changing any live relation.
-    pub(super) fn rebuild_free_arena(&mut self, reset_free_slots: &[u16]) {
+    pub(crate) fn rebuild_free_arena(&mut self, reset_free_slots: &[u16]) {
         self.replacement_cursor_exclusions.clear();
         // sub_49F90 scans class-zero slots; it does not run sub_57F20 on
         // switches hidden earlier in this same source pass.
@@ -668,7 +672,7 @@ impl Level2EconomyState {
         &self.spheres
     }
 
-    pub(super) fn spheres_mut(&mut self) -> &mut [ManaSphere] {
+    pub(crate) fn spheres_mut(&mut self) -> &mut [ManaSphere] {
         &mut self.spheres
     }
 
@@ -831,6 +835,14 @@ impl Level2EconomyState {
     #[must_use]
     pub fn model76_children(&self) -> &[Level2Model76Child] {
         &self.model76_children
+    }
+
+    pub(crate) fn effect_sphere_roots_mut(&mut self) -> &mut [Level2AuthoredModel76Source] {
+        &mut self.authored_model76
+    }
+
+    pub(crate) fn effect_sphere_children_mut(&mut self) -> &mut [Level2Model76Child] {
+        &mut self.model76_children
     }
 
     /// Bind the exact `array_0x52_82` collision selectors copied by the
@@ -1002,6 +1014,9 @@ impl Level2EconomyState {
         let removed_free_slot = self.free_slots.last().copied();
         self.free_slots.clear();
         for child in &mut self.castle_children {
+            child.control_flags &= !SOURCE_REPLACEABLE_FLAG;
+        }
+        for child in &mut self.castle_defenders {
             child.control_flags &= !SOURCE_REPLACEABLE_FLAG;
         }
         macro_rules! make_nonreplaceable {
@@ -2450,6 +2465,7 @@ impl Level2EconomyState {
             dword_0x10: 0,
             control_flags: 0x20_000,
             sprite_index: 244,
+            animation_frame: 0,
             last_sound_id: 0,
             position: grounded_position,
             phase: source_entity_index as u8,
@@ -2541,12 +2557,14 @@ impl Level2EconomyState {
             player_entity_index: 0,
             incoming_owner_entity_index: 0,
             incoming_possession_payload: 0,
+            ordinary_damage_payload: 0,
+            ordinary_damage_owner: 0,
             attraction_source_entity_index: 0,
             attraction_step: 0,
             attraction_distance_high: 0,
             assigned_carrier_id: 0,
             assigned_defender_slot: 0,
-            control_flags: 0,
+            control_flags: 8,
             // NewEvent seeds byte 0x3E from the allocated arena row.  The
             // typed phase is the corresponding source-visible byte.
             phase: source_entity_index as u8,
@@ -3832,25 +3850,19 @@ impl Level2EconomyState {
         &mut self,
         authored_index: u16,
         position: Position,
-        terrain: &SessionTerrain,
+        _terrain: &SessionTerrain,
     ) -> Option<Level2AuthoredModel17Source> {
         let source_entity_index = self.allocate_slot()?;
+        Some(self.initialize_authored_model17(source_entity_index, authored_index, position))
+    }
+
+    pub(crate) fn initialize_authored_model17(
+        &mut self,
+        source_entity_index: u16,
+        authored_index: u16,
+        position: Position,
+    ) -> Level2AuthoredModel17Source {
         let entity_rng = self.new_event_rng(source_entity_index);
-        let mut position = position;
-        position.z = terrain.ground_height(position);
-        if self
-            .map_chains
-            .sync_entity(RenderableMapSeed {
-                entity_index: source_entity_index,
-                active: true,
-                x: position.x,
-                y: position.y,
-            })
-            .is_err()
-        {
-            self.release_slot(source_entity_index, None);
-            return None;
-        }
         let source = Level2AuthoredModel17Source {
             source_entity_index,
             entity_id: source_entity_index,
@@ -3873,7 +3885,7 @@ impl Level2EconomyState {
         };
         self.source_rng.insert(source_entity_index, entity_rng);
         self.authored_model17.push(source);
-        Some(source)
+        source
     }
 
     /// Advance one authored Meteor through pinned `sub_32880`.  SEARCH.DAT
@@ -4027,6 +4039,7 @@ impl Level2EconomyState {
                 pitch: parent_pitch,
                 source_word_2c: 0,
                 target_source_entity_index,
+                animation_frame: 0,
                 position,
                 phase: source_entity_index as u8,
                 active: true,
@@ -4415,7 +4428,7 @@ impl Level2EconomyState {
         &mut self,
         authored_index: u16,
         position: Position,
-        terrain: &SessionTerrain,
+        _terrain: &SessionTerrain,
     ) -> Option<Level2AuthoredModel76Source> {
         if self.free_slots.len() < 1 + LEVEL2_MODEL76_CHILD_COUNT {
             return None;
@@ -4423,8 +4436,7 @@ impl Level2EconomyState {
         let state_before = self.clone();
         let source_entity_index = self.allocate_slot()?;
         let entity_rng = self.new_event_rng(source_entity_index);
-        let mut root_position = position;
-        root_position.z = terrain.ground_height(root_position);
+        let root_position = position;
         if self
             .map_chains
             .sync_entity(RenderableMapSeed {
@@ -4536,6 +4548,8 @@ impl Level2EconomyState {
                 entity_rng: child_rng,
                 parent_entity_index: source_entity_index,
                 parent_entity_id: root.entity_id,
+                pending_damage: 0,
+                pending_damage_owner: 0,
                 source_class: 10,
                 model: 77,
                 action: 84,
@@ -4560,7 +4574,7 @@ impl Level2EconomyState {
                 shift_rot_x: root.shift_rot_x,
                 shift_rot_y: root.shift_rot_y,
                 position: child_position,
-                phase: root.phase,
+                phase: index as u8,
                 control_flags,
                 drawing_enabled: true,
                 active: true,
@@ -5302,6 +5316,10 @@ impl Level2EconomyState {
         &self.castle_children
     }
 
+    pub fn castle_defenders(&self) -> &[creatures::creature_15::CastleDefenderState] {
+        &self.castle_defenders
+    }
+
     #[must_use]
     pub(crate) fn slot_generation(&self, slot: u16) -> u32 {
         self.slot_generations
@@ -5380,6 +5398,12 @@ impl Level2EconomyState {
                     42 | 41 => Level2DynamicArenaKind::CastleChild,
                     _ => Level2DynamicArenaKind::CastleChild,
                 },
+            );
+        }
+        for defender in self.castle_defenders.iter().filter(|row| row.active) {
+            visit(
+                defender.source_entity_index,
+                Level2DynamicArenaKind::CastleAuxiliary,
             );
         }
         for sphere in self.spheres.iter().filter(|sphere| sphere.active) {
@@ -5760,9 +5784,13 @@ impl Level2EconomyState {
                 .filter(|row| row.active && row.source_entity_index == source_slot)
                 .map(|row| (row.source_class, row.action)),
             Level2DynamicArenaKind::CastleChild
-            | Level2DynamicArenaKind::CastleAuxiliary
             | Level2DynamicArenaKind::CastleDefender
             | Level2DynamicArenaKind::CastleController => selector!(self.castle_children),
+            Level2DynamicArenaKind::CastleAuxiliary => self
+                .castle_defenders
+                .iter()
+                .find(|row| row.active && row.source_entity_index == source_slot)
+                .map(|row| (5, row.action)),
             Level2DynamicArenaKind::ManaSphere => self
                 .spheres
                 .iter()
@@ -5939,6 +5967,10 @@ impl Level2EconomyState {
         self.free_slots.len()
     }
 
+    pub(crate) fn free_source_slots(&self) -> &[u16] {
+        &self.free_slots
+    }
+
     #[must_use]
     pub fn events(&self) -> &[Level2EconomyEvent] {
         &self.events
@@ -5998,6 +6030,12 @@ impl Level2EconomyState {
                 .map(|child| child.source_entity_index),
         );
         active_dynamic_source_slots.extend(
+            self.castle_defenders
+                .iter()
+                .filter(|row| row.active)
+                .map(|row| row.source_entity_index),
+        );
+        active_dynamic_source_slots.extend(
             self.spheres
                 .iter()
                 .filter(|sphere| sphere.active)
@@ -6035,6 +6073,21 @@ impl Level2EconomyState {
                 child.model,
                 child.player_entity_index,
                 child.mana,
+            );
+        }
+        let defenders = self
+            .castle_defenders
+            .iter()
+            .filter(|row| row.active)
+            .copied()
+            .collect::<Vec<_>>();
+        for actor in defenders {
+            self.install_owner_mana_row(
+                actor.source_entity_index,
+                5,
+                15,
+                actor.player_entity_index,
+                actor.mana,
             );
         }
         let spheres = self
@@ -6344,6 +6397,29 @@ impl Level2EconomyState {
         defer_bee_creatures: bool,
         at_source_boundary: bool,
     ) {
+        if at_source_boundary {
+            // DisableEntityDrawing04 hides this occupant for the remainder of
+            // its visit. UpdateEntities reclaims it at the next pass boundary.
+            macro_rules! expire_hidden_effects {
+                ($rows:expr) => {
+                    for row in &mut $rows {
+                        if row.control_flags & 0x400 != 0 {
+                            row.active = false;
+                        }
+                    }
+                };
+            }
+            expire_hidden_effects!(self.authored_model1);
+            expire_hidden_effects!(self.authored_model5_water_splashes);
+            expire_hidden_effects!(self.authored_model6);
+            expire_hidden_effects!(self.authored_model13);
+            expire_hidden_effects!(self.model13_spawned_children);
+            expire_hidden_effects!(self.model59_smoke_children);
+            expire_hidden_effects!(self.model17_spawned_children);
+            expire_hidden_effects!(self.authored_model17);
+            expire_hidden_effects!(self.authored_model76);
+            expire_hidden_effects!(self.model76_children);
+        }
         // Castle projectiles are disabled by their source callback and
         // reclaimed only by reclaim_hidden_castle_rows_at_source_boundary at
         // the following UpdateEntities prologue. Same-pass reclamation would
@@ -6955,6 +7031,18 @@ impl Level2EconomyState {
             .filter(|child| !child.active)
             .map(|child| (child.source_entity_index, child.entity_rng))
             .collect::<Vec<_>>();
+        let reclaimed_defenders = self
+            .castle_defenders
+            .iter()
+            .filter(|row| !row.active || row.reclaimable())
+            .map(|row| (row.source_entity_index, row.entity_rng))
+            .collect::<Vec<_>>();
+        self.castle_defenders
+            .retain(|row| row.active && !row.reclaimable());
+        for (slot, rng) in reclaimed_defenders {
+            self.map_chains.set_map_entity_unlink(slot);
+            self.release_slot(slot, Some(rng));
+        }
         self.castle_children.retain(|child| child.active);
         for (slot, entity_rng) in reclaimed_children {
             self.release_slot(slot, Some(entity_rng));
@@ -7074,6 +7162,11 @@ impl Level2EconomyState {
             hasher.update(sphere.player_entity_index.to_le_bytes());
             hasher.update(sphere.incoming_owner_entity_index.to_le_bytes());
             hasher.update(sphere.incoming_possession_payload.to_le_bytes());
+            if sphere.ordinary_damage_payload != 0 || sphere.ordinary_damage_owner != 0 {
+                hasher.update(b"mana-sphere-ordinary-mailbox-v1");
+                hasher.update(sphere.ordinary_damage_payload.to_le_bytes());
+                hasher.update(sphere.ordinary_damage_owner.to_le_bytes());
+            }
             hasher.update(sphere.attraction_source_entity_index.to_le_bytes());
             hasher.update(sphere.attraction_step.to_le_bytes());
             hasher.update(sphere.attraction_distance_high.to_le_bytes());
@@ -7486,6 +7579,10 @@ impl Level2EconomyState {
         }
         hasher.update(b"level2-authored-model5-water-splash-v1");
         for source in &self.authored_model5_water_splashes {
+            if source.animation_frame != 0 {
+                hasher.update(b"ash-frame-v1");
+                hasher.update([source.animation_frame]);
+            }
             hasher.update(source.source_entity_index.to_le_bytes());
             hasher.update(source.entity_id.to_le_bytes());
             hasher.update(source.entity_rng.to_le_bytes());
@@ -7596,6 +7693,10 @@ impl Level2EconomyState {
             hasher.update([u8::from(source.active)]);
         }
         for child in &self.model17_spawned_children {
+            if child.animation_frame != 0 {
+                hasher.update(b"impact-frame-v1");
+                hasher.update([child.animation_frame]);
+            }
             hasher.update(child.source_entity_index.to_le_bytes());
             hasher.update(child.entity_rng.to_le_bytes());
             hasher.update(child.parent_entity_index.to_le_bytes());
@@ -7713,6 +7814,11 @@ impl Level2EconomyState {
             ]);
         }
         for child in &self.model76_children {
+            if child.pending_damage != 0 || child.pending_damage_owner != 0 {
+                hasher.update(b"fire-sphere-damage-v1");
+                hasher.update(child.pending_damage.to_le_bytes());
+                hasher.update(child.pending_damage_owner.to_le_bytes());
+            }
             hasher.update(child.source_entity_index.to_le_bytes());
             hasher.update(child.entity_id.to_le_bytes());
             hasher.update(child.entity_rng.to_le_bytes());
@@ -7872,6 +7978,10 @@ impl Level2EconomyState {
             hasher.update(state.render_fov.to_le_bytes());
         }
         for part in &self.authored_dragon_parts {
+            if part.word_0x24 != 0 {
+                hasher.update(b"dragon-part-killer-v1");
+                hasher.update(part.word_0x24.to_le_bytes());
+            }
             hasher.update(part.source_entity_index.to_le_bytes());
             hasher.update(part.root_authored_index.to_le_bytes());
             hasher.update(part.entity_id.to_le_bytes());
@@ -8392,6 +8502,9 @@ impl Level2EconomyState {
             }
         } else {
             hasher.update([0]);
+        }
+        for defender in &self.castle_defenders {
+            defender.hash_source_state(&mut hasher);
         }
         for child in &self.castle_children {
             hasher.update(child.source_entity_index.to_le_bytes());

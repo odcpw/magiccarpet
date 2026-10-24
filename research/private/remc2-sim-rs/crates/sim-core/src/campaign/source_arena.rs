@@ -13,6 +13,7 @@ use crate::{
         level2_nyphur_source_identity_parts,
     },
 };
+use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::{Deref, DerefMut};
 
@@ -56,6 +57,9 @@ pub(crate) enum CreatureRootOrigin {
     },
     HouseSpawn {
         house_slot: u16,
+    },
+    CastleSpawn {
+        castle_slot: u16,
     },
     CreatureConversion {
         producer_slot: u16,
@@ -111,12 +115,35 @@ impl CreatureRuntimeCensus {
 pub struct SourceArena {
     pub(crate) entities: Box<[EntitySnapshot]>,
     pub(crate) economy: Level2EconomyState,
+    pub(crate) effects: crate::world::effects::State,
 }
 
 impl SourceArena {
     #[must_use]
     pub(crate) fn new(entities: Box<[EntitySnapshot]>, economy: Level2EconomyState) -> Self {
-        Self { entities, economy }
+        Self {
+            entities,
+            economy,
+            effects: crate::world::effects::State::default(),
+        }
+    }
+
+    /// The effect owner contributes its source-global relations to the same
+    /// reset/replay receipt as the arena. Default state preserves old receipts.
+    pub(crate) fn reset_hash_with_terrain(
+        &self,
+        terrain: &crate::native_world::SessionTerrain,
+    ) -> String {
+        let arena = self.economy.reset_hash_with_terrain(terrain);
+        if self.effects == crate::world::effects::State::default() {
+            return arena;
+        }
+        let mut hash = Sha256::new();
+        hash.update(b"source-arena-effects-v1");
+        hash.update(arena.as_bytes());
+        hash.update(self.effects.eruption.to_le_bytes());
+        hash.update(self.effects.eruption_smoke.to_le_bytes());
+        format!("{:x}", hash.finalize())
     }
 
     #[must_use]
@@ -127,6 +154,27 @@ impl SourceArena {
     /// NewEvent over both canonical carrier domains. Raw controller records
     /// participate in the same lowest-slot fallback as typed arena rows.
     pub(crate) fn allocate_source_slot(&mut self) -> Option<u16> {
+        self.allocate_source_slot_notifying(|_, _| {})
+    }
+
+    /// Source 49F90 reconstructs the current ordinary free stack in
+    /// descending slot order before GenerateEvents consumes the group.
+    pub(crate) fn rebuild_source_free_arena(&mut self) {
+        self.economy.rebuild_free_arena(&[]);
+    }
+
+    /// Publish the old cell's head in the same allocation transaction. An
+    /// unlinked constructor has no later AddEventToMap which could repair it.
+    pub(crate) fn allocate_source_slot_with_terrain(
+        &mut self,
+        terrain: &mut crate::native_world::SessionTerrain,
+    ) -> Option<u16> {
+        self.allocate_source_slot_notifying(|tile, head| {
+            terrain.disaster_parts().0.entity_indices[usize::from(tile)] = head as i16;
+        })
+    }
+
+    fn allocate_source_slot_notifying(&mut self, mut publish: impl FnMut(u16, u16)) -> Option<u16> {
         if self.economy.free_slot_count() != 0 {
             return self.economy.allocate_slot();
         }
@@ -150,15 +198,20 @@ impl SourceArena {
             .map(|row| row.index)
             .min();
         let typed = self.economy.typed_replacement_candidate();
-        let Some(slot) = raw.filter(|slot| typed.is_none_or(|typed| *slot < typed)) else {
-            return self.economy.allocate_slot();
-        };
+        let raw_wins = raw.is_some_and(|slot| typed.is_none_or(|typed| slot < typed));
+        let slot = if raw_wins { raw? } else { typed? };
+        let tile = self.economy.map_chains.tile_of(slot);
         let neighbors = [
             self.economy.map_chains.old_map_entity(slot),
             self.economy.map_chains.next_entity(slot),
         ];
-        self.entities[usize::from(slot)].reclaim_source_row();
-        self.economy.claim_raw_replacement_slot(slot);
+        if raw_wins {
+            self.entities[usize::from(slot)].reclaim_source_row();
+            self.economy.claim_raw_replacement_slot(slot);
+        } else {
+            let allocated = self.economy.allocate_slot()?;
+            debug_assert_eq!(allocated, slot);
+        }
         for neighbor in neighbors
             .into_iter()
             .filter(|id| *id != 0 && !dynamic.contains(id))
@@ -169,6 +222,7 @@ impl SourceArena {
             );
             self.entities[usize::from(neighbor)].set_map_links(links.0, links.1);
         }
+        publish(tile, self.economy.map_chains.tile_head(tile));
         Some(slot)
     }
 
@@ -195,6 +249,29 @@ impl SourceArena {
                 );
             }
         }
+        Some(slot)
+    }
+
+    pub(crate) fn spawn_eruption_projectile(
+        &mut self,
+        terrain: &mut crate::native_world::SessionTerrain,
+        position: Position,
+        yaw: i16,
+        destination: Position,
+        owner: u16,
+        holder: u16,
+    ) -> Option<u16> {
+        let slot = self.allocate_source_slot_with_terrain(terrain)?;
+        self.economy.initialize_eruption_projectile(
+            slot,
+            position,
+            yaw,
+            destination,
+            owner,
+            holder,
+        )?;
+        crate::world::effects::sync_position(self, terrain, slot, position, true, false)
+            .expect("ordinary Eruption flyer has a valid fixed map slot");
         Some(slot)
     }
 
@@ -346,7 +423,7 @@ impl SourceArena {
         initial_bindings: &BTreeMap<u16, CreatureKind>,
     ) -> Option<CreatureRuntimeIdentity> {
         let source = self.entities.get(usize::from(source_slot))?;
-        if !source.active {
+        if !source.active || source.class != 5 {
             return None;
         }
         let handle = SourceEntityHandle {
@@ -404,6 +481,15 @@ impl SourceArena {
         authored_bindings: &BTreeMap<u16, CreatureKind>,
         include_retained: bool,
     ) -> Option<CreatureRuntimeIdentity> {
+        if let Some(identity) = crate::native_world::creatures::creature_15::mc2::runtime_identity(
+            self,
+            source_slot,
+            initial_bindings,
+            authored_bindings,
+            include_retained,
+        ) {
+            return Some(identity);
+        }
         let dynamic_handle = SourceEntityHandle {
             source_slot,
             generation: self.economy.slot_generation(source_slot),
@@ -528,7 +614,10 @@ impl SourceArena {
 
         let handle = self.handle(source_slot)?;
         let source = self.entities.get(usize::from(source_slot))?;
-        if !source.active || !matches!(self.resolve(handle), Some(SourceEntityView::Imported(_))) {
+        if !source.active
+            || source.class != 5
+            || !matches!(self.resolve(handle), Some(SourceEntityView::Imported(_)))
+        {
             return None;
         }
         if source.class == 5
@@ -612,6 +701,14 @@ impl SourceArena {
     /// over the decoded imported record at the same numeric index.
     #[must_use]
     pub(crate) fn class5_position(&self, source_slot: u16) -> Option<Position> {
+        if let Some(source) = self
+            .economy
+            .castle_defenders()
+            .iter()
+            .find(|source| source.active && source.source_entity_index == source_slot)
+        {
+            return Some(source.position);
+        }
         self.economy
             .authored_class5()
             .iter()
@@ -826,6 +923,14 @@ impl SourceArena {
                 source.life,
             );
         }
+        for source in self
+            .economy
+            .castle_defenders()
+            .iter()
+            .filter(|source| source.active && source.drawing_enabled())
+        {
+            include(source.source_entity_index, 15, source.action, source.life);
+        }
         for bucket in &mut slots {
             bucket.sort_unstable();
             bucket.dedup();
@@ -869,6 +974,143 @@ mod tests {
             .expect("qualified Level 2 semantic source arena package")
             .level2_compatibility()
             .clone()
+    }
+
+    #[test]
+    fn replaced_raw_effect_does_not_inherit_the_old_creature_identity() {
+        let session = level_two_session();
+        let mut arena = session.source_arena().clone();
+        let mut terrain = session.session.state.live.terrain.clone();
+        let bindings = session.session.definition.initial_creature_bindings();
+        let slot = *bindings
+            .iter()
+            .find(|(slot, kind)| {
+                **kind == CreatureKind::Goat && arena.entities[usize::from(**slot)].class == 5
+            })
+            .unwrap()
+            .0;
+        for row in &mut arena.entities {
+            row.set_control_flags(
+                row.control_flags & !crate::level1_mission::SOURCE_REPLACEABLE_FLAG,
+            );
+        }
+        arena.entities[usize::from(slot)]
+            .set_control_flags(crate::level1_mission::SOURCE_REPLACEABLE_FLAG);
+        let position = arena.entities[usize::from(slot)].position;
+        while arena.economy.free_slot_count() != 0 {
+            arena
+                .allocate_source_slot()
+                .expect("consume one actual ordinary free slot");
+        }
+        let birth = crate::world::effects::allocate(
+            &mut arena,
+            &mut terrain,
+            sim_definition::adapter::mc2_effect_definition(
+                crate::level_definition::EffectKind::Impact,
+            ),
+            position,
+            &session.session.definition.presentation.particles,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(birth, slot);
+        assert_eq!(
+            (
+                arena.entities[usize::from(slot)].class,
+                arena.entities[usize::from(slot)].model
+            ),
+            (10, 0)
+        );
+        assert!(
+            arena
+                .imported_creature_runtime_identity(slot, bindings)
+                .is_none()
+        );
+        assert!(
+            arena
+                .creature_runtime_identity(slot, bindings, &BTreeMap::new())
+                .is_none()
+        );
+        // The same initial identity still rejects an actual wrong creature.
+        arena.entities[usize::from(slot)].class = 5;
+        assert_eq!(
+            arena
+                .imported_creature_runtime_identity(slot, bindings)
+                .unwrap()
+                .kind,
+            CreatureKind::Goat
+        );
+        assert_eq!(
+            arena
+                .imported_creature_runtime_identity(slot, bindings)
+                .unwrap()
+                .raw_model,
+            Some(0)
+        );
+    }
+
+    #[test]
+    fn replacement_unlink_publishes_terrain_head_for_raw_and_typed_effects() {
+        for raw in [true, false] {
+            let session = level_two_session();
+            let mut arena = session.source_arena().clone();
+            let mut terrain = session.session.state.live.terrain.clone();
+            for row in &mut arena.entities {
+                row.set_control_flags(
+                    row.control_flags & !crate::level1_mission::SOURCE_REPLACEABLE_FLAG,
+                );
+            }
+            assert!(
+                arena.economy.typed_replacement_candidate().is_none(),
+                "fixture has no pre-existing replaceable typed row"
+            );
+            let tile = (0..=u16::MAX)
+                .find(|tile| arena.economy.map_chains.tile_head(*tile) == 0)
+                .unwrap();
+            let position = Position {
+                x: ((tile as u8 as u16) << 8) + 128,
+                y: ((tile >> 8) << 8) + 128,
+                z: 128,
+            };
+            let slot = if raw {
+                crate::world::effects::allocate(
+                    &mut arena,
+                    &mut terrain,
+                    sim_definition::adapter::mc2_effect_definition(
+                        crate::level_definition::EffectKind::Impact,
+                    ),
+                    position,
+                    &session.session.definition.presentation.particles,
+                )
+                .unwrap()
+                .unwrap()
+            } else {
+                arena.allocate_smoke13(position).unwrap()
+            };
+            terrain.disaster_parts().0.entity_indices[usize::from(tile)] = slot as i16;
+            let generation = arena.economy.slot_generation(slot);
+            // Reserve the remaining ordinary rows without manufacturing any
+            // additional replaceable object. This is an allocator regression,
+            // not a simulated full-pool gameplay capture.
+            while arena.economy.free_slot_count() > 0 {
+                arena.allocate_source_slot().unwrap();
+            }
+            assert_eq!(
+                arena.allocate_source_slot_with_terrain(&mut terrain),
+                Some(slot)
+            );
+            assert_eq!(
+                arena.economy.slot_generation(slot),
+                generation.wrapping_add(1)
+            );
+            assert_eq!(arena.economy.free_slot_count(), 0);
+            assert_eq!(arena.economy.map_chains.tile_head(tile), 0);
+            assert_eq!(
+                terrain.planes().entity_indices[usize::from(tile)],
+                0,
+                "unlinked constructor must observe the old cell already repaired, raw={raw}"
+            );
+        }
     }
 
     #[test]

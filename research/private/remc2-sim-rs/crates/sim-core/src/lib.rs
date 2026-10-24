@@ -706,6 +706,8 @@ pub enum MissionAudioSite {
     CaveGroundFeature,
     CaveInLaunch,
     CaveInCapture,
+    MeteorImpact,
+    FireSphereCollision,
     Count,
 }
 
@@ -774,11 +776,13 @@ pub enum SourceAudioCallTag {
     ReboundReflection,
     CaveGroundFeatureAction93,
     SpellProjectileCapture,
+    MeteorAction17FirstUpdate,
+    FireSpheresAction83Collision,
 }
 
 /// Compiler-checked binding from every reachable source occurrence identity
 /// to the production tag used at its Rust call path.
-pub const SOURCE_AUDIO_CALL_BINDINGS: [(SourceAudioCallTag, &str); 59] = [
+pub const SOURCE_AUDIO_CALL_BINDINGS: [(SourceAudioCallTag, &str); 61] = [
     (
         SourceAudioCallTag::VolumePreviewAdjustVolume,
         "286982557778df1130f462a82b40225bf7e9cff0ef1a128b9d00f0a7a0d6ea2a",
@@ -1019,6 +1023,14 @@ pub const SOURCE_AUDIO_CALL_BINDINGS: [(SourceAudioCallTag, &str); 59] = [
         SourceAudioCallTag::SpellProjectileCapture,
         "a0282605de763727b9a5fabed2776e02f4bfb4b23bb17445169d865a49c2ac47",
     ),
+    (
+        SourceAudioCallTag::MeteorAction17FirstUpdate,
+        "e6e8389397ec1c7fe9c33de907c7f63c2865200ab7cdd246b7e13b3afdd70d90",
+    ),
+    (
+        SourceAudioCallTag::FireSpheresAction83Collision,
+        "55766cf86f54e37aaec2b6a4e247184ba44814fcd1031784fd501ded05001063",
+    ),
 ];
 
 #[inline(always)]
@@ -1026,7 +1038,7 @@ pub fn mark_source_audio_call(_tag: SourceAudioCallTag) {}
 
 #[cfg(test)]
 impl SourceAudioCallTag {
-    pub const ALL: [Self; 59] = [
+    pub const ALL: [Self; 61] = [
         Self::VolumePreviewAdjustVolume,
         Self::GoatAction08Bleat,
         Self::GoatAction09Bleat,
@@ -1086,6 +1098,8 @@ impl SourceAudioCallTag {
         Self::ReboundReflection,
         Self::CaveGroundFeatureAction93,
         Self::SpellProjectileCapture,
+        Self::MeteorAction17FirstUpdate,
+        Self::FireSpheresAction83Collision,
     ];
 }
 
@@ -1156,6 +1170,8 @@ impl MissionAudioSite {
         Self::CaveGroundFeature,
         Self::CaveInLaunch,
         Self::CaveInCapture,
+        Self::MeteorImpact,
+        Self::FireSphereCollision,
     ];
 
     #[must_use]
@@ -1479,6 +1495,22 @@ impl MissionAudioSite {
                 "1",
                 "fixed 0",
                 "EventsFunctions.cpp:22741-22750",
+                true,
+            ),
+            Self::MeteorImpact => (
+                "30",
+                "meteor impact entity",
+                "1",
+                "fixed 0",
+                "EventsFunctions.cpp:23862 sub_32880 first eligible update",
+                true,
+            ),
+            Self::FireSphereCollision => (
+                "3",
+                "Fire Spheres root",
+                "1",
+                "fixed 0",
+                "EventsFunctions.cpp:24713 sub_33C00 per colliding column-zero sector",
                 true,
             ),
             Self::WaterSplashFirstUpdate => (

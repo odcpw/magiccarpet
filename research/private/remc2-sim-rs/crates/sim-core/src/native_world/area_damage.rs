@@ -117,6 +117,52 @@ pub(crate) fn source_actor(
     .actor(slot)
 }
 
+/// Read life from the same current carrier as source_actor, including dead
+/// retained targets. A typed occupant never falls back to stale raw bytes.
+pub(crate) fn source_life(
+    arena: &SourceArena,
+    actors: Option<ActorDomains<'_>>,
+    slot: u16,
+) -> Option<i32> {
+    if let Some(domains) = actors.as_ref()
+        && let Some(view) = domains.source_view(slot)
+    {
+        return Some(view.life);
+    }
+    let economy = &arena.economy;
+    macro_rules! row_life {
+        ($rows:expr) => {
+            if let Some(row) = $rows
+                .iter()
+                .find(|row| row.active && row.source_entity_index == slot)
+            {
+                return Some(i32::from(row.life));
+            }
+        };
+    }
+    row_life!(economy.spheres);
+    row_life!(economy.castle_defenders);
+    row_life!(economy.bee_creatures);
+    row_life!(economy.house_residents);
+    row_life!(economy.authored_dragon_parts);
+    row_life!(economy.authored_class5_model3_children);
+    row_life!(economy.authored_class5);
+    if let Some(row) = economy
+        .castle
+        .filter(|row| row.active && row.source_entity_index == slot)
+    {
+        return Some(row.life);
+    }
+    if economy.live_arena_cursor_row(slot).is_some() {
+        return None;
+    }
+    arena
+        .entities
+        .get(usize::from(slot))
+        .filter(|s| s.active)
+        .map(|s| s.life)
+}
+
 /// The direct life/credit write made by source 57390 after terrain admission.
 /// This leaves ordinary pending damage intact for the actual family callback.
 pub(crate) fn apply_construction_kill(

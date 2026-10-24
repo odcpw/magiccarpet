@@ -12,8 +12,9 @@ use sim_definition::adapter::{
     cave_corridor_entity_definition, cave_feature_entity_definition, creature_entity_definition,
     effect_entity_definition, entity_definition_with_position_access,
     exit_sequence_trigger_entity_definition, experience_scroll_entity_definition,
-    house_construction_entity_definition, mc2_effect_definition, objective_definition,
-    stable_entity_id, stable_objective_id, stable_rival_wizard_id,
+    house_construction_entity_definition, mc2_authored_terrain_disaster_definition,
+    mc2_effect_definition, objective_definition, stable_entity_id, stable_objective_id,
+    stable_rival_wizard_id, terrain_disaster_entity_definition,
 };
 
 use crate::{
@@ -23,7 +24,7 @@ use crate::{
         EffectKind, ItemKind, LevelDefinition, LevelEntityId, LevelEntityKind,
         LevelEntityParameterAccess, LevelEntityPositionAccess, LevelObjectiveConditionAccess,
         LevelObjectiveId, MechanicKind, ObjectiveCondition, RivalWizardId, SceneryKind, SpellKind,
-        SwitchKind, TilePosition, supports_authorable_creature_placement,
+        SwitchKind, TerrainDisasterKind, TilePosition, supports_authorable_creature_placement,
     },
     level1_mission::{AuthoredFeature, parse_authored_features},
 };
@@ -99,6 +100,9 @@ impl Mc2LevelDefinition {
             ));
         }
         match (class, subtype) {
+            (10, 11) => Some(LevelEntityKind::Mechanic(MechanicKind::TerrainDisaster {
+                kind: TerrainDisasterKind::LoweringRing,
+            })),
             (5, model) => match Self::creature_for_model(model) {
                 Some(kind) => Some(LevelEntityKind::Creature(kind)),
                 None => None,
@@ -165,6 +169,7 @@ impl Mc2LevelDefinition {
             12 => Some(CreatureKind::Builder),
             13 => Some(CreatureKind::Villager),
             14 => Some(CreatureKind::Trader),
+            15 => Some(CreatureKind::CastleDefender),
             19 => Some(CreatureKind::Firefly),
             _ => None,
         }
@@ -176,6 +181,9 @@ impl Mc2LevelDefinition {
         action: u8,
     ) -> Option<CreatureKind> {
         if class != 5 || model > 255 || matches!(action, 180 | 232 | 234) {
+            return None;
+        }
+        if model == 15 && !matches!(action, 120..=125 | 127) {
             return None;
         }
         Self::creature_for_model(model as u8)
@@ -457,27 +465,27 @@ impl Mc2LevelDefinition {
         // These shared effect families were absent from the opening identity
         // manifest. Give their actual authored placements stable semantic IDs
         // without changing any established opening entity identity.
-        let mut effect_occurrences = BTreeMap::<String, u16>::new();
+        let mut shared_occurrences = BTreeMap::<String, u16>::new();
         for feature in &features {
             let Ok(model) = u8::try_from(feature.subtype) else {
                 continue;
             };
-            if feature.kind != 10 {
-                continue;
-            }
-            let Some(kind) = Self::effect_kind(model) else {
-                continue;
+            let role = match (feature.kind, model) {
+                (10, 11) => "mechanic.lowering_ring".to_owned(),
+                (10, model) => {
+                    let Some(kind) = Self::effect_kind(model) else {
+                        continue;
+                    };
+                    format!("mechanic.{}", kind.as_str())
+                }
+                (5, 15) => "creature.castle_defender".to_owned(),
+                _ => continue,
             };
             if stable_entity_ids.contains_key(&feature.index) {
                 continue;
             }
-            let mut label = format!(
-                "mechanic.{}.at_{}_{}",
-                kind.as_str(),
-                feature.tile_x,
-                feature.tile_y
-            );
-            let ordinal = effect_occurrences.entry(label.clone()).or_default();
+            let mut label = format!("{}.at_{}_{}", role, feature.tile_x, feature.tile_y);
+            let ordinal = shared_occurrences.entry(label.clone()).or_default();
             *ordinal += 1;
             if *ordinal > 1 {
                 label.push_str(&format!(".instance_{ordinal}"));
@@ -529,6 +537,7 @@ impl Mc2LevelDefinition {
                 (5, 12) => Some(CreatureKind::Builder),
                 (5, 13) => Some(CreatureKind::Villager),
                 (5, 14) => Some(CreatureKind::Trader),
+                (5, 15) => Some(CreatureKind::CastleDefender),
                 (5, 19) => Some(CreatureKind::Firefly),
                 _ => None,
             };
@@ -571,6 +580,7 @@ impl Mc2LevelDefinition {
                     CreatureKind::Firefly
                         | CreatureKind::Goat
                         | CreatureKind::Archer
+                        | CreatureKind::CastleDefender
                         | CreatureKind::Bee
                         | CreatureKind::Dragon
                         | CreatureKind::Skeleton
@@ -584,6 +594,10 @@ impl Mc2LevelDefinition {
                         }
                         CreatureKind::Goat => crate::goat::GOAT_CONSTRUCTOR_LIFE,
                         CreatureKind::Archer => crate::native_world::level2_class5::ARCHER_MAX_LIFE,
+                        CreatureKind::CastleDefender => {
+                            crate::level_definition::CASTLE_DEFENDER_CLASS_PROPERTIES.max_life
+                                as i32
+                        }
                         CreatureKind::Bee => {
                             i32::from(crate::native_world::level2_class5::BEE_MAX_LIFE)
                         }
@@ -947,6 +961,9 @@ impl Mc2LevelDefinition {
                             .expect("guarded effect kind"),
                     }
                 }
+                (10, 11) => MechanicKind::TerrainDisaster {
+                    kind: TerrainDisasterKind::LoweringRing,
+                },
                 (14, 2) => MechanicKind::CaveCorridor,
                 // The two source callbacks observe the rebuilt class-5 model
                 // lists for Worms and Archers respectively. Shared callers
@@ -972,7 +989,15 @@ impl Mc2LevelDefinition {
                 LevelEntityKind::Mechanic(mechanic_kind),
                 position_access,
             )?;
-            if let MechanicKind::EnvironmentalEffect { kind } = mechanic_kind {
+            if let MechanicKind::TerrainDisaster { kind } = mechanic_kind {
+                entities.push(terrain_disaster_entity_definition(
+                    id.clone(),
+                    position,
+                    activation_group,
+                    position_access,
+                    mc2_authored_terrain_disaster_definition(kind, feature.parameter_1)?,
+                ));
+            } else if let MechanicKind::EnvironmentalEffect { kind } = mechanic_kind {
                 entities.push(effect_entity_definition(
                     id.clone(),
                     position,

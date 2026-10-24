@@ -511,10 +511,11 @@ mod ballistic_scenery;
 #[path = "campaign/level2.rs"]
 mod campaign;
 mod campaign_shared_families;
-pub(crate) mod cave_features;
+pub(crate) use crate::world::terrain::cave_features;
 mod cave_spells;
 mod countdown_switch;
 pub(crate) mod creatures;
+mod effects;
 mod level2_nyphur;
 mod support_spells;
 mod terrain_strip;
@@ -526,6 +527,7 @@ pub use level2_nyphur::{
     Level2NyphurDispatchTrace, Level2NyphurParticipant, Level2NyphurVisibility,
 };
 use level2_nyphur::{Level2NyphurDispatcher, NyphurCapability, level2_nyphur_source_identity};
+pub(crate) use terrain_strip::cave_corridors;
 
 /// One source-owned Day spell-hand row consumed by the HUD presenter.
 ///
@@ -1298,6 +1300,8 @@ fn level2_static_mana_spheres_from_entities(
             }
             let player_entity_index = *source_owner.get(&entity.index)?;
             Some(ManaSphere {
+                ordinary_damage_payload: entity.source_wind_spell_payload(),
+                ordinary_damage_owner: entity.source_wind_spell_owner(),
                 id: u32::from(entity.index),
                 source_entity_index: entity.index,
                 entity_rng: entity.entity_rng,
@@ -2080,6 +2084,7 @@ pub struct Level2AuthoredModel5WaterSplashSource {
     pub dword_0x10: i32,
     pub control_flags: u32,
     pub sprite_index: u16,
+    pub animation_frame: u8,
     pub last_sound_id: u16,
     pub position: Position,
     pub phase: u8,
@@ -2200,6 +2205,7 @@ pub struct Level2Model17SpawnedChild {
     pub source_word_2c: i16,
     /// Source `word_0x96`; Fireball copies its collision target here.
     pub target_source_entity_index: u16,
+    pub animation_frame: u8,
     pub position: Position,
     pub phase: u8,
     pub active: bool,
@@ -2325,6 +2331,8 @@ pub struct Level2Model76Child {
     pub entity_rng: u16,
     pub parent_entity_index: u16,
     pub parent_entity_id: u16,
+    pub pending_damage: i32,
+    pub pending_damage_owner: u16,
     pub source_class: u8,
     pub model: u8,
     pub action: u8,
@@ -2556,6 +2564,8 @@ pub struct AuthoredDragonPart {
     pub pending_word_0x62: u16,
     /// Source damage-mailbox payload `str_0x5E.dword_0x5E`.
     pub pending_damage: i32,
+    /// Source linked-part killer relation, distinct from the pending mailbox.
+    pub word_0x24: u16,
     /// Source attacker relation `word_0x26`, copied into the Dragon root
     /// when this segment becomes the first lower-life child.
     pub word_0x26: u16,
@@ -2667,6 +2677,7 @@ pub struct Level2AuthoredClass5Model3Child {
 }
 
 pub use creatures::archer::{Level2AuthoredClass5ArcherChild, Level2AuthoredClass5ArcherState};
+pub use creatures::creature_15::CastleDefenderState;
 
 pub use creatures::settlements::Level2HouseResidentSource;
 
@@ -3021,6 +3032,7 @@ pub struct Level2EconomyState {
     castle: Option<Level2CastleState>,
 
     castle_children: Vec<Level2CastleChild>,
+    castle_defenders: Vec<creatures::creature_15::CastleDefenderState>,
 
     castle_footprint: Option<CastleBuildFootprint>,
     /// Source `RemoveCastleStage_385C0` indexes the old Castle level through
@@ -4237,7 +4249,10 @@ impl NativeWorld {
         let terrain_bytes = read("terrain.bin")?;
         let presentation_bytes = read("presentation.bin")?;
         let feature_end = read("feature-end.bin")?;
-        let collision_mask_bytes = (definition.identity != CampaignSelection::LEVEL1)
+        let collision_mask_bytes = definition
+            .source_facts
+            .iter()
+            .any(|fact| fact.kind == crate::campaign::source_facts::SourceFactKind::CollisionMask)
             .then(|| read("collision-masks.bin"))
             .transpose()?;
 
@@ -4263,8 +4278,20 @@ impl NativeWorld {
             capture_frame: 0,
             vga_resolution_selector,
         };
-        let terrain_planes = parse_terrain(&terrain_bytes)?;
-        let terrain_rng = read_u16(&feature_end, 8, "campaign feature-end terrain RNG")?;
+        let mut terrain_planes = parse_terrain(&terrain_bytes)?;
+        let terrain_rng = if map_type == MapType::Cave
+            && definition
+                .can_generate_cave_startup()
+                .map_err(|error| NativeWorldError::new(error.to_string()))?
+        {
+            definition
+                .generate_cave_startup()
+                .map_err(|error| NativeWorldError::new(error.to_string()))?
+                .write_geometry_into(&mut terrain_planes)
+                .map_err(NativeWorldError::new)?
+        } else {
+            read_u16(&feature_end, 8, "campaign feature-end terrain RNG")?
+        };
         let terrain = LegacyTerrain::new(
             terrain_planes.terrain_types.to_vec(),
             terrain_planes.ground_heights.to_vec(),
@@ -4931,6 +4958,7 @@ pub struct NativeSession<'world> {
 
 fn goat_source_entity_view(goat: &GoatState) -> Level1SourceEntityView {
     Level1SourceEntityView {
+        current_attacker: goat.current_attacker.cast_unsigned(),
         source_entity_index: goat.entity_index,
         source_id: goat.source_id,
         authority: Level1SourceEntityAuthority::LiveGoat,
@@ -4963,10 +4991,11 @@ fn goat_source_entity_view(goat: &GoatState) -> Level1SourceEntityView {
 
 fn house_source_entity_view(house: &HouseState) -> Level1SourceEntityView {
     Level1SourceEntityView {
+        current_attacker: 0,
         source_entity_index: house.entity_index,
         source_id: house.source_id,
         authority: Level1SourceEntityAuthority::LiveHouse,
-        active: house.active,
+        active: house.source_retained(),
         visible: house.active,
         class: HOUSE_CLASS,
         model: HOUSE_MODEL,
@@ -4995,6 +5024,7 @@ fn house_source_entity_view(house: &HouseState) -> Level1SourceEntityView {
 
 fn villager_source_entity_view(villager: &VillagerState) -> Level1SourceEntityView {
     Level1SourceEntityView {
+        current_attacker: villager.current_attacker.cast_unsigned(),
         source_entity_index: villager.entity_index,
         source_id: villager.source_id,
         authority: Level1SourceEntityAuthority::LiveVillager,
@@ -5011,7 +5041,7 @@ fn villager_source_entity_view(villager: &VillagerState) -> Level1SourceEntityVi
         life: villager.life,
         pending_damage: villager.pending_damage,
         pending_attacker: villager.pending_attacker.cast_unsigned(),
-        owner_entity_index: villager.current_attacker.cast_unsigned(),
+        owner_entity_index: villager.owner_entity_index,
         target_entity_index: villager.target_entity_index.unwrap_or(0),
         linked_entity_index: 0,
         actual_speed: villager.actual_speed,
@@ -7328,7 +7358,7 @@ fn validate_package(
     })
 }
 
-fn parse_terrain(bytes: &[u8]) -> Result<TerrainPlanes> {
+pub(crate) fn parse_terrain(bytes: &[u8]) -> Result<TerrainPlanes> {
     if bytes.len() != TERRAIN_BYTES {
         return Err(NativeWorldError::new("terrain.bin has an invalid extent"));
     }
@@ -7675,6 +7705,13 @@ fn parse_runtime(bytes: &[u8]) -> Result<RuntimeSnapshot> {
         ));
     }
     let local_player = read_i16(bytes, 16, "runtime local player slot")?;
+    if usize::from(read_u16(bytes, 24, "runtime Eruption source slot")?) >= ENTITY_COUNT
+        || usize::from(read_u16(bytes, 26, "runtime Eruption smoke source slot")?) >= ENTITY_COUNT
+    {
+        return Err(NativeWorldError::new(
+            "runtime effect global source slot is outside the entity arena",
+        ));
+    }
     let player_count = read_i16(bytes, 18, "runtime player count")?;
     if !(0..PLAYER_COUNT_I16).contains(&local_player)
         || !(1..=PLAYER_COUNT_I16).contains(&player_count)
