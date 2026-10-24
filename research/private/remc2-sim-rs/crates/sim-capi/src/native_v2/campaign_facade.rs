@@ -595,6 +595,12 @@ fn mc2_player_command(command: GameCommand) -> PlayerCommand {
     flags |= u8::from(command.cast_right) * 0x20;
     flags |= u8::from(command.cast_selected) * 0x40;
     PlayerCommand {
+        opcode: if command.recenter || command.full_stop {
+            0x27
+        } else {
+            0
+        },
+        argument_1: i8::from(command.full_stop),
         roll: command.roll_axis,
         pitch: command.pitch_axis,
         flags: flags.cast_signed(),
@@ -862,7 +868,7 @@ mod tests {
 
     #[test]
     fn neutral_flight_command_maps_inside_the_mc2_owned_adapter() {
-        let mapped = mc2_player_command(GameCommand {
+        let command = GameCommand {
             longitudinal: LongitudinalControl::Decelerate,
             lateral: LateralControl::Positive,
             roll_axis: -32,
@@ -875,7 +881,8 @@ mod tests {
             full_stop: false,
             look_yaw: -17,
             look_pitch: 23,
-        });
+        };
+        let mapped = mc2_player_command(command.clone());
         assert_eq!(mapped.opcode, 0);
         assert_eq!(mapped.argument_1, 0);
         assert_eq!(mapped.argument_2, 0);
@@ -884,6 +891,29 @@ mod tests {
         assert_eq!(mapped.pitch, 24);
         assert_eq!(mapped.argument_6.cast_signed(), -17);
         assert_eq!(mapped.argument_8.cast_signed(), 23);
+
+        for (recenter, full_stop, argument_1) in
+            [(true, false, 0), (false, true, 1), (true, true, 1)]
+        {
+            let recentered = mc2_player_command(GameCommand {
+                recenter,
+                full_stop,
+                ..command.clone()
+            });
+            assert_eq!(
+                recentered,
+                PlayerCommand {
+                    opcode: 0x27,
+                    argument_1,
+                    ..mapped
+                },
+                "recenter={recenter}, full_stop={full_stop}: preserve movement, cast and look fields"
+            );
+        }
+        assert_eq!(
+            mc2_player_command(GameCommand::default()),
+            PlayerCommand::default()
+        );
     }
 
     #[test]
