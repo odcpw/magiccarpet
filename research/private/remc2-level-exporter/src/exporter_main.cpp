@@ -1849,7 +1849,8 @@ struct CampaignBehaviorRow {
 };
 
 // Census-proven per-level campaign emission facts. Level 1 retains its sealed
-// 573-byte player component and has no collision-mask carrier. Level 2 values
+// 573-byte player component; campaign v5 adds the real collision-mask bank.
+// Level 2 values
 // are the preserved Day reset census; Level 3 values are the mc-iol7n
 // byte-identical twin exports. Further ordinary records use the complete source
 // catalog dialect; runtime capability admission remains a separate consumer.
@@ -1867,7 +1868,7 @@ struct CampaignEmissionProfile {
 
 const CampaignEmissionProfile* campaign_emission_profile(std::uint16_t external) {
     static const CampaignEmissionProfile kProfiles[] = {
-        {1, 0, 1, 177, 1, {0, 5, 7}, 5, "mc2-player-arena/v2", false},
+        {1, 0, 1, 177, 1, {0, 5, 7}, 5, "mc2-player-arena/v2", true},
         {2, 1, 0, 114, 2, {3, 5, 7, 9}, 5, "mc2-player-arena/v4", true},
         {3, 2, 0, 252, 1, {0, 5, 7}, 5, "mc2-player-arena/v4", true},
     };
@@ -2281,7 +2282,7 @@ canonical_json build_campaign_definition(
         }},
         {"required_behaviors", campaign_required_behaviors(behavior_rows)},
         {"schema", profile.external > 3 ? "mc2-campaign-definition/v4" : profile.external == 1
-            ? "mc2-campaign-definition/v3"
+            ? "mc2-campaign-definition/v5"
             : (profile.external == 2
                 ? "mc2-campaign-definition/v2"
                 : "mc2-campaign-definition/v1")},
@@ -2567,6 +2568,7 @@ json banishment_state_reference() {
 
 int run(const Arguments& arguments) {
     const bool level_one = arguments.level.external == 1;
+    const bool include_collision_masks = !level_one || arguments.campaign_package;
     const fs::path owner_root = fs::canonical(arguments.owner_root);
     if (!fs::is_directory(owner_root / "GAME/NETHERW") ||
         !fs::is_directory(owner_root / "CD_Files") ||
@@ -2761,7 +2763,7 @@ int run(const Arguments& arguments) {
         building_parameters = capture_building_parameters(owner_root);
     }
     CollisionMaskCapture collision_masks;
-    if (!level_one) {
+    if (include_collision_masks) {
         std::size_t collision_authored_count = 0;
         const auto collision_selectors = building_selectors(authored, collision_authored_count);
         collision_masks = capture_collision_masks(
@@ -2816,12 +2818,12 @@ int run(const Arguments& arguments) {
     fs::remove(runtime_config);
 
     std::vector<std::pair<const char*, const Bytes*>> files;
-    files.reserve(level_one ? 13 : (arguments.level.external == 2 ? 15 : 14));
+    files.reserve(level_one ? 14 : (arguments.level.external == 2 ? 15 : 14));
     files.emplace_back("authored-level.bin", &authored_bytes);
     if (arguments.level.external == 2 || arguments.level.external > 3) {
         files.emplace_back("building-parameters.bin", &building_parameters);
     }
-    if (!level_one) files.emplace_back("collision-masks.bin", &collision_masks.bytes);
+    if (include_collision_masks) files.emplace_back("collision-masks.bin", &collision_masks.bytes);
     files.emplace_back("entities-post-features.bin", &feature_entities);
     files.emplace_back("entities.bin", &entities);
     files.emplace_back("feature-allocator.bin", &feature_allocator);
@@ -3287,7 +3289,7 @@ int run(const Arguments& arguments) {
             {"owner_files", make_owner_sources(
                 owner_root,
                 map_profile,
-                !level_one,
+                include_collision_masks,
                 arguments.level.external == 2 || arguments.level.external > 3)}
         }},
         {"reference", {
@@ -3395,8 +3397,8 @@ int run(const Arguments& arguments) {
             banishment_state_layout();
         manifest["reference"]["banishment_state_0x006"] =
             banishment_state_reference();
-        manifest["collision_masks"] = collision_masks.metadata;
     }
+    if (include_collision_masks) manifest["collision_masks"] = collision_masks.metadata;
     // The reset projection is a sealed Level 1 contract.  Do not copy its
     // Night-specific expected state into an open Level 2 package; Level 2 gets
     // its own reset seal only when that corpus is qualified.
@@ -3472,7 +3474,7 @@ int run(const Arguments& arguments) {
         };
         if (level_one) {
             manifest = {
-                {"schema", "mc2-owner-campaign-package/v3"},
+                {"schema", "mc2-owner-campaign-package/v5"},
                 {"byte_order", "little-endian"},
                 {"level", {
                     {"external", arguments.level.external},
