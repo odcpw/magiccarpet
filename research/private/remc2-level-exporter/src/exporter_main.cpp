@@ -679,8 +679,17 @@ Bytes capture_feature_construction_inputs(
     bool has_settlement = authored_model_45_row_count != 0;
     for (std::size_t index = 1; index < kAuthoredFeatures; ++index) {
         const auto& feature = authored.entity_0x30311[index];
-        has_settlement |= feature.DisId == -1 && feature.type_0x30311 == 5 &&
-            feature.subtype_0x30311 == 12;
+        // Ordinary group-zero and later activated houses use the same BUILD
+        // constructor as prepared features. Retain their real inputs too;
+        // the collision-mask census deliberately remains feature-only.
+        if (feature.type_0x30311 == 10 && feature.subtype_0x30311 == 45) {
+            if (feature.par1_14 >= str_D93C0_bldgprmbuffer.size()) {
+                throw std::runtime_error("authored house BUILD selector is outside the source table");
+            }
+            selectors.push_back(feature.par1_14);
+            has_settlement = true;
+        }
+        has_settlement |= feature.type_0x30311 == 5 && feature.subtype_0x30311 == 12;
     }
     if (has_settlement) {
         constexpr std::uint16_t builder_rows[] = {
@@ -696,7 +705,7 @@ Bytes capture_feature_construction_inputs(
 
     Bytes result;
     result.magic("MCI3");
-    result.u16(1);
+    result.u16(2);
     result.u16(16);
     result.u16(static_cast<std::uint16_t>(selectors.size()));
     result.u16(1);
@@ -2219,7 +2228,7 @@ canonical_json build_campaign_definition(
     feature_boundary.push_back(typed_campaign_member(
         file_manifest, "feature-allocator.bin", "mc2-feature-allocator/v1"));
     feature_boundary.push_back(typed_campaign_member(
-        file_manifest, "feature-construction-inputs.bin", "mc2-feature-construction-inputs/v1"));
+        file_manifest, "feature-construction-inputs.bin", "mc2-feature-construction-inputs/v2"));
     feature_boundary.push_back(typed_campaign_member(
         file_manifest, "entities-post-features.bin", "mc2-feature-entity-arena/v1"));
     feature_boundary.push_back(typed_campaign_member(
@@ -2938,7 +2947,7 @@ int run(const Arguments& arguments) {
             {"construction_inputs", {
                 {"file", "feature-construction-inputs.bin"},
                 {"magic", "MCI3"},
-                {"version", 1},
+                {"version", 2},
                 {"record_count", feature_building_selectors.size()},
                 {"selectors", feature_building_selectors},
                 {"source", "live pinned BLDGPRM rows plus BUILD footprint bytes"}
