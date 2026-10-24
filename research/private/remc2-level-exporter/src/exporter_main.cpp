@@ -673,6 +673,23 @@ Bytes capture_feature_construction_inputs(
         throw std::runtime_error("isolated Level 1 feature seam requires VGA selector 1");
     }
     selectors = building_selectors(authored, authored_model_45_row_count);
+    // House population can construct a Builder which selects any eligible
+    // BLDGPRM row through sub_232C0. These are constructor inputs, independent
+    // of the authored sprite collision-mask selector census.
+    bool has_settlement = authored_model_45_row_count != 0;
+    for (std::size_t index = 1; index < kAuthoredFeatures; ++index) {
+        const auto& feature = authored.entity_0x30311[index];
+        has_settlement |= feature.DisId == -1 && feature.type_0x30311 == 5 &&
+            feature.subtype_0x30311 == 12;
+    }
+    if (has_settlement) {
+        constexpr std::uint16_t builder_rows[] = {
+            17, 19, 22, 26, 29, 30, 31, 32, 33, 34, 35, 39, 40, 42, 47, 50, 62, 74
+        };
+        selectors.insert(selectors.end(), std::begin(builder_rows), std::end(builder_rows));
+        std::sort(selectors.begin(), selectors.end());
+        selectors.erase(std::unique(selectors.begin(), selectors.end()), selectors.end());
+    }
     if (level_one && selectors.empty()) {
         throw std::runtime_error("Level 1 has no source house construction selectors");
     }
@@ -2736,10 +2753,12 @@ int run(const Arguments& arguments) {
     }
     CollisionMaskCapture collision_masks;
     if (!level_one) {
+        std::size_t collision_authored_count = 0;
+        const auto collision_selectors = building_selectors(authored, collision_authored_count);
         collision_masks = capture_collision_masks(
             owner_root,
-            feature_building_selectors,
-            authored_model_45_row_count,
+            collision_selectors,
+            collision_authored_count,
             arguments.level.external);
     }
     const Type_Level_2FECE feature_expectation = authored;

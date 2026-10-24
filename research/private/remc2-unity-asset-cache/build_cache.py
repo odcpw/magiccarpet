@@ -304,7 +304,7 @@ PINNED_REMC2_BLOB_SHA256 = {
         "a5d1812f796c690cd0fc7ea7f46cdb64bd9b73d999c632b04f9ea1e2806f4386",
 }
 EXPECTED_PACKAGE = "730d2fa084265df839f3f2b55ed766ac167a8b152ca4631b5ded9d0bb9104ac8"
-EXPECTED_CLOSURE = "878123908f6de05f684f4cd1d73cff8d2ff08701cb6fdd12b7165bfcacc75719"
+EXPECTED_CLOSURE = "ae375e8257b4d4aa701d71e77d37a165ae58de26a3a2415571024f3f3122435e"
 EXPECTED_RUNTIME_SHA256 = (
     "b078dbed443e2cc3bf3bfd08a0f519492546d9f939db74a3d9c185d58f9c559f"
 )
@@ -662,7 +662,7 @@ LEVEL1_MATERIALIZED_SOUND_IDS = (
     39, 40, 41, 43, 44, 46, 54, 55, 56, 57, 63,
 )
 CASTLE_STAGE_ONE_BUILD_INDEX = 1
-LEVEL1_HOUSE_BUILD_INDICES = (17, 26, 29, 30, 31, 34, 42, 47, 50, 51, 52, 53)
+LEVEL1_HOUSE_BUILD_INDICES = (17, 19, 22, 26, 29, 30, 31, 32, 33, 34, 35, 39, 40, 42, 47, 50, 51, 52, 53, 62, 74)
 CASTLE_STAGE_ONE_BUILD_RAW_WIDTH = 8
 CASTLE_STAGE_ONE_BUILD_RAW_HEIGHT = 8
 CASTLE_STAGE_ONE_BUILD_PAYLOAD_SHA256 = (
@@ -8404,10 +8404,14 @@ def build_cache(
     castle_build_closure = castle_build_assets[0]
     house_build_closures = {
         int(row["asset_id"].rsplit("-", 1)[1]): row
-        for row in closure["sets"]["scene_reachable"]["assets"]
+        for row in (
+            closure["sets"]["scene_reachable"]["assets"]
+            + closure["sets"]["dynamic_dependencies"]["assets"]
+        )
         if row["asset_id"].startswith(
             "owner_data:DATA/BUILD0-0.DAT#footprint-"
         )
+        and int(row["asset_id"].rsplit("-", 1)[1]) in LEVEL1_HOUSE_BUILD_INDICES
     }
     if set(house_build_closures) != set(LEVEL1_HOUSE_BUILD_INDICES):
         raise CacheError(

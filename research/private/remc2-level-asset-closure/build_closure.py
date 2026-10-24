@@ -31,6 +31,9 @@ BASELINE_STATIC_CLOSURE_SHA256 = (
     "04e8b237b166161b57d4b86fc5c50a5f96ea32e4ec9b20404ac1d57e4615e751"
 )
 REMC2_SPEC_COMMIT = "6806c7204d17220ecc0430759f784aea8ee2ddb2"
+# sub_232C0 eligibility plus its bounded-scan fallback. These are reachable
+# construction inputs, rather than buildings observed in the initial scene.
+BUILDER_BUILD_INDICES = (17, 19, 22, 26, 29, 30, 31, 32, 33, 34, 35, 39, 40, 42, 47, 50, 62, 74)
 FINAL_TRACE_EVENT_COUNT = 76
 DAY_PRESENTATION_SELECTOR_IDENTITY = {
     "map_type": "Day",
@@ -406,6 +409,17 @@ def spell_constructor_particles(families: Iterable[int]) -> dict[int, tuple[int,
     constructors = {0: (340, 7), 1: (209, 41), 2: (18,)}
     return {family: constructors[family] for family in sorted(set(families))
             if family in constructors}
+
+
+def builder_build_dependencies(owner_root: Path) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    assets = parse_build_footprints(owner_root, BUILDER_BUILD_INDICES)
+    relations = [edge(
+        "settlement.builder.action96", asset["asset_id"],
+        "sub_232C0 BLDGPRM eligibility and fallback -> sub_49A30 BUILD constructor",
+        "source Builder construction selector", "dynamic",
+        "EventsFunctions.cpp:sub_232C0/sub_22760/sub_49A30",
+    ) for asset in assets]
+    return assets, relations
 
 
 def parse_build_footprints(owner_root: Path, indices: Iterable[int]) -> list[dict[str, Any]]:
@@ -1231,6 +1245,10 @@ def _build_day_closure(
                 ))
     footprints = parse_build_footprints(owner_root, entities["active_build_indices"])
     scene_assets.extend(footprints)
+    if entities["active_build_indices"]:
+        builder_assets, builder_edges = builder_build_dependencies(owner_root)
+        dynamic_assets.extend(builder_assets)
+        edges.extend(builder_edges)
     for asset in footprints:
         edges.append(
             edge(
@@ -1668,6 +1686,10 @@ def build_closure(
 
     footprints = parse_build_footprints(owner_root, entities["active_build_indices"])
     scene_assets.extend(footprints)
+    if entities["active_build_indices"]:
+        builder_assets, builder_edges = builder_build_dependencies(owner_root)
+        dynamic_assets.extend(builder_assets)
+        edges.extend(builder_edges)
     for asset in footprints:
         edges.append(
             edge(
