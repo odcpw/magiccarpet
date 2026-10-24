@@ -517,9 +517,7 @@ impl<B: GameSessionBackend> GameRuntime<B> {
         self.validate_guard(guard)
             .map_err(Box::new)
             .map_err(RuntimeTransitionError::Guard)?;
-        if !matches!(self.state, RuntimeState::Title { .. })
-            || self.frontend_media.blocks_transition()
-        {
+        if !matches!(self.state, RuntimeState::Title { .. }) || self.frontend_media.active() {
             return Err(RuntimeTransitionError::InvalidMode {
                 expected: RuntimeMode::Title,
                 actual: self.identity().mode,
@@ -1333,6 +1331,30 @@ mod tests {
             },
             PathBuf::from,
         )
+    }
+
+    #[test]
+    fn runtime_failed_media_immediately_admits_guarded_new_game() {
+        let definition =
+            Arc::new(load_mc2_campaign(level_one_package(), &default_catalog().unwrap()).unwrap());
+        let mut runtime = GameRuntime::<Mc2CampaignBackend>::title(337).unwrap();
+        let guard = runtime.identity().guard();
+        runtime
+            .frontend_media_command(
+                guard,
+                media::MediaCommand::Failed {
+                    message: "missing /override/media.json".into(),
+                },
+            )
+            .unwrap();
+        let recovered = runtime.identity();
+        assert_eq!(recovered.mode, RuntimeMode::Title);
+        let media = recovered.frontend_media.as_ref().unwrap();
+        assert!(!media.active);
+        assert!(media.clear_input);
+        assert_eq!(media.error.as_deref(), Some("missing /override/media.json"));
+        let loading = runtime.new_game(recovered.guard(), definition).unwrap();
+        assert_eq!(loading.mode, RuntimeMode::Loading);
     }
 
     fn load_verified_level_three_route_replay_for_test() -> (

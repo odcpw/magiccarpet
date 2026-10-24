@@ -194,10 +194,7 @@ impl FrontendMedia {
         (self.catalog.is_some() || self.view.error.is_some()).then(|| self.view.clone())
     }
     pub fn active(&self) -> bool {
-        self.view.active
-    }
-    pub(super) fn blocks_transition(&self) -> bool {
-        self.active() || self.awaiting_release || self.title_entry_pending
+        self.view.active || self.awaiting_release || self.title_entry_pending
     }
     /// Reset source MainMenu entry state; the next scheduled frontend frame
     /// consumes its audio actions, so an intervening identity read cannot lose
@@ -226,6 +223,10 @@ impl FrontendMedia {
                 self.prepared = None;
                 self.title_entry_pending = false;
                 self.finish();
+                // Failure returns immediately to usable Title. The normal
+                // segment input drain must not keep optional failed media in
+                // the runtime's activity/admission predicate.
+                self.awaiting_release = false;
                 // A broken optional media source cannot trap the user in an
                 // idle/retry loop. A new runtime can bind corrected resources.
                 self.catalog = None;
@@ -670,7 +671,7 @@ mod tests {
         owner.next_attract = true;
         owner.return_to_title();
         let _observation = owner.snapshot();
-        assert!(owner.blocks_transition());
+        assert!(owner.active());
         frame(&mut owner, 0, false);
         assert!(owner.view.clear_input);
         assert!(
@@ -704,11 +705,11 @@ mod tests {
             })
             .unwrap();
         assert!(!owner.active());
-        assert!(owner.blocks_transition());
+        assert!(owner.view.clear_input);
         frame(&mut owner, 49_999, false);
-        assert!(owner.blocks_transition());
+        assert!(!owner.active());
         frame(&mut owner, 1, false);
-        assert!(!owner.blocks_transition());
+        assert!(!owner.active());
         assert_eq!(
             owner.view.error.as_deref(),
             Some("missing /override/intro1.frames")
@@ -717,6 +718,5 @@ mod tests {
             frame(&mut owner, 5_000_000, false);
         }
         assert!(!owner.active());
-        assert!(!owner.blocks_transition());
     }
 }
