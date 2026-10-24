@@ -9,22 +9,23 @@ use sim_definition::adapter::{
     absence_countdown_definition, absence_countdown_entity_definition, activation_group_id,
     activation_switch_entity_definition, area_entry_trigger_entity_definition,
     area_exit_trigger_entity_definition, build_level_definition, cave_corridor_definition,
-    cave_corridor_entity_definition, creature_entity_definition,
-    entity_definition_with_position_access, exit_sequence_trigger_entity_definition,
-    experience_scroll_entity_definition, house_construction_entity_definition,
-    objective_definition, stable_entity_id, stable_objective_id, stable_rival_wizard_id,
+    cave_corridor_entity_definition, cave_feature_entity_definition, creature_entity_definition,
+    effect_entity_definition, entity_definition_with_position_access,
+    exit_sequence_trigger_entity_definition, experience_scroll_entity_definition,
+    house_construction_entity_definition, mc2_effect_definition, objective_definition,
+    stable_entity_id, stable_objective_id, stable_rival_wizard_id,
 };
 
 use crate::{
     house::HouseParameter,
     level_definition::{
-        BuildingKind, CorridorOrientation, CreatureKind, ItemKind, LevelDefinition, LevelEntityId,
-        LevelEntityKind, LevelEntityParameterAccess, LevelEntityPositionAccess,
-        LevelObjectiveConditionAccess, LevelObjectiveId, MechanicKind, ObjectiveCondition,
-        RivalWizardId, SceneryKind, SpellKind, SwitchKind, TilePosition,
-        supports_authorable_creature_placement,
+        BuildingKind, CaveFeatureDefinition, CaveFeatureKind, CorridorOrientation, CreatureKind,
+        EffectKind, ItemKind, LevelDefinition, LevelEntityId, LevelEntityKind,
+        LevelEntityParameterAccess, LevelEntityPositionAccess, LevelObjectiveConditionAccess,
+        LevelObjectiveId, MechanicKind, ObjectiveCondition, RivalWizardId, SceneryKind, SpellKind,
+        SwitchKind, TilePosition, supports_authorable_creature_placement,
     },
-    level1_mission::parse_authored_features,
+    level1_mission::{AuthoredFeature, parse_authored_features},
 };
 
 use super::spec::{CampaignSelection, ObjectiveOperation};
@@ -90,6 +91,13 @@ impl Mc2LevelDefinition {
     }
 
     pub(crate) const fn authored_kind(class: u8, subtype: u8) -> Option<LevelEntityKind> {
+        if class == 10
+            && let Some(kind) = Self::effect_kind(subtype)
+        {
+            return Some(LevelEntityKind::Mechanic(
+                MechanicKind::EnvironmentalEffect { kind },
+            ));
+        }
         match (class, subtype) {
             (5, model) => match Self::creature_for_model(model) {
                 Some(kind) => Some(LevelEntityKind::Creature(kind)),
@@ -98,6 +106,12 @@ impl Mc2LevelDefinition {
             (2, 0) => Some(LevelEntityKind::Scenery(SceneryKind::Tree)),
             (2, 1) => Some(LevelEntityKind::Scenery(SceneryKind::Stone)),
             (10, 45) => Some(LevelEntityKind::Building(BuildingKind::House)),
+            (10, model @ 80..=86) => match Self::cave_feature_kind(model) {
+                Some(kind) => Some(LevelEntityKind::Mechanic(MechanicKind::CaveFeature {
+                    kind,
+                })),
+                None => None,
+            },
             (14, 3) => Some(LevelEntityKind::Scenery(SceneryKind::ExitPortal)),
             (14, 2) => Some(LevelEntityKind::Mechanic(MechanicKind::CaveCorridor)),
             (14, 5) => Some(LevelEntityKind::Item(ItemKind::ExperienceScroll)),
@@ -135,6 +149,7 @@ impl Mc2LevelDefinition {
             (15, 10) => Some(LevelEntityKind::SpellPickup(SpellKind::Teleport)),
             (15, 11) => Some(LevelEntityKind::SpellPickup(SpellKind::Invisibility)),
             (15, 12) => Some(LevelEntityKind::SpellPickup(SpellKind::BeyondSight)),
+            (15, 25) => Some(LevelEntityKind::SpellPickup(SpellKind::CaveIn)),
             _ => None,
         }
     }
@@ -182,6 +197,12 @@ impl Mc2LevelDefinition {
         action: u8,
     ) -> Option<MechanicKind> {
         match (class, model, action) {
+            (10, model @ 80..=86, action) if action == model as u8 + 7 => {
+                match Self::cave_feature_kind(model as u8) {
+                    Some(kind) => Some(MechanicKind::CaveFeature { kind }),
+                    None => None,
+                }
+            }
             (14, 2, 7) => Some(MechanicKind::CaveCorridor),
             (11, 16, 16) => Some(MechanicKind::AbsenceCountdown {
                 creature: CreatureKind::Worm,
@@ -191,6 +212,95 @@ impl Mc2LevelDefinition {
             }),
             _ => None,
         }
+    }
+
+    pub(crate) const fn effect_kind(model: u8) -> Option<EffectKind> {
+        Some(match model {
+            0 => EffectKind::Impact,
+            1 => EffectKind::RadialExplosion,
+            2 => EffectKind::Expiry,
+            3 => EffectKind::ShortVisual,
+            4 => EffectKind::DormantGroundMarker,
+            5 => EffectKind::Ash,
+            6 => EffectKind::GroundFire,
+            7 => EffectKind::ImmediateVisual,
+            13 => EffectKind::Smoke,
+            14 => EffectKind::DarkSmoke,
+            16 => EffectKind::BurningDebris,
+            18 => EffectKind::Eruption,
+            19 => EffectKind::EruptionSmoke,
+            60 => EffectKind::AmbientSmoke,
+            70 => EffectKind::PossessionContact,
+            76 => EffectKind::FireSpheres,
+            87 => EffectKind::FadingSmoke,
+            _ => return None,
+        })
+    }
+
+    pub(crate) const fn cave_feature_kind(model: u8) -> Option<CaveFeatureKind> {
+        Some(match model {
+            80 => CaveFeatureKind::PathNode,
+            81 => CaveFeatureKind::Passage,
+            82 => CaveFeatureKind::Room,
+            83 => CaveFeatureKind::RoundObstruction,
+            84 => CaveFeatureKind::CeilingPendant,
+            85 => CaveFeatureKind::FloorMound,
+            86 => CaveFeatureKind::GroundVent,
+            _ => return None,
+        })
+    }
+
+    pub(crate) const fn cave_feature_definition(
+        feature: AuthoredFeature,
+    ) -> Option<CaveFeatureDefinition> {
+        if feature.kind != 10 {
+            return None;
+        }
+        let startup = feature.activation_group == -1;
+        Some(match feature.subtype {
+            80 => CaveFeatureDefinition::PathNode {
+                half_width_tiles: if startup {
+                    feature.parameter_3 as u8 & 15
+                } else {
+                    0
+                },
+            },
+            81 => CaveFeatureDefinition::Passage {
+                start_radius_tiles: 2,
+                end_radius_tiles: 4,
+                destination: TilePosition { x: 0, y: 0 },
+            },
+            82 => CaveFeatureDefinition::Room {
+                half_width_tiles: if startup {
+                    feature.parameter_1 as u8
+                } else {
+                    3
+                },
+                half_depth_tiles: if startup {
+                    feature.parameter_2 as u8
+                } else {
+                    3
+                },
+                clearance_steps: if startup {
+                    feature.parameter_3 as u8
+                } else {
+                    2
+                },
+            },
+            83 => CaveFeatureDefinition::RoundObstruction {
+                radius_tiles: feature.word_10 as i16,
+            },
+            84 => CaveFeatureDefinition::CeilingPendant {
+                radius_tiles: feature.word_10 as i16,
+                height_factor: feature.parameter_3 as i16,
+            },
+            85 => CaveFeatureDefinition::FloorMound {
+                radius_tiles: feature.word_10 as i16,
+                height_factor: feature.parameter_3 as i16,
+            },
+            86 => CaveFeatureDefinition::GroundVent { lifetime: 9 },
+            _ => return None,
+        })
     }
 
     pub(crate) const fn scenery_for_reset_selector(
@@ -253,6 +363,7 @@ impl Mc2LevelDefinition {
             (15, 10, 31) => Some(SpellKind::Teleport),
             (15, 11, 34) => Some(SpellKind::Invisibility),
             (15, 12, 37) => Some(SpellKind::BeyondSight),
+            (15, 25, 76 | 77) => Some(SpellKind::CaveIn),
             _ => None,
         }
     }
@@ -274,11 +385,11 @@ impl Mc2LevelDefinition {
 
     /// Non-executable projection of the known entity bindings. Unsupported
     /// source rows remain in the caller's complete decoded package.
-    pub(crate) fn catalog_entities(
+    pub(crate) fn catalog_binding(
         bytes: &[u8],
         selection: CampaignSelection,
-    ) -> Result<LevelDefinition, String> {
-        Self::bind_authored(bytes, &[], selection, None, true).map(|binding| binding.semantic)
+    ) -> Result<Self, String> {
+        Self::bind_authored(bytes, &[], selection, None, true)
     }
 
     fn bind_authored(
@@ -342,6 +453,42 @@ impl Mc2LevelDefinition {
                     ),
                 );
             }
+        }
+        // These shared effect families were absent from the opening identity
+        // manifest. Give their actual authored placements stable semantic IDs
+        // without changing any established opening entity identity.
+        let mut effect_occurrences = BTreeMap::<String, u16>::new();
+        for feature in &features {
+            let Ok(model) = u8::try_from(feature.subtype) else {
+                continue;
+            };
+            if feature.kind != 10 {
+                continue;
+            }
+            let Some(kind) = Self::effect_kind(model) else {
+                continue;
+            };
+            if stable_entity_ids.contains_key(&feature.index) {
+                continue;
+            }
+            let mut label = format!(
+                "mechanic.{}.at_{}_{}",
+                kind.as_str(),
+                feature.tile_x,
+                feature.tile_y
+            );
+            let ordinal = effect_occurrences.entry(label.clone()).or_default();
+            *ordinal += 1;
+            if *ordinal > 1 {
+                label.push_str(&format!(".instance_{ordinal}"));
+            }
+            stable_entity_ids.insert(
+                feature.index,
+                (
+                    stable_entity_id(&label).map_err(|error| error.to_string())?,
+                    LevelEntityPositionAccess::ReadOnly,
+                ),
+            );
         }
         let mut creature_by_authored_record = BTreeMap::new();
         let mut creature_model_by_kind = BTreeMap::new();
@@ -746,6 +893,7 @@ impl Mc2LevelDefinition {
                 (15, 10) => Some(SpellKind::Teleport),
                 (15, 11) => Some(SpellKind::Invisibility),
                 (15, 12) => Some(SpellKind::BeyondSight),
+                (15, 25) => Some(SpellKind::CaveIn),
                 _ => None,
             };
             if let Some(kind) = spell_kind {
@@ -785,6 +933,20 @@ impl Mc2LevelDefinition {
             }
 
             let mechanic_kind = match (feature.kind, feature.subtype) {
+                (10, model @ 80..=86) => MechanicKind::CaveFeature {
+                    kind: Self::cave_feature_kind(model as u8).expect("bounded cave model"),
+                },
+                (10, model)
+                    if u8::try_from(model)
+                        .ok()
+                        .and_then(Self::effect_kind)
+                        .is_some() =>
+                {
+                    MechanicKind::EnvironmentalEffect {
+                        kind: Self::effect_kind(u8::try_from(model).expect("guarded effect model"))
+                            .expect("guarded effect kind"),
+                    }
+                }
                 (14, 2) => MechanicKind::CaveCorridor,
                 // The two source callbacks observe the rebuilt class-5 model
                 // lists for Worms and Archers respectively. Shared callers
@@ -810,7 +972,23 @@ impl Mc2LevelDefinition {
                 LevelEntityKind::Mechanic(mechanic_kind),
                 position_access,
             )?;
-            if mechanic_kind == MechanicKind::CaveCorridor {
+            if let MechanicKind::EnvironmentalEffect { kind } = mechanic_kind {
+                entities.push(effect_entity_definition(
+                    id.clone(),
+                    position,
+                    activation_group,
+                    position_access,
+                    mc2_effect_definition(kind),
+                ));
+            } else if let Some(config) = Self::cave_feature_definition(*feature) {
+                entities.push(cave_feature_entity_definition(
+                    id.clone(),
+                    position,
+                    activation_group,
+                    position_access,
+                    config,
+                ));
+            } else if mechanic_kind == MechanicKind::CaveCorridor {
                 let orientation = if feature.parameter_1 != 0 {
                     CorridorOrientation::AlongX
                 } else {

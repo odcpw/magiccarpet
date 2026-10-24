@@ -846,18 +846,35 @@ impl Level2EconomyState {
             };
         }
 
-        let impact_slot = self.allocate_class10_model0_effect(
-            projectile.source_entity_index,
-            projectile.owner_entity_index,
-            projectile.yaw,
-            projectile.pitch,
-            projectile.position,
-            projectile.source_subspell_index,
-            0,
-            0x0002_0000,
-            128,
-            128,
-        );
+        let impact_slot = if projectile.origin == FireballProjectileOrigin::Eruption {
+            self.allocate_authored_model17(u16::MAX, projectile.position, terrain)
+                .map(|birth| {
+                    let slot = birth.source_entity_index;
+                    if let Some(source) = self
+                        .authored_model17
+                        .iter_mut()
+                        .find(|row| row.source_entity_index == slot)
+                    {
+                        source.entity_id = projectile.owner_entity_index;
+                    }
+                    self.source_owner
+                        .insert(slot, projectile.owner_entity_index);
+                    slot
+                })
+        } else {
+            self.allocate_class10_model0_effect(
+                projectile.source_entity_index,
+                projectile.owner_entity_index,
+                projectile.yaw,
+                projectile.pitch,
+                projectile.position,
+                projectile.source_subspell_index,
+                0,
+                0x0002_0000,
+                128,
+                128,
+            )
+        };
         if impact_slot.is_some() {
             let projectile = &mut self.fireball_projectiles[projectile_index];
             projectile.active = false;

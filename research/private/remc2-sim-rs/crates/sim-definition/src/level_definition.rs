@@ -9,6 +9,11 @@ use crate::{DefinitionError, DefinitionErrorCode, SemanticId};
 use serde::{Deserialize, Deserializer, Serialize};
 use std::collections::BTreeSet;
 
+mod cave_features;
+pub use cave_features::{CaveFeatureDefinition, CaveFeatureKind};
+mod effects;
+pub use effects::{EffectDefinition, EffectKind};
+
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CreatureKind {
@@ -135,6 +140,7 @@ pub enum SpellKind {
     Teleport,
     Invisibility,
     BeyondSight,
+    CaveIn,
 }
 
 impl SpellKind {
@@ -152,6 +158,7 @@ impl SpellKind {
             Self::Teleport => "teleport",
             Self::Invisibility => "invisibility",
             Self::BeyondSight => "beyond_sight",
+            Self::CaveIn => "cave_in",
         }
     }
 }
@@ -161,6 +168,8 @@ impl SpellKind {
 pub enum MechanicKind {
     AbsenceCountdown { creature: CreatureKind },
     CaveCorridor,
+    CaveFeature { kind: CaveFeatureKind },
+    EnvironmentalEffect { kind: EffectKind },
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
@@ -288,6 +297,8 @@ impl MechanicKind {
         match self {
             Self::AbsenceCountdown { .. } => "absence_countdown",
             Self::CaveCorridor => "cave_corridor",
+            Self::CaveFeature { kind } => kind.as_str(),
+            Self::EnvironmentalEffect { kind } => kind.as_str(),
         }
     }
 
@@ -295,7 +306,9 @@ impl MechanicKind {
     pub const fn creature(self) -> Option<CreatureKind> {
         match self {
             Self::AbsenceCountdown { creature } => Some(creature),
-            Self::CaveCorridor => None,
+            Self::CaveCorridor | Self::CaveFeature { .. } | Self::EnvironmentalEffect { .. } => {
+                None
+            }
         }
     }
 }
@@ -810,6 +823,10 @@ pub struct LevelEntityDefinition {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     cave_corridor: Option<CaveCorridorDefinition>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    cave_feature: Option<CaveFeatureDefinition>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    effect: Option<EffectDefinition>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     creature_health: Option<CreatureHealthDefinition>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     experience_scroll: Option<ExperienceScrollDefinition>,
@@ -841,6 +858,8 @@ impl LevelEntityDefinition {
             position_access,
             absence_countdown,
             cave_corridor: None,
+            cave_feature: None,
+            effect: None,
             creature_health,
             experience_scroll,
             house_construction,
@@ -895,6 +914,26 @@ impl LevelEntityDefinition {
     }
 
     #[must_use]
+    pub const fn cave_feature(&self) -> Option<CaveFeatureDefinition> {
+        self.cave_feature
+    }
+
+    pub(crate) const fn with_cave_feature(mut self, config: CaveFeatureDefinition) -> Self {
+        self.cave_feature = Some(config);
+        self
+    }
+
+    #[must_use]
+    pub const fn effect(&self) -> Option<EffectDefinition> {
+        self.effect
+    }
+
+    pub(crate) const fn with_effect(mut self, config: EffectDefinition) -> Self {
+        self.effect = Some(config);
+        self
+    }
+
+    #[must_use]
     pub const fn creature_health(&self) -> Option<CreatureHealthDefinition> {
         self.creature_health
     }
@@ -934,6 +973,45 @@ impl LevelDefinition {
     ) -> Result<Self, String> {
         let mut ids = BTreeSet::new();
         for entity in &entities {
+            match (entity.kind, entity.effect) {
+                (
+                    LevelEntityKind::Mechanic(MechanicKind::EnvironmentalEffect { kind }),
+                    Some(config),
+                ) if kind == config.kind() => config.validate()?,
+                (LevelEntityKind::Mechanic(MechanicKind::EnvironmentalEffect { .. }), _) => {
+                    return Err(format!(
+                        "effect {} lacks matching construction properties",
+                        entity.id.as_str()
+                    ));
+                }
+                (_, Some(_)) => {
+                    return Err(format!(
+                        "non-effect {} carries effect properties",
+                        entity.id.as_str()
+                    ));
+                }
+                (_, None) => {}
+            }
+            match (entity.kind, entity.cave_feature) {
+                (LevelEntityKind::Mechanic(MechanicKind::CaveFeature { kind }), Some(config))
+                    if kind == config.kind() =>
+                {
+                    config.validate()?
+                }
+                (LevelEntityKind::Mechanic(MechanicKind::CaveFeature { .. }), _) => {
+                    return Err(format!(
+                        "cave feature {} lacks matching construction properties",
+                        entity.id.as_str()
+                    ));
+                }
+                (_, Some(_)) => {
+                    return Err(format!(
+                        "non-cave entity {} carries cave construction properties",
+                        entity.id.as_str()
+                    ));
+                }
+                (_, None) => {}
+            }
             if !ids.insert(entity.id.clone()) {
                 return Err(format!(
                     "duplicate semantic level entity {}",
@@ -1570,6 +1648,8 @@ impl LevelDefinition {
                 || candidate.activation_group != original.activation_group
                 || candidate.position_access != original.position_access
                 || candidate.cave_corridor != original.cave_corridor
+                || candidate.effect != original.effect
+                || candidate.cave_feature != original.cave_feature
             {
                 return Err(format!(
                     "semantic level variant changes entity identity or structure at {}",

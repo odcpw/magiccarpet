@@ -267,7 +267,10 @@ impl Level2EconomyState {
 
             authored_class5_archer_children: Vec::new(),
 
-            house_residents: Vec::new(),
+            house_residents: creatures::settlements::SettlementPopulation::new(
+                counters[12],
+                counters[13],
+            ),
 
             class5_model0_constructor_phase: counters[0],
 
@@ -393,7 +396,7 @@ impl Level2EconomyState {
         visit_flagged_rows!(self.model76_tail_spawns, Model76TailSpawn);
     }
 
-    pub(super) fn allocate_slot(&mut self) -> Option<u16> {
+    pub(crate) fn allocate_slot(&mut self) -> Option<u16> {
         if let Some(slot) = self.free_slots.pop() {
             self.converted_skeleton_origins.remove(&slot);
             // `NewEvent` overwrites the fixed source record at this slot.
@@ -489,8 +492,41 @@ impl Level2EconomyState {
         Some(slot)
     }
 
+    /// SourceArena combines this typed candidate with its authoritative raw
+    /// records. No raw control flags are copied into this carrier.
+    pub(crate) fn typed_replacement_candidate(&self) -> Option<u16> {
+        let mut candidate = None;
+        self.for_each_live_replaceable_arena_row(|slot, _| {
+            if self.raw_replacement_candidate_allowed(slot)
+                && candidate.is_none_or(|current| slot < current)
+            {
+                candidate = Some(slot);
+            }
+        });
+        candidate
+    }
+
+    pub(crate) fn raw_replacement_candidate_allowed(&self, slot: u16) -> bool {
+        !self.replacement_cursor_exclusions.contains(&slot)
+    }
+
+    /// Fallback NewEvent metadata, after SourceArena retires the raw row.
+    /// It never appends to the ordinary free stack.
+    pub(crate) fn claim_raw_replacement_slot(&mut self, slot: u16) -> u16 {
+        self.converted_skeleton_origins.remove(&slot);
+        self.possession_guidance_stale_records.remove(&slot);
+        self.source_phase_sidecars.remove(&slot);
+        self.map_chains.set_map_entity_unlink(slot);
+        self.slot_rng.remove(&slot);
+        self.source_rng.remove(&slot);
+        let generation = self.slot_generations.entry(slot).or_default();
+        *generation = generation.wrapping_add(1);
+        self.replacement_list_epoch = self.replacement_list_epoch.wrapping_add(1);
+        slot
+    }
+
     #[must_use]
-    pub(super) fn new_event_rng(&self, source_slot: u16) -> u16 {
+    pub(crate) fn new_event_rng(&self, source_slot: u16) -> u16 {
         // Pinned remc2 NewEvent_4A050: rand_0x14 is the source slot plus the
         // global D41A0.rand_0x8 stream, not the inactive row's stale RNG.
         source_slot.wrapping_add(self.global_rng as u16)
@@ -505,7 +541,7 @@ impl Level2EconomyState {
         self.global_rng = level2_next_rng32(self.global_rng);
     }
 
-    pub(super) fn release_slot(&mut self, slot: u16, entity_rng: Option<u16>) {
+    pub(crate) fn release_slot(&mut self, slot: u16, entity_rng: Option<u16>) {
         if slot == 0 {
             return;
         }
@@ -594,11 +630,15 @@ impl Level2EconomyState {
         // canonical Rust projection of that live set, including slots freed
         // since reset; the reset pool remains a compatibility input for rows
         // that have never been allocated in this bounded carrier.
+        let currently_free = self.free_slots.iter().copied().collect::<BTreeSet<_>>();
         self.free_slots = reset_free_slots
             .iter()
             .chain(self.free_slots.iter())
             .copied()
-            .filter(|slot| !occupied.contains(slot))
+            .filter(|slot| {
+                !occupied.contains(slot)
+                    && (currently_free.contains(slot) || !self.slot_generations.contains_key(slot))
+            })
             .collect::<BTreeSet<_>>()
             .into_iter()
             .collect();
@@ -1277,7 +1317,7 @@ impl Level2EconomyState {
         family: u8,
         position: Position,
     ) -> Option<Level2StartingSpellHolderSource> {
-        if !matches!(family, 0..=3 | 5 | 8 | 10) || self.free_slot_count() == 0 {
+        if !matches!(family, 0..=3 | 5 | 8 | 10 | 25) || self.free_slot_count() == 0 {
             return None;
         }
         let source_entity_index = self.allocate_slot()?;
@@ -3162,65 +3202,12 @@ impl Level2EconomyState {
                 terrain,
             );
         }
-        let semantic_kind =
-            crate::campaign::mc2_level_definition::Mc2LevelDefinition::creature_for_house_resident(
-                request.model,
-                request.action,
-            )?;
-        let source_entity_index = self.allocate_slot()?;
-        let entity_rng = self.new_event_rng(source_entity_index);
-        if self
-            .map_chains
-            .sync_entity(RenderableMapSeed {
-                entity_index: source_entity_index,
-                active: true,
-                x: request.position.x,
-                y: request.position.y,
-            })
-            .is_err()
-        {
-            self.release_slot(source_entity_index, None);
-            return None;
-        }
-        let source = Level2HouseResidentSource {
-            source_entity_index,
-            entity_rng,
+        self.allocate_settlement_resident(
             parent_house_entity_index,
             owner_entity_index,
-            attacker_entity_index: request.attacker_entity_index,
-            semantic_kind,
-            position: request.position,
-            model: request.model,
-            action: request.action,
-            life: 1_000,
-            phase: source_entity_index as u8,
-            drawing_enabled: true,
-            active: true,
-        };
-        self.source_rng.insert(source_entity_index, entity_rng);
-        self.source_owner
-            .insert(source_entity_index, owner_entity_index);
-        self.house_residents.push(source);
-        Some(source_entity_index)
-    }
-
-    pub(super) fn step_house_resident_slot(&mut self, source_slot: u16) -> bool {
-        let Some(source) = self
-            .house_residents
-            .iter_mut()
-            .find(|source| source.active && source.source_entity_index == source_slot)
-        else {
-            return false;
-        };
-        source.phase = source.phase.wrapping_add(1);
-        self.map_chains
-            .sync_entity(RenderableMapSeed {
-                entity_index: source_slot,
-                active: true,
-                x: source.position.x,
-                y: source.position.y,
-            })
-            .is_ok()
+            request,
+            terrain,
+        )
     }
 
     #[must_use]
@@ -6909,11 +6896,13 @@ impl Level2EconomyState {
         let reclaimed_house_residents = self
             .house_residents
             .iter()
-            .filter(|source| !source.active)
+            .filter(|source| !source.active || !source.drawing_enabled)
             .map(|source| (source.source_entity_index, source.entity_rng))
             .collect::<Vec<_>>();
-        self.house_residents.retain(|source| source.active);
+        self.house_residents
+            .retain(|source| source.active && source.drawing_enabled);
         for (slot, entity_rng) in reclaimed_house_residents {
+            self.map_chains.set_map_entity_unlink(slot);
             self.release_slot(slot, Some(entity_rng));
         }
         let reclaimed_beyond_sight_effects = self
@@ -8035,7 +8024,9 @@ impl Level2EconomyState {
             hasher.update(state.linked_head.to_le_bytes());
         }
         hasher.update(b"level2-house-resident-v1");
+        self.house_residents.digest_counters(&mut hasher);
         for source in &self.house_residents {
+            source.digest_behavior(&mut hasher);
             hasher.update(source.source_entity_index.to_le_bytes());
             hasher.update(source.entity_rng.to_le_bytes());
             hasher.update(source.parent_house_entity_index.to_le_bytes());
@@ -8104,6 +8095,9 @@ impl Level2EconomyState {
                 }
                 FireballProjectileOrigin::Worm => {
                     hasher.update(b"worm-fireball-origin-v1");
+                }
+                FireballProjectileOrigin::Eruption => {
+                    hasher.update(b"eruption-fireball-origin-v1");
                 }
             }
             hasher.update(projectile.source_entity_index.to_le_bytes());

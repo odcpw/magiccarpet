@@ -124,6 +124,54 @@ impl SourceArena {
         &self.entities
     }
 
+    /// NewEvent over both canonical carrier domains. Raw controller records
+    /// participate in the same lowest-slot fallback as typed arena rows.
+    pub(crate) fn allocate_source_slot(&mut self) -> Option<u16> {
+        if self.economy.free_slot_count() != 0 {
+            return self.economy.allocate_slot();
+        }
+        let dynamic = self
+            .economy
+            .live_arena_slots()
+            .into_iter()
+            .map(|(slot, _)| slot)
+            .collect::<BTreeSet<_>>();
+        let raw = self
+            .entities
+            .iter()
+            .filter(|row| {
+                row.index != 0
+                    && row.active
+                    && row.class != 0
+                    && row.control_flags & crate::level1_mission::SOURCE_REPLACEABLE_FLAG != 0
+                    && !dynamic.contains(&row.index)
+                    && self.economy.raw_replacement_candidate_allowed(row.index)
+            })
+            .map(|row| row.index)
+            .min();
+        let typed = self.economy.typed_replacement_candidate();
+        let Some(slot) = raw.filter(|slot| typed.is_none_or(|typed| *slot < typed)) else {
+            return self.economy.allocate_slot();
+        };
+        let neighbors = [
+            self.economy.map_chains.old_map_entity(slot),
+            self.economy.map_chains.next_entity(slot),
+        ];
+        self.entities[usize::from(slot)].reclaim_source_row();
+        self.economy.claim_raw_replacement_slot(slot);
+        for neighbor in neighbors
+            .into_iter()
+            .filter(|id| *id != 0 && !dynamic.contains(id))
+        {
+            let links = (
+                self.economy.map_chains.old_map_entity(neighbor),
+                self.economy.map_chains.next_entity(neighbor),
+            );
+            self.entities[usize::from(neighbor)].set_map_links(links.0, links.1);
+        }
+        Some(slot)
+    }
+
     #[must_use]
     pub(crate) fn topology(&self) -> SourceTopology {
         let links = self

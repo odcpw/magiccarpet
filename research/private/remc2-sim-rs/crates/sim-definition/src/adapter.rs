@@ -9,12 +9,13 @@ use crate::{
     ArtifactKind, ArtifactNode, DefinitionError, DefinitionErrorCode, GameDefinition, GamePackage,
     PackageProvenance, RequiredCapability, SemanticId, SemanticValue,
     level_definition::{
-        AbsenceCountdownDefinition, ActivationGroupId, CaveCorridorDefinition, CorridorOrientation,
-        CreatureHealthDefinition, CreatureKind, ExperienceScrollDefinition,
-        HouseConstructionDefinition, LevelDefinition, LevelEntityDefinition, LevelEntityId,
-        LevelEntityKind, LevelEntityParameterAccess, LevelEntityPositionAccess,
-        LevelObjectiveConditionAccess, LevelObjectiveDefinition, LevelObjectiveId, MechanicKind,
-        ObjectiveCondition, RivalWizardId, SwitchOverlapDefinition, TilePosition,
+        AbsenceCountdownDefinition, ActivationGroupId, CaveCorridorDefinition,
+        CaveFeatureDefinition, CorridorOrientation, CreatureHealthDefinition, CreatureKind,
+        EffectDefinition, EffectKind, ExperienceScrollDefinition, HouseConstructionDefinition,
+        LevelDefinition, LevelEntityDefinition, LevelEntityId, LevelEntityKind,
+        LevelEntityParameterAccess, LevelEntityPositionAccess, LevelObjectiveConditionAccess,
+        LevelObjectiveDefinition, LevelObjectiveId, MechanicKind, ObjectiveCondition,
+        RivalWizardId, SwitchOverlapDefinition, TilePosition,
     },
     runtime_flow::RuntimeFlowDefinition,
 };
@@ -159,6 +160,81 @@ pub const fn cave_corridor_definition(
     extent: i16,
 ) -> CaveCorridorDefinition {
     CaveCorridorDefinition::new(orientation, extent)
+}
+
+#[must_use]
+pub const fn cave_feature_entity_definition(
+    id: LevelEntityId,
+    position: TilePosition,
+    activation_group: Option<ActivationGroupId>,
+    position_access: LevelEntityPositionAccess,
+    config: CaveFeatureDefinition,
+) -> LevelEntityDefinition {
+    LevelEntityDefinition::new(
+        id,
+        LevelEntityKind::Mechanic(MechanicKind::CaveFeature {
+            kind: config.kind(),
+        }),
+        position,
+        activation_group,
+        position_access,
+        None,
+        None,
+        None,
+        None,
+        None,
+    )
+    .with_cave_feature(config)
+}
+
+/// Pinned MC2 class defaults. Pure presentation effects retain their source
+/// payload word, but their behavior never submits a damage operation.
+#[must_use]
+pub const fn mc2_effect_definition(kind: EffectKind) -> EffectDefinition {
+    let (life, damage) = match kind {
+        EffectKind::Impact => (8, 400),
+        EffectKind::RadialExplosion => (1, 400),
+        EffectKind::Expiry => (8, 100),
+        EffectKind::ShortVisual => (7, 0),
+        EffectKind::DormantGroundMarker => (100, 0),
+        EffectKind::Ash => (8, 0),
+        EffectKind::GroundFire => (240, 50),
+        EffectKind::ImmediateVisual => (12, 100),
+        EffectKind::Smoke | EffectKind::FadingSmoke => (17, 100),
+        EffectKind::DarkSmoke => (28, 100),
+        EffectKind::BurningDebris => (100, 200),
+        EffectKind::Eruption => (10000, 200),
+        EffectKind::EruptionSmoke => (240, 200),
+        EffectKind::AmbientSmoke => (800, 100),
+        EffectKind::PossessionContact => (8, 64000),
+        EffectKind::FireSpheres => (80, 70),
+    };
+    EffectDefinition::new(kind, life, damage)
+}
+
+#[must_use]
+pub const fn effect_entity_definition(
+    id: LevelEntityId,
+    position: TilePosition,
+    activation_group: Option<ActivationGroupId>,
+    position_access: LevelEntityPositionAccess,
+    config: EffectDefinition,
+) -> LevelEntityDefinition {
+    LevelEntityDefinition::new(
+        id,
+        LevelEntityKind::Mechanic(MechanicKind::EnvironmentalEffect {
+            kind: config.kind(),
+        }),
+        position,
+        activation_group,
+        position_access,
+        None,
+        None,
+        None,
+        None,
+        None,
+    )
+    .with_effect(config)
 }
 
 #[must_use]
