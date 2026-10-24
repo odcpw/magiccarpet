@@ -129,6 +129,12 @@ fn safe_path(path: &str) -> bool {
         && !path.contains('\\')
         && path.split('/').all(|p| !matches!(p, "" | "." | ".."))
 }
+
+fn source_deadline_us(ticks: u64) -> u64 {
+    // Animation.cpp: static_cast<long long>(AnimCurrentTick * AnimTickTime),
+    // with AnimTickTime = 8.4f. Rational arithmetic changes real deadlines.
+    ((ticks as f32 * 8.4_f32) as u64) * 1_000
+}
 impl MediaCatalog {
     pub fn validate(&self) -> Result<(), String> {
         if self.schema != MEDIA_CONTRACT
@@ -521,8 +527,7 @@ impl FrontendMedia {
             }
         }
         self.ticks += u64::from(self.pacing);
-        // Source uses truncation of cumulative ticks * 8.4 milliseconds.
-        self.deadline = (self.ticks * 84 / 10) * 1000;
+        self.deadline = source_deadline_us(self.ticks);
         self.prepared = Some(self.next_frame);
         Ok(())
     }
@@ -597,6 +602,13 @@ mod tests {
         }
         frame(owner, 50_000, false);
     }
+    #[test]
+    fn source_float_deadline_retains_truncation_at_real_intro_keyframes() {
+        assert_eq!(source_deadline_us(10), 84_000);
+        assert_eq!(source_deadline_us(30), 251_000);
+        assert_eq!(source_deadline_us(100), 839_000);
+    }
+
     #[test]
     fn source_events_precede_deadline_palette_and_retained_subtitle_presentation() {
         let mut owner = media();
