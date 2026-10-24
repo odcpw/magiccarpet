@@ -6,7 +6,12 @@
 //! owns a real mailbox/target/building decision closure rather than the
 //! creature callbacks used by models 3 and 9.
 
-use super::super::*;
+use crate::native_world::{
+    Level2AuthoredClass5RuntimeState, Level2AuthoredClass5Source, Level2EconomyState,
+    SessionTerrain, level2_next_rng16,
+};
+use crate::renderable_map_chain::RenderableMapSeed;
+use crate::{FlightWorld, Position};
 
 /// The group-3 Trader rows, in the order in which the Level 2 dispatch
 /// artifact presents them.
@@ -179,6 +184,34 @@ impl TraderConstructorPayload {
 }
 
 impl Level2EconomyState {
+    /// `sub_57F20` runs at the following source-pass boundary. Hide leaves
+    /// the row and map-chain membership intact until this owner is called.
+    pub(crate) fn reclaim_hidden_trader_rows_at_source_boundary(&mut self) {
+        let mut hidden = self
+            .authored_class5
+            .iter()
+            .filter(|row| row.active && row.model == TRADER_MODEL && !row.drawing_enabled)
+            .map(|row| (row.source_entity_index, row.entity_rng))
+            .collect::<Vec<_>>();
+        hidden.sort_unstable_by_key(|(slot, _)| *slot);
+        self.authored_class5
+            .retain(|row| row.model != TRADER_MODEL || row.drawing_enabled);
+        self.authored_class5_runtime.retain(|row| {
+            !hidden
+                .iter()
+                .any(|(slot, _)| *slot == row.source_entity_index)
+        });
+        for (slot, rng) in hidden {
+            let _ = self.map_chains.sync_entity(RenderableMapSeed {
+                entity_index: slot,
+                active: false,
+                x: 0,
+                y: 0,
+            });
+            self.release_slot(slot, Some(rng));
+        }
+    }
+
     #[cfg(test)]
     pub(crate) fn stage_trader_mailbox_damage_for_test(
         &mut self,
@@ -261,8 +294,10 @@ impl Level2EconomyState {
             });
         Some(source)
     }
+}
 
-    /// Advance one live Trader through action 113 and its direct source
+impl crate::campaign::source_arena::SourceArena {
+    /// Advance one live Trader through its source callback and direct
     /// closure.  The context is deliberately explicit: the current generic
     /// class-5 carrier does not own the Trader mailbox damage amount, linked
     /// child chain, target `dword_0x10`, or ordered building candidates.
@@ -280,10 +315,10 @@ impl Level2EconomyState {
             source.active
                 && source.source_entity_index == source_slot
                 && source.model == TRADER_MODEL
-                && source.action == TRADER_ACTION
+                && source.drawing_enabled
+                && matches!(source.action, 112..=119)
         })?;
         let mut source = self.authored_class5[source_index];
-        let consumed_mailbox = source.pending_word_0x62 != 0;
         let mut context = TraderAction113Context {
             pending_damage,
             linked_head,
@@ -291,12 +326,65 @@ impl Level2EconomyState {
             target,
             buildings,
         };
-        let effects = step_trader_action113(&mut source, &mut context);
-        if effects.moved {
-            source.position.z = terrain.ground_height(source.position);
+        let linked_killers = linked
+            .iter()
+            .map(|child| {
+                (
+                    child.entity_index,
+                    self.entities
+                        .get(usize::from(child.entity_index))
+                        .map_or(0, |row| row.word_24()),
+                )
+            })
+            .collect::<Vec<_>>();
+        let views = self
+            .entities
+            .iter()
+            .filter(|row| row.active)
+            .map(|row| {
+                let mut view = crate::level1_mission::Level1SourceEntityView::imported_record(
+                    crate::level1_mission::Level1ResetSourceSlot {
+                        index: row.index,
+                        active: row.active,
+                        class: row.class,
+                        model: row.model,
+                        action: row.action,
+                        phase: row.phase,
+                        entity_rng: row.entity_rng,
+                        control_flags: row.control_flags,
+                    },
+                );
+                view.position = row.position;
+                view.life = row.life;
+                view.source_id = row.source_id;
+                view
+            })
+            .collect::<Vec<_>>();
+        let effects =
+            step_trader_lifecycle(&mut source, &mut context, terrain, &views, &linked_killers);
+        if effects.prekill_linked {
+            for child in linked {
+                if let Some(row) = self.entities.get_mut(usize::from(child.entity_index)) {
+                    row.set_source_action(117);
+                }
+                if let Some(row) = self
+                    .authored_class5
+                    .iter_mut()
+                    .find(|row| row.source_entity_index == child.entity_index)
+                {
+                    row.action = 117;
+                }
+            }
         }
-        if consumed_mailbox && let Some(runtime) = self.authored_class5_runtime_mut(source_slot) {
-            runtime.pending_damage = 0;
+        if effects.death_burst {
+            let _ = self.spawn_death_burst_from_death_with_id(
+                source_slot,
+                source_slot,
+                source.position,
+            );
+        }
+        if effects.population_decrement != 0 {
+            self.decrement_source_creature_population();
         }
         source.source_byte_3e = source.source_byte_3e.wrapping_add(1);
         source.phase = source.phase.wrapping_add(1);
@@ -365,6 +453,10 @@ pub(crate) struct TraderAction113Effects {
     pub(crate) selected_target: Option<u16>,
     pub(crate) released_target: bool,
     pub(crate) moved: bool,
+    pub(crate) hidden: bool,
+    pub(crate) death_burst: bool,
+    pub(crate) prekill_linked: bool,
+    pub(crate) population_decrement: u32,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -374,183 +466,223 @@ pub(crate) struct TraderAction113Step {
     pub(crate) map_synced: bool,
 }
 
-/// Exact source action 113/helper closure for a model-14 Trader.
+/// Translate the MC2 carrier into the canonical settlement population callback.
+/// All state written back below belongs to the same source slot. The views are
+/// temporary reads, never another mutable authority or scheduled actor.
+fn step_trader_lifecycle<W: crate::FlightWorld>(
+    source: &mut Level2AuthoredClass5Source,
+    context: &mut TraderAction113Context<'_>,
+    world: &W,
+    extra_views: &[crate::level1_mission::Level1SourceEntityView],
+    linked_killers: &[(u16, u16)],
+) -> TraderAction113Effects {
+    use crate::level1_mission::{
+        Level1ResetSourceSlot, Level1SourceEffect, Level1SourceEntityView,
+    };
+    use crate::native_world::creatures::settlements::{
+        self, DynamicResidentKind, SettlementContext,
+    };
+
+    let old_target = source.word_0x96_150;
+    let old_action = source.action;
+    let had_mailbox = source.pending_word_0x62 != 0;
+    let mut resident = settlements::resident_constructor(
+        source.source_entity_index,
+        source.entity_rng,
+        source.source_byte_3e,
+        source.position,
+        DynamicResidentKind::Trader,
+        TRADER_MODEL,
+        source.action,
+        0,
+    );
+    resident.entity_rng = source.entity_rng;
+    resident.yaw = source.yaw;
+    resident.desired_heading = source.roll;
+    resident.life = source.life;
+    resident.max_life = source.max_life;
+    resident.pending_damage = context.pending_damage;
+    resident.pending_attacker = source.pending_word_0x62;
+    resident.current_attacker = source.word_0x26;
+    resident.kill_credit_entity = source.word_0x24;
+    resident.reset_counter = source.dword_0x10;
+    resident.minimum_speed = source.minimum_speed;
+    resident.maximum_speed = source.maximum_speed;
+    resident.actual_speed = source.actual_speed;
+    resident.target_entity_index = source.word_0x96_150;
+    resident.linked_entity_index = context.linked_head;
+    resident.mana = source.mana;
+    resident.visible = source.drawing_enabled;
+
+    let view = |index, class, model, active, position| {
+        let mut view = Level1SourceEntityView::imported_record(Level1ResetSourceSlot {
+            index,
+            class,
+            model,
+            active,
+            action: 0,
+            phase: 0,
+            entity_rng: 0,
+            control_flags: 0,
+        });
+        view.position = position;
+        view.life = 1;
+        view
+    };
+    let mut views = extra_views.to_vec();
+    for building in context.buildings {
+        let mut candidate = view(building.entity_index, 10, 45, true, building.position);
+        candidate.villager_entry_eligible = building.eligible;
+        views.push(candidate);
+    }
+    if let Some(target) = context.target {
+        let mut target_view = view(
+            target.entity_index,
+            target.class,
+            target.model,
+            target.active,
+            target.position,
+        );
+        if let Some(current) = extra_views
+            .iter()
+            .find(|row| row.source_entity_index == target.entity_index)
+        {
+            target_view.life = current.life;
+            target_view.control_flags = current.control_flags;
+        }
+        target_view.villager_entry_eligible = true;
+        views.push(target_view);
+    }
+    let mut linked_residents = if context.linked.is_empty() {
+        Vec::new()
+    } else {
+        vec![None; 1000]
+    };
+    for linked in context.linked {
+        let mut child_view = view(linked.entity_index, 5, linked.model, true, source.position);
+        child_view.life = linked.life;
+        child_view.owner_entity_index = linked.current_attacker;
+        child_view.linked_entity_index = linked.next_entity_index;
+        views.push(child_view);
+        let mut child = resident;
+        child.source_entity_index = linked.entity_index;
+        child.life = linked.life;
+        child.current_attacker = linked.current_attacker;
+        child.linked_entity_index = linked.next_entity_index;
+        child.kill_credit_entity = linked_killers
+            .iter()
+            .find(|(slot, _)| *slot == linked.entity_index)
+            .map_or(0, |(_, killer)| *killer);
+        if let Some(slot) = linked_residents.get_mut(usize::from(linked.entity_index)) {
+            *slot = Some(child);
+        }
+    }
+    // Stable sorting keeps the current explicit target ahead of stale package
+    // rows for the same arena identity.
+    views.reverse();
+    views.sort_by_key(|row| row.source_entity_index);
+    views.dedup_by_key(|row| row.source_entity_index);
+    let mut census = 1;
+    let mut feedback = 0;
+    let mut unused_global_rng = 0;
+    let mut step = SettlementContext {
+        source_slots: &mut [],
+        dynamic_residents: &mut linked_residents,
+        class_5_census: &mut census,
+        player_archer_target_ticks: &mut feedback,
+        global_rng: &mut unused_global_rng,
+        building_source_order: &[],
+        house_request: None,
+        death_bursts: Vec::new(),
+        linked_kills: Vec::new(),
+        selection_rng_draw: None,
+    };
+    let outputs = step.step_dynamic_trader(world, &views, &mut resident);
+    let death_burst = !step.death_bursts.is_empty();
+    let prekill_linked = !step.linked_kills.is_empty();
+    let population_decrement = u32::from(census == 0);
+    let mut hidden = false;
+    for effect in outputs {
+        match effect {
+            Level1SourceEffect::TryEnterVillager {
+                house_source_entity_index,
+                ..
+            } => {
+                if let Some(target) = context
+                    .target
+                    .as_mut()
+                    .filter(|target| target.entity_index == house_source_entity_index)
+                    && i32::from(target.minimum_speed) > target.dword_0x10
+                {
+                    target.dword_0x10 = target.dword_0x10.wrapping_add(1);
+                } else {
+                    settlements::reject_trader_house_target(&mut resident);
+                }
+            }
+            Level1SourceEffect::DisableSourceSlot { .. } => hidden = true,
+            _ => unreachable!("Trader emits only household entry or hide"),
+        }
+    }
+    source.entity_rng = resident.entity_rng;
+    source.action = resident.action;
+    source.life = resident.life;
+    source.pending_word_0x62 = resident.pending_attacker;
+    source.word_0x26 = resident.current_attacker;
+    source.word_0x24 = resident.kill_credit_entity;
+    source.word_0x96_150 = resident.target_entity_index;
+    source.dword_0x10 = resident.reset_counter;
+    source.position = resident.position;
+    source.yaw = resident.yaw;
+    source.roll = resident.desired_heading;
+    source.actual_speed = resident.actual_speed;
+    if hidden {
+        source.drawing_enabled = false;
+    }
+    TraderAction113Effects {
+        player_feedback_entity: (feedback != 0).then_some(if old_action == 117 {
+            source.word_0x24
+        } else {
+            source.word_0x26
+        }),
+        selected_target: (source.word_0x96_150 != 0 && source.word_0x96_150 != old_target)
+            .then_some(source.word_0x96_150),
+        released_target: old_target != 0 && source.word_0x96_150 == 0,
+        moved: !had_mailbox && source.life >= 0 && matches!(old_action, 112..=115 | 118),
+        hidden,
+        death_burst,
+        prekill_linked,
+        population_decrement,
+    }
+}
+
+#[cfg(test)]
 pub(crate) fn step_trader_action113(
     source: &mut Level2AuthoredClass5Source,
     context: &mut TraderAction113Context<'_>,
 ) -> TraderAction113Effects {
-    debug_assert_eq!(source.model, TRADER_MODEL);
-    debug_assert_eq!(source.action, TRADER_ACTION);
-
-    let mut effects = TraderAction113Effects {
-        player_feedback_entity: None,
-        selected_target: None,
-        released_target: false,
-        moved: false,
-    };
-
-    let mut mailbox_state = 0_u8;
-    if source.pending_word_0x62 != 0 {
-        source.life = source.life.wrapping_sub(context.pending_damage);
-        let pending_target = source.pending_word_0x62;
-        source.pending_word_0x62 = 0;
-        source.word_0x26 = pending_target;
-        mailbox_state = 1;
-    } else {
-        source.word_0x26 = 0;
-    }
-
-    let mut linked_entity_index = context.linked_head;
-    while linked_entity_index != 0 {
-        let Some(linked_entity) = context
-            .linked
-            .iter()
-            .find(|linked_entity| linked_entity.entity_index == linked_entity_index)
-        else {
-            break;
-        };
-        if linked_entity.life < source.life {
-            source.life = linked_entity.life;
-            source.word_0x26 = linked_entity.current_attacker;
-            mailbox_state = 1;
-            break;
+    struct Ground(i16);
+    impl crate::FlightWorld for Ground {
+        fn ground_height(&self, _: Position) -> i16 {
+            self.0
         }
-        linked_entity_index = linked_entity.next_entity_index;
-    }
-
-    if source.life < 0 {
-        source.word_0x24 = source.word_0x26;
-        mailbox_state = 2;
-    }
-
-    if mailbox_state >= 1 {
-        if mailbox_state == 1 {
-            source.word_0x96_150 = source.word_0x26;
-            source.action = TRADER_HIT_ACTION;
-            effects.selected_target = Some(source.word_0x26);
-            if context
-                .target
-                .is_some_and(|target| target.entity_index == source.word_0x26 && target.model <= 1)
-                || context.linked.iter().any(|linked_entity| {
-                    linked_entity.entity_index == source.word_0x26 && linked_entity.model <= 1
-                })
-            {
-                effects.player_feedback_entity = Some(source.word_0x26);
-            }
-        } else {
-            source.action = TRADER_PRE_KILL_ACTION;
+        fn ceiling_height(&self, _: Position) -> Option<i16> {
+            None
         }
-        if source.action == TRADER_HIT_ACTION {
-            source.actual_speed = source.minimum_speed;
+        fn material_mask(&self, _: Position) -> u32 {
+            0
         }
-        return effects;
-    }
-
-    // `sub_1B8C0` is the common source movement helper reached before the
-    // descriptor cadence gate.  The Level 2 terrain seam supplies its
-    // ground result; the integer movement primitive preserves wrapping.
-    crate::move_entity(&mut source.position, source.yaw, 0, source.actual_speed);
-    effects.moved = true;
-
-    if !source
-        .source_byte_3e
-        .is_multiple_of(TRADER_DESCRIPTOR_CADENCE)
-    {
-        return effects;
-    }
-
-    if source.word_0x96_150 != 0 {
-        if let Some(mut target) = context
-            .target
-            .filter(|target| target.entity_index == source.word_0x96_150)
-        {
-            if target.active && target.class == 10 && target.model == 45 {
-                let distance = level2_trader_distance_3d(source.position, target.position);
-                if distance > TRADER_TARGET_RANGE {
-                    source.roll =
-                        i16::try_from(heading_for_positions(source.position, target.position))
-                            .expect("Trader target heading fits i16");
-                    context.target = Some(target);
-                    return effects;
-                }
-                if i32::from(target.minimum_speed) > target.dword_0x10 {
-                    source.dword_0x10 = 1;
-                    source.action = TRADER_PRE_KILL_ACTION;
-                    target.dword_0x10 = target.dword_0x10.wrapping_add(1);
-                    context.target = Some(target);
-                    return effects;
-                }
-            }
-        }
-        source.word_0x96_150 = 0;
-        effects.released_target = true;
-        source.actual_speed = source.maximum_speed;
-        return effects;
-    }
-
-    let first_rng = level2_next_rng16(source.entity_rng);
-    source.entity_rng = first_rng;
-    let second_rng = level2_next_rng16(source.entity_rng);
-    source.entity_rng = second_rng;
-    let direction = 2 * (i32::from(first_rng % 0x009d) / 79) - 1;
-    let turn = (i32::from(second_rng & 0x00ff) + 85) * direction;
-    source.roll = i16::try_from((i32::from(source.roll).wrapping_add(turn)) & 0x07ff)
-        .expect("Trader roll fits 11 bits");
-
-    let mut nearest = u32::MAX;
-    let mut nearest_entity = None;
-    for candidate in context
-        .buildings
-        .iter()
-        .filter(|candidate| candidate.eligible)
-    {
-        let dx = i32::from(i16::from_le_bytes(
-            candidate
-                .position
-                .x
-                .wrapping_sub(source.position.x)
-                .to_le_bytes(),
-        ));
-        let dy = i32::from(i16::from_le_bytes(
-            candidate
-                .position
-                .y
-                .wrapping_sub(source.position.y)
-                .to_le_bytes(),
-        ));
-        let distance = dx
-            .wrapping_mul(dx)
-            .wrapping_add(dy.wrapping_mul(dy))
-            .cast_unsigned();
-        if distance < nearest && distance > TRADER_BUILDING_DISTANCE_MIN {
-            nearest = distance;
-            nearest_entity = Some(candidate.entity_index);
+        fn angle_flags(&self, _: crate::Tile) -> u8 {
+            0
         }
     }
-    if let Some(entity_index) = nearest_entity {
-        source.word_0x96_150 = entity_index;
-        source.actual_speed = source.maximum_speed.wrapping_add(12);
-        effects.selected_target = Some(entity_index);
-    }
-    effects
-}
-
-fn level2_trader_distance_3d(left: Position, right: Position) -> u32 {
-    let dx = i32::from(right.x.wrapping_sub(left.x).cast_signed());
-    let dy = i32::from(right.y.wrapping_sub(left.y).cast_signed());
-    let dz = i32::from(right.z.wrapping_sub(left.z));
-    crate::legacy_sqrt(
-        dx.wrapping_mul(dx)
-            .wrapping_add(dy.wrapping_mul(dy))
-            .wrapping_add(dz.wrapping_mul(dz))
-            .cast_unsigned(),
-    )
+    step_trader_lifecycle(source, context, &Ground(source.position.z), &[], &[])
 }
 
 #[cfg(test)]
 mod tests {
     use super::super::super::tests::level_two_fixture_path;
     use super::*;
+    use crate::native_world::{Level2DynamicArenaKind, NativeWorld};
 
     fn trader_position() -> Position {
         Position {
@@ -809,7 +941,7 @@ mod tests {
                 .find(|state| state.source_entity_index == trader_slot)
                 .expect("production Trader sidecar remains keyed")
                 .pending_damage,
-            0
+            100
         );
         assert_eq!(session.nyphur_dispatcher.common_upkeep(0).word_0x248, 200);
 
