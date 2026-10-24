@@ -1419,10 +1419,9 @@ impl Level2EconomyState {
     }
 
     /// Source `TransformEntityToManaSphere_36BA0`. With `use_mana_fraction`
-    /// enabled, mana is split into `clamp(mana / 1000, 1, 16)` spheres and the
-    /// final sphere receives the exact remainder. The source writes the dying
-    /// entity RNG before attempting allocations, so an exhausted arena may
-    /// return a partial vector while preserving the already-created spheres.
+    /// enabled, the pinned C++ shadows its outer `manaFraction`: the loop still
+    /// creates one sphere containing the full remainder. Preserve that behavior,
+    /// including the dying RNG/owner writes when allocation is exhausted.
     pub fn spawn_mana_spheres_from_death(
         &mut self,
         source_entity_index: u16,
@@ -1442,14 +1441,9 @@ impl Level2EconomyState {
         // TransformEntityToManaSphere_36BA0 clears the dying source's owner
         // relation after the sphere loop, even when the arena is exhausted.
         self.source_owner.insert(source_entity_index, 0);
-        let fraction = if use_mana_fraction {
-            (mana / 1_000).clamp(1, 16)
-        } else {
-            1
-        };
-        let each_mana = mana / fraction;
-        let mut sphere_ids = Vec::with_capacity(usize::try_from(fraction).unwrap_or(1));
-        for sphere_index in 0..fraction {
+        let fraction = crate::combat::actors::death_mana_sphere_count(mana, use_mana_fraction);
+        let mut sphere_ids = Vec::with_capacity(fraction);
+        for _ in 0..fraction {
             let Some(sphere_slot) = self.allocate_slot() else {
                 break;
             };
@@ -1465,11 +1459,7 @@ impl Level2EconomyState {
             let ground = terrain.ground_height(position);
             let height_above_ground = i32::from(position.z) - i32::from(ground);
             let vertical_velocity = level2_mana_sphere_vertical_velocity(height_above_ground);
-            let sphere_mana = if sphere_index + 1 == fraction {
-                mana - each_mana * (fraction - 1)
-            } else {
-                each_mana
-            };
+            let sphere_mana = mana;
             let sphere = ManaSphere {
                 id: u32::from(sphere_slot),
                 source_entity_index: sphere_slot,
@@ -1755,16 +1745,16 @@ impl Level2EconomyState {
 
     fn consume_castle_auxiliary_damage(&mut self, child_index: usize) -> u8 {
         let mut state = 0_u8;
-        let pending_attacker = self.castle_children[child_index].pending_attacker_entity_index;
-        if pending_attacker != 0 {
-            let damage = self.castle_children[child_index].pending_damage;
-            let child = &mut self.castle_children[child_index];
-            child.life = child.life.wrapping_sub(damage);
-            child.pending_attacker_entity_index = 0;
-            child.damage_attacker_entity_index = pending_attacker;
+        let child = &mut self.castle_children[child_index];
+        if crate::combat::actors::consume_damage(
+            &mut child.life,
+            &mut child.pending_damage,
+            &mut child.pending_attacker_entity_index,
+            &mut child.damage_attacker_entity_index,
+        )
+        .is_some()
+        {
             state = 1;
-        } else {
-            self.castle_children[child_index].damage_attacker_entity_index = 0;
         }
 
         let mut linked_slot = self.castle_children[child_index].chain_next_slot;
@@ -1778,10 +1768,13 @@ impl Level2EconomyState {
             else {
                 break;
             };
-            if linked.life < self.castle_children[child_index].life {
-                let child = &mut self.castle_children[child_index];
-                child.life = linked.life;
-                child.damage_attacker_entity_index = linked.damage_attacker_entity_index;
+            let child = &mut self.castle_children[child_index];
+            if crate::combat::actors::inherit_linked_life(
+                &mut child.life,
+                &mut child.damage_attacker_entity_index,
+                linked.life,
+                linked.damage_attacker_entity_index,
+            ) {
                 state = 1;
                 break;
             }
@@ -2263,10 +2256,11 @@ impl Level2EconomyState {
                     };
                     let next_slot = self.castle_children[linked_index].chain_next_slot;
                     self.castle_children[linked_index].action = 125;
-                    if self.castle_children[linked_index].killer_entity_index != 0 {
-                        self.castle_children[child_index].killer_entity_index =
-                            self.castle_children[linked_index].killer_entity_index;
-                    }
+                    let child_killer = self.castle_children[linked_index].killer_entity_index;
+                    crate::combat::actors::inherit_killer(
+                        &mut self.castle_children[child_index].killer_entity_index,
+                        child_killer,
+                    );
                     linked_slot = next_slot;
                 }
                 self.castle_children[child_index].action = 125;
@@ -6307,34 +6301,43 @@ impl Level2EconomyState {
                 && child.model == 15
                 && matches!(child.action, 121 | 122)
         }) {
-            auxiliary.pending_damage = if auxiliary.pending_attacker_entity_index == 0 {
-                damage
-            } else {
-                auxiliary.pending_damage.wrapping_add(damage)
-            };
-            auxiliary.pending_attacker_entity_index = attacker;
+            crate::combat::actors::DamageMailboxMut::new(
+                &mut auxiliary.pending_damage,
+                &mut auxiliary.pending_attacker_entity_index,
+            )
+            .submit(
+                damage,
+                attacker,
+                crate::combat::actors::DamageWriter::Ordinary,
+            );
             return true;
         }
         if let Some(carrier) = self.carriers.iter_mut().find(|carrier| {
             carrier.active && carrier.life >= 0 && carrier.source_entity_index == target_slot
         }) {
-            carrier.pending_damage = if carrier.pending_attacker_entity_index == 0 {
-                damage
-            } else {
-                carrier.pending_damage.wrapping_add(damage)
-            };
-            carrier.pending_attacker_entity_index = attacker;
+            crate::combat::actors::DamageMailboxMut::new(
+                &mut carrier.pending_damage,
+                &mut carrier.pending_attacker_entity_index,
+            )
+            .submit(
+                damage,
+                attacker,
+                crate::combat::actors::DamageWriter::Ordinary,
+            );
             return true;
         }
         if let Some(castle) = self.castle.as_mut().filter(|castle| {
             castle.active && castle.life >= 0 && castle.source_entity_index == target_slot
         }) {
-            castle.pending_damage = if castle.pending_attacker_entity_index == 0 {
-                damage
-            } else {
-                castle.pending_damage.wrapping_add(damage)
-            };
-            castle.pending_attacker_entity_index = attacker;
+            crate::combat::actors::DamageMailboxMut::new(
+                &mut castle.pending_damage,
+                &mut castle.pending_attacker_entity_index,
+            )
+            .submit(
+                damage,
+                attacker,
+                crate::combat::actors::DamageWriter::Ordinary,
+            );
             return true;
         }
         false

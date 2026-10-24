@@ -5,6 +5,10 @@
 //! are required to play Level 1. It is not a generic replacement for the
 //! complete remc2 entity dispatcher.
 
+use crate::combat::actors::{
+    DamageMailboxMut, DamageWriter, awards_creature_kill, consume_damage, inherit_killer,
+    inherit_linked_life,
+};
 use crate::native_world::{
     TerrainPlanes, apply_level1_load_house_edge_smoothing, apply_level1_load_house_sweep,
     apply_level1_load_path_point, level1_feature_ground_height, level1_load_house_base,
@@ -6232,6 +6236,7 @@ impl Level1MissionTemplate {
             player_archer_target_ticks: 0,
             player_killer_entity_index: 0,
             player_scores_by_entity: BTreeMap::new(),
+            pending_creature_kill_credits: Vec::new(),
             pending_player_hit_reaction: None,
             last_player_hit_reaction: None,
             player_action0_prepared_for_flight: false,
@@ -6480,6 +6485,8 @@ pub struct Level1MissionState {
     player_archer_target_ticks: u16,
     player_killer_entity_index: u16,
     player_scores_by_entity: BTreeMap<u16, [u16; 8]>,
+    /// PreKill effects awaiting the runtime-owned player counter sink.
+    pending_creature_kill_credits: Vec<u16>,
     /// Future-driving reaction waiting to be installed into the current
     /// action-0 flight invocation.
     pending_player_hit_reaction: Option<PlayerHitReaction>,
@@ -6643,7 +6650,8 @@ pub struct Level1MissionState {
     source_building_indices: Box<[i16]>,
     /// Mutable source `axis_0x9A` used as the child constructor position.
     source_axes: Box<[Position]>,
-    /// Mutable source `word_0x24/word_0x26` written by `sub_57390`.
+    /// Authoritative source `word_0x24/word_0x26`: killer/current attacker for
+    /// combat actors, house ownership links when written by `sub_57390`.
     source_house_links: Box<[[u16; 2]]>,
     /// Mutable source `word_0x2E` committed only after a successful
     /// `sub_5FBD0` allocation.
@@ -8115,6 +8123,16 @@ impl Level1MissionState {
         self.player_archer_target_ticks
     }
 
+    /// `ArrowAttack_216F0` cadence feedback, including allocation failure.
+    pub(crate) fn mark_player_archer_targeted(&mut self) {
+        self.player_archer_target_ticks = 200;
+    }
+
+    /// `sub_5EF70`: Type_str_164 word36, after a successful hostile product.
+    pub(crate) fn apply_player_survived_feedback(&mut self) {
+        self.player_survived_feedback = PLAYER_SURVIVED_FEEDBACK;
+    }
+
     /// Allocate one resident requested by the exact row-major house-removal
     /// trace. The four accepted model/action pairs are the literal remc2
     /// constructors used by action 53; unknown pairs remain an error rather
@@ -9058,6 +9076,11 @@ impl Level1MissionState {
             .map_or(0, |scores| scores[usize::from(victim_color.min(7))])
     }
 
+    /// Drain once after a source callback into the canonical player counters.
+    pub fn take_creature_kill_credits(&mut self) -> Vec<u16> {
+        std::mem::take(&mut self.pending_creature_kill_credits)
+    }
+
     pub fn set_player_menu_state(&mut self, menu_state: u8) {
         self.player_menu_state = menu_state;
     }
@@ -9256,6 +9279,13 @@ impl Level1MissionState {
     pub fn source_arena_hash_v1(&self) -> u64 {
         let mut hash = Level1Fnv1a64::new();
         hash.bytes(b"mc2-level1-source-arena-v1\0");
+        if !self.pending_creature_kill_credits.is_empty() {
+            hash.bytes(b"pending-creature-kill-credits\0");
+            hash.u32(self.pending_creature_kill_credits.len() as u32);
+            for killer in &self.pending_creature_kill_credits {
+                hash.u16(*killer);
+            }
+        }
         hash.u32(u32::try_from(self.source_slots.len()).expect("source arena size fits u32"));
         for (index, record) in self.source_slots.iter().copied().enumerate() {
             hash.u16(u16::try_from(index).expect("source arena index fits u16"));
@@ -11032,12 +11062,11 @@ impl Level1MissionState {
         if self.player_action != PLAYER_ACTION_ACTIVE || damage <= 0 || attacker == 0 {
             return;
         }
-        if self.player_pending_attacker == 0 {
-            self.player_pending_damage = damage;
-        } else {
-            self.player_pending_damage = self.player_pending_damage.saturating_add(damage);
-        }
-        self.player_pending_attacker = attacker;
+        DamageMailboxMut::new(
+            &mut self.player_pending_damage,
+            &mut self.player_pending_attacker,
+        )
+        .submit(damage, attacker, DamageWriter::Ordinary);
     }
 
     fn submit_player_contact_damage(&mut self, damage: i32, attacker: u16) {
@@ -11047,12 +11076,11 @@ impl Level1MissionState {
         // Firefly charge uses `sub_11900`, whose mailbox behavior differs
         // from the area writer: overwrite an already-owned mailbox, otherwise
         // add to the old payload.
-        if self.player_pending_attacker != 0 {
-            self.player_pending_damage = damage;
-        } else {
-            self.player_pending_damage = self.player_pending_damage.saturating_add(damage);
-        }
-        self.player_pending_attacker = attacker;
+        DamageMailboxMut::new(
+            &mut self.player_pending_damage,
+            &mut self.player_pending_attacker,
+        )
+        .submit(damage, attacker, DamageWriter::Contact);
     }
 
     fn submit_archer_arrow_damage(&mut self, target: u16, damage: i32, attacker: u16) {
@@ -11069,18 +11097,26 @@ impl Level1MissionState {
             .iter_mut()
             .find(|actor| actor.source_entity_index == target && actor.active)
         {
-            actor.pending_damage = actor.pending_damage.wrapping_add(damage);
-            actor.pending_attacker = attacker;
+            DamageMailboxMut::new(&mut actor.pending_damage, &mut actor.pending_attacker).submit(
+                damage,
+                attacker,
+                DamageWriter::Ordinary,
+            );
             return;
         }
         if let Some(resident) = self.dynamic_residents[usize::from(target)].as_mut() {
-            resident.pending_damage = resident.pending_damage.wrapping_add(damage);
-            resident.pending_attacker = attacker;
+            DamageMailboxMut::new(&mut resident.pending_damage, &mut resident.pending_attacker)
+                .submit(damage, attacker, DamageWriter::Ordinary);
             return;
         }
         if let Some(house) = self.authored_houses[usize::from(target)].as_mut() {
-            house.pending_damage = house.pending_damage.wrapping_add(damage);
-            house.pending_attacker = attacker.cast_signed();
+            let mut owner = house.pending_attacker.cast_unsigned();
+            DamageMailboxMut::new(&mut house.pending_damage, &mut owner).submit(
+                damage,
+                attacker,
+                DamageWriter::Ordinary,
+            );
+            house.pending_attacker = owner.cast_signed();
             return;
         }
         if self.castle_exists && self.castle_source_entity_index == target {
@@ -11092,8 +11128,11 @@ impl Level1MissionState {
             .as_mut()
             .filter(|carrier| carrier.active && carrier.source_entity_index == target)
         {
-            carrier.pending_damage = carrier.pending_damage.wrapping_add(damage);
-            carrier.pending_attacker_entity_index = attacker;
+            DamageMailboxMut::new(
+                &mut carrier.pending_damage,
+                &mut carrier.pending_attacker_entity_index,
+            )
+            .submit(damage, attacker, DamageWriter::Ordinary);
         }
     }
 
@@ -11101,12 +11140,11 @@ impl Level1MissionState {
         if !self.castle_exists || self.castle_life < 0 || damage <= 0 || attacker == 0 {
             return;
         }
-        if self.castle_pending_attacker == 0 {
-            self.castle_pending_damage = damage;
-        } else {
-            self.castle_pending_damage = self.castle_pending_damage.wrapping_add(damage);
-        }
-        self.castle_pending_attacker = attacker;
+        DamageMailboxMut::new(
+            &mut self.castle_pending_damage,
+            &mut self.castle_pending_attacker,
+        )
+        .submit(damage, attacker, DamageWriter::Ordinary);
     }
 
     fn player_inside_stage_one_castle(&self, player_start_position: Position) -> bool {
@@ -15590,7 +15628,9 @@ impl Level1MissionState {
 
             let linked_damage = {
                 let actor = self.actors[actor_index];
-                (actor.action == 35 && actor.linked_entity_index != 0 && actor.pending_damage != 0)
+                (actor.action == 35
+                    && actor.linked_entity_index != 0
+                    && actor.pending_attacker != 0)
                     .then_some((
                         actor.linked_entity_index,
                         actor.pending_attacker,
@@ -15644,11 +15684,10 @@ impl Level1MissionState {
                 continue;
             }
             if actor.active && actor.kind == Level1ActorKind::Tree {
-                if actor.action == TREE_LIVE_ACTION && actor.pending_damage != 0 {
+                if actor.action == TREE_LIVE_ACTION && actor.pending_attacker != 0 {
                     let damage = actor.pending_damage;
                     let attacker = actor.pending_attacker;
-                    actor.pending_damage = 0;
-                    actor.life = actor.life.saturating_sub(damage);
+                    actor.life = actor.life.wrapping_sub(damage);
                     self.events.push(Level1MissionEvent::ActorDamaged {
                         authored_index: actor.authored_index,
                         attacker_entity_index: attacker,
@@ -15728,17 +15767,19 @@ impl Level1MissionState {
                 // then walk the linked body in source order and stop at the
                 // first child whose life is lower than the updated head.
                 // A surviving hit selects base action 24 + 2.
+                let relations = &mut self.source_house_links[usize::from(source_slot)];
                 let mut hit_attacker = None;
-                if actor.pending_damage != 0 {
-                    let damage = actor.pending_damage;
-                    let attacker = actor.pending_attacker;
-                    actor.pending_damage = 0;
-                    actor.life = actor.life.saturating_sub(damage);
-                    hit_attacker = Some(attacker);
+                if let Some(hit) = consume_damage(
+                    &mut actor.life,
+                    &mut actor.pending_damage,
+                    &mut actor.pending_attacker,
+                    &mut relations[1],
+                ) {
+                    hit_attacker = Some(hit.attacker);
                     self.events.push(Level1MissionEvent::ActorDamaged {
                         authored_index: actor.authored_index,
-                        attacker_entity_index: attacker,
-                        damage,
+                        attacker_entity_index: hit.attacker,
+                        damage: hit.damage,
                         life: actor.life,
                     });
                 }
@@ -15749,12 +15790,22 @@ impl Level1MissionState {
                         && segment.active
                         && segment.life < head_life
                 }) {
-                    actor.life = child.life;
-                    hit_attacker = Some(child.pending_attacker);
+                    let child_attacker =
+                        self.source_house_links[usize::from(child.source_entity_index)][1];
+                    let relations = &mut self.source_house_links[usize::from(source_slot)];
+                    if inherit_linked_life(
+                        &mut actor.life,
+                        &mut relations[1],
+                        child.life,
+                        child_attacker,
+                    ) {
+                        hit_attacker = Some(child_attacker);
+                    }
                 }
                 if let Some(attacker) = hit_attacker {
                     actor.linked_entity_index = 0;
                     if actor.life < 0 {
+                        self.source_house_links[usize::from(source_slot)][0] = attacker;
                         actor.action = MULTIPART_PRE_KILL_ACTION;
                     } else {
                         actor.target_entity_index = attacker;
@@ -15768,7 +15819,7 @@ impl Level1MissionState {
             }
 
             let _ = actor;
-            if self.actors[actor_index].pending_damage != 0 {
+            if self.actors[actor_index].pending_attacker != 0 {
                 let hit_actor = self.actors[actor_index];
                 let damage = hit_actor.pending_damage;
                 let attacker = hit_actor.pending_attacker;
@@ -15792,8 +15843,12 @@ impl Level1MissionState {
                             == (hit_actor.class, hit_actor.model)
                     });
                 let actor = &mut self.actors[actor_index];
-                actor.pending_damage = 0;
-                actor.life = actor.life.saturating_sub(damage);
+                consume_damage(
+                    &mut actor.life,
+                    &mut actor.pending_damage,
+                    &mut actor.pending_attacker,
+                    &mut self.source_house_links[usize::from(source_slot)][1],
+                );
                 let life = actor.life;
                 self.events.push(Level1MissionEvent::ActorDamaged {
                     authored_index: actor.authored_index,
@@ -15802,6 +15857,7 @@ impl Level1MissionState {
                     life,
                 });
                 if life < 0 {
+                    self.source_house_links[usize::from(source_slot)][0] = attacker;
                     actor.linked_entity_index = 0;
                     actor.action = match actor.kind {
                         Level1ActorKind::Archer => 36,
@@ -15894,6 +15950,28 @@ impl Level1MissionState {
                 actor.action = final_kill_action;
                 if actor.kind == Level1ActorKind::MultipartHead {
                     multipart_pre_kill_heads.push(actor.authored_index);
+                }
+                let root_killer = &mut self.source_house_links[usize::from(source_slot)][0];
+                // The full linked walk below resolves the root's killer before
+                // credit. Ordinary single actors already own the final killer.
+                if actor.kind != Level1ActorKind::MultipartHead {
+                    let killer = *root_killer;
+                    if self
+                        .source_slots
+                        .get(usize::from(killer))
+                        .is_some_and(|record| {
+                            record.active
+                                && awards_creature_kill(
+                                    actor.model,
+                                    self.source_ids[usize::from(source_slot)],
+                                    self.source_ids[usize::from(killer)],
+                                    record.class,
+                                    record.model,
+                                )
+                        })
+                    {
+                        self.pending_creature_kill_credits.push(killer);
+                    }
                 }
             } else if actor.action == final_kill_action && actor.phase & 7 == 0 {
                 actor.active = false;
@@ -16216,12 +16294,40 @@ impl Level1MissionState {
             self.next_effect_id = self.next_effect_id.wrapping_add(1).max(1);
         }
         for head_authored_index in multipart_pre_kill_heads {
+            let head_index = self
+                .actors
+                .iter()
+                .position(|actor| actor.authored_index == head_authored_index)
+                .expect("multipart pre-kill root remains allocated");
+            let head = self.actors[head_index];
+            let mut killer = self.source_house_links[usize::from(head.source_entity_index)][0];
             for segment in self.multipart_segments.iter_mut().filter(|segment| {
                 segment.head_authored_index == head_authored_index && segment.active
             }) {
                 segment.action = MULTIPART_KILL_ACTION;
                 self.source_slots[usize::from(segment.source_entity_index)].action =
                     MULTIPART_KILL_ACTION;
+                inherit_killer(
+                    &mut killer,
+                    self.source_house_links[usize::from(segment.source_entity_index)][0],
+                );
+            }
+            self.source_house_links[usize::from(head.source_entity_index)][0] = killer;
+            if self
+                .source_slots
+                .get(usize::from(killer))
+                .is_some_and(|record| {
+                    record.active
+                        && awards_creature_kill(
+                            head.model,
+                            self.source_ids[usize::from(head.source_entity_index)],
+                            self.source_ids[usize::from(killer)],
+                            record.class,
+                            record.model,
+                        )
+                })
+            {
+                self.pending_creature_kill_credits.push(killer);
             }
         }
         if let Some((damage, attacker)) = player_contact_damage {
@@ -16374,11 +16480,15 @@ impl Level1MissionState {
         body.yaw = yaw;
         body.pitch = pitch;
         body.position = trailing_position;
-        if body.pending_damage != 0 {
-            body.life = body.life.saturating_sub(body.pending_damage);
-            body.pending_damage = 0;
-        } else {
-            body.pending_attacker = 0;
+        let relations = &mut self.source_house_links[usize::from(source_slot)];
+        consume_damage(
+            &mut body.life,
+            &mut body.pending_damage,
+            &mut body.pending_attacker,
+            &mut relations[1],
+        );
+        if body.life < 0 {
+            relations[0] = relations[1];
         }
         body.phase = body.phase.wrapping_add(1);
     }
@@ -19518,8 +19628,15 @@ impl Level1MissionState {
                             actor.collision_half_height,
                         )
                     {
-                        actor.pending_damage = actor.pending_damage.saturating_add(impact.payload);
-                        actor.pending_attacker = impact.owner_entity_index;
+                        DamageMailboxMut::new(
+                            &mut actor.pending_damage,
+                            &mut actor.pending_attacker,
+                        )
+                        .submit(
+                            impact.payload,
+                            impact.owner_entity_index,
+                            DamageWriter::Ordinary,
+                        );
                     }
                 }
                 for resident in self.dynamic_residents.iter_mut().filter_map(Option::as_mut) {
@@ -19537,9 +19654,15 @@ impl Level1MissionState {
                             resident.collision_half_height,
                         )
                     {
-                        resident.pending_damage =
-                            resident.pending_damage.saturating_add(impact.payload);
-                        resident.pending_attacker = impact.owner_entity_index;
+                        DamageMailboxMut::new(
+                            &mut resident.pending_damage,
+                            &mut resident.pending_attacker,
+                        )
+                        .submit(
+                            impact.payload,
+                            impact.owner_entity_index,
+                            DamageWriter::Ordinary,
+                        );
                     }
                 }
                 for house in self.authored_houses.iter_mut().filter_map(Option::as_mut) {
@@ -19554,8 +19677,13 @@ impl Level1MissionState {
                             house.collision_half_depth,
                         )
                     {
-                        house.pending_damage = house.pending_damage.saturating_add(impact.payload);
-                        house.pending_attacker = impact.owner_entity_index.cast_signed();
+                        let mut owner = house.pending_attacker.cast_unsigned();
+                        DamageMailboxMut::new(&mut house.pending_damage, &mut owner).submit(
+                            impact.payload,
+                            impact.owner_entity_index,
+                            DamageWriter::Ordinary,
+                        );
+                        house.pending_attacker = owner.cast_signed();
                     }
                 }
                 for segment in &mut self.multipart_segments {
@@ -19573,9 +19701,15 @@ impl Level1MissionState {
                             segment.collision_half_height,
                         )
                     {
-                        segment.pending_damage =
-                            segment.pending_damage.saturating_add(impact.payload);
-                        segment.pending_attacker = impact.owner_entity_index;
+                        DamageMailboxMut::new(
+                            &mut segment.pending_damage,
+                            &mut segment.pending_attacker,
+                        )
+                        .submit(
+                            impact.payload,
+                            impact.owner_entity_index,
+                            DamageWriter::Ordinary,
+                        );
                     }
                 }
                 if !ground_fire {
@@ -19674,8 +19808,11 @@ impl Level1MissionState {
         }
         for (damage, attacker) in carrier_damage {
             if let Some(carrier) = self.mana_carrier.as_mut().filter(|carrier| carrier.active) {
-                carrier.pending_damage = carrier.pending_damage.wrapping_add(damage);
-                carrier.pending_attacker_entity_index = attacker;
+                DamageMailboxMut::new(
+                    &mut carrier.pending_damage,
+                    &mut carrier.pending_attacker_entity_index,
+                )
+                .submit(damage, attacker, DamageWriter::Ordinary);
             }
         }
         self.pending_ambient_loop_5_distance = pending_ambient_loop_5_distance;
@@ -42778,7 +42915,10 @@ mod tests {
         );
         assert_eq!(head.target_entity_index, 777);
         assert_eq!(head.action, MULTIPART_ATTACK_ACTION);
-        assert_eq!(head.pending_damage, 0);
+        assert_eq!(
+            head.pending_damage, 3_000,
+            "source retains the payload after clearing its owner"
+        );
         assert_eq!(head.pending_attacker, 0);
     }
 
@@ -42798,6 +42938,13 @@ mod tests {
         mission.multipart_segments[0].pending_attacker = 111;
         mission.multipart_segments[1].life = 7_000;
         mission.multipart_segments[1].pending_attacker = 222;
+
+        // Linked callbacks read word26 (last consumed attacker), not a new
+        // unconsumed mailbox owner.
+        mission.source_house_links
+            [usize::from(mission.multipart_segments[0].source_entity_index)][1] = 111;
+        mission.source_house_links
+            [usize::from(mission.multipart_segments[1].source_entity_index)][1] = 222;
 
         let source_views = mission.source_entity_views(&FlightState::default(), &[]);
         mission.step_actor_slot(

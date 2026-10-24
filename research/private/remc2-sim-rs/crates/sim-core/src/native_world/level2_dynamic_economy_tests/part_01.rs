@@ -2230,7 +2230,7 @@
             111,
             true,
         );
-        assert_eq!(fractional_ids.len(), 3);
+        assert_eq!(fractional_ids.len(), 1);
         let fractional_mana = fractional_ids
             .iter()
             .map(|id| {
@@ -2243,9 +2243,9 @@
                     .mana
             })
             .collect::<Vec<_>>();
-        assert_eq!(fractional_mana, vec![1_166, 1_166, 1_168]);
+        assert_eq!(fractional_mana, vec![3_500]);
         assert_eq!(fractional_mana.iter().sum::<i32>(), 3_500);
-        assert_eq!(first.economy().events().len(), 3);
+        assert_eq!(first.economy().events().len(), 1);
         first.reset();
         assert_eq!(first.economy().reset_hash(), baseline_hash);
 
@@ -3223,9 +3223,9 @@
     #[test]
     fn level_two_economy_conformance_death_split_and_merge_vectors() {
         // Pinned remc2 6806c72, EventsFunctions.cpp:26867-26915
-        // (TransformEntityToManaSphere_36BA0): fraction is clamp(mana / 1000,
-        // 1, 16), each sphere gets the floor share, and the final sphere gets
-        // the exact remainder. The source also advances the sphere-local RNG
+        // (TransformEntityToManaSphere_36BA0): the inner fraction shadows the
+        // outer loop bound, so even true creates ONE sphere with all mana.
+        // The source also advances the sphere-local RNG
         // twice before deriving yaw and speed and clears the dying owner.
         let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
             .expect("qualified Level 2 package");
@@ -3257,7 +3257,7 @@
             .free_slots
             .iter()
             .rev()
-            .take(16)
+            .take(1)
             .copied()
             .collect::<Vec<_>>();
         let first_slot = expected_slots[0];
@@ -3288,7 +3288,7 @@
         );
         assert_eq!(split.economy().source_rng.get(&42), Some(&0x4321));
         assert_eq!(split.economy().source_owner(42), 0);
-        assert_eq!(split.economy().events().len(), 16);
+        assert_eq!(split.economy().events().len(), 1);
         let first = split
             .economy()
             .spheres()
@@ -3301,7 +3301,7 @@
             i16::try_from((i32::from(first_rng % 0x71) + i32::from(0x120_i16) - 56) & 0x07ff)
                 .expect("source yaw fits")
         );
-        assert_eq!(first.mana, 1_062);
+        assert_eq!(first.mana, 17_000);
         assert_eq!(
             split
                 .economy()
@@ -3309,7 +3309,7 @@
                 .iter()
                 .map(|sphere| sphere.mana)
                 .collect::<Vec<_>>(),
-            [vec![1_062; 15], vec![1_070]].concat()
+            vec![17_000]
         );
         for (event, &sphere_id) in split.economy().events().iter().zip(&sphere_ids) {
             assert_eq!(

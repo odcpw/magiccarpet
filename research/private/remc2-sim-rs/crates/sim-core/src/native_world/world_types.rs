@@ -446,7 +446,58 @@ impl EntitySnapshot {
     }
 
     pub(super) fn source_upkeep_word_7a(&self) -> u16 {
-        u16::from_le_bytes([self.record[126], self.record[127]])
+        self.pending_player_effect(crate::combat::actors::PlayerEffectLane::Duel)
+            .map_or(0, |hit| hit.attacker)
+    }
+
+    /// Safe compatibility adapter for `sub_10C80` modes 3/4. The four-byte
+    /// export header is excluded; both six-byte lanes belong to THIS entity.
+    /// The effect owner supplies the real source-overlap result.
+    pub fn submit_player_effect_contact(
+        &mut self,
+        lane: crate::combat::actors::PlayerEffectLane,
+        payload: u16,
+        attacker_source_id: u16,
+        overlaps: bool,
+    ) -> bool {
+        let bytes = (&mut self.record[98..134])
+            .try_into()
+            .expect("36-byte actor mailbox");
+        crate::combat::actors::PlayerEffectMailboxesMut::new(bytes).submit_overlap(
+            lane,
+            payload,
+            attacker_source_id,
+            self.source_id,
+            self.class,
+            overlaps,
+        )
+    }
+
+    /// Observations and consumers read the same record as effect producers.
+    #[must_use]
+    pub fn pending_player_effect(
+        &self,
+        lane: crate::combat::actors::PlayerEffectLane,
+    ) -> Option<crate::combat::actors::PlayerEffectHit> {
+        crate::combat::actors::pending_player_effect(
+            self.record[98..134]
+                .try_into()
+                .expect("36-byte actor mailbox"),
+            lane,
+        )
+    }
+
+    /// `5EFA0` effect order is Duel, StealMana, ordinary damage. Dead players
+    /// retain effects; successful consumption clears only the lane's owner.
+    /// The spell owner implements the transfer/tether, not an adjacent entity.
+    pub fn take_player_effect(
+        &mut self,
+        lane: crate::combat::actors::PlayerEffectLane,
+    ) -> Option<crate::combat::actors::PlayerEffectHit> {
+        let bytes = (&mut self.record[98..134])
+            .try_into()
+            .expect("36-byte actor mailbox");
+        crate::combat::actors::PlayerEffectMailboxesMut::new(bytes).take(lane, self.life)
     }
 
     pub(super) fn source_upkeep_word_62(&self) -> u16 {
