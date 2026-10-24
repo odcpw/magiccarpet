@@ -291,7 +291,7 @@ pub struct EntitySnapshot {
     pub particle_parameter_index: Option<u16>,
     pub parameter_relation: Option<u16>,
     pub special_relation: EntitySpecialRelation,
-    pub(super) record: Box<[u8]>,
+    pub(crate) record: Box<[u8]>,
 }
 
 impl EntitySnapshot {
@@ -334,7 +334,7 @@ impl EntitySnapshot {
 
     /// Apply the source draw-disable write to both the typed control dword
     /// and its lossless exported record bytes.
-    pub(super) fn disable_drawing(&mut self) {
+    pub(crate) fn disable_drawing(&mut self) {
         self.control_flags |= ENTITY_DRAW_DISABLED_BIT;
         self.record[16..20].copy_from_slice(&self.control_flags.to_le_bytes());
     }
@@ -352,7 +352,7 @@ impl EntitySnapshot {
     /// Update the source position while keeping the lossless record projection
     /// in lockstep.  Level 2 switch tests and the future objective bridge use
     /// this seam instead of mutating a typed cache and leaving stale bytes.
-    pub(super) fn set_position(&mut self, position: Position) {
+    pub(crate) fn set_position(&mut self, position: Position) {
         self.position = position;
         self.record[80..82].copy_from_slice(&position.x.to_le_bytes());
         self.record[82..84].copy_from_slice(&position.y.to_le_bytes());
@@ -389,7 +389,7 @@ impl EntitySnapshot {
     }
 
     /// Keep the source callback speed field in lockstep with its typed cache.
-    pub(super) fn set_actual_speed(&mut self, actual_speed: i16) {
+    pub(crate) fn set_actual_speed(&mut self, actual_speed: i16) {
         self.actual_speed = actual_speed;
         self.record[134..136].copy_from_slice(&actual_speed.to_le_bytes());
     }
@@ -401,7 +401,7 @@ impl EntitySnapshot {
     }
 
     /// Keep the source maximum-life field in lockstep with its typed cache.
-    pub(super) fn set_max_life(&mut self, max_life: i32) {
+    pub(crate) fn set_max_life(&mut self, max_life: i32) {
         self.max_life = max_life;
         self.record[8..12].copy_from_slice(&max_life.to_le_bytes());
     }
@@ -414,14 +414,14 @@ impl EntitySnapshot {
     }
 
     /// Keep the source life field in lockstep with a common AI upkeep write.
-    pub(super) fn set_life(&mut self, life: i32) {
+    pub(crate) fn set_life(&mut self, life: i32) {
         self.life = life;
         self.record[12..16].copy_from_slice(&life.to_le_bytes());
     }
 
     /// Keep source `subSpellIndex_0x2A_42` in lockstep with a callback-owned
     /// controller clock.
-    pub(super) fn set_subspell_index(&mut self, subspell_index: u16) {
+    pub(crate) fn set_subspell_index(&mut self, subspell_index: u16) {
         self.subspell_index = subspell_index;
         self.record[46..48].copy_from_slice(&subspell_index.to_le_bytes());
     }
@@ -567,13 +567,13 @@ impl EntitySnapshot {
     }
 
     /// Keep the source entity RNG in lockstep with a callback draw.
-    pub(super) fn set_entity_rng(&mut self, entity_rng: u16) {
+    pub(crate) fn set_entity_rng(&mut self, entity_rng: u16) {
         self.entity_rng = entity_rng;
         self.record[24..26].copy_from_slice(&entity_rng.to_le_bytes());
     }
 
     /// Keep the source control dword in lockstep with a callback flag write.
-    pub(super) fn set_control_flags(&mut self, control_flags: u32) {
+    pub(crate) fn set_control_flags(&mut self, control_flags: u32) {
         self.control_flags = control_flags;
         self.record[16..20].copy_from_slice(&control_flags.to_le_bytes());
     }
@@ -609,7 +609,7 @@ impl EntitySnapshot {
 
     /// Keep all four bytes of source `dword_0x10_16` in lockstep with a
     /// Trader target-reservation write.
-    pub(super) fn set_source_dword_10(&mut self, value: i32) {
+    pub(crate) fn set_source_dword_10(&mut self, value: i32) {
         self.record[20..24].copy_from_slice(&value.to_le_bytes());
     }
 
@@ -636,7 +636,7 @@ impl EntitySnapshot {
         self.record[48..50].copy_from_slice(&value.to_le_bytes());
     }
 
-    pub(super) fn set_source_action(&mut self, action: u8) {
+    pub(crate) fn set_source_action(&mut self, action: u8) {
         self.action = action;
         self.record[73] = action;
     }
@@ -2052,6 +2052,17 @@ pub struct HouseRemovalOutcome {
 }
 
 impl SessionTerrain {
+    /// Disasters borrow only terrain state, never the campaign session. This
+    /// is the same geometry and RNG domain used by buildings and flight.
+    pub(crate) fn disaster_parts(&mut self) -> (&mut TerrainPlanes, MapType, &mut u16, &mut u64) {
+        (
+            &mut self.planes,
+            self.map_type,
+            &mut self.terrain_rng,
+            &mut self.mutation_sequence,
+        )
+    }
+
     #[must_use]
     pub fn from_inspection(inspection: &NativeWorldInspection) -> Self {
         Self {
@@ -2575,7 +2586,7 @@ pub(super) fn building_topology_rebuild_required(terrain_type: u8) -> bool {
     )
 }
 
-pub(super) fn add_building_to_terrain(
+pub(crate) fn add_building_to_terrain(
     planes: &mut TerrainPlanes,
     x: u8,
     y: u8,
@@ -2596,7 +2607,7 @@ pub(super) fn add_building_to_terrain(
     rebuild_marked_building_topology(planes, x, y, 1, 1, map_type, terrain_rng);
 }
 
-pub(super) fn rebuild_building_topology(
+pub(crate) fn rebuild_building_topology(
     planes: &mut TerrainPlanes,
     start_x: u8,
     start_y: u8,
@@ -3489,6 +3500,31 @@ impl std::ops::DerefMut for RuntimeSnapshot {
 }
 
 impl RuntimeSnapshot {
+    /// The direct-reference publication in source sub_12100's second loop.
+    /// Matching the full authored relation word belongs to the content owner.
+    pub(crate) fn bind_authored_stage_variable_entity(&mut self, index: u8, slot: u16) -> bool {
+        if !(1..=10).contains(&index) || !(1..1000).contains(&slot) {
+            return false;
+        }
+        let Some(stage) = self.stage_variables.get_mut(usize::from(index)) else {
+            return false;
+        };
+        if !matches!(stage.kind, 3 | 4 | 5 | 8 | 9) || stage.flags & 2 != 0 {
+            return false;
+        }
+        let offset = 392 + 12 * usize::from(index);
+        let Some(bytes) = self.bytes.get_mut(offset..offset + 12) else {
+            return false;
+        };
+        stage.relation = RuntimeRelation::LiveEntity(slot);
+        stage.flags &= !4;
+        bytes[1] = stage.flags as u8;
+        bytes[4] = 1;
+        bytes[5..8].fill(0);
+        bytes[8..12].copy_from_slice(&(u32::from(slot) + 1).to_le_bytes());
+        true
+    }
+
     /// Exact reset-time source counters. Legacy captures did not export them.
     pub(super) fn constructor_counters(&self) -> Option<&[u8; 29]> {
         self.bytes.get(RUNTIME_BYTES..)?.try_into().ok()
