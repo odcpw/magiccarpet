@@ -67,6 +67,10 @@ def main(arguments):
         option = arguments[index]
         index += 1
         if option == '--':
+            if any(value == '-mc-game-runtime' or value.startswith('-mc-runtime-')
+                   for value in arguments[index:]):
+                raise LaunchError('Campaign options must precede --; only Unity '
+                                  'player arguments may follow it')
             player.extend(arguments[index:])
             break
         if option in ('--help', '-h'):

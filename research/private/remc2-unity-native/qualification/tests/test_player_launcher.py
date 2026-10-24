@@ -242,6 +242,8 @@ class PlayerLauncherTests(unittest.TestCase):
             (["--new-game", "--load-save", "/missing/save.json"], "Choose only one"),
             (["--menu", "--new-game"], "Choose only one"),
             (["-mc-runtime-menu", "-mc-runtime-replay-load", "/missing/save.json"], "Choose only one"),
+            (["--new-game", "--", "-mc-runtime-replay-load", "/missing/save.json"],
+             "Campaign options must precede --"),
             (["--save", str(generated / "missing parent/save.json")], "Invalid save destination"),
             (["--level", "2"], "--new-game"),
             (["--packge", package], "Unknown campaign option"),
