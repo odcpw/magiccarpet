@@ -86,6 +86,14 @@ const BINDINGS: &[SpellBinding] = &[
         id: "spell.teleport",
         name: "Teleport",
     },
+    SpellBinding {
+        // Source spell_t::cave_in. Cave/castle emission checks belong to the
+        // following holder visit, after the common activation boundary.
+        kind: SpellKind::CaveIn,
+        family: 25,
+        id: "spell.cave_in",
+        name: "Cave In",
+    },
 ];
 
 pub(super) fn semantic_spell_kind(id: &SemanticId) -> Option<SpellKind> {
@@ -219,4 +227,24 @@ pub(super) fn observe(shared: &Level2SharedSpellResetSession) -> Vec<SpellObserv
             }
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cave_in_command_and_carry_use_the_same_closed_semantic_binding() {
+        let id = SemanticId::parse("spell.cave_in").unwrap();
+        assert_eq!(semantic_spell_kind(&id), Some(SpellKind::CaveIn));
+        assert_eq!(mc2_spell_family(SpellKind::CaveIn), Some(25));
+        assert_eq!(mc2_spell_kind_for_family(25), Some(SpellKind::CaveIn));
+        assert!(SOURCE_SPELL_INDEX_MAP.contains(&25));
+        assert_eq!(format!("spell.{}", SpellKind::CaveIn.as_str()), id.as_str());
+
+        for unsupported in ["spell.family25", "spell.cavein", "spell.cave_in.projectile"] {
+            let id = SemanticId::parse(unsupported).unwrap();
+            assert_eq!(semantic_spell_kind(&id), None);
+        }
+    }
 }
