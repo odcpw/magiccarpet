@@ -3014,6 +3014,53 @@ pub extern "C" fn mc_native_campaign_entities_copy(
                                     source.actual_speed,
                                 )
                             })
+                            .chain(reset.economy().house_residents().iter().map(|source| {
+                                (
+                                    source.source_entity_index,
+                                    source.source_id,
+                                    // Hidden residents retain their arena identity
+                                    // until the following source boundary reclaims
+                                    // them, just like other live class-5 actors.
+                                    source.active
+                                        && source.drawing_enabled
+                                        && source.control_flags & 0x21 == 0,
+                                    5,
+                                    source.model,
+                                    source.action,
+                                    source.phase,
+                                    source.position,
+                                    source.yaw,
+                                    0,
+                                    0,
+                                    source.actual_speed,
+                                )
+                            }))
+                            .chain(
+                                reset
+                                    .ordinary()
+                                    .houses()
+                                    .iter()
+                                    .filter(|source| source.active)
+                                    .map(|source| {
+                                        (
+                                            source.entity_index,
+                                            source.source_id,
+                                            // Inactive HouseFamily entries may outlive
+                                            // their arena slot; only current owners
+                                            // can shadow the raw entity projection.
+                                            source.control_flags & 0x421 == 0,
+                                            10,
+                                            45,
+                                            source.action,
+                                            source.phase,
+                                            source.position,
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                        )
+                                    }),
+                            )
                             .chain(reset.economy().castle_projectiles().iter().map(|source| {
                                 (
                                     source.source_entity_index,
