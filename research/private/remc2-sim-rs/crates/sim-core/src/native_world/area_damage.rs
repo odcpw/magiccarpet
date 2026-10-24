@@ -2,7 +2,7 @@
 
 use std::collections::BTreeSet;
 
-use super::{ENTITY_DRAW_DISABLED_BIT, current_live_world_source_entity_view};
+use super::{ENTITY_DRAW_DISABLED_BIT, Level2OrdinaryResetSession};
 use crate::{
     Position,
     campaign::source_arena::SourceArena,
@@ -10,28 +10,93 @@ use crate::{
         actors::{DamageMailboxMut, DamageWriter},
         area::{self, Actor, AreaDamage, AreaWorld, Shape},
     },
-    goat::LiveWorldState,
+    goat::GoatFamily,
+    house::HouseFamily,
+    villager::VillagerFamily,
 };
+
+/// Borrow the three actual scheduler-owned actor domains. The ordinary
+/// session is split at construction; no unrelated session state is retained.
+pub(crate) struct ActorDomains<'a> {
+    goats: &'a mut GoatFamily,
+    houses: &'a mut HouseFamily,
+    villagers: &'a mut VillagerFamily,
+}
+
+impl<'a> ActorDomains<'a> {
+    pub(crate) fn new(
+        goats: &'a mut GoatFamily,
+        ordinary: &'a mut Level2OrdinaryResetSession,
+    ) -> Self {
+        Self {
+            goats,
+            houses: &mut ordinary.houses,
+            villagers: &mut ordinary.villagers,
+        }
+    }
+
+    fn source_view(&self, slot: u16) -> Option<crate::level1_mission::Level1SourceEntityView> {
+        self.goats
+            .goats()
+            .iter()
+            .find(|row| row.active && row.entity_index == slot)
+            .map(super::goat_source_entity_view)
+            .or_else(|| {
+                self.houses
+                    .houses()
+                    .iter()
+                    .find(|row| row.active && row.entity_index == slot)
+                    .map(super::house_source_entity_view)
+            })
+            .or_else(|| {
+                self.villagers
+                    .villagers()
+                    .iter()
+                    .find(|row| row.active && row.entity_index == slot)
+                    .map(super::villager_source_entity_view)
+            })
+    }
+
+    fn submit(&mut self, slot: u16, payload: u16, owner: u16) -> bool {
+        if self
+            .houses
+            .houses()
+            .iter()
+            .any(|row| row.active && row.entity_index == slot)
+        {
+            self.houses.submit_source_damage(slot, payload, owner)
+        } else if self
+            .villagers
+            .villagers()
+            .iter()
+            .any(|row| row.active && row.entity_index == slot)
+        {
+            self.villagers.submit_source_damage(slot, payload, owner)
+        } else {
+            self.goats.submit_source_damage(slot, payload, owner)
+        }
+    }
+}
 
 pub(crate) fn apply(
     arena: &mut SourceArena,
-    live_world: Option<&mut LiveWorldState>,
+    actors: Option<ActorDomains<'_>>,
     player: Option<(u16, Position)>,
     request: AreaDamage,
 ) -> Result<u16, String> {
     area::apply(
         &mut ArenaTargets {
             arena,
-            live_world,
+            actors,
             player,
         },
         request,
     )
 }
 
-struct ArenaTargets<'a> {
-    arena: &'a mut SourceArena,
-    live_world: Option<&'a mut LiveWorldState>,
+struct ArenaTargets<'arena, 'actors> {
+    arena: &'arena mut SourceArena,
+    actors: Option<ActorDomains<'actors>>,
     player: Option<(u16, Position)>,
 }
 
@@ -44,7 +109,7 @@ fn shape(width: i16, depth: i16, offset: i16, height: i16) -> Shape {
     }
 }
 
-impl AreaWorld for ArenaTargets<'_> {
+impl AreaWorld for ArenaTargets<'_, '_> {
     fn class3_slots(&self) -> Vec<u16> {
         let mut slots = self
             .arena
@@ -92,9 +157,8 @@ impl AreaWorld for ArenaTargets<'_> {
             return None;
         }
         let economy = &self.arena.economy;
-        if let Some(world) = self.live_world.as_deref()
-            && let Some(view) = current_live_world_source_entity_view(world, slot)
-            && view.active
+        if let Some(actors) = self.actors.as_ref()
+            && let Some(view) = actors.source_view(slot)
         {
             let mask = economy
                 .authored_class5_runtime
@@ -223,7 +287,10 @@ impl AreaWorld for ArenaTargets<'_> {
                 .find(|root| root.source_entity_index == row.parent_entity_index)
                 .map_or(1, |root| root.byte_0x38);
             return Some(Actor {
-                source_id: slot,
+                // sub_4B6F0 qmemcpy copies the root's id into every body.
+                // The immutable constructor parent retains that id even if
+                // the root's numeric slot is later reclaimed and reused.
+                source_id: row.parent_entity_index,
                 class: 5,
                 model: row.model,
                 position: row.position,
@@ -368,15 +435,20 @@ impl AreaWorld for ArenaTargets<'_> {
     }
 
     fn ordinary_damage(&mut self, slot: u16, payload: u16, owner: u16) -> Result<(), String> {
-        if let Some(world) = self.live_world.as_deref_mut()
-            && current_live_world_source_entity_view(world, slot).is_some_and(|view| view.active)
+        if let Some(actors) = self.actors.as_mut()
+            && actors.source_view(slot).is_some()
         {
-            if !world.submit_source_damage(slot, payload, owner) {
+            if !actors.submit(slot, payload, owner) {
                 return Err(format!(
                     "area live-world mailbox {slot} rejected an admitted target"
                 ));
             }
-            if let Some(goat) = world.goats().iter().find(|row| row.entity_index == slot) {
+            if let Some(goat) = actors
+                .goats
+                .goats()
+                .iter()
+                .find(|row| row.entity_index == slot)
+            {
                 self.arena.economy.sync_authored_goat_projection(goat);
             }
             return Ok(());
@@ -559,7 +631,24 @@ mod tests {
 
     #[test]
     fn owner_package_ring_hits_player_creature_and_castle_before_their_consumers() {
-        let mut session = super::super::tests::level_two_campaign_session();
+        // The Level-2 start is sea: its first lowering clears the center's
+        // angle and correctly terminates the next visit. Use the existing
+        // Level-3 land start to exercise both ordinary payloads, preserving
+        // the real package pose and terrain rather than forcing either.
+        let root = std::env::var_os("MC_CAMPAIGN_PACKAGE_LEVEL3_V1").map_or_else(
+            || {
+                std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../../generated/mc-cf14-campaign-package-v1-a/qualified-level3")
+            },
+            std::path::PathBuf::from,
+        );
+        let mut session = crate::campaign::CampaignSession::open(
+            root,
+            crate::campaign::spec::CampaignSelection::LEVEL3,
+        )
+        .expect("qualified Level-3 land boundary")
+        .level2_compatibility()
+        .clone();
         let player = session.state.entity_index;
         let position = session.state.position;
         let initial_player_life = session.canonical_player_life_for_test();
@@ -684,5 +773,77 @@ mod tests {
         assert_eq!(row.source_spell_word_30(), 30);
         assert_eq!(&row.record[48..50], before_legacy_word.as_slice());
         assert_eq!(row.source_wind_spell_owner(), 0);
+    }
+
+    #[test]
+    fn worm_area_owner_exclusion_uses_copied_root_identity() {
+        let session = super::super::tests::level_two_campaign_session();
+        let terrain = session.canonical_terrain();
+        let mut arena = session.source_arena().clone();
+        let root = arena
+            .economy
+            .allocate_authored_class5(1, 3, session.state.position, terrain)
+            .expect("ordinary Worm root and body constructor");
+        let body_slots = arena
+            .economy
+            .authored_class5_model3_children
+            .iter()
+            .filter(|body| body.parent_entity_index == root.source_entity_index)
+            .map(|body| body.source_entity_index)
+            .collect::<Vec<_>>();
+        assert_eq!(body_slots.len(), 16);
+        let mut request = AreaDamage {
+            position: root.position,
+            shape: shape(2304, 2304, 0, 8192),
+            owner: root.source_entity_index,
+            payload: 200,
+            selector: (5, 3),
+            mode: 0,
+        };
+        assert_eq!(
+            apply(&mut arena, None, None, request).unwrap(),
+            0,
+            "the root id excludes its whole copied chain"
+        );
+        assert!(
+            arena
+                .economy
+                .authored_class5_model3_children
+                .iter()
+                .filter(|body| body_slots.contains(&body.source_entity_index))
+                .all(|body| body.damage_dword_0x5e_94 == 0 && body.pending_word_0x62 == 0)
+        );
+        request.owner = session.state.entity_index;
+        assert_eq!(
+            apply(&mut arena, None, None, request).unwrap(),
+            17,
+            "a hostile field reaches the root and all sixteen real bodies"
+        );
+        assert!(
+            arena
+                .economy
+                .authored_class5_model3_children
+                .iter()
+                .filter(|body| body_slots.contains(&body.source_entity_index))
+                .all(|body| body.damage_dword_0x5e_94 == 200
+                    && body.pending_word_0x62 == request.owner)
+        );
+        let source = arena
+            .economy
+            .authored_class5
+            .iter()
+            .find(|row| row.source_entity_index == root.source_entity_index)
+            .unwrap();
+        assert_eq!(source.pending_word_0x62, request.owner);
+        assert_eq!(
+            arena
+                .economy
+                .authored_class5_model3
+                .iter()
+                .find(|row| row.source_entity_index == root.source_entity_index)
+                .unwrap()
+                .damage_dword_0x5e_94,
+            200
+        );
     }
 }
