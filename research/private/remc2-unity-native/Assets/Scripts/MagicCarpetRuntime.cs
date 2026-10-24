@@ -2354,7 +2354,7 @@ namespace MagicCarpet.Native
                 }
                 if (gameRuntimeRequested)
                 {
-                    OpenGameRuntimeFromStartupArguments(arguments);
+                    OpenGameRuntimeFromStartupArguments(arguments, true);
                     // All ordinary runtime routes bypass the legacy flight
                     // camera constructor. Compose one device listener here.
                     if (!FindObjectsByType<AudioListener>(FindObjectsSortMode.None)
@@ -2362,7 +2362,6 @@ namespace MagicCarpet.Native
                         gameRuntimeAudioListener = gameObject.AddComponent<AudioListener>();
                     if (HasArgument(arguments, "-mc-runtime-menu"))
                     {
-                        ApplyGameRuntimeProductionInput(false, true, false);
                         PreparePlayerPreferences(arguments);
                         EnsureGameRuntimeMenu();
                         var mediaPath = ArgumentValue(arguments, "-mc-runtime-media-cache");
@@ -2373,7 +2372,12 @@ namespace MagicCarpet.Native
                         frontendMedia.ApplyPreferences(playerPreferences.Current.preferences);
                         frontendMedia.Step(session.Handle, session.GameRuntimeIdentity(), 0, false, false);
                     }
-                    else PreparePlayerPreferences(arguments);
+                    else
+                    {
+                        PreparePlayerPreferences(arguments);
+                        if (session.GameRuntimeIdentity().mode == GameRuntimeTransport.TitleMode)
+                            BeginGameRuntimeMenuNewGame();
+                    }
                     Application.targetFrameRate = 120;
                     Time.fixedDeltaTime = 1f / AuthoritativeSimulationHz;
                     if (!Application.isBatchMode && session.GameRuntimeIdentity().mode == GameRuntimeTransport.PlayingMode)
@@ -9015,11 +9019,11 @@ namespace MagicCarpet.Native
                 Require(
                     gameRuntimeRequested,
                     "game runtime production qualification requires -mc-game-runtime");
-                OpenGameRuntimeFromStartupArguments(arguments);
+                OpenGameRuntimeFromStartupArguments(arguments,
+                    HasArgument(arguments, "-mc-runtime-menu"));
                 if (HasArgument(arguments, "-mc-runtime-menu"))
                 {
                     EnsureGameRuntimeMenu();
-                    ApplyGameRuntimeProductionInput(false, true, false);
                 }
             }
             catch (Exception exception)
@@ -13884,12 +13888,22 @@ namespace MagicCarpet.Native
             }
         }
 
-        private void OpenGameRuntimeFromStartupArguments(string[] arguments)
+        private void OpenGameRuntimeFromStartupArguments(string[] arguments, bool prepareFrontend)
         {
             var packages = GameRuntimePackagesFromArguments(arguments);
             var replayPath = ArgumentValue(arguments, "-mc-runtime-replay-load");
             if (string.IsNullOrWhiteSpace(replayPath))
             {
+                if (prepareFrontend)
+                {
+                    Require(session == null && campaignSession == null,
+                        "campaign frontend starts with no existing gameplay owner");
+                    gameRuntimePackages = packages;
+                    session = NativeSession.OpenGameRuntimeFrontend(packages);
+                    gameRuntimeMode = true;
+                    gameRuntimeStartupReady = false;
+                    return;
+                }
                 OpenAndValidateGameRuntimeProductionSession(packages);
                 return;
             }

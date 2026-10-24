@@ -131,6 +131,24 @@ namespace MagicCarpet.Native
             }
         }
 
+        internal static NativeSession OpenGameRuntimeFrontend(
+            params GameRuntimeTransport.InstalledPackageResource[] packages)
+        {
+            var runtime = new GameRuntimeTransport();
+            try
+            {
+                var loading = runtime.BootstrapPackageSet(packages);
+                GameRuntimeTransport.CancelLoading(loading);
+                runtime.IdentitySnapshot();
+                return new NativeSession(runtime.Handle, gameRuntime: runtime);
+            }
+            catch
+            {
+                runtime.Dispose();
+                throw;
+            }
+        }
+
         internal static NativeSession OpenGameRuntime(
             params GameRuntimeTransport.InstalledPackageResource[] packages)
         {

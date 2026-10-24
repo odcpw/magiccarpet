@@ -162,6 +162,9 @@ namespace MagicCarpet.Native.Tests
                     "-mc-runtime-package", Path.Combine(generated, "level2-day-block32-campaign-v2"),
                     "-mc-runtime-package", Path.Combine(generated, "level3-day-block32-campaign-recipe-v2") });
                 Assert.That(runtime.GameRuntimeProductionIdentity.mode, Is.EqualTo(GameRuntimeTransport.TitleMode));
+                Assert.That(runtime.GameRuntimeProductionIdentity.session?.session_id, Is.Null.Or.Empty,
+                    "menu startup has not opened a hidden gameplay session");
+                Assert.That(runtime.GameRuntimeNightPresentationReady, Is.False);
                 Assert.That(runtime.ExecuteGameRuntimeMenuAction(CampaignMenuPresenter.Action.NewGame), Is.True);
                 Assert.That(runtime.GameRuntimeLoadingPresentationVisible, Is.True);
                 runtime.QualificationDriveGameRuntimeFrames(1);
