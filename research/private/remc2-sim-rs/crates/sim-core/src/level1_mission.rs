@@ -14093,7 +14093,8 @@ impl Level1MissionState {
             .class_10_buildings()
             .collect::<Vec<_>>();
         let mut context = settlements::SettlementContext {
-            source_slots: &mut self.source_slots,
+            source_control_flags: &mut self.source_slots[usize::from(resident.source_entity_index)]
+                .control_flags,
             dynamic_residents: &mut self.dynamic_residents,
             class_5_census: &mut self.class_5_census,
             player_archer_target_ticks: &mut self.player_archer_target_ticks,
@@ -14121,6 +14122,8 @@ impl Level1MissionState {
         #[cfg(test)]
         let rng_draw = context.selection_rng_draw;
         drop(context);
+        self.source_slots[usize::from(resident.source_entity_index)].entity_rng =
+            resident.entity_rng;
         #[cfg(test)]
         if let Some((before, after)) = rng_draw {
             self.global_rng_trace.push(GlobalRngTraceEntry {

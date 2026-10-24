@@ -6,8 +6,7 @@
 
 use crate::house::{HOUSE_CLASS, HOUSE_MODEL};
 use crate::level1_mission::{
-    GlobalRngSite, Level1ResetSourceSlot, Level1SourceEffect, Level1SourceEntityView,
-    SOURCE_DISABLED_FLAG,
+    GlobalRngSite, Level1SourceEffect, Level1SourceEntityView, SOURCE_DISABLED_FLAG,
 };
 use crate::villager::{
     VillagerBehaviorConfig, VillagerState, VillagerStepEffect, step_villager_state,
@@ -113,7 +112,7 @@ pub(crate) struct BuilderHouseRequest {
 }
 
 pub(crate) struct SettlementContext<'a> {
-    pub source_slots: &'a mut [Level1ResetSourceSlot],
+    pub source_control_flags: &'a mut u32,
     pub dynamic_residents: &'a mut [Option<DynamicResidentState>],
     pub class_5_census: &'a mut u32,
     pub player_archer_target_ticks: &'a mut u16,
@@ -252,12 +251,12 @@ impl SettlementContext<'_> {
                         apply_builder_wander(resident);
                         let mut nearest = None;
                         let mut nearest_distance = u32::MAX;
-                        for candidate in source_views.iter().copied().filter(|candidate| {
-                            candidate.active
-                                && candidate.class == HOUSE_CLASS
-                                && candidate.model == HOUSE_MODEL
-                                && candidate.villager_entry_eligible
-                        }) {
+                        for candidate in self
+                            .building_source_order
+                            .iter()
+                            .filter_map(|slot| source_view(source_views, *slot))
+                            .filter(|candidate| candidate.villager_entry_eligible)
+                        {
                             let distance =
                                 squared_wrapping_xy_distance(resident.position, candidate.position);
                             if distance < nearest_distance
@@ -751,9 +750,11 @@ impl SettlementContext<'_> {
 
         let mut nearest = None;
         let mut nearest_distance = u32::MAX;
-        for candidate in source_views.iter().copied().filter(|candidate| {
-            candidate.active && candidate.class == HOUSE_CLASS && candidate.model == HOUSE_MODEL
-        }) {
+        for candidate in self
+            .building_source_order
+            .iter()
+            .filter_map(|slot| source_view(source_views, *slot))
+        {
             let distance = distance_3d_wrapped(resident.position, candidate.position);
             if distance != 0 && distance < nearest_distance {
                 nearest = Some(candidate.source_entity_index);
@@ -897,8 +898,7 @@ impl SettlementContext<'_> {
         source_views: &[Level1SourceEntityView],
         resident: &mut DynamicResidentState,
     ) -> Vec<Level1SourceEffect> {
-        let source_index = usize::from(resident.source_entity_index);
-        let mut control_flags = self.source_slots[source_index].control_flags;
+        let mut control_flags = *self.source_control_flags;
         if resident.suppress_death_burst {
             control_flags |= 0x0010_0000;
         } else {
@@ -968,8 +968,7 @@ impl SettlementContext<'_> {
         resident.target_entity_index = villager.target_entity_index.unwrap_or(0);
         resident.movement_blocked = villager.control_flags & 0x0004_0000 != 0;
         resident.suppress_death_burst = villager.control_flags & 0x0010_0000 != 0;
-        self.source_slots[source_index].control_flags = villager.control_flags;
-        self.source_slots[source_index].entity_rng = villager.rng;
+        *self.source_control_flags = villager.control_flags;
 
         let mut effects = Vec::with_capacity(villager_effects.len());
         for effect in villager_effects {
@@ -1360,5 +1359,738 @@ pub(crate) fn resident_constructor(
         logical_height,
         active: true,
         visible: true,
+    }
+}
+
+/// Complete source carrier for house-created population. Common arena identity and
+/// additional behavior state have one storage location; callbacks use temporary views.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Level2HouseResidentSource {
+    pub source_entity_index: u16,
+    pub entity_rng: u16,
+    pub parent_house_entity_index: u16,
+    pub owner_entity_index: u16,
+    pub attacker_entity_index: u16,
+    pub semantic_kind: crate::level_definition::CreatureKind,
+    pub position: Position,
+    pub model: u8,
+    pub action: u8,
+    pub life: i32,
+    pub phase: u8,
+    pub drawing_enabled: bool,
+    pub active: bool,
+    pub source_id: u16,
+    pub max_life: i32,
+    pub pending_damage: i32,
+    pub current_attacker: u16,
+    pub kill_credit_entity: u16,
+    pub yaw: i16,
+    pub desired_heading: i16,
+    pub minimum_speed: i16,
+    pub actual_speed: i16,
+    pub maximum_speed: i16,
+    pub target_entity_index: u16,
+    pub linked_entity_index: u16,
+    pub reset_counter: i32,
+    pub mana: i32,
+    pub stage_var_2: i8,
+    pub builder_placement_latch: u8,
+    pub movement_blocked: bool,
+    pub suppress_death_burst: bool,
+    pub collision_half_width: i16,
+    pub collision_vertical_offset: i16,
+    pub collision_half_height: i16,
+    pub render_parameter_index: u16,
+    pub base_tmap: u16,
+    pub render_mode: u8,
+    pub logical_height: u16,
+    pub control_flags: u32,
+}
+
+pub const SETTLEMENT_MAX_LIFE: i32 = 1_000;
+
+impl Level2HouseResidentSource {
+    pub(crate) fn from_resident(
+        state: DynamicResidentState,
+        parent_house_entity_index: u16,
+        semantic_kind: crate::level_definition::CreatureKind,
+    ) -> Self {
+        Self {
+            source_entity_index: state.source_entity_index,
+            entity_rng: state.entity_rng,
+            parent_house_entity_index: parent_house_entity_index,
+            owner_entity_index: state.owner_entity_index,
+            attacker_entity_index: state.pending_attacker,
+            semantic_kind: semantic_kind,
+            position: state.position,
+            model: state.model,
+            action: state.action,
+            life: state.life,
+            phase: state.phase,
+            drawing_enabled: state.visible,
+            active: state.active,
+            source_id: state.source_id,
+            max_life: state.max_life,
+            pending_damage: state.pending_damage,
+            current_attacker: state.current_attacker,
+            kill_credit_entity: state.kill_credit_entity,
+            yaw: state.yaw,
+            desired_heading: state.desired_heading,
+            minimum_speed: state.minimum_speed,
+            actual_speed: state.actual_speed,
+            maximum_speed: state.maximum_speed,
+            target_entity_index: state.target_entity_index,
+            linked_entity_index: state.linked_entity_index,
+            reset_counter: state.reset_counter,
+            mana: state.mana,
+            stage_var_2: state.stage_var_2,
+            builder_placement_latch: state.builder_placement_latch,
+            movement_blocked: state.movement_blocked,
+            suppress_death_burst: state.suppress_death_burst,
+            collision_half_width: state.collision_half_width,
+            collision_vertical_offset: state.collision_vertical_offset,
+            collision_half_height: state.collision_half_height,
+            render_parameter_index: state.render_parameter_index,
+            base_tmap: state.base_tmap,
+            render_mode: state.render_mode,
+            logical_height: state.logical_height,
+            control_flags: 8,
+        }
+    }
+
+    pub(crate) fn population_state(self) -> DynamicResidentState {
+        DynamicResidentState {
+            source_entity_index: self.source_entity_index,
+            source_id: self.source_id,
+            kind: match self.semantic_kind {
+                crate::level_definition::CreatureKind::Builder => DynamicResidentKind::Builder,
+                crate::level_definition::CreatureKind::Villager => DynamicResidentKind::Villager,
+                crate::level_definition::CreatureKind::Trader => DynamicResidentKind::Trader,
+                _ => unreachable!("Archer has its own arena carrier"),
+            },
+            class: 5,
+            model: self.model,
+            action: self.action,
+            position: self.position,
+            max_life: self.max_life,
+            life: self.life,
+            pending_damage: self.pending_damage,
+            pending_attacker: self.attacker_entity_index,
+            current_attacker: self.current_attacker,
+            kill_credit_entity: self.kill_credit_entity,
+            entity_rng: self.entity_rng,
+            yaw: self.yaw,
+            desired_heading: self.desired_heading,
+            minimum_speed: self.minimum_speed,
+            actual_speed: self.actual_speed,
+            maximum_speed: self.maximum_speed,
+            target_entity_index: self.target_entity_index,
+            linked_entity_index: self.linked_entity_index,
+            owner_entity_index: self.owner_entity_index,
+            reset_counter: self.reset_counter,
+            mana: self.mana,
+            stage_var_2: self.stage_var_2,
+            builder_placement_latch: self.builder_placement_latch,
+            movement_blocked: self.movement_blocked,
+            suppress_death_burst: self.suppress_death_burst,
+            phase: self.phase,
+            collision_half_width: self.collision_half_width,
+            collision_vertical_offset: self.collision_vertical_offset,
+            collision_half_height: self.collision_half_height,
+            render_parameter_index: self.render_parameter_index,
+            base_tmap: self.base_tmap,
+            render_mode: self.render_mode,
+            logical_height: self.logical_height,
+            active: self.active,
+            visible: self.drawing_enabled,
+        }
+    }
+
+    pub(crate) fn commit_population(&mut self, state: DynamicResidentState) {
+        self.source_entity_index = state.source_entity_index;
+        self.entity_rng = state.entity_rng;
+        self.owner_entity_index = state.owner_entity_index;
+        self.attacker_entity_index = state.pending_attacker;
+        self.position = state.position;
+        self.model = state.model;
+        self.action = state.action;
+        self.life = state.life;
+        self.phase = state.phase;
+        self.drawing_enabled = state.visible;
+        self.source_id = state.source_id;
+        self.max_life = state.max_life;
+        self.pending_damage = state.pending_damage;
+        self.current_attacker = state.current_attacker;
+        self.kill_credit_entity = state.kill_credit_entity;
+        self.yaw = state.yaw;
+        self.desired_heading = state.desired_heading;
+        self.minimum_speed = state.minimum_speed;
+        self.actual_speed = state.actual_speed;
+        self.maximum_speed = state.maximum_speed;
+        self.target_entity_index = state.target_entity_index;
+        self.linked_entity_index = state.linked_entity_index;
+        self.reset_counter = state.reset_counter;
+        self.mana = state.mana;
+        self.stage_var_2 = state.stage_var_2;
+        self.builder_placement_latch = state.builder_placement_latch;
+        self.movement_blocked = state.movement_blocked;
+        self.suppress_death_burst = state.suppress_death_burst;
+        self.collision_half_width = state.collision_half_width;
+        self.collision_vertical_offset = state.collision_vertical_offset;
+        self.collision_half_height = state.collision_half_height;
+        self.render_parameter_index = state.render_parameter_index;
+        self.base_tmap = state.base_tmap;
+        self.render_mode = state.render_mode;
+        self.logical_height = state.logical_height;
+        // Hide retains the numeric row until following-pass sub_57F20.
+        self.drawing_enabled &= state.active;
+    }
+
+    pub(crate) fn digest_behavior(&self, hasher: &mut sha2::Sha256) {
+        use sha2::Digest;
+        hasher.update(self.source_id.to_le_bytes());
+        hasher.update(self.max_life.to_le_bytes());
+        hasher.update(self.pending_damage.to_le_bytes());
+        hasher.update(self.current_attacker.to_le_bytes());
+        hasher.update(self.kill_credit_entity.to_le_bytes());
+        hasher.update(self.yaw.to_le_bytes());
+        hasher.update(self.desired_heading.to_le_bytes());
+        hasher.update(self.minimum_speed.to_le_bytes());
+        hasher.update(self.actual_speed.to_le_bytes());
+        hasher.update(self.maximum_speed.to_le_bytes());
+        hasher.update(self.target_entity_index.to_le_bytes());
+        hasher.update(self.linked_entity_index.to_le_bytes());
+        hasher.update(self.reset_counter.to_le_bytes());
+        hasher.update(self.mana.to_le_bytes());
+        hasher.update(self.stage_var_2.to_le_bytes());
+        hasher.update(self.builder_placement_latch.to_le_bytes());
+        hasher.update([u8::from(self.movement_blocked)]);
+        hasher.update([u8::from(self.suppress_death_burst)]);
+        hasher.update(self.collision_half_width.to_le_bytes());
+        hasher.update(self.collision_vertical_offset.to_le_bytes());
+        hasher.update(self.collision_half_height.to_le_bytes());
+        hasher.update(self.render_parameter_index.to_le_bytes());
+        hasher.update(self.base_tmap.to_le_bytes());
+        hasher.update(self.render_mode.to_le_bytes());
+        hasher.update(self.logical_height.to_le_bytes());
+        hasher.update(self.control_flags.to_le_bytes());
+    }
+}
+
+/// Constructor counters and residents are one reset/save/hash-owned population.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct SettlementPopulation {
+    residents: Vec<Level2HouseResidentSource>,
+    builder_phase: u8,
+    villager_phase: u8,
+}
+impl SettlementPopulation {
+    pub(crate) fn new(builder_phase: u8, villager_phase: u8) -> Self {
+        Self {
+            residents: Vec::new(),
+            builder_phase,
+            villager_phase,
+        }
+    }
+    pub(crate) fn take_constructor_phase(&mut self, kind: DynamicResidentKind) -> u8 {
+        let phase = match kind {
+            DynamicResidentKind::Builder => &mut self.builder_phase,
+            DynamicResidentKind::Villager => &mut self.villager_phase,
+            _ => unreachable!("Archer/Trader constructor counters have their existing owner"),
+        };
+        let current = *phase;
+        *phase = phase.wrapping_add(1);
+        current
+    }
+    pub(crate) fn digest_counters(&self, hasher: &mut sha2::Sha256) {
+        use sha2::Digest;
+        hasher.update([self.builder_phase, self.villager_phase]);
+    }
+}
+impl std::ops::Deref for SettlementPopulation {
+    type Target = Vec<Level2HouseResidentSource>;
+    fn deref(&self) -> &Self::Target {
+        &self.residents
+    }
+}
+impl std::ops::DerefMut for SettlementPopulation {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.residents
+    }
+}
+impl<'a> IntoIterator for &'a SettlementPopulation {
+    type Item = &'a Level2HouseResidentSource;
+    type IntoIter = std::slice::Iter<'a, Level2HouseResidentSource>;
+    fn into_iter(self) -> Self::IntoIter {
+        self.residents.iter()
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct SettlementPopulationStep {
+    pub feedback_entity: Option<u16>,
+}
+impl crate::native_world::Level2EconomyState {
+    pub(crate) fn rebuild_settlement_mana_rows(&mut self, houses: &[crate::house::HouseState]) {
+        // Derived source-boundary projection only. The House and resident
+        // carriers remain the sole mutable gameplay authority.
+        self.owner_mana_rows.retain(|row| {
+            !houses
+                .iter()
+                .any(|house| house.entity_index == row.source_entity_index)
+        });
+        for house in houses.iter().filter(|house| house.active) {
+            let mana = if house.parameter.flags & 8 == 0 {
+                (1_000_i32 * i32::from(house.parameter.life_mana_scalar)) >> 7
+            } else {
+                0
+            };
+            self.install_owner_mana_row(house.entity_index, 10, 45, house.owner_entity_index, mana);
+        }
+        let residents = self
+            .house_residents
+            .iter()
+            .filter(|row| row.active)
+            .copied()
+            .collect::<Vec<_>>();
+        for row in residents {
+            self.install_owner_mana_row(
+                row.source_entity_index,
+                5,
+                row.model,
+                row.owner_entity_index,
+                row.mana,
+            );
+        }
+        self.publish_owner_mana_projection();
+    }
+
+    /// RemoveCastleStage writes this after each constructor, even if the
+    /// demolishing source has no owner. Ordinary population births retain zero.
+    pub(crate) fn initialize_demolition_resident_mailbox(&mut self, slot: u16, attacker: u16) {
+        if let Some(row) = self
+            .house_residents
+            .iter_mut()
+            .find(|row| row.source_entity_index == slot)
+        {
+            row.pending_damage = 1;
+            row.attacker_entity_index = attacker;
+        } else if let Some(row) = self
+            .authored_class5
+            .iter_mut()
+            .find(|row| row.source_entity_index == slot && row.model == 4)
+        {
+            row.pending_word_0x62 = attacker;
+            if let Some(state) = self
+                .authored_class5_archer
+                .iter_mut()
+                .find(|state| state.source_entity_index == slot)
+            {
+                state.pending_damage = 1;
+            }
+        }
+    }
+
+    pub(crate) fn allocate_settlement_resident(
+        &mut self,
+        parent_house_entity_index: u16,
+        _house_owner_entity_index: u16,
+        request: crate::level1_mission::HouseResidentRequest,
+        terrain: &crate::native_world::SessionTerrain,
+    ) -> Option<u16> {
+        if request.model == 4 {
+            return self.allocate_house_archer(parent_house_entity_index, 0, request, terrain);
+        }
+        let semantic_kind =
+            crate::campaign::mc2_level_definition::Mc2LevelDefinition::creature_for_house_resident(
+                request.model,
+                request.action,
+            )?;
+        let kind = match semantic_kind {
+            crate::level_definition::CreatureKind::Builder => DynamicResidentKind::Builder,
+            crate::level_definition::CreatureKind::Villager => DynamicResidentKind::Villager,
+            crate::level_definition::CreatureKind::Trader => DynamicResidentKind::Trader,
+            _ => return None,
+        };
+        let slot = self.allocate_slot()?;
+        let initial_rng = self.new_event_rng(slot);
+        let phase = if kind == DynamicResidentKind::Trader {
+            let phase = self.class5_model14_constructor_phase;
+            self.class5_model14_constructor_phase = phase.wrapping_add(1);
+            phase
+        } else {
+            self.house_residents.take_constructor_phase(kind)
+        };
+        let mut state = resident_constructor(
+            slot,
+            initial_rng,
+            phase,
+            request.position,
+            kind,
+            request.model,
+            request.action,
+            request.attacker_entity_index,
+        );
+        // Ordinary births have no damage payload. Demolition callers write
+        // their explicit payload after construction, including ownerless bursts.
+        state.pending_damage = 0;
+        // GetRandManaSphere and the family constructors do not copy the
+        // possessing house's player relation into the new neutral resident.
+        let source = Level2HouseResidentSource::from_resident(
+            state,
+            parent_house_entity_index,
+            semantic_kind,
+        );
+        if self
+            .map_chains
+            .sync_entity(crate::renderable_map_chain::RenderableMapSeed {
+                entity_index: slot,
+                active: true,
+                x: state.position.x,
+                y: state.position.y,
+            })
+            .is_err()
+        {
+            self.release_slot(slot, Some(state.entity_rng));
+            return None;
+        }
+        self.source_rng.insert(slot, state.entity_rng);
+        self.source_owner.insert(slot, state.owner_entity_index);
+        self.owner_class.insert(slot, 5);
+        self.house_residents.push(source);
+        Some(slot)
+    }
+
+    pub(crate) fn submit_settlement_damage(
+        &mut self,
+        slot: u16,
+        damage: i32,
+        attacker: u16,
+        writer: crate::combat::actors::DamageWriter,
+    ) -> bool {
+        let Some(row) = self
+            .house_residents
+            .iter_mut()
+            .find(|row| row.active && row.source_entity_index == slot)
+        else {
+            return false;
+        };
+        crate::combat::actors::DamageMailboxMut::new(
+            &mut row.pending_damage,
+            &mut row.attacker_entity_index,
+        )
+        .submit(damage, attacker, writer)
+    }
+}
+
+impl crate::campaign::source_arena::SourceArena {
+    /// An ephemeral callback view over actual source, house and population
+    /// carriers. Dynamic occupants replace stale reset records by source slot.
+    pub(crate) fn settlement_source_views(
+        &self,
+        houses: &crate::house::HouseFamily,
+        villagers: &[crate::villager::VillagerState],
+        parameters: &std::collections::BTreeMap<u8, crate::house::HouseParameter>,
+    ) -> Vec<crate::level1_mission::Level1SourceEntityView> {
+        use crate::level1_mission::{Level1ResetSourceSlot, Level1SourceEntityView};
+        let mut views = std::collections::BTreeMap::new();
+        for row in self
+            .entities
+            .iter()
+            .filter(|row| row.active && row.index != 0)
+        {
+            let mut view = Level1SourceEntityView::imported_record(Level1ResetSourceSlot {
+                index: row.index,
+                active: true,
+                class: row.class,
+                model: row.model,
+                action: row.action,
+                phase: row.phase,
+                entity_rng: row.entity_rng,
+                control_flags: row.control_flags,
+            });
+            view.source_id = row.source_id;
+            view.position = row.position;
+            view.life = row.life;
+            view.max_life = row.max_life;
+            view.owner_entity_index = row.source_player_entity_index();
+            view.linked_entity_index = row.word_34();
+            view.collision_half_width = row.array_pitch();
+            view.collision_half_depth = row.array_roll();
+            view.collision_vertical_offset = row.array_yaw();
+            view.collision_half_height = row.array_fov();
+            views.insert(row.index, view);
+        }
+        for row in self.authored_model45.iter().filter(|row| row.active) {
+            let mut view = Level1SourceEntityView::imported_record(Level1ResetSourceSlot {
+                index: row.source_entity_index,
+                active: true,
+                class: row.source_class,
+                model: row.model,
+                action: row.action,
+                phase: row.source_byte_3e,
+                entity_rng: row.entity_rng,
+                control_flags: row.control_flags,
+            });
+            view.position = row.position;
+            view.life = row.life;
+            view.max_life = row.max_life;
+            view.collision_half_width = row.view_pitch;
+            view.collision_half_depth = row.view_roll;
+            view.collision_vertical_offset = row.view_yaw;
+            view.collision_half_height = row.view_fov;
+            view.villager_entry_eligible = parameters
+                .get(&row.byte_0x46)
+                .is_some_and(|parameter| parameter.produces_villagers());
+            views.insert(row.source_entity_index, view);
+        }
+        for row in self.authored_class5.iter().filter(|row| row.active) {
+            let mut view = Level1SourceEntityView::imported_record(Level1ResetSourceSlot {
+                index: row.source_entity_index,
+                active: true,
+                class: 5,
+                model: row.model,
+                action: row.action,
+                phase: row.source_byte_3e,
+                entity_rng: row.entity_rng,
+                control_flags: if row.drawing_enabled { 8 } else { 0x408 },
+            });
+            view.position = row.position;
+            view.life = row.life;
+            view.max_life = row.max_life;
+            view.target_entity_index = row.word_0x96_150;
+            view.collision_half_width = row.shift_rot_x;
+            view.collision_half_depth = row.shift_rot_x;
+            view.collision_half_height = row.shift_rot_y;
+            views.insert(row.source_entity_index, view);
+        }
+        for row in houses.houses() {
+            let mut view = Level1SourceEntityView::imported_record(Level1ResetSourceSlot {
+                index: row.entity_index,
+                active: row.active,
+                class: 10,
+                model: 45,
+                action: row.action,
+                phase: row.phase,
+                entity_rng: row.rng,
+                control_flags: row.control_flags,
+            });
+            view.source_id = row.source_id;
+            view.position = row.position;
+            view.life = row.life;
+            view.max_life = row.max_life;
+            view.owner_entity_index = row.owner_entity_index;
+            view.collision_half_width = row.collision_half_width;
+            view.collision_half_depth = row.collision_half_depth;
+            view.collision_vertical_offset = row.collision_vertical_offset;
+            view.collision_half_height = row.collision_half_height;
+            view.villager_entry_eligible = row.parameter.produces_villagers();
+            views.insert(row.entity_index, view);
+        }
+        for row in villagers.iter().filter(|row| row.active) {
+            let mut view = Level1SourceEntityView::imported_record(Level1ResetSourceSlot {
+                index: row.entity_index,
+                active: true,
+                class: 5,
+                model: 13,
+                action: row.action,
+                phase: row.phase,
+                entity_rng: row.rng,
+                control_flags: row.control_flags,
+            });
+            view.source_id = row.source_id;
+            view.position = row.position;
+            view.life = row.life;
+            view.owner_entity_index = row.owner_entity_index;
+            view.collision_half_width = row.collision_half_width;
+            view.collision_half_depth = row.collision_half_width;
+            view.collision_vertical_offset = row.collision_vertical_offset;
+            view.collision_half_height = row.collision_half_height;
+            views.insert(row.entity_index, view);
+        }
+        for row in self.house_residents.iter().filter(|row| row.active) {
+            let mut view = Level1SourceEntityView::imported_record(Level1ResetSourceSlot {
+                index: row.source_entity_index,
+                active: true,
+                class: 5,
+                model: row.model,
+                action: row.action,
+                phase: row.phase,
+                entity_rng: row.entity_rng,
+                control_flags: row.control_flags,
+            });
+            view.source_id = row.source_id;
+            view.position = row.position;
+            view.life = row.life;
+            view.max_life = row.max_life;
+            view.owner_entity_index = row.owner_entity_index;
+            view.target_entity_index = row.target_entity_index;
+            view.linked_entity_index = row.linked_entity_index;
+            view.collision_half_width = row.collision_half_width;
+            view.collision_half_depth = row.collision_half_width;
+            view.collision_vertical_offset = row.collision_vertical_offset;
+            view.collision_half_height = row.collision_half_height;
+            view.builder_placement_latch = row.builder_placement_latch;
+            views.insert(row.source_entity_index, view);
+        }
+        views.into_values().collect()
+    }
+
+    pub(crate) fn step_settlement_resident_slot(
+        &mut self,
+        slot: u16,
+        terrain: &crate::native_world::SessionTerrain,
+        houses: &mut crate::house::HouseFamily,
+        villagers: &[crate::villager::VillagerState],
+        building_source_order: &[u16],
+        parameters: &std::collections::BTreeMap<u8, crate::house::HouseParameter>,
+        footprints: &std::collections::BTreeMap<u8, crate::level1_mission::CastleBuildFootprint>,
+    ) -> Result<Option<SettlementPopulationStep>, String> {
+        let Some(index) = self
+            .house_residents
+            .iter()
+            .position(|row| row.source_entity_index == slot && row.active && row.drawing_enabled)
+        else {
+            return Ok(None);
+        };
+        let views = self.settlement_source_views(houses, villagers, parameters);
+        let mut source = self.house_residents[index];
+        let mut resident = source.population_state();
+        let mut linked_residents = Vec::new();
+        if resident.linked_entity_index != 0 {
+            linked_residents.resize(1000, None);
+            for row in self.house_residents.iter() {
+                linked_residents[usize::from(row.source_entity_index)] =
+                    Some(row.population_state());
+            }
+        }
+        let economy = &mut self.economy;
+        let mut feedback = 0;
+        let mut context = SettlementContext {
+            source_control_flags: &mut source.control_flags,
+            dynamic_residents: &mut linked_residents,
+            class_5_census: &mut economy.source_creature_population,
+            player_archer_target_ticks: &mut feedback,
+            global_rng: &mut economy.global_rng,
+            building_source_order,
+            house_request: None,
+            death_bursts: Vec::new(),
+            linked_kills: Vec::new(),
+            selection_rng_draw: None,
+        };
+        let effects = match resident.kind {
+            DynamicResidentKind::Builder => {
+                context.step_dynamic_builder(terrain, &views, &mut resident)
+            }
+            DynamicResidentKind::Villager => {
+                context.step_dynamic_villager(terrain, &views, &mut resident)
+            }
+            DynamicResidentKind::Trader => {
+                context.step_dynamic_trader(terrain, &views, &mut resident)
+            }
+            DynamicResidentKind::Archer => unreachable!("Archer has its own source owner"),
+        };
+        let request = context.house_request;
+        let bursts = std::mem::take(&mut context.death_bursts);
+        let linked_kills = std::mem::take(&mut context.linked_kills);
+        drop(context);
+        for effect in effects {
+            match effect {
+                Level1SourceEffect::TryEnterVillager {
+                    house_source_entity_index,
+                    ..
+                } => {
+                    if houses.try_enter_resident(house_source_entity_index)
+                        != crate::house::HouseResidentEntry::Entered
+                    {
+                        resident.reset_counter = 0;
+                        resident.target_entity_index = 0;
+                        resident.actual_speed = resident.maximum_speed;
+                        resident.action = if resident.kind == DynamicResidentKind::Trader {
+                            TRADER_FREE_ACTION
+                        } else {
+                            105
+                        };
+                    }
+                }
+                Level1SourceEffect::DisableSourceSlot { .. } => resident.visible = false,
+                _ => return Err("unexpected settlement family effect".to_owned()),
+            }
+        }
+        for linked in linked_kills {
+            if let Some(row) = self
+                .house_residents
+                .iter_mut()
+                .find(|row| row.source_entity_index == linked)
+            {
+                row.action = 117;
+            }
+        }
+        for (dead_slot, position) in bursts {
+            let _ =
+                self.spawn_death_burst_from_death_with_id(dead_slot, resident.source_id, position);
+        }
+        if let Some(request) = request {
+            let parameter = *parameters
+                .get(&request.building_index)
+                .ok_or_else(|| format!("Builder BLDGPRM row {} absent", request.building_index))?;
+            let footprint = footprints
+                .get(&request.building_index)
+                .ok_or_else(|| format!("Builder BUILD row {} absent", request.building_index))?;
+            if let Some(house_slot) = self.allocate_slot() {
+                let rng = self.new_event_rng(house_slot);
+                let position = builder_house_position(terrain, request.candidate, request.spec);
+                let mut house = crate::house::HouseState::builder_from_source(
+                    house_slot,
+                    rng,
+                    position,
+                    request.building_index,
+                    footprint.width,
+                    footprint.height,
+                    parameter,
+                );
+                houses
+                    .insert_builder_house(house)
+                    .map_err(|error| format!("Builder house insert: {error}"))?;
+                crate::mark_source_audio_call(crate::SourceAudioCallTag::BuilderBuildAction96);
+                self.prepare_sound(slot, resident.source_id, -1, BUILDER_BUILD_SOUND);
+                house.action = crate::house::HOUSE_TERRAIN_TO_LIVE_ACTION;
+                houses.initialize_builder_house(house)?;
+                self.source_rng.insert(house_slot, rng);
+                self.source_owner.insert(house_slot, 0);
+                self.owner_class.insert(house_slot, 10);
+                self.map_chains
+                    .sync_entity(crate::renderable_map_chain::RenderableMapSeed {
+                        entity_index: house_slot,
+                        active: true,
+                        x: position.x,
+                        y: position.y,
+                    })
+                    .map_err(|error| format!("Builder house map insertion: {error}"))?;
+            }
+        }
+        resident.phase = resident.phase.wrapping_add(1);
+        source.commit_population(resident);
+        if !source.drawing_enabled {
+            source.control_flags |= crate::level1_mission::SOURCE_DISABLED_FLAG;
+        }
+        self.house_residents[index] = source;
+        self.source_rng.insert(slot, source.entity_rng);
+        self.source_owner.insert(slot, source.owner_entity_index);
+        self.map_chains
+            .sync_entity(crate::renderable_map_chain::RenderableMapSeed {
+                entity_index: slot,
+                active: source.active,
+                x: source.position.x,
+                y: source.position.y,
+            })
+            .map_err(|error| format!("Settlement map insertion: {error}"))?;
+        Ok(Some(SettlementPopulationStep {
+            feedback_entity: (feedback != 0).then_some(if matches!(source.action, 101 | 117) {
+                source.kill_credit_entity
+            } else {
+                source.current_attacker
+            }),
+        }))
     }
 }

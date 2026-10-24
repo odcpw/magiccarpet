@@ -431,6 +431,28 @@ impl VillagerFamily {
         effects
     }
 
+    /// Ordinary source writers admit zero payload and an ownerless mailbox.
+    /// The source identity exclusion belongs here, before mailbox mutation.
+    pub fn submit_source_damage(&mut self, entity_index: u16, payload: u16, owner: u16) -> bool {
+        let Some(villager) = self.villagers.iter_mut().find(|villager| {
+            villager.active && villager.entity_index == entity_index && villager.source_id != owner
+        }) else {
+            return false;
+        };
+        let mut attacker = villager.pending_attacker.cast_unsigned();
+        let written = crate::combat::actors::DamageMailboxMut::new(
+            &mut villager.pending_damage,
+            &mut attacker,
+        )
+        .submit(
+            i32::from(payload),
+            owner,
+            crate::combat::actors::DamageWriter::Ordinary,
+        );
+        villager.pending_attacker = attacker.cast_signed();
+        written
+    }
+
     pub fn inject_damage(
         &mut self,
         entity_index: u16,

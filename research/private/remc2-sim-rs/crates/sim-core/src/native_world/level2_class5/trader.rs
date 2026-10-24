@@ -585,13 +585,19 @@ fn step_trader_lifecycle<W: crate::FlightWorld>(
     let mut census = 1;
     let mut feedback = 0;
     let mut unused_global_rng = 0;
+    let mut source_control_flags = 8;
+    let building_source_order = context
+        .buildings
+        .iter()
+        .map(|row| row.entity_index)
+        .collect::<Vec<_>>();
     let mut step = SettlementContext {
-        source_slots: &mut [],
+        source_control_flags: &mut source_control_flags,
         dynamic_residents: &mut linked_residents,
         class_5_census: &mut census,
         player_archer_target_ticks: &mut feedback,
         global_rng: &mut unused_global_rng,
-        building_source_order: &[],
+        building_source_order: &building_source_order,
         house_request: None,
         death_bursts: Vec::new(),
         linked_kills: Vec::new(),
