@@ -863,8 +863,33 @@ impl Level2EconomyState {
         if request.model != ARCHER_MODEL {
             return None;
         }
-        let source =
-            self.allocate_campaign_archer(u16::MAX, request.position, ARCHER_MAX_LIFE, terrain)?;
+        let before = self.clone();
+        let slot = self.allocate_slot()?;
+        let result = self.initialize_house_archer(slot, parent_house, request, terrain);
+        if result.is_none() {
+            *self = before;
+        }
+        result
+    }
+
+    /// The House producer has already acquired this address from SourceArena.
+    pub(crate) fn initialize_house_archer(
+        &mut self,
+        slot: u16,
+        parent_house: u16,
+        request: HouseResidentRequest,
+        terrain: &SessionTerrain,
+    ) -> Option<u16> {
+        if request.model != ARCHER_MODEL {
+            return None;
+        }
+        let source = self.initialize_campaign_archer(
+            slot,
+            u16::MAX,
+            request.position,
+            ARCHER_MAX_LIFE,
+            terrain,
+        )?;
         if let Some(state) = self
             .authored_class5_archer
             .iter_mut()
@@ -1011,6 +1036,30 @@ impl Level2EconomyState {
         }
         let state_before = self.clone();
         let source_entity_index = self.allocate_slot()?;
+        let result = self.initialize_campaign_archer(
+            source_entity_index,
+            authored_index,
+            position,
+            max_life,
+            terrain,
+        );
+        if result.is_none() {
+            *self = state_before;
+        }
+        result
+    }
+
+    fn initialize_campaign_archer(
+        &mut self,
+        source_entity_index: u16,
+        authored_index: u16,
+        position: Position,
+        max_life: i32,
+        terrain: &SessionTerrain,
+    ) -> Option<Level2AuthoredClass5Source> {
+        if !(1..=i32::MAX).contains(&max_life) {
+            return None;
+        }
         let initial_rng = self.new_event_rng(source_entity_index);
         let source_byte_3e = self.class5_model4_constructor_phase;
         self.class5_model4_constructor_phase = source_byte_3e.wrapping_add(1);
@@ -1035,7 +1084,6 @@ impl Level2EconomyState {
             })
             .is_err()
         {
-            *self = state_before;
             return None;
         }
         let source = payload.into_class5_source();

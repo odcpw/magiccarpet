@@ -1533,6 +1533,68 @@ pub struct Level2HouseResidentSource {
 pub const SETTLEMENT_MAX_LIFE: i32 = 1_000;
 
 impl Level2HouseResidentSource {
+    pub(crate) fn publish_source(&self, source: &mut crate::native_world::EntitySnapshot) {
+        debug_assert_eq!(source.index, self.source_entity_index);
+        source.active = self.active;
+        source.record[2] = u8::from(self.active);
+        source.source_id = self.source_id;
+        source.record[30..32].copy_from_slice(&self.source_id.to_le_bytes());
+        source.class = 5;
+        source.model = self.model;
+        source.record[67] = 5;
+        source.record[68] = self.model;
+        source.set_position(self.position);
+        source.set_yaw(self.yaw);
+        source.record[36..38].copy_from_slice(&self.desired_heading.to_le_bytes());
+        source.set_max_life(self.max_life);
+        source.set_life(self.life);
+        source.set_control_flags(self.control_flags);
+        source.set_entity_rng(self.entity_rng);
+        source.set_actual_speed(self.actual_speed);
+        let descriptor = if self.model == BUILDER_MODEL {
+            BUILDER_SOURCE_BINDING.descriptor
+        } else {
+            TRADER_SOURCE_BINDING.descriptor
+        };
+        source.parameter_relation = Some(descriptor);
+        source.record[164..168].copy_from_slice(&(u32::from(descriptor) + 1).to_le_bytes());
+        source.action = self.action;
+        source.record[73] = self.action;
+        source.phase = self.phase;
+        source.record[66] = self.phase;
+        source.record[20..24].copy_from_slice(&self.reset_counter.to_le_bytes());
+        source.record[40..42].copy_from_slice(&self.kill_credit_entity.to_le_bytes());
+        source.record[42..44].copy_from_slice(&self.current_attacker.to_le_bytes());
+        source.record[44..46].copy_from_slice(&self.stage.parent.to_le_bytes());
+        source.record[50..52].copy_from_slice(&self.stage.remaining.to_le_bytes());
+        source.record[52..54].copy_from_slice(&self.stage.duration.to_le_bytes());
+        source.record[56..58].copy_from_slice(&self.linked_entity_index.to_le_bytes());
+        source.record[61] = self.source_byte_39;
+        source.font_type_index = self.builder_placement_latch;
+        source.record[65] = self.builder_placement_latch;
+        source.record[76] = self.stage_var_1 as u8;
+        source.record[77] = self.stage_var_2 as u8;
+        source.record[78..80].copy_from_slice(&self.stage.relation.to_le_bytes());
+        for (offset, value) in [
+            (86, self.collision_vertical_offset),
+            (88, self.collision_half_width),
+            (90, self.collision_half_width),
+            (92, self.collision_half_height),
+            (136, self.minimum_speed),
+            (138, self.maximum_speed),
+        ] {
+            source.record[offset..offset + 2].copy_from_slice(&value.to_le_bytes());
+        }
+        source.particle_parameter_index = Some(self.render_parameter_index);
+        source.record[94..96].copy_from_slice(&self.render_parameter_index.to_le_bytes());
+        source.record[98..102].copy_from_slice(&self.pending_damage.to_le_bytes());
+        source.record[102..104].copy_from_slice(&self.attacker_entity_index.to_le_bytes());
+        source.mana = self.mana;
+        source.record[148..152].copy_from_slice(&self.mana.to_le_bytes());
+        source.record[152..154].copy_from_slice(&self.owner_entity_index.to_le_bytes());
+        source.record[154..156].copy_from_slice(&self.target_entity_index.to_le_bytes());
+    }
+
     pub(crate) fn from_resident(
         state: DynamicResidentState,
         parent_house_entity_index: u16,
@@ -1724,6 +1786,9 @@ pub(crate) struct SettlementPopulation {
     residents: Vec<Level2HouseResidentSource>,
     builder_phase: u8,
     villager_phase: u8,
+    /// Dynamic settlement rows admitted by the current sub_60F00 boundary.
+    /// Generic economy mutations must retain these same generation-bound rows.
+    mana_sources: Vec<(u16, u32)>,
 }
 impl SettlementPopulation {
     pub(crate) fn new(builder_phase: u8, villager_phase: u8) -> Self {
@@ -1731,6 +1796,7 @@ impl SettlementPopulation {
             residents: Vec::new(),
             builder_phase,
             villager_phase,
+            mana_sources: Vec::new(),
         }
     }
     pub(crate) fn take_constructor_phase(&mut self, kind: DynamicResidentKind) -> u8 {
@@ -1746,6 +1812,13 @@ impl SettlementPopulation {
     pub(crate) fn digest_counters(&self, hasher: &mut sha2::Sha256) {
         use sha2::Digest;
         hasher.update([self.builder_phase, self.villager_phase]);
+        if !self.mana_sources.is_empty() {
+            hasher.update(b"settlement-mana-sources-v1\0");
+            for (slot, generation) in &self.mana_sources {
+                hasher.update(slot.to_le_bytes());
+                hasher.update(generation.to_le_bytes());
+            }
+        }
     }
 }
 impl std::ops::Deref for SettlementPopulation {
@@ -1772,6 +1845,15 @@ pub(crate) struct SettlementPopulationStep {
     pub feedback_entity: Option<u16>,
 }
 impl crate::native_world::Level2EconomyState {
+    pub(crate) fn settlement_mana_source_slots(&self) -> impl Iterator<Item = u16> + '_ {
+        self.house_residents
+            .mana_sources
+            .iter()
+            .filter_map(|&(slot, generation)| {
+                (self.slot_generation(slot) == generation).then_some(slot)
+            })
+    }
+
     pub(crate) fn rebuild_settlement_mana_rows(&mut self, houses: &[crate::house::HouseState]) {
         // Derived source-boundary projection only. The House and resident
         // carriers remain the sole mutable gameplay authority.
@@ -1803,6 +1885,25 @@ impl crate::native_world::Level2EconomyState {
                 row.mana,
             );
         }
+        let mut sources = houses
+            .iter()
+            .filter(|house| house.active)
+            .map(|house| house.entity_index)
+            .chain(
+                self.house_residents
+                    .iter()
+                    .filter(|row| row.active)
+                    .map(|row| row.source_entity_index),
+            )
+            .filter_map(|slot| {
+                self.slot_generations
+                    .get(&slot)
+                    .map(|&generation| (slot, generation))
+            })
+            .collect::<Vec<_>>();
+        sources.sort_unstable();
+        sources.dedup();
+        self.house_residents.mana_sources = sources;
         self.publish_owner_mana_projection();
     }
 
@@ -1842,6 +1943,21 @@ impl crate::native_world::Level2EconomyState {
         if request.model == 4 {
             return self.allocate_house_archer(parent_house_entity_index, 0, request, terrain);
         }
+        crate::campaign::mc2_level_definition::Mc2LevelDefinition::creature_for_house_resident(
+            request.model,
+            request.action,
+        )?;
+        let slot = self.allocate_slot()?;
+        self.initialize_settlement_resident(slot, parent_house_entity_index, request)
+    }
+
+    /// Constructor tail after the canonical SourceArena has assigned a slot.
+    pub(crate) fn initialize_settlement_resident(
+        &mut self,
+        slot: u16,
+        parent_house_entity_index: u16,
+        request: crate::level1_mission::HouseResidentRequest,
+    ) -> Option<u16> {
         let semantic_kind =
             crate::campaign::mc2_level_definition::Mc2LevelDefinition::creature_for_house_resident(
                 request.model,
@@ -1853,7 +1969,6 @@ impl crate::native_world::Level2EconomyState {
             crate::level_definition::CreatureKind::Trader => DynamicResidentKind::Trader,
             _ => return None,
         };
-        let slot = self.allocate_slot()?;
         let initial_rng = self.new_event_rng(slot);
         let phase = if kind == DynamicResidentKind::Trader {
             let phase = self.class5_model14_constructor_phase;
@@ -1941,6 +2056,70 @@ impl crate::native_world::Level2EconomyState {
 }
 
 impl crate::campaign::source_arena::SourceArena {
+    pub(crate) fn initialize_demolition_resident_mailbox(&mut self, slot: u16, attacker: u16) {
+        self.economy
+            .initialize_demolition_resident_mailbox(slot, attacker);
+        if let Some(row) = self
+            .house_residents
+            .iter()
+            .find(|row| row.source_entity_index == slot)
+            .copied()
+        {
+            row.publish_source(&mut self.entities[usize::from(slot)]);
+        }
+    }
+
+    /// Ordinary House births use the same frozen NewEvent allocator as all
+    /// other source constructors, before entering their family constructor.
+    pub(crate) fn allocate_house_resident(
+        &mut self,
+        parent_house: u16,
+        _owner: u16,
+        request: crate::level1_mission::HouseResidentRequest,
+        terrain: &mut crate::native_world::SessionTerrain,
+    ) -> Option<u16> {
+        if request.model == 4 {
+            let slot = self.allocate_source_slot_with_terrain(terrain)?;
+            self.economy
+                .initialize_house_archer(slot, parent_house, request, terrain)?;
+            let position = self
+                .authored_class5
+                .iter()
+                .find(|row| row.source_entity_index == slot)?
+                .position;
+            crate::world::effects::sync_position(self, terrain, slot, position, true, false)
+                .ok()?;
+            return Some(slot);
+        }
+        crate::campaign::mc2_level_definition::Mc2LevelDefinition::creature_for_house_resident(
+            request.model,
+            request.action,
+        )?;
+        let slot = self.allocate_source_slot_with_terrain(terrain)?;
+        self.economy
+            .initialize_settlement_resident(slot, parent_house, request)?;
+        let source = *self
+            .house_residents
+            .iter()
+            .find(|row| row.source_entity_index == slot)?;
+        self.entities[usize::from(slot)] = crate::native_world::cave_features::new_event(
+            slot,
+            slot.wrapping_add(self.global_rng as u16),
+            source.position,
+        );
+        let raw = &mut self.entities[usize::from(slot)];
+        raw.set_subspell_index(crate::native_world::level2_class5::trader::TRADER_SUBSPELL_INDEX);
+        raw.pitch = source.yaw;
+        raw.record[34..36].copy_from_slice(&source.yaw.to_le_bytes());
+        raw.record[60] = 1;
+        raw.record[69] = 3;
+        raw.record[97] = 1;
+        source.publish_source(&mut self.entities[usize::from(slot)]);
+        crate::world::effects::sync_position(self, terrain, slot, source.position, true, false)
+            .ok()?;
+        Some(slot)
+    }
+
     /// An ephemeral callback view over actual source, house and population
     /// carriers. Dynamic occupants replace stale reset records by source slot.
     pub(crate) fn settlement_source_views(
@@ -2110,7 +2289,7 @@ impl crate::campaign::source_arena::SourceArena {
     pub(crate) fn step_settlement_resident_slot(
         &mut self,
         slot: u16,
-        terrain: &crate::native_world::SessionTerrain,
+        terrain: &mut crate::native_world::SessionTerrain,
         houses: &mut crate::house::HouseFamily,
         villagers: &[crate::villager::VillagerState],
         building_source_order: &[u16],
@@ -2213,7 +2392,7 @@ impl crate::campaign::source_arena::SourceArena {
             let footprint = footprints
                 .get(&request.building_index)
                 .ok_or_else(|| format!("Builder BUILD row {} absent", request.building_index))?;
-            if let Some(house_slot) = self.allocate_slot() {
+            if let Some(house_slot) = self.allocate_source_slot_with_terrain(terrain) {
                 let rng = self.new_event_rng(house_slot);
                 let position = builder_house_position(terrain, request.candidate, request.spec);
                 let mut house = crate::house::HouseState::builder_from_source(
@@ -2235,14 +2414,20 @@ impl crate::campaign::source_arena::SourceArena {
                 self.source_rng.insert(house_slot, rng);
                 self.source_owner.insert(house_slot, 0);
                 self.owner_class.insert(house_slot, 10);
-                self.map_chains
-                    .sync_entity(crate::renderable_map_chain::RenderableMapSeed {
-                        entity_index: house_slot,
-                        active: true,
-                        x: position.x,
-                        y: position.y,
-                    })
-                    .map_err(|error| format!("Builder house map insertion: {error}"))?;
+                let mut raw =
+                    crate::native_world::cave_features::new_event(house_slot, rng, position);
+                crate::house::bind_startup_construction(
+                    &mut raw,
+                    request.building_index,
+                    parameter,
+                    footprint,
+                    u16::from(footprint.width) * u16::from(footprint.height) * 4,
+                );
+                house.publish_source(&mut raw);
+                self.entities[usize::from(house_slot)] = raw;
+                crate::world::effects::sync_position(
+                    self, terrain, house_slot, position, true, false,
+                )?;
             }
         }
         resident.phase = resident.phase.wrapping_add(1);
@@ -2253,14 +2438,15 @@ impl crate::campaign::source_arena::SourceArena {
         self.house_residents[index] = source;
         self.source_rng.insert(slot, source.entity_rng);
         self.source_owner.insert(slot, source.owner_entity_index);
-        self.map_chains
-            .sync_entity(crate::renderable_map_chain::RenderableMapSeed {
-                entity_index: slot,
-                active: source.active,
-                x: source.position.x,
-                y: source.position.y,
-            })
-            .map_err(|error| format!("Settlement map insertion: {error}"))?;
+        source.publish_source(&mut self.entities[usize::from(slot)]);
+        crate::world::effects::sync_position(
+            self,
+            terrain,
+            slot,
+            source.position,
+            source.active,
+            false,
+        )?;
         Ok(Some(SettlementPopulationStep {
             feedback_entity: (feedback != 0).then_some(if matches!(source.action, 101 | 117) {
                 source.kill_credit_entity
@@ -2272,6 +2458,23 @@ impl crate::campaign::source_arena::SourceArena {
 }
 
 impl crate::native_world::Level2OrdinaryResetSession {
+    /// Keep current House state visible to generic arena consumers, including
+    /// callback turns that emit no terrain event.
+    pub(crate) fn publish_house_source(
+        &self,
+        arena: &mut crate::campaign::source_arena::SourceArena,
+        slot: u16,
+    ) {
+        if let Some(house) = self
+            .houses
+            .houses()
+            .iter()
+            .find(|house| house.entity_index == slot)
+        {
+            house.publish_source(&mut arena.entities[usize::from(slot)]);
+        }
+    }
+
     /// The family-owned part of 57F20, shared by UpdateEntities and 49F90.
     /// Retire the authoritative row before a free address can be reused.
     pub(crate) fn reclaim_for_source_boundary(
@@ -2317,6 +2520,17 @@ impl crate::native_world::Level2OrdinaryResetSession {
             ))
         }));
         self.villagers.reclaim_inactive();
+        retired.extend(arena.house_residents.iter().filter_map(|resident| {
+            (!resident.active || !resident.drawing_enabled).then_some((
+                resident.source_entity_index,
+                resident.entity_rng,
+                resident.position,
+                false,
+            ))
+        }));
+        arena
+            .house_residents
+            .retain(|resident| resident.active && resident.drawing_enabled);
         retired.sort_unstable_by_key(|row| row.0);
         for (slot, rng, position, house) in retired {
             crate::world::effects::sync_position(arena, terrain, slot, position, false, false)?;
@@ -2332,6 +2546,9 @@ impl crate::native_world::Level2OrdinaryResetSession {
                     .economy
                     .reclaim_house_source_slot_at_source_boundary(slot, rng);
             } else {
+                arena.economy.source_owner.remove(&slot);
+                arena.economy.owner_class.remove(&slot);
+                arena.economy.source_rng.remove(&slot);
                 arena.economy.release_slot(slot, Some(rng));
             }
         }
@@ -2437,6 +2654,102 @@ mod production_tests {
     }
 
     #[test]
+    fn ordinary_demolition_resident_publishes_and_reclaims_its_actual_arena_row() {
+        let mut session = ordinary_level_two();
+        let victim = *session
+            .ordinary()
+            .houses()
+            .iter()
+            .find(|row| row.entity_index == 10)
+            .unwrap();
+        let attacker = session.state.entity_index;
+        session
+            .ordinary_mut()
+            .inject_house_damage(victim.entity_index, victim.life + 1, attacker.cast_signed())
+            .unwrap();
+        session.step_level2_source_pass(0);
+        session.step_level2_source_pass(1);
+        let builder = *session
+            .economy()
+            .house_residents()
+            .iter()
+            .find(|row| {
+                row.parent_house_entity_index == victim.entity_index && row.model == BUILDER_MODEL
+            })
+            .unwrap();
+        let slot = builder.source_entity_index;
+        let raw = &session.entities()[usize::from(slot)];
+        assert_eq!(
+            (
+                raw.active, raw.class, raw.model, raw.action, raw.life, raw.phase
+            ),
+            (
+                true,
+                5,
+                BUILDER_MODEL,
+                builder.action,
+                builder.life,
+                builder.phase
+            )
+        );
+        assert_eq!(raw.position, builder.position);
+        assert_eq!(raw.entity_rng, builder.entity_rng);
+        assert_eq!(
+            raw.particle_parameter_index,
+            Some(BUILDER_APPEARANCE.particle)
+        );
+        assert_eq!(raw.source_player_entity_index(), builder.owner_entity_index);
+        assert!(session.economy().map_chains.is_linked(slot));
+
+        assert!(session.session.state.live.economy.submit_settlement_damage(
+            slot,
+            builder.life + 1,
+            attacker,
+            crate::combat::actors::DamageWriter::Ordinary
+        ));
+        let mut hidden = false;
+        for pass in 0..24 {
+            session.step_level2_source_pass(pass % 3);
+            if let Some(row) = session
+                .economy()
+                .house_residents()
+                .iter()
+                .find(|row| row.source_entity_index == slot)
+                && !row.drawing_enabled
+            {
+                assert!(session.entities()[usize::from(slot)].active);
+                assert!(session.entities()[usize::from(slot)].drawing_disabled());
+                hidden = true;
+                break;
+            }
+        }
+        assert!(
+            hidden,
+            "ordinary Builder death must reach its phase-gated hide"
+        );
+        session.step_level2_source_pass(0);
+        assert!(
+            !session
+                .economy()
+                .house_residents()
+                .iter()
+                .any(|row| row.source_entity_index == slot)
+        );
+        assert_eq!(session.entities()[usize::from(slot)].class, 0);
+        assert!(!session.economy().map_chains.is_linked(slot));
+        let live = &mut session.session.state.live;
+        let free = live.economy.free_slot_count();
+        live.ordinary
+            .reclaim_for_source_boundary(&mut live.economy, &mut live.terrain)
+            .unwrap();
+        assert_eq!(
+            live.economy.free_slot_count(),
+            free,
+            "retired family rows cannot free a reused address again"
+        );
+    }
+
+    #[test]
     fn ordinary_level_two_demolition_builder_constructs_a_live_house() {
         let mut session = ordinary_level_two();
         let initial_slots = session
@@ -2451,12 +2764,17 @@ mod production_tests {
                 )
             })
             .collect::<BTreeMap<_, _>>();
+        // This is a resident-producing House, with buildable land beside
+        // surviving neighbour 10. Scenery rows 1..9 do not spawn a Builder;
+        // demolishing shoreline House 10 remains the separate reclaim case.
         let victim = *session
             .ordinary()
             .houses()
             .iter()
-            .find(|house| house.entity_index == 10)
+            .find(|house| house.entity_index == 12)
             .unwrap();
+        assert!(victim.parameter.produces_villagers());
+        assert_eq!(victim.parameter.destruction_successor, 0);
         let attacker = session.state.entity_index;
         session
             .ordinary_mut()
@@ -2529,6 +2847,13 @@ mod production_tests {
         assert_eq!(house.action, crate::house::HOUSE_LIVE_ACTION);
         assert!(house.capacity > 0 && house.occupants >= 2);
         assert!(house.collision_half_width > 0 && house.collision_half_depth > 0);
+        let raw = &session.entities()[usize::from(house.entity_index)];
+        assert_eq!(
+            (raw.class, raw.model, raw.action, raw.life, raw.phase),
+            (10, 45, house.action, house.life, house.phase)
+        );
+        assert_eq!(raw.position, house.position);
+        assert!(raw.active && session.economy().map_chains.is_linked(house.entity_index));
         assert_ne!(session.terrain_hash(), terrain_before_build);
         // Neutral source houses retain bit 0 and render through their BUILD
         // terrain. Possession clears that bit through the ordinary callback,
@@ -2538,12 +2863,25 @@ mod production_tests {
             .submit_house_possession(house.entity_index, attacker, 1)
             .unwrap();
         session.step_level2_source_pass(0);
+        assert_eq!(session.economy().source_owner(house.entity_index), attacker);
+        assert_eq!(
+            session
+                .economy()
+                .owner_mana_rows
+                .iter()
+                .find(|row| row.source_entity_index == house.entity_index)
+                .unwrap()
+                .player_entity_index,
+            0,
+            "a same-pass refresh must retain the pre-possession boundary owner"
+        );
         session.step_level2_source_pass(1);
         let owned = session
             .ordinary()
             .houses()
             .iter()
             .find(|row| row.entity_index == house.entity_index)
+            .copied()
             .unwrap();
         assert_eq!(owned.owner_entity_index, attacker);
         let mana = session
@@ -2575,6 +2913,70 @@ mod production_tests {
             house.occupants,
             house.capacity,
             house.position
+        );
+
+        // Exercise the real teardown/rebuild/constructor sequence which can
+        // reuse a settlement address during a later authored group callback.
+        session
+            .ordinary_mut()
+            .inject_house_damage(owned.entity_index, owned.life + 1, attacker.cast_signed())
+            .unwrap();
+        session.step_level2_source_pass(0);
+        session.step_level2_source_pass(1);
+        assert!(session.entities()[usize::from(owned.entity_index)].drawing_disabled());
+        let live = &mut session.session.state.live;
+        let generation = live.economy.slot_generation(owned.entity_index);
+        assert!(
+            live.economy
+                .settlement_mana_source_slots()
+                .any(|slot| slot == owned.entity_index)
+        );
+        live.ordinary
+            .reclaim_for_source_boundary(&mut live.economy, &mut live.terrain)
+            .unwrap();
+        live.economy
+            .rebuild_source_arena_with_terrain(&mut live.terrain, &[])
+            .unwrap();
+        // 49F90 sorts all existing free addresses, including older holes.
+        // Consume those normally rather than forcing the desired slot first.
+        let mut reused = None;
+        for _ in 1..1000 {
+            let slot = live
+                .economy
+                .allocate_house_resident(
+                    owned.entity_index,
+                    0,
+                    crate::level1_mission::HouseResidentRequest {
+                        position: owned.position,
+                        model: 13,
+                        action: 105,
+                        attacker_entity_index: 0,
+                    },
+                    &mut live.terrain,
+                )
+                .expect("ordinary free arena retains reclaimed House address");
+            if slot == owned.entity_index {
+                reused = Some(slot);
+                break;
+            }
+        }
+        let reused = reused.expect("canonical allocation must revisit the reclaimed House address");
+        assert_ne!(live.economy.slot_generation(reused), generation);
+        assert!(
+            !live
+                .economy
+                .settlement_mana_source_slots()
+                .any(|slot| slot == reused)
+        );
+        live.economy.refresh_owner_mana_rows();
+        assert!(
+            !live
+                .economy
+                .owner_mana_rows
+                .iter()
+                .any(|row| row.source_entity_index == reused
+                    && row.source_class == 10
+                    && row.source_model == 45)
         );
     }
 }

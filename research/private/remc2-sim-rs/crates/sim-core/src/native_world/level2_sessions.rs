@@ -3920,7 +3920,7 @@ impl Level2OrdinaryResetSession {
     pub(crate) fn step_settlement_source(
         &mut self,
         arena: &mut crate::campaign::source_arena::SourceArena,
-        terrain: &SessionTerrain,
+        terrain: &mut SessionTerrain,
         source_slot: u16,
         frozen_building_slots: &[u16],
     ) -> std::result::Result<Option<creatures::settlements::SettlementPopulationStep>, String> {

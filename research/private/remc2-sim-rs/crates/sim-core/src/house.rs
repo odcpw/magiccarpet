@@ -264,7 +264,7 @@ pub(crate) fn decode_campaign_house_parameters(
 ) -> Result<BTreeMap<u8, HouseParameter>, String> {
     if bytes.len() < 16
         || bytes.get(..4) != Some(b"MCI3")
-        || u16::from_le_bytes([bytes[4], bytes[5]]) != 1
+        || !matches!(u16::from_le_bytes([bytes[4], bytes[5]]), 1 | 2)
         || u16::from_le_bytes([bytes[6], bytes[7]]) != 16
         || u16::from_le_bytes([bytes[10], bytes[11]]) != 1
         || bytes[12..16] != [0, 0, 0, 0]
@@ -342,6 +342,53 @@ pub struct HouseState {
 }
 
 impl HouseState {
+    /// Publish the authoritative House into its source-arena projection.
+    /// Hide retains the header until the following source cleanup boundary.
+    pub(crate) fn publish_source(&self, source: &mut EntitySnapshot) {
+        debug_assert_eq!(source.index, self.entity_index);
+        source.active = self.source_retained();
+        source.record[2] = u8::from(source.active);
+        source.source_id = self.source_id;
+        source.record[30..32].copy_from_slice(&self.source_id.to_le_bytes());
+        source.class = HOUSE_CLASS;
+        source.model = HOUSE_MODEL;
+        source.record[67] = HOUSE_CLASS;
+        source.record[68] = HOUSE_MODEL;
+        source.set_position(self.position);
+        source.set_max_life(self.max_life);
+        source.set_life(self.life);
+        source.set_control_flags(self.control_flags);
+        source.set_entity_rng(self.rng);
+        source.action = self.action;
+        source.record[73] = self.action;
+        source.phase = self.phase;
+        source.record[66] = self.phase;
+        source.record[20..24].copy_from_slice(&self.occupants.to_le_bytes());
+        source.record[59] = self.build_tail;
+        source.record[69] = self.xtype;
+        source.record[74] = self.building_index;
+        source.set_subspell_index(self.parameter.life_mana_scalar);
+        source.font_type_index = self.parameter.destruction_successor;
+        source.record[65] = source.font_type_index;
+        for (offset, value) in [
+            (86, self.collision_vertical_offset),
+            (88, self.collision_half_width),
+            (90, self.collision_half_depth),
+            (92, self.collision_half_height),
+            (136, self.capacity),
+        ] {
+            source.record[offset..offset + 2].copy_from_slice(&value.to_le_bytes());
+        }
+        source.particle_parameter_index = Some(177);
+        source.record[94..96].copy_from_slice(&177_i16.to_le_bytes());
+        source.record[97] = 1;
+        source.record[98..102].copy_from_slice(&self.pending_damage.to_le_bytes());
+        source.record[102..104].copy_from_slice(&self.pending_attacker.to_le_bytes());
+        source.record[104..108].copy_from_slice(&self.pending_possession_payload.to_le_bytes());
+        source.record[108..110].copy_from_slice(&self.pending_possession_owner.to_le_bytes());
+        source.record[152..154].copy_from_slice(&self.owner_entity_index.to_le_bytes());
+    }
+
     /// Hiding keeps the class/model header until the following source pass.
     /// Collision and an already tracked resident target still see that row.
     #[must_use]
