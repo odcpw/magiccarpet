@@ -304,7 +304,7 @@ impl EntitySnapshot {
     /// overlap callbacks. These are render-pose fields in the source record,
     /// but class-11 model-0/model-1 callbacks use them as their strict
     /// horizontal overlap bounds.
-    pub(super) fn set_source_overlap_half_extents(&mut self, half_width: i16, half_depth: i16) {
+    pub(crate) fn set_source_overlap_half_extents(&mut self, half_width: i16, half_depth: i16) {
         self.record[88..90].copy_from_slice(&half_width.to_le_bytes());
         self.record[90..92].copy_from_slice(&half_depth.to_le_bytes());
     }
@@ -365,7 +365,7 @@ impl EntitySnapshot {
     }
 
     /// Keep the source orientation field in lockstep with a callback write.
-    pub(super) fn set_yaw(&mut self, yaw: i16) {
+    pub(crate) fn set_yaw(&mut self, yaw: i16) {
         self.yaw = yaw;
         self.record[32..34].copy_from_slice(&yaw.to_le_bytes());
     }
@@ -603,7 +603,7 @@ impl EntitySnapshot {
 
     /// Raw source `dword_0x10_16`, used by the Trader when it reserves a
     /// class-10/model-45 building target.
-    pub(super) fn source_dword_10(&self) -> i32 {
+    pub(crate) fn source_dword_10(&self) -> i32 {
         i32::from_le_bytes([
             self.record[20],
             self.record[21],
@@ -633,11 +633,11 @@ impl EntitySnapshot {
         self.record[73] = 2;
     }
 
-    pub(super) fn source_word_2c(&self) -> i16 {
+    pub(crate) fn source_word_2c(&self) -> i16 {
         i16::from_le_bytes([self.record[48], self.record[49]])
     }
 
-    pub(super) fn set_source_word_2c(&mut self, value: i16) {
+    pub(crate) fn set_source_word_2c(&mut self, value: i16) {
         self.record[48..50].copy_from_slice(&value.to_le_bytes());
     }
 
@@ -722,7 +722,7 @@ impl EntitySnapshot {
 
     /// Source `array_0x52_82.yaw`, distinct from the entity orientation yaw.
     #[must_use]
-    pub(super) fn array_yaw(&self) -> i16 {
+    pub(crate) fn array_yaw(&self) -> i16 {
         i16::from_le_bytes([self.record[86], self.record[87]])
     }
 
@@ -730,7 +730,7 @@ impl EntitySnapshot {
     /// follower when it retunes the root oscillation envelope from a live
     /// target row.
     #[must_use]
-    pub(super) fn array_pitch(&self) -> i16 {
+    pub(crate) fn array_pitch(&self) -> i16 {
         i16::from_le_bytes([self.record[88], self.record[89]])
     }
 
@@ -744,7 +744,7 @@ impl EntitySnapshot {
     /// Raw source `array_0x52_82.fov`, used by the cave ceiling clamp in
     /// `sub_33340` after the target movement branch.
     #[must_use]
-    pub(super) fn array_fov(&self) -> i16 {
+    pub(crate) fn array_fov(&self) -> i16 {
         i16::from_le_bytes([self.record[92], self.record[93]])
     }
 
@@ -3336,7 +3336,7 @@ pub(super) fn apply_castle_material(
     }
 }
 
-pub(super) fn apply_ambient_material(
+pub(crate) fn apply_ambient_material(
     planes: &mut TerrainPlanes,
     x: u8,
     y: u8,

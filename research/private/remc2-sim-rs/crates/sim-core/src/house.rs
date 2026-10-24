@@ -8,7 +8,9 @@
 
 use std::collections::BTreeMap;
 
-use crate::{FlightWorld, Position, native_world::EntitySnapshot};
+use crate::{
+    FlightWorld, Position, level1_mission::CastleBuildFootprint, native_world::EntitySnapshot,
+};
 
 pub const LEVEL_ONE_HOUSE_INDICES: std::ops::RangeInclusive<u16> = 1..=47;
 pub const HOUSE_CLASS: u8 = 10;
@@ -28,6 +30,86 @@ pub(crate) const AUTHORED_HOUSE_COLLISION_HALF_HEIGHT: i16 = 256;
 
 const SOURCE_DISABLED_FLAG: u32 = 0x0000_0400;
 const POSSESSED_FLAG: u32 = 0x0020_0000;
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct HouseConstructionInput {
+    pub(crate) parameter: HouseParameter,
+    pub(crate) footprint: crate::level1_mission::CastleBuildFootprint,
+    pub(crate) raw_area: u16,
+}
+
+pub(crate) fn decode_house_construction_inputs(
+    bytes: &[u8],
+) -> Result<BTreeMap<u8, HouseConstructionInput>, String> {
+    let word = |bytes: &[u8], offset: usize| -> Result<u16, String> {
+        let value: [u8; 2] = bytes
+            .get(offset..offset + 2)
+            .ok_or("truncated BUILD word")?
+            .try_into()
+            .map_err(|_| "BUILD word extent")?;
+        Ok(u16::from_le_bytes(value))
+    };
+    let dword = |bytes: &[u8], offset: usize| -> Result<u32, String> {
+        let value: [u8; 4] = bytes
+            .get(offset..offset + 4)
+            .ok_or("truncated BUILD dword")?
+            .try_into()
+            .map_err(|_| "BUILD dword extent")?;
+        Ok(u32::from_le_bytes(value))
+    };
+    if bytes.len() < 16
+        || &bytes[..4] != b"MCI3"
+        || word(bytes, 4)? != 1
+        || word(bytes, 6)? != 16
+        || word(bytes, 10)? != 1
+        || dword(bytes, 12)? != 0
+    {
+        return Err("house construction inputs are malformed".into());
+    }
+    let mut rows = BTreeMap::new();
+    let mut offset = 16;
+    for _ in 0..word(bytes, 8)? {
+        let header = bytes
+            .get(offset..offset + 12)
+            .ok_or("truncated BUILD header")?;
+        let selector = u8::try_from(word(header, 0)?).map_err(|_| "BUILD selector exceeds u8")?;
+        let parameter = HouseParameter::from_source_record(word(header, 2)?, header[4], header[5]);
+        let raw_area = u16::from(header[6]) * u16::from(header[7]);
+        let length = dword(header, 8)? as usize;
+        offset += 12;
+        let data = bytes
+            .get(offset..offset + length)
+            .ok_or("truncated BUILD cells")?;
+        if length != usize::from(raw_area) * 2 || header[6] < 2 || header[7] < 2 {
+            return Err(format!("BUILD {selector} dimensions mismatch"));
+        }
+        let (width, height) = (header[6] >> 1, header[7] >> 1);
+        let footprint = CastleBuildFootprint::from_owner_cells(
+            selector,
+            width,
+            height,
+            &data[..usize::from(width) * usize::from(height) * 2],
+        )?;
+        if rows
+            .insert(
+                selector,
+                HouseConstructionInput {
+                    parameter,
+                    footprint,
+                    raw_area,
+                },
+            )
+            .is_some()
+        {
+            return Err(format!("duplicate BUILD {selector}"));
+        }
+        offset += length;
+    }
+    if offset != bytes.len() {
+        return Err("trailing BUILD bytes".into());
+    }
+    Ok(rows)
+}
 
 /// AddTerrainModification_50250 followed by sub_49A30. The caller supplies
 /// the parity-aligned, averaged BUILD base and performs shared map insertion.
@@ -810,6 +892,17 @@ impl HouseFamily {
     #[must_use]
     pub fn houses(&self) -> &[HouseState] {
         &self.houses
+    }
+
+    /// Retire source rows once at following-pass cleanup. Keeping a dead
+    /// typed row after releasing its slot would reclaim its next incarnation.
+    pub(crate) fn reclaim_inactive(&mut self) -> Vec<HouseState> {
+        let (live, retired): (Vec<_>, Vec<_>) = std::mem::take(&mut self.houses)
+            .into_vec()
+            .into_iter()
+            .partition(|house| house.active);
+        self.houses = live.into_boxed_slice();
+        retired
     }
 
     /// Bind one reset-live semantic House before its first scheduler visit.

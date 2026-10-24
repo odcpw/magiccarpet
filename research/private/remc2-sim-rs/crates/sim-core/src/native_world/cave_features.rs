@@ -136,7 +136,7 @@ pub(crate) fn allocate_ground_smoke(
 ) -> Result<Option<u16>, String> {
     arena.economy.advance_global_rng();
     let lifetime = (arena.economy.global_rng % 23 + 17) as i32;
-    let Some(slot) = arena.economy.allocate_slot() else {
+    let Some(slot) = arena.allocate_source_slot() else {
         return Ok(None);
     };
     let mut source = new_event(slot, arena.economy.new_event_rng(slot), position);
@@ -290,7 +290,7 @@ pub(crate) fn allocate(
     if !enabled(terrain, model) {
         return Ok(None);
     }
-    let Some(slot) = arena.economy.allocate_slot() else {
+    let Some(slot) = arena.allocate_source_slot() else {
         return Ok(None);
     };
     let mut source = new_event(slot, arena.economy.new_event_rng(slot), position);
