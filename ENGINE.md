@@ -107,6 +107,14 @@ content, operations do not yet create/remove placements or author terrain, and
 current runnable packages still depend on MC2 adapters. The new beads supply real
 operations and real play to close those gaps.
 
+Concrete implementation splits retain their full integration outcomes:
+`mc-5r5.4` preferences and `mc-5r5.5` installed language/glyph bindings feed
+`mc-5r5.2`; `mc-k5k.8`–`.12` deliver Morph, Castle, Fireball, Possession and
+player-status tiers before `mc-k5k.7` integrates their acquisition/rewards.
+`mc-hkm.7.1` supplies an authored flyable world and `.7.2` its real combat/objective
+completion; the original standalone-game outcome remains `mc-hkm.7`.
+Optional human-report tooling `mc-xks` is separate from full-game completion.
+
 An agent uses discover → edit → validate → publish → reopen → play/observe through
 the same authority as a human client. The initial CLI owns its runtime; attachment
 to another running Unity process is not implied. Compiled behavior modules plus
@@ -155,6 +163,13 @@ Inside the large dispatch units, the production coverage is:
 | Class 11 activation / objective language | Selectors 0–44, authored stageTag/DisId/group order, stage forms 0–9 and `sub_58DA0` bindings. `mc-6qf.1`, `mc-bhq.7`; forms 4/6 exist in source without established vanilla usage in the earlier census. |
 | Inactive/metadata classes | Class 0 sentinel; class 1 reset/constructors; empty classes 4/6/7/8/12; class 13 metadata with zero executable callback addresses. Import/reset adapters preserve these; display labels do not establish missing gameplay. |
 
+Spell IDs, projectile models and scheduled actions are distinct. In particular,
+Meteor9 launches projectile9/3 then effect10/17; CaveIn25 uses9/30 then10/89.
+Effect ownership follows behavior: Tremor10/71 belongs to terrain, Army10/72
+to summoning, GravityWell10/67 to fields, Alliance10/74 to its spell, and
+Possession10/12 to `mc-k5k.11`. Checkpoint10/59 and jar10/91 belong to items.
+Do not infer a new behavior from a numeric range containing disabled entries.
+
 State/identity and asset-selector headers follow these same owners:
 `Event.h`, `EventType.h`, `GameState.h`, `global_types.h`, `LevelStructs.h`,
 `TypeConfigDat.h`, `GameBitmapIndexes.h`, `LangTextIndexes.h`,
@@ -194,9 +209,20 @@ Mission identities are distinct domains: ordinary source 0–24 (external 1–25
 secret 30–34 and multiplayer 50–59. Reserved rows 25–29 and 35–49 are not silently
 offered as playable missions. The ten multiplayer names are Thrull, Keevur,
 Braak, Trapox, Hibren Zhor, Jinople, Dethrem, Canquin, Zephulum and Verune.
-`mc-bc0.17` opens the first actual world, Thrull; `mc-bc0.3` supplies the first
-synchronized turn while `mc-bc0.15` extends the same admission path to all ten
-maps. Decoding/cataloguing a map does not prove its gameplay.
+`mc-bc0.17` opens the first actual world, Thrull (source50, Day);
+`mc-bc0.3` supplies the first synchronized turn. `mc-bc0.18` extends that same
+admission path to Hibren Zhor (54, Night) and Jinople (55, Cave), while
+`mc-bc0.15` completes all ten maps. Their known creature, item, effect and spell
+constructors are real prerequisites. Decoding/cataloguing a map does not prove
+its gameplay.
+
+Actual final mission source24 is Night with feature byte2. Its authored
+record373 is special building10/45 parameter68; destruction releases group29
+and boss5/10 at record379 (`mc-1pb.3`). Ordered objectives reach (40,212) and
+kill the bound boss. Switch392 releases group31 and ordinary exit393 leads to
+the authoritative result consumed by `mc-paj.7`. `mc-6qf.5` owns this real
+assembly, including the boss's dynamic children and building protection tail.
+This mapping comes from decoded owner data and source, not a completed playthrough.
 
 Newly explicit source omissions are objective/briefing CD speech (`mc-oi6.10`),
 the fire-Night palette/material branch (`mc-oi6.2`), selected-language glyph/cache
