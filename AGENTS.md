@@ -127,13 +127,15 @@ read upstream remc2 files outside the Rust workspace. Pin the nested toolchain
 explicitly; for example, after `rch check` confirms the worker is available:
 
 ```sh
-RCH_REQUIRE_REMOTE=1 rch exec --source-content-receipt -- cargo +1.98.0 check --manifest-path research/private/remc2-sim-rs/Cargo.toml -p sim-input --locked
+RCH_REQUIRE_REMOTE=1 rch exec -- cargo +1.98.0 check --manifest-path research/private/remc2-sim-rs/Cargo.toml -p sim-input --locked
 ```
 
 Select the actual affected package/target. `.rchignore` retains source tables,
 compile-time regression fixtures and atlas CSVs but omits large owner runtime
 caches and Unity outputs. Run checks needing those omitted assets locally.
-The receipt proves execution/source identity, not a speedup or gameplay result.
+RCH 2.1.34's optional `--source-content-receipt` rejects this repository's source
+symlinks; omit that option. Require the remote worker/result in RCH output and
+preserve the source closure. Offload success is not a gameplay or speedup claim.
 Run changed-source UBS at handoff, with its scope limits. Documentation/Bead-only
 changes need diff/graph checks, not Cargo.
 

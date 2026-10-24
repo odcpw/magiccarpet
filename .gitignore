@@ -2,6 +2,9 @@
 /.agents/
 /.bv/
 /.codex/
+/.ntm/logs/
+/.ntm/pids/
+/.ntm/rate_limits.json
 /.repo_janitor_workspace/
 /log.txt
 __pycache__/
