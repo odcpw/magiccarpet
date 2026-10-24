@@ -86,6 +86,15 @@ namespace MagicCarpet.Native.Tests
                     Package(LevelOnePackage, LevelOneAssetCache),
                     Package(LevelTwoPackage));
                 presenter.Present(loading);
+                var selectedResource = Package(LevelOnePackage, LevelOneAssetCache);
+                selectedResource.presentation_cache_path = LevelOneAssetCache;
+                Assert.That(CampaignTransitionPresenter.PreflightDestination(
+                    presenter.Destination, new[] { selectedResource }), Is.SameAs(selectedResource));
+                var exactCapture = presenter.Destination.runtime_capture_sha256;
+                presenter.Destination.runtime_capture_sha256 = new string('f', 64);
+                Assert.Throws<InvalidDataException>(() => CampaignTransitionPresenter.PreflightDestination(
+                    presenter.Destination, new[] { selectedResource }));
+                presenter.Destination.runtime_capture_sha256 = exactCapture;
                 Assert.That(presenter.IsVisible, Is.True);
                 Assert.That(
                     presenter.LastPresentedCueId,
@@ -160,6 +169,7 @@ namespace MagicCarpet.Native.Tests
                     definition_hash = identity.pending_definition.definition_hash,
                     package_graph_hash = identity.pending_definition.package_graph_hash,
                     source_package_sha256 = new string('c', 64), owner_export_package_sha256 = new string('d', 64),
+                    runtime_capture_sha256 = new string('f', 64),
                     environment = "cave", artwork_profile = "ordinary"
                 };
                 presenter.Present(identity, binding);

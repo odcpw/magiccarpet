@@ -139,7 +139,7 @@ namespace MagicCarpet.Native
         [Serializable] private sealed class CacheManifest
         { public string schema; public FrameBinding[] frames; public CacheBindings bindings; public Asset[] outputs; }
         [Serializable] private sealed class CacheBindings
-        { public string campaign_package_sha256, level_export_package_sha256; }
+        { public string campaign_package_sha256, level_export_package_sha256, qualified_runtime_capture_sha256; }
         [Serializable] private sealed class PackageManifest
         { public string package_sha256; }
         [Serializable] private sealed class FrameBinding
@@ -484,7 +484,15 @@ namespace MagicCarpet.Native
             var rootPath = Path.GetFullPath(match.presentation_cache_path);
             var cache = JsonUtility.FromJson<CacheManifest>(System.Text.Encoding.UTF8.GetString(
                 ReadBounded(ConfinedFile(rootPath, "manifest.json"), 16 * 1024 * 1024)));
-            if (cache?.bindings?.level_export_package_sha256 != binding.owner_export_package_sha256 ||
+            // The qualified cache predates additive owner-export members
+            // (such as gameplay collision masks). Its declared provenance is
+            // the exact reset capture, retained and validated by Rust. Other
+            // cache formats bind the complete export they declare instead.
+            var matchesProvenance = cache?.bindings != null &&
+                (cache.schema == "mc2-owner-unity-asset-cache/v1"
+                    ? cache.bindings.qualified_runtime_capture_sha256 == binding.runtime_capture_sha256
+                    : cache.bindings.level_export_package_sha256 == binding.owner_export_package_sha256);
+            if (!matchesProvenance ||
                 !string.IsNullOrEmpty(cache.bindings.campaign_package_sha256) &&
                 cache.bindings.campaign_package_sha256 != binding.source_package_sha256 ||
                 cache.outputs == null || cache.outputs.Length == 0 || cache.outputs.Length > 20000)

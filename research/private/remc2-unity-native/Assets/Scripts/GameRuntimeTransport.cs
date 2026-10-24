@@ -162,6 +162,7 @@ namespace MagicCarpet.Native
             public string definition_revision;
             public string source_package_sha256;
             public string owner_export_package_sha256;
+            public string runtime_capture_sha256;
             public string environment;
             public string artwork_profile;
         }
@@ -211,6 +212,7 @@ namespace MagicCarpet.Native
                 binding.definition_revision != definition.definition_revision ||
                 !IsLoadingHash(binding.source_package_sha256) ||
                 !IsLoadingHash(binding.owner_export_package_sha256) ||
+                !IsLoadingHash(binding.runtime_capture_sha256) ||
                 !IsLoadingDefinitionHash(binding.definition_hash) || !IsLoadingDefinitionHash(binding.package_graph_hash) ||
                 binding.environment is not ("day" or "night" or "cave") ||
                 binding.artwork_profile is not ("ordinary" or "secret"))
