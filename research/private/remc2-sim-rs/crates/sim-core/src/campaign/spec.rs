@@ -14,6 +14,7 @@ use crate::level_definition::{
     LevelObjectiveId, MechanicKind, RivalWizardId, SceneryKind, SpellKind, SwitchKind,
     TilePosition,
 };
+pub use crate::native_world::cave_features::startup::CaveStartupWorld;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::{
@@ -625,6 +626,7 @@ pub struct DecodedCampaignPackage {
     /// A projection error is retained explicitly; it never admits gameplay or
     /// replaces the complete decoded compatibility payload.
     pub semantic_entities: std::result::Result<LevelDefinition, String>,
+    semantic_entity_by_authored_record: BTreeMap<u16, LevelEntityId>,
     members: BTreeMap<String, Vec<u8>>,
     files: BTreeMap<String, (u64, String)>,
     presentation_assets: Vec<PortablePresentationAsset>,
@@ -706,6 +708,73 @@ impl DecodedCampaignPackage {
             message,
         })
     }
+
+    /// Construct authored cave terrain from the retained pre-feature boundary.
+    /// The returned geometry feeds ordinary flight/collision and source sprite
+    /// observations; post-feature members are never inputs to construction.
+    pub fn generate_cave_startup(&self) -> Result<CaveStartupWorld> {
+        let fail = |message| CampaignPackageError {
+            stage: ValidationStage::TypedMembers,
+            message,
+        };
+        if self.identity.map_type_id != 2 {
+            return Err(fail("cave startup requires a Cave package".into()));
+        }
+        let level = self
+            .semantic_entities
+            .as_ref()
+            .map_err(|message| fail(message.clone()))?;
+        let member = |name| {
+            self.member(name)
+                .ok_or_else(|| fail(format!("missing startup member {name}")))
+        };
+        generate_bound_cave_startup(
+            level,
+            &self.semantic_entity_by_authored_record,
+            self.authored_bytes(),
+            member("terrain-pre-features.bin")?,
+            member("feature-start.bin")?,
+            member("feature-construction-inputs.bin")?,
+        )
+    }
+}
+
+fn generate_bound_cave_startup(
+    level: &LevelDefinition,
+    bindings: &BTreeMap<u16, LevelEntityId>,
+    authored: &[u8],
+    pre_terrain: &[u8],
+    boundary: &[u8],
+    construction: &[u8],
+) -> Result<CaveStartupWorld> {
+    let fail = |message| CampaignPackageError {
+        stage: ValidationStage::TypedMembers,
+        message,
+    };
+    let mut caves = BTreeMap::new();
+    let mut corridors = BTreeMap::new();
+    for (&record, id) in bindings {
+        let entity = level
+            .entity(id)
+            .ok_or_else(|| fail(format!("missing semantic entity {id:?}")))?;
+        if let Some(properties) = entity.cave_feature() {
+            caves.insert(record, properties);
+        }
+        if let Some(properties) = entity.cave_corridor() {
+            corridors.insert(record, properties);
+        }
+    }
+    crate::native_world::cave_features::startup::generate(
+        crate::native_world::cave_features::startup::Inputs {
+            authored,
+            pre_terrain,
+            boundary,
+            construction,
+            caves: &caves,
+            corridors: &corridors,
+        },
+    )
+    .map_err(fail)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1324,8 +1393,12 @@ impl CampaignDefinition {
                     .map(|kind| (row.authored_record, kind))
             })
             .collect();
-        let semantic_entities =
-            Mc2LevelDefinition::catalog_entities(authored, descriptor_selection);
+        let semantic_binding = Mc2LevelDefinition::catalog_binding(authored, descriptor_selection);
+        let semantic_entity_by_authored_record = semantic_binding
+            .as_ref()
+            .map(|binding| binding.mechanic_entity_by_authored_record.clone())
+            .unwrap_or_default();
+        let semantic_entities = semantic_binding.map(|binding| binding.semantic);
         let authored_stages = std::array::from_fn(|index| {
             let row = &authored
                 [AUTHORED_STAGE_OFFSET + index * 7..AUTHORED_STAGE_OFFSET + (index + 1) * 7];
@@ -1380,6 +1453,7 @@ impl CampaignDefinition {
             stage_variables,
             semantic_bindings,
             semantic_entities,
+            semantic_entity_by_authored_record,
             members,
             files,
             presentation_assets,
@@ -1963,6 +2037,17 @@ impl CampaignDefinition {
     #[must_use]
     pub const fn level_definition(&self) -> &LevelDefinition {
         &self.level_definition
+    }
+
+    pub(crate) fn generate_cave_startup(&self) -> Result<CaveStartupWorld> {
+        generate_bound_cave_startup(
+            &self.level_definition,
+            &self.mechanic_entity_by_authored_record,
+            &self.read_member("authored-level.bin")?,
+            &self.read_member("terrain-pre-features.bin")?,
+            &self.read_member("feature-start.bin")?,
+            &self.read_member("feature-construction-inputs.bin")?,
+        )
     }
 
     pub(crate) fn presentation_assets(&self) -> &[PortablePresentationAsset] {

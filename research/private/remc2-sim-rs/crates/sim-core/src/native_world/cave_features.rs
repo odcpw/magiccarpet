@@ -10,6 +10,7 @@ use super::{
     RenderableMapSeed, SessionTerrain, TerrainPlanes, add_building_to_terrain,
     building_topology_rebuild_required, rebuild_building_topology, terrain_index,
 };
+use crate::level_definition::CaveFeatureDefinition;
 use crate::{
     FlightWorld, Position, SIN_16_16,
     campaign::source_arena::SourceArena,
@@ -18,6 +19,8 @@ use crate::{
     level1_mission::AuthoredFeature,
     move_entity,
 };
+
+pub(crate) mod startup;
 
 /// One successful NewEvent allocation. The caller installs retained particle
 /// defaults before honoring `reclaim`, just as sub_50960 does.
@@ -36,6 +39,7 @@ pub(crate) fn prepare_group(
     terrain: &mut SessionTerrain,
     feature: AuthoredFeature,
     particles: &[ParticleParameter],
+    properties: Option<CaveFeatureDefinition>,
 ) -> Result<Option<u16>, String> {
     if (feature.kind, feature.subtype) == (2, 7) {
         return Ok(None);
@@ -77,6 +81,9 @@ pub(crate) fn prepare_group(
             write_axis(source, 0, feature.word_10 as i16);
         }
         _ => {}
+    }
+    if let Some(properties) = properties {
+        bind_definition(source, properties);
     }
     Ok(Some(allocation.source_slot))
 }
@@ -332,7 +339,7 @@ pub(crate) fn reclaim(arena: &mut SourceArena, terrain: &mut SessionTerrain, slo
     arena.economy.release_slot(slot, Some(rng));
 }
 
-fn synchronize_links(arena: &mut SourceArena, terrain: &mut SessionTerrain, slot: u16) {
+pub(crate) fn synchronize_links(arena: &mut SourceArena, terrain: &mut SessionTerrain, slot: u16) {
     // Source map surgery changes neighboring fixed rows as well as the head.
     // Dynamic families retain their own projections in the shared map owner.
     for source in &mut arena.entities {
@@ -356,7 +363,7 @@ fn synchronize_links(arena: &mut SourceArena, terrain: &mut SessionTerrain, slot
     terrain.planes.entity_indices[tile] = arena.economy.map_chains.tile_head(tile as u16) as i16;
 }
 
-fn new_event(slot: u16, rng: u16, position: Position) -> EntitySnapshot {
+pub(crate) fn new_event(slot: u16, rng: u16, position: Position) -> EntitySnapshot {
     let mut record = vec![0; 176].into_boxed_slice();
     record[0..2].copy_from_slice(&slot.to_le_bytes());
     record[2] = 1;
@@ -608,6 +615,59 @@ pub(crate) fn bind_link(source: &mut EntitySnapshot, target: Position, widths: u
     source.set_source_byte_46(widths);
 }
 
+/// Install the retained semantic properties on the authoritative controller.
+/// The MC2 adapter chooses startup or published defaults; geometry and later
+/// callbacks read these exact words rather than another mutable property copy.
+pub(crate) fn bind_definition(source: &mut EntitySnapshot, properties: CaveFeatureDefinition) {
+    match properties {
+        CaveFeatureDefinition::PathNode { .. } => {}
+        CaveFeatureDefinition::Passage {
+            start_radius_tiles,
+            end_radius_tiles,
+            destination,
+        } => {
+            bind_link(
+                source,
+                Position {
+                    x: destination.x << 8,
+                    y: destination.y << 8,
+                    z: 0,
+                },
+                ((start_radius_tiles - 2) << 4) | (end_radius_tiles - 2),
+            );
+        }
+        CaveFeatureDefinition::Room {
+            half_width_tiles,
+            half_depth_tiles,
+            clearance_steps,
+        } => {
+            source.record[71] = half_width_tiles;
+            source.record[72] = half_depth_tiles;
+            source.set_source_byte_46(clearance_steps);
+        }
+        CaveFeatureDefinition::RoundObstruction { radius_tiles } => {
+            write_axis(source, 0, radius_tiles)
+        }
+        CaveFeatureDefinition::CeilingPendant {
+            radius_tiles,
+            height_factor,
+        }
+        | CaveFeatureDefinition::FloorMound {
+            radius_tiles,
+            height_factor,
+        } => {
+            write_axis(source, 0, radius_tiles);
+            let mut position = source.position;
+            position.z = height_factor;
+            source.set_position(position);
+        }
+        CaveFeatureDefinition::GroundVent { lifetime } => {
+            source.set_max_life(lifetime);
+            source.set_life(lifetime);
+        }
+    }
+}
+
 pub(crate) fn step(terrain: &mut SessionTerrain, source: &mut EntitySnapshot) -> Visit {
     let mut visit = Visit::default();
     match source.action {
@@ -722,7 +782,7 @@ fn normalize(planes: &mut TerrainPlanes, index: usize, reset_ceiling: bool) {
 }
 
 /// `sub_570F0(x,y,height,0,force_material,preserve_zero_neighbors)`.
-fn write_ground(
+pub(crate) fn write_ground(
     terrain: &mut SessionTerrain,
     x: u8,
     y: u8,
@@ -1161,7 +1221,7 @@ mod tests {
             parameter_2: 10,
             parameter_3: 2,
         };
-        let marker = prepare_group(&mut arena, &mut terrain, feature(80), &[])
+        let marker = prepare_group(&mut arena, &mut terrain, feature(80), &[], None)
             .expect("published marker")
             .expect("marker row");
         assert_eq!(
@@ -1169,7 +1229,7 @@ mod tests {
             80,
             "group publication never walks the startup linked path"
         );
-        let room = prepare_group(&mut arena, &mut terrain, feature(82), &[])
+        let room = prepare_group(&mut arena, &mut terrain, feature(82), &[], None)
             .expect("published room")
             .expect("room row");
         let room = &arena.entities[usize::from(room)];
@@ -1183,7 +1243,7 @@ mod tests {
             ((10 << 8) + 128, (12 << 8) + 128)
         );
         for model in 83..=85 {
-            let slot = prepare_group(&mut arena, &mut terrain, feature(model), &[])
+            let slot = prepare_group(&mut arena, &mut terrain, feature(model), &[], None)
                 .expect("published shaped feature")
                 .expect("shape row");
             let row = &arena.entities[usize::from(slot)];
@@ -1200,11 +1260,34 @@ mod tests {
         barrel.subtype = 7;
         let free = arena.economy.free_slot_count();
         assert!(
-            prepare_group(&mut arena, &mut terrain, barrel, &[])
+            prepare_group(&mut arena, &mut terrain, barrel, &[], None)
                 .expect("source cave barrel no-op")
                 .is_none()
         );
         assert_eq!(arena.economy.free_slot_count(), free);
+        let configured = prepare_group(
+            &mut arena,
+            &mut terrain,
+            feature(82),
+            &[],
+            Some(CaveFeatureDefinition::Room {
+                half_width_tiles: 6,
+                half_depth_tiles: 7,
+                clearance_steps: 8,
+            }),
+        )
+        .expect("typed room producer")
+        .expect("typed room birth");
+        let configured = &arena.entities[usize::from(configured)];
+        assert_eq!(
+            (
+                configured.record[71],
+                configured.record[72],
+                configured.record[74]
+            ),
+            (6, 7, 8),
+            "retained semantic properties reach the actual controller consumed by room geometry"
+        );
     }
 
     #[test]

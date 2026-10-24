@@ -341,7 +341,12 @@ impl EntitySnapshot {
 
     /// Apply the source `sub_57F20` class-zero transition after a row was
     /// draw-disabled during the preceding UpdateEntities pass.
-    pub(super) fn reclaim_source_row(&mut self) {
+    pub(crate) fn set_map_links(&mut self, old: u16, next: u16) {
+        self.record[26..28].copy_from_slice(&old.to_le_bytes());
+        self.record[28..30].copy_from_slice(&next.to_le_bytes());
+    }
+
+    pub(crate) fn reclaim_source_row(&mut self) {
         self.active = false;
         self.authority = EntityAuthority::Inactive;
         self.class = 0;
@@ -2336,6 +2341,19 @@ impl SessionTerrain {
         remaining: Option<i32>,
         footprint: &CastleBuildFootprint,
     ) -> std::result::Result<(), String> {
+        self.apply_house_construction_with_clearance(position, remaining, footprint, false)
+    }
+
+    /// Source BUILD terrain rules for the actual map and BLDGPRM clearance
+    /// policy. Ordinary non-cave callers need no ceiling writes; cave startup
+    /// and construction pass the retained flag4 policy explicitly.
+    pub fn apply_house_construction_with_clearance(
+        &mut self,
+        position: Position,
+        remaining: Option<i32>,
+        footprint: &CastleBuildFootprint,
+        open_ceiling: bool,
+    ) -> std::result::Result<(), String> {
         let expected = usize::from(footprint.width) * usize::from(footprint.height);
         if footprint.cells().len() != expected {
             return Err(format!(
@@ -2355,23 +2373,32 @@ impl SessionTerrain {
                         "house action-51 construction pass requires remaining > 0".to_owned()
                     );
                 }
-                apply_level1_load_house_sweep(
+                apply_house_sweep(
                     &mut staged.planes,
                     &mut staged.terrain_rng,
                     position,
                     footprint,
                     remaining,
+                    staged.map_type,
+                    open_ceiling,
                 );
             }
             None => {
-                apply_level1_load_house_sweep(
+                apply_house_sweep(
                     &mut staged.planes,
                     &mut staged.terrain_rng,
                     position,
                     footprint,
                     0,
+                    staged.map_type,
+                    open_ceiling,
                 );
-                apply_level1_load_house_edge_smoothing(&mut staged.planes, position, footprint);
+                apply_house_edge_smoothing(
+                    &mut staged.planes,
+                    position,
+                    footprint,
+                    staged.map_type,
+                );
             }
         }
         staged.mutation_sequence = staged.mutation_sequence.wrapping_add(1);
@@ -2783,6 +2810,26 @@ pub(crate) fn apply_level1_load_house_sweep(
     footprint: &CastleBuildFootprint,
     remaining: u8,
 ) {
+    apply_house_sweep(
+        planes,
+        terrain_rng,
+        position,
+        footprint,
+        remaining,
+        MapType::Night,
+        false,
+    );
+}
+
+fn apply_house_sweep(
+    planes: &mut TerrainPlanes,
+    terrain_rng: &mut u16,
+    position: Position,
+    footprint: &CastleBuildFootprint,
+    remaining: u8,
+    map_type: MapType,
+    open_ceiling: bool,
+) {
     let center_x = position.x.wrapping_add(128).to_be_bytes()[0];
     let center_y = position.y.wrapping_add(128).to_be_bytes()[0];
     let start_x = center_x.wrapping_sub(footprint.width / 2);
@@ -2801,7 +2848,7 @@ pub(crate) fn apply_level1_load_house_sweep(
                         start_y.wrapping_add(row),
                         start_x.wrapping_add(column),
                         start_y.wrapping_add(row),
-                        MapType::Night,
+                        map_type,
                         terrain_rng,
                     );
                 }
@@ -2814,19 +2861,28 @@ pub(crate) fn apply_level1_load_house_sweep(
         for column in 0..footprint.width {
             let cell = footprint.cells()
                 [usize::from(row) * usize::from(footprint.width) + usize::from(column)];
-            if cell[1] == 0xff {
-                continue;
-            }
             let x = start_x.wrapping_add(column);
             let y = start_y.wrapping_add(row);
             let index = terrain_index(x, y);
-            let current = i16::from(planes.ground_heights[index]);
-            let target = construction_base + i16::from(cell[1]);
-            let next = current.wrapping_add((target - current) / i16::from(remaining));
-            planes.ground_heights[index] = next.to_le_bytes()[0];
-            if planes.angles[index].trailing_zeros() >= 3 {
-                planes.angles[index] = (planes.angles[index] & 0xf0) | 1;
-                rebuild_building_topology(planes, x, y, x, y, MapType::Night, terrain_rng);
+            if cell[1] != 0xff {
+                let current = i16::from(planes.ground_heights[index]);
+                let target = construction_base + i16::from(cell[1]);
+                let next = current.wrapping_add((target - current) / i16::from(remaining));
+                planes.ground_heights[index] = next.to_le_bytes()[0];
+                if planes.angles[index].trailing_zeros() >= 3 {
+                    planes.angles[index] = (planes.angles[index] & 0xf0) | 1;
+                    rebuild_building_topology(planes, x, y, x, y, map_type, terrain_rng);
+                }
+            }
+            if map_type == MapType::Cave && open_ceiling {
+                let desired =
+                    (i16::from(planes.ground_heights[index]).max(construction_base) + 80).min(255);
+                let ceiling = i16::from(planes.secondary_heights[index]);
+                if desired > ceiling {
+                    planes.secondary_heights[index] =
+                        (ceiling + (desired - ceiling) / i16::from(remaining)) as u8;
+                }
+                normalize_cave_clearance(planes, index);
             }
         }
     }
@@ -2851,13 +2907,14 @@ pub(crate) fn apply_level1_load_house_sweep(
                 let cell = footprint.cells()
                     [usize::from(row) * usize::from(footprint.width) + usize::from(column)];
                 if cell[0] != 0xff {
-                    apply_level1_house_material(
+                    apply_house_material(
                         planes,
                         start_x.wrapping_add(column),
                         start_y.wrapping_add(row),
                         column,
                         cell[0],
                         terrain_rng,
+                        map_type,
                     );
                 }
             }
@@ -2870,6 +2927,15 @@ pub(crate) fn apply_level1_load_house_edge_smoothing(
     position: Position,
     footprint: &CastleBuildFootprint,
 ) {
+    apply_house_edge_smoothing(planes, position, footprint, MapType::Night);
+}
+
+fn apply_house_edge_smoothing(
+    planes: &mut TerrainPlanes,
+    position: Position,
+    footprint: &CastleBuildFootprint,
+    map_type: MapType,
+) {
     let center_x = position.x.wrapping_add(128).to_be_bytes()[0];
     let center_y = position.y.wrapping_add(128).to_be_bytes()[0];
     let footprint_start_x = center_x.wrapping_sub(footprint.width / 2);
@@ -2877,40 +2943,44 @@ pub(crate) fn apply_level1_load_house_edge_smoothing(
     let half_width = footprint.width / 2;
     let half_height = footprint.height / 2;
     for radius in [2_u8, 5] {
-        smooth_level1_house_edges(
+        smooth_house_edges(
             planes,
             footprint_start_x,
             footprint_start_y,
             half_width,
             half_height,
             radius,
+            map_type,
         );
     }
 }
 
-pub(super) fn smooth_level1_house_edges(
+fn smooth_house_edges(
     planes: &mut TerrainPlanes,
     start_x: u8,
     start_y: u8,
     half_width: u8,
     half_height: u8,
     radius: u8,
+    map_type: MapType,
 ) {
     let boundary_x = start_x.wrapping_sub(half_width);
     let boundary_y = start_y.wrapping_sub(half_height);
     for row in 0..half_height.wrapping_mul(2) {
         for inset in 0..=radius {
-            smooth_level1_house_height(
+            smooth_building_height(
                 planes,
                 boundary_x.wrapping_sub(radius).wrapping_add(inset),
                 boundary_y.wrapping_add(row),
+                map_type,
             );
-            smooth_level1_house_height(
+            smooth_building_height(
                 planes,
                 boundary_x
                     .wrapping_add(half_width.wrapping_mul(2))
                     .wrapping_add(inset),
                 boundary_y.wrapping_add(row),
+                map_type,
             );
         }
     }
@@ -2919,17 +2989,19 @@ pub(super) fn smooth_level1_house_edges(
         .wrapping_add(radius.wrapping_mul(2))
     {
         for inset in 0..=radius {
-            smooth_level1_house_height(
+            smooth_building_height(
                 planes,
                 boundary_x.wrapping_sub(radius).wrapping_add(column),
                 boundary_y.wrapping_sub(radius).wrapping_add(inset),
+                map_type,
             );
-            smooth_level1_house_height(
+            smooth_building_height(
                 planes,
                 boundary_x.wrapping_sub(radius).wrapping_add(column),
                 boundary_y
                     .wrapping_add(half_height.wrapping_mul(2))
                     .wrapping_add(inset),
+                map_type,
             );
         }
     }
@@ -2984,10 +3056,22 @@ pub(super) fn apply_level1_house_material(
     material: u8,
     terrain_rng: &mut u16,
 ) {
+    apply_house_material(planes, x, y, column, material, terrain_rng, MapType::Night);
+}
+
+fn apply_house_material(
+    planes: &mut TerrainPlanes,
+    x: u8,
+    y: u8,
+    column: u8,
+    material: u8,
+    terrain_rng: &mut u16,
+    map_type: MapType,
+) {
     let index = terrain_index(x, y);
     if material < 8 {
         planes.angles[index] = (planes.angles[index] & 0xf0) | material;
-        rebuild_building_topology(planes, x, y, x, y, MapType::Night, terrain_rng);
+        rebuild_building_topology(planes, x, y, x, y, map_type, terrain_rng);
         return;
     }
     match material {
@@ -3018,7 +3102,12 @@ pub(super) fn apply_level1_house_material(
         (x.wrapping_add(1), y.wrapping_add(1)),
         (x, y.wrapping_add(1)),
     ] {
-        planes.angles[terrain_index(corner_x, corner_y)] &= 0xf7;
+        let corner = terrain_index(corner_x, corner_y);
+        if map_type == MapType::Cave {
+            normalize_cave_clearance(planes, corner);
+        } else {
+            planes.angles[corner] &= 0xf7;
+        }
     }
 }
 

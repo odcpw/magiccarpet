@@ -29,6 +29,59 @@ pub(crate) const AUTHORED_HOUSE_COLLISION_HALF_HEIGHT: i16 = 256;
 const SOURCE_DISABLED_FLAG: u32 = 0x0000_0400;
 const POSSESSED_FLAG: u32 = 0x0020_0000;
 
+/// AddTerrainModification_50250 followed by sub_49A30. The caller supplies
+/// the parity-aligned, averaged BUILD base and performs shared map insertion.
+pub(crate) fn bind_startup_construction(
+    source: &mut EntitySnapshot,
+    building_index: u8,
+    parameter: HouseParameter,
+    footprint: &crate::level1_mission::CastleBuildFootprint,
+    raw_area: u16,
+) {
+    source.class = HOUSE_CLASS;
+    source.model = HOUSE_MODEL;
+    source.record[67] = HOUSE_CLASS;
+    source.record[68] = HOUSE_MODEL;
+    source.action = HOUSE_TERRAIN_TO_LIVE_ACTION;
+    source.record[73] = HOUSE_TERRAIN_TO_LIVE_ACTION;
+    source.max_life = 30;
+    source.life = 30;
+    source.control_flags = 13;
+    source.record[8..12].copy_from_slice(&30_i32.to_le_bytes());
+    source.record[12..16].copy_from_slice(&30_i32.to_le_bytes());
+    source.record[16..20].copy_from_slice(&13_u32.to_le_bytes());
+    source.record[20..24].copy_from_slice(&2_i32.to_le_bytes());
+    source.subspell_index = parameter.life_mana_scalar;
+    source.record[46..48].copy_from_slice(&parameter.life_mana_scalar.to_le_bytes());
+    source.record[60] = 33 | if parameter.flags & 8 == 0 { 2 } else { 0 };
+    source.record[65] = parameter.destruction_successor;
+    source.font_type_index = parameter.destruction_successor;
+    source.record[69] = 0;
+    source.record[74] = building_index;
+    for (offset, value) in [
+        (86, 0),
+        (88, (((i32::from(footprint.width) << 8) + 1280) >> 1) as i16),
+        (
+            90,
+            (((i32::from(footprint.height) << 8) + 1280) >> 1) as i16,
+        ),
+        (92, 256),
+        (94, 177),
+        (136, (raw_area >> 4) as i16),
+    ] {
+        source.record[offset..offset + 2].copy_from_slice(&value.to_le_bytes());
+    }
+    source.record[97] = 1;
+    source.particle_parameter_index = Some(177);
+    let mana = if parameter.flags & 8 == 0 {
+        i32::from(parameter.life_mana_scalar) * 1000 >> 7
+    } else {
+        0
+    };
+    source.mana = mana;
+    source.record[148..152].copy_from_slice(&mana.to_le_bytes());
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct HouseParameter {
     pub life_mana_scalar: u16,
@@ -207,6 +260,46 @@ pub struct HouseState {
 }
 
 impl HouseState {
+    /// Builder-owned site before its following initialization callback.
+    /// BUILD dimensions and BLDGPRM come from the retained owner bank.
+    pub(crate) fn builder_from_source(
+        source_slot: u16,
+        rng: u16,
+        position: Position,
+        building_index: u8,
+        width: u8,
+        height: u8,
+        parameter: HouseParameter,
+    ) -> Self {
+        Self {
+            entity_index: source_slot,
+            source_id: source_slot,
+            active: true,
+            control_flags: 13,
+            max_life: 30,
+            life: 30,
+            occupants: 2,
+            rng,
+            position,
+            collision_vertical_offset: 0,
+            collision_half_width: ((i32::from(width) * 256 + 1280) >> 1) as i16,
+            collision_half_depth: ((i32::from(height) * 256 + 1280) >> 1) as i16,
+            collision_half_height: 256,
+            action: 0,
+            phase: source_slot as u8,
+            xtype: 0,
+            build_tail: 0,
+            building_index,
+            capacity: i16::from(width).wrapping_mul(i16::from(height)) >> 2,
+            owner_entity_index: 0,
+            pending_damage: 0,
+            pending_attacker: 0,
+            pending_possession_owner: 0,
+            pending_possession_payload: 0,
+            parameter,
+        }
+    }
+
     /// Construct the qualified Level 1 group-13-through-32 House after the
     /// shared source arena has assigned its numeric slot. Both the sealed
     /// mission and the campaign scheduler use this exact source projection.
@@ -394,16 +487,38 @@ impl HouseState {
         snapshot: &EntitySnapshot,
         parameter: HouseParameter,
     ) -> Result<Self, String> {
-        if snapshot.class != HOUSE_CLASS || snapshot.model != HOUSE_MODEL {
-            return Err(format!(
-                "entity {} is {}/{}, not a source house",
-                snapshot.index, snapshot.class, snapshot.model
-            ));
-        }
         if snapshot.action != HOUSE_LIVE_ACTION {
             return Err(format!(
                 "house entity {} reset action is {}, expected {HOUSE_LIVE_ACTION}",
                 snapshot.index, snapshot.action
+            ));
+        }
+        Self::decode_source_snapshot(snapshot, parameter)
+    }
+
+    /// Startup action51 uses the ordinary BUILD handler against its newly
+    /// allocated source row. Reset decoding still requires live action52.
+    pub(crate) fn from_construction_snapshot(
+        snapshot: &EntitySnapshot,
+        parameter: HouseParameter,
+    ) -> Result<Self, String> {
+        if snapshot.action != HOUSE_TERRAIN_TO_LIVE_ACTION {
+            return Err(format!(
+                "house entity {} construction action is {}, expected51",
+                snapshot.index, snapshot.action
+            ));
+        }
+        Self::decode_source_snapshot(snapshot, parameter)
+    }
+
+    fn decode_source_snapshot(
+        snapshot: &EntitySnapshot,
+        parameter: HouseParameter,
+    ) -> Result<Self, String> {
+        if snapshot.class != HOUSE_CLASS || snapshot.model != HOUSE_MODEL {
+            return Err(format!(
+                "entity {} is {}/{}, not a source house",
+                snapshot.index, snapshot.class, snapshot.model
             ));
         }
         let bytes = snapshot.record_bytes();
@@ -826,6 +941,31 @@ impl HouseFamily {
         }
         house.pending_attacker = attacker;
         Ok(())
+    }
+
+    /// Ordinary source area/projectile mailbox admission. Zero owner/payload
+    /// retain their source meaning; the human injection API keeps its checks.
+    pub(crate) fn submit_source_damage(
+        &mut self,
+        entity_index: u16,
+        payload: u16,
+        owner: u16,
+    ) -> bool {
+        let Some(house) = self.houses.iter_mut().find(|house| {
+            house.entity_index == entity_index && house.active && house.source_id != owner
+        }) else {
+            return false;
+        };
+        let mut attacker = house.pending_attacker as u16;
+        let accepted =
+            crate::combat::actors::DamageMailboxMut::new(&mut house.pending_damage, &mut attacker)
+                .submit(
+                    i32::from(payload),
+                    owner,
+                    crate::combat::actors::DamageWriter::Ordinary,
+                );
+        house.pending_attacker = attacker as i16;
+        accepted
     }
 
     pub fn submit_possession(
