@@ -1396,7 +1396,7 @@ mod tests {
         std::env::var_os("MC_CAMPAIGN_LEVEL1_PACKAGE").map_or_else(
             || {
                 PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                    .join("../../../generated/mc-cf15-level1-package-v3-current")
+                    .join("../../../generated/mc-bhq8-level1-collision-v5-night")
             },
             PathBuf::from,
         )
@@ -1652,15 +1652,14 @@ mod tests {
 
         // The ordinary first step needs the bank-bearing owner package as well
         // as its owner cache. A cache cannot supply a missing package bank.
-        let level_one = std::env::var_os("MC_CAMPAIGN_LEVEL1_PACKAGE").map_or_else(
+        let level_one = level_one_package();
+        let owner_cache = std::env::var_os("MC_CAMPAIGN_LEVEL1_CACHE").map_or_else(
             || {
                 PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                    .join("../../../generated/mc-bhq8-level1-collision-v5-night")
+                    .join("../../../generated/mc2-level1-night-cache-v2")
             },
             PathBuf::from,
         );
-        let owner_cache = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../../generated/level1-unity-asset-cache-plan29-final");
         let packages = serde_json::to_vec(&serde_json::json!({
             "request_contract": INSTALLED_PACKAGE_SET_CONTRACT,
             "packages": [
@@ -1709,7 +1708,12 @@ mod tests {
             "level.magic_carpet_2.night_spire"
         );
         assert!(loading.get("active_runtime_flow").is_none());
-        assert_eq!(mc_game_runtime_open_level_v1(handle, 2), MC_STATUS_OK);
+        assert_eq!(
+            mc_game_runtime_open_level_v1(handle, 2),
+            MC_STATUS_OK,
+            "{}",
+            LAST_ERROR.with(|value| value.borrow().clone())
+        );
         let playing = identity(handle);
         assert_eq!(playing["mode"], "playing");
         assert_eq!(playing["generation"], "3");
@@ -1935,7 +1939,12 @@ mod tests {
             ),
             MC_STATUS_OK
         );
-        assert_eq!(mc_game_runtime_open_level_v1(source, 2), MC_STATUS_OK);
+        assert_eq!(
+            mc_game_runtime_open_level_v1(source, 2),
+            MC_STATUS_OK,
+            "{}",
+            LAST_ERROR.with(|value| value.borrow().clone())
+        );
         for (tick, command) in [
             br#"{}"#.as_slice(),
             br#"{"longitudinal":"accelerate","lateral":"positive","pitch_axis":3}"#.as_slice(),

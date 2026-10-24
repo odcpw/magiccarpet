@@ -753,41 +753,11 @@ impl SourceSchedulerWorld for Level2SourceSchedulerWorld<'_, '_> {
                 self.owner.session.state.live.economy.advance_global_rng();
             }
             PassPhase::FollowingPassCleanup => {
-                let (hidden_house_slots, hidden_authored_house_slots) = {
+                {
                     let live = &mut self.owner.session.state.live;
-                    let hidden = live.ordinary.take_inactive_houses();
-                    let imported = hidden
-                        .iter()
-                        .filter(|house| {
-                            live.economy
-                                .entities
-                                .get(usize::from(house.entity_index))
-                                .is_some_and(|entity| entity.active && entity.drawing_disabled())
-                        })
-                        .map(|house| (house.entity_index, house.rng))
-                        .collect::<Vec<_>>();
-                    let authored = hidden
-                        .iter()
-                        .filter(|house| {
-                            live.economy
-                                .economy
-                                .authored_house_record(house.entity_index)
-                                .is_some()
-                        })
-                        .map(|house| (house.entity_index, house.rng))
-                        .collect::<Vec<_>>();
-                    (imported, authored)
-                };
-                let hidden_house_slot_set = hidden_house_slots
-                    .iter()
-                    .map(|(source_slot, _)| *source_slot)
-                    .collect::<BTreeSet<_>>();
-                self.owner
-                    .session
-                    .state
-                    .live
-                    .ordinary
-                    .reclaim_inactive_villagers();
+                    live.ordinary
+                        .reclaim_for_source_boundary(&mut live.economy, &mut live.terrain)?;
+                }
                 let dynamic_slots = self
                     .owner
                     .session
@@ -810,7 +780,6 @@ impl SourceSchedulerWorld for Level2SourceSchedulerWorld<'_, '_> {
                         entity.active
                             && entity.drawing_disabled()
                             && !dynamic_slots.contains(&entity.index)
-                            && !hidden_house_slot_set.contains(&entity.index)
                     })
                     .map(|entity| (entity.index, entity.entity_rng))
                     .collect::<Vec<_>>();
@@ -841,22 +810,6 @@ impl SourceSchedulerWorld for Level2SourceSchedulerWorld<'_, '_> {
                     live.economy
                         .economy
                         .release_slot(source_slot, Some(source_rng));
-                }
-                for (source_slot, source_rng) in hidden_house_slots {
-                    let live = &mut self.owner.session.state.live;
-                    live.economy.entities[usize::from(source_slot)].reclaim_source_row();
-                    live.economy
-                        .economy
-                        .reclaim_house_source_slot_at_source_boundary(source_slot, source_rng);
-                }
-                for (source_slot, source_rng) in hidden_authored_house_slots {
-                    self.owner
-                        .session
-                        .state
-                        .live
-                        .economy
-                        .economy
-                        .reclaim_house_source_slot_at_source_boundary(source_slot, source_rng);
                 }
                 {
                     let live = &mut self.owner.session.state.live;
@@ -9408,6 +9361,8 @@ impl Level2ResetSession {
         let reset_free_slots = self.session.baseline.economy.economy.free_slots.clone();
         {
             let live = &mut self.session.state.live;
+            live.ordinary
+                .reclaim_for_source_boundary(&mut live.economy, &mut live.terrain)?;
             live.economy
                 .rebuild_source_arena_with_terrain(&mut live.terrain, &reset_free_slots)?;
         }
@@ -13240,6 +13195,8 @@ impl Level2ResetSession {
         // sink. Keep every ordinary callback write, including phase and Z,
         // without copying the world-sized rollback carriers on that path.
         if events.is_empty() {
+            live.ordinary
+                .publish_house_source(&mut live.economy, source_slot);
             return Ok(events);
         }
         // The callback above owns only ordinary House state; these domains
@@ -13254,7 +13211,11 @@ impl Level2ResetSession {
             &events,
             &mut live.terrain,
         ) {
-            Ok(()) => Ok(events),
+            Ok(()) => {
+                live.ordinary
+                    .publish_house_source(&mut live.economy, source_slot);
+                Ok(events)
+            }
             Err(error) => {
                 live.ordinary.houses = houses_before;
                 live.ordinary.villagers = villagers_before;
@@ -14556,7 +14517,7 @@ impl Level2ResetSession {
                     let live = &mut self.session.state.live;
                     if let Some(step) = live.ordinary.step_settlement_source(
                         &mut live.economy,
-                        &live.terrain,
+                        &mut live.terrain,
                         source_slot,
                         pass_start_settlement_building_slots,
                     )? {
@@ -20919,6 +20880,8 @@ impl Level2ResetSession {
         let reset_free_slots = self.session.baseline.economy.economy.free_slots.clone();
         {
             let live = &mut self.session.state.live;
+            live.ordinary
+                .reclaim_for_source_boundary(&mut live.economy, &mut live.terrain)?;
             live.economy
                 .rebuild_source_arena_with_terrain(&mut live.terrain, &reset_free_slots)?;
         }
@@ -21163,6 +21126,8 @@ impl Level2ResetSession {
             let reset_free_slots = self.session.baseline.economy.economy.free_slots.clone();
             {
                 let live = &mut self.session.state.live;
+                live.ordinary
+                    .reclaim_for_source_boundary(&mut live.economy, &mut live.terrain)?;
                 live.economy
                     .rebuild_source_arena_with_terrain(&mut live.terrain, &reset_free_slots)?;
             }
@@ -21783,6 +21748,53 @@ mod tests {
     }
 
     #[test]
+    fn authored_group_rebuild_drains_hidden_house_authority_before_reuse() {
+        let package = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../generated/mc-1pb-16-level2-full-build-v2");
+        let campaign = CampaignSession::open(package, CampaignSelection::LEVEL2).unwrap();
+        let mut session = campaign.level2_compatibility().clone();
+        let house = *session
+            .ordinary()
+            .houses()
+            .iter()
+            .find(|house| house.entity_index == 10)
+            .unwrap();
+        let attacker = session.state.entity_index;
+        session
+            .ordinary_mut()
+            .inject_house_damage(house.entity_index, house.life + 1, attacker as i16)
+            .unwrap();
+        session.step_level2_source_pass(0);
+        session.step_level2_source_pass(1);
+        assert!(session.ordinary().houses().iter().any(|row| {
+            row.entity_index == house.entity_index && !row.active && row.source_retained()
+        }));
+
+        // Even an empty GenerateEvents group runs 49F90. It must drain the
+        // owning family before exposing the same source address to NewEvent.
+        session
+            .publish_authored_group(0, attacker, 32767, true)
+            .unwrap();
+        assert!(
+            session
+                .ordinary()
+                .houses()
+                .iter()
+                .all(|row| { row.entity_index != house.entity_index })
+        );
+        let arena = &session.session.state.live.economy;
+        let raw = &arena.entities[usize::from(house.entity_index)];
+        assert!(!raw.active && raw.class == 0);
+        assert!(arena.free_slots.contains(&house.entity_index));
+        let tile = u16::from(house.position.x >> 8) | ((house.position.y >> 8) << 8);
+        assert_eq!(
+            session.canonical_terrain().planes().entity_indices[usize::from(tile)],
+            arena.map_chains.tile_head(tile) as i16,
+            "group rebuild publishes the retired House cell head"
+        );
+    }
+
+    #[test]
     fn qualified_house_lazy_rollback_matches_eager_outputs_and_hashes() {
         fn eager_reference(
             compatibility: &mut Level2ResetSession,
@@ -21801,7 +21813,11 @@ mod tests {
                 &events,
                 &mut live.terrain,
             ) {
-                Ok(()) => Ok(events),
+                Ok(()) => {
+                    live.ordinary
+                        .publish_house_source(&mut live.economy, source_slot);
+                    Ok(events)
+                }
                 Err(error) => {
                     live.ordinary = ordinary_before;
                     live.economy = economy_before;
@@ -21920,6 +21936,19 @@ mod tests {
                 assert_eq!(
                     actual.level2_compatibility().ordinary().houses()[0].phase,
                     2
+                );
+                let live = &actual.level2_compatibility().session.state.live;
+                let house = live
+                    .ordinary
+                    .houses()
+                    .iter()
+                    .find(|house| house.entity_index == source_slot)
+                    .unwrap();
+                let raw = &live.economy.entities[usize::from(source_slot)];
+                assert_eq!(
+                    (raw.life, raw.action, raw.phase, raw.position),
+                    (house.life, house.action, house.phase, house.position),
+                    "generic consumers see the completed House callback, including idle: {case}"
                 );
             }
         }

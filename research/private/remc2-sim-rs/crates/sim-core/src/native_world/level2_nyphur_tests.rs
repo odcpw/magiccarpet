@@ -1,9 +1,39 @@
 use super::super::tests::{level_two_campaign_session, level_two_fixture_path};
 use super::*;
 use crate::native_world::{
-    LEVEL2_NYPHUR_ENTITY_INDEX, POSSESSION_PROJECTILE_MODEL, level2_possession_guidance_target_top,
-    projectile_guidance_angles,
+    LEVEL2_NYPHUR_ENTITY_INDEX, Level2ResetSession, POSSESSION_PROJECTILE_MODEL,
+    level2_possession_guidance_target_top, projectile_guidance_angles,
 };
+
+// Earlier fixtures assumed the first cadence always selected a creature.
+// Ordinary Goat deaths now publish mana spheres, which sub_13CE0 correctly
+// selects before sub_14530. Wait for the real class-5 relation without
+// changing actor state or selector priority. This bounded prelude is separate
+// from the existing 300-turn family-0 pursuit/cast window below.
+fn advance_to_class5_target(session: &mut Level2ResetSession) -> (usize, usize) {
+    for turn in 1..=4096 {
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        assert!(session.dispatch_events().iter().all(|event| !matches!(
+            event,
+            Level2DispatchEvent::Error {
+                source_slot: 112,
+                ..
+            }
+        )));
+        if session.nyphur_dispatch_state_byte() != 13 {
+            continue;
+        }
+        let source = &session.economy.entities[112];
+        let target_index = usize::from(source.source_word_96());
+        let target = &session.economy.entities[target_index];
+        assert_eq!(target.class, 5);
+        assert!(matches!(target.model, 0 | 1));
+        assert!(level2_nyphur_source_identity_matches(source, target));
+        eprintln!("ordinary class-5 selection after {turn} turns: target {target_index}");
+        return (turn, target_index);
+    }
+    panic!("ordinary Nyphur did not finish its higher-priority mana pursuit within 4096 turns");
+}
 
 #[test]
 fn level_two_nyphur_participant_chain_is_source_bound_and_reset_isolated() {
@@ -749,13 +779,10 @@ fn level_two_ai_modes_0_1_2_are_exact() {
     let mut related = inspection
         .level2_reset_session()
         .expect("Level 2 mode-1 relation session");
-    for _ in 0..53 {
-        related.step_outer_turn(PlayerCommand::default(), 0);
-    }
-    assert_eq!(related.economy.entities[112].source_word_96(), 70);
+    let (_, target_index) = advance_to_class5_target(&mut related);
     assert!(level2_nyphur_source_identity_matches(
         &related.economy.entities[112],
-        &related.economy.entities[70]
+        &related.economy.entities[target_index]
     ));
 
     let mode1_trace = Level2NyphurDispatcher::trace_for_state(1, 0, 112);
@@ -805,7 +832,7 @@ fn level_two_ai_modes_0_1_2_are_exact() {
     };
     let mut inclusive = related.clone();
     inclusive.session.state.live.economy.entities[112].set_position(source_position);
-    inclusive.session.state.live.economy.entities[70].set_position(Position {
+    inclusive.session.state.live.economy.entities[target_index].set_position(Position {
         x: source_position.x + 512,
         ..source_position
     });
@@ -830,7 +857,7 @@ fn level_two_ai_modes_0_1_2_are_exact() {
 
     let mut exact_height = related.clone();
     exact_height.session.state.live.economy.entities[112].set_position(source_position);
-    exact_height.session.state.live.economy.entities[70].set_position(Position {
+    exact_height.session.state.live.economy.entities[target_index].set_position(Position {
         z: source_position.z - 512,
         ..source_position
     });
@@ -853,7 +880,7 @@ fn level_two_ai_modes_0_1_2_are_exact() {
 
     let mut exclusive = related.clone();
     exclusive.session.state.live.economy.entities[112].set_position(source_position);
-    exclusive.session.state.live.economy.entities[70].set_position(Position {
+    exclusive.session.state.live.economy.entities[target_index].set_position(Position {
         x: source_position.x + 513,
         ..source_position
     });
@@ -881,7 +908,7 @@ fn level_two_ai_modes_0_1_2_are_exact() {
     let mut stale = inclusive.clone();
     let preserved_roll = stale.session.state.live.economy.entities[112].source_roll();
     let stale_identity =
-        level2_nyphur_source_identity(&stale.session.state.live.economy.entities[70])
+        level2_nyphur_source_identity(&stale.session.state.live.economy.entities[target_index])
             .wrapping_add(1);
     stale.session.state.live.economy.entities[112].record[156..158]
         .copy_from_slice(&stale_identity.to_le_bytes());
@@ -954,6 +981,43 @@ fn level_two_ai_modes_0_1_2_are_exact() {
 }
 
 #[test]
+fn level_two_nyphur_replaced_target_keeps_the_ordinary_avoidance_tail() {
+    let mut session = NativeWorld::inspect_level2(level_two_fixture_path())
+        .unwrap()
+        .level2_reset_session()
+        .unwrap();
+    advance_to_class5_target(&mut session);
+    let live = &mut session.session.state.live;
+    let target_slot = live.economy.entities[112].source_word_96();
+    assert_ne!(
+        target_slot, 0,
+        "the ordinary selector must create the relation"
+    );
+    assert!(level2_nyphur_source_identity_matches(
+        &live.economy.entities[112],
+        &live.economy.entities[usize::from(target_slot)]
+    ));
+    // Only invalidate the stored generation. This models the actual reused
+    // target which stopped the ordinary native run at tick 1764.
+    let identity = live.economy.entities[112].source_word_98();
+    live.economy.entities[112].record[156..158]
+        .copy_from_slice(&identity.wrapping_add(1).to_le_bytes());
+    let source_before = live.economy.entities[112].clone();
+    live.nyphur_dispatcher.common_upkeep.byte_0x45e = 3;
+    live.nyphur_dispatcher
+        .step_sub_13850(
+            112,
+            &mut live.economy.entities,
+            &live.core.players,
+            &live.terrain,
+            &session.session.definition.presentation,
+        )
+        .expect("a replaced target skips aiming and still performs avoidance");
+    assert_eq!(live.economy.entities[112], source_before);
+    assert_eq!(live.nyphur_dispatcher.common_upkeep.byte_0x45e, 4);
+}
+
+#[test]
 fn level_two_ai_modes_8_9_13_and_mode5_nocall_are_exact() {
     let inspection =
         NativeWorld::inspect_level2(level_two_fixture_path()).expect("qualified Level 2 package");
@@ -967,15 +1031,12 @@ fn level_two_ai_modes_8_9_13_and_mode5_nocall_are_exact() {
         .nyphur_common_upkeep()
         .expect("initial Nyphur common carrier");
 
-    // This is the ordinary production route: sub_12E70 selects the
-    // source-backed class-5 target and latches mode 13. No test-only state
-    // write creates the target relation or makes the AI source live.
-    for _ in 0..53 {
-        initial.step_outer_turn(PlayerCommand::default(), 0);
-    }
+    // Let the ordinary selector consume higher-priority sphere targets
+    // before it selects a class-5 relation for these mode-body vectors.
+    let (selection_turn, target_index) = advance_to_class5_target(&mut initial);
     assert_eq!(initial.nyphur_dispatch_state_byte(), 13);
     let source = initial.session.state.live.economy.entities[112].clone();
-    let target = initial.session.state.live.economy.entities[70].clone();
+    let target = initial.session.state.live.economy.entities[target_index].clone();
     assert!(level2_nyphur_source_identity_matches(&source, &target));
     assert_eq!(source.source_word_96(), target.index);
     assert!(target.model == 0 || target.model == 1);
@@ -1000,11 +1061,29 @@ fn level_two_ai_modes_8_9_13_and_mode5_nocall_are_exact() {
         .record[158] ^= 1;
     assert!(unrelated_census_mutation.nyphur_participant().is_err());
 
-    let expected_roll = i16::try_from(crate::heading_for_positions(
-        source.position,
-        target.position,
-    ))
-    .expect("mode helper roll fits signed source carrier");
+    // A later natural selection already has movement from earlier sphere
+    // pursuit. Isolate the common callback so mode-body assertions do not
+    // mistake that preceding movement for a write by sub_13890.
+    let mut common_only = initial.clone();
+    {
+        let live = &mut common_only.session.state.live;
+        live.nyphur_dispatcher
+            .common_upkeep
+            .step(
+                112,
+                &mut live.economy.entities,
+                &live.terrain,
+                &common_only.session.definition.presentation,
+                live.core
+                    .context
+                    .effects
+                    .as_ref()
+                    .map_or(0, |effects| effects.move_speed_flag),
+                live.shared_spells.local_player.player_color_index(),
+            )
+            .unwrap();
+    }
+    let common_source = common_only.economy.entities[112].clone();
 
     // All three pinned wrappers enter the same sub_13890 body, but their
     // wrapper symbols remain observable in the dispatcher trace. The far
@@ -1046,18 +1125,24 @@ fn level_two_ai_modes_8_9_13_and_mode5_nocall_are_exact() {
         )));
         let stepped_source = &candidate.session.state.live.economy.entities[112];
         assert_eq!(
-            stepped_source.entity_rng, source.entity_rng,
+            stepped_source.entity_rng, common_source.entity_rng,
             "far state-13 must not consume the movement RNG"
         );
         assert_eq!(
-            stepped_source.yaw, source.yaw,
+            stepped_source.yaw, common_source.yaw,
             "far state-13 must not enter the movement yaw branch"
         );
         assert_eq!(
-            stepped_source.position, source.position,
+            stepped_source.position, common_source.position,
             "far state-13 must not enter the movement position branch"
         );
-        assert_eq!(stepped_source.source_roll(), expected_roll);
+        assert_eq!(
+            stepped_source.source_roll(),
+            crate::heading_for_positions(
+                common_source.position,
+                candidate.economy.entities[target_index].position
+            ) as i16
+        );
         let common = candidate
             .nyphur_common_upkeep()
             .expect("mode helper common carrier");
@@ -1132,12 +1217,12 @@ fn level_two_ai_modes_8_9_13_and_mode5_nocall_are_exact() {
     let source_before_negative = wrong_identity.session.state.live.economy.entities[112]
         .record_bytes()
         .to_vec();
-    wrong_identity.session.state.live.economy.entities[70].model =
-        wrong_identity.session.state.live.economy.entities[70]
+    wrong_identity.session.state.live.economy.entities[target_index].model =
+        wrong_identity.session.state.live.economy.entities[target_index]
             .model
             .wrapping_add(1);
-    wrong_identity.session.state.live.economy.entities[70].record[68] =
-        wrong_identity.session.state.live.economy.entities[70].model;
+    wrong_identity.session.state.live.economy.entities[target_index].record[68] =
+        wrong_identity.session.state.live.economy.entities[target_index].model;
     let wrong_identity_terrain = wrong_identity.canonical_terrain().clone();
     let wrong_identity_players = wrong_identity.players().to_vec();
     wrong_identity
@@ -1165,9 +1250,7 @@ fn level_two_ai_modes_8_9_13_and_mode5_nocall_are_exact() {
     // the ordinary outer phase byte and emits the exact call sequence.
     let mut mode5 = initial.clone();
     mode5.session.state.live.nyphur_dispatcher.state_byte = 5;
-    let mode5_source_before = mode5.session.state.live.economy.entities[112]
-        .record_bytes()
-        .to_vec();
+    let mode5_source_before = common_source.record_bytes().to_vec();
     mode5.step_outer_turn(PlayerCommand::default(), 0);
     let mode5_trace = mode5
         .nyphur_dispatch_traces()
@@ -1188,6 +1271,23 @@ fn level_two_ai_modes_8_9_13_and_mode5_nocall_are_exact() {
     );
     let mut mode5_expected_record = mode5_source_before;
     mode5_expected_record[66] = mode5_expected_record[66].wrapping_add(1);
+    // An earlier cast can still have an active holder after its AI cooldown
+    // expires. Its later ordinary callback consumes one tick and clears
+    // positive parent regen (sub_693F0/sub_68DE0), independently of mode 5.
+    let holder_ticks = [113, 114].map(|slot| {
+        (
+            initial.economy.entities[slot].active_value,
+            mode5.economy.entities[slot].active_value,
+        )
+    });
+    assert!(
+        holder_ticks
+            .iter()
+            .any(|(before, after)| *before > 0 && *after == *before - 1),
+        "an ordinary Nyphur holder consumes the pending spell tick: {holder_ticks:?}"
+    );
+    assert!(common_source.mana_regen > 0);
+    mode5_expected_record[140..144].copy_from_slice(&0_i32.to_le_bytes());
     assert_eq!(
         mode5.economy.entities[112].record_bytes(),
         mode5_expected_record.as_slice()
@@ -1218,7 +1318,7 @@ fn level_two_ai_modes_8_9_13_and_mode5_nocall_are_exact() {
     assert_eq!(replay.dispatch_observability_hash(), initial_dispatch_hash);
     assert_eq!(replay.economy.entities, initial_entities);
     assert_eq!(replay.nyphur_common_upkeep().unwrap(), initial_common);
-    for _ in 0..54 {
+    for _ in 0..=selection_turn {
         replay.step_outer_turn(PlayerCommand::default(), 0);
     }
     assert_eq!(replay.campaign_state_hash(), stepped_campaign_hash);
@@ -2730,8 +2830,8 @@ fn level_two_ai_modes_3_4_11_12_are_exact() {
     }
     assert_eq!(
         production_states,
-        BTreeSet::from([0_i8, 13_i8]),
-        "the qualified cursor reaches the package-backed default and state-13 selector"
+        BTreeSet::from([0_i8, 6_i8]),
+        "the qualified cursor selects the higher-priority live death sphere first"
     );
 
     // sub_13B00 is a production selector, not a test-only state setter.
@@ -2930,11 +3030,12 @@ fn level_two_ai_modes_3_4_11_12_are_exact() {
     let mut mode4 = inspection
         .level2_reset_session()
         .expect("mode-4 production carrier");
-    for _ in 0..53 {
-        mode4.step_outer_turn(PlayerCommand::default(), 0);
-    }
+    let (_, mode4_target_index) = advance_to_class5_target(&mut mode4);
     let mode4_source = mode4.session.state.live.economy.entities[112].clone();
-    assert_eq!(mode4_source.source_word_96(), 70);
+    assert_eq!(
+        usize::from(mode4_source.source_word_96()),
+        mode4_target_index
+    );
     mode4.session.state.live.nyphur_dispatcher.state_byte = 4;
     mode4.step_outer_turn(PlayerCommand::default(), 0);
     let mode4_trace = mode4
@@ -2973,8 +3074,9 @@ fn level_two_ai_modes_3_4_11_12_are_exact() {
     // this private state-byte dispatcher vector.
     let mut stale_identity = mode4;
     let stale_source_roll = stale_identity.session.state.live.economy.entities[112].source_roll();
-    let target_identity =
-        level2_nyphur_source_identity(&stale_identity.session.state.live.economy.entities[70]);
+    let target_identity = level2_nyphur_source_identity(
+        &stale_identity.session.state.live.economy.entities[mode4_target_index],
+    );
     stale_identity.session.state.live.economy.entities[112].record[156..158]
         .copy_from_slice(&target_identity.wrapping_add(1).to_le_bytes());
     stale_identity
@@ -3559,20 +3661,37 @@ fn level_two_ai_shared_tail_owned_rows_are_exact() {
         }
     )));
 
-    // The exact cadence gate is 55 at the qualified reflex value. The
-    // 53rd outer turn enters the pinned post-mode tail with the live
-    // class-5 mana rows; sub_14530 therefore selects row 70 and latches
-    // state 13 after the common callback. A generic one-tail dispatcher
-    // or slot-order mover does not reach this same state/target pair.
+    // The exact cadence gate is 55 at the qualified reflex value. Goat
+    // deaths now publish actual model-39 rows before the 53rd outer turn;
+    // sub_13CE0 selects that higher-priority target before sub_14530.
     for _ in 1..53 {
         session.step_outer_turn(PlayerCommand::default(), 0);
     }
-    assert_eq!(session.nyphur_dispatch_state_byte(), 13);
+    assert_eq!(session.nyphur_dispatch_state_byte(), 6);
     let stepped_source = &session.session.state.live.economy.entities[112];
-    assert_eq!(stepped_source.source_word_96(), 70);
+    let selected_target_index = usize::from(stepped_source.source_word_96());
+    assert_eq!(selected_target_index, 119);
+    let sphere = *session
+        .economy
+        .spheres()
+        .iter()
+        .find(|sphere| {
+            sphere.active && usize::from(sphere.source_entity_index) == selected_target_index
+        })
+        .expect("the selected target is owned by the typed sphere arena");
+    let mut selected_target = session.economy.entities[selected_target_index].clone();
+    level2_nyphur_project_mana_sphere(
+        &mut selected_target,
+        sphere,
+        u16::try_from(sphere.id).expect("source sphere identity"),
+    );
+    assert_eq!((selected_target.class, selected_target.model), (10, 39));
+    assert!(session.economy.spheres().iter().any(|sphere| {
+        sphere.active && usize::from(sphere.source_entity_index) == selected_target_index
+    }));
     assert!(level2_nyphur_source_identity_matches(
         stepped_source,
-        &session.economy.entities[70]
+        &selected_target
     ));
     let final_trace = session
         .nyphur_dispatch_traces()
@@ -3584,7 +3703,7 @@ fn level_two_ai_shared_tail_owned_rows_are_exact() {
     // above on the production dispatcher itself.
     assert_eq!(final_trace.state_byte, 0);
     // The selector was latched as case 0 before the first tail changed
-    // the persistent state to 13, so the source still performs both
+    // the persistent state to 6, so the source still performs both
     // case-0 tail calls on this dispatch.
     assert_eq!(final_trace.tail_call_count(), 2);
     assert_eq!(
@@ -3603,14 +3722,14 @@ fn level_two_ai_shared_tail_owned_rows_are_exact() {
         }
     )));
 
-    // The next ordinary cursor dispatch must execute the latched state-13
+    // The next ordinary cursor dispatch must execute the latched state-6
     // helper before its shared tail.  Capture the source carriers first so
     // a trace-only or tail-only implementation cannot satisfy this test.
     let transition_source = session.session.state.live.economy.entities[112].clone();
-    let transition_target = session.session.state.live.economy.entities[70].clone();
+    let transition_target = selected_target;
     let transition_common = session
         .nyphur_common_upkeep()
-        .expect("state-13 transition common carrier");
+        .expect("state-6 transition common carrier");
     assert_eq!(transition_common.byte_0x45d, 0);
     assert_eq!(transition_common.word_0xe_14, 0);
 
@@ -3619,14 +3738,14 @@ fn level_two_ai_shared_tail_owned_rows_are_exact() {
         .nyphur_dispatch_traces()
         .last()
         .cloned()
-        .expect("state-13 ordinary dispatch emits Nyphur trace");
-    assert_eq!(next_trace.state_byte, 13);
+        .expect("state-6 ordinary dispatch emits Nyphur trace");
+    assert_eq!(next_trace.state_byte, 6);
     assert_eq!(next_trace.tail_call_count(), 1);
     assert_eq!(
         next_trace.calls.as_ref(),
         &[
             Level2NyphurDispatchCall::Sub12a70,
-            Level2NyphurDispatchCall::Helper(Level2NyphurDispatchHelper::Sub13850),
+            Level2NyphurDispatchCall::Helper(Level2NyphurDispatchHelper::Sub135c0),
             Level2NyphurDispatchCall::Sub12e70,
         ]
     );
@@ -3640,15 +3759,15 @@ fn level_two_ai_shared_tail_owned_rows_are_exact() {
     let next_source = &session.session.state.live.economy.entities[112];
     assert_eq!(
         next_source.entity_rng, transition_source.entity_rng,
-        "the far state-13 branch does not consume movement RNG"
+        "the far state-6 branch does not consume movement RNG"
     );
     assert_eq!(
         next_source.yaw, transition_source.yaw,
-        "the far state-13 branch does not enter the yaw branch"
+        "the far state-6 branch does not enter the yaw branch"
     );
     assert_eq!(
         next_source.position, transition_source.position,
-        "the far state-13 branch does not enter the position branch"
+        "the far state-6 branch does not enter the position branch"
     );
     assert_eq!(
         next_source.source_roll(),
@@ -3656,11 +3775,11 @@ fn level_two_ai_shared_tail_owned_rows_are_exact() {
             transition_source.position,
             transition_target.position,
         ))
-        .expect("state-13 roll fits")
+        .expect("state-6 roll fits")
     );
     let next_common = session
         .nyphur_common_upkeep()
-        .expect("state-13 ordinary dispatch common carrier");
+        .expect("state-6 ordinary dispatch common carrier");
     assert_eq!(next_common.speed, transition_source.minimum_speed());
     assert_eq!(next_common.word_0xe_14, 1);
     assert_eq!(next_common.byte_0x45c, transition_common.byte_0x45c);
@@ -4457,7 +4576,7 @@ fn level_two_ai_cast_eligibility_owned_rows_are_exact() {
 
 /// The ordinary Level 2 route reaches the genuine family-0 Fireball
 /// producer with no selector, relation, position, or state coercion: the
-/// production tail selects class-5 row 70, natural pursuit crosses the
+/// production tail selects a class-5 row after sphere pursuit, then crosses the
 /// 3,328 gate, and the pinned case-0 `sub_14E10` branch activates holder
 /// 113. The proof continues through the same-pass holder producer, the
 /// scheduled class-9 consumer and its epilogue, the following-visit mana
@@ -4467,12 +4586,15 @@ fn level_two_ai_cast_eligibility_owned_rows_are_exact() {
 fn level_two_nyphur_family0_activation_reaches_projectile_consumer_ordinarily() {
     let mut session = level_two_campaign_session();
     let baseline_campaign_hash = session.campaign_state_hash();
+    advance_to_class5_target(&mut session);
+    assert_eq!(session.nyphur_common_upkeep().unwrap().spell_enabled[0], 0);
     let mut replay = session.clone();
 
     let mut selection_turn = None;
     let mut crossed_3328 = None;
     let mut activation = None;
     for turn in 1..=300_u16 {
+        let burst_before = session.nyphur_common_upkeep().unwrap().word_0x1a2;
         session.step_outer_turn(PlayerCommand::default(), 0);
         replay.step_outer_turn(PlayerCommand::default(), 0);
         assert_eq!(
@@ -4498,10 +4620,15 @@ fn level_two_nyphur_family0_activation_reaches_projectile_consumer_ordinarily() 
             continue;
         }
         if selection_turn.is_none() {
-            assert_eq!(
-                target_slot, 70,
-                "the ordinary selector must choose the source-nearest class-5 row"
-            );
+            // Newly live death-sphere producers can select state 6 first.
+            // Keep the original positive family-0 cast and 300-turn bound;
+            // start pursuit observations only on the genuine class-5 route.
+            if session.nyphur_dispatch_state_byte() != 13 {
+                continue;
+            }
+            let target = &session.economy.entities[usize::from(target_slot)];
+            assert_eq!(target.class, 5);
+            assert!(matches!(target.model, 0 | 1));
             assert_eq!(session.nyphur_dispatch_state_byte(), 13);
             selection_turn = Some(turn);
         }
@@ -4514,13 +4641,13 @@ fn level_two_nyphur_family0_activation_reaches_projectile_consumer_ordinarily() 
             .nyphur_common_upkeep()
             .expect("ordinary Nyphur common carrier remains valid");
         if common.spell_enabled[0] != 0 {
-            activation = Some((turn, distance));
+            activation = Some((turn, distance, burst_before));
             break;
         }
     }
-    let selection_turn = selection_turn.expect("ordinary selector chooses row 70");
+    let selection_turn = selection_turn.expect("ordinary selector chooses a class-5 target");
     let crossed_3328 = crossed_3328.expect("state-13 pursuit naturally crosses 3328");
-    let (activation_turn, activation_distance) =
+    let (activation_turn, activation_distance, burst_before) =
         activation.expect("state-13 family-0 activation arms the source cooldown");
     assert!(selection_turn < crossed_3328 && crossed_3328 <= activation_turn);
     assert!(activation_distance <= 3_328);
@@ -4557,11 +4684,16 @@ fn level_two_nyphur_family0_activation_reaches_projectile_consumer_ordinarily() 
         "sub_14E10 installs the exact family-0 cooldown"
     );
     assert_eq!(
-        common.word_0x1a2, 1,
+        common.word_0x1a2,
+        if burst_before == 7 {
+            -28
+        } else {
+            burst_before + 1
+        },
         "the case-0 branch advances the source burst counter exactly once"
     );
     let source = &session.economy.entities[112];
-    let target = &session.economy.entities[70];
+    let target = &session.economy.entities[usize::from(source.source_word_96())];
     let horizontal = crate::legacy_sqrt(super::super::level2_wrapping_xy_distance(
         source.position,
         target.position,
@@ -4651,6 +4783,11 @@ fn level_two_nyphur_family0_activation_reaches_projectile_consumer_ordinarily() 
     // continues the burst: eight case-0 casts advance `word_0x1A2` to the
     // pinned reset value, after which the state-13 body is locked out until
     // the common callback recovers the counter.
+    let mana_before_charge = common.mana;
+    assert_eq!(
+        common.mana_regen, -fireball_profile.max_mana,
+        "the deferred cost is published to the authoritative AI carrier"
+    );
     session.step_outer_turn(PlayerCommand::default(), 0);
     replay.step_outer_turn(PlayerCommand::default(), 0);
     assert_eq!(session.campaign_state_hash(), replay.campaign_state_hash());
@@ -4659,7 +4796,7 @@ fn level_two_nyphur_family0_activation_reaches_projectile_consumer_ordinarily() 
         .expect("following Nyphur common carrier remains valid");
     assert_eq!(
         following.mana,
-        1_000 - fireball_profile.max_mana,
+        (mana_before_charge - fireball_profile.max_mana).clamp(0, common.max_mana),
         "the deferred family-0 charge lands on the following Nyphur visit"
     );
     let mut lockout = None;
@@ -4730,19 +4867,31 @@ fn level_two_nyphur_family0_activation_reaches_projectile_consumer_ordinarily() 
 fn level_two_nyphur_mode7_cadence_gate_and_family0_cast_are_exact() {
     let mut session = level_two_campaign_session();
     let baseline_campaign_hash = session.campaign_state_hash();
+    let (_, mut target_index) = advance_to_class5_target(&mut session);
 
     // Let the ordinary selector and pursuit establish the genuine target
     // relation and bring the source into the (2048, 3584] band without any
     // position write.
-    for _ in 0..230 {
+    for _ in 0..300 {
+        target_index = usize::from(session.economy.entities[112].source_word_96());
+        if level2_wrapping_target_distance(
+            session.economy.entities[112].position,
+            session.economy.entities[target_index].position,
+        ) <= 3_584
+        {
+            break;
+        }
         session.step_outer_turn(PlayerCommand::default(), 0);
     }
-    assert_eq!(session.economy.entities[112].source_word_96(), 70);
+    assert!(level2_nyphur_source_identity_matches(
+        &session.economy.entities[112],
+        &session.economy.entities[target_index]
+    ));
     let start_distance = level2_wrapping_target_distance(
         session.economy.entities[112].position,
-        session.economy.entities[70].position,
+        session.economy.entities[target_index].position,
     );
-    assert!(start_distance > 2_048);
+    assert!(start_distance > 2_048 && start_distance <= 3_584);
     assert_eq!(
         session
             .nyphur_common_upkeep()
@@ -4760,6 +4909,7 @@ fn level_two_nyphur_mode7_cadence_gate_and_family0_cast_are_exact() {
         session.session.state.live.nyphur_dispatcher.state_byte = 7;
         replay.session.state.live.nyphur_dispatcher.state_byte = 7;
         let phase_before = session.economy.entities[112].phase;
+        let burst_before = session.nyphur_common_upkeep().unwrap().word_0x1a2;
         session.step_outer_turn(PlayerCommand::default(), 0);
         replay.step_outer_turn(PlayerCommand::default(), 0);
         assert_eq!(session.campaign_state_hash(), replay.campaign_state_hash());
@@ -4782,8 +4932,10 @@ fn level_two_nyphur_mode7_cadence_gate_and_family0_cast_are_exact() {
             }
         )));
         let source = &session.economy.entities[112];
-        let distance =
-            level2_wrapping_target_distance(source.position, session.economy.entities[70].position);
+        let distance = level2_wrapping_target_distance(
+            source.position,
+            session.economy.entities[target_index].position,
+        );
         if distance <= 2_048 {
             crossed_2048.get_or_insert(turn);
         }
@@ -4791,7 +4943,7 @@ fn level_two_nyphur_mode7_cadence_gate_and_family0_cast_are_exact() {
             .nyphur_common_upkeep()
             .expect("mode-7 common carrier remains valid");
         if common.spell_enabled[0] != 0 {
-            activation = Some((turn, distance, phase_before));
+            activation = Some((turn, distance, phase_before, burst_before));
             break;
         }
         if crossed_2048.is_some() {
@@ -4803,7 +4955,7 @@ fn level_two_nyphur_mode7_cadence_gate_and_family0_cast_are_exact() {
         }
     }
     let crossed_2048 = crossed_2048.expect("mode-7 pursuit crosses the 2048 gate");
-    let (activation_turn, activation_distance, activation_phase) =
+    let (activation_turn, activation_distance, activation_phase, burst_before) =
         activation.expect("the mode-7 cadence tick activates the family-0 holder");
     assert!(crossed_2048 <= activation_turn);
     assert!(activation_distance <= 2_048, "the pinned mode-7 receipt");
@@ -4825,7 +4977,14 @@ fn level_two_nyphur_mode7_cadence_gate_and_family0_cast_are_exact() {
     let fireball_profile = level2_direct_starting_spell_profile(0, tier)
         .expect("qualified Nyphur family-0 tier profile");
     assert_eq!(common.spell_enabled[0], LEVEL2_NYPHUR_SPELL_COOLDOWNS[0]);
-    assert_eq!(common.word_0x1a2, 1);
+    assert_eq!(
+        common.word_0x1a2,
+        if burst_before == 7 {
+            -28
+        } else {
+            burst_before + 1
+        }
+    );
     assert_eq!(
         session.economy.entities[113].active_value,
         fireball_profile.word_0x30.cast_signed().wrapping_sub(1)
@@ -4867,13 +5026,10 @@ fn level_two_nyphur_mode7_cadence_gate_and_family0_cast_are_exact() {
     assert_eq!(replay.campaign_state_hash(), baseline_campaign_hash);
 
     // Direct body vectors discriminate the branches that the dispatched
-    // flow above cannot isolate. They reuse the ordinary 53-turn relation
+    // flow above cannot isolate. They reuse the ordinary class-5 relation
     // and rewrite only detached geometry/phase carriers.
     let mut related = level_two_campaign_session();
-    for _ in 0..53 {
-        related.step_outer_turn(PlayerCommand::default(), 0);
-    }
-    assert_eq!(related.economy.entities[112].source_word_96(), 70);
+    let (_, target_index) = advance_to_class5_target(&mut related);
     let source_position = Position {
         x: 10_000,
         y: 10_000,
@@ -4885,7 +5041,7 @@ fn level_two_nyphur_mode7_cadence_gate_and_family0_cast_are_exact() {
     let mut cadence_miss = related.clone();
     cadence_miss.session.state.live.economy.entities[112].set_position(source_position);
     cadence_miss.session.state.live.economy.entities[112].phase = 1;
-    cadence_miss.session.state.live.economy.entities[70].set_position(Position {
+    cadence_miss.session.state.live.economy.entities[target_index].set_position(Position {
         x: source_position.x + 2_048,
         ..source_position
     });
@@ -4929,7 +5085,8 @@ fn level_two_nyphur_mode7_cadence_gate_and_family0_cast_are_exact() {
         ))
         .expect("mode-7 vector heading fits the signed angle carrier"),
     );
-    inclusive_cast.session.state.live.economy.entities[70].set_position(inclusive_target_position);
+    inclusive_cast.session.state.live.economy.entities[target_index]
+        .set_position(inclusive_target_position);
     let inclusive_terrain = inclusive_cast.canonical_terrain().clone();
     inclusive_cast
         .session
@@ -4952,14 +5109,22 @@ fn level_two_nyphur_mode7_cadence_gate_and_family0_cast_are_exact() {
         inclusive_cast.economy.entities[112].position.z, source_position.z,
         "a successful cast skips the altitude branch"
     );
-    assert_eq!(inclusive_cast.nyphur_dispatcher.common_upkeep.word_0x1a2, 1);
+    let prior_burst = related.nyphur_dispatcher.common_upkeep.word_0x1a2;
+    assert_eq!(
+        inclusive_cast.nyphur_dispatcher.common_upkeep.word_0x1a2,
+        if prior_burst == 7 {
+            -28
+        } else {
+            prior_burst + 1
+        }
+    );
 
     // The exclusive 2049 cadence visit stays in the approach branch: no
     // cast, minimum-speed pursuit.
     let mut exclusive = related.clone();
     exclusive.session.state.live.economy.entities[112].set_position(source_position);
     exclusive.session.state.live.economy.entities[112].phase = 0;
-    exclusive.session.state.live.economy.entities[70].set_position(Position {
+    exclusive.session.state.live.economy.entities[target_index].set_position(Position {
         x: source_position.x + 2_049,
         ..source_position
     });
@@ -4991,7 +5156,7 @@ fn level_two_nyphur_mode7_cadence_gate_and_family0_cast_are_exact() {
     let mut starved = related.clone();
     starved.session.state.live.economy.entities[112].set_position(source_position);
     starved.session.state.live.economy.entities[112].phase = 0;
-    starved.session.state.live.economy.entities[70].set_position(Position {
+    starved.session.state.live.economy.entities[target_index].set_position(Position {
         x: source_position.x + 2_048,
         ..source_position
     });
@@ -5047,13 +5212,13 @@ fn level_two_nyphur_mode7_cadence_gate_and_family0_cast_are_exact() {
     let mut stale = related.clone();
     stale.session.state.live.economy.entities[112].set_position(source_position);
     stale.session.state.live.economy.entities[112].phase = 0;
-    stale.session.state.live.economy.entities[70].set_position(Position {
+    stale.session.state.live.economy.entities[target_index].set_position(Position {
         x: source_position.x + 2_048,
         ..source_position
     });
     let preserved_roll = stale.session.state.live.economy.entities[112].source_roll();
     let stale_identity =
-        level2_nyphur_source_identity(&stale.session.state.live.economy.entities[70])
+        level2_nyphur_source_identity(&stale.session.state.live.economy.entities[target_index])
             .wrapping_add(1);
     stale.session.state.live.economy.entities[112].record[156..158]
         .copy_from_slice(&stale_identity.to_le_bytes());

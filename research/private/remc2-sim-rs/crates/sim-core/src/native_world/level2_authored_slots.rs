@@ -6066,6 +6066,11 @@ impl Level2EconomyState {
                 .filter(|carrier| carrier.active)
                 .map(|carrier| carrier.source_entity_index),
         );
+        // Retain settlement rows frozen at the source boundary only while
+        // their owning family still holds that exact slot generation.
+        active_dynamic_source_slots.extend(self.settlement_mana_source_slots().filter(|slot| {
+            self.source_owner.contains_key(slot) && !self.free_slots.contains(slot)
+        }));
         self.owner_mana_rows.retain(|row| {
             imported_source_slots.contains(&row.source_entity_index)
                 || active_dynamic_source_slots.contains(&row.source_entity_index)

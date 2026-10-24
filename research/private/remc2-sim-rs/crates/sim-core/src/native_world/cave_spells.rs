@@ -411,7 +411,7 @@ pub(crate) fn step_source(
         (9, 30, 31) => step_projectile(arena, terrain, shared, core, slot, parameters),
         (10, 89, 96) => {
             for (position, yaw) in step_effect(arena, terrain, slot)? {
-                if let Some(child) = arena.allocate_smoke13(position)
+                if let Some(child) = arena.allocate_smoke13_with_terrain(position, terrain)
                     && let Some(row) = arena
                         .economy
                         .model59_smoke_children
@@ -1079,6 +1079,19 @@ mod tests {
         let mut saw_smoke = false;
         let mut saw_visible_descriptor = false;
         for _ in 0..96 {
+            let arena = &session.session.state.live.economy;
+            for smoke in arena
+                .model59_smoke_children
+                .iter()
+                .filter(|row| row.active && row.max_speed == 512)
+            {
+                let tile = arena.map_chains.tile_of(smoke.source_entity_index);
+                assert_eq!(
+                    session.canonical_terrain().planes().entity_indices[usize::from(tile)],
+                    arena.map_chains.tile_head(tile) as i16,
+                    "CaveIn Smoke13 publishes its live terrain cell head"
+                );
+            }
             saw_smoke |= session
                 .session
                 .state
