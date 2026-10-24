@@ -5,12 +5,12 @@
 //! and the live terrain. Terrain topology uses the existing source rebuild
 //! and its independent RNG, so collision and presentation see the same writes.
 
-use super::{
-    EntityAuthority, EntitySnapshot, EntitySpecialRelation, MapType, ParticleParameter,
-    RenderableMapSeed, SessionTerrain, TerrainPlanes, add_building_to_terrain,
-    building_topology_rebuild_required, rebuild_building_topology, terrain_index,
-};
 use crate::level_definition::CaveFeatureDefinition;
+use crate::native_world::{
+    EntityAuthority, EntitySnapshot, EntitySpecialRelation, MapType, ParticleParameter,
+    SessionTerrain, TerrainPlanes, add_building_to_terrain, building_topology_rebuild_required,
+    rebuild_building_topology, terrain_index,
+};
 use crate::{
     FlightWorld, Position, SIN_16_16,
     campaign::source_arena::SourceArena,
@@ -18,6 +18,7 @@ use crate::{
     legacy_terrain::{cave_perimeter_extrema, perturb_cave_ceiling},
     level1_mission::AuthoredFeature,
     move_entity,
+    renderable_map_chain::RenderableMapSeed,
 };
 
 pub(crate) mod startup;
@@ -103,14 +104,12 @@ pub(crate) fn bind_particle(
     index: u16,
     particle: ParticleParameter,
 ) -> Result<(), String> {
-    let animation_limit =
-        super::campaign_shared_families::particle_animation_limit(particle.render_mode)
-            .ok_or_else(|| {
-                format!(
-                    "cave particle {index} has unsupported render mode {}",
-                    particle.render_mode
-                )
-            })?;
+    let animation_limit = particle.animation_limit().ok_or_else(|| {
+        format!(
+            "cave particle {index} has unsupported render mode {}",
+            particle.render_mode
+        )
+    })?;
     source.particle_parameter_index = Some(index);
     source.record[94..96].copy_from_slice(&index.to_le_bytes());
     source.record[96] = 0;
@@ -136,7 +135,7 @@ pub(crate) fn allocate_ground_smoke(
 ) -> Result<Option<u16>, String> {
     arena.economy.advance_global_rng();
     let lifetime = (arena.economy.global_rng % 23 + 17) as i32;
-    let Some(slot) = arena.allocate_source_slot() else {
+    let Some(slot) = arena.allocate_source_slot_with_terrain(terrain) else {
         return Ok(None);
     };
     let mut source = new_event(slot, arena.economy.new_event_rng(slot), position);
@@ -290,7 +289,7 @@ pub(crate) fn allocate(
     if !enabled(terrain, model) {
         return Ok(None);
     }
-    let Some(slot) = arena.allocate_source_slot() else {
+    let Some(slot) = arena.allocate_source_slot_with_terrain(terrain) else {
         return Ok(None);
     };
     let mut source = new_event(slot, arena.economy.new_event_rng(slot), position);
@@ -360,7 +359,8 @@ pub(crate) fn synchronize_links(arena: &mut SourceArena, terrain: &mut SessionTe
     }
     let source = &arena.entities[usize::from(slot)];
     let tile = index(source.position);
-    terrain.planes.entity_indices[tile] = arena.economy.map_chains.tile_head(tile as u16) as i16;
+    terrain.disaster_parts().0.entity_indices[tile] =
+        arena.economy.map_chains.tile_head(tile as u16) as i16;
 }
 
 pub(crate) fn new_event(slot: u16, rng: u16, position: Position) -> EntitySnapshot {
@@ -494,7 +494,7 @@ pub(crate) fn visit_source(
             y: source.position.y,
         })?;
         synchronize_links(arena, terrain, source_slot);
-        terrain.planes.entity_indices[old_tile] =
+        terrain.disaster_parts().0.entity_indices[old_tile] =
             arena.economy.map_chains.tile_head(old_tile as u16) as i16;
     }
     Ok(visit)
@@ -503,7 +503,7 @@ pub(crate) fn visit_source(
 /// Check before calling NewEvent: the six cave-only constructors do not
 /// allocate or advance allocation/RNG state on an outdoor map.
 pub(crate) fn enabled(terrain: &SessionTerrain, model: u8) -> bool {
-    model == 86 || ((80..=85).contains(&model) && terrain.map_type == MapType::Cave)
+    model == 86 || ((80..=85).contains(&model) && terrain.map_type() == MapType::Cave)
 }
 
 /// Initialize a freshly allocated NewEvent row at its requested position.
@@ -566,7 +566,7 @@ pub(crate) fn construct(
             source.set_position(position);
             source.set_entity_rng(source.entity_rng.wrapping_mul(9_377).wrapping_add(9_439));
             let particle_index = Some(332 + source.entity_rng % 3);
-            return if terrain.planes.angles[index(position)] & 15 == 0 {
+            return if terrain.planes().angles[index(position)] & 15 == 0 {
                 Construction::Retain {
                     map_linked: true,
                     particle_index,
@@ -707,47 +707,17 @@ pub(crate) fn step(terrain: &mut SessionTerrain, source: &mut EntitySnapshot) ->
                 }
             }
         }
-        94 => visit.hide = step_ground_smoke(terrain, source),
+        94 => {
+            crate::world::effects::step_smoke(source, terrain);
+            visit.hide = source.control_flags & 0x400 != 0;
+        }
         _ => {}
     }
     if visit.terrain_mutated {
-        terrain.mutation_sequence = terrain.mutation_sequence.wrapping_add(1);
+        let (_, _, _, sequence) = terrain.disaster_parts();
+        *sequence = sequence.wrapping_add(1);
     }
     visit
-}
-
-fn step_ground_smoke(terrain: &SessionTerrain, source: &mut EntitySnapshot) -> bool {
-    let life = source.life;
-    source.set_life(life.wrapping_sub(1));
-    if life < 0 {
-        return true;
-    }
-    let speed = source.actual_speed.wrapping_sub(4).clamp(64, 128);
-    source.set_actual_speed(speed);
-    let mut position = source.position;
-    position.z = position
-        .z
-        .wrapping_add(speed)
-        .max(terrain.ground_height(source.position));
-    let age = source.source_dword_10().wrapping_add(1);
-    source.set_source_dword_10(age);
-    let mut particle = source.particle_parameter_index.unwrap_or(67);
-    if age < 16 {
-        let speed = i16::from_le_bytes([source.record[138], source.record[139]]);
-        move_entity(&mut position, source.yaw, 0, speed);
-        source.record[138..140]
-            .copy_from_slice(&speed.wrapping_sub(52).clamp(30, 1024).to_le_bytes());
-        if age & 1 == 0 && particle < 74 {
-            particle += 1;
-        }
-    }
-    if source.life < 6 && particle > 67 {
-        particle -= 1;
-    }
-    source.particle_parameter_index = Some(particle);
-    source.record[94..96].copy_from_slice(&particle.to_le_bytes());
-    source.set_position(position);
-    false
 }
 
 fn index(position: Position) -> usize {
@@ -790,7 +760,7 @@ pub(crate) fn write_ground(
     force_material: bool,
     preserve_zero_neighbors: bool,
 ) {
-    let planes = &mut terrain.planes;
+    let (planes, map_type, terrain_rng, _) = terrain.disaster_parts();
     let index = terrain_index(x, y);
     let height = height.clamp(0, 255) as u8;
     planes.ground_heights[index] = height;
@@ -814,7 +784,7 @@ pub(crate) fn write_ground(
     {
         planes.angles[index] &= 0xf0;
     }
-    add_building_to_terrain(planes, x, y, terrain.map_type, &mut terrain.terrain_rng);
+    add_building_to_terrain(planes, x, y, map_type, terrain_rng);
 }
 
 /// Source sub_34B00: repair closed perimeter cells in literal call order.
@@ -833,26 +803,19 @@ fn repair_border(terrain: &mut SessionTerrain, x: u8, y: u8, width: i32, height:
 
 fn repair_cell(terrain: &mut SessionTerrain, x: u8, y: u8, mark_type: bool) {
     let index = terrain_index(x, y);
-    if terrain.planes.angles[index] & 8 == 0 {
+    let (planes, map_type, terrain_rng, _) = terrain.disaster_parts();
+    if planes.angles[index] & 8 == 0 {
         return;
     }
-    terrain.planes.angles[index] = (terrain.planes.angles[index] & 0xf8) | 1;
+    planes.angles[index] = (planes.angles[index] & 0xf8) | 1;
     if mark_type {
-        terrain.planes.terrain_types[index] = 1;
+        planes.terrain_types[index] = 1;
     }
-    rebuild_building_topology(
-        &mut terrain.planes,
-        x,
-        y,
-        x,
-        y,
-        terrain.map_type,
-        &mut terrain.terrain_rng,
-    );
+    rebuild_building_topology(planes, x, y, x, y, map_type, terrain_rng);
 }
 
 fn perturb(terrain: &mut SessionTerrain, x: u8, y: u8, width: u16, height: u16) {
-    let planes = &mut terrain.planes;
+    let (planes, _, _, _) = terrain.disaster_parts();
     perturb_cave_ceiling(
         &planes.ground_heights,
         &mut planes.secondary_heights,
@@ -872,7 +835,7 @@ fn room(terrain: &mut SessionTerrain, source: &EntitySnapshot) {
     let x = ((source.position.x >> 8) as u8).wrapping_sub(half_width as u8);
     let y = ((source.position.y >> 8) as u8).wrapping_sub(half_height as u8);
     let floor = cave_perimeter_extrema(
-        &terrain.planes.ground_heights,
+        &terrain.planes().ground_heights,
         x,
         y,
         width as u16,
@@ -881,7 +844,7 @@ fn room(terrain: &mut SessionTerrain, source: &EntitySnapshot) {
     .0;
     // Deliberately the FLOOR maximum, not ceiling maximum (sub_48E90).
     let ceiling = cave_perimeter_extrema(
-        &terrain.planes.ground_heights,
+        &terrain.planes().ground_heights,
         x,
         y,
         width as u16,
@@ -895,14 +858,15 @@ fn room(terrain: &mut SessionTerrain, source: &EntitySnapshot) {
             let y = y.wrapping_add(row as u8);
             let index = terrain_index(x, y);
             let target = (floor - clearance).clamp(0, 254);
-            if i32::from(terrain.planes.ground_heights[index]) > target {
+            if i32::from(terrain.planes().ground_heights[index]) > target {
                 write_ground(terrain, x, y, target, false, false);
             }
             let target = (ceiling + clearance).clamp(0, 254) as u8;
-            if terrain.planes.secondary_heights[index] < target {
-                terrain.planes.secondary_heights[index] = target;
+            let planes = terrain.disaster_parts().0;
+            if planes.secondary_heights[index] < target {
+                planes.secondary_heights[index] = target;
             }
-            normalize(&mut terrain.planes, index, true);
+            normalize(planes, index, true);
         }
     }
     repair_border(
@@ -917,8 +881,8 @@ fn room(terrain: &mut SessionTerrain, source: &EntitySnapshot) {
 
 fn midpoint(terrain: &SessionTerrain, position: Position) -> u8 {
     let index = index(position);
-    ((u16::from(terrain.planes.ground_heights[index])
-        + u16::from(terrain.planes.secondary_heights[index]))
+    ((u16::from(terrain.planes().ground_heights[index])
+        + u16::from(terrain.planes().secondary_heights[index]))
         / 2)
     .min(254) as u8
 }
@@ -960,15 +924,16 @@ fn passage(terrain: &mut SessionTerrain, source: &EntitySnapshot) {
                 if squared <= radius_squared {
                     let clearance = (legacy_sqrt((radius_squared - squared) as u32) >> 5) as i32;
                     let floor = (i32::from(midpoints[0]) - clearance).clamp(0, 254);
-                    if i32::from(terrain.planes.ground_heights[index]) > floor {
+                    if i32::from(terrain.planes().ground_heights[index]) > floor {
                         write_ground(terrain, x, y, floor, false, true);
                     }
                     let ceiling = (i32::from(midpoints[0]) + clearance).clamp(0, 254) as u8;
-                    if terrain.planes.secondary_heights[index] < ceiling {
-                        terrain.planes.secondary_heights[index] = ceiling;
+                    let planes = terrain.disaster_parts().0;
+                    if planes.secondary_heights[index] < ceiling {
+                        planes.secondary_heights[index] = ceiling;
                     }
                 }
-                normalize(&mut terrain.planes, index, true);
+                normalize(terrain.disaster_parts().0, index, true);
             }
         }
         repair_border(
@@ -995,14 +960,14 @@ fn shape(terrain: &mut SessionTerrain, source: &mut EntitySnapshot) -> bool {
     let phase = source.record[74];
     if phase == 0 {
         let floor = cave_perimeter_extrema(
-            &terrain.planes.ground_heights,
+            &terrain.planes().ground_heights,
             x,
             y,
             diameter as u16,
             diameter as u16,
         );
         let ceiling = cave_perimeter_extrema(
-            &terrain.planes.secondary_heights,
+            &terrain.planes().secondary_heights,
             x,
             y,
             diameter as u16,
@@ -1072,8 +1037,8 @@ fn shape(terrain: &mut SessionTerrain, source: &mut EntitySnapshot) -> bool {
             let weight =
                 (65_536 + SIN_16_16[512 + ((distance << 10) / world_radius) as usize]) >> 1;
             let amplitude = (span * weight) >> 16;
-            let floor = i32::from(terrain.planes.ground_heights[index]);
-            let ceiling = i32::from(terrain.planes.secondary_heights[index]);
+            let floor = i32::from(terrain.planes().ground_heights[index]);
+            let ceiling = i32::from(terrain.planes().secondary_heights[index]);
             match source.model {
                 83 => {
                     let target = (i32::from(source.position.z) + amplitude).min(254);
@@ -1089,18 +1054,18 @@ fn shape(terrain: &mut SessionTerrain, source: &mut EntitySnapshot) -> bool {
                     }
                     let target = (base - amplitude).max(0);
                     if target < ceiling {
-                        terrain.planes.secondary_heights[index] =
+                        terrain.disaster_parts().0.secondary_heights[index] =
                             (ceiling - (ceiling - target) / source.life) as u8;
                     }
-                    normalize(&mut terrain.planes, index, false);
+                    normalize(terrain.disaster_parts().0, index, false);
                 }
                 84 => {
                     let target = (base - amplitude).max(0);
                     let next = ceiling - (ceiling - target) / source.life;
                     if next < ceiling {
-                        terrain.planes.secondary_heights[index] = next as u8;
+                        terrain.disaster_parts().0.secondary_heights[index] = next as u8;
                     }
-                    normalize(&mut terrain.planes, index, true);
+                    normalize(terrain.disaster_parts().0, index, true);
                 }
                 85 => {
                     let target = (base + amplitude).min(254);
@@ -1108,7 +1073,7 @@ fn shape(terrain: &mut SessionTerrain, source: &mut EntitySnapshot) -> bool {
                     if next > floor {
                         write_ground(terrain, x, y, next, distance <= 192 * radius, true);
                     }
-                    normalize(&mut terrain.planes, index, true);
+                    normalize(terrain.disaster_parts().0, index, true);
                 }
                 _ => {}
             }
@@ -1123,9 +1088,9 @@ mod tests {
     use crate::native_world::Level2EconomyState;
 
     fn terrain() -> SessionTerrain {
-        SessionTerrain {
-            map_type: MapType::Cave,
-            planes: TerrainPlanes {
+        SessionTerrain::from_planes(
+            MapType::Cave,
+            TerrainPlanes {
                 terrain_types: vec![1; 65_536].into_boxed_slice(),
                 ground_heights: vec![40; 65_536].into_boxed_slice(),
                 shading: vec![32; 65_536].into_boxed_slice(),
@@ -1133,9 +1098,8 @@ mod tests {
                 secondary_heights: vec![80; 65_536].into_boxed_slice(),
                 entity_indices: vec![0; 65_536].into_boxed_slice(),
             },
-            terrain_rng: 12_345,
-            mutation_sequence: 0,
-        }
+            12_345,
+        )
     }
 
     fn arena(terrain: &SessionTerrain) -> SourceArena {
@@ -1151,6 +1115,54 @@ mod tests {
             Level2EconomyState::from_parts(terrain.clone(), &entities, 0, 0, 0, 0, 12_345)
                 .expect("empty source arena");
         SourceArena::new(entities, economy)
+    }
+
+    #[test]
+    fn full_arena_cave_replacement_publishes_the_old_cell_before_unlinked_construction() {
+        let mut terrain = terrain();
+        let mut arena = arena(&terrain);
+        let old_position = Position {
+            x: 10 << 8,
+            y: 10 << 8,
+            z: 0,
+        };
+        let new_position = Position {
+            x: 30 << 8,
+            y: 30 << 8,
+            z: 0,
+        };
+        let vent = allocate(&mut arena, &mut terrain, 86, old_position)
+            .expect("ordinary mapped vent")
+            .expect("first free source slot");
+        assert_eq!(vent.source_slot, 1);
+        assert_eq!(terrain.planes().entity_indices[index(old_position)], 1);
+        while arena.economy.free_slot_count() != 0 {
+            allocate(&mut arena, &mut terrain, 82, new_position)
+                .expect("ordinary room allocation")
+                .expect("remaining free source slot");
+        }
+        let replacement = allocate(&mut arena, &mut terrain, 83, new_position)
+            .expect("ordinary source fallback")
+            .expect("mapped replaceable vent is reused");
+        assert_eq!(replacement.source_slot, vent.source_slot);
+        assert_eq!(arena.entities[1].model, 83);
+        assert!(!arena.economy.map_chains.is_linked(1));
+        assert_eq!(
+            arena
+                .economy
+                .map_chains
+                .tile_head(index(old_position) as u16),
+            0
+        );
+        assert_eq!(terrain.planes().entity_indices[index(old_position)], 0);
+        assert_eq!(terrain.planes().entity_indices[index(new_position)], 0);
+        let rng = arena.economy.global_rng;
+        assert!(
+            allocate(&mut arena, &mut terrain, 86, old_position)
+                .expect("no replaceable source row remains")
+                .is_none()
+        );
+        assert_eq!(arena.economy.global_rng, rng);
     }
 
     #[test]
@@ -1183,7 +1195,11 @@ mod tests {
             ),
             (8, 3, 3, 2)
         );
-        terrain.map_type = MapType::Day;
+        terrain = SessionTerrain::from_planes(
+            MapType::Day,
+            terrain.planes().clone(),
+            terrain.terrain_rng(),
+        );
         let free = arena.economy.free_slot_count();
         assert!(
             allocate(&mut arena, &mut terrain, 82, position)
@@ -1191,7 +1207,7 @@ mod tests {
                 .is_none()
         );
         assert_eq!(arena.economy.free_slot_count(), free);
-        terrain.planes.angles[index(position)] = 8;
+        terrain.disaster_parts().0.angles[index(position)] = 8;
         let allocation = allocate(&mut arena, &mut terrain, 86, position)
             .expect("ground feature")
             .expect("allocated before eligibility");
@@ -1201,7 +1217,7 @@ mod tests {
         reclaim(&mut arena, &mut terrain, allocation.source_slot);
         assert!(!arena.entities[usize::from(allocation.source_slot)].active);
         assert_eq!(arena.economy.free_slot_count(), free);
-        assert_eq!(terrain.planes.entity_indices[index(position)], 0);
+        assert_eq!(terrain.planes().entity_indices[index(position)], 0);
     }
 
     #[test]
@@ -1374,8 +1390,8 @@ mod tests {
     #[test]
     fn linked_authored_path_constructs_real_passage_and_dynamic80_only_hides() {
         let mut terrain = terrain();
-        terrain.planes.secondary_heights.fill(39);
-        terrain.planes.angles.fill(8);
+        terrain.disaster_parts().0.secondary_heights.fill(39);
+        terrain.disaster_parts().0.angles.fill(8);
         let mut arena = arena(&terrain);
         let feature = |index, x, previous, next, width| AuthoredFeature {
             index,
@@ -1409,9 +1425,9 @@ mod tests {
         assert!(apply_generation_pass(&mut arena, &mut terrain));
         assert!(!apply_generation_pass(&mut arena, &mut terrain));
         let center = terrain_index(12, 10);
-        assert!(terrain.planes.ground_heights[center] < 40);
-        assert!(terrain.planes.secondary_heights[center] > 39);
-        assert_eq!(terrain.planes.angles[center] & 8, 0);
+        assert!(terrain.planes().ground_heights[center] < 40);
+        assert!(terrain.planes().secondary_heights[center] > 39);
+        assert_eq!(terrain.planes().angles[center] & 8, 0);
         let content = terrain.deterministic_hash();
         let mut dynamic = new_event(
             3,
@@ -1460,10 +1476,10 @@ mod tests {
             assert!(step(&mut terrain, &mut source).hide);
             let center = terrain_index(10, 10);
             if model != 84 {
-                assert!(terrain.planes.ground_heights[center] > 40);
+                assert!(terrain.planes().ground_heights[center] > 40);
             }
             if model != 85 {
-                assert!(terrain.planes.secondary_heights[center] < 80);
+                assert!(terrain.planes().secondary_heights[center] < 80);
             }
         }
     }
@@ -1479,24 +1495,14 @@ mod tests {
         let mut features = crate::level1_mission::parse_authored_features(&authored)
             .expect("owner authored table");
         let mut terrain = terrain();
-        terrain
-            .planes
-            .terrain_types
-            .copy_from_slice(&bytes[..0x10000]);
-        terrain
-            .planes
+        let planes = terrain.disaster_parts().0;
+        planes.terrain_types.copy_from_slice(&bytes[..0x10000]);
+        planes
             .ground_heights
             .copy_from_slice(&bytes[0x10000..0x20000]);
-        terrain
-            .planes
-            .shading
-            .copy_from_slice(&bytes[0x20000..0x30000]);
-        terrain
-            .planes
-            .angles
-            .copy_from_slice(&bytes[0x30000..0x40000]);
-        terrain
-            .planes
+        planes.shading.copy_from_slice(&bytes[0x20000..0x30000]);
+        planes.angles.copy_from_slice(&bytes[0x30000..0x40000]);
+        planes
             .secondary_heights
             .copy_from_slice(&bytes[0x40000..0x50000]);
         let mut arena = arena(&terrain);
@@ -1515,12 +1521,15 @@ mod tests {
             ground < ceiling,
             "constructed room must admit flight between its two planes"
         );
-        assert_ne!(terrain.planes.ground_heights, before.planes.ground_heights);
         assert_ne!(
-            terrain.planes.secondary_heights,
-            before.planes.secondary_heights
+            terrain.planes().ground_heights,
+            before.planes().ground_heights
         );
-        assert_eq!(terrain.planes.angles[index(position)] & 8, 0);
+        assert_ne!(
+            terrain.planes().secondary_heights,
+            before.planes().secondary_heights
+        );
+        assert_eq!(terrain.planes().angles[index(position)] & 8, 0);
         assert!(
             arena.entities.iter().all(|source| !source.active),
             "generation temporary was reclaimed"

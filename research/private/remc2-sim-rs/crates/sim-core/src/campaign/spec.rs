@@ -14,7 +14,7 @@ use crate::level_definition::{
     LevelObjectiveId, MechanicKind, RivalWizardId, SceneryKind, SpellKind, SwitchKind,
     TilePosition,
 };
-pub use crate::native_world::cave_features::startup::CaveStartupWorld;
+pub use crate::world::terrain::cave_features::startup::CaveStartupWorld;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::{
@@ -753,6 +753,7 @@ fn generate_bound_cave_startup(
     };
     let mut caves = BTreeMap::new();
     let mut corridors = BTreeMap::new();
+    let mut rings = BTreeMap::new();
     for (&record, id) in bindings {
         let entity = level
             .entity(id)
@@ -763,15 +764,19 @@ fn generate_bound_cave_startup(
         if let Some(properties) = entity.cave_corridor() {
             corridors.insert(record, properties);
         }
+        if let Some(properties) = entity.terrain_disaster() {
+            rings.insert(record, properties);
+        }
     }
-    crate::native_world::cave_features::startup::generate(
-        crate::native_world::cave_features::startup::Inputs {
+    crate::world::terrain::cave_features::startup::generate(
+        crate::world::terrain::cave_features::startup::Inputs {
             authored,
             pre_terrain,
             boundary,
             construction,
             caves: &caves,
             corridors: &corridors,
+            rings: &rings,
         },
     )
     .map_err(fail)
@@ -2048,6 +2053,16 @@ impl CampaignDefinition {
             &self.read_member("feature-start.bin")?,
             &self.read_member("feature-construction-inputs.bin")?,
         )
+    }
+
+    pub(crate) fn can_generate_cave_startup(&self) -> Result<bool> {
+        crate::world::terrain::cave_features::startup::supports_authored(
+            &self.read_member("authored-level.bin")?,
+        )
+        .map_err(|message| CampaignPackageError {
+            stage: ValidationStage::TypedMembers,
+            message,
+        })
     }
 
     pub(crate) fn presentation_assets(&self) -> &[PortablePresentationAsset] {
@@ -3486,14 +3501,26 @@ fn validate_feature_boundary(
     expected_allocator_trace_count: u32,
     cave: bool,
 ) -> Result<Vec<MemberRef>> {
+    let construction_schema = match read_u16(
+        &members["feature-construction-inputs.bin"],
+        4,
+        "feature construction version",
+        ValidationStage::TypedMembers,
+    )? {
+        1 => "mc2-feature-construction-inputs/v1",
+        2 => "mc2-feature-construction-inputs/v2",
+        _ => {
+            return fail(
+                ValidationStage::TypedMembers,
+                "unsupported feature construction version",
+            );
+        }
+    };
     let expected = [
         ("feature-start.bin", "mc2-feature-boundary/v1"),
         ("terrain-pre-features.bin", "mc2-feature-terrain/v1"),
         ("feature-allocator.bin", "mc2-feature-allocator/v1"),
-        (
-            "feature-construction-inputs.bin",
-            "mc2-feature-construction-inputs/v1",
-        ),
+        ("feature-construction-inputs.bin", construction_schema),
         ("entities-post-features.bin", "mc2-feature-entity-arena/v1"),
         ("terrain-post-features.bin", "mc2-feature-terrain/v1"),
         ("feature-end.bin", "mc2-feature-boundary/v1"),

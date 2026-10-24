@@ -590,7 +590,7 @@ impl EntitySnapshot {
 
     /// Keep the lossless source cadence byte in sync with a typed callback
     /// projection that reuses an imported frame-zero entity slot.
-    pub(super) fn set_phase(&mut self, phase: u8) {
+    pub(crate) fn set_phase(&mut self, phase: u8) {
         self.phase = phase;
         self.record[66] = phase;
     }
@@ -648,7 +648,7 @@ impl EntitySnapshot {
 
     /// Keep source `byte_0x46_70` in lockstep with the semantic player
     /// action-12 exit phase.
-    pub(super) fn set_source_byte_46(&mut self, value: u8) {
+    pub(crate) fn set_source_byte_46(&mut self, value: u8) {
         self.record[74] = value;
     }
 
@@ -1208,7 +1208,7 @@ pub(super) fn level2_wrapping_target_distance(left: Position, right: Position) -
     )
 }
 
-pub(super) fn level2_mana_sphere_dimension(mana: i32) -> i16 {
+pub(crate) fn level2_mana_sphere_dimension(mana: i32) -> i16 {
     MANA_SPHERE_COLLISION_DIMENSIONS[usize::from(mana_sphere_size_ordinal(mana))]
 }
 
@@ -2057,6 +2057,19 @@ pub struct HouseRemovalOutcome {
 }
 
 impl SessionTerrain {
+    pub(crate) fn from_planes(map_type: MapType, planes: TerrainPlanes, terrain_rng: u16) -> Self {
+        Self {
+            map_type,
+            planes,
+            terrain_rng,
+            mutation_sequence: 0,
+        }
+    }
+
+    pub(crate) const fn map_type(&self) -> MapType {
+        self.map_type
+    }
+
     /// Disasters borrow only terrain state, never the campaign session. This
     /// is the same geometry and RNG domain used by buildings and flight.
     pub(crate) fn disaster_parts(&mut self) -> (&mut TerrainPlanes, MapType, &mut u16, &mut u64) {
@@ -2602,11 +2615,11 @@ pub(super) const TERRAIN_GENERATION_TABLE_PREFIX: [u8; 0x70] = [
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x17, 0x00, 0x17, 0x50, 0x17, 0x30, 0x17, 0x60,
 ];
 
-pub(super) fn terrain_index(x: u8, y: u8) -> usize {
+pub(crate) fn terrain_index(x: u8, y: u8) -> usize {
     usize::from(x) + usize::from(y) * 256
 }
 
-pub(super) fn building_topology_rebuild_required(terrain_type: u8) -> bool {
+pub(crate) fn building_topology_rebuild_required(terrain_type: u8) -> bool {
     matches!(
         terrain_type,
         0 | 0x25 | 0x26 | 0x2c..=0x2f | 0x51 | 0x53 | 0x68 | 0x69 | 0x6d | 0x72 | 0x74
@@ -3622,6 +3635,25 @@ impl RuntimeSnapshot {
     #[must_use]
     pub fn bytes(&self) -> &[u8] {
         &self.bytes
+    }
+
+    /// Source word31/word33, retained in the validated MCR1 prefix. These
+    /// reset relations initialize the effect owner's mutable arena state.
+    pub(crate) fn effect_globals(&self) -> (u16, u16) {
+        (
+            u16::from_le_bytes([self.bytes[24], self.bytes[25]]),
+            u16::from_le_bytes([self.bytes[26], self.bytes[27]]),
+        )
+    }
+
+    /// Source byte36E03, distinct from the objective textbox byte at69.
+    pub(crate) fn alternate_volcano(&self) -> bool {
+        self.bytes[68] != 0
+    }
+
+    /// A successful source9 constructor clears the actual retained global.
+    pub(crate) fn clear_alternate_volcano(&mut self) {
+        self.bytes[68] = 0;
     }
 
     /// Service the source-visible objective presentation cadence that remains
