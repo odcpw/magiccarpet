@@ -29,6 +29,8 @@ pub const LEVEL1_ASSET_CAMPAIGN_PACKAGE_SCHEMA: &str = "mc2-owner-campaign-packa
 pub const CAMPAIGN_DEFINITION_SCHEMA: &str = "mc2-campaign-definition/v1";
 pub const LEVEL2_CAMPAIGN_DEFINITION_SCHEMA: &str = "mc2-campaign-definition/v2";
 pub const LEVEL1_ASSET_CAMPAIGN_DEFINITION_SCHEMA: &str = "mc2-campaign-definition/v3";
+pub const ORDINARY_CAMPAIGN_PACKAGE_SCHEMA: &str = "mc2-owner-campaign-package/v4";
+pub const ORDINARY_CAMPAIGN_DEFINITION_SCHEMA: &str = "mc2-campaign-definition/v4";
 pub const LEVEL2_REMC2_COMMIT: &str = "6806c7204d17220ecc0430759f784aea8ee2ddb2";
 const FIREBALL_PROJECTILE_BASE_ASSET_SHA256: &str =
     "331df08c5fa8483d5dd75dc10abd9dd76cc26918d6447403b3f3199bc31f521d";
@@ -92,6 +94,28 @@ const LEVEL1_CAMPAIGN_MEMBERS: [&str; 17] = [
     "terrain.bin",
 ];
 
+const ORDINARY_CAMPAIGN_MEMBERS: [&str; 19] = [
+    "authored-level.bin",
+    "building-parameters.bin",
+    "campaign-definition.json",
+    "collision-masks.bin",
+    "entities-post-features.bin",
+    "entities.bin",
+    "feature-allocator.bin",
+    "feature-construction-inputs.bin",
+    "feature-end.bin",
+    "feature-start.bin",
+    "players.bin",
+    "presentation.bin",
+    "runtime.bin",
+    "source-record.bin",
+    "source-record.json",
+    "source-record.packed",
+    "terrain-post-features.bin",
+    "terrain-pre-features.bin",
+    "terrain.bin",
+];
+
 const AUTHORED_RECORD_OFFSET: usize = 1_091;
 const AUTHORED_RECORD_COUNT: usize = 1_200;
 const AUTHORED_RECORD_BYTES: usize = 20;
@@ -126,6 +150,20 @@ pub struct CampaignSelection {
 }
 
 impl CampaignSelection {
+    /// Ordinary source identities; environment is part of identity, never a
+    /// gameplay capability claim. Reserved, secret and multiplayer rows differ.
+    pub fn ordinary(external_level: u16) -> Option<Self> {
+        const MAPS: [u8; 25] = [
+            1, 0, 0, 2, 0, 2, 1, 2, 0, 1, 1, 2, 0, 1, 2, 2, 0, 1, 1, 0, 2, 1, 0, 2, 1,
+        ];
+        let internal_level = external_level.checked_sub(1)?;
+        Some(Self {
+            external_level,
+            internal_level,
+            map_type_id: *MAPS.get(usize::from(internal_level))?,
+        })
+    }
+
     pub const LEVEL1: Self = Self {
         external_level: 1,
         internal_level: 0,
@@ -187,6 +225,22 @@ fn campaign_package_profile(selection: CampaignSelection) -> Option<CampaignPack
             has_presentation_assets: false,
             has_owner_manifest: false,
         }),
+        _ if CampaignSelection::ordinary(selection.external_level) == Some(selection) => {
+            Some(CampaignPackageProfile {
+                members: &ORDINARY_CAMPAIGN_MEMBERS,
+                package_schema: ORDINARY_CAMPAIGN_PACKAGE_SCHEMA,
+                definition_schema: ORDINARY_CAMPAIGN_DEFINITION_SCHEMA,
+                player_schema: "mc2-player-arena/v4",
+                player_version: 4,
+                player_record_bytes: 663,
+                feature_allocator_bytes: 4_032,
+                feature_allocator_trace_count: 0,
+                has_collision_bank: true,
+                has_building_parameters: true,
+                has_presentation_assets: false,
+                has_owner_manifest: false,
+            })
+        }
         _ => None,
     }
 }
@@ -200,22 +254,80 @@ fn building_objective_provenance(
         return Ok(Vec::new());
     }
     let offset = AUTHORED_STAGE_OFFSET + 4 * 7;
-    let stage = authored[offset] as i8;
-    let objective_selector = i16::from_le_bytes([authored[offset + 1], authored[offset + 2]]);
-    if stage != 9 || objective_selector != 153 {
+    if authored[offset] != 9
+        || read_i16(
+            authored,
+            offset + 1,
+            "standing-building target",
+            ValidationStage::SourceFacts,
+        )? != 153
+    {
         return fail(
             ValidationStage::SourceFacts,
             "standing-building objective operation differs from the qualified Level 2 binding",
         );
     }
-    let authored_record = u16::try_from(objective_selector).map_err(|_| CampaignPackageError {
-        stage: ValidationStage::SourceFacts,
-        message: "standing-building objective selector is outside the authored arena".to_owned(),
-    })?;
+    let provenance = decode_building_objective_provenance(true, authored, declared_rows)?;
+    if !matches!(
+        provenance.as_slice(),
+        [SelectorProvenance {
+            authored_record: 153,
+            source_class: 10,
+            source_model: 21,
+            source_subtype: 45,
+            source_field: SourceField::Par1_14,
+            selector_value: 21
+        }]
+    ) {
+        return fail(
+            ValidationStage::SourceFacts,
+            "standing-building objective operation differs from the qualified Level 2 binding",
+        );
+    }
+    Ok(provenance)
+}
+
+fn decode_building_objective_provenance(
+    has_building_parameters: bool,
+    authored: &[u8],
+    declared_rows: &[AuthoredBehaviorRow],
+) -> Result<Vec<SelectorProvenance>> {
+    if !has_building_parameters {
+        return Ok(Vec::new());
+    }
+    let mut targets = BTreeSet::new();
+    for index in 0..8 {
+        let offset = AUTHORED_STAGE_OFFSET + index * 7;
+        if authored[offset] != 9 {
+            continue;
+        }
+        let target = read_i16(
+            authored,
+            offset + 1,
+            "standing-building target",
+            ValidationStage::SourceFacts,
+        )?;
+        let target = u16::try_from(target).map_err(|_| CampaignPackageError {
+            stage: ValidationStage::SourceFacts,
+            message: format!("standing-building objective {index} has negative target"),
+        })?;
+        if !declared_rows.iter().any(|row| {
+            row.authored_record == target
+                && row.initial_source_slot.is_none()
+                && row.class == 10
+                && row.subtype == 45
+        }) {
+            return fail(
+                ValidationStage::SourceFacts,
+                format!("standing-building objective {index} has no authored building at {target}"),
+            );
+        }
+        targets.insert(target);
+    }
     Ok(declared_rows
         .iter()
         .filter(|row| {
-            row.authored_record == authored_record
+            targets.contains(&row.authored_record)
                 && row.initial_source_slot.is_none()
                 && row.class == 10
                 && row.subtype == 45
@@ -223,7 +335,7 @@ fn building_objective_provenance(
         .map(|row| SelectorProvenance {
             authored_record: row.authored_record,
             source_class: row.class,
-            source_model: row.model,
+            source_model: u8::try_from(row.model).expect("validated building selector"),
             source_subtype: row.subtype,
             source_field: SourceField::Par1_14,
             selector_value: u32::from(row.model),
@@ -300,7 +412,7 @@ pub struct AuthoredBehaviorRow {
     pub initial_source_slot: Option<u16>,
     pub class: u8,
     pub action: u8,
-    pub model: u8,
+    pub model: u16,
     pub subtype: u8,
     pub initial_dispatch_sites: Vec<u16>,
 }
@@ -481,6 +593,7 @@ pub struct CampaignDefinition {
     item_entity_by_authored_record: BTreeMap<u16, LevelEntityId>,
     switch_by_authored_record: BTreeMap<u16, SwitchKind>,
     switch_by_initial_source_slot: BTreeMap<u16, SwitchKind>,
+    switch_entity_by_initial_source_slot: BTreeMap<u16, LevelEntityId>,
     mechanic_by_authored_record: BTreeMap<u16, MechanicKind>,
     mechanic_by_initial_source_slot: BTreeMap<u16, MechanicKind>,
     mechanic_entity_by_authored_record: BTreeMap<u16, LevelEntityId>,
@@ -490,6 +603,109 @@ pub struct CampaignDefinition {
     movable_entity_bindings: BTreeMap<LevelEntityId, Mc2EntityRuntimeBinding>,
     local_player_fireball_mana_cost: Option<i32>,
     member_hashes: BTreeMap<String, String>,
+}
+
+/// Validated owner data, before runtime capability admission. Unknown gameplay
+/// remains in the complete source payload and is never an executable definition.
+#[derive(Debug, Clone)]
+pub struct DecodedCampaignPackage {
+    pub identity: CampaignSelection,
+    pub package_sha256: String,
+    pub campaign_spec: CampaignSpec,
+    pub source_facts: Vec<SourceFact>,
+    pub required_behaviors: Vec<BehaviorRequirement>,
+    pub source_record: Option<SourceLevelRecord>,
+    pub wizard_settings: [SourceWizardSettings; 8],
+    pub authored_stages: [SourceAuthoredStage; 8],
+    pub stage_variables: [SourceStageVariable; 11],
+    /// Known semantic family identities. Absence means an unresolved adapter
+    /// binding, not permission to drop the original authored record.
+    pub semantic_bindings: BTreeMap<u16, LevelEntityKind>,
+    /// Known typed entities with their actual property/configuration bindings.
+    /// A projection error is retained explicitly; it never admits gameplay or
+    /// replaces the complete decoded compatibility payload.
+    pub semantic_entities: std::result::Result<LevelDefinition, String>,
+    members: BTreeMap<String, Vec<u8>>,
+    files: BTreeMap<String, (u64, String)>,
+    presentation_assets: Vec<PortablePresentationAsset>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SourceLevelRecord {
+    pub container_path: String,
+    pub container_sha256: String,
+    pub offset_table_path: String,
+    pub offset_table_sha256: String,
+    pub packed_offset: u64,
+    pub packed_bytes: u64,
+    pub encoding: String,
+    pub owner_artifacts: Value,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SourceWizardSettings {
+    pub aggression: i16,
+    pub reflexes: i16,
+    pub perception: i16,
+    pub starting_spells: [u8; 26],
+    pub spell_settings: [u8; 26],
+    pub blocked_spells: [u8; 26],
+    pub life: i16,
+    pub source_bytes: [u8; 110],
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SourceAuthoredStage {
+    pub kind: i8,
+    pub selector: i16,
+    pub x: i16,
+    pub y: i16,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SourceStageVariable {
+    pub kind: i8,
+    pub flags: i8,
+    pub word: u16,
+    pub x: u16,
+    pub y: u16,
+}
+
+impl DecodedCampaignPackage {
+    pub fn decode(package_root: impl AsRef<Path>, selection: CampaignSelection) -> Result<Self> {
+        CampaignDefinition::decode_package(package_root, selection)
+    }
+
+    pub fn member(&self, name: &str) -> Option<&[u8]> {
+        self.members.get(name).map(Vec::as_slice)
+    }
+
+    pub fn authored_bytes(&self) -> &[u8] {
+        &self.members["authored-level.bin"]
+    }
+
+    /// Both planes belong to the selected package; Cave ceilings are never
+    /// replaced with the normalized inactive plane used by Day/Night exports.
+    pub fn terrain_planes(&self) -> (&[u8], &[u8]) {
+        let terrain = &self.members["terrain.bin"];
+        (&terrain[0x10000..0x20000], &terrain[0x40000..0x50000])
+    }
+
+    /// Bind the decoded planes to the ordinary terrain sampling consumer even
+    /// while an unrelated gameplay family still prevents session admission.
+    pub fn terrain(&self) -> Result<crate::legacy_terrain::LegacyTerrain> {
+        let bytes = &self.members["terrain.bin"];
+        crate::legacy_terrain::LegacyTerrain::new(
+            bytes[..0x10000].to_vec(),
+            bytes[0x10000..0x20000].to_vec(),
+            (self.identity.map_type_id == 2).then(|| bytes[0x40000..0x50000].to_vec()),
+            bytes[0x30000..0x40000].to_vec(),
+        )
+        .map_err(|message| CampaignPackageError {
+            stage: ValidationStage::TypedMembers,
+            message,
+        })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -574,13 +790,11 @@ impl CampaignDefinition {
         })
     }
 
-    /// Validate stages 1–9 in contract order without allocating a handle or
-    /// touching session/global state.
-    pub fn preflight(
+    /// Decode stages 1–7 without asserting that a runtime can execute them.
+    fn decode_package(
         package_root: impl AsRef<Path>,
         caller: CampaignSelection,
-        capabilities: &dyn CampaignCapabilityRegistry,
-    ) -> Result<Self> {
+    ) -> Result<DecodedCampaignPackage> {
         let package_root = package_root.as_ref();
 
         // Stage 1: exact outer schema and bounded identities.
@@ -976,7 +1190,12 @@ impl CampaignDefinition {
         )?;
         let authored = &members[&authored_records.member];
         let entities = &members[&entities_ref.member];
-        let expected_rows = decode_behavior_rows(authored, entities, outer.map_type_id)?;
+        let expected_rows = decode_behavior_rows(
+            authored,
+            entities,
+            outer.map_type_id,
+            caller.external_level > 3,
+        )?;
         let declared_rows = parse_behavior_rows(&spec_value["authored_behavior_rows"])?;
         if declared_rows != expected_rows {
             return fail(
@@ -993,15 +1212,18 @@ impl CampaignDefinition {
             profile.player_version,
             profile.player_record_bytes,
         )?;
-        let local_player_fireball_mana_cost =
-            validate_local_player_fireball_binding(&members[&players_ref.member], entities)?;
-        validate_terrain(&members["terrain.bin"], "terrain.bin")?;
+        validate_terrain(
+            &members["terrain.bin"],
+            "terrain.bin",
+            outer.map_type_id == 2,
+        )?;
         let feature_boundary = validate_feature_boundary(
             &reset_sources["feature_boundary"],
             &files,
             &members,
             profile.feature_allocator_bytes,
             profile.feature_allocator_trace_count,
+            outer.map_type_id == 2,
         )?;
         let presentation_recipe =
             validate_presentation(&spec_value["presentation_recipe"], &files, &members, outer)?;
@@ -1024,17 +1246,19 @@ impl CampaignDefinition {
             .map(|row| SelectorProvenance {
                 authored_record: row.authored_record,
                 source_class: row.class,
-                source_model: row.model,
+                source_model: u8::try_from(row.model).expect("validated building selector"),
                 source_subtype: row.subtype,
                 source_field: SourceField::Par1_14,
                 selector_value: u32::from(row.model),
             })
             .collect::<Vec<_>>();
-        let building_objective_provenance = building_objective_provenance(
-            profile.has_building_parameters,
-            authored,
-            &declared_rows,
-        )?;
+        let provenance_decoder = if caller.external_level > 3 {
+            decode_building_objective_provenance
+        } else {
+            building_objective_provenance
+        };
+        let building_objective_provenance =
+            provenance_decoder(profile.has_building_parameters, authored, &declared_rows)?;
         let source_facts = validate_source_facts(
             &definition["source_facts"],
             &SourceFactContext {
@@ -1059,8 +1283,151 @@ impl CampaignDefinition {
 
         // Stage 7: the declared operations must match the authored stage row
         // that supplied the Stage-6 SourceFact provenance.
-        let (initial_rng, objectives) =
-            validate_operations(spec_value, authored, &files, &members)?;
+        let (initial_rng, objectives) = validate_operations(
+            spec_value,
+            authored,
+            &files,
+            &members,
+            caller.external_level > 3,
+        )?;
+        let source_record = if caller.external_level > 3 {
+            Some(validate_source_record(
+                &members,
+                caller,
+                &presentation_recipe.resolved_files,
+            )?)
+        } else {
+            None
+        };
+        let wizard_settings = std::array::from_fn(|index| {
+            let offset = AUTHORED_RECORD_OFFSET
+                + AUTHORED_RECORD_COUNT * AUTHORED_RECORD_BYTES
+                + 1
+                + index * 110;
+            let record = &authored[offset..offset + 110];
+            SourceWizardSettings {
+                aggression: i16::from_le_bytes([record[3], record[4]]),
+                reflexes: i16::from_le_bytes([record[7], record[8]]),
+                perception: i16::from_le_bytes([record[11], record[12]]),
+                starting_spells: record[15..41].try_into().expect("26 spell settings"),
+                spell_settings: record[41..67].try_into().expect("26 spell settings"),
+                blocked_spells: record[67..93].try_into().expect("26 spell settings"),
+                life: i16::from_le_bytes([record[93], record[94]]),
+                source_bytes: record.try_into().expect("110-byte wizard record"),
+            }
+        });
+        let semantic_bindings = declared_rows
+            .iter()
+            .filter(|row| row.initial_source_slot.is_none())
+            .filter_map(|row| {
+                Mc2LevelDefinition::authored_kind(row.class, row.subtype)
+                    .map(|kind| (row.authored_record, kind))
+            })
+            .collect();
+        let semantic_entities =
+            Mc2LevelDefinition::catalog_entities(authored, descriptor_selection);
+        let authored_stages = std::array::from_fn(|index| {
+            let row = &authored
+                [AUTHORED_STAGE_OFFSET + index * 7..AUTHORED_STAGE_OFFSET + (index + 1) * 7];
+            SourceAuthoredStage {
+                kind: row[0] as i8,
+                selector: i16::from_le_bytes([row[1], row[2]]),
+                x: i16::from_le_bytes([row[3], row[4]]),
+                y: i16::from_le_bytes([row[5], row[6]]),
+            }
+        });
+        let stage_variables = std::array::from_fn(|index| {
+            let offset = AUTHORED_STAGE_OFFSET + 8 * 7 + index * 8;
+            let row = &authored[offset..offset + 8];
+            SourceStageVariable {
+                kind: row[0] as i8,
+                flags: row[1] as i8,
+                word: u16::from_le_bytes([row[2], row[3]]),
+                x: u16::from_le_bytes([row[4], row[5]]),
+                y: u16::from_le_bytes([row[6], row[7]]),
+            }
+        });
+        let required_behaviors = parse_behavior_requirements(&definition["required_behaviors"])?;
+        if required_behaviors != expected_behavior_requirements(&declared_rows) {
+            return fail(
+                ValidationStage::BehaviorClosure,
+                "declared required behavior roots differ from the live reset selectors",
+            );
+        }
+        Ok(DecodedCampaignPackage {
+            identity: descriptor_selection,
+            package_sha256,
+            campaign_spec: CampaignSpec {
+                authored_records,
+                authored_behavior_rows: declared_rows,
+                reset_sources: ResetSources {
+                    terrain: terrain_ref,
+                    entities: entities_ref,
+                    players: players_ref,
+                    runtime: runtime_ref,
+                    feature_boundary,
+                },
+                initial_rng,
+                initial_activation: Vec::new(),
+                objectives,
+                presentation_recipe,
+            },
+            source_facts,
+            required_behaviors,
+            source_record,
+            wizard_settings,
+            authored_stages,
+            stage_variables,
+            semantic_bindings,
+            semantic_entities,
+            members,
+            files,
+            presentation_assets,
+        })
+    }
+
+    /// Runtime admission consumes the same decoded package as catalog and asset
+    /// consumers. It never substitutes another mission's reset state.
+    pub fn preflight(
+        package_root: impl AsRef<Path>,
+        caller: CampaignSelection,
+        capabilities: &dyn CampaignCapabilityRegistry,
+    ) -> Result<Self> {
+        let package_root = package_root.as_ref();
+        let decoded = DecodedCampaignPackage::decode(package_root, caller)?;
+        let DecodedCampaignPackage {
+            identity: descriptor_selection,
+            package_sha256,
+            campaign_spec,
+            source_facts,
+            required_behaviors: declared_requirements,
+            members,
+            files,
+            presentation_assets,
+            ..
+        } = decoded;
+        let profile = campaign_package_profile(caller).expect("decoded package has a profile");
+        let CampaignSpec {
+            authored_records,
+            authored_behavior_rows: declared_rows,
+            reset_sources,
+            initial_rng,
+            initial_activation: _,
+            objectives,
+            presentation_recipe,
+        } = campaign_spec;
+        let ResetSources {
+            terrain: terrain_ref,
+            entities: entities_ref,
+            players: players_ref,
+            runtime: runtime_ref,
+            feature_boundary,
+        } = reset_sources;
+        let authored = &members[&authored_records.member];
+        let entities = &members[&entities_ref.member];
+        let expected_rows = declared_rows.clone();
+        let local_player_fireball_mana_cost =
+            validate_local_player_fireball_binding(&members[&players_ref.member], entities)?;
         let building_parameters = profile
             .has_building_parameters
             .then(|| decode_building_parameters(&members["building-parameters.bin"]))
@@ -1166,6 +1533,36 @@ impl CampaignDefinition {
                 ))
             })
             .collect::<BTreeMap<_, _>>();
+        let mut switch_entity_by_initial_source_slot = BTreeMap::new();
+        for (&slot, &kind) in &switch_by_initial_source_slot {
+            if !matches!(
+                kind,
+                SwitchKind::CreatureAbsenceTrigger | SwitchKind::PopulationAbsenceTrigger
+            ) {
+                continue;
+            }
+            let position = initial_entity_tile(entities, slot)?;
+            let matches = semantic_level
+                .semantic
+                .entities()
+                .iter()
+                .filter(|entity| {
+                    entity.kind() == LevelEntityKind::Switch(kind)
+                        && entity.default_position() == position
+                })
+                .collect::<Vec<_>>();
+            if matches.len() != 1 {
+                return fail(
+                    ValidationStage::TypedOperations,
+                    format!(
+                        "initial {} switch slot {slot} has {} semantic arming candidates",
+                        kind.as_str(),
+                        matches.len()
+                    ),
+                );
+            }
+            switch_entity_by_initial_source_slot.insert(slot, matches[0].id().clone());
+        }
         let mut movable_entity_bindings = BTreeMap::new();
         for (entity_id, hint) in &semantic_level.movable_runtime_hint_by_entity_id {
             let entity =
@@ -1466,11 +1863,19 @@ impl CampaignDefinition {
         // declaration, and compiled keys. Any later selector is independently
         // fail-closed by the source scheduler before callback or epilogue.
         let expected_requirements = expected_behavior_requirements(&declared_rows);
-        let declared_requirements = parse_behavior_requirements(&definition["required_behaviors"])?;
         if declared_requirements != expected_requirements {
             return fail(
                 ValidationStage::BehaviorClosure,
                 "declared required behavior roots differ from the live reset selectors",
+            );
+        }
+        if presentation_recipe.terrain_graphics_flags != 0 {
+            return fail(
+                ValidationStage::BehaviorClosure,
+                format!(
+                    "source terrain feature flags {} require their gameplay/presentation consumers",
+                    presentation_recipe.terrain_graphics_flags,
+                ),
             );
         }
         for requirement in &declared_requirements {
@@ -1478,8 +1883,8 @@ impl CampaignDefinition {
                 return fail(
                     ValidationStage::BehaviorClosure,
                     format!(
-                        "compiled registry is missing capability {:?}",
-                        requirement.key
+                        "compiled registry is missing capability {:?}, required by {:?}",
+                        requirement.key, requirement.provenance
                     ),
                 );
             }
@@ -1544,6 +1949,7 @@ impl CampaignDefinition {
             item_entity_by_authored_record: semantic_level.item_entity_by_authored_record,
             switch_by_authored_record: semantic_level.switch_by_authored_record,
             switch_by_initial_source_slot,
+            switch_entity_by_initial_source_slot,
             mechanic_by_authored_record: semantic_level.mechanic_by_authored_record,
             mechanic_by_initial_source_slot,
             mechanic_entity_by_authored_record: semantic_level.mechanic_entity_by_authored_record,
@@ -1665,6 +2071,10 @@ impl CampaignDefinition {
         &self.switch_by_initial_source_slot
     }
 
+    pub(crate) fn initial_switch_entity_bindings(&self) -> &BTreeMap<u16, LevelEntityId> {
+        &self.switch_entity_by_initial_source_slot
+    }
+
     pub(crate) fn mechanic_bindings(&self) -> &BTreeMap<u16, MechanicKind> {
         &self.mechanic_by_authored_record
     }
@@ -1723,10 +2133,16 @@ impl CampaignDefinition {
                     | "fireball-projectile-base.indexed-sprite.json"
                     | "fireball-projectile-fade.indexed-sprite.json"
                     | "owner-manifest.json"
+                    | "source-record.bin"
+                    | "source-record.json"
+                    | "source-record.packed"
             ) {
                 continue;
             }
-            if name == "building-parameters.bin" && !corrected_day_export {
+            if name == "building-parameters.bin"
+                && !corrected_day_export
+                && self.identity.external_level <= 3
+            {
                 continue;
             }
             let bytes = self.read_member(name)?;
@@ -2223,6 +2639,7 @@ fn decode_behavior_rows(
     authored: &[u8],
     entities: &[u8],
     expected_map_type_id: u8,
+    wide_parameters: bool,
 ) -> Result<Vec<AuthoredBehaviorRow>> {
     if authored.len() != 0x6604 || authored.get(6) != Some(&expected_map_type_id) {
         return fail(
@@ -2263,12 +2680,20 @@ fn decode_behavior_rows(
         )?;
         if class > u16::from(u8::MAX)
             || !(0..=255).contains(&subtype)
-            || model > u16::from(u8::MAX)
+            || (!wide_parameters && model > u16::from(u8::MAX))
             || !(-1..=255).contains(&action)
         {
             return fail(
                 ValidationStage::TypedMembers,
                 format!("authored behavior row {index} exceeds schema-v1 widths"),
+            );
+        }
+        if class == 10 && subtype == 45 && model >= 76 {
+            return fail(
+                ValidationStage::SourceFacts,
+                format!(
+                    "authored building row {index} parameter selector {model} is outside BLDGPRM"
+                ),
             );
         }
         rows.push(AuthoredBehaviorRow {
@@ -2280,7 +2705,7 @@ fn decode_behavior_rows(
             } else {
                 u8::try_from(action).expect("bounded action")
             },
-            model: u8::try_from(model).expect("bounded model"),
+            model,
             subtype: u8::try_from(subtype).expect("bounded subtype"),
             initial_dispatch_sites: if action == -1 { vec![4] } else { vec![1, 2] },
         });
@@ -2307,7 +2732,7 @@ fn decode_behavior_rows(
             initial_source_slot: Some(u16::try_from(slot).expect("1,000 slots fit u16")),
             class: entities[offset + 67],
             action: entities[offset + 73],
-            model: entities[offset + 68],
+            model: u16::from(entities[offset + 68]),
             subtype: entities[offset + 70],
             initial_dispatch_sites: vec![1, 2, 3],
         });
@@ -2398,7 +2823,7 @@ fn parse_behavior_rows(value: &Value) -> Result<Vec<AuthoredBehaviorRow>> {
                     &format!("{label}.action"),
                     ValidationStage::TypedMembers,
                 )?,
-                model: bounded_u8(
+                model: bounded_u16(
                     &object["model"],
                     &format!("{label}.model"),
                     ValidationStage::TypedMembers,
@@ -2651,7 +3076,7 @@ fn validate_runtime(bytes: &[u8]) -> Result<u16> {
         let offset = 192 + index * 14;
         let stage_type = bytes[offset];
         let flags = bytes[offset + 1];
-        if !matches!(stage_type, 0 | 3 | 5 | 7 | 9) {
+        if stage_type > 9 {
             return fail(
                 ValidationStage::TypedMembers,
                 format!("runtime stage {index} has an unproven type"),
@@ -2670,8 +3095,32 @@ fn validate_runtime(bytes: &[u8]) -> Result<u16> {
             "runtime stage relation",
             ValidationStage::TypedMembers,
         )?;
-        let expected_domain = u8::from(stage_type == 3 && flags & 1 != 0) * 2;
-        if domain != expected_domain || (domain == 2 && !(1..=1_000).contains(&relation)) {
+        let expected_domain = match stage_type {
+            1 | 2 | 4 => {
+                if flags & 1 != 0 {
+                    2
+                } else {
+                    1
+                }
+            }
+            3 if flags & 1 != 0 => 2,
+            6 => {
+                if flags & 1 != 0 {
+                    3
+                } else {
+                    1
+                }
+            }
+            _ => 0,
+        };
+        let bounded = match domain {
+            0 => true,
+            1 => relation <= 1_200,
+            2 => relation <= 1_000,
+            3 => relation < 1_000,
+            _ => false,
+        };
+        if domain != expected_domain || !bounded {
             return fail(
                 ValidationStage::TypedMembers,
                 format!("runtime stage {index} relation is invalid"),
@@ -2705,7 +3154,7 @@ fn validate_runtime(bytes: &[u8]) -> Result<u16> {
             "runtime stage-variable relation",
             ValidationStage::TypedMembers,
         )?;
-        if domain != expected_domain || (domain == 1 && !(1..=1_000).contains(&relation)) {
+        if domain != expected_domain || (domain == 1 && relation > 1_000) {
             return fail(
                 ValidationStage::TypedMembers,
                 format!("runtime stage variable {index} relation is invalid"),
@@ -2740,8 +3189,213 @@ fn validate_runtime(bytes: &[u8]) -> Result<u16> {
     Ok(player_count)
 }
 
-fn validate_terrain(bytes: &[u8], label: &str) -> Result<()> {
-    if bytes.len() != 0x70000 || bytes[0x40000..0x50000].iter().any(|byte| *byte != 0) {
+fn validate_source_record(
+    members: &BTreeMap<String, Vec<u8>>,
+    selection: CampaignSelection,
+    resources: &PresentationResolvedFiles,
+) -> Result<SourceLevelRecord> {
+    let stage = ValidationStage::SourceFacts;
+    let value: Value = serde_json::from_slice(&members["source-record.json"]).map_err(|error| {
+        CampaignPackageError {
+            stage,
+            message: format!("cannot parse source-record.json: {error}"),
+        }
+    })?;
+    let record = exact_object(
+        &value,
+        &[
+            "schema",
+            "internal_level",
+            "encoding",
+            "container",
+            "offset_table",
+            "packed_offset",
+            "packed_bytes",
+            "packed_sha256",
+            "decoded_bytes",
+            "decoded_sha256",
+            "owner_artifacts",
+        ],
+        "source record",
+        stage,
+    )?;
+    require_string_eq(
+        &record["schema"],
+        "mc2-source-level-record/v1",
+        "source record schema",
+        stage,
+    )?;
+    if bounded_u16(&record["internal_level"], "source record identity", stage)?
+        != selection.internal_level
+    {
+        return fail(
+            stage,
+            "source record identity differs from selected mission",
+        );
+    }
+    let artifact = |name: &str, suffix: &str| -> Result<(String, String, u64)> {
+        let value = exact_object(
+            &record[name],
+            &["logical_path", "bytes", "sha256"],
+            name,
+            stage,
+        )?;
+        let path = string(&value["logical_path"], name, stage)?.to_owned();
+        if path != format!("GAME/NETHERW/CLEVELS/LEVELS.{suffix}")
+            && path != format!("CD_Files/LEVELS/LEVELS.{suffix}")
+        {
+            return fail(stage, format!("source {name} has an unknown logical path"));
+        }
+        Ok((
+            path,
+            lower_sha256(&value["sha256"], name, stage)?,
+            unsigned(&value["bytes"], name, stage)?,
+        ))
+    };
+    let (container_path, container_sha256, container_bytes) = artifact("container", "DAT")?;
+    let (offset_table_path, offset_table_sha256, table_bytes) = artifact("offset_table", "TAB")?;
+    // The same pinned owner containers already underpin AuthoredLevelRecords.
+    if container_bytes != 3_063_856
+        || container_sha256 != "3b7fae5d7c350486a4f62ad4b2e9fa2e4e52023a216b8a7f043ce02439b50222"
+        || table_bytes != 4_000
+        || offset_table_sha256 != "179a65f04d4aa7bc147cfd56ffb63a0da400dfd85542eb0fbda10265d6bc1bea"
+    {
+        return fail(
+            stage,
+            "source container/table identity differs from the pinned owner data",
+        );
+    }
+    let packed_offset = unsigned(&record["packed_offset"], "source packed offset", stage)?;
+    let packed_bytes = unsigned(&record["packed_bytes"], "source packed extent", stage)?;
+    let packed = &members["source-record.packed"];
+    let decoded = &members["source-record.bin"];
+    let receipt = include_str!("mc2_ordinary_source_records.tsv")
+        .lines()
+        .filter(|line| !line.starts_with('#'))
+        .map(|line| line.split('\t').collect::<Vec<_>>())
+        .find(|fields| {
+            fields.first().and_then(|value| value.parse::<u16>().ok())
+                == Some(selection.external_level)
+        })
+        .ok_or_else(|| CampaignPackageError {
+            stage,
+            message: "ordinary source record has no pinned container span".to_owned(),
+        })?;
+    if receipt.len() != 5
+        || receipt[1].parse::<u64>().ok() != Some(packed_offset)
+        || receipt[2].parse::<u64>().ok() != Some(packed_bytes)
+        || receipt[3] != sha256_hex(packed)
+        || receipt[4] != sha256_hex(decoded)
+    {
+        return fail(
+            stage,
+            "source packed span/decoded payload differs from the pinned ordinary record",
+        );
+    }
+    if packed_offset
+        .checked_add(packed_bytes)
+        .is_none_or(|end| end > container_bytes)
+        || packed_bytes != packed.len() as u64
+        || unsigned(&record["decoded_bytes"], "source decoded extent", stage)? != 0x6604
+        || decoded != &members["authored-level.bin"]
+        || lower_sha256(&record["decoded_sha256"], "source decoded hash", stage)?
+            != sha256_hex(decoded)
+        || lower_sha256(&record["packed_sha256"], "source packed hash", stage)?
+            != sha256_hex(packed)
+    {
+        return fail(stage, "source packed/decoded identity or extent differs");
+    }
+    let encoding = string(&record["encoding"], "source encoding", stage)?.to_owned();
+    match encoding.as_str() {
+        "raw" if packed == decoded && !packed.starts_with(b"RNC") => {}
+        "rnc1" | "rnc2" => {
+            let method = if encoding == "rnc1" { 1 } else { 2 };
+            if packed.len() < 18
+                || packed.get(..4) != Some(&[b'R', b'N', b'C', method])
+                || u32::from_be_bytes(packed[4..8].try_into().expect("checked header")) != 0x6604
+                || u64::from(u32::from_be_bytes(
+                    packed[8..12].try_into().expect("checked header"),
+                )) + 18
+                    != packed_bytes
+            {
+                return fail(stage, "source RNC header differs from packed/decoded spans");
+            }
+        }
+        _ => {
+            return fail(
+                stage,
+                "source encoding does not match retained packed payload",
+            );
+        }
+    }
+    let artifacts = record["owner_artifacts"]
+        .as_array()
+        .ok_or_else(|| CampaignPackageError {
+            stage,
+            message: "source owner artifacts are not an array".to_owned(),
+        })?;
+    let mut paths = BTreeMap::new();
+    for value in artifacts {
+        let owner = exact_object(
+            value,
+            &["logical_path", "bytes", "sha256"],
+            "owner artifact",
+            stage,
+        )?;
+        let path = super::source_facts::normalized_source_path(
+            &owner["logical_path"],
+            "owner artifact path",
+        )
+        .map_err(|message| CampaignPackageError { stage, message })?;
+        if paths
+            .insert(path, value)
+            .is_some_and(|prior| prior != value)
+        {
+            return fail(stage, "conflicting source owner artifact");
+        }
+        unsigned(&owner["bytes"], "owner artifact extent", stage)?;
+        lower_sha256(&owner["sha256"], "owner artifact hash", stage)?;
+    }
+    for resource in [
+        &resources.block_bank,
+        &resources.building_bank,
+        &resources.font_bank,
+        &resources.language,
+        &resources.level_records,
+        &resources.palette,
+        &resources.sky_bank,
+        &resources.spell_table,
+        &resources.sprite_bank,
+        &resources.terrain_bank,
+        &resources.web_bank,
+    ] {
+        let path = resource
+            .strip_prefix("owner:")
+            .ok_or_else(|| CampaignPackageError {
+                stage,
+                message: format!("environment resource {resource} has no owner identity"),
+            })?;
+        if !paths.contains_key(path) {
+            return fail(
+                stage,
+                format!("environment resource {resource} has no retained owner artifact"),
+            );
+        }
+    }
+    Ok(SourceLevelRecord {
+        container_path,
+        container_sha256,
+        offset_table_path,
+        offset_table_sha256,
+        packed_offset,
+        packed_bytes,
+        encoding,
+        owner_artifacts: record["owner_artifacts"].clone(),
+    })
+}
+
+fn validate_terrain(bytes: &[u8], label: &str, cave: bool) -> Result<()> {
+    if bytes.len() != 0x70000 || (!cave && bytes[0x40000..0x50000].iter().any(|byte| *byte != 0)) {
         return fail(
             ValidationStage::TypedMembers,
             format!("{label} extent/Day inactive plane changed"),
@@ -2756,6 +3410,7 @@ fn validate_feature_boundary(
     members: &BTreeMap<String, Vec<u8>>,
     expected_allocator_bytes: usize,
     expected_allocator_trace_count: u32,
+    cave: bool,
 ) -> Result<Vec<MemberRef>> {
     let expected = [
         ("feature-start.bin", "mc2-feature-boundary/v1"),
@@ -2817,10 +3472,12 @@ fn validate_feature_boundary(
     validate_terrain(
         &members["terrain-pre-features.bin"],
         "terrain-pre-features.bin",
+        cave,
     )?;
     validate_terrain(
         &members["terrain-post-features.bin"],
         "terrain-post-features.bin",
+        cave,
     )?;
     validate_entity_header(
         &members["entities-post-features.bin"],
@@ -3044,38 +3701,43 @@ fn validate_presentation(
         None,
         ValidationStage::TypedMembers,
     )?;
-    let expected_strings = match selection {
-        CampaignSelection::LEVEL1 => [
-            ("block_bank", "BL32N0-0"),
-            ("map_type", "Night"),
-            ("palette", "PALN-0"),
-            ("sky_bank", "SKYN0-0"),
-            ("sprite_bank", "MSPRN0-0"),
-            ("terrain_bank", "TMAPS1-0"),
-            ("web_bank", "MWEBN0-0"),
-        ],
-        CampaignSelection::LEVEL2 | CampaignSelection::LEVEL3 => [
-            (
-                "block_bank",
-                if corrected_blocks {
-                    "BLOCK32"
-                } else {
-                    "BL32N0-0"
-                },
-            ),
-            ("map_type", "Day"),
-            ("palette", "PALD-0"),
-            ("sky_bank", "SKYD0-0"),
-            ("sprite_bank", "MSPRD0-0"),
-            ("terrain_bank", "TMAPS0-0"),
-            ("web_bank", "MWEBD0-0"),
-        ],
-        _ => unreachable!("selection was profile-validated"),
+    let source_flags = u32::from(members["authored-level.bin"][4]);
+    let map_code = match selection.map_type_id {
+        0 => "D",
+        1 => "N",
+        2 => "C",
+        _ => unreachable!("validated environment"),
     };
+    let blocks = match selection.map_type_id {
+        0 if corrected_blocks => "BLOCK32",
+        0 | 1 if source_flags & 2 == 0 => "BL32N0-0",
+        1 => "BL32F0-0",
+        2 => "BL32C0-0",
+        _ => "BL32N0-0", // retained legacy Day recipe
+    };
+    let palette = if source_flags & 2 != 0 {
+        "PALF-0".to_owned()
+    } else {
+        format!("PAL{map_code}-0")
+    };
+    let expected_strings = [
+        ("block_bank", blocks.to_owned()),
+        (
+            "map_type",
+            campaign_map_type_name(selection.map_type_id)
+                .expect("validated environment")
+                .to_owned(),
+        ),
+        ("palette", palette.clone()),
+        ("sky_bank", format!("SKY{map_code}0-0")),
+        ("sprite_bank", format!("MSPR{map_code}0-0")),
+        ("terrain_bank", format!("TMAPS{}-0", selection.map_type_id)),
+        ("web_bank", format!("MWEB{map_code}0-0")),
+    ];
     for (name, expected) in expected_strings {
         require_string_eq(
             &object[name],
-            expected,
+            &expected,
             &format!("presentation_recipe.{name}"),
             ValidationStage::TypedMembers,
         )?;
@@ -3114,7 +3776,8 @@ fn validate_presentation(
         stage: ValidationStage::TypedMembers,
         message: "presentation recipe terrain_graphics_flags exceeds u32".to_owned(),
     })?;
-    if terrain_graphics_flag_2 || terrain_graphics_flags != 0 {
+    if terrain_graphics_flag_2 != (source_flags & 2 != 0) || terrain_graphics_flags != source_flags
+    {
         return fail(
             ValidationStage::TypedMembers,
             "presentation recipe terrain flags differ from the campaign profile",
@@ -3138,46 +3801,44 @@ fn validate_presentation(
         "presentation_recipe.resolved_files",
         ValidationStage::TypedMembers,
     )?;
-    let expected_resolved = match selection {
-        CampaignSelection::LEVEL1 => [
-            ("block_bank", "owner:CD_Files/DATA/BL32N0-0.DAT"),
-            ("building_bank", "owner:CD_Files/DATA/BUILD0-0.DAT"),
-            ("font_bank", "owner:CD_Files/DATA/FONT1.DAT"),
-            ("language", "owner:CD_Files/LANGUAGE/L1.TXT"),
-            ("level_records", "owner:GAME/NETHERW/CLEVELS/LEVELS.DAT"),
-            ("palette", "owner:CD_Files/DATA/PALN-0.DAT"),
-            ("sky_bank", "owner:CD_Files/DATA/SKYN0-0.DAT"),
-            ("spell_table", "owner:CD_Files/DATA/SPELLS.DAT"),
-            ("sprite_bank", "owner:CD_Files/DATA/MSPRN0-0.DAT"),
-            ("terrain_bank", "owner:GAME/NETHERW/CDATA/TMAPS1-0.DAT"),
-            ("web_bank", "owner:CD_Files/DATA/MWEBN0-0.DAT"),
-        ],
-        CampaignSelection::LEVEL2 | CampaignSelection::LEVEL3 => [
-            (
-                "block_bank",
-                if corrected_blocks {
-                    "owner:CD_Files/DATA/BLOCK32.DAT"
-                } else {
-                    "owner:CD_Files/DATA/BL32N0-0.DAT"
-                },
+    let expected_resolved = [
+        ("block_bank", format!("owner:CD_Files/DATA/{blocks}.DAT")),
+        (
+            "building_bank",
+            "owner:CD_Files/DATA/BUILD0-0.DAT".to_owned(),
+        ),
+        ("font_bank", "owner:CD_Files/DATA/FONT1.DAT".to_owned()),
+        ("language", "owner:CD_Files/LANGUAGE/L1.TXT".to_owned()),
+        (
+            "level_records",
+            "owner:GAME/NETHERW/CLEVELS/LEVELS.DAT".to_owned(),
+        ),
+        ("palette", format!("owner:CD_Files/DATA/{palette}.DAT")),
+        (
+            "sky_bank",
+            format!("owner:CD_Files/DATA/SKY{map_code}0-0.DAT"),
+        ),
+        ("spell_table", "owner:CD_Files/DATA/SPELLS.DAT".to_owned()),
+        (
+            "sprite_bank",
+            format!("owner:CD_Files/DATA/MSPR{map_code}0-0.DAT"),
+        ),
+        (
+            "terrain_bank",
+            format!(
+                "owner:GAME/NETHERW/CDATA/TMAPS{}-0.DAT",
+                selection.map_type_id
             ),
-            ("building_bank", "owner:CD_Files/DATA/BUILD0-0.DAT"),
-            ("font_bank", "owner:CD_Files/DATA/FONT1.DAT"),
-            ("language", "owner:CD_Files/LANGUAGE/L1.TXT"),
-            ("level_records", "owner:GAME/NETHERW/CLEVELS/LEVELS.DAT"),
-            ("palette", "owner:CD_Files/DATA/PALD-0.DAT"),
-            ("sky_bank", "owner:CD_Files/DATA/SKYD0-0.DAT"),
-            ("spell_table", "owner:CD_Files/DATA/SPELLS.DAT"),
-            ("sprite_bank", "owner:CD_Files/DATA/MSPRD0-0.DAT"),
-            ("terrain_bank", "owner:GAME/NETHERW/CDATA/TMAPS0-0.DAT"),
-            ("web_bank", "owner:CD_Files/DATA/MWEBD0-0.DAT"),
-        ],
-        _ => unreachable!("selection was profile-validated"),
-    };
+        ),
+        (
+            "web_bank",
+            format!("owner:CD_Files/DATA/MWEB{map_code}0-0.DAT"),
+        ),
+    ];
     for (name, expected) in expected_resolved {
         require_string_eq(
             &resolved[name],
-            expected,
+            &expected,
             &format!("presentation_recipe.resolved_files.{name}"),
             ValidationStage::TypedMembers,
         )?;
@@ -3351,6 +4012,7 @@ fn validate_operations(
     authored: &[u8],
     files: &BTreeMap<String, (u64, String)>,
     members: &BTreeMap<String, Vec<u8>>,
+    preserve_inactive_payload: bool,
 ) -> Result<(InitialRng, Vec<ObjectiveOperation>)> {
     let Some(initial_activation) = spec["initial_activation"].as_array() else {
         return fail(
@@ -3524,7 +4186,7 @@ fn validate_operations(
         )?;
         if stage == -1 {
             inactive_seen = true;
-            if (objective_selector, axis_x, axis_y) != (0, 0, 0) {
+            if !preserve_inactive_payload && (objective_selector, axis_x, axis_y) != (0, 0, 0) {
                 return fail(
                     ValidationStage::TypedOperations,
                     format!("inactive objective row {index} has payload"),
@@ -3532,7 +4194,7 @@ fn validate_operations(
             }
             continue;
         }
-        if inactive_seen || !matches!(stage, 0 | 3 | 5 | 7 | 9) {
+        if inactive_seen || !(0..=9).contains(&stage) {
             return fail(
                 ValidationStage::TypedOperations,
                 format!("objective row {index} has an unproven form"),
@@ -3862,6 +4524,115 @@ mod tests {
     }
 
     #[test]
+    fn ordinary_owner_packages_decode_without_claiming_runtime_closure() {
+        use crate::campaign::{CampaignSession, spec::DecodedCampaignPackage};
+        let root = std::env::var_os("MC_ORDINARY_CAMPAIGN_PACKAGES").map_or_else(
+            || {
+                PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../../generated/mc-bhq6-ordinary-20261024-b")
+            },
+            PathBuf::from,
+        );
+        for external in 1..=25 {
+            let selection =
+                CampaignSelection::ordinary(external).expect("ordinary mission identity");
+            let package = root.join(format!("level{external}"));
+            let decoded = DecodedCampaignPackage::decode(&package, selection)
+                .unwrap_or_else(|error| panic!("mission {external}: {error}"));
+            assert_eq!(decoded.authored_bytes().len(), 0x6604);
+            assert_eq!(
+                crate::level1_mission::parse_authored_features(decoded.authored_bytes())
+                    .unwrap()
+                    .len(),
+                1_200
+            );
+            assert!(!decoded.semantic_bindings.is_empty());
+            let semantic = decoded
+                .semantic_entities
+                .as_ref()
+                .unwrap_or_else(|error| panic!("mission {external} entity bindings: {error}"));
+            assert_eq!(semantic.entities().len(), decoded.semantic_bindings.len());
+            for (index, wizard) in decoded.wizard_settings.iter().enumerate() {
+                let offset = 25_092 + index * 110;
+                assert_eq!(
+                    wizard.source_bytes,
+                    decoded.authored_bytes()[offset..offset + 110]
+                );
+                assert_eq!(
+                    wizard.starting_spells,
+                    decoded.authored_bytes()[offset + 15..offset + 41]
+                );
+                assert_eq!(
+                    wizard.blocked_spells,
+                    decoded.authored_bytes()[offset + 67..offset + 93]
+                );
+            }
+            let (floor, ceiling) = decoded.terrain_planes();
+            let terrain = decoded
+                .terrain()
+                .expect("source planes bind the ordinary terrain consumer");
+            assert_eq!(terrain.ground_heights(), floor);
+            assert_eq!(
+                terrain.cave_heights(),
+                (selection.map_type_id == 2).then_some(ceiling)
+            );
+            assert_eq!((floor.len(), ceiling.len()), (65_536, 65_536));
+            assert_eq!(
+                ceiling.iter().any(|byte| *byte != 0),
+                selection.map_type_id == 2
+            );
+            let flags = if external == 23 {
+                4
+            } else if external == 25 {
+                2
+            } else {
+                0
+            };
+            assert_eq!(
+                decoded
+                    .campaign_spec
+                    .presentation_recipe
+                    .terrain_graphics_flags,
+                flags
+            );
+            assert_eq!(
+                decoded
+                    .campaign_spec
+                    .presentation_recipe
+                    .terrain_graphics_flag_2,
+                flags & 2 != 0
+            );
+            if external > 3 {
+                assert_eq!(
+                    decoded.member("source-record.bin"),
+                    Some(decoded.authored_bytes())
+                );
+                assert!(decoded.source_record.is_some());
+            } else {
+                let mut live = CampaignSession::open(&package, selection)
+                    .unwrap_or_else(|error| panic!("supported mission {external}: {error}"));
+                live.step(crate::PlayerCommand::default(), 0);
+                assert!(
+                    live.tick() > 0,
+                    "mission {external} advances the ordinary source scheduler"
+                );
+            }
+        }
+        assert_eq!(CampaignSelection::ordinary(0), None);
+        assert_eq!(CampaignSelection::ordinary(26), None);
+        let selection = CampaignSelection::ordinary(4).unwrap();
+        let error = CampaignSession::open(root.join("level4"), selection).unwrap_err();
+        assert!(
+            !error
+                .to_string()
+                .contains("has no campaign package profile")
+        );
+        assert!(
+            error.to_string().contains("capability") || error.to_string().contains("unsupported")
+        );
+    }
+
+    #[test]
     fn semantic_initial_creature_bindings_cover_level_one_two_and_three_roots() {
         use crate::level_definition::CreatureKind;
 
@@ -4132,9 +4903,13 @@ mod tests {
         let offset = AUTHORED_RECORD_OFFSET + record * AUTHORED_RECORD_BYTES + 2;
         authored[offset..offset + 2].copy_from_slice(&(-2_i16).to_le_bytes());
 
-        let error =
-            decode_behavior_rows(&authored, &entities, CampaignSelection::LEVEL2.map_type_id)
-                .expect_err("negative signed subtype cannot narrow into schema-v1 u8");
+        let error = decode_behavior_rows(
+            &authored,
+            &entities,
+            CampaignSelection::LEVEL2.map_type_id,
+            false,
+        )
+        .expect_err("negative signed subtype cannot narrow into schema-v1 u8");
         assert_eq!(error.stage, ValidationStage::TypedMembers);
         assert!(error.message.contains("schema-v1 widths"));
     }

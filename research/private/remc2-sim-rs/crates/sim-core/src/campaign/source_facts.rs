@@ -179,7 +179,7 @@ fn lower_sha256(value: &Value, label: &str) -> Result<String, String> {
     Ok(value.to_owned())
 }
 
-fn normalized_source_path(value: &Value, label: &str) -> Result<String, String> {
+pub(crate) fn normalized_source_path(value: &Value, label: &str) -> Result<String, String> {
     let value = string(value, label)?;
     if value.is_empty()
         || !value.is_ascii()
@@ -434,24 +434,6 @@ pub(crate) fn validate_source_facts(
     let rows = value
         .as_array()
         .ok_or_else(|| "source_facts is not an array".to_owned())?;
-    if context.has_building_parameters
-        && !matches!(
-            context.building_objective_provenance,
-            [SelectorProvenance {
-                authored_record: 153,
-                source_class: 10,
-                source_model: 21,
-                source_subtype: 45,
-                source_field: SourceField::Par1_14,
-                selector_value: 21,
-            }]
-        )
-    {
-        return Err(
-            "standing-building objective provenance differs from the qualified Level 2 binding"
-                .to_owned(),
-        );
-    }
     let mut expected = Vec::new();
     if context.has_building_parameters {
         expected.push((

@@ -7,20 +7,22 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use sim_definition::adapter::{
     absence_countdown_definition, absence_countdown_entity_definition, activation_group_id,
-    area_entry_trigger_entity_definition, area_exit_trigger_entity_definition,
-    build_level_definition, creature_entity_definition, entity_definition_with_position_access,
-    exit_sequence_trigger_entity_definition, experience_scroll_entity_definition,
-    house_construction_entity_definition, objective_definition, stable_entity_id,
-    stable_objective_id, stable_rival_wizard_id,
+    activation_switch_entity_definition, area_entry_trigger_entity_definition,
+    area_exit_trigger_entity_definition, build_level_definition, cave_corridor_definition,
+    cave_corridor_entity_definition, creature_entity_definition,
+    entity_definition_with_position_access, exit_sequence_trigger_entity_definition,
+    experience_scroll_entity_definition, house_construction_entity_definition,
+    objective_definition, stable_entity_id, stable_objective_id, stable_rival_wizard_id,
 };
 
 use crate::{
     house::HouseParameter,
     level_definition::{
-        BuildingKind, CreatureKind, ItemKind, LevelDefinition, LevelEntityId, LevelEntityKind,
-        LevelEntityParameterAccess, LevelEntityPositionAccess, LevelObjectiveConditionAccess,
-        LevelObjectiveId, MechanicKind, ObjectiveCondition, RivalWizardId, SceneryKind, SpellKind,
-        SwitchKind, TilePosition, supports_authorable_creature_placement,
+        BuildingKind, CorridorOrientation, CreatureKind, ItemKind, LevelDefinition, LevelEntityId,
+        LevelEntityKind, LevelEntityParameterAccess, LevelEntityPositionAccess,
+        LevelObjectiveConditionAccess, LevelObjectiveId, MechanicKind, ObjectiveCondition,
+        RivalWizardId, SceneryKind, SpellKind, SwitchKind, TilePosition,
+        supports_authorable_creature_placement,
     },
     level1_mission::parse_authored_features,
 };
@@ -63,6 +65,56 @@ pub(crate) struct Mc2LevelDefinition {
 }
 
 impl Mc2LevelDefinition {
+    pub(crate) const fn authored_kind(class: u8, subtype: u8) -> Option<LevelEntityKind> {
+        match (class, subtype) {
+            (5, model) => match Self::creature_for_model(model) {
+                Some(kind) => Some(LevelEntityKind::Creature(kind)),
+                None => None,
+            },
+            (2, 0) => Some(LevelEntityKind::Scenery(SceneryKind::Tree)),
+            (2, 1) => Some(LevelEntityKind::Scenery(SceneryKind::Stone)),
+            (10, 45) => Some(LevelEntityKind::Building(BuildingKind::House)),
+            (14, 3) => Some(LevelEntityKind::Scenery(SceneryKind::ExitPortal)),
+            (14, 2) => Some(LevelEntityKind::Mechanic(MechanicKind::CaveCorridor)),
+            (14, 5) => Some(LevelEntityKind::Item(ItemKind::ExperienceScroll)),
+            (11, 0) => Some(LevelEntityKind::Switch(SwitchKind::AreaEntryTrigger)),
+            (11, 1) => Some(LevelEntityKind::Switch(SwitchKind::AreaExitTrigger)),
+            (11, 2) => Some(LevelEntityKind::Switch(
+                SwitchKind::RepeatingAreaEntryTrigger,
+            )),
+            (11, 3) => Some(LevelEntityKind::Switch(
+                SwitchKind::RepeatingAreaExitTrigger,
+            )),
+            (11, 4) => Some(LevelEntityKind::Switch(SwitchKind::LevelExitGate)),
+            (11, 5..=11) => Some(LevelEntityKind::Switch(SwitchKind::EmptyTrigger)),
+            (11, 12) => Some(LevelEntityKind::Switch(SwitchKind::ExitSequenceTrigger)),
+            (11, 32) => Some(LevelEntityKind::Switch(SwitchKind::ObjectiveGate)),
+            (11, 31) => Some(LevelEntityKind::Switch(SwitchKind::SecretEntryTrigger)),
+            (11, 13..=15 | 18..=29 | 33..=44) => {
+                Some(LevelEntityKind::Switch(SwitchKind::CreatureAbsenceTrigger))
+            }
+            (11, 30) => Some(LevelEntityKind::Switch(
+                SwitchKind::PopulationAbsenceTrigger,
+            )),
+            (11, 16) => Some(LevelEntityKind::Mechanic(MechanicKind::AbsenceCountdown {
+                creature: CreatureKind::Worm,
+            })),
+            (11, 17) => Some(LevelEntityKind::Mechanic(MechanicKind::AbsenceCountdown {
+                creature: CreatureKind::Archer,
+            })),
+            (15, 2) => Some(LevelEntityKind::SpellPickup(SpellKind::Castle)),
+            (15, 3) => Some(LevelEntityKind::SpellPickup(SpellKind::Speed)),
+            (15, 4) => Some(LevelEntityKind::SpellPickup(SpellKind::Morph)),
+            (15, 5) => Some(LevelEntityKind::SpellPickup(SpellKind::Heal)),
+            (15, 6) => Some(LevelEntityKind::SpellPickup(SpellKind::Shield)),
+            (15, 8) => Some(LevelEntityKind::SpellPickup(SpellKind::Rebound)),
+            (15, 10) => Some(LevelEntityKind::SpellPickup(SpellKind::Teleport)),
+            (15, 11) => Some(LevelEntityKind::SpellPickup(SpellKind::Invisibility)),
+            (15, 12) => Some(LevelEntityKind::SpellPickup(SpellKind::BeyondSight)),
+            _ => None,
+        }
+    }
+
     pub(crate) const fn creature_for_model(model: u8) -> Option<CreatureKind> {
         match model {
             0 => Some(CreatureKind::Dragon),
@@ -81,18 +133,18 @@ impl Mc2LevelDefinition {
 
     pub(crate) const fn creature_for_reset_selector(
         class: u8,
-        model: u8,
+        model: u16,
         action: u8,
     ) -> Option<CreatureKind> {
-        if class != 5 || matches!(action, 180 | 232 | 234) {
+        if class != 5 || model > 255 || matches!(action, 180 | 232 | 234) {
             return None;
         }
-        Self::creature_for_model(model)
+        Self::creature_for_model(model as u8)
     }
 
     pub(crate) const fn creature_for_house_resident(model: u8, action: u8) -> Option<CreatureKind> {
         match (model, action) {
-            (4, 33) => Some(CreatureKind::Archer),
+            (4, 32..=39) => Some(CreatureKind::Archer),
             (12, 97) => Some(CreatureKind::Builder),
             (13, 105) => Some(CreatureKind::Villager),
             (14, 113) => Some(CreatureKind::Trader),
@@ -102,10 +154,11 @@ impl Mc2LevelDefinition {
 
     pub(crate) const fn mechanic_for_reset_selector(
         class: u8,
-        model: u8,
+        model: u16,
         action: u8,
     ) -> Option<MechanicKind> {
         match (class, model, action) {
+            (14, 2, 7) => Some(MechanicKind::CaveCorridor),
             (11, 16, 16) => Some(MechanicKind::AbsenceCountdown {
                 creature: CreatureKind::Worm,
             }),
@@ -118,7 +171,7 @@ impl Mc2LevelDefinition {
 
     pub(crate) const fn scenery_for_reset_selector(
         class: u8,
-        model: u8,
+        model: u16,
         action: u8,
     ) -> Option<SceneryKind> {
         match (class, model, action) {
@@ -131,7 +184,7 @@ impl Mc2LevelDefinition {
 
     pub(crate) const fn building_for_reset_selector(
         class: u8,
-        model: u8,
+        model: u16,
         action: u8,
     ) -> Option<BuildingKind> {
         match (class, model, action) {
@@ -142,27 +195,38 @@ impl Mc2LevelDefinition {
 
     pub(crate) const fn switch_for_reset_selector(
         class: u8,
-        model: u8,
+        model: u16,
         action: u8,
     ) -> Option<SwitchKind> {
         match (class, model, action) {
             (11, 0, 0) => Some(SwitchKind::AreaEntryTrigger),
             (11, 1, 1) => Some(SwitchKind::AreaExitTrigger),
+            (11, 2, 2) => Some(SwitchKind::RepeatingAreaEntryTrigger),
+            (11, 3, 3) => Some(SwitchKind::RepeatingAreaExitTrigger),
             (11, 4, 4) => Some(SwitchKind::LevelExitGate),
+            (11, 5..=11, _) if model == action as u16 => Some(SwitchKind::EmptyTrigger),
             (11, 12, 12) => Some(SwitchKind::ExitSequenceTrigger),
             (11, 32, 32) => Some(SwitchKind::ObjectiveGate),
+            (11, 31, 31) => Some(SwitchKind::SecretEntryTrigger),
+            (11, 13..=15 | 18..=29 | 33..=44, _) if model == action as u16 => {
+                Some(SwitchKind::CreatureAbsenceTrigger)
+            }
+            (11, 30, 30) => Some(SwitchKind::PopulationAbsenceTrigger),
             _ => None,
         }
     }
 
     pub(crate) const fn spell_for_reset_selector(
         class: u8,
-        model: u8,
+        model: u16,
         action: u8,
     ) -> Option<SpellKind> {
         match (class, model, action) {
             (15, 3, 10) => Some(SpellKind::Speed),
+            (15, 5, 16) => Some(SpellKind::Heal),
             (15, 6, 19) => Some(SpellKind::Shield),
+            (15, 8, 25) => Some(SpellKind::Rebound),
+            (15, 10, 31) => Some(SpellKind::Teleport),
             (15, 11, 34) => Some(SpellKind::Invisibility),
             (15, 12, 37) => Some(SpellKind::BeyondSight),
             _ => None,
@@ -175,9 +239,86 @@ impl Mc2LevelDefinition {
         selection: CampaignSelection,
         building_parameters: Option<&BTreeMap<u8, HouseParameter>>,
     ) -> Result<Self, String> {
+        Self::bind_authored(
+            bytes,
+            objective_operations,
+            selection,
+            building_parameters,
+            false,
+        )
+    }
+
+    /// Non-executable projection of the known entity bindings. Unsupported
+    /// source rows remain in the caller's complete decoded package.
+    pub(crate) fn catalog_entities(
+        bytes: &[u8],
+        selection: CampaignSelection,
+    ) -> Result<LevelDefinition, String> {
+        Self::bind_authored(bytes, &[], selection, None, true).map(|binding| binding.semantic)
+    }
+
+    fn bind_authored(
+        bytes: &[u8],
+        objective_operations: &[ObjectiveOperation],
+        selection: CampaignSelection,
+        building_parameters: Option<&BTreeMap<u8, HouseParameter>>,
+        entities_only: bool,
+    ) -> Result<Self, String> {
         let features = parse_authored_features(bytes)?;
         let mut stable_entity_ids = stable_entity_ids(selection.external_level)?;
         let mut stable_objective_ids = stable_objective_ids(selection.external_level)?;
+        if entities_only {
+            stable_objective_ids.clear();
+        }
+        if selection.external_level > 3 {
+            // The sealed opening identities retain their explicit manifests.
+            // Further immutable packages use semantic role and authored place,
+            // with an occurrence suffix for coincident placements. No source
+            // arena address or selector becomes a public entity identity.
+            let mut occurrences = BTreeMap::<String, u16>::new();
+            for feature in &features {
+                let (Ok(class), Ok(subtype)) =
+                    (u8::try_from(feature.kind), u8::try_from(feature.subtype))
+                else {
+                    continue;
+                };
+                let Some(kind) = Self::authored_kind(class, subtype) else {
+                    continue;
+                };
+                let role = match kind {
+                    LevelEntityKind::Creature(kind) => format!("creature.{}", kind.as_str()),
+                    LevelEntityKind::SpellPickup(kind) => format!("spell_pickup.{}", kind.as_str()),
+                    LevelEntityKind::Scenery(kind) => format!("scenery.{}", kind.as_str()),
+                    LevelEntityKind::Building(kind) => format!("building.{}", kind.as_str()),
+                    LevelEntityKind::Item(kind) => format!("item.{}", kind.as_str()),
+                    LevelEntityKind::Switch(kind) => format!("switch.{}", kind.as_str()),
+                    LevelEntityKind::Mechanic(kind) => format!("mechanic.{}", kind.as_str()),
+                };
+                let mut label = format!("{role}.at_{}_{}", feature.tile_x, feature.tile_y);
+                let ordinal = occurrences.entry(label.clone()).or_default();
+                *ordinal += 1;
+                if *ordinal > 1 {
+                    label.push_str(&format!(".instance_{ordinal}"));
+                }
+                stable_entity_ids.insert(
+                    feature.index,
+                    (
+                        stable_entity_id(&label).map_err(|error| error.to_string())?,
+                        LevelEntityPositionAccess::ReadOnly,
+                    ),
+                );
+            }
+            for operation in objective_operations {
+                let label = format!("objective.campaign.task_{}", operation.objective_slot + 1);
+                stable_objective_ids.insert(
+                    u16::from(operation.objective_slot),
+                    (
+                        stable_objective_id(&label).map_err(|error| error.to_string())?,
+                        LevelObjectiveConditionAccess::ReadOnly,
+                    ),
+                );
+            }
+        }
         let mut creature_by_authored_record = BTreeMap::new();
         let mut creature_model_by_kind = BTreeMap::new();
         let mut spell_by_authored_record = BTreeMap::new();
@@ -440,13 +581,19 @@ impl Mc2LevelDefinition {
                 // waits for the package's level-complete player state.
                 (11, 0) => Some(SwitchKind::AreaEntryTrigger),
                 (11, 1) => Some(SwitchKind::AreaExitTrigger),
+                (11, 2) => Some(SwitchKind::RepeatingAreaEntryTrigger),
+                (11, 3) => Some(SwitchKind::RepeatingAreaExitTrigger),
                 (11, 4) => Some(SwitchKind::LevelExitGate),
+                (11, 5..=11) => Some(SwitchKind::EmptyTrigger),
                 // This overlap trigger starts the player-owned exit sequence;
                 // it does not activate its stage tag as another area group.
                 (11, 12) => Some(SwitchKind::ExitSequenceTrigger),
                 // `AddSwitch0B_20_6F1C0` waits for one objective-state
                 // selector, then activates the row's authored group.
                 (11, 32) => Some(SwitchKind::ObjectiveGate),
+                (11, 31) => Some(SwitchKind::SecretEntryTrigger),
+                (11, 13..=15 | 18..=29 | 33..=44) => Some(SwitchKind::CreatureAbsenceTrigger),
+                (11, 30) => Some(SwitchKind::PopulationAbsenceTrigger),
                 _ => None,
             };
             if let Some(kind) = switch_kind {
@@ -463,7 +610,39 @@ impl Mc2LevelDefinition {
                     LevelEntityKind::Switch(kind),
                     position_access,
                 )?;
-                if kind == SwitchKind::AreaEntryTrigger
+                if matches!(
+                    kind,
+                    SwitchKind::RepeatingAreaEntryTrigger
+                        | SwitchKind::RepeatingAreaExitTrigger
+                        | SwitchKind::SecretEntryTrigger
+                        | SwitchKind::CreatureAbsenceTrigger
+                        | SwitchKind::PopulationAbsenceTrigger
+                        | SwitchKind::EmptyTrigger
+                ) {
+                    let overlap = matches!(
+                        kind,
+                        SwitchKind::RepeatingAreaEntryTrigger
+                            | SwitchKind::RepeatingAreaExitTrigger
+                            | SwitchKind::SecretEntryTrigger
+                    )
+                    .then_some(feature.word_10);
+                    let countdown = matches!(
+                        kind,
+                        SwitchKind::CreatureAbsenceTrigger | SwitchKind::PopulationAbsenceTrigger
+                    )
+                    .then(|| {
+                        absence_countdown_definition(16, LevelEntityParameterAccess::SessionReset)
+                    });
+                    entities.push(activation_switch_entity_definition(
+                        id,
+                        kind,
+                        position,
+                        activation_group,
+                        position_access,
+                        overlap,
+                        countdown,
+                    ));
+                } else if kind == SwitchKind::AreaEntryTrigger
                     // Level 2 row 111 is consumed by the dedicated switch-25
                     // model-76 route, which has no word-10 overlap carrier.
                     && !(selection.external_level == 2 && feature.index == 111)
@@ -537,7 +716,10 @@ impl Mc2LevelDefinition {
                 (15, 2) => Some(SpellKind::Castle),
                 (15, 3) => Some(SpellKind::Speed),
                 (15, 4) => Some(SpellKind::Morph),
+                (15, 5) => Some(SpellKind::Heal),
                 (15, 6) => Some(SpellKind::Shield),
+                (15, 8) => Some(SpellKind::Rebound),
+                (15, 10) => Some(SpellKind::Teleport),
                 (15, 11) => Some(SpellKind::Invisibility),
                 (15, 12) => Some(SpellKind::BeyondSight),
                 _ => None,
@@ -579,6 +761,7 @@ impl Mc2LevelDefinition {
             }
 
             let mechanic_kind = match (feature.kind, feature.subtype) {
+                (14, 2) => MechanicKind::CaveCorridor,
                 // The two source callbacks observe the rebuilt class-5 model
                 // lists for Worms and Archers respectively. Shared callers
                 // see the creature being observed, never those selectors.
@@ -603,14 +786,29 @@ impl Mc2LevelDefinition {
                 LevelEntityKind::Mechanic(mechanic_kind),
                 position_access,
             )?;
-            entities.push(absence_countdown_entity_definition(
-                id.clone(),
-                LevelEntityKind::Mechanic(mechanic_kind),
-                position,
-                activation_group,
-                position_access,
-                absence_countdown_definition(16, LevelEntityParameterAccess::SessionReset),
-            ));
+            if mechanic_kind == MechanicKind::CaveCorridor {
+                let orientation = if feature.parameter_1 != 0 {
+                    CorridorOrientation::AlongX
+                } else {
+                    CorridorOrientation::AlongY
+                };
+                entities.push(cave_corridor_entity_definition(
+                    id.clone(),
+                    position,
+                    activation_group,
+                    position_access,
+                    cave_corridor_definition(orientation, feature.parameter_3 as i16),
+                ));
+            } else {
+                entities.push(absence_countdown_entity_definition(
+                    id.clone(),
+                    LevelEntityKind::Mechanic(mechanic_kind),
+                    position,
+                    activation_group,
+                    position_access,
+                    absence_countdown_definition(16, LevelEntityParameterAccess::SessionReset),
+                ));
+            }
             mechanic_by_authored_record.insert(feature.index, mechanic_kind);
             mechanic_entity_by_authored_record.insert(feature.index, id);
         }
@@ -687,6 +885,9 @@ impl Mc2LevelDefinition {
                             .get(&authored_record)
                             .copied()
                             .ok_or_else(|| {
+                                if let Some(feature) = features.iter().find(|feature| feature.index == authored_record && feature.kind == 5) {
+                                    return format!("creature objective {} targets unsupported MC2 creature model {} at authored record {}", operation.objective_slot, feature.subtype, authored_record);
+                                }
                                 format!(
                                     "creature objective {} targets non-creature authored record {}",
                                     operation.objective_slot, authored_record
