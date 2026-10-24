@@ -8,7 +8,52 @@ use crate::{
     native_world::{SessionTerrain, cave_features::new_event},
 };
 
+pub(crate) mod authored;
+pub(crate) mod burial;
 pub(crate) mod damage;
+pub(crate) mod paths;
+pub(crate) mod ribbon;
+pub(crate) mod runtime;
+pub(crate) mod travelling;
+pub(crate) mod tremor;
+pub(crate) mod volcano;
+
+pub(crate) const fn kind_for_model(
+    model: u8,
+) -> Option<crate::level_definition::TerrainDisasterKind> {
+    use crate::level_definition::TerrainDisasterKind;
+    match model {
+        9 => Some(TerrainDisasterKind::Volcano),
+        10 => Some(TerrainDisasterKind::Impact),
+        11 => Some(TerrainDisasterKind::LoweringRing),
+        15 => Some(TerrainDisasterKind::Earthquake),
+        27 | 28 => Some(TerrainDisasterKind::RaisedRibbon),
+        29 | 30 => Some(TerrainDisasterKind::MarkedPath),
+        31 | 32 => Some(TerrainDisasterKind::CraterTrail),
+        50 | 51 => Some(TerrainDisasterKind::RisingTrail),
+        71 => Some(TerrainDisasterKind::Tremor),
+        _ => None,
+    }
+}
+
+impl Default for RingProfile {
+    fn default() -> Self {
+        sim_definition::adapter::mc2_terrain_disaster_definition(
+            crate::level_definition::TerrainDisasterKind::LoweringRing,
+        )
+        .into()
+    }
+}
+
+/// Physical family16 in pinned Spells.cpp. The duration is signed life_1A,
+/// not its adjacent word18 (31/41/51); NewAdd0A0B keeps maxLife40.
+pub(crate) fn authored_profile(tier: u16) -> Result<RingProfile, String> {
+    sim_definition::adapter::mc2_authored_terrain_disaster_definition(
+        crate::level_definition::TerrainDisasterKind::LoweringRing,
+        tier,
+    )
+    .map(RingProfile::from)
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct AreaDamage {
@@ -52,10 +97,11 @@ impl StepOutcome {
 /// it is nevertheless an ordinary live source slot with normal RNG/defaults.
 pub(crate) fn construct(
     arena: &mut SourceArena,
+    terrain: &mut SessionTerrain,
     position: Position,
     profile: RingProfile,
 ) -> Option<u16> {
-    let slot = arena.economy.allocate_slot()?;
+    let slot = arena.allocate_source_slot_with_terrain(terrain)?;
     let mut source = new_event(slot, arena.economy.new_event_rng(slot), position);
     source.class = 10;
     source.record[67] = 10;

@@ -8,6 +8,11 @@ use crate::{
 };
 
 pub(crate) mod mc2;
+pub(crate) mod paths;
+pub(crate) mod ribbon;
+pub(crate) mod travelling;
+pub(crate) mod tremor;
+pub(crate) mod volcano;
 
 /// Immutable lowering-ring rules. An authored or spell producer supplies its
 /// configured values before publication; subsequent ticks use the source row.
@@ -20,15 +25,14 @@ pub(crate) struct RingProfile {
     pub(crate) half_height: i16,
 }
 
-impl Default for RingProfile {
-    fn default() -> Self {
-        // NewAdd0A0B_4E840. These are constructor defaults, not SPELLS data.
+impl From<crate::level_definition::TerrainDisasterDefinition> for RingProfile {
+    fn from(definition: crate::level_definition::TerrainDisasterDefinition) -> Self {
         Self {
-            max_life: 40,
-            lifetime: 40,
-            damage: 200,
-            half_width: 2304,
-            half_height: 8192,
+            max_life: definition.max_life(),
+            lifetime: definition.lifetime(),
+            damage: definition.damage(),
+            half_width: definition.half_width(),
+            half_height: definition.half_height(),
         }
     }
 }
@@ -134,7 +138,12 @@ pub(crate) fn deform_band(
 ) -> bool {
     let x = (i32::from(position.x as i16) + 128) >> 8;
     let y = (i32::from(position.y as i16) + 128) >> 8;
+    let mut mutated = false;
+    let mut stopped = false;
     for (dx, dy) in search_band(i32::from(first), i32::from(last).min(tile_radius(pitch))) {
+        let tile =
+            usize::from((x + i32::from(dx)) as u8) + 256 * usize::from((y + i32::from(dy)) as u8);
+        mutated |= !protect || terrain.planes().angles[tile] & 0x80 == 0;
         if relative_height(
             terrain,
             (x + i32::from(dx)) as i16,
@@ -142,10 +151,15 @@ pub(crate) fn deform_band(
             delta,
             protect,
         ) {
-            return true;
+            stopped = true;
+            break;
         }
     }
-    false
+    if mutated {
+        let (_, _, _, sequence) = terrain.disaster_parts();
+        *sequence = sequence.wrapping_add(1);
+    }
+    stopped
 }
 
 #[cfg(test)]

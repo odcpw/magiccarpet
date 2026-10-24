@@ -1183,6 +1183,12 @@ impl MissionContentSession {
         &self.authored_features
     }
 
+    /// Source linked terrain constructors consume stage tags while following
+    /// predecessor/successor references in this session's actual row table.
+    pub(crate) fn authored_features_mut(&mut self) -> &mut [AuthoredFeature] {
+        &mut self.authored_features
+    }
+
     /// Move one package-authored feature before its production constructor
     /// consumes it. The private MC2 adapter has already proven the authored
     /// record/kind relation; this seam changes only its tile coordinates.
