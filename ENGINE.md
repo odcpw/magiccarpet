@@ -12,8 +12,8 @@ architecture navigation. Update a row when its implementation moves. It is not
 a second progress tracker or proof that the mapped behavior already works.
 
 Reference: `upstream/magic-carpet-2-hd`, commit
-`6806c7204d17220ecc0430759f784aea8ee2ddb2`. The planning inspection started at
-port commit `d577723`. No executable parity or complete playthrough was established
+`6806c7204d17220ecc0430759f784aea8ee2ddb2`. The current source review was performed against
+port commit `7a95492`. No executable parity or complete playthrough was established
 by this source inspection.
 
 ## Runtime ownership
@@ -49,6 +49,7 @@ and presentation never become another simulation.
 | MC2 adapter and schedule | `campaign/{spec,dispatch,schedule,source_facts,mc2_level_definition}.rs`, decoding in `native_world.rs`, source glue in `campaign/level2.rs` | Import source data, bind typed defaults and execute exact source phase/order. Retain source payload for fidelity; public IDs stay semantic. `mc-bhq.6`, `mc-6qf` and family beads |
 | Creature families | `goat.rs`, `native_world/creatures/worm/`, `native_world/level2_class5/`, remaining bodies in `level1_mission.rs` and `campaign/level2.rs` | Family state, constructor/descendants, movement, combat/death, cleanup and live property/asset/observation bindings. `mc-1pb`, Spider `mc-bhq.3` |
 | Spells and players | `spell_activation.rs`, `native_world/{level2_sessions,level2_nyphur}.rs`, shared spell bodies/carriers | Participant inventory/tiers/costs and each real spell's complete product lifetime. `mc-k5k`, Meteor `mc-bhq.4`, `mc-b9s.2` |
+| Shared actor combat | Existing damage/death transitions in `level1_mission.rs` and `native_world/level2_dynamic_economy.rs`, extracted into `combat::actors` | Producer-specific damage mailboxes, linked death, kill credit, collectible mana and reclaim, consumed by real families. `mc-1pb.24`; ordinary StealMana/Duel casts remain `mc-k5k.2`. |
 | Economy | `house.rs`, `villager.rs`, `native_world/level2_dynamic_economy.rs`, existing economy carriers | Castles, mana, balloons and settlements; ownership/transfer/reclaim. Remove unrelated state from the economy carrier as its owner is extracted. `mc-bhq.10`, `mc-1pb.16` |
 | Terrain and world systems | `legacy_terrain.rs`, `native_world/{terrain_strip,ballistic_scenery,countdown_switch}.rs`, `campaign/objectives.rs` | Separate terrain/cave, scenery, fields/effects, items, switches and objective owners. `mc-bhq`, `mc-6qf` |
 | Runtime and persistence | `sim-core/src/game_runtime.rs`, `game_runtime/campaign_menu.rs`, `campaign/backend.rs` | Game/mission/menu lifecycle, with separate content resolver, definition binding, persistence and projections. `mc-paj`, `mc-zdo.3`, `mc-zdo.4`, `mc-hkm.1` |
@@ -154,20 +155,31 @@ Inside the large dispatch units, the production coverage is:
 
 | Source family | Enabled scope and real owner |
 |---|---|
-| Class 5 creatures | Models 0,1,2,3,4,9,10,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28; descendant actions 232/233/234. `mc-1pb` and Spider `mc-bhq.3` cover ordinary construction through combat/death and reclaim. Disabled 5/6/7/8/11 remain disabled. Unverified friendly names are not invented. |
+| Class 5 creatures | Models 0,1,2,3,4,9,10,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28; enabled descendant action232; allocated children233/234 have disabled callback entries. `mc-1pb` and Spider `mc-bhq.3` cover ordinary construction through combat/death and reclaim. Disabled 5/6/7/8/11 remain disabled. Unverified friendly names are not invented. |
 | Class 3 players/wizards | Flight, human input, rival AI, spell holders, rewards and death/revival. `mc-1pb.17`, `mc-1pb.18`, `mc-6qf.2`, `mc-bhq.10`; participant integration in `mc-bc0`. |
 | Class 15 spells / class 9 projectiles | All 26 spell families 0–25; holder/pickup actions 0–78; projectile constructors 0–30/actions 0–31 as actual descendants. `mc-k5k`, Meteor `mc-bhq.4`, and creature attack owners. Source map gates and no-ops remain deliberate. |
 | Class 2 scenery | Constructor range 0–8/actions 0–21; real nonempty paths belong to `mc-bhq.1`, `.5`, `.13` and their immediate producer families. Cave-null barrel constructors stay null. |
 | Class 10 effects/world | Constructor range 0–91/actions 0–98, including terrain 61–64. `mc-bhq.2`, `.5`, `.8`, `.9`, `.10`, `.12`; immediate spell/creature descendants stay with their producer. No invented behavior for empty entries. |
 | Class 14 controllers/items | Constructors 0–5/actions 0–10. `mc-bhq.11`, `mc-6qf.1`, `.4` and source effect owners; retain their complete lifetime. |
-| Class 11 activation / objective language | Selectors 0–44, authored stageTag/DisId/group order, stage forms 0–9 and `sub_58DA0` bindings. `mc-6qf.1`, `mc-bhq.7`; forms 4/6 exist in source without established vanilla usage in the earlier census. |
+| Class 11 activation / objective language | Selectors 0–44, authored stageTag/DisId/group order, stage forms 0–9 and `sub_58DA0` bindings. `mc-6qf.1`, `mc-bhq.7`; forms4/6 exist in source but are absent from the decoded 40 shipped records. |
 | Inactive/metadata classes | Class 0 sentinel; class 1 reset/constructors; empty classes 4/6/7/8/12; class 13 metadata with zero executable callback addresses. Import/reset adapters preserve these; display labels do not establish missing gameplay. |
+
+The class5 offset6 actions 6,22,30,38,78,126,134,142,150,158,166,174,
+182,190,206,214,222,230 have enabled table addresses but no dispatch case.
+Their shipped descriptors lack the bit8 production gate, so ordinary actor
+production cannot reach them. They are unsupported source routes, not empty
+callbacks. Only Goat/Villager/Trader/Builder descriptors enable that branch,
+and their handlers exist. Action232 is enabled; allocated233/234 are disabled.
+Frozen family memberships and the subsequent live-slot callback scan are
+separate: a newly allocated higher slot can still execute in the same pass.
 
 Spell IDs, projectile models and scheduled actions are distinct. In particular,
 Meteor9 launches projectile9/3 then effect10/17; CaveIn25 uses9/30 then10/89.
 Effect ownership follows behavior: Tremor10/71 belongs to terrain, Army10/72
 to summoning, GravityWell10/67 to fields, Alliance10/74 to its spell, and
-Possession10/12 to `mc-k5k.11`. Checkpoint10/59 and jar10/91 belong to items.
+Possession10/12 to `mc-k5k.11`. Checkpoint10/59 is a smoke cluster; jar10/91 repeatedly produces mana and
+spell experience. Their actual source consumers belong to items. Terrain27
+belongs to `mc-bhq.8`; slowdown65 and immobilization66 belong to `mc-bhq.12`.
 Do not infer a new behavior from a numeric range containing disabled entries.
 
 State/identity and asset-selector headers follow these same owners:
@@ -203,7 +215,8 @@ are delivery targets, not claims that those modules already exist.
 | `speechFolder/TRACK%02d.WAV; local reference enhancedassets/sound/speech/TRACK01.wav..TRACK27.wav`<br>`Type_DB080_CdTrack.h::CdTracks_DB080[28] with ten segment rows per entry` | Semantic speech asset and bounded segment, source time conversion, presentation phase and completion/duck identity.<br>`cache:focused speech builder`<br>`rust:objective/speech owner`<br>`unity:OwnerAudioPresentation.cs` | `mc-oi6.10`, `mc-paj.4`, `mc-oi6.6`, `mc-5r5.2` |
 | `CONFIG.DAT 32-byte record, signature 0xfffffff7`<br>`SAVE/SLEV*.DAT, SMAP*.DAT, SVER*.DAT and slot metadata`<br>`remc2 config.json host preferences` | Versioned preferences and Rust campaign/session state with definition/content identity and atomic local publication.<br>`rust:game_runtime.rs / campaign/backend.rs`<br>`rust:immutable workspace persistence`<br>`unity:CampaignMenuPresenter.cs` | `mc-zdo.3`, `mc-zdo.4`, `mc-5r5.2`, `mc-hkm.1` |
 | `enhancedassets graphics block128.data/bl128*.data/skyd1024.data/skyn1024.data`<br>`PNG sprite/font overrides via Level.cpp LoadFixedFonts and sprite patch paths`<br>`music-ogg and alternative/day/night/cave OGG tracks`<br>`font/16x16-font.bmp, 8x8-font.bmp, UbuntuMono-B.ttf` | Explicit optional variants through existing asset contracts; original defaults remain distinct.<br>`rust:sim-enhanced-presentation`<br>`rust:retained semantic asset variants`<br>`unity:SemanticPresentationAssetCache.cs` | `mc-hkm`, `mc-oi6.1` |
-| `SOUND/*.DIG, *.MDI, AILDRVR.LST`<br>`DATA/DFONT*, SFONT*, GTDEF*, FTDEF*, GTD2.DAT, ETEXT/FTEXT/GTEXT/ITEXT/SPTEXT/SWTEXT.DAT, extra title/logo assets`<br>`INTRO/INTEL.DAT` | Only proven live asset consumers become semantic bindings; hardware drivers remain platform implementation detail.<br>`Existing Rust/Unity audio/input/window services`<br>`Actual player/status renderer where conditional consumer is established` | `mc-1pb.18`, `mc-oi6.7` |
+| `DATA/GTD2.DAT` | Day exit lookup/blend data: `Level.cpp::LoadSpr_47160` buffer -> `sub_5E8C0_endGameSeq` -> timed status renderer. This is a normal Day exit requirement. | `mc-oi6.7` |
+| `SOUND/*.DIG, *.MDI, AILDRVR.LST`<br>`DATA/DFONT*, SFONT*, GTDEF*, FTDEF*, ETEXT/FTEXT/GTEXT/ITEXT/SPTEXT/SWTEXT.DAT, extra title/logo assets`<br>`INTRO/INTEL.DAT` | Bind source-active consumer branches; hardware drivers remain host implementation detail. File existence does not prove a live branch or completed replacement. | `mc-5r5.5`, `mc-oi6.6`, `mc-oi6.7`, `mc-oi6.8`, `mc-oi6.9` |
 
 Mission identities are distinct domains: ordinary source 0–24 (external 1–25),
 secret 30–34 and multiplayer 50–59. Reserved rows 25–29 and 35–49 are not silently
@@ -219,8 +232,10 @@ its gameplay.
 Actual final mission source24 is Night with feature byte2. Its authored
 record373 is special building10/45 parameter68; destruction releases group29
 and boss5/10 at record379 (`mc-1pb.3`). Ordered objectives reach (40,212) and
-kill the bound boss. Switch392 releases group31 and ordinary exit393 leads to
-the authoritative result consumed by `mc-paj.7`. `mc-6qf.5` owns this real
+kill the bound boss. Switch392 releases group31: visible exit393 at (125,170) and a distinct
+class11/model12 controller394 at (227,237). Controller overlap, not the visible
+sprite, selects player action12 and the authoritative result consumed by
+`mc-paj.7`. `mc-6qf.5` owns this real
 assembly, including the boss's dynamic children and building protection tail.
 This mapping comes from decoded owner data and source, not a completed playthrough.
 
@@ -231,6 +246,72 @@ segment, duck/fade and cleanup lifecycle, separate from SOUND.DAT and XMIDI.
 The mission code currently selects speech-disabled behavior. Map briefing uses
 segment zero from the same speech consumer, so `mc-paj.4` now depends on it.
 
+### Shipped mission inputs
+
+This index comes from decoding all 40 actual owner records with the pinned RNC
+implementation. It is an import/assembly input for `mc-bhq.6`, `mc-6qf.3`,
+`mc-bc0.15` and their gameplay owners, not a playthrough result. Source row IDs
+remain adapter-private. Creature IDs below are authored class5 models; the
+constructors, attacks, transformations, death products and shared spell tables
+supply additional runtime descendants. Use those production chains as well as
+these rows when admitting a mission. Eight wizard profiles, 1200 entity rows,
+eight stage rows and eleven StageVars are retained for every mission.
+
+| Mission / source | Environment / flag | Authored objective kinds in order | Authored creature models |
+|---|---|---|---|
+| 1 / 0 | Night / 0 | 5,5,7,0,7 | 1,3,4,13,19 |
+| 2 / 1 | Day / 0 | 5,3,7,5,9 | 1,2,3,4,9,13,14 |
+| 3 / 2 | Day / 0 | 7,7,0,5,7 | 0,1,2,3,4,9 |
+| 4 / 3 | Cave / 0 | 0,7 | 0,9,19,20 |
+| 5 / 4 | Day / 0 | 3,3 | 0,1,2,3,4,9 |
+| 6 / 5 | Cave / 0 | 1,7,5,7 | 0,3,9,18,19,20,26 |
+| 7 / 6 | Night / 0 | 8 | 0,3,9,12,13,14,19,20,22 |
+| 8 / 7 | Cave / 0 | 7,5,5,7,7,9 | 0,3,9,19,20,21,26 |
+| 9 / 8 | Day / 0 | 1,1,3,2,7 | 0,2,3,9,17,20,21,22,26 |
+| 10 / 9 | Night / 0 | 9,7,5,0 | 0,3,9,17,21,25,26 |
+| 11 / 10 | Night / 0 | 5,9,7,5 | 0,9,20,21,28 |
+| 12 / 11 | Cave / 0 | 5,5 | 0,4,18,19,20,21,26 |
+| 13 / 12 | Day / 0 | 3,3,3,3 | 0,1,2,3,4,17,20,21,25,26 |
+| 14 / 13 | Night / 0 | 0,1,7,7 | 0,1,3,13,18,19,20,21,22,23,25,26,28 |
+| 15 / 14 | Cave / 0 | 7,7 | 0,3,9,17,18,19,20,21,22,24,25,26 |
+| 16 / 15 | Cave / 0 | 2,1,1,9,7 | 3,9,18,19,20,21,22,24,25,26 |
+| 17 / 16 | Day / 0 | 8 | 0,17,18,20,21,22,23,25,26,28 |
+| 18 / 17 | Night / 0 | 0,1,0,3 | 9,16,17,18,19,20,23,25,26,28 |
+| 19 / 18 | Night / 0 | 8 | 16,17,18,19,20,21,22,23,25,26,28 |
+| 20 / 19 | Day / 0 | 7,1 | 4,13,16,26,27,28 |
+| 21 / 20 | Cave / 0 | 7,7 | 18,20,21,24,25,26,28 |
+| 22 / 21 | Night / 0 | 1,0 | 1,14,19,20,21,22,23,25,27,28 |
+| 23 / 22 | Day / 4 | 2,9,2,2,9,8,0 | 2,4,9,16,18,20,21,22,23,25,26,27 |
+| 24 / 23 | Cave / 0 | 5,7,5,9,7 | 0,16,18,24,25,26 |
+| 25 / 24 | Night / 2 | 5,1 | 3,9,10,16,17,18,19,20,21,23,25,26,27,28 |
+| Secret 1 / 30 | Cave / 0 | 0 | 0,3,4,9,19,20 |
+| Secret 2 / 31 | Night / 0 | 0 | 0,3,4,9,28 |
+| Secret 3 / 32 | Cave / 0 | 0 | 0,3,19,20,21,24,25,26 |
+| Secret 4 / 33 | Cave / 0 | 0 | 0,9,16,18,19,20,21,22,25 |
+| Secret 5 / 34 | Day / 0 | 0 | 0,2,3,16,18,20,21,25,28 |
+| Thrull / 50 | Day / 1 | 8 | 2,3,16,18,20,21,22,25,27,28 |
+| Keevur / 51 | Day / 1 | 8 | 2,9,16,17,18,20,23,27,28 |
+| Braak / 52 | Day / 1 | 8 | 0,2,3,4,9,16,17,18,20,21,23,25,26,27 |
+| Trapox / 53 | Day / 1 | 8 | 0,2,3,4,16,17,18,23,25,26,28 |
+| Hibren Zhor / 54 | Night / 1 | 8 | 0,1,3,4,9,16,19,20,23,26,27,28 |
+| Jinople / 55 | Cave / 1 | 8 | 0,3,9,16,17,18,20,21,24,25,26 |
+| Dethrem / 56 | Night / 1 | 8,5,7,5,5,7,5 | 0,3,9,16,17,18,19,20,22,23,25,26,27,28 |
+| Canquin / 57 | Day / 1 | 8 | 0,2,17,18,19,20,22,23 |
+| Zephulum / 58 | Day / 1 | 8 | 2,9,16,17,18,20,21,22,23,25,26,27,28 |
+| Verune / 59 | Day / 1 | 8 | 2,16,17,18,21,22,23,25,28 |
+
+Source22 feature4 is gameplay: `sub_605E0` removes a rival’s Castle spell
+holder when its last castle stage is destroyed; it is not a fire-palette flag.
+Source24 feature2 selects fire-Night resources and source constructor gates.
+`InitStages_58940` replaces every multiplayer authored stage list with one
+type8 stage; source56’s extra authored stages therefore do not run in multiplayer.
+In multiplayer, `InitialiseSpells_54A50` uses wizard profile0 for every
+participant; separate participant state does not imply separate source starting
+profiles. Wizard/color selection does not change this rule.
+Objective kinds4/6 occur in the source language but not in these shipped records.
+Secret30..34 all use kind0 with their own target, content and return association.
+A shared objective kind or environment does not make two missions interchangeable.
+
 ## Multiplayer lifecycle and extension points
 
 | Source behavior | Runtime delivery |
@@ -240,8 +321,8 @@ segment zero from the same speech consumer, so `mc-paj.4` now depends on it.
 | `type_BYTE_17DE68x`<br>`NetworkInitConnection_7308F`<br>`MultiplayerMenu_7DE80`<br>`sub_77680`<br>`sub_7C390`<br>`SetMultiplayerColors_7CE50`<br>`FindFreeColorIndex_7D230`<br>`DrawNetworkLevelName_7D1F0`<br>`SetMultiplayerColors_7D310`<br>`SetPaletteColor_7CDC0`<br>`MultiplayerPreviousWizard_7CBF0`<br>`MultiplayerNextWizard_7CC40`<br>`MultiplayerPreviousLevel_7CCF0`<br>`MultiplayerNextLevel_7CD30`<br>`MultiplayerPlayLevel_7CDA0`<br>`MultiplayerExit_7CCA0`<br>Eight slots, source session digit produces NETH(session+20) names. Eleven-byte lobby record carries active/update bit, eight colour entries, action and selected level. Source actions1..6 are leave, initial allocation, previous/next wizard, start and level change. Colour cycling has occupancy<7 condition; lobby start publishes local slot/player count and map before cancelling unused listeners. | `mc-bc0.2`, `mc-bc0.15` |
 | `LevelsNames_D9204`<br>`LevelDecompress_533B0`<br>`LevelInitGame_56A30`<br>`GenerateLevelMap_43830`<br>`sub_49270_generate_level_features`<br>`sub_53160`<br>`InitialiseSpells_54A50`<br>`InitStages_58940`<br>Exactly ten named selectable MP source indices50..59 (Thrull,Keevur,Braak,Trapox,Hibren Zhor,Jinople,Dethrem,Canquin,Zephulum,Verune), sentinel60. Same owner LEVELS.DAT/TAB/CLEVELS loader, seed generation, environment cache and wizard settings; source prevents ordinary map player count replacing the negotiated MP count. MP humans are not AI and do not inherit ordinary SP carry. | `mc-bc0.15`, `mc-bc0.6`, `mc-bc0.4` |
 | `Type_PlayerInput_0x6E3E`<br>`type_str_0x2BDE`<br>`MouseAndKeysEvents_17A00`<br>`HandleButtonClick_191B0`<br>`ProcessKeyboardPresses_17190`<br>`ChangeSettings_1A970`<br>`PlayerEvents_51BB0`<br>`sub_57B20`<br>`sub_55C60`<br>`InGameLoop_47320`<br>`UpdateEntities_57730`<br>Input is ten bytes per slot, all inputs exchange before player actions; first action1 additionally exchanges full 2124-byte player records. Stable player loop then per-player roll/pitch/target epilogue, menu service and zero input. Outer loop continues sub_848A0, entity passes, lighting, objectives, presentation, completion, sound and rendering. MP disallows pause, speed changes, ordinary saves/load and flight assistance; UI can still open locally. | `mc-bc0.3`, `mc-bc0.4`, `mc-bc0.5` |
-| `sub_58630`<br>`sub_68BF0`<br>`sub_574A0`<br>`sub_575C0`<br>`sub_57640`<br>`SaveLevel_55080`<br>`LoadLevel_555D0`<br>`AddSwitch31atyp_50FF0`<br>`InitialiseSpells_54A50`<br>`UpdateScroll_59C80`<br>`sub_6D8B0`<br>`sub_6D9C0`<br>`sub_6DAD0`<br>`sub_6DB50`<br>`sub_6DBD0`<br>MP selects a player for cave/environment effects using shared RNG; skips the SP rival-wizard coordinator and SP checkpoint/save path. MP scroll reward50 and xpos2 spell upgrade thresholds differ from SP. Existing shared creature/spell/economy family leaves remain dependencies, not copied implementations. | `mc-bc0.4`, `mc-bc0.5`, `mc-bc0.6`, `mc-bc0.7` |
-| `sub_5E310_multiplayer_test_die`<br>`sub_5E7C0_multiplayer_test_banished`<br>`sub_5E6C0`<br>`DisableEntitesDrawing_5E660`<br>`sub_5C950`<br>`InitStages_58940`<br>`sub_58F00_game_objectives`<br>`sub_59760`<br>`PresentObjective_59820`<br>`AddSwitch0B_20_6F1C0`<br>`sub_57570`<br>`sub_5E8C0_endGameSeq`<br>`DrawSorcererScores_2D1D0`<br>`CollectLevelStats_5C530`<br>`sub_46830_main_loop`<br>Class3 lifecycle includes source drops, counter updates and castle-dependent revival/banishment; multiplayer-named handlers also serve SP. MP objective initializer uses one stage type8: all other active participant flags clear. Each participant has objective progress. Source scores show max mana and kill matrix. Ending returns through ordinary menu; no separate automatic rematch protocol established. | `mc-bc0.8`, `mc-bc0.11`, `mc-bc0.10` |
+| `sub_58630`<br>`sub_68BF0`<br>`sub_574A0`<br>`sub_575C0`<br>`sub_57640`<br>`SaveLevel_55080`<br>`LoadLevel_555D0`<br>`AddSwitch31atyp_50FF0`<br>`InitialiseSpells_54A50`<br>`UpdateScroll_59C80`<br>`sub_6D8B0`<br>`sub_6D9C0`<br>`sub_6DAD0`<br>`sub_6DB50`<br>`sub_6DBD0`<br>MP selects a player for cave/environment effects using shared RNG; skips the SP creature/mana proximity-activation pass and SP checkpoint/save path. MP scroll reward50 and xpos2 spell upgrade thresholds differ from SP. Existing shared creature/spell/economy family leaves remain dependencies, not copied implementations. | `mc-bc0.4`, `mc-bc0.5`, `mc-bc0.6`, `mc-bc0.7` |
+| `sub_5E310_multiplayer_test_die`<br>`sub_5E7C0_multiplayer_test_banished`<br>`sub_5E6C0`<br>`DisableEntitesDrawing_5E660`<br>`sub_5C950`<br>`InitStages_58940`<br>`sub_58F00_game_objectives`<br>`sub_59760`<br>`PresentObjective_59820`<br>`AddSwitch0B_20_6F1C0`<br>`sub_57570`<br>`sub_5E8C0_endGameSeq`<br>`DrawSorcererScores_2D1D0`<br>`CollectLevelStats_5C530`<br>`sub_46830_main_loop`<br>Class3 lifecycle includes source drops, counter updates and castle-dependent revival/banishment; multiplayer-named handlers also serve SP. MP objective initializer uses one stage type8: all other active participant flags clear. Each participant has objective progress. Source scores show max mana and kill matrix. Type8 completion -> sub_57570 resultbit2 -> input action27/PlayerEvents0x1B -> resultword10/NetworkEvent -> outer-loop stats/cleanup/menu. Shared cinematic actions11/12 require their own actual producer and are not a mandatory MP type8 transition. No separate automatic rematch protocol established. | `mc-bc0.8`, `mc-bc0.11`, `mc-bc0.10` |
 | `DrawChatMenu_2F6B0`<br>`sub_61620`<br>`sub_61810`<br>`DrawTextPauseEndOfLevel_2CE30`<br>`GetTrueWizardNumber_61790`<br>`TransformPlayerColorIndex_616D0`<br>`DrawBottomSpellsMenu_2ECC0`<br>`DrawTopStatusBar_2D710`<br>`DrawCurrentObjectiveTextbox_30630`<br>`DrawMinimapEntites_61880`<br>`PlayEntitySounds_6E150`<br>`PlayInGameFmv_82670`<br>Eight text slots and four recipient modes; geometry is distance<5376 and angle<0x100, nearest qualifying wizard helper. Remote names, status, colours, spell hands, minimap and sound differ by local viewpoint; SP objectives/FMV are gated off. Source currently has questionable sender==local routing guard. | `mc-bc0.9`, `mc-bc0.10` |
 | `NetworkEvent_7373D`<br>`NetworkSomeChange_73AA1`<br>`NetworkCanceling_73669`<br>`NetworkRemoveClient_739AD`<br>`NetworkEnd_73D11`<br>`NetworkCancelAll_7449C`<br>`RemoveDeadClients`<br>`NetworkDisallocation_72D04`<br>`PollSessions`<br>`CancelNetwork`<br>`DeleteNetwork`<br>`StopNetworkThread`<br>`EndMyNetLib`<br>Graceful game coordinator departure publishes connected slots and chooses first remaining slot to listen/call. Registration server is a separate control role; no registration-server failover was established. Transport probes after1s and declares silence dead after5s; pending receive and some NCB loops otherwise lack bounded waits. Dead-client hook writes lobby action1; full abrupt midgame lifecycle is not demonstrated. | `mc-bc0.12`, `mc-bc0.13` |
 
@@ -273,6 +354,20 @@ game flow. The standalone game must reuse the MC2 domain implementations and
 work without MC2 owner resources. It is a later engine deliverable, not a new
 condition for finishing the original single-player game.
 
+Source findings also expose deliberate compatibility decisions. `mc-1pb.24`
+and `mc-k5k.2` replace `sub_10C80`'s invalid cross-entity writes with typed
+per-target StealMana/Duel channels and their actual consumers. Original callers
+use modes0/3/4; no invented mode1/2 producer is required. Existing Invisible
+holder/parent status distinctions and documented texture clock policy remain
+explicit. These are not claims of literal C++ equivalence.
+
+Multiplayer keeps source match behavior while repairing concrete transport and
+locality defects: route by participant pair and generation, retain slot mapping,
+apply gameplay rewards identically across peers and keep cues local, and require
+an active eligible winner. Three clients with distinct traffic, including two
+sharing an address, exercise routing. Those repairs belong to the existing
+transport/progression/results capabilities; legacy interop remains deferred.
+
 ## Explicit limits and non-game plumbing
 
 - Reference DOS/BIOS/VGA/AIL/MSCDEX, SDL/Winsock handles, directory enumeration
@@ -292,11 +387,14 @@ condition for finishing the original single-player game.
   and `portability/dirent.c` are absent from this CMake roster. This is not a
   universal dead-code claim; alternate Windows/Android manifests were not
   exhaustively inspected.
-- HMD/stereo branches, every renderer/function branch, all language packs,
-  conditional `GTD2.DAT` reachability and every fixed-table consumer were not
-  exhaustively traced. Only local L1.TXT/D2.TXT were observed; their filenames
-  do not prove distinct languages. `INTEL.DAT` and several legacy text/driver
-  filenames are neither mandatory nor dead merely because they exist.
+- `GTD2.DAT` is required for ordinary Day exits: `LoadSpr_47160` allocates
+  its buffer, endGameSeq states5/6/8 load and activate blur mode2, and state12
+  clears it. `mc-oi6.7` owns this live path. Source flat terrain, smoothing and
+  Alt+H stereo/interlace have input consumers; optional alternate backends do
+  not replace those requirements. Every pixel-kernel branch and installed
+  language pack has not been proved equivalent. Only local L1.TXT/D2.TXT were
+  observed; filenames alone do not prove distinct languages. Unresolved
+  fixed-table consumers stay within their implementation owner until traced.
 - Source-table ranges and asset paths provide coverage/navigation. Actual
   complete-game acceptance still requires each production chain and the normal
   end-to-end player route. Unexpected live behavior is fixed in its owning
