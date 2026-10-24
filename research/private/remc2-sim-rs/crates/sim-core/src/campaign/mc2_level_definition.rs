@@ -65,6 +65,30 @@ pub(crate) struct Mc2LevelDefinition {
 }
 
 impl Mc2LevelDefinition {
+    pub(crate) fn initial_mechanic_entity(
+        &self,
+        kind: MechanicKind,
+        position: TilePosition,
+    ) -> Result<&LevelEntityId, String> {
+        let mut matching = self.semantic.entities().iter().filter(|entity| {
+            entity.kind() == LevelEntityKind::Mechanic(kind)
+                && entity.default_position() == position
+        });
+        let Some(entity) = matching.next() else {
+            return Err(format!(
+                "no semantic mechanic {kind:?} at ({}, {})",
+                position.x, position.y
+            ));
+        };
+        if matching.next().is_some() {
+            return Err(format!(
+                "ambiguous semantic mechanic {kind:?} at ({}, {})",
+                position.x, position.y
+            ));
+        }
+        Ok(entity.id())
+    }
+
     pub(crate) const fn authored_kind(class: u8, subtype: u8) -> Option<LevelEntityKind> {
         match (class, subtype) {
             (5, model) => match Self::creature_for_model(model) {

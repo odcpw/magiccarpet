@@ -1478,27 +1478,16 @@ impl CampaignDefinition {
             };
             // Reset behavior rows use their own constructor provenance, not
             // the authored feature index. Join the private carrier to the
-            // semantic package entity by kind and fail closed on ambiguity.
-            let matching = semantic_level
-                .mechanic_by_authored_record
-                .iter()
-                .filter(|(_, candidate_kind)| **candidate_kind == kind)
-                .filter_map(|(authored_record, _)| {
-                    semantic_level
-                        .mechanic_entity_by_authored_record
-                        .get(authored_record)
-                })
-                .collect::<Vec<_>>();
-            if matching.len() != 1 {
-                return fail(
-                    ValidationStage::TypedOperations,
-                    format!(
-                        "initial mechanic source slot {source_slot} has {} semantic package candidates",
-                        matching.len()
-                    ),
-                );
-            }
-            mechanic_entity_by_initial_source_slot.insert(source_slot, matching[0].clone());
+            // semantic package entity by kind and initial position; several
+            // controllers of the same kind can be present in one mission.
+            let position = initial_entity_tile(entities, source_slot)?;
+            let entity = semantic_level
+                .initial_mechanic_entity(kind, position)
+                .map_err(|message| CampaignPackageError {
+                    stage: ValidationStage::TypedOperations,
+                    message: format!("initial mechanic source slot {source_slot}: {message}"),
+                })?;
+            mechanic_entity_by_initial_source_slot.insert(source_slot, entity.clone());
         }
         let scenery_by_initial_source_slot = expected_rows
             .iter()

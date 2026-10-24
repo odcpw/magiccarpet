@@ -1574,9 +1574,14 @@ mod tests {
                 (0, orientation, extent as u16, 16)
             );
             assert_eq!(row.particle_parameter_index, Some(0));
+            let phase = row.phase;
             let visit = cave_corridors::visit(&mut live.economy, &mut live.terrain, slot);
             assert_eq!(visit, cave_corridors::Visit::default());
             let row = &live.economy.entities[usize::from(slot)];
+            assert_eq!(
+                row.phase, phase,
+                "direct initializer has no Update epilogue"
+            );
             assert_eq!((row.life, row.position.z), (4, 50));
             assert_ne!(live.terrain.planes.angles[0] & 0x80, 0);
             live.economy.entities[usize::from(slot)].set_life(1);
@@ -1701,18 +1706,19 @@ mod tests {
         let mut directions = [0; 2];
         for row in rows {
             let mut source = row.clone();
+            let position = crate::level_definition::TilePosition {
+                x: source.position.x >> 8,
+                y: source.position.y >> 8,
+            };
+            let id = imported
+                .initial_mechanic_entity(
+                    crate::level_definition::MechanicKind::CaveCorridor,
+                    position,
+                )
+                .expect("each initial controller resolves among six same-kind mechanics");
             let definition = imported
                 .semantic
-                .entities()
-                .iter()
-                .find(|entity| {
-                    entity.kind()
-                        == crate::level_definition::LevelEntityKind::Mechanic(
-                            crate::level_definition::MechanicKind::CaveCorridor,
-                        )
-                        && entity.position().x == source.position.x >> 8
-                        && entity.position().y == source.position.y >> 8
-                })
+                .entity(id)
                 .expect("live controller has a typed authored corridor binding");
             assert_eq!(
                 definition.cave_corridor(),
@@ -1799,6 +1805,47 @@ mod tests {
             directions,
             [3, 3],
             "all six actual mission4 corridor roots exercised"
+        );
+        let corridor = imported
+            .semantic
+            .entities()
+            .iter()
+            .find(|entity| entity.cave_corridor().is_some())
+            .unwrap();
+        let mut ambiguous = imported.clone();
+        let mut definitions = ambiguous.semantic.entities().to_vec();
+        definitions.push(sim_definition::adapter::cave_corridor_entity_definition(
+            sim_definition::adapter::stable_entity_id("mechanic.cave_corridor.duplicate").unwrap(),
+            corridor.default_position(),
+            None,
+            crate::level_definition::LevelEntityPositionAccess::ReadOnly,
+            corridor.cave_corridor().unwrap(),
+        ));
+        ambiguous.semantic = sim_definition::adapter::build_level_definition(
+            definitions,
+            ambiguous.semantic.objectives().to_vec(),
+            ambiguous.semantic.activation_groups().collect(),
+        )
+        .unwrap();
+        assert!(
+            ambiguous
+                .initial_mechanic_entity(
+                    crate::level_definition::MechanicKind::CaveCorridor,
+                    corridor.default_position(),
+                )
+                .unwrap_err()
+                .contains("ambiguous"),
+            "the join still rejects two same-kind mechanics at one initial position"
+        );
+        assert!(
+            imported
+                .initial_mechanic_entity(
+                    crate::level_definition::MechanicKind::CaveCorridor,
+                    crate::level_definition::TilePosition { x: 0, y: 0 },
+                )
+                .unwrap_err()
+                .contains("no semantic mechanic"),
+            "missing initial bindings remain invalid"
         );
     }
 
