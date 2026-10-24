@@ -9406,11 +9406,11 @@ impl Level2ResetSession {
         // rows. Those side effects still happen for an empty or already
         // consumed group.
         let reset_free_slots = self.session.baseline.economy.economy.free_slots.clone();
-        self.session
-            .state
-            .live
-            .economy
-            .rebuild_free_arena(&reset_free_slots);
+        {
+            let live = &mut self.session.state.live;
+            live.economy
+                .rebuild_source_arena_with_terrain(&mut live.terrain, &reset_free_slots)?;
+        }
         self.session
             .state
             .live
@@ -9438,6 +9438,7 @@ impl Level2ResetSession {
             .collect::<Vec<_>>();
         rows.sort_unstable_by_key(|feature| feature.index);
         if rows.is_empty() {
+            self.session.state.live.economy.finish_source_group();
             return Ok(());
         }
 
@@ -9550,11 +9551,13 @@ impl Level2ResetSession {
                     ));
                 }
                 let live = &mut self.session.state.live;
+                let position =
+                    feature.world_position(live.terrain.ground_height(feature.world_position(0)));
                 let slot = crate::world::effects::allocate(
                     &mut live.economy,
                     &mut live.terrain,
                     properties,
-                    feature.world_position(0),
+                    position,
                     &self.session.definition.presentation.particles,
                 )?;
                 if let Some(slot) = slot {
@@ -10273,6 +10276,7 @@ impl Level2ResetSession {
                 }
             }
         }
+        self.session.state.live.economy.finish_source_group();
         self.push_dispatch_effect(Level2DispatchEvent::AuthoredGroupActivated {
             pass,
             source_slot: producer_slot,
@@ -13449,22 +13453,34 @@ impl Level2ResetSession {
         match (visit.handler, visit.route) {
             (ExistingHandler::TerrainDisasters, Level2SourceRoute::Imported) => {
                 use crate::world::terrain::disasters::mc2;
+                let particles = &self.session.definition.presentation.particles;
+                let masks = self.session.definition.collision_masks.as_ref();
                 let outcome = {
                     let live = &mut self.session.state.live;
+                    let alternate_volcano = live.core.runtime.alternate_volcano();
                     let actors = &mut live.goats;
                     let ordinary = &mut live.ordinary;
                     let progression = &mut live.shared_spells;
-                    mc2::step(
+                    mc2::runtime::step(
                         &mut live.economy,
                         &mut live.terrain,
+                        particles,
                         source_slot,
+                        alternate_volcano,
                         |arena, request| {
-                            mc2::damage::apply(
+                            mc2::damage::apply_request(
                                 arena,
-                                Some(area_damage::ActorDomains::new(&mut *actors, &mut *ordinary)),
-                                Some((player_entity_index, *player_position)),
-                                Some(&mut *progression),
-                                true,
+                                mc2::damage::Context {
+                                    actors: Some(area_damage::ActorDomains::new(
+                                        &mut *actors,
+                                        &mut *ordinary,
+                                    )),
+                                    player: Some((player_entity_index, *player_position)),
+                                    progression: Some(&mut *progression),
+                                    experience_enabled: true,
+                                    masks,
+                                    lists: effect_lists,
+                                },
                                 request,
                             )
                         },
@@ -13697,7 +13713,7 @@ impl Level2ResetSession {
                             [context_event_start..]
                             .to_vec();
                         self.append_context_effects(context_events);
-                        self.step_level2_player_dying_action(pass, source_slot, body.proposed);
+                        self.step_level2_player_dying_action(pass, source_slot, body.proposed)?;
                         *player_position = self.session.state.live.core.state.position;
                         evidence.push(body);
                     } else if player_action_at_visit == crate::level_exit::EXIT_PLAYER_ACTION {
@@ -14722,7 +14738,7 @@ impl Level2ResetSession {
                 let action =
                     self.session.state.live.economy.entities[usize::from(source_slot)].action;
                 if action == 2 {
-                    self.step_level2_nyphur_dying_action(source_slot);
+                    self.step_level2_nyphur_dying_action(source_slot)?;
                     return Ok(());
                 }
                 if action == 3 {
@@ -20848,7 +20864,10 @@ impl Level2ResetSession {
     /// `sub_5EFA0` mailbox result. This is the pinned `sub_5E310` action-2
     /// transition: fall to terrain, release holders, allocate the death
     /// marker, redirect owned mana, then select action 3.
-    fn step_level2_nyphur_dying_action(&mut self, source_slot: u16) {
+    fn step_level2_nyphur_dying_action(
+        &mut self,
+        source_slot: u16,
+    ) -> std::result::Result<(), String> {
         const PLAYER_BANISHED_ACTION_TIMER: i32 = 1_200;
 
         let (old_fall_velocity, source_id, collision_vertical_offset, burst_position) = {
@@ -20895,14 +20914,14 @@ impl Level2ResetSession {
         );
 
         if position.z != ground {
-            return;
+            return Ok(());
         }
         let reset_free_slots = self.session.baseline.economy.economy.free_slots.clone();
-        self.session
-            .state
-            .live
-            .economy
-            .rebuild_free_arena(&reset_free_slots);
+        {
+            let live = &mut self.session.state.live;
+            live.economy
+                .rebuild_source_arena_with_terrain(&mut live.terrain, &reset_free_slots)?;
+        }
         self.session.state.live.economy.entities[usize::from(source_slot)]
             .clear_source_upkeep_mailbox();
         self.release_level2_nyphur_spell_holders(source_slot, position);
@@ -20932,6 +20951,7 @@ impl Level2ResetSession {
             .live
             .economy
             .decrement_replacement_cursor_after_player_contact();
+        Ok(())
     }
 
     /// Execute the AI/no-Castle branch of pinned `sub_5E7C0`. The objective
@@ -21075,7 +21095,7 @@ impl Level2ResetSession {
         pass: u8,
         source_slot: u16,
         burst_position: Position,
-    ) {
+    ) -> std::result::Result<(), String> {
         const PLAYER_DEATH_NOTIFICATION_ID: u16 = 374;
         const PLAYER_DEATH_NOTIFICATION_STATE: u8 = 1;
         const PLAYER_DEATH_NOTIFICATION_TIMER: i16 = 100;
@@ -21141,11 +21161,11 @@ impl Level2ResetSession {
 
         if position.z == ground {
             let reset_free_slots = self.session.baseline.economy.economy.free_slots.clone();
-            self.session
-                .state
-                .live
-                .economy
-                .rebuild_free_arena(&reset_free_slots);
+            {
+                let live = &mut self.session.state.live;
+                live.economy
+                    .rebuild_source_arena_with_terrain(&mut live.terrain, &reset_free_slots)?;
+            }
 
             let killer = self.session.state.live.economy.entities[usize::from(player_entity_index)]
                 .word_24();
@@ -21243,6 +21263,7 @@ impl Level2ResetSession {
             .shared_spells
             .sync_player_entity_from_authority(&player);
         self.append_new_economy_events(pass, source_slot);
+        Ok(())
     }
 
     fn step_level2_player_banished_action(&mut self) {
@@ -29538,7 +29559,7 @@ mod tests {
         session.set_level2_entity_position(slot, position).unwrap();
         session.economy.entities[usize::from(slot)].set_source_action(2);
         session.economy.entities[usize::from(slot)].set_source_word_2c(0);
-        session.step_level2_nyphur_dying_action(slot);
+        session.step_level2_nyphur_dying_action(slot).unwrap();
         let after = session
             .campaign_presentation_opponent(CampaignSelection::LEVEL2)
             .expect("released opponent spells are not entity references");
@@ -29628,7 +29649,9 @@ mod tests {
             .map(|sphere| sphere.player_entity_index)
             .collect::<Vec<_>>();
 
-        session.step_level2_player_dying_action(0, player_entity_index, position);
+        session
+            .step_level2_player_dying_action(0, player_entity_index, position)
+            .unwrap();
         assert_eq!(session.economy.entities[player_index].action, 2);
         let released_hud = session.day_hud().expect("released holders remain readable");
         assert_eq!(released_hud.left.holder_entity_index, 0);
@@ -29661,7 +29684,9 @@ mod tests {
             sphere_relations
         );
 
-        session.step_level2_player_dying_action(0, player_entity_index, position);
+        session
+            .step_level2_player_dying_action(0, player_entity_index, position)
+            .unwrap();
         assert_eq!(session.economy.entities[player_index].action, 2);
         assert!(session.economy.player_death_markers.is_empty());
         assert_eq!(

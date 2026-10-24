@@ -454,6 +454,25 @@ impl LiveWorldState {
             hash.u16(goat.entity_index);
             hash.i16(goat.collision_half_depth);
         }
+        // Accepted Level 1 reset rows have model13, null links and byte39=63
+        // after the source reset pass. Keep those receipts byte-identical;
+        // distinguish newly retained script/link state in the current hash.
+        for villager in self.villagers().iter().filter(|row| {
+            row.model != 13
+                || row.linked_entity_index != 0
+                || row.stage != Default::default()
+                || row.source_byte_39 != 63
+        }) {
+            hash.bytes(b"settlement-stage-v1\0");
+            hash.u16(villager.entity_index);
+            hash.u8(villager.model);
+            hash.u16(villager.linked_entity_index);
+            hash.u16(villager.stage.parent);
+            hash.u16(villager.stage.relation);
+            hash.i16(villager.stage.remaining);
+            hash.i16(villager.stage.duration);
+            hash.u8(villager.source_byte_39);
+        }
         hash.finish()
     }
 

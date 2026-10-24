@@ -358,7 +358,7 @@ impl Level2EconomyState {
         Ok(state)
     }
 
-    pub(super) fn for_each_live_replaceable_arena_row(
+    pub(crate) fn for_each_live_replaceable_arena_row(
         &self,
         mut visit: impl FnMut(u16, Level2DynamicArenaKind),
     ) {
@@ -427,16 +427,23 @@ impl Level2EconomyState {
             }
         });
         let (slot, kind) = candidate?;
+        self.replace_typed_source_slot(slot, kind)
+    }
+
+    /// NewEvent's frozen pointer identifies the address to overwrite. The
+    /// current row's replaceable bit need not still match the rebuild scan.
+    pub(crate) fn replace_typed_source_slot(
+        &mut self,
+        slot: u16,
+        kind: Level2DynamicArenaKind,
+    ) -> Option<u16> {
         self.possession_guidance_stale_records.remove(&slot);
         self.source_phase_sidecars.remove(&slot);
 
         macro_rules! remove_flagged_row {
             ($rows:expr) => {{
-                let Some(index) = $rows.iter().position(|row| {
-                    row.active
-                        && row.source_entity_index == slot
-                        && row.control_flags & SOURCE_REPLACEABLE_FLAG != 0
-                }) else {
+                let Some(index) = $rows.iter().position(|row| row.source_entity_index == slot)
+                else {
                     return None;
                 };
                 $rows.remove(index);
@@ -445,11 +452,11 @@ impl Level2EconomyState {
 
         match kind {
             Level2DynamicArenaKind::CastleAuxiliary => {
-                let Some(index) = self.castle_defenders.iter().position(|child| {
-                    child.active
-                        && child.source_entity_index == slot
-                        && child.control_flags & SOURCE_REPLACEABLE_FLAG != 0
-                }) else {
+                let Some(index) = self
+                    .castle_defenders
+                    .iter()
+                    .position(|child| child.source_entity_index == slot)
+                else {
                     return None;
                 };
                 self.castle_defenders.remove(index);
@@ -866,6 +873,8 @@ impl Level2EconomyState {
             child.collision_pitch = collision_pitch;
             child.collision_roll = collision_roll;
             child.collision_fov = collision_fov;
+            child.shift_rot_x = collision_pitch;
+            child.shift_rot_y = collision_fov;
             bound = true;
         }
         bound
@@ -4495,7 +4504,7 @@ impl Level2EconomyState {
             let column_index = u8::try_from(index % 5).expect("model-76 child column fits");
             let child_rng = level2_next_rng16(entity_rng);
             let orbit = i16::try_from((child_rng & 0x3f) + 84).expect("model-76 orbit fits");
-            let (yaw, pitch, roll, fov, control_flags) = match row_index {
+            let (yaw, pitch, roll, fov, _) = match row_index {
                 0 => (
                     wrap_source_angle(512 - 96 * i16::from(column_index)),
                     0,
@@ -4559,7 +4568,7 @@ impl Level2EconomyState {
                 actual_speed: root.actual_speed,
                 minimum_speed: root.minimum_speed,
                 maximum_speed: root.maximum_speed,
-                word_0x2c: root.word_0x2c,
+                word_0x2c: 0,
                 row_index,
                 column_index,
                 chain_index: u8::try_from(index).expect("model-76 child index fits"),
@@ -4575,7 +4584,7 @@ impl Level2EconomyState {
                 shift_rot_y: root.shift_rot_y,
                 position: child_position,
                 phase: index as u8,
-                control_flags,
+                control_flags: if column_index == 0 { 12 } else { 0x0080_0004 },
                 drawing_enabled: true,
                 active: true,
             };
@@ -4595,6 +4604,16 @@ impl Level2EconomyState {
             self.source_rng.insert(child_slot, child_rng);
             self.model76_children.push(child);
         }
+        // AddFireSpheres publishes its root after the copied child chain.
+        self.map_chains.set_map_entity_unlink(source_entity_index);
+        self.map_chains
+            .sync_entity(RenderableMapSeed {
+                entity_index: source_entity_index,
+                active: true,
+                x: root_position.x,
+                y: root_position.y,
+            })
+            .expect("Fire Spheres root keeps its fixed map slot");
         self.authored_model76
             .iter()
             .find(|source| source.source_entity_index == source_entity_index)
@@ -6238,7 +6257,7 @@ impl Level2EconomyState {
     /// Reclaim inactive rows at the following `UpdateEntities_57730`
     /// prologue. Callback-hidden rows remain allocated and map-linked through
     /// the remainder of their dispatch pass.
-    pub(super) fn reclaim_inactive_slots_at_source_boundary(&mut self) {
+    pub(crate) fn reclaim_inactive_slots_at_source_boundary(&mut self) {
         self.reclaim_inactive_slots_with_policy(true, true);
     }
 
@@ -8658,9 +8677,10 @@ mod source_effect_allocator_tests {
         let position = arena.entities[usize::from(raw)].position;
         let typed = arena.allocate_smoke13(position).unwrap();
         assert!(raw < typed);
+        arena.rebuild_source_free_arena();
         arena.economy.free_slots.clear();
         let mut excluded = arena.clone();
-        excluded.economy.replacement_cursor_exclusions.insert(raw);
+        excluded.decrement_replacement_cursor_after_player_contact();
         assert_eq!(excluded.allocate_smoke13(position), Some(typed));
         assert!(excluded.entities[usize::from(raw)].active);
 
@@ -8695,10 +8715,19 @@ mod source_effect_allocator_tests {
             level2_next_rng16(raw.wrapping_add(arena.economy.global_rng as u16))
         );
         assert_eq!(arena.economy.map_chains.tile_head(0x1010), raw);
-        arena
-            .economy
-            .replacement_cursor_exclusions
-            .extend([raw, typed]);
+        let mut ended = arena.clone();
+        ended.finish_source_group();
+        assert_eq!(
+            ended.allocate_smoke13(position),
+            None,
+            "the group epilogue disables unconsumed fallback pointers"
+        );
+        assert_eq!(
+            arena.allocate_smoke13(position),
+            Some(typed),
+            "the frozen next address wins over the replaceable newborn"
+        );
+        arena.finish_source_group();
         let rng = arena.economy.global_rng;
         assert_eq!(arena.allocate_smoke13(position), None);
         assert_eq!(arena.economy.global_rng, level2_next_rng32(rng));

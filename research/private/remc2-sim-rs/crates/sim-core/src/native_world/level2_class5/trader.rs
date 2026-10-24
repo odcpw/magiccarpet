@@ -6,12 +6,14 @@
 //! owns a real mailbox/target/building decision closure rather than the
 //! creature callbacks used by models 3 and 9.
 
+use crate::level_definition::TRADER_CLASS_PROPERTIES as PROPERTIES;
 use crate::native_world::{
     Level2AuthoredClass5RuntimeState, Level2AuthoredClass5Source, Level2EconomyState,
     SessionTerrain, level2_next_rng16,
 };
 use crate::renderable_map_chain::RenderableMapSeed;
 use crate::{FlightWorld, Position};
+use sim_definition::adapter::{TRADER_APPEARANCE, TRADER_SOURCE_BINDING};
 
 /// The group-3 Trader rows, in the order in which the Level 2 dispatch
 /// artifact presents them.
@@ -21,24 +23,24 @@ pub(crate) const TRADER_AUTHORED_ROWS: [u16; 27] = [
 ];
 
 pub(crate) const TRADER_CLASS: u8 = 5;
-pub(crate) const TRADER_MODEL: u8 = 14;
-pub(crate) const TRADER_ACTION: u8 = 113;
+pub(crate) const TRADER_MODEL: u8 = TRADER_SOURCE_BINDING.model;
+pub(crate) const TRADER_ACTION: u8 = TRADER_SOURCE_BINDING.action;
 pub(crate) const TRADER_HIT_ACTION: u8 = 118;
 pub(crate) const TRADER_PRE_KILL_ACTION: u8 = 116;
-pub(crate) const TRADER_MINIMUM_SPEED: i16 = 54;
-pub(crate) const TRADER_MAXIMUM_SPEED: i16 = 18;
-pub(crate) const TRADER_MAX_LIFE: i32 = 1_000;
-pub(crate) const TRADER_MANA: i32 = 0;
+pub(crate) const TRADER_MINIMUM_SPEED: i16 = PROPERTIES.minimum_speed;
+pub(crate) const TRADER_MAXIMUM_SPEED: i16 = PROPERTIES.maximum_speed;
+pub(crate) const TRADER_MAX_LIFE: i32 = PROPERTIES.max_life;
+pub(crate) const TRADER_MANA: i32 = PROPERTIES.mana;
 pub(crate) const TRADER_MAX_MANA: i32 = 0;
 pub(crate) const TRADER_SUBSPELL_INDEX: u16 = 500;
-pub(crate) const TRADER_DESCRIPTOR_INDEX: u16 = 100;
-pub(crate) const TRADER_DESCRIPTOR_CADENCE: u8 = 40;
+pub(crate) const TRADER_DESCRIPTOR_INDEX: u16 = TRADER_SOURCE_BINDING.descriptor;
+pub(crate) const TRADER_DESCRIPTOR_CADENCE: u8 = PROPERTIES.scan_period;
 pub(crate) const TRADER_BYTE_0X38: u8 = 1;
 pub(crate) const TRADER_XTYPE: u8 = 3;
 pub(crate) const TRADER_SOURCE_BYTE_39: u8 = 64;
-pub(crate) const TRADER_PARTICLE_INDEX: u16 = 219;
-pub(crate) const TRADER_SHIFT_ROT_X: i16 = 128;
-pub(crate) const TRADER_SHIFT_ROT_Y: i16 = 128;
+pub(crate) const TRADER_PARTICLE_INDEX: u16 = TRADER_APPEARANCE.particle;
+pub(crate) const TRADER_SHIFT_ROT_X: i16 = PROPERTIES.collision_half_width;
+pub(crate) const TRADER_SHIFT_ROT_Y: i16 = PROPERTIES.collision_half_height;
 pub(crate) const TRADER_BUILDING_DISTANCE_MIN: u32 = 0x0e10_0000;
 pub(crate) const TRADER_TARGET_RANGE: u32 = 0x0800;
 
@@ -592,6 +594,7 @@ fn step_trader_lifecycle<W: crate::FlightWorld>(
         .map(|row| row.entity_index)
         .collect::<Vec<_>>();
     let mut step = SettlementContext {
+        stage: None,
         source_control_flags: &mut source_control_flags,
         dynamic_residents: &mut linked_residents,
         class_5_census: &mut census,

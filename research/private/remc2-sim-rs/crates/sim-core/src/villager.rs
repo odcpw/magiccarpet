@@ -4,6 +4,7 @@
 //! 104, free-townie aliases 105-107, death actions 108-109, hit action 110,
 //! and staged action 111.
 
+use crate::level_definition::VILLAGER_CLASS_PROPERTIES as PROPERTIES;
 use crate::{
     FlightWorld, Position, heading_for_positions,
     house::{HouseFamily, HouseResidentEntry},
@@ -12,6 +13,7 @@ use crate::{
     native_world::EntitySnapshot,
     turn_toward, wrapping_i16,
 };
+use sim_definition::adapter::VILLAGER_SOURCE_BINDING;
 
 pub const LEVEL_ONE_VILLAGER_INDICES: [u16; 28] = [
     51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74,
@@ -25,17 +27,17 @@ pub const LEVEL_TWO_VILLAGER_INDICES: [u16; 29] = [
     101, 102, 103, 104, 105, 106,
 ];
 pub const VILLAGER_CLASS: u8 = 5;
-pub const VILLAGER_MODEL: u8 = 13;
+pub const VILLAGER_MODEL: u8 = VILLAGER_SOURCE_BINDING.model;
 pub const VILLAGER_INITIAL_ACTION: u8 = 104;
 pub const VILLAGER_STAGED_ACTION: u8 = 111;
-pub const VILLAGER_FREE_ACTION: u8 = 105;
+pub const VILLAGER_FREE_ACTION: u8 = VILLAGER_SOURCE_BINDING.action;
 pub const VILLAGER_FREE_ALIAS_ACTION_A: u8 = 106;
 pub const VILLAGER_FREE_ALIAS_ACTION_B: u8 = 107;
 pub const VILLAGER_HIT_ACTION: u8 = 110;
 pub const VILLAGER_DEATH_ACTION: u8 = 108;
 pub const VILLAGER_REMOVAL_ACTION: u8 = 109;
-pub const VILLAGER_PARAMETER_INDEX: u16 = 100;
-pub const VILLAGER_MAX_LIFE: i32 = 1_000;
+pub const VILLAGER_PARAMETER_INDEX: u16 = VILLAGER_SOURCE_BINDING.descriptor;
+pub const VILLAGER_MAX_LIFE: i32 = PROPERTIES.max_life;
 
 const SOURCE_DEATH_BURST_SUPPRESSED_FLAG: u32 = 0x0010_0000;
 
@@ -54,15 +56,15 @@ pub struct VillagerBehaviorConfig {
 
 impl VillagerBehaviorConfig {
     pub const LEVEL_ONE: Self = Self {
-        turn_clamp: 22,
-        ground_clearance: 0,
-        vertical_relaxation: -256,
-        terrain_threshold: 15,
-        allowed_material_mask: 0xffff_fefe,
-        behavior_cadence: 40,
-        engagement_range: 3_584,
-        separation_radius: 512,
-        behavior_flags: 9,
+        turn_clamp: PROPERTIES.turn_limit,
+        ground_clearance: PROPERTIES.ground_clearance,
+        vertical_relaxation: PROPERTIES.descent,
+        terrain_threshold: PROPERTIES.maximum_slope as i16,
+        allowed_material_mask: PROPERTIES.terrain_mask,
+        behavior_cadence: PROPERTIES.scan_period as u16,
+        engagement_range: PROPERTIES.target_range,
+        separation_radius: PROPERTIES.separation_radius,
+        behavior_flags: PROPERTIES.behavior_flags,
     };
 
     /// Level 2 row 101 is byte-for-byte the ordinary Level 1 movement
@@ -95,6 +97,10 @@ impl VillagerBehaviorConfig {
 pub struct VillagerState {
     pub entity_index: u16,
     pub source_id: u16,
+    pub model: u8,
+    pub linked_entity_index: u16,
+    pub stage: crate::native_world::creatures::settlements::SettlementStageLinks,
+    pub source_byte_39: u8,
     pub active: bool,
     pub control_flags: u32,
     pub reset_counter: i32,
@@ -152,6 +158,15 @@ impl VillagerState {
         Ok(Self {
             entity_index: snapshot.index,
             source_id: read_u16(bytes, 30),
+            model: snapshot.model,
+            linked_entity_index: read_u16(bytes, 56),
+            stage: crate::native_world::creatures::settlements::SettlementStageLinks {
+                parent: read_u16(bytes, 44),
+                relation: read_u16(bytes, 78),
+                remaining: read_i16(bytes, 50),
+                duration: read_i16(bytes, 52),
+            },
+            source_byte_39: bytes[61],
             active: snapshot.active,
             control_flags: read_u32(bytes, 16),
             reset_counter: read_i32(bytes, 20),
@@ -182,6 +197,54 @@ impl VillagerState {
             owner_entity_index: read_u16(bytes, 152),
             target_entity_index: relation_index(read_u16(bytes, 154)),
         })
+    }
+
+    #[must_use]
+    pub const fn source_retained(&self) -> bool {
+        self.active || self.control_flags & SOURCE_DISABLED_FLAG != 0
+    }
+
+    /// Publish the typed callback into its original arena header. Hiding
+    /// preserves the class/model and slot until following-pass reclamation.
+    pub(crate) fn publish_source(&self, source: &mut EntitySnapshot) {
+        debug_assert_eq!(
+            (source.index, source.class, source.model),
+            (self.entity_index, 5, self.model)
+        );
+        source.set_position(self.position);
+        source.set_yaw(self.yaw);
+        source.pitch = self.pitch;
+        source.record[34..36].copy_from_slice(&self.pitch.to_le_bytes());
+        source.record[36..38].copy_from_slice(&self.roll.to_le_bytes());
+        source.set_max_life(self.max_life);
+        source.set_life(self.life);
+        source.set_control_flags(self.control_flags);
+        source.set_entity_rng(self.rng);
+        source.action = self.action;
+        source.record[73] = self.action;
+        source.phase = self.phase;
+        source.record[66] = self.phase;
+        source.record[20..24].copy_from_slice(&self.reset_counter.to_le_bytes());
+        source.record[40..42].copy_from_slice(&self.kill_credit_entity.to_le_bytes());
+        source.record[42..44].copy_from_slice(&self.current_attacker.to_le_bytes());
+        source.record[56..58].copy_from_slice(&self.linked_entity_index.to_le_bytes());
+        source.record[44..46].copy_from_slice(&self.stage.parent.to_le_bytes());
+        source.record[78..80].copy_from_slice(&self.stage.relation.to_le_bytes());
+        source.record[50..52].copy_from_slice(&self.stage.remaining.to_le_bytes());
+        source.record[52..54].copy_from_slice(&self.stage.duration.to_le_bytes());
+        source.record[61] = self.source_byte_39;
+        source.record[76] = self.stage_var_1.cast_unsigned();
+        source.record[77] = self.stage_var_2.cast_unsigned();
+        source.record[98..102].copy_from_slice(&self.pending_damage.to_le_bytes());
+        source.record[102..104].copy_from_slice(&self.pending_attacker.to_le_bytes());
+        source.set_actual_speed(self.actual_speed);
+        source.record[136..138].copy_from_slice(&self.minimum_speed.to_le_bytes());
+        source.record[138..140].copy_from_slice(&self.maximum_speed.to_le_bytes());
+        source.mana = self.mana;
+        source.record[148..152].copy_from_slice(&self.mana.to_le_bytes());
+        source.record[152..154].copy_from_slice(&self.owner_entity_index.to_le_bytes());
+        source.record[154..156]
+            .copy_from_slice(&self.target_entity_index.unwrap_or(0).to_le_bytes());
     }
 }
 
@@ -330,6 +393,27 @@ impl VillagerFamily {
         &self.villagers
     }
 
+    pub(crate) fn reclaim_inactive(&mut self) {
+        self.villagers = std::mem::take(&mut self.villagers)
+            .into_vec()
+            .into_iter()
+            .filter(|villager| villager.active)
+            .collect();
+    }
+
+    pub(crate) fn disable_source_slot(&mut self, source_slot: u16) -> bool {
+        let Some(villager) = self
+            .villagers
+            .iter_mut()
+            .find(|row| row.entity_index == source_slot)
+        else {
+            return false;
+        };
+        villager.active = false;
+        villager.control_flags |= SOURCE_DISABLED_FLAG;
+        true
+    }
+
     /// Bind one reset-live semantic Villager before its first scheduler visit.
     ///
     /// The imported arena and this typed family are parallel projections of
@@ -405,6 +489,17 @@ impl VillagerFamily {
         source_views: &[Level1SourceEntityView],
         houses: &mut HouseFamily,
     ) -> Vec<VillagerStepEffect> {
+        self.step_source_slot_with_stage(source_slot, world, source_views, houses, None)
+    }
+
+    pub(crate) fn step_source_slot_with_stage<W: FlightWorld>(
+        &mut self,
+        source_slot: u16,
+        world: &W,
+        source_views: &[Level1SourceEntityView],
+        houses: &mut HouseFamily,
+        stage: Option<&mut crate::native_world::creatures::settlements::stage::StageContext<'_>>,
+    ) -> Vec<VillagerStepEffect> {
         let Some(index) = self
             .villagers
             .iter()
@@ -412,8 +507,13 @@ impl VillagerFamily {
         else {
             return Vec::new();
         };
-        let mut effects =
-            step_villager_state(&mut self.villagers[index], world, source_views, self.config);
+        let mut effects = step_villager_state_with_stage(
+            &mut self.villagers[index],
+            world,
+            source_views,
+            self.config,
+            stage,
+        );
         for effect in effects.iter().copied() {
             let VillagerStepEffect::TryEnterBuilding {
                 house_source_entity_index,
@@ -435,7 +535,9 @@ impl VillagerFamily {
     /// The source identity exclusion belongs here, before mailbox mutation.
     pub fn submit_source_damage(&mut self, entity_index: u16, payload: u16, owner: u16) -> bool {
         let Some(villager) = self.villagers.iter_mut().find(|villager| {
-            villager.active && villager.entity_index == entity_index && villager.source_id != owner
+            villager.source_retained()
+                && villager.entity_index == entity_index
+                && villager.source_id != owner
         }) else {
             return false;
         };
@@ -474,7 +576,7 @@ impl VillagerFamily {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum VillagerDamageResult {
+pub(crate) enum VillagerDamageResult {
     None,
     Hit(u16),
     Dead,
@@ -488,6 +590,16 @@ pub(crate) fn step_villager_state<W: FlightWorld>(
     world: &W,
     source_views: &[Level1SourceEntityView],
     config: VillagerBehaviorConfig,
+) -> Vec<VillagerStepEffect> {
+    step_villager_state_with_stage(villager, world, source_views, config, None)
+}
+
+pub(crate) fn step_villager_state_with_stage<W: FlightWorld>(
+    villager: &mut VillagerState,
+    world: &W,
+    source_views: &[Level1SourceEntityView],
+    config: VillagerBehaviorConfig,
+    stage: Option<&mut crate::native_world::creatures::settlements::stage::StageContext<'_>>,
 ) -> Vec<VillagerStepEffect> {
     let mut effects = Vec::new();
     match villager.action {
@@ -526,7 +638,18 @@ pub(crate) fn step_villager_state<W: FlightWorld>(
             step_hit_villager(villager, world, source_views, config, &mut effects);
         }
         VILLAGER_STAGED_ACTION => {
-            step_staged_villager(villager, world, source_views, config, &mut effects);
+            if let Some(context) = stage {
+                crate::native_world::creatures::settlements::stage::step(
+                    villager,
+                    world,
+                    config,
+                    104,
+                    context,
+                    &mut effects,
+                );
+            } else {
+                step_staged_villager(villager, world, source_views, config, &mut effects);
+            }
             villager.actual_speed = if villager.action == VILLAGER_HIT_ACTION {
                 villager.minimum_speed
             } else {
@@ -545,7 +668,7 @@ fn step_free_villager<W: FlightWorld>(
     config: VillagerBehaviorConfig,
     effects: &mut Vec<VillagerStepEffect>,
 ) {
-    match consume_villager_mailbox(villager) {
+    match consume_villager_mailbox(villager, source_views) {
         VillagerDamageResult::Hit(attacker) => {
             if source_view(source_views, attacker)
                 .is_some_and(|target| matches!(target.model, 0 | 1))
@@ -576,13 +699,9 @@ fn step_free_villager<W: FlightWorld>(
     }
 
     if let Some(target_index) = villager.target_entity_index {
-        let Some(target) = source_view(source_views, target_index).filter(|target| {
-            target.active
-                && target.life >= 0
-                && target.class == 10
-                && target.model == 45
-                && target.villager_entry_eligible
-        }) else {
+        let Some(target) = source_view(source_views, target_index)
+            .filter(|target| target.active && target.class == 10 && target.model == 45)
+        else {
             reject_building_entry(villager);
             return;
         };
@@ -611,7 +730,6 @@ fn step_free_villager<W: FlightWorld>(
     let mut best_distance = u32::MAX;
     for candidate in source_views.iter().copied().filter(|candidate| {
         candidate.active
-            && candidate.life >= 0
             && candidate.class == 10
             && candidate.model == 45
             && candidate.villager_entry_eligible
@@ -635,7 +753,7 @@ fn step_hit_villager<W: FlightWorld>(
     config: VillagerBehaviorConfig,
     effects: &mut Vec<VillagerStepEffect>,
 ) {
-    match consume_villager_mailbox(villager) {
+    match consume_villager_mailbox(villager, source_views) {
         VillagerDamageResult::Hit(attacker) => {
             villager.target_entity_index = Some(attacker);
             relax_to_terrain(
@@ -715,10 +833,15 @@ fn step_staged_villager<W: FlightWorld>(
     config: VillagerBehaviorConfig,
     effects: &mut Vec<VillagerStepEffect>,
 ) {
-    match consume_villager_mailbox(villager) {
+    // The source dispatcher returns before consuming a mailbox for these
+    // modes. Ordinary constructors carry mode zero.
+    if !matches!(villager.stage_var_2, 1..=10 | 12..=14 | 16 | 17) {
+        return;
+    }
+    match consume_villager_mailbox(villager, source_views) {
         VillagerDamageResult::Hit(attacker) => {
             let foreign_attacker = source_view(source_views, attacker).is_none_or(|target| {
-                (target.class, target.model) != (VILLAGER_CLASS, VILLAGER_MODEL)
+                (target.class, target.model) != (VILLAGER_CLASS, villager.model)
             });
             if foreign_attacker {
                 villager.target_entity_index = Some(attacker);
@@ -757,7 +880,10 @@ fn step_staged_villager<W: FlightWorld>(
     }
 }
 
-fn consume_villager_mailbox(villager: &mut VillagerState) -> VillagerDamageResult {
+pub(crate) fn consume_villager_mailbox(
+    villager: &mut VillagerState,
+    source_views: &[Level1SourceEntityView],
+) -> VillagerDamageResult {
     let mut result = VillagerDamageResult::None;
     if villager.pending_attacker != 0 {
         villager.life = villager.life.wrapping_sub(villager.pending_damage);
@@ -767,6 +893,21 @@ fn consume_villager_mailbox(villager: &mut VillagerState) -> VillagerDamageResul
     } else {
         villager.current_attacker = 0;
     }
+    let mut linked = villager.linked_entity_index;
+    let mut remaining = source_views.len();
+    while linked != 0 && remaining != 0 {
+        remaining -= 1;
+        let Some(child) = source_view(source_views, linked) else {
+            break;
+        };
+        if child.life < villager.life {
+            villager.life = child.life;
+            villager.current_attacker = child.current_attacker.cast_signed();
+            result = VillagerDamageResult::Hit(child.current_attacker);
+            break;
+        }
+        linked = child.linked_entity_index;
+    }
     if villager.life < 0 {
         villager.kill_credit_entity = villager.current_attacker;
         VillagerDamageResult::Dead
@@ -775,7 +916,10 @@ fn consume_villager_mailbox(villager: &mut VillagerState) -> VillagerDamageResul
     }
 }
 
-fn disable_villager(villager: &mut VillagerState, effects: &mut Vec<VillagerStepEffect>) {
+pub(crate) fn disable_villager(
+    villager: &mut VillagerState,
+    effects: &mut Vec<VillagerStepEffect>,
+) {
     villager.active = false;
     villager.control_flags |= SOURCE_DISABLED_FLAG;
     effects.push(VillagerStepEffect::DisableSourceSlot {
@@ -790,7 +934,7 @@ pub(crate) fn reject_building_entry(villager: &mut VillagerState) {
     villager.actual_speed = villager.maximum_speed;
 }
 
-fn move_villager<W: FlightWorld>(
+pub(crate) fn move_villager<W: FlightWorld>(
     villager: &mut VillagerState,
     world: &W,
     config: VillagerBehaviorConfig,
@@ -853,7 +997,7 @@ fn source_view(
         .map(|index| source_views[index])
 }
 
-fn next_rng(seed: u16) -> u16 {
+pub(crate) fn next_rng(seed: u16) -> u16 {
     seed.wrapping_mul(9_377).wrapping_add(9_439)
 }
 
@@ -923,7 +1067,7 @@ fn terrain_slope_measure<W: FlightWorld>(position: Position, world: &W) -> i32 {
         .max((point_1 + point_2 - point_4 - point_3).abs())
 }
 
-fn relax_to_terrain<W: FlightWorld>(
+pub(crate) fn relax_to_terrain<W: FlightWorld>(
     position: &mut Position,
     world: &W,
     ground_clearance: i16,
@@ -1029,6 +1173,7 @@ mod tests {
             life,
             pending_damage: 0,
             pending_attacker: 0,
+            current_attacker: 0,
             owner_entity_index: 0,
             target_entity_index: 0,
             linked_entity_index: 0,

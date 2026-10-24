@@ -3856,6 +3856,67 @@ impl Level2OrdinaryResetSession {
         self.houses.houses()
     }
 
+    pub(crate) fn take_inactive_houses(&mut self) -> Vec<HouseState> {
+        self.houses.reclaim_inactive()
+    }
+
+    pub(crate) fn reclaim_inactive_villagers(&mut self) {
+        self.villagers.reclaim_inactive();
+    }
+
+    /// Skeleton conversion hides the imported arena row and its typed owner
+    /// together. Allocation failure does not undo the source hide.
+    pub(crate) fn disable_villager_source(&mut self, source_slot: u16) -> bool {
+        self.villagers.disable_source_slot(source_slot)
+    }
+
+    pub(crate) fn step_villager_source(
+        &mut self,
+        arena: &mut crate::campaign::source_arena::SourceArena,
+        terrain: &SessionTerrain,
+        source_slot: u16,
+        frozen_building_slots: &[u16],
+    ) -> std::result::Result<Vec<VillagerStepEffect>, String> {
+        let mut views = arena.settlement_source_views(
+            &self.houses,
+            self.villagers.villagers(),
+            &self.house_parameters,
+        );
+        for view in &mut views {
+            // A current tracked target still resolves through the arena;
+            // only the search traverses the pass-start building membership.
+            view.villager_entry_eligible &=
+                frozen_building_slots.contains(&view.source_entity_index);
+        }
+        let effects =
+            self.villagers
+                .step_source_slot(source_slot, terrain, &views, &mut self.houses);
+        if let Some(villager) = self
+            .villagers
+            .villagers()
+            .iter()
+            .find(|row| row.entity_index == source_slot)
+        {
+            let source = arena
+                .entities
+                .get_mut(usize::from(source_slot))
+                .filter(|row| row.active && row.class == 5 && row.model == villager.model)
+                .ok_or_else(|| format!("Villager {source_slot} lost its imported arena header"))?;
+            villager.publish_source(source);
+            arena
+                .economy
+                .map_chains
+                .sync_entity(crate::renderable_map_chain::RenderableMapSeed {
+                    entity_index: source_slot,
+                    active: true,
+                    x: villager.position.x,
+                    y: villager.position.y,
+                })
+                .map_err(|error| format!("Villager {source_slot} map publication: {error}"))?;
+        }
+        Ok(effects)
+    }
+
     pub(crate) fn step_settlement_source(
         &mut self,
         arena: &mut crate::campaign::source_arena::SourceArena,
@@ -4018,7 +4079,8 @@ impl Level2OrdinaryResetSession {
 
     pub(super) fn apply_house_terrain_events(
         &mut self,
-        economy: &mut Level2EconomyState,
+        economy: &mut crate::campaign::source_arena::SourceArena,
+        goats: &mut crate::goat::GoatFamily,
         events: &[HouseStepEvent],
         terrain: &mut SessionTerrain,
     ) -> Result<()> {
@@ -4026,11 +4088,32 @@ impl Level2OrdinaryResetSession {
             match *event {
                 HouseStepEvent::ConstructionPass {
                     entity_index,
+                    source_id,
                     position,
                     building_index,
                     remaining,
-                    ..
+                    first_pass,
                 } => {
+                    if first_pass {
+                        let footprint = self
+                            .house_build_footprints
+                            .get(&building_index)
+                            .ok_or_else(|| {
+                                NativeWorldError::new(format!(
+                                    "Level 2 House BUILD footprint {building_index} is absent"
+                                ))
+                            })?;
+                        let (width, height) = (footprint.width, footprint.height);
+                        crate::world::terrain::disasters::mc2::burial::footprint(
+                            economy,
+                            Some(super::area_damage::ActorDomains::new(goats, self)),
+                            position,
+                            width,
+                            height,
+                            source_id,
+                        )
+                        .map_err(NativeWorldError::new)?;
+                    }
                     let footprint = self
                         .house_build_footprints
                         .get(&building_index)

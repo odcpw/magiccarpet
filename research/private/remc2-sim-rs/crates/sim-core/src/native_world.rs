@@ -516,6 +516,7 @@ mod cave_spells;
 mod countdown_switch;
 pub(crate) mod creatures;
 mod effects;
+pub(crate) use effects::hidden_slots as hidden_effect_slots;
 mod level2_nyphur;
 mod support_spells;
 mod terrain_strip;

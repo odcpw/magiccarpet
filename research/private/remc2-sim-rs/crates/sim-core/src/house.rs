@@ -59,7 +59,7 @@ pub(crate) fn decode_house_construction_inputs(
     };
     if bytes.len() < 16
         || &bytes[..4] != b"MCI3"
-        || word(bytes, 4)? != 1
+        || !matches!(word(bytes, 4)?, 1 | 2)
         || word(bytes, 6)? != 16
         || word(bytes, 10)? != 1
         || dword(bytes, 12)? != 0
@@ -342,6 +342,13 @@ pub struct HouseState {
 }
 
 impl HouseState {
+    /// Hiding keeps the class/model header until the following source pass.
+    /// Collision and an already tracked resident target still see that row.
+    #[must_use]
+    pub const fn source_retained(&self) -> bool {
+        self.active || self.control_flags & crate::level1_mission::SOURCE_DISABLED_FLAG != 0
+    }
+
     /// Builder-owned site before its following initialization callback.
     /// BUILD dimensions and BLDGPRM come from the retained owner bank.
     pub(crate) fn builder_from_source(
@@ -1045,7 +1052,9 @@ impl HouseFamily {
         owner: u16,
     ) -> bool {
         let Some(house) = self.houses.iter_mut().find(|house| {
-            house.entity_index == entity_index && house.active && house.source_id != owner
+            house.entity_index == entity_index
+                && house.source_retained()
+                && house.source_id != owner
         }) else {
             return false;
         };
@@ -1095,7 +1104,7 @@ impl HouseFamily {
         let Some(house) = self
             .houses
             .iter_mut()
-            .find(|house| house.entity_index == entity_index && house.active)
+            .find(|house| house.entity_index == entity_index && house.source_retained())
         else {
             return HouseResidentEntry::NotLive;
         };

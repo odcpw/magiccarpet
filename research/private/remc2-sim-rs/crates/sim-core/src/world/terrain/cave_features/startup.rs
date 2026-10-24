@@ -63,7 +63,7 @@ impl CaveStartupWorld {
         // sub_4A1E0 invokes sub_49F90 before group-zero construction. The
         // previous generation pass leaves a LIFO reclaim stack; rebuilding
         // descending slots restores the actual numeric callback order.
-        arena.rebuild_source_free_arena();
+        arena.rebuild_source_arena_with_terrain(&mut terrain, &[])?;
         for &row in self.authored.iter().skip(1) {
             if row.activation_group != 0 || row.kind != 10 {
                 continue;
@@ -96,6 +96,7 @@ impl CaveStartupWorld {
                 _ => {}
             }
         }
+        arena.finish_source_group();
         // The same numeric source order used by UpdateEntities: group-zero
         // rows reuse free slots below the retained cave controllers. A close
         // trigger therefore selects life1 before the controller's callback.

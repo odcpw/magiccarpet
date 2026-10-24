@@ -4112,9 +4112,9 @@ impl Level2NyphurDispatcher {
             .cloned()
             .ok_or_else(|| NativeWorldError::new("Level 2 Nyphur state-13 target row is absent"))?;
         if !level2_nyphur_source_identity_matches(&source, &target) {
-            return Err(NativeWorldError::new(
-                "Level 2 Nyphur sub_13890 target identity does not match",
-            ));
+            // A reclaimed/replaced target is an ordinary false branch in
+            // sub_13890. It skips aiming/casting but still runs avoidance.
+            return self.step_sub_16580(source_index, entities, terrain);
         }
 
         let roll = i16::try_from(crate::heading_for_positions(

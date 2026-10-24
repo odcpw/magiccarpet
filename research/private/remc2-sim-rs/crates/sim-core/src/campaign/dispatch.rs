@@ -850,7 +850,7 @@ mod tests {
             );
         }
         expected_handlers.extend(supplemental_handlers);
-        assert_eq!(expected_handlers.len(), 532);
+        assert_eq!(expected_handlers.len(), 556);
 
         for entry in CAMPAIGN_BEHAVIOR_REGISTRY.entries() {
             assert_eq!(

@@ -1125,9 +1125,10 @@ fn level_two_ai_modes_8_9_13_and_mode5_nocall_are_exact() {
     assert_eq!(reset_carrier.nyphur_dispatcher.common_upkeep.byte_0x45e, 0);
 
     // The source compares the stored sub_14C40 identity, not merely the
-    // target slot. This planted negative rejects a naive slot-only helper
-    // while leaving all source carriers untouched on failure.
+    // target slot. A mismatch skips aiming/casting, then executes sub_16580
+    // just like the source false branch; it must not abort the outer turn.
     let mut wrong_identity = initial.clone();
+    wrong_identity.nyphur_dispatcher.common_upkeep.byte_0x45e = 3;
     let source_before_negative = wrong_identity.session.state.live.economy.entities[112]
         .record_bytes()
         .to_vec();
@@ -1139,21 +1140,20 @@ fn level_two_ai_modes_8_9_13_and_mode5_nocall_are_exact() {
         wrong_identity.session.state.live.economy.entities[70].model;
     let wrong_identity_terrain = wrong_identity.canonical_terrain().clone();
     let wrong_identity_players = wrong_identity.players().to_vec();
-    assert!(
-        wrong_identity
-            .session
-            .state
-            .live
-            .nyphur_dispatcher
-            .step_sub_13850(
-                112,
-                &mut wrong_identity.session.state.live.economy.entities,
-                &wrong_identity_players,
-                &wrong_identity_terrain,
-                &wrong_identity.session.definition.presentation,
-            )
-            .is_err()
-    );
+    wrong_identity
+        .session
+        .state
+        .live
+        .nyphur_dispatcher
+        .step_sub_13850(
+            112,
+            &mut wrong_identity.session.state.live.economy.entities,
+            &wrong_identity_players,
+            &wrong_identity_terrain,
+            &wrong_identity.session.definition.presentation,
+        )
+        .expect("replaced target runs the ordinary sub_16580 tail");
+    assert_eq!(wrong_identity.nyphur_dispatcher.common_upkeep.byte_0x45e, 4);
     assert_eq!(
         wrong_identity.economy.entities[112].record_bytes(),
         source_before_negative.as_slice()

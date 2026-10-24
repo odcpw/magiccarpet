@@ -116,6 +116,7 @@ pub struct SourceArena {
     pub(crate) entities: Box<[EntitySnapshot]>,
     pub(crate) economy: Level2EconomyState,
     pub(crate) effects: crate::world::effects::State,
+    replacement_slots: Vec<u16>,
 }
 
 impl SourceArena {
@@ -125,6 +126,7 @@ impl SourceArena {
             entities,
             economy,
             effects: crate::world::effects::State::default(),
+            replacement_slots: Vec::new(),
         }
     }
 
@@ -135,7 +137,9 @@ impl SourceArena {
         terrain: &crate::native_world::SessionTerrain,
     ) -> String {
         let arena = self.economy.reset_hash_with_terrain(terrain);
-        if self.effects == crate::world::effects::State::default() {
+        if self.effects == crate::world::effects::State::default()
+            && self.replacement_slots.is_empty()
+        {
             return arena;
         }
         let mut hash = Sha256::new();
@@ -143,6 +147,10 @@ impl SourceArena {
         hash.update(arena.as_bytes());
         hash.update(self.effects.eruption.to_le_bytes());
         hash.update(self.effects.eruption_smoke.to_le_bytes());
+        hash.update((self.replacement_slots.len() as u16).to_le_bytes());
+        for slot in &self.replacement_slots {
+            hash.update(slot.to_le_bytes());
+        }
         format!("{:x}", hash.finalize())
     }
 
@@ -160,7 +168,77 @@ impl SourceArena {
     /// Source 49F90 reconstructs the current ordinary free stack in
     /// descending slot order before GenerateEvents consumes the group.
     pub(crate) fn rebuild_source_free_arena(&mut self) {
-        self.economy.rebuild_free_arena(&[]);
+        self.rebuild_free_arena(&[]);
+    }
+
+    /// 49F90 freezes addresses, rather than continuously admitting newborn
+    /// rows. The highest stack entry is the lowest captured source address.
+    pub(crate) fn rebuild_free_arena(&mut self, reset_free_slots: &[u16]) {
+        self.economy.rebuild_free_arena(reset_free_slots);
+        let dynamic = self
+            .economy
+            .live_arena_slots()
+            .into_iter()
+            .map(|(slot, _)| slot)
+            .collect::<BTreeSet<_>>();
+        let mut slots = self
+            .entities
+            .iter()
+            .filter(|s| {
+                s.index != 0
+                    && s.active
+                    && s.class != 0
+                    && !dynamic.contains(&s.index)
+                    && s.control_flags & crate::level1_mission::SOURCE_REPLACEABLE_FLAG != 0
+            })
+            .map(|s| s.index)
+            .collect::<Vec<_>>();
+        self.economy
+            .for_each_live_replaceable_arena_row(|slot, _| slots.push(slot));
+        slots.sort_unstable_by(|a, b| b.cmp(a));
+        slots.dedup();
+        self.replacement_slots = slots;
+    }
+
+    pub(crate) fn rebuild_source_arena_with_terrain(
+        &mut self,
+        terrain: &mut crate::native_world::SessionTerrain,
+        reset_free_slots: &[u16],
+    ) -> Result<(), String> {
+        let dynamic = self
+            .economy
+            .live_arena_slots()
+            .into_iter()
+            .map(|(slot, _)| slot)
+            .collect::<BTreeSet<_>>();
+        let hidden = self
+            .entities
+            .iter()
+            .filter(|s| {
+                s.index != 0 && s.active && s.drawing_disabled() && !dynamic.contains(&s.index)
+            })
+            .map(|s| (s.index, s.position, s.entity_rng))
+            .collect::<Vec<_>>();
+        for (slot, position, rng) in hidden {
+            crate::world::effects::sync_position(self, terrain, slot, position, false, false)?;
+            self.entities[usize::from(slot)].reclaim_source_row();
+            self.economy.release_slot(slot, Some(rng));
+        }
+        for (slot, position) in crate::native_world::hidden_effect_slots(self) {
+            crate::world::effects::sync_position(self, terrain, slot, position, false, false)?;
+        }
+        self.economy.reclaim_inactive_slots_at_source_boundary();
+        self.rebuild_free_arena(reset_free_slots);
+        Ok(())
+    }
+
+    /// sub4A1E0 disables the fallback cursor after its authored group scan.
+    pub(crate) fn finish_source_group(&mut self) {
+        self.replacement_slots.clear();
+    }
+
+    pub(crate) fn decrement_replacement_cursor_after_player_contact(&mut self) {
+        self.replacement_slots.pop();
     }
 
     /// Publish the old cell's head in the same allocation transaction. An
@@ -184,32 +262,22 @@ impl SourceArena {
             .into_iter()
             .map(|(slot, _)| slot)
             .collect::<BTreeSet<_>>();
-        let raw = self
-            .entities
-            .iter()
-            .filter(|row| {
-                row.index != 0
-                    && row.active
-                    && row.class != 0
-                    && row.control_flags & crate::level1_mission::SOURCE_REPLACEABLE_FLAG != 0
-                    && !dynamic.contains(&row.index)
-                    && self.economy.raw_replacement_candidate_allowed(row.index)
-            })
-            .map(|row| row.index)
-            .min();
-        let typed = self.economy.typed_replacement_candidate();
-        let raw_wins = raw.is_some_and(|slot| typed.is_none_or(|typed| slot < typed));
-        let slot = if raw_wins { raw? } else { typed? };
+        let slot = self.replacement_slots.pop()?;
+        let typed = self
+            .economy
+            .live_arena_slots()
+            .into_iter()
+            .find_map(|(id, kind)| (id == slot).then_some(kind));
         let tile = self.economy.map_chains.tile_of(slot);
         let neighbors = [
             self.economy.map_chains.old_map_entity(slot),
             self.economy.map_chains.next_entity(slot),
         ];
-        if raw_wins {
+        if typed.is_none() {
             self.entities[usize::from(slot)].reclaim_source_row();
             self.economy.claim_raw_replacement_slot(slot);
         } else {
-            let allocated = self.economy.allocate_slot()?;
+            let allocated = self.economy.replace_typed_source_slot(slot, typed?)?;
             debug_assert_eq!(allocated, slot);
         }
         for neighbor in neighbors
@@ -232,6 +300,29 @@ impl SourceArena {
         self.economy.advance_global_rng();
         let life = (self.economy.global_rng % 23 + 17) as i16;
         let slot = self.allocate_source_slot()?;
+        self.initialize_smoke13_source_slot(slot, position, life)
+    }
+
+    pub(crate) fn allocate_smoke13_with_terrain(
+        &mut self,
+        position: Position,
+        terrain: &mut crate::native_world::SessionTerrain,
+    ) -> Option<u16> {
+        self.economy.advance_global_rng();
+        let life = (self.economy.global_rng % 23 + 17) as i16;
+        let slot = self.allocate_source_slot_with_terrain(terrain)?;
+        self.initialize_smoke13_source_slot(slot, position, life)?;
+        crate::world::effects::sync_position(self, terrain, slot, position, true, false)
+            .expect("ordinary Smoke13 retains its fixed map slot");
+        Some(slot)
+    }
+
+    fn initialize_smoke13_source_slot(
+        &mut self,
+        slot: u16,
+        position: Position,
+        life: i16,
+    ) -> Option<u16> {
         let slot = self
             .economy
             .initialize_model13_smoke_child(slot, position, life)?;
@@ -997,6 +1088,7 @@ mod tests {
         arena.entities[usize::from(slot)]
             .set_control_flags(crate::level1_mission::SOURCE_REPLACEABLE_FLAG);
         let position = arena.entities[usize::from(slot)].position;
+        arena.rebuild_source_free_arena();
         while arena.economy.free_slot_count() != 0 {
             arena
                 .allocate_source_slot()
@@ -1088,6 +1180,7 @@ mod tests {
                 arena.allocate_smoke13(position).unwrap()
             };
             terrain.disaster_parts().0.entity_indices[usize::from(tile)] = slot as i16;
+            arena.rebuild_source_free_arena();
             let generation = arena.economy.slot_generation(slot);
             // Reserve the remaining ordinary rows without manufacturing any
             // additional replaceable object. This is an allocator regression,

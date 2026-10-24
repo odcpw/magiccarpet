@@ -1141,6 +1141,9 @@ mod tests {
                 .expect("ordinary room allocation")
                 .expect("remaining free source slot");
         }
+        // Source49F90 freezes replacement addresses before a group starts;
+        // NewEvent consumes that snapshot rather than rescanning newborns.
+        arena.rebuild_source_free_arena();
         let replacement = allocate(&mut arena, &mut terrain, 83, new_position)
             .expect("ordinary source fallback")
             .expect("mapped replaceable vent is reused");

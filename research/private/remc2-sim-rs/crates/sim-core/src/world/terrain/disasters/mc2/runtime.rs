@@ -81,6 +81,22 @@ pub(crate) struct Outcome {
     pub(crate) terrain_mutated: bool,
 }
 
+impl Outcome {
+    /// Audio is emitted by the source scheduler before its common epilogue.
+    pub(crate) fn effects(self, source_slot: u16) -> impl Iterator<Item = crate::FlightEvent> {
+        self.sounds.into_iter().map(move |sound_id| {
+            crate::mark_source_audio_call(crate::SourceAudioCallTag::TerrainRingRumble);
+            crate::FlightEvent::PrepareSound {
+                #[cfg(test)]
+                audio_site: crate::MissionAudioSite::TerrainDisaster,
+                entity_index: source_slot,
+                player_index: -1,
+                sound_id,
+            }
+        })
+    }
+}
+
 /// Materialize the published semantic properties through the real source
 /// constructor. Linked authored chains set route fields after construction.
 pub(crate) fn construct_defined(

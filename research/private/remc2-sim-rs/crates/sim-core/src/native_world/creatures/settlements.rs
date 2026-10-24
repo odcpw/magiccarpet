@@ -4,16 +4,26 @@
 //! Arena allocation and footprint application are immediate effects applied by the caller;
 //! the family cannot reach unrelated mission, spell, player or scheduler state.
 
+pub(crate) mod stage;
+pub use stage::SettlementStageLinks;
+
 use crate::house::{HOUSE_CLASS, HOUSE_MODEL};
+use crate::level_definition::{
+    BUILDER_CLASS_PROPERTIES, TRADER_CLASS_PROPERTIES, VILLAGER_CLASS_PROPERTIES,
+};
 use crate::level1_mission::{
     GlobalRngSite, Level1SourceEffect, Level1SourceEntityView, SOURCE_DISABLED_FLAG,
 };
 use crate::villager::{
-    VillagerBehaviorConfig, VillagerState, VillagerStepEffect, step_villager_state,
+    VillagerBehaviorConfig, VillagerState, VillagerStepEffect, step_villager_state_with_stage,
 };
 use crate::{FlightWorld, Position, distance_3d_wrapped, heading_for_positions};
+use sim_definition::adapter::{
+    BUILDER_APPEARANCE, BUILDER_SOURCE_BINDING, TRADER_APPEARANCE, TRADER_SOURCE_BINDING,
+    VILLAGER_APPEARANCES,
+};
 
-pub const BUILDER_MODEL: u8 = 12;
+pub const BUILDER_MODEL: u8 = BUILDER_SOURCE_BINDING.model;
 pub const BUILDER_SEARCH_ACTION: u8 = 96;
 pub const BUILDER_ROAM_ACTION: u8 = 97;
 pub const BUILDER_APPROACH_ACTION: u8 = 98;
@@ -23,16 +33,16 @@ pub const BUILDER_KILL_ACTION: u8 = 101;
 pub const BUILDER_HIT_ACTION: u8 = 102;
 pub const BUILDER_RESET_ACTION: u8 = 103;
 pub const BUILDER_POST_BUILD_ACTION: u8 = 105;
-pub const BUILDER_DECISION_CADENCE: u8 = 40;
-pub const BUILDER_GROUND_CLEARANCE: i16 = 0;
-pub const BUILDER_DESCENT: i16 = -256;
-pub const BUILDER_TURN_LIMIT: i16 = 22;
-pub const BUILDER_TERRAIN_MASK: u32 = 0xffff_fefe;
-pub const BUILDER_MAX_TILE_SLOPE: i32 = 15;
+pub const BUILDER_DECISION_CADENCE: u8 = BUILDER_CLASS_PROPERTIES.scan_period;
+pub const BUILDER_GROUND_CLEARANCE: i16 = BUILDER_CLASS_PROPERTIES.ground_clearance;
+pub const BUILDER_DESCENT: i16 = BUILDER_CLASS_PROPERTIES.descent;
+pub const BUILDER_TURN_LIMIT: i16 = BUILDER_CLASS_PROPERTIES.turn_limit;
+pub const BUILDER_TERRAIN_MASK: u32 = BUILDER_CLASS_PROPERTIES.terrain_mask;
+pub const BUILDER_MAX_TILE_SLOPE: i32 = BUILDER_CLASS_PROPERTIES.maximum_slope;
 pub const BUILDER_HOUSE_APPROACH_RANGE: u32 = 0x0a00;
 pub const BUILDER_HIT_RELEASE_RANGE: u32 = 0x0e00;
 pub const BUILDER_BUILD_SOUND: u16 = 10;
-pub const TRADER_MODEL: u8 = 14;
+pub const TRADER_MODEL: u8 = TRADER_SOURCE_BINDING.model;
 pub const TRADER_INITIAL_ACTION: u8 = 112;
 pub const TRADER_FREE_ACTION: u8 = 113;
 pub const TRADER_FREE_ALIAS_ACTION_A: u8 = 114;
@@ -41,7 +51,7 @@ pub const TRADER_PRE_KILL_ACTION: u8 = 116;
 pub const TRADER_KILL_ACTION: u8 = 117;
 pub const TRADER_HIT_ACTION: u8 = 118;
 pub const TRADER_STAGED_ACTION: u8 = 119;
-pub const TRADER_DECISION_CADENCE: u8 = 40;
+pub const TRADER_DECISION_CADENCE: u8 = TRADER_CLASS_PROPERTIES.scan_period;
 pub const TRADER_HOUSE_APPROACH_RANGE: u32 = 0x0800;
 pub const TRADER_HIT_RELEASE_RANGE: u32 = 0x0e00;
 pub const TRADER_HOUSE_SEARCH_MIN_DISTANCE_SQUARED: u32 = 0x0e10_0000;
@@ -79,6 +89,9 @@ pub struct DynamicResidentState {
     pub target_entity_index: u16,
     /// Source `word_0x32_50`: another model-4 resident followed by action 35.
     pub linked_entity_index: u16,
+    pub stage: SettlementStageLinks,
+    pub stage_var_1: i8,
+    pub source_byte_39: u8,
     /// Source `playerEntityIndex_0x94_148`, transferred to the death mana.
     pub owner_entity_index: u16,
     pub reset_counter: i32,
@@ -122,6 +135,7 @@ pub(crate) struct SettlementContext<'a> {
     pub death_bursts: Vec<(u16, Position)>,
     pub linked_kills: Vec<u16>,
     pub selection_rng_draw: Option<(u32, u32)>,
+    pub stage: Option<stage::StageContext<'a>>,
 }
 
 impl SettlementContext<'_> {
@@ -182,14 +196,7 @@ impl SettlementContext<'_> {
                 self.step_dynamic_trader_hit(world, source_views, resident);
             }
             TRADER_STAGED_ACTION => {
-                // Every Level 1 reset/import and house constructor supplies
-                // StageVar2 zero, for which `sub_1D5D0(entity, 112)` is an
-                // exact no-op. Preserve the wrapper's speed selection.
-                resident.actual_speed = if resident.action == TRADER_HIT_ACTION {
-                    resident.minimum_speed
-                } else {
-                    resident.maximum_speed
-                };
+                return self.step_dynamic_resident_body(world, source_views, resident, 112);
             }
             _ => {}
         }
@@ -378,7 +385,7 @@ impl SettlementContext<'_> {
                 .copied()
                 .flatten()
                 .map_or(
-                    (view.life, view.owner_entity_index, view.linked_entity_index),
+                    (view.life, view.current_attacker, view.linked_entity_index),
                     |linked_resident| {
                         (
                             linked_resident.life,
@@ -614,6 +621,8 @@ impl SettlementContext<'_> {
         // `sub_104D0 == 1` is exactly terrain material/type zero. This branch
         // abandons the target immediately rather than trying the next side.
         if world.terrain_type(candidate) == 0 {
+            #[cfg(test)]
+            trace_builder_site(resident, building_index, candidate, "water");
             resident.reset_counter = 2;
             resident.target_entity_index = 0;
             resident.action = BUILDER_ROAM_ACTION;
@@ -623,6 +632,8 @@ impl SettlementContext<'_> {
         let width_tiles = i16::from(spec.sprite_width) / 2 + 3;
         let height_tiles = i16::from(spec.sprite_height) / 2 + 3;
         if !builder_site_height_is_eligible(world, candidate, width_tiles, height_tiles) {
+            #[cfg(test)]
+            trace_builder_site(resident, building_index, candidate, "corner range");
             return;
         }
 
@@ -636,6 +647,8 @@ impl SettlementContext<'_> {
         )
         .is_some()
         {
+            #[cfg(test)]
+            trace_builder_site(resident, building_index, candidate, "source overlap");
             return;
         }
 
@@ -644,6 +657,8 @@ impl SettlementContext<'_> {
             building_index,
             spec,
         });
+        #[cfg(test)]
+        trace_builder_site(resident, building_index, candidate, "accepted");
         // The source does not roll back this state when NewEvent exhausts.
         resident.target_entity_index = 0;
         resident.builder_placement_latch = 1;
@@ -657,7 +672,7 @@ impl SettlementContext<'_> {
         resident: &mut DynamicResidentState,
     ) {
         resident.builder_placement_latch = 0;
-        match consume_builder_mailbox(resident) {
+        match consume_builder_mailbox(resident, source_views) {
             BuilderMailboxResult::Dead => {
                 resident.action = BUILDER_PRE_KILL_ACTION;
                 return;
@@ -690,7 +705,7 @@ impl SettlementContext<'_> {
         source_views: &[Level1SourceEntityView],
         resident: &mut DynamicResidentState,
     ) {
-        match consume_builder_mailbox(resident) {
+        match consume_builder_mailbox(resident, source_views) {
             BuilderMailboxResult::Dead => {
                 resident.action = BUILDER_PRE_KILL_ACTION;
                 return;
@@ -715,7 +730,6 @@ impl SettlementContext<'_> {
         if previous == 0 || target.is_none_or(|target| target.class == 0) {
             resident.reset_counter = 5;
             resident.action = BUILDER_ROAM_ACTION;
-            return;
         }
         let target_position =
             target.map_or(Position { x: 0, y: 0, z: 0 }, |target| target.position);
@@ -733,7 +747,7 @@ impl SettlementContext<'_> {
         source_views: &[Level1SourceEntityView],
         resident: &mut DynamicResidentState,
     ) {
-        match consume_builder_mailbox(resident) {
+        match consume_builder_mailbox(resident, source_views) {
             BuilderMailboxResult::Dead => {
                 resident.action = BUILDER_PRE_KILL_ACTION;
                 return;
@@ -777,7 +791,7 @@ impl SettlementContext<'_> {
         source_views: &[Level1SourceEntityView],
         resident: &mut DynamicResidentState,
     ) {
-        match consume_builder_mailbox(resident) {
+        match consume_builder_mailbox(resident, source_views) {
             BuilderMailboxResult::Dead => {
                 resident.action = BUILDER_PRE_KILL_ACTION;
             }
@@ -898,6 +912,16 @@ impl SettlementContext<'_> {
         source_views: &[Level1SourceEntityView],
         resident: &mut DynamicResidentState,
     ) -> Vec<Level1SourceEffect> {
+        self.step_dynamic_resident_body(world, source_views, resident, 104)
+    }
+
+    fn step_dynamic_resident_body<W: FlightWorld>(
+        &mut self,
+        world: &W,
+        source_views: &[Level1SourceEntityView],
+        resident: &mut DynamicResidentState,
+        base: u8,
+    ) -> Vec<Level1SourceEffect> {
         let mut control_flags = *self.source_control_flags;
         if resident.suppress_death_burst {
             control_flags |= 0x0010_0000;
@@ -907,6 +931,10 @@ impl SettlementContext<'_> {
         let mut villager = VillagerState {
             entity_index: resident.source_entity_index,
             source_id: resident.source_id,
+            model: resident.model,
+            linked_entity_index: resident.linked_entity_index,
+            stage: resident.stage,
+            source_byte_39: resident.source_byte_39,
             active: resident.active,
             control_flags,
             reset_counter: resident.reset_counter,
@@ -928,7 +956,7 @@ impl SettlementContext<'_> {
             animation_frame: 0,
             action: resident.action,
             phase: resident.phase,
-            stage_var_1: 0,
+            stage_var_1: resident.stage_var_1,
             stage_var_2: resident.stage_var_2,
             actual_speed: resident.actual_speed,
             minimum_speed: resident.minimum_speed,
@@ -938,12 +966,38 @@ impl SettlementContext<'_> {
             target_entity_index: (resident.target_entity_index != 0)
                 .then_some(resident.target_entity_index),
         };
-        let villager_effects = step_villager_state(
-            &mut villager,
-            world,
-            source_views,
-            VillagerBehaviorConfig::LEVEL_ONE,
-        );
+        let villager_effects = if base == 112 {
+            let mut effects = Vec::new();
+            if let Some(stage) = self.stage.as_mut() {
+                stage::step(
+                    &mut villager,
+                    world,
+                    VillagerBehaviorConfig::LEVEL_ONE,
+                    base,
+                    stage,
+                    &mut effects,
+                );
+            } else {
+                assert!(
+                    !matches!(villager.stage_var_2, 1..=10 | 12..=14 | 16 | 17),
+                    "scripted Trader needs its source StageVar context"
+                );
+            }
+            villager.actual_speed = if villager.action == base + 6 {
+                villager.minimum_speed
+            } else {
+                villager.maximum_speed
+            };
+            effects
+        } else {
+            step_villager_state_with_stage(
+                &mut villager,
+                world,
+                source_views,
+                VillagerBehaviorConfig::LEVEL_ONE,
+                self.stage.as_mut(),
+            )
+        };
 
         resident.active = villager.active;
         resident.visible &= villager.active;
@@ -960,6 +1014,9 @@ impl SettlementContext<'_> {
         resident.position = villager.position;
         resident.action = villager.action;
         resident.stage_var_2 = villager.stage_var_2;
+        resident.stage_var_1 = villager.stage_var_1;
+        resident.stage = villager.stage;
+        resident.source_byte_39 = villager.source_byte_39;
         resident.actual_speed = villager.actual_speed;
         resident.minimum_speed = villager.minimum_speed;
         resident.maximum_speed = villager.maximum_speed;
@@ -1004,6 +1061,27 @@ impl SettlementContext<'_> {
         effects
     }
 }
+#[cfg(test)]
+fn trace_builder_site(
+    resident: &DynamicResidentState,
+    building: u8,
+    position: Position,
+    result: &str,
+) {
+    if std::env::var_os("MC_SETTLEMENT_TRACE").is_some() {
+        eprintln!(
+            "Builder {} phase {} target {} side {} BUILD {} at {:?}: {}",
+            resident.source_entity_index,
+            resident.phase,
+            resident.target_entity_index,
+            resident.reset_counter,
+            building,
+            position,
+            result
+        );
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum BuilderMailboxResult {
     None,
@@ -1018,20 +1096,40 @@ enum TraderMailboxResult {
     Dead,
 }
 
-fn consume_builder_mailbox(resident: &mut DynamicResidentState) -> BuilderMailboxResult {
-    let hit = crate::combat::actors::consume_damage(
+fn consume_builder_mailbox(
+    resident: &mut DynamicResidentState,
+    source_views: &[Level1SourceEntityView],
+) -> BuilderMailboxResult {
+    let mut hit = crate::combat::actors::consume_damage(
         &mut resident.life,
         &mut resident.pending_damage,
         &mut resident.pending_attacker,
         &mut resident.current_attacker,
-    );
+    )
+    .map(|hit| hit.attacker);
+    let mut linked = resident.linked_entity_index;
+    let mut remaining = source_views.len();
+    while linked != 0 && remaining != 0 {
+        remaining -= 1;
+        let Some(child) = source_view(source_views, linked) else {
+            break;
+        };
+        if crate::combat::actors::inherit_linked_life(
+            &mut resident.life,
+            &mut resident.current_attacker,
+            child.life,
+            child.current_attacker,
+        ) {
+            hit = Some(child.current_attacker);
+            break;
+        }
+        linked = child.linked_entity_index;
+    }
     if resident.life < 0 {
         resident.kill_credit_entity = resident.current_attacker;
         BuilderMailboxResult::Dead
     } else {
-        hit.map_or(BuilderMailboxResult::None, |hit| {
-            BuilderMailboxResult::Hit(hit.attacker)
-        })
+        hit.map_or(BuilderMailboxResult::None, BuilderMailboxResult::Hit)
     }
 }
 
@@ -1295,30 +1393,49 @@ pub(crate) fn resident_constructor(
     let yaw = i16::try_from(entity_rng & 0x07ff)
         .expect("11-bit heading fits i16")
         .wrapping_sub(1);
-    let (minimum_speed, actual_speed, maximum_speed, reset_counter) = match kind {
-        DynamicResidentKind::Archer => (30, 30, 0, i32::from(source_entity_index % 100)),
-        DynamicResidentKind::Builder => (54, 24, 24, 2),
-        DynamicResidentKind::Villager | DynamicResidentKind::Trader => (54, 18, 18, 2),
+    let properties = match kind {
+        DynamicResidentKind::Archer => None,
+        DynamicResidentKind::Builder => Some(BUILDER_CLASS_PROPERTIES),
+        DynamicResidentKind::Villager => Some(VILLAGER_CLASS_PROPERTIES),
+        DynamicResidentKind::Trader => Some(TRADER_CLASS_PROPERTIES),
+    };
+    let (minimum_speed, actual_speed, maximum_speed, reset_counter) = match properties {
+        None => (30, 30, 0, i32::from(source_entity_index % 100)),
+        Some(properties) => (
+            properties.minimum_speed,
+            properties.maximum_speed,
+            properties.maximum_speed,
+            2,
+        ),
     };
     let (render_parameter_index, base_tmap, logical_height) = match kind {
         DynamicResidentKind::Archer => (0, 8, 250),
-        DynamicResidentKind::Builder => (221, 141, 250),
-        DynamicResidentKind::Trader => (219, 138, 250),
+        DynamicResidentKind::Builder => (
+            BUILDER_APPEARANCE.particle,
+            BUILDER_APPEARANCE.base_tmap,
+            BUILDER_APPEARANCE.logical_height,
+        ),
+        DynamicResidentKind::Trader => (
+            TRADER_APPEARANCE.particle,
+            TRADER_APPEARANCE.base_tmap,
+            TRADER_APPEARANCE.logical_height,
+        ),
         DynamicResidentKind::Villager => {
             entity_rng = next_rng16(entity_rng);
-            match entity_rng % 9 {
-                0..=2 => (242, 183, 250),
-                3..=5 => (271, 199, 300),
-                6..=7 => (241, 180, 250),
-                8 => (239, 155, 200),
-                _ => unreachable!("modulo-nine branch"),
-            }
+            let appearance = VILLAGER_APPEARANCES[usize::from(entity_rng % 9)];
+            (
+                appearance.particle,
+                appearance.base_tmap,
+                appearance.logical_height,
+            )
         }
     };
     let collision_half_height = if kind == DynamicResidentKind::Archer {
         256
     } else {
-        128
+        properties
+            .expect("settlement constructor properties")
+            .collision_half_height
     };
     DynamicResidentState {
         source_entity_index,
@@ -1328,8 +1445,8 @@ pub(crate) fn resident_constructor(
         model,
         action,
         position,
-        max_life: 1_000,
-        life: 1_000,
+        max_life: properties.map_or(1_000, |properties| properties.max_life),
+        life: properties.map_or(1_000, |properties| properties.max_life),
         pending_damage: 1,
         pending_attacker: attacker_entity_index,
         current_attacker: 0,
@@ -1342,15 +1459,18 @@ pub(crate) fn resident_constructor(
         maximum_speed,
         target_entity_index: 0,
         linked_entity_index: 0,
+        stage: SettlementStageLinks::default(),
+        stage_var_1: 0,
+        source_byte_39: 64,
         owner_entity_index: 0,
         reset_counter,
-        mana: 0,
+        mana: properties.map_or(0, |properties| properties.mana),
         stage_var_2: 0,
         builder_placement_latch: 0,
         movement_blocked: false,
         suppress_death_burst: false,
         phase,
-        collision_half_width: 128,
+        collision_half_width: properties.map_or(128, |properties| properties.collision_half_width),
         collision_vertical_offset: 0,
         collision_half_height,
         render_parameter_index,
@@ -1391,6 +1511,9 @@ pub struct Level2HouseResidentSource {
     pub maximum_speed: i16,
     pub target_entity_index: u16,
     pub linked_entity_index: u16,
+    pub stage: SettlementStageLinks,
+    pub stage_var_1: i8,
+    pub source_byte_39: u8,
     pub reset_counter: i32,
     pub mana: i32,
     pub stage_var_2: i8,
@@ -1441,6 +1564,9 @@ impl Level2HouseResidentSource {
             maximum_speed: state.maximum_speed,
             target_entity_index: state.target_entity_index,
             linked_entity_index: state.linked_entity_index,
+            stage: state.stage,
+            stage_var_1: state.stage_var_1,
+            source_byte_39: state.source_byte_39,
             reset_counter: state.reset_counter,
             mana: state.mana,
             stage_var_2: state.stage_var_2,
@@ -1486,6 +1612,9 @@ impl Level2HouseResidentSource {
             maximum_speed: self.maximum_speed,
             target_entity_index: self.target_entity_index,
             linked_entity_index: self.linked_entity_index,
+            stage: self.stage,
+            stage_var_1: self.stage_var_1,
+            source_byte_39: self.source_byte_39,
             owner_entity_index: self.owner_entity_index,
             reset_counter: self.reset_counter,
             mana: self.mana,
@@ -1532,6 +1661,9 @@ impl Level2HouseResidentSource {
         self.reset_counter = state.reset_counter;
         self.mana = state.mana;
         self.stage_var_2 = state.stage_var_2;
+        self.stage = state.stage;
+        self.stage_var_1 = state.stage_var_1;
+        self.source_byte_39 = state.source_byte_39;
         self.builder_placement_latch = state.builder_placement_latch;
         self.movement_blocked = state.movement_blocked;
         self.suppress_death_burst = state.suppress_death_burst;
@@ -1563,6 +1695,15 @@ impl Level2HouseResidentSource {
         hasher.update(self.reset_counter.to_le_bytes());
         hasher.update(self.mana.to_le_bytes());
         hasher.update(self.stage_var_2.to_le_bytes());
+        if self.stage_var_1 != 0 || self.stage != Default::default() || self.source_byte_39 != 64 {
+            hasher.update(b"settlement-stage-v1\0");
+            hasher.update(self.stage_var_1.to_le_bytes());
+            hasher.update(self.stage.parent.to_le_bytes());
+            hasher.update(self.stage.relation.to_le_bytes());
+            hasher.update(self.stage.remaining.to_le_bytes());
+            hasher.update(self.stage.duration.to_le_bytes());
+            hasher.update([self.source_byte_39]);
+        }
         hasher.update(self.builder_placement_latch.to_le_bytes());
         hasher.update([u8::from(self.movement_blocked)]);
         hasher.update([u8::from(self.suppress_death_burst)]);
@@ -1761,6 +1902,22 @@ impl crate::native_world::Level2EconomyState {
         Some(slot)
     }
 
+    /// Construction burial writes life and both credit words directly;
+    /// it neither consumes nor synthesizes an ordinary damage mailbox.
+    pub(crate) fn apply_settlement_construction_kill(&mut self, slot: u16, source_id: u16) -> bool {
+        let Some(row) = self
+            .house_residents
+            .iter_mut()
+            .find(|row| row.active && row.source_entity_index == slot)
+        else {
+            return false;
+        };
+        row.life = -1;
+        row.kill_credit_entity = source_id;
+        row.current_attacker = source_id;
+        true
+    }
+
     pub(crate) fn submit_settlement_damage(
         &mut self,
         slot: u16,
@@ -1793,11 +1950,6 @@ impl crate::campaign::source_arena::SourceArena {
         parameters: &std::collections::BTreeMap<u8, crate::house::HouseParameter>,
     ) -> Vec<crate::level1_mission::Level1SourceEntityView> {
         use crate::level1_mission::{Level1ResetSourceSlot, Level1SourceEntityView};
-        let dynamic_slots = self
-            .live_arena_slots()
-            .into_iter()
-            .map(|(slot, _)| slot)
-            .collect::<std::collections::BTreeSet<_>>();
         let mut views = std::collections::BTreeMap::new();
         for row in self
             .entities
@@ -1819,6 +1971,8 @@ impl crate::campaign::source_arena::SourceArena {
             view.life = row.life;
             view.max_life = row.max_life;
             view.owner_entity_index = row.source_player_entity_index();
+            view.current_attacker =
+                u16::from_le_bytes([row.record_bytes()[42], row.record_bytes()[43]]);
             view.linked_entity_index = row.word_34();
             view.collision_half_width = row.array_pitch();
             view.collision_half_depth = row.array_roll();
@@ -1870,16 +2024,17 @@ impl crate::campaign::source_arena::SourceArena {
             views.insert(row.source_entity_index, view);
         }
         for row in houses.houses().iter().filter(|row| {
-            row.active
-                || (!dynamic_slots.contains(&row.entity_index)
-                    && self
+            row.source_retained()
+                && (row.active
+                    || self.authored_house_record(row.entity_index).is_some()
+                    || self
                         .entities
                         .get(usize::from(row.entity_index))
                         .is_some_and(|raw| raw.active && raw.class == 10 && raw.model == 45))
         }) {
             let mut view = Level1SourceEntityView::imported_record(Level1ResetSourceSlot {
                 index: row.entity_index,
-                active: row.active,
+                active: row.source_retained(),
                 class: 10,
                 model: 45,
                 action: row.action,
@@ -1899,12 +2054,12 @@ impl crate::campaign::source_arena::SourceArena {
             view.villager_entry_eligible = row.parameter.produces_villagers();
             views.insert(row.entity_index, view);
         }
-        for row in villagers.iter().filter(|row| row.active) {
+        for row in villagers.iter().filter(|row| row.source_retained()) {
             let mut view = Level1SourceEntityView::imported_record(Level1ResetSourceSlot {
                 index: row.entity_index,
                 active: true,
                 class: 5,
-                model: 13,
+                model: row.model,
                 action: row.action,
                 phase: row.phase,
                 entity_rng: row.rng,
@@ -1913,7 +2068,10 @@ impl crate::campaign::source_arena::SourceArena {
             view.source_id = row.source_id;
             view.position = row.position;
             view.life = row.life;
+            view.max_life = row.max_life;
             view.owner_entity_index = row.owner_entity_index;
+            view.linked_entity_index = row.linked_entity_index;
+            view.current_attacker = row.current_attacker.cast_unsigned();
             view.collision_half_width = row.collision_half_width;
             view.collision_half_depth = row.collision_half_width;
             view.collision_vertical_offset = row.collision_vertical_offset;
@@ -1943,6 +2101,7 @@ impl crate::campaign::source_arena::SourceArena {
             view.collision_vertical_offset = row.collision_vertical_offset;
             view.collision_half_height = row.collision_half_height;
             view.builder_placement_latch = row.builder_placement_latch;
+            view.current_attacker = row.current_attacker;
             views.insert(row.source_entity_index, view);
         }
         views.into_values().collect()
@@ -1965,7 +2124,11 @@ impl crate::campaign::source_arena::SourceArena {
         else {
             return Ok(None);
         };
-        let views = self.settlement_source_views(houses, villagers, parameters);
+        let mut views = self.settlement_source_views(houses, villagers, parameters);
+        for view in &mut views {
+            view.villager_entry_eligible &=
+                building_source_order.contains(&view.source_entity_index);
+        }
         let mut source = self.house_residents[index];
         let mut resident = source.population_state();
         let mut linked_residents = Vec::new();
@@ -1979,6 +2142,7 @@ impl crate::campaign::source_arena::SourceArena {
         let economy = &mut self.economy;
         let mut feedback = 0;
         let mut context = SettlementContext {
+            stage: None,
             source_control_flags: &mut source.control_flags,
             dynamic_residents: &mut linked_residents,
             class_5_census: &mut economy.source_creature_population,
@@ -2107,30 +2271,174 @@ impl crate::campaign::source_arena::SourceArena {
     }
 }
 
+impl crate::native_world::Level2OrdinaryResetSession {
+    /// The family-owned part of 57F20, shared by UpdateEntities and 49F90.
+    /// Retire the authoritative row before a free address can be reused.
+    pub(crate) fn reclaim_for_source_boundary(
+        &mut self,
+        arena: &mut crate::campaign::source_arena::SourceArena,
+        terrain: &mut crate::native_world::SessionTerrain,
+    ) -> Result<(), String> {
+        let mut retired = self
+            .houses
+            .reclaim_inactive()
+            .into_iter()
+            .filter_map(|house| {
+                let imported = arena
+                    .entities
+                    .get(usize::from(house.entity_index))
+                    .is_some_and(|raw| {
+                        raw.active && raw.class == 10 && raw.model == 45 && raw.drawing_disabled()
+                    });
+                let constructed = arena.economy.owner_class.get(&house.entity_index) == Some(&10)
+                    && arena.economy.source_owner.contains_key(&house.entity_index);
+                (imported
+                    || constructed
+                    || arena.authored_house_record(house.entity_index).is_some())
+                .then_some((house.entity_index, house.rng, house.position, true))
+            })
+            .collect::<Vec<_>>();
+        retired.extend(self.villagers.villagers().iter().filter_map(|villager| {
+            (!villager.active
+                && arena
+                    .entities
+                    .get(usize::from(villager.entity_index))
+                    .is_some_and(|raw| {
+                        raw.active
+                            && raw.class == 5
+                            && raw.model == villager.model
+                            && raw.drawing_disabled()
+                    }))
+            .then_some((
+                villager.entity_index,
+                villager.rng,
+                villager.position,
+                false,
+            ))
+        }));
+        self.villagers.reclaim_inactive();
+        retired.sort_unstable_by_key(|row| row.0);
+        for (slot, rng, position, house) in retired {
+            crate::world::effects::sync_position(arena, terrain, slot, position, false, false)?;
+            if let Some(raw) = arena
+                .entities
+                .get_mut(usize::from(slot))
+                .filter(|raw| raw.active && raw.drawing_disabled())
+            {
+                raw.reclaim_source_row();
+            }
+            if house {
+                arena
+                    .economy
+                    .reclaim_house_source_slot_at_source_boundary(slot, rng);
+            } else {
+                arena.economy.release_slot(slot, Some(rng));
+            }
+        }
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod production_tests {
     use super::*;
     use crate::campaign::{CampaignSession, spec::CampaignSelection};
     use std::{collections::BTreeMap, path::PathBuf};
 
-    #[test]
-    fn ordinary_level_two_demolition_builder_constructs_a_live_house() {
+    fn ordinary_level_two() -> crate::native_world::Level2ResetSession {
         let private = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../..");
         let package = std::env::var_os("MC_CAMPAIGN_PACKAGE")
             .map(PathBuf::from)
-            .unwrap_or_else(|| {
-                private.join("generated/mc-cf02-campaign-package-v2-b/qualified-level2")
-            });
-        let cache = std::env::var_os("MC_LEVEL2_GAMEPLAY_CACHE_V5")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| {
-                private.join("generated/level2-day-owner-cache/components/gameplay")
-            });
-        let mut session =
-            CampaignSession::open_with_owner_cache(package, cache, CampaignSelection::LEVEL2)
-                .expect("actual qualified Level2 package and retained owner BUILD bank")
-                .level2_compatibility()
-                .clone();
+            .unwrap_or_else(|| private.join("generated/mc-1pb-16-level2-full-build-v2"));
+        // The current packet carries the complete retained BUILD bank. The
+        // normal simulation entry needs no separately bound presentation or
+        // Castle cache; an explicitly supplied cache still gets its full
+        // identity validation through the existing cached entry point.
+        let session = if let Some(cache) = std::env::var_os("MC_LEVEL2_GAMEPLAY_CACHE_V5") {
+            CampaignSession::open_with_owner_cache(
+                package,
+                PathBuf::from(cache),
+                CampaignSelection::LEVEL2,
+            )
+        } else {
+            CampaignSession::open(package, CampaignSelection::LEVEL2)
+        };
+        session
+            .expect("actual Level2 package with its retained owner BUILD bank")
+            .level2_compatibility()
+            .clone()
+    }
+
+    #[test]
+    fn ordinary_level_two_villager_death_publishes_and_reclaims_the_actual_target_row() {
+        let mut session = ordinary_level_two();
+        let initial = session
+            .ordinary()
+            .villagers()
+            .iter()
+            .find(|row| row.active && row.action == 105)
+            .unwrap()
+            .clone();
+        let slot = initial.entity_index;
+        let attacker = session.state.entity_index;
+        session
+            .ordinary_mut()
+            .inject_villager_damage(slot, initial.life + 1, attacker.cast_signed())
+            .unwrap();
+        session.step_level2_source_pass(0);
+        let row = session
+            .ordinary()
+            .villagers()
+            .iter()
+            .find(|row| row.entity_index == slot)
+            .unwrap();
+        let raw = &session.entities()[usize::from(slot)];
+        assert_eq!(row.life, -1);
+        assert_eq!(raw.life, row.life);
+        assert_eq!(raw.position, row.position);
+        assert_eq!(raw.action, row.action);
+        assert_eq!(raw.phase, row.phase);
+        assert_eq!(
+            u16::from_le_bytes([raw.record_bytes()[42], raw.record_bytes()[43]]),
+            attacker
+        );
+        assert_eq!(row.action, 108);
+        for pass in 0..16 {
+            session.step_level2_source_pass(pass % 3);
+            if let Some(row) = session
+                .ordinary()
+                .villagers()
+                .iter()
+                .find(|row| row.entity_index == slot)
+                && !row.active
+            {
+                assert!(
+                    session.entities()[usize::from(slot)].active,
+                    "hidden row is retained in this pass"
+                );
+                assert!(session.entities()[usize::from(slot)].drawing_disabled());
+                session.step_level2_source_pass((pass + 1) % 3);
+                assert!(
+                    !session
+                        .ordinary()
+                        .villagers()
+                        .iter()
+                        .any(|row| row.entity_index == slot)
+                );
+                assert_eq!(
+                    session.entities()[usize::from(slot)].class,
+                    0,
+                    "following pass retires the targeting header"
+                );
+                return;
+            }
+        }
+        panic!("ordinary imported Villager did not reach its phase-gated removal");
+    }
+
+    #[test]
+    fn ordinary_level_two_demolition_builder_constructs_a_live_house() {
+        let mut session = ordinary_level_two();
         let initial_slots = session
             .ordinary()
             .houses()
@@ -2182,9 +2490,22 @@ mod production_tests {
                 .active
         );
         let terrain_before_build = session.terrain_hash();
+        if std::env::var_os("MC_SETTLEMENT_TRACE").is_some() {
+            eprintln!("ordinary Builder birth: {builder:?}");
+        }
         let mut born = None;
         for pass in 0..4096_u16 {
             session.step_level2_source_pass((pass % 3) as u8);
+            if pass % 256 == 0 && std::env::var_os("MC_SETTLEMENT_TRACE").is_some() {
+                eprintln!(
+                    "ordinary Builder pass {pass}: {:?}",
+                    session
+                        .economy()
+                        .house_residents()
+                        .iter()
+                        .find(|row| row.source_entity_index == builder.source_entity_index)
+                );
+            }
             if let Some(house) = session.ordinary().houses().iter().find(|house| {
                 house.active
                     && initial_slots
@@ -2209,6 +2530,33 @@ mod production_tests {
         assert!(house.capacity > 0 && house.occupants >= 2);
         assert!(house.collision_half_width > 0 && house.collision_half_depth > 0);
         assert_ne!(session.terrain_hash(), terrain_before_build);
+        // Neutral source houses retain bit 0 and render through their BUILD
+        // terrain. Possession clears that bit through the ordinary callback,
+        // binds ownership/mana, and admits particle 177 to sprite consumers.
+        session
+            .ordinary_mut()
+            .submit_house_possession(house.entity_index, attacker, 1)
+            .unwrap();
+        session.step_level2_source_pass(0);
+        session.step_level2_source_pass(1);
+        let owned = session
+            .ordinary()
+            .houses()
+            .iter()
+            .find(|row| row.entity_index == house.entity_index)
+            .unwrap();
+        assert_eq!(owned.owner_entity_index, attacker);
+        let mana = session
+            .economy()
+            .owner_mana_rows
+            .iter()
+            .find(|row| row.source_entity_index == house.entity_index)
+            .unwrap();
+        assert_eq!(mana.player_entity_index, attacker);
+        assert_eq!(
+            mana.mana,
+            (1_000 * i32::from(owned.parameter.life_mana_scalar)) >> 7
+        );
         assert!(
             session
                 .campaign_entity_presentations(0)

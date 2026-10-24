@@ -3597,6 +3597,8 @@ pub struct Level1SourceEntityView {
     pub life: i32,
     pub pending_damage: i32,
     pub pending_attacker: u16,
+    /// Source word 0x26, distinct from the owning player relation.
+    pub current_attacker: u16,
     pub owner_entity_index: u16,
     pub target_entity_index: u16,
     pub linked_entity_index: u16,
@@ -3634,6 +3636,7 @@ impl Level1SourceEntityView {
             life: 0,
             pending_damage: 0,
             pending_attacker: 0,
+            current_attacker: 0,
             owner_entity_index: 0,
             target_entity_index: 0,
             linked_entity_index: 0,
@@ -6751,6 +6754,7 @@ impl Level1MissionState {
                 life: self.player_life,
                 pending_damage: self.player_pending_damage,
                 pending_attacker: self.player_pending_attacker,
+                current_attacker: 0,
                 owner_entity_index: player.entity_index,
                 target_entity_index: 0,
                 linked_entity_index: 0,
@@ -6786,6 +6790,7 @@ impl Level1MissionState {
                 life: actor.life,
                 pending_damage: actor.pending_damage,
                 pending_attacker: actor.pending_attacker,
+                current_attacker: 0,
                 owner_entity_index: actor.owner_id.cast_unsigned(),
                 target_entity_index: actor.target_entity_index,
                 linked_entity_index: actor.linked_entity_index,
@@ -6818,6 +6823,7 @@ impl Level1MissionState {
                 life: house.life,
                 pending_damage: house.pending_damage,
                 pending_attacker: house.pending_attacker.cast_unsigned(),
+                current_attacker: 0,
                 owner_entity_index: house.owner_entity_index,
                 target_entity_index: 0,
                 linked_entity_index: 0,
@@ -6851,6 +6857,7 @@ impl Level1MissionState {
                 pending_damage: 0,
                 pending_attacker: 0,
                 owner_entity_index: ambient.parent_entity_index,
+                current_attacker: 0,
                 target_entity_index: 0,
                 linked_entity_index: 0,
                 actual_speed: ambient.actual_speed,
@@ -6882,6 +6889,7 @@ impl Level1MissionState {
                 life: resident.life,
                 pending_damage: resident.pending_damage,
                 pending_attacker: resident.pending_attacker,
+                current_attacker: resident.current_attacker,
                 owner_entity_index: resident.owner_entity_index,
                 target_entity_index: resident.target_entity_index,
                 linked_entity_index: resident.linked_entity_index,
@@ -6924,6 +6932,7 @@ impl Level1MissionState {
                 pending_damage: 0,
                 pending_attacker: 0,
                 owner_entity_index: controller.owner_entity_index,
+                current_attacker: 0,
                 target_entity_index: controller.target_entity_index,
                 linked_entity_index: 0,
                 actual_speed: 0,
@@ -6956,6 +6965,7 @@ impl Level1MissionState {
                 pending_damage: 0,
                 pending_attacker: 0,
                 owner_entity_index: shot.owner_entity_index,
+                current_attacker: 0,
                 target_entity_index: shot.target_entity_index,
                 linked_entity_index: 0,
                 actual_speed: shot.speed,
@@ -6994,6 +7004,7 @@ impl Level1MissionState {
                 pending_damage: 0,
                 pending_attacker: 0,
                 owner_entity_index: construction.owner_entity_index,
+                current_attacker: 0,
                 target_entity_index: 0,
                 linked_entity_index: construction.parent_entity_index,
                 actual_speed: 0,
@@ -7028,6 +7039,7 @@ impl Level1MissionState {
         view.life = self.player_life;
         view.pending_damage = self.player_pending_damage;
         view.pending_attacker = self.player_pending_attacker;
+        view.current_attacker = 0;
         view.owner_entity_index = player.entity_index;
         view.target_entity_index = 0;
         view.linked_entity_index = 0;
@@ -7069,6 +7081,7 @@ impl Level1MissionState {
             view.life = actor.life;
             view.pending_damage = actor.pending_damage;
             view.pending_attacker = actor.pending_attacker;
+            view.current_attacker = 0;
             view.owner_entity_index = actor.owner_id.cast_unsigned();
             view.target_entity_index = actor.target_entity_index;
             view.linked_entity_index = actor.linked_entity_index;
@@ -7147,6 +7160,7 @@ impl Level1MissionState {
         view.life = resident.life;
         view.pending_damage = resident.pending_damage;
         view.pending_attacker = resident.pending_attacker;
+        view.current_attacker = resident.current_attacker;
         view.owner_entity_index = resident.owner_entity_index;
         view.target_entity_index = resident.target_entity_index;
         view.linked_entity_index = resident.linked_entity_index;
@@ -9581,6 +9595,18 @@ impl Level1MissionState {
             hash.u32(resident.reset_counter.cast_unsigned());
             hash.u32(resident.mana.cast_unsigned());
             hash.u8(resident.stage_var_2.cast_unsigned());
+            if resident.stage_var_1 != 0
+                || resident.stage != Default::default()
+                || resident.source_byte_39 != 64
+            {
+                hash.bytes(b"settlement-stage-v1\0");
+                hash.u8(resident.stage_var_1.cast_unsigned());
+                hash.u16(resident.stage.parent);
+                hash.u16(resident.stage.relation);
+                hash.u16(resident.stage.remaining.cast_unsigned());
+                hash.u16(resident.stage.duration.cast_unsigned());
+                hash.u8(resident.source_byte_39);
+            }
             hash.u8(resident.builder_placement_latch);
             hash.u8(u8::from(resident.movement_blocked));
             hash.u8(u8::from(resident.suppress_death_burst));
@@ -14125,6 +14151,7 @@ impl Level1MissionState {
             .class_10_buildings()
             .collect::<Vec<_>>();
         let mut context = settlements::SettlementContext {
+            stage: None,
             source_control_flags: &mut self.source_slots[usize::from(resident.source_entity_index)]
                 .control_flags,
             dynamic_residents: &mut self.dynamic_residents,
@@ -23317,6 +23344,7 @@ mod tests {
             pending_damage: 0,
             pending_attacker: 0,
             owner_entity_index: 152,
+            current_attacker: 0,
             target_entity_index: 0,
             linked_entity_index: 0,
             actual_speed: 0,
@@ -25735,9 +25763,12 @@ mod tests {
             );
         }
 
-        for (label, reset_counter, include_target) in
-            [("expired", 0_i32, true), ("invalid", 10_i32, false)]
-        {
+        for (label, reset_counter, include_target, x, expected_action, expected_reset) in [
+            ("expired-near", 0_i32, true, 1, BUILDER_SEARCH_ACTION, 0),
+            ("invalid-near", 10_i32, false, 1, BUILDER_SEARCH_ACTION, 0),
+            ("expired-far", 0_i32, true, 5000, BUILDER_ROAM_ACTION, 5),
+            ("invalid-far", 10_i32, false, 5000, BUILDER_ROAM_ACTION, 5),
+        ] {
             let mut approach = band_base.clone();
             {
                 let builder = approach.dynamic_residents[usize::from(band_slot)]
@@ -25746,7 +25777,7 @@ mod tests {
                 builder.action = BUILDER_APPROACH_ACTION;
                 builder.phase = 40;
                 builder.reset_counter = reset_counter;
-                builder.position = Position { x: 1, y: 1, z: 0 };
+                builder.position = Position { x, y: 1, z: 0 };
                 builder.actual_speed = 0;
                 builder.target_entity_index = 214;
             }
@@ -25775,8 +25806,8 @@ mod tests {
                         builder.target_entity_index,
                     )
                 }),
-                Some((BUILDER_ROAM_ACTION, 5, 214)),
-                "action 98 {label} target exits before the near-origin fallback can overwrite action 97"
+                Some((expected_action, expected_reset, 214)),
+                "source22E60 {label}: expiry sets97, then the same callback's distance check may select96"
             );
         }
 
