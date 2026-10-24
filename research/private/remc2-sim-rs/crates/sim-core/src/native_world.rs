@@ -4314,7 +4314,8 @@ impl NativeWorld {
                 })
             })
             .transpose()?;
-        let (level2_castle_stage_footprints, level2_house_build_footprints) = if definition.identity
+        let (level2_castle_stage_footprints, mut level2_house_build_footprints) = if definition
+            .identity
             == CampaignSelection::LEVEL1
         {
             let footprint = qualified_level_one_authored_house_footprint()?;
@@ -4331,6 +4332,15 @@ impl NativeWorld {
                 .transpose()?
                 .unwrap_or_default()
         };
+        let construction_inputs = definition
+            .read_member("feature-construction-inputs.bin")
+            .map_err(|error| NativeWorldError::new(error.to_string()))?;
+        for (selector, input) in
+            crate::house::decode_house_construction_inputs(&construction_inputs)
+                .map_err(NativeWorldError::new)?
+        {
+            level2_house_build_footprints.insert(selector, input.footprint);
+        }
 
         Ok(NativeWorldInspection {
             profile: OwnerPackageProfile::Campaign,

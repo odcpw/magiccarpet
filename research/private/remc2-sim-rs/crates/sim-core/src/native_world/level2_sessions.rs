@@ -3890,6 +3890,32 @@ impl Level2OrdinaryResetSession {
             .collect()
     }
 
+    pub(crate) fn current_building_rows(
+        &self,
+        arena: &crate::campaign::source_arena::SourceArena,
+    ) -> Vec<(u16, u8, Position)> {
+        let mut rows = arena
+            .live_model45_buildings()
+            .into_iter()
+            .map(|(slot, selector, position)| (slot, (selector, position)))
+            .collect::<BTreeMap<_, _>>();
+        let dynamic = arena
+            .live_arena_slots()
+            .into_iter()
+            .map(|(slot, _)| slot)
+            .collect::<BTreeSet<_>>();
+        for house in self.houses.houses() {
+            if house.active {
+                rows.insert(house.entity_index, (house.building_index, house.position));
+            } else if !dynamic.contains(&house.entity_index) {
+                rows.remove(&house.entity_index);
+            }
+        }
+        rows.into_iter()
+            .map(|(slot, (selector, position))| (slot, selector, position))
+            .collect()
+    }
+
     #[cfg(test)]
     pub(crate) fn house_mut(&mut self, source_slot: u16) -> Option<&mut HouseState> {
         self.houses.house_mut(source_slot)
@@ -3941,6 +3967,11 @@ impl Level2OrdinaryResetSession {
         let mut hasher = Sha256::new();
         hasher.update(REMC2_SPEC_COMMIT.as_bytes());
         hasher.update(self.population_census.to_le_bytes());
+        hasher.update(b"settlement-construction-bank-v1");
+        for (selector, parameter) in &self.house_parameters {
+            hasher.update([*selector, parameter.flags, parameter.destruction_successor]);
+            hasher.update(parameter.life_mana_scalar.to_le_bytes());
+        }
         hasher
             .update(format!("{:?}{:?}{:?}", self.houses, self.villagers, self.dolmens).as_bytes());
         for entity in &self.players {
@@ -3994,6 +4025,7 @@ impl Level2OrdinaryResetSession {
         for event in events {
             match *event {
                 HouseStepEvent::ConstructionPass {
+                    entity_index,
                     position,
                     building_index,
                     remaining,
@@ -4008,10 +4040,26 @@ impl Level2OrdinaryResetSession {
                             ))
                         })?;
                     terrain
-                        .apply_house_construction(position, Some(remaining), footprint)
+                        .apply_house_construction_with_clearance(
+                            position,
+                            Some(remaining),
+                            footprint,
+                            self.houses
+                                .houses()
+                                .iter()
+                                .find(|house| house.entity_index == entity_index)
+                                .ok_or_else(|| {
+                                    NativeWorldError::new("construction lost its House carrier")
+                                })?
+                                .parameter
+                                .flags
+                                & 4
+                                == 0,
+                        )
                         .map_err(NativeWorldError::new)?;
                 }
                 HouseStepEvent::ConstructionCompleted {
+                    entity_index,
                     position,
                     building_index,
                     ..
@@ -4025,7 +4073,24 @@ impl Level2OrdinaryResetSession {
                             ))
                         })?;
                     terrain
-                        .apply_house_construction(position, None, footprint)
+                        .apply_house_construction_with_clearance(
+                            position,
+                            None,
+                            footprint,
+                            self.houses
+                                .houses()
+                                .iter()
+                                .find(|house| house.entity_index == entity_index)
+                                .ok_or_else(|| {
+                                    NativeWorldError::new(
+                                        "construction completion lost its House carrier",
+                                    )
+                                })?
+                                .parameter
+                                .flags
+                                & 4
+                                == 0,
+                        )
                         .map_err(NativeWorldError::new)?;
                 }
                 HouseStepEvent::RemoveFootprint {
