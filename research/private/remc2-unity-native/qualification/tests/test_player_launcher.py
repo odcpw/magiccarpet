@@ -200,7 +200,7 @@ class PlayerLauncherTests(unittest.TestCase):
 
     def campaign_resources(self):
         generated = self.root.parent / "generated"
-        for name in ("mc-cf15-level1-package-v3-current", "level2-day-block32-campaign-v2",
+        for name in ("mc-bhq8-level1-collision-v5-night", "level2-day-block32-campaign-v2",
                      "level3-day-block32-campaign-recipe-v2"):
             package = generated / name
             package.mkdir(parents=True, exist_ok=True)
@@ -277,7 +277,7 @@ class PlayerLauncherTests(unittest.TestCase):
         self.assertEqual(actual, packages)
         self.assertEqual(arguments.count("-mc-runtime-owner-cache"), 4)
         self.assertEqual(arguments.count("-mc-runtime-presentation-cache"), 4)
-        self.assertNotIn(str(generated / "mc-cf15-level1-package-v3-current"), arguments)
+        self.assertNotIn(str(generated / "mc-bhq8-level1-collision-v5-night"), arguments)
         self.assertNotIn("-mc-runtime-menu", arguments)
         self.assertEqual(arguments[arguments.index("-mc-runtime-replay-save") + 1], str(save))
         self.assertEqual(arguments[arguments.index("-mc-runtime-media-cache") + 1], str(media))
@@ -300,7 +300,7 @@ class PlayerLauncherTests(unittest.TestCase):
 
     def test_campaign_rejects_missing_conflicting_and_duplicate_inputs_before_player(self):
         generated = self.campaign_resources()
-        package = str(generated / "mc-cf15-level1-package-v3-current")
+        package = str(generated / "mc-bhq8-level1-collision-v5-night")
         cache = str(generated / "level1-unity-asset-cache-plan29-final")
         cases = [
             (["--package"], "requires a path"),
