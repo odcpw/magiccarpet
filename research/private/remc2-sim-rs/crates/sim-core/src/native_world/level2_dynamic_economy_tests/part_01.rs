@@ -3221,6 +3221,56 @@
     }
 
     #[test]
+    fn level_two_bee_ordinary_hits_accumulate_before_own_callback() {
+        let package = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../generated/mc-cf02-campaign-package-v2-b/qualified-level2");
+        let mut campaign = crate::campaign::CampaignSession::open(
+            package, crate::campaign::spec::CampaignSelection::LEVEL2,
+        ).expect("qualified semantic Level 2 campaign");
+        let session = campaign.level2_compatibility_mut();
+        session.select_level2_campaign_entry_stage();
+        let producer = session.economy.entities().iter().find(|entity| {
+            entity.active && entity.class == 11 && entity.model == 32
+                && entity.source_id == 21 && !entity.drawing_disabled()
+        }).expect("real model32 group21 producer");
+        let stage = usize::try_from(producer.level_gate).unwrap();
+        for objective in 0..session.runtime.objectives.len() {
+            session.runtime.set_level2_objective_stage_selector_for(objective, stage, 2);
+        }
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        let bee = session.economy().bee_creatures().iter()
+            .find(|bee| bee.authored_index() == Some(229)).copied()
+            .expect("real authored Bee constructor");
+        let attacker = session.state.entity_index;
+        let second_attacker = session.economy.entities().iter()
+            .find(|entity| entity.active && entity.class == 3 && entity.model == 1)
+            .expect("real hostile player carrier").source_id;
+        {
+            let mut economy = session.economy_mut();
+            assert!(economy.submit_authored_bee_damage(bee.source_entity_index, 100, attacker));
+            assert!(economy.submit_authored_bee_damage(bee.source_entity_index, 200, second_attacker));
+            let pending = economy.bee_creatures().iter()
+                .find(|candidate| candidate.source_entity_index == bee.source_entity_index).unwrap();
+            assert_eq!((pending.pending_damage, pending.pending_attacker_entity_index), (300, second_attacker));
+        }
+        // The arena's real source visits consume both hits exactly once.
+        // A constructor-selected linked action may defer consumption one pass.
+        for _ in 0..3 {
+            session.step_outer_turn(PlayerCommand::default(), 0);
+            let callback = session.economy().bee_creatures().iter()
+                .find(|candidate| candidate.source_entity_index == bee.source_entity_index).unwrap();
+            if callback.pending_attacker_entity_index == 0 { break; }
+        }
+        let callback = session.economy().bee_creatures().iter()
+            .find(|candidate| candidate.source_entity_index == bee.source_entity_index).unwrap();
+        assert_eq!(callback.pending_damage, 300);
+        assert_eq!(callback.pending_attacker_entity_index, 0);
+        assert_eq!(callback.life, bee.life.wrapping_sub(300));
+        // This focused producer/consumer regression does not establish public
+        // aiming, spell casting, or the full death/mana gameplay result.
+    }
+
+    #[test]
     fn level_two_economy_conformance_death_split_and_merge_vectors() {
         // Pinned remc2 6806c72, EventsFunctions.cpp:26867-26915
         // (TransformEntityToManaSphere_36BA0): the inner fraction shadows the

@@ -549,9 +549,9 @@ impl Level2EconomyState {
 
     /// Submit one source-shaped Fireball damage mailbox write. The target is
     /// resolved by class/model and live map relation at write time, and
-    /// an already occupied attacker word is rejected so a one-shot projectile
-    /// cannot duplicate its hit before the Bee callback consumes it. The
-    /// source-shaped damage dword is intentionally retained after consumption.
+    /// ordinary area writer accumulates two distinct hits before the Bee
+    /// callback. The impact's own callback latch prevents duplicate pulses;
+    /// the victim mailbox must not discard a second producer's hit.
     pub(super) fn submit_authored_bee_damage(
         &mut self,
         target_slot: u16,
@@ -569,12 +569,18 @@ impl Level2EconomyState {
                 && bee.entity_id != attacker
                 && bee.source_class == 5
                 && bee.model == 2
-                && bee.pending_attacker_entity_index == 0
         }) else {
             return false;
         };
-        bee.pending_damage = damage;
-        bee.pending_attacker_entity_index = attacker;
+        crate::combat::actors::DamageMailboxMut::new(
+            &mut bee.pending_damage,
+            &mut bee.pending_attacker_entity_index,
+        )
+        .submit(
+            damage,
+            attacker,
+            crate::combat::actors::DamageWriter::Ordinary,
+        );
         true
     }
 
@@ -3633,7 +3639,6 @@ impl Level2EconomyState {
             carrier.life = carrier.life.wrapping_sub(carrier.pending_damage);
             if carrier.life >= 0 {
                 carrier.pending_attacker_entity_index = 0;
-                carrier.pending_damage = 0;
             }
         }
         self.map_chains
@@ -6379,12 +6384,12 @@ impl Level2EconomyState {
             return None;
         }
         castle.life = castle.life.wrapping_sub(damage);
-        castle.pending_damage = 0;
         castle.pending_attacker_entity_index = 0;
         let lethal = castle.life < 0;
         if lethal {
             castle.killer_entity_index = attacker;
         } else {
+            castle.pending_damage = 0;
             // sub_609E0 clears the damage mailbox, marks the owner's linked
             // player record, and requests state-0 reconstruction when the
             // attacker mailbox points back at this Castle root.
