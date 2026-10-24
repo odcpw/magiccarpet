@@ -339,6 +339,7 @@ pub(super) struct Level2FireballCollisionTarget {
 pub(super) struct Level2FireballStep {
     pub live: bool,
     pub impact_slot: Option<u16>,
+    pub reflection: Option<super::support_spells::ReboundReflection>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -603,6 +604,7 @@ impl Level2EconomyState {
             return Level2FireballStep {
                 live: false,
                 impact_slot: None,
+                reflection: None,
             };
         };
         let mut projectile = self.fireball_projectiles[projectile_index];
@@ -717,6 +719,72 @@ impl Level2EconomyState {
         });
 
         let mut terminal = collision_slot.is_some();
+        if let Some(target) = collision_slot
+            .and_then(|slot| imported_entities.get(usize::from(slot)))
+            .filter(|target| target.active && target.control_flags & 0x8010 != 0)
+        {
+            use crate::spells::support::{
+                ReboundProjectile, ReboundSpread, ReboundTarget, reflect_projectile,
+            };
+            // All products of this flyer callback deliver class10/model0,
+            // one of sub_68740's explicitly reflectable source products.
+            let mut reflected = ReboundProjectile {
+                owner: projectile.owner_entity_index,
+                target: projectile.target_source_entity_index,
+                position: projectile.position,
+                yaw: projectile.yaw,
+                pitch: projectile.pitch,
+                roll: projectile.roll,
+                fov: projectile.fov,
+                damage: projectile.source_subspell_index,
+                mana: projectile.source_mana,
+                life: i32::from(projectile.life),
+                max_life: i32::from(projectile.max_life),
+                rng: projectile.entity_rng,
+            };
+            if let Some(mana_after) = reflect_projectile(
+                &mut reflected,
+                ReboundTarget {
+                    source_id: target.source_id,
+                    flags: target.control_flags,
+                    mana: target.mana,
+                    position: target.position,
+                    fov: target.array_fov(),
+                },
+                ReboundSpread::Narrow,
+            ) {
+                projectile.owner_entity_index = reflected.owner;
+                projectile.target_source_entity_index = reflected.target;
+                projectile.position = reflected.position;
+                projectile.yaw = reflected.yaw;
+                projectile.pitch = reflected.pitch;
+                projectile.roll = reflected.roll;
+                projectile.fov = reflected.fov;
+                projectile.source_subspell_index = reflected.damage;
+                projectile.payload = i32::from(reflected.damage);
+                projectile.life = reflected.life as i16;
+                projectile.entity_rng = reflected.rng;
+                self.source_owner.insert(source_slot, reflected.owner);
+                self.source_rng.insert(source_slot, reflected.rng);
+                self.fireball_projectiles[projectile_index] = projectile;
+                self.map_chains
+                    .sync_entity(RenderableMapSeed {
+                        entity_index: source_slot,
+                        active: true,
+                        x: projectile.position.x,
+                        y: projectile.position.y,
+                    })
+                    .expect("live reflected Fireball retains its arena map slot");
+                return Level2FireballStep {
+                    live: true,
+                    impact_slot: None,
+                    reflection: Some(super::support_spells::ReboundReflection {
+                        target_slot: target.index,
+                        mana_after,
+                    }),
+                };
+            }
+        }
         if let Some(target_slot) = collision_slot
             && let Some(target) = collision_targets
                 .iter()
@@ -753,6 +821,7 @@ impl Level2EconomyState {
                     return Level2FireballStep {
                         live: false,
                         impact_slot: None,
+                        reflection: None,
                     };
                 }
                 terminal = true;
@@ -773,6 +842,7 @@ impl Level2EconomyState {
             return Level2FireballStep {
                 live: true,
                 impact_slot: None,
+                reflection: None,
             };
         }
 
@@ -796,6 +866,7 @@ impl Level2EconomyState {
         Level2FireballStep {
             live: impact_slot.is_none(),
             impact_slot,
+            reflection: None,
         }
     }
 

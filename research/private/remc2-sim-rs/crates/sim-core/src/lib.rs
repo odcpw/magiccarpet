@@ -12,6 +12,7 @@ pub mod classic_hd_raster;
 pub mod classic_hd_render_graph;
 pub mod classic_hd_sprites;
 pub mod classic_hd_terrain;
+pub mod combat;
 pub use sim_collision as collision_mask;
 pub mod combat_tmap;
 pub mod day_indexed_frame;
@@ -71,6 +72,7 @@ pub mod render_camera;
 pub mod renderable_map_chain;
 pub mod source_sprite_tmap;
 pub mod spell_activation;
+pub mod spells;
 mod ss2_tmap;
 pub mod static_world_tmap;
 pub mod terrain_frame;
@@ -696,6 +698,10 @@ pub enum MissionAudioSite {
     CountdownSwitch,
     TerrainStrip,
     CastleDefenseFirstShot,
+    HealSpell,
+    TeleportSpell,
+    ReboundReflection,
+    CaveGroundFeature,
     Count,
 }
 
@@ -758,11 +764,15 @@ pub enum SourceAudioCallTag {
     CastleConstruction,
     CastleDestruction,
     MenuCursorTransition,
+    HealSpell,
+    TeleportSpell,
+    ReboundReflection,
+    CaveGroundFeatureAction93,
 }
 
 /// Compiler-checked binding from every reachable source occurrence identity
 /// to the production tag used at its Rust call path.
-pub const SOURCE_AUDIO_CALL_BINDINGS: [(SourceAudioCallTag, &str); 53] = [
+pub const SOURCE_AUDIO_CALL_BINDINGS: [(SourceAudioCallTag, &str); 57] = [
     (
         SourceAudioCallTag::VolumePreviewAdjustVolume,
         "286982557778df1130f462a82b40225bf7e9cff0ef1a128b9d00f0a7a0d6ea2a",
@@ -979,6 +989,22 @@ pub const SOURCE_AUDIO_CALL_BINDINGS: [(SourceAudioCallTag, &str); 53] = [
         SourceAudioCallTag::MenuCursorTransition,
         "5193f7cf7a2fb17aa2491272b35676b34c9d9b34439195d4b171a33fa6784856",
     ),
+    (
+        SourceAudioCallTag::CaveGroundFeatureAction93,
+        "381c5435da6c0350032db982986eae352118bad47203ffd0e04d8f24ecff1c6b",
+    ),
+    (
+        SourceAudioCallTag::HealSpell,
+        "45e783b49af6367b85ef6740ee4fd0b6f818c6a7508868f0ca5eda7ababf237a",
+    ),
+    (
+        SourceAudioCallTag::TeleportSpell,
+        "3e8d2aa0ed292fba32bc8f020ae4345edf80cfe6eb885d4ea5c03547bd275477",
+    ),
+    (
+        SourceAudioCallTag::ReboundReflection,
+        "0f5e2005195aa14918a40423c8ccb0b8ab19f3f23674f660a82a4cc9dd7dec5b",
+    ),
 ];
 
 #[inline(always)]
@@ -986,7 +1012,7 @@ pub fn mark_source_audio_call(_tag: SourceAudioCallTag) {}
 
 #[cfg(test)]
 impl SourceAudioCallTag {
-    pub const ALL: [Self; 53] = [
+    pub const ALL: [Self; 57] = [
         Self::VolumePreviewAdjustVolume,
         Self::GoatAction08Bleat,
         Self::GoatAction09Bleat,
@@ -1040,6 +1066,10 @@ impl SourceAudioCallTag {
         Self::CastleConstruction,
         Self::CastleDestruction,
         Self::MenuCursorTransition,
+        Self::HealSpell,
+        Self::TeleportSpell,
+        Self::ReboundReflection,
+        Self::CaveGroundFeatureAction93,
     ];
 }
 
@@ -1103,6 +1133,10 @@ impl MissionAudioSite {
         Self::CountdownSwitch,
         Self::TerrainStrip,
         Self::CastleDefenseFirstShot,
+        Self::HealSpell,
+        Self::TeleportSpell,
+        Self::ReboundReflection,
+        Self::CaveGroundFeature,
     ];
 
     #[must_use]
@@ -1466,6 +1500,38 @@ impl MissionAudioSite {
                 "1",
                 "fixed 0",
                 "EventsFunctions.cpp:30168-30169,30283-30289,44271-44282",
+                true,
+            ),
+            Self::HealSpell => (
+                "25",
+                "spell parent",
+                "1",
+                "fixed 0",
+                "EventsFunctions.cpp:56489",
+                true,
+            ),
+            Self::TeleportSpell => (
+                "22",
+                "spell parent",
+                "1",
+                "fixed 0",
+                "EventsFunctions.cpp:57071",
+                true,
+            ),
+            Self::ReboundReflection => (
+                "28",
+                "reflecting target",
+                "1",
+                "fixed 0",
+                "EventsFunctions.cpp:55312",
+                true,
+            ),
+            Self::CaveGroundFeature => (
+                "50/51/52",
+                "ground-anchored cave effect",
+                "1",
+                "fixed 0",
+                "EventsFunctions.cpp:22845 (sub_31120)",
                 true,
             ),
             Self::Count => panic!("sentinel has no audio contract"),

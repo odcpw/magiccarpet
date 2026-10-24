@@ -47,13 +47,13 @@ impl Level2SharedSpellResetSession {
             .collect::<Vec<_>>();
         let pickups = class15
             .iter()
-            .filter(|row| matches!(row.action, 19 | 34 | 37))
+            .filter(|row| matches!(row.action, 16 | 17 | 19 | 25 | 26 | 31 | 32 | 34 | 37))
             .cloned()
             .collect::<Vec<_>>()
             .into_boxed_slice();
         let holders = class15
             .iter()
-            .filter(|row| !matches!(row.action, 19 | 34 | 37))
+            .filter(|row| !matches!(row.action, 16 | 17 | 19 | 25 | 26 | 31 | 32 | 34 | 37))
             .cloned()
             .collect::<Vec<_>>()
             .into_boxed_slice();
@@ -1333,6 +1333,7 @@ impl Level2SharedSpellResetSession {
         let parent_life = self.player_entity.life;
         let parent_mana = self.player_entity.mana;
         let parent_mana_regen = self.player_entity.mana_regen;
+        let parent_status_flags = self.player_entity.control_flags;
         if let Some(shield) = self
             .shield
             .as_mut()
@@ -1341,6 +1342,7 @@ impl Level2SharedSpellResetSession {
             shield.parent_life = parent_life;
             shield.parent_mana = parent_mana;
             shield.parent_mana_regen = parent_mana_regen;
+            shield.parent_status_flags = parent_status_flags;
         }
         if let Some(invisible) = self
             .invisible
@@ -1350,6 +1352,7 @@ impl Level2SharedSpellResetSession {
             invisible.parent_life = parent_life;
             invisible.parent_mana = parent_mana;
             invisible.parent_mana_regen = parent_mana_regen;
+            invisible.parent_status_flags = parent_status_flags;
         }
         if let Some(beyond_sight) = self
             .beyond_sight
@@ -1501,7 +1504,10 @@ impl Level2SharedSpellResetSession {
             2 => 2,
             3 => 3,
             4 => 4,
+            5 => 5,
             6 => 6,
+            8 => 8,
+            10 => 10,
             11 => 11,
             _ => {
                 return Err(NativeWorldError::new(format!(
@@ -1510,14 +1516,15 @@ impl Level2SharedSpellResetSession {
                 )));
             }
         };
-        if authored.kind != 15 || authored.stage_tag != 1 {
+        if authored.kind != 15 || !matches!(authored.stage_tag, 1 | 2) {
             return Err(NativeWorldError::new(format!(
-                "authored spell row {} is not a stage-1 class-15 source",
+                "authored spell row {} is not an ordinary/persistent class-15 source",
                 authored.index
             )));
         }
-        let action = physical_spell_action(family, PhysicalSpellActionRole::OrdinaryPickup)
-            .expect("validated authored family has an ordinary action");
+        let ordinary_action =
+            physical_spell_action(family, PhysicalSpellActionRole::OrdinaryPickup)
+                .expect("validated authored family has an ordinary action");
         let profile = level2_set_spell_profile(family, 0).ok_or_else(|| {
             NativeWorldError::new(format!(
                 "authored spell family {family} has no constructor profile"
@@ -1540,13 +1547,30 @@ impl Level2SharedSpellResetSession {
             ));
         }
         let position = authored.world_position(terrain.ground_height(authored.world_position(0)));
-        let Some(source) = economy.allocate_spell_pickup(authored.index, family, action, position)
+        let Some(mut source) =
+            economy.allocate_spell_pickup(authored.index, family, ordinary_action, position)
         else {
             // `sub_4A1E0` consumes this authored row and continues when
             // NewEvent returns null; callers distinguish that source result
             // from semantic adapter errors carried by `Err`.
             return Ok(None);
         };
+        // sub_4A310 constructs the ordinary row, then source stage 2 adds
+        // one to its action. This uses the same NewEvent/RNG/map publication.
+        if authored.stage_tag == 2 {
+            source.action =
+                physical_spell_action(family, PhysicalSpellActionRole::PersistentPickup)
+                    .expect("validated family has a persistent action");
+            if !economy.sync_spell_pickup_projection(
+                source.source_entity_index,
+                source.action,
+                position,
+            ) {
+                return Err(NativeWorldError::new(
+                    "persistent authored spell lost its allocated row",
+                ));
+            }
+        }
         let mut entity = template;
         entity.index = source.source_entity_index;
         entity.source_id = source.source_entity_index;
@@ -3014,6 +3038,17 @@ impl Level2SharedSpellResetSession {
         let economy_before = economy.clone();
         let position = economy
             .mark_spell_replacement_acquired(outcome.source_slot, outcome.holder_action)
+            .or_else(|| {
+                let position = self.pickup(outcome.source_slot)?.position;
+                // Authored/reset persistent sources are not replacement
+                // products yet; their first holder conversion is in place.
+                let _ = economy.sync_spell_pickup_projection(
+                    outcome.source_slot,
+                    outcome.holder_action,
+                    position,
+                );
+                Some(position)
+            })
             .ok_or_else(|| {
                 NativeWorldError::new(format!(
                     "Level 2 persistent source {} is absent from the economy arena",
@@ -3124,6 +3159,15 @@ impl Level2SharedSpellResetSession {
         let economy_before = economy.clone();
         let position = economy
             .mark_spell_replacement_acquired(source_slot, outcome.holder_action)
+            .or_else(|| {
+                let position = self.pickup(source_slot)?.position;
+                let _ = economy.sync_spell_pickup_projection(
+                    source_slot,
+                    outcome.holder_action,
+                    position,
+                );
+                Some(position)
+            })
             .ok_or_else(|| {
                 NativeWorldError::new(format!(
                     "Level 2 persistent source {source_slot} is absent from the economy arena"
@@ -3995,6 +4039,7 @@ impl Level2OrdinaryResetSession {
                             parent_house_entity_index,
                             owner_entity_index,
                             request,
+                            terrain,
                         );
                     }
                     self.houses
@@ -4026,8 +4071,12 @@ impl Level2OrdinaryResetSession {
                     };
                     // `AddHouse0A_2D_38330` mutates the House before
                     // NewEvent. A null result simply produces no resident.
-                    let _ =
-                        economy.allocate_house_resident(entity_index, owner_entity_index, request);
+                    let _ = economy.allocate_house_resident(
+                        entity_index,
+                        owner_entity_index,
+                        request,
+                        terrain,
+                    );
                 }
                 HouseStepEvent::Possessed {
                     entity_index,

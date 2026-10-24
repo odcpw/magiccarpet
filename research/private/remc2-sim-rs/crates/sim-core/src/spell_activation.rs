@@ -444,6 +444,9 @@ pub struct Level2SetSpellProfile {
 /// the initial `mana` by dividing it by `word_0x30` when that word is nonzero.
 #[must_use]
 pub const fn level2_set_spell_profile(family: u8, tier: u8) -> Option<Level2SetSpellProfile> {
+    if let Some(profile) = support_spell_profile(family, tier) {
+        return Some(profile);
+    }
     let rows: &[[Level2SetSpellProfile; 3]] = &[
         [
             Level2SetSpellProfile {
@@ -671,6 +674,71 @@ pub const fn level2_set_spell_profile(family: u8, tier: u8) -> Option<Level2SetS
     Some(rows[row][tier as usize])
 }
 
+/// MC2 SPELLS.DAT defaults for the self-targeted support families. Numeric
+/// identities stay at this compatibility boundary; behavior uses typed rules.
+#[must_use]
+pub const fn support_spell_profile(family: u8, tier: u8) -> Option<Level2SetSpellProfile> {
+    if tier > 2 {
+        return None;
+    }
+    let tier = tier as usize;
+    let (power, duration, cost, castle) = match family {
+        5 => (
+            [1, 1, 10][tier],
+            [11, 21, 41][tier],
+            [500, 10_000, 50_000][tier],
+            [0, 40_000, 160_000][tier],
+        ),
+        8 => (
+            0,
+            [125, 251, 125][tier],
+            [5_000, 15_000, 25_000][tier],
+            [40_000, 80_000, 160_000][tier],
+        ),
+        10 => (
+            0,
+            11,
+            [5_000, 20_000, 40_000][tier],
+            [5_000, 40_000, 60_000][tier],
+        ),
+        _ => return None,
+    };
+    Some(Level2SetSpellProfile {
+        subspell_index: power,
+        word_0x30: duration,
+        byte_0x3b: 1,
+        mana_regen: castle,
+        max_mana: cost,
+        mana: cost / duration as i32,
+    })
+}
+
+#[must_use]
+pub const fn support_spell_rule(
+    family: u8,
+    tier: u8,
+    power: u16,
+) -> Option<crate::spells::support::SupportSpellRule> {
+    use crate::spells::support::{ReboundMode, SupportSpellRule, TeleportMode};
+    if tier > 2 {
+        return None;
+    }
+    match family {
+        5 => Some(SupportSpellRule::Heal { percent: power }),
+        8 => Some(SupportSpellRule::Rebound(if tier == 2 {
+            ReboundMode::DoubleDamage
+        } else {
+            ReboundMode::Reflect
+        })),
+        10 => Some(SupportSpellRule::Teleport(match tier {
+            0 => TeleportMode::Castle,
+            1 => TeleportMode::Return,
+            _ => TeleportMode::CycleCastles,
+        })),
+        _ => None,
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SpellHolderAcquisitionFailure {
     UnsupportedFamily,
@@ -723,7 +791,7 @@ pub fn acquire_level2_spell_holder_with_return_side(
     overlaps: bool,
     return_side: i16,
 ) -> SpellHolderAcquisitionResult {
-    if !matches!(state.family, 0..=4 | 6 | 11 | 12) {
+    if !matches!(state.family, 0..=6 | 8 | 10..=12) {
         return SpellHolderAcquisitionResult::Rejected(
             SpellHolderAcquisitionFailure::UnsupportedFamily,
         );
@@ -2288,9 +2356,18 @@ mod tests {
             (4, 0, 100, 201, 1, 20_000, 5_000, 24),
             (4, 1, 100, 301, 1, 20_000, 7_500, 24),
             (4, 2, 100, 455, 1, 25_000, 15_000, 32),
+            (5, 0, 1, 11, 1, 0, 500, 45),
+            (5, 1, 1, 21, 1, 40_000, 10_000, 476),
+            (5, 2, 10, 41, 1, 160_000, 50_000, 1_219),
             (6, 0, 100, 101, 1, 0, 1_000, 9),
             (6, 1, 100, 201, 1, 0, 1_500, 7),
             (6, 2, 100, 301, 1, 0, 10_000, 33),
+            (8, 0, 0, 125, 1, 40_000, 5_000, 40),
+            (8, 1, 0, 251, 1, 80_000, 15_000, 59),
+            (8, 2, 0, 125, 1, 160_000, 25_000, 200),
+            (10, 0, 0, 11, 1, 5_000, 5_000, 454),
+            (10, 1, 0, 11, 1, 40_000, 20_000, 1_818),
+            (10, 2, 0, 11, 1, 60_000, 40_000, 3_636),
             (11, 0, 0, 181, 1, 2_000, 2_000, 11),
             (11, 1, 0, 183, 1, 3_000, 2_500, 13),
             (11, 2, 0, 183, 1, 4_000, 3_000, 16),
@@ -2314,7 +2391,7 @@ mod tests {
             );
         }
         assert_eq!(level2_set_spell_profile(6, 3), None);
-        assert_eq!(level2_set_spell_profile(5, 0), None);
+        assert_eq!(level2_set_spell_profile(7, 0), None);
     }
 
     #[test]
@@ -2363,8 +2440,8 @@ mod tests {
     #[test]
     fn level_two_generic_acquisition_rejects_unauthored_duplicate_and_no_overlap() {
         // Family3 is the supported Speed pickup (action10 -> holder9).
-        // Family5 has a valid physical pickup action but no supported profile.
-        let mut unauthored = SpellHolderAcquisitionState::new(5, 200, 111, 16, 0);
+        // Family7 has a valid physical pickup action but no supported profile.
+        let mut unauthored = SpellHolderAcquisitionState::new(7, 200, 111, 22, 0);
         let unauthored_before = unauthored;
         assert_eq!(
             acquire_level2_spell_holder(
