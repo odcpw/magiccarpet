@@ -1793,6 +1793,11 @@ impl crate::campaign::source_arena::SourceArena {
         parameters: &std::collections::BTreeMap<u8, crate::house::HouseParameter>,
     ) -> Vec<crate::level1_mission::Level1SourceEntityView> {
         use crate::level1_mission::{Level1ResetSourceSlot, Level1SourceEntityView};
+        let dynamic_slots = self
+            .live_arena_slots()
+            .into_iter()
+            .map(|(slot, _)| slot)
+            .collect::<std::collections::BTreeSet<_>>();
         let mut views = std::collections::BTreeMap::new();
         for row in self
             .entities
@@ -1864,7 +1869,14 @@ impl crate::campaign::source_arena::SourceArena {
             view.collision_half_height = row.shift_rot_y;
             views.insert(row.source_entity_index, view);
         }
-        for row in houses.houses() {
+        for row in houses.houses().iter().filter(|row| {
+            row.active
+                || (!dynamic_slots.contains(&row.entity_index)
+                    && self
+                        .entities
+                        .get(usize::from(row.entity_index))
+                        .is_some_and(|raw| raw.active && raw.class == 10 && raw.model == 45))
+        }) {
             let mut view = Level1SourceEntityView::imported_record(Level1ResetSourceSlot {
                 index: row.entity_index,
                 active: row.active,
@@ -2092,5 +2104,129 @@ impl crate::campaign::source_arena::SourceArena {
                 source.current_attacker
             }),
         }))
+    }
+}
+
+#[cfg(test)]
+mod production_tests {
+    use super::*;
+    use crate::campaign::{CampaignSession, spec::CampaignSelection};
+    use std::{collections::BTreeMap, path::PathBuf};
+
+    #[test]
+    fn ordinary_level_two_demolition_builder_constructs_a_live_house() {
+        let private = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../..");
+        let package = std::env::var_os("MC_CAMPAIGN_PACKAGE")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| {
+                private.join("generated/mc-cf02-campaign-package-v2-b/qualified-level2")
+            });
+        let cache = std::env::var_os("MC_LEVEL2_GAMEPLAY_CACHE_V5")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| {
+                private.join("generated/level2-day-owner-cache/components/gameplay")
+            });
+        let mut session =
+            CampaignSession::open_with_owner_cache(package, cache, CampaignSelection::LEVEL2)
+                .expect("actual qualified Level2 package and retained owner BUILD bank")
+                .level2_compatibility()
+                .clone();
+        let initial_slots = session
+            .ordinary()
+            .houses()
+            .iter()
+            .filter(|house| house.active)
+            .map(|house| {
+                (
+                    house.entity_index,
+                    session.economy().slot_generation(house.entity_index),
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+        let victim = *session
+            .ordinary()
+            .houses()
+            .iter()
+            .find(|house| house.entity_index == 10)
+            .unwrap();
+        let attacker = session.state.entity_index;
+        session
+            .ordinary_mut()
+            .inject_house_damage(victim.entity_index, victim.life + 1, attacker.cast_signed())
+            .unwrap();
+        session.step_level2_source_pass(0);
+        session.step_level2_source_pass(1);
+        let builder = *session
+            .economy()
+            .house_residents()
+            .iter()
+            .find(|row| {
+                row.parent_house_entity_index == victim.entity_index && row.model == BUILDER_MODEL
+            })
+            .expect("ordinary RemoveCastleStage produced its final Builder");
+        assert_eq!(
+            builder.pending_damage, 1,
+            "demolition constructor retains its source damage residue"
+        );
+        assert_eq!(
+            builder.semantic_kind,
+            crate::level_definition::CreatureKind::Builder
+        );
+        assert!(
+            !session
+                .ordinary()
+                .houses()
+                .iter()
+                .find(|house| house.entity_index == victim.entity_index)
+                .unwrap()
+                .active
+        );
+        let terrain_before_build = session.terrain_hash();
+        let mut born = None;
+        for pass in 0..4096_u16 {
+            session.step_level2_source_pass((pass % 3) as u8);
+            if let Some(house) = session.ordinary().houses().iter().find(|house| {
+                house.active
+                    && initial_slots
+                        .get(&house.entity_index)
+                        .is_none_or(|generation| {
+                            *generation != session.economy().slot_generation(house.entity_index)
+                        })
+            }) {
+                born = Some(*house);
+                if house.action == crate::house::HOUSE_LIVE_ACTION {
+                    break;
+                }
+            }
+        }
+        let house = born.unwrap_or_else(|| {
+            panic!(
+                "no Builder house; current residents: {:?}",
+                session.economy().house_residents()
+            )
+        });
+        assert_eq!(house.action, crate::house::HOUSE_LIVE_ACTION);
+        assert!(house.capacity > 0 && house.occupants >= 2);
+        assert!(house.collision_half_width > 0 && house.collision_half_depth > 0);
+        assert_ne!(session.terrain_hash(), terrain_before_build);
+        assert!(
+            session
+                .campaign_entity_presentations(0)
+                .unwrap()
+                .iter()
+                .any(|row| row.entity_index == house.entity_index)
+        );
+        eprintln!(
+            "actual Level2 House {} demolition -> Builder {} action {} -> House {} BUILD {} action {} occupants {}/{} at {:?}",
+            victim.entity_index,
+            builder.source_entity_index,
+            builder.action,
+            house.entity_index,
+            house.building_index,
+            house.action,
+            house.occupants,
+            house.capacity,
+            house.position
+        );
     }
 }
