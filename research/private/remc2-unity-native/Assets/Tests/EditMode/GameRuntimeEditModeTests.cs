@@ -205,6 +205,56 @@ namespace MagicCarpet.Native.Tests
             Assert.That(surface.WorldReady && surface.LiveMinimapReady, Is.True);
             Assert.That(surface.Tick, Is.Zero, "package/cache admission diagnostic performs no gameplay");
             Assert.That(surface.FrameHash, Is.Not.Zero);
+            var player = session.Entities()[session.Players()[0].entityIndex];
+            surface.PresentView(new EngineSessionTransport.Pose {
+                x = player.x, y = player.y, z = player.z, yaw = player.yaw, display_pitch = player.pitch
+            });
+            var display = new RenderTexture(320, 200, 0, RenderTextureFormat.ARGB32, RenderTextureReadWrite.Linear);
+            var pixels = new Texture2D(320, 200, TextureFormat.RGBA32, false, true);
+            var previous = RenderTexture.active;
+            try
+            {
+                var cameras = surface.FrameCamera.transform.parent.GetComponentsInChildren<Camera>();
+                Array.Sort(cameras, (left, right) => left.depth.CompareTo(right.depth));
+                foreach (var camera in cameras)
+                {
+                    if (camera.targetTexture == null) camera.targetTexture = display;
+                    camera.Render();
+                    if (camera.depth == -100f)
+                    {
+                        RenderTexture.active = camera.targetTexture;
+                        pixels.ReadPixels(new Rect(0, 0, 320, 200), 0, 0); pixels.Apply();
+                        var rawPixels = pixels.GetPixels32();
+                        var topDown = new byte[rawPixels.Length];
+                        for (var y = 0; y < 200; y++)
+                            for (var x = 0; x < 320; x++)
+                                topDown[(199 - y) * 320 + x] = rawPixels[y * 320 + x].r;
+                        CollectionAssert.AreEqual(session.SceneFrameIndices, topDown,
+                            "the index target retains every raw terrain byte before sprites");
+                    }
+                }
+                Assert.That(surface.SceneHistoryRevision, Is.EqualTo(session.SceneFrameRevision));
+                Assert.That(surface.ComposedSceneIndices, Is.Not.Null);
+                RenderTexture.active = surface.ComposedSceneIndices;
+                pixels.ReadPixels(new Rect(0, 0, 320, 200), 0, 0); pixels.Apply();
+                var composed = pixels.GetPixels32();
+                var spritePixels = 0;
+                for (var y = 0; y < 200; y++)
+                    for (var x = 0; x < 320; x++)
+                        if (composed[y * 320 + x].r != session.SceneFrameIndices[(199 - y) * 320 + x]) spritePixels++;
+                Assert.That(spritePixels, Is.GreaterThan(0), "actual scene history includes visible source sprite pixels");
+                foreach (var camera in cameras) camera.Render();
+                RenderTexture.active = surface.ComposedSceneIndices;
+                pixels.ReadPixels(new Rect(0, 0, 320, 200), 0, 0); pixels.Apply();
+                CollectionAssert.AreEqual(composed, pixels.GetPixels32(), "same native revision cannot blend history again");
+            }
+            finally
+            {
+                RenderTexture.active = previous;
+                display.Release();
+                UnityEngine.Object.DestroyImmediate(display);
+                UnityEngine.Object.DestroyImmediate(pixels);
+            }
             var audioRoot = new GameObject("source-closed Level2 audio consumer");
             try
             {
@@ -213,6 +263,49 @@ namespace MagicCarpet.Native.Tests
                 Assert.That(audio, Is.Not.Null);
             }
             finally { UnityEngine.Object.DestroyImmediate(audioRoot); }
+        }
+
+        [Test]
+        public void IndexedSceneHistoryUsesExactOwnerGtd2CurrentHighPriorLow()
+        {
+            Assert.That(SystemInfo.graphicsDeviceType, Is.Not.EqualTo(UnityEngine.Rendering.GraphicsDeviceType.Null));
+            var generated = Path.Combine(PrivateRoot, "generated");
+            var cache = OwnerAssetCache.OpenAndValidateEnvironment(
+                Path.Combine(generated, "mc-level3-environment-exit-20261025"),
+                Path.Combine(generated, "level3-day-block32-campaign-recipe-v2"));
+            var table = cache.ReadOutput(cache.EnvironmentMaterials.day_exit_tables.path);
+            Assert.That(table.Length, Is.EqualTo(65536));
+            var shader = Shader.Find("MagicCarpet/CampaignIndexedHistory");
+            Assert.That(shader, Is.Not.Null);
+            Assert.That(shader.isSupported, Is.True);
+            var material = new Material(shader);
+            var current = new Texture2D(256, 256, TextureFormat.R8, false, true);
+            var prior = new Texture2D(256, 256, TextureFormat.R8, false, true);
+            var lut = new Texture2D(256, 256, TextureFormat.R8, false, true);
+            var output = new RenderTexture(256, 256, 0, RenderTextureFormat.ARGB32, RenderTextureReadWrite.Linear);
+            var pixels = new Texture2D(256, 256, TextureFormat.RGBA32, false, true);
+            var previous = RenderTexture.active;
+            try
+            {
+                var now = new byte[65536]; var old = new byte[65536];
+                for (var i = 0; i < now.Length; i++) { now[i] = (byte)(i >> 8); old[i] = unchecked((byte)i); }
+                current.LoadRawTextureData(now); prior.LoadRawTextureData(old); lut.LoadRawTextureData(table);
+                foreach (var texture in new[] { current, prior, lut }) { texture.filterMode = FilterMode.Point; texture.Apply(); }
+                material.SetTexture("_SceneHistory", prior); material.SetTexture("_BlendLut", lut);
+                material.SetFloat("_BlendHistory", 1);
+                Graphics.Blit(current, output, material);
+                RenderTexture.active = output;
+                pixels.ReadPixels(new Rect(0, 0, 256, 256), 0, 0); pixels.Apply();
+                var rgba = pixels.GetPixels32(); var actual = new byte[rgba.Length];
+                for (var i = 0; i < actual.Length; i++) actual[i] = rgba[i].r;
+                CollectionAssert.AreEqual(table, actual, "each actual source LUT entry uses current-high/prior-low indices");
+            }
+            finally
+            {
+                RenderTexture.active = previous; output.Release();
+                foreach (var resource in new UnityEngine.Object[] { material, current, prior, lut, output, pixels })
+                    UnityEngine.Object.DestroyImmediate(resource);
+            }
         }
 
         [Test]
