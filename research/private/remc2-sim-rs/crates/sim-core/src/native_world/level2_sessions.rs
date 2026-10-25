@@ -35,20 +35,72 @@ impl Level2SharedSpellResetSession {
     }
 
     fn register_starting_acquisition(&mut self, source: &EntitySnapshot, player: &PlayerSnapshot) {
-        if source.model != SPEED_SPELL_FAMILY
-            || self
-                .acquisitions
-                .iter()
-                .any(|state| state.family == source.model)
+        self.bind_cold_holder_lifecycle(source, player);
+        if self
+            .acquisitions
+            .iter()
+            .any(|state| state.family == source.model)
         {
             return;
         }
-        // A carried or direct-start Speed holder can become an ordinary pickup on
+        // A carried or direct-start holder can become an ordinary pickup on
         // death even when this mission has no authored pickup for its family.
         // Preserve an existing reset source (notably Speed slot 75).
         let mut acquisitions = std::mem::take(&mut self.acquisitions).into_vec();
         acquisitions.push(Self::acquisition_from_source(source, player));
         self.acquisitions = acquisitions.into_boxed_slice();
+    }
+
+    /// Starting/carry holders never visit sub_68FF0, but their active callbacks
+    /// need the same cold lifecycle that ordinary acquisition installs.
+    pub(crate) fn bind_cold_holder_lifecycle(
+        &mut self,
+        source: &EntitySnapshot,
+        player: &PlayerSnapshot,
+    ) {
+        let parent = &self.player_entity;
+        let tier = source.level_gate.cast_unsigned();
+        match source.model {
+            6 => {
+                let mut state = ShieldState::new(
+                    tier,
+                    source.index,
+                    player.entity_index,
+                    parent.mana,
+                    parent.life,
+                )
+                .expect("validated starting Shield tier");
+                state.parent_mana_regen = parent.mana_regen;
+                state.parent_status_flags = parent.control_flags;
+                self.shield = Some(state);
+            }
+            11 => {
+                let mut state = InvisibleState::new(
+                    tier,
+                    source.index,
+                    player.entity_index,
+                    parent.mana,
+                    parent.life,
+                )
+                .expect("validated starting Invisible tier");
+                state.parent_mana_regen = parent.mana_regen;
+                state.parent_status_flags = parent.control_flags;
+                self.invisible = Some(state);
+            }
+            12 => {
+                let mut state = BeyondSightState::new(
+                    tier,
+                    source.index,
+                    player.entity_index,
+                    parent.mana,
+                    parent.life,
+                )
+                .expect("validated starting Beyond Sight tier");
+                state.parent_mana_regen = parent.mana_regen;
+                self.beyond_sight = Some(state);
+            }
+            _ => {}
+        }
     }
 
     #[cfg(test)]
@@ -100,7 +152,25 @@ impl Level2SharedSpellResetSession {
             .filter(|row| {
                 matches!(
                     row.action,
-                    10 | 11 | 16 | 17 | 19 | 25 | 26 | 31 | 32 | 34 | 37 | 76 | 77
+                    10 | 11
+                        | 13
+                        | 14
+                        | 16
+                        | 17
+                        | 19
+                        | 20
+                        | 25
+                        | 26
+                        | 28
+                        | 29
+                        | 31
+                        | 32
+                        | 34
+                        | 35
+                        | 37
+                        | 38
+                        | 76
+                        | 77
                 )
             })
             .cloned()
@@ -111,7 +181,25 @@ impl Level2SharedSpellResetSession {
             .filter(|row| {
                 !matches!(
                     row.action,
-                    10 | 11 | 16 | 17 | 19 | 25 | 26 | 31 | 32 | 34 | 37 | 76 | 77
+                    10 | 11
+                        | 13
+                        | 14
+                        | 16
+                        | 17
+                        | 19
+                        | 20
+                        | 25
+                        | 26
+                        | 28
+                        | 29
+                        | 31
+                        | 32
+                        | 34
+                        | 35
+                        | 37
+                        | 38
+                        | 76
+                        | 77
                 )
             })
             .cloned()
@@ -143,11 +231,11 @@ impl Level2SharedSpellResetSession {
         };
         let acquisitions = pickups
             .iter()
-            .chain(
-                holders
-                    .iter()
-                    .filter(|source| source.model == SPEED_SPELL_FAMILY),
-            )
+            .chain(holders.iter().filter(|source| {
+                matches!(source.model, 3 | 4 | 6 | 9 | 11 | 12)
+                    && source.source_spell_parent_entity_index() == local_player.entity_index
+                    && !pickups.iter().any(|pickup| pickup.model == source.model)
+            }))
             .map(|source| {
                 let family = source.model;
                 let family_index = usize::from(family);
@@ -1585,6 +1673,7 @@ impl Level2SharedSpellResetSession {
             9 => 9,
             10 => 10,
             11 => 11,
+            12 => 12,
             25 => 25,
             _ => {
                 return Err(NativeWorldError::new(format!(
@@ -1786,13 +1875,20 @@ impl Level2SharedSpellResetSession {
         {
             return Ok(());
         }
-        let template = self
-            .pickups
-            .first()
-            .ok_or_else(|| NativeWorldError::new("Level 2 shared spell template is absent"))?;
-        let mut entity = template.clone();
+        let source = self
+            .pickup(self.acquisitions[family_index].source_slot)
+            .ok_or_else(|| NativeWorldError::new("persistent spell source is absent"))?;
+        // sub_69250 invokes AddSpellXX again, not a copy of an unrelated
+        // reset pickup. Retain only particle77's owner-bound presentation.
+        let mut entity = cave_features::new_event(
+            replacement.source_entity_index,
+            replacement.entity_rng,
+            replacement.position,
+        );
+        entity.particle_parameter_index = source.particle_parameter_index;
+        entity.record[86..98].copy_from_slice(&source.record[86..98]);
         entity.index = replacement.source_entity_index;
-        entity.source_id = 0;
+        entity.source_id = replacement.source_entity_index;
         entity.authority = EntityAuthority::SpellActivationLive;
         entity.active = replacement.active;
         entity.max_life = 0;
@@ -1825,7 +1921,7 @@ impl Level2SharedSpellResetSession {
         entity.record[16..20].copy_from_slice(&entity.control_flags.to_le_bytes());
         entity.record[24..26].copy_from_slice(&replacement.entity_rng.to_le_bytes());
         entity.record[26..30].fill(0);
-        entity.record[30..32].fill(0);
+        entity.record[30..32].copy_from_slice(&replacement.source_entity_index.to_le_bytes());
         entity.record[46..54].fill(0);
         entity.record[58..60].fill(0);
         entity.record[63..66].fill(0);
@@ -1839,6 +1935,10 @@ impl Level2SharedSpellResetSession {
         entity.record[82..84].copy_from_slice(&replacement.position.y.to_le_bytes());
         entity.record[84..86].copy_from_slice(&replacement.position.z.to_le_bytes());
         entity.record[140..152].fill(0);
+        let profile = level2_set_spell_profile(replacement.family, 0).ok_or_else(|| {
+            NativeWorldError::new("persistent spell constructor profile is absent")
+        })?;
+        entity.apply_nyphur_spell_profile(profile, 0);
         self.dynamic_pickups.push(entity.clone());
 
         let mut state = self.acquisitions[family_index];

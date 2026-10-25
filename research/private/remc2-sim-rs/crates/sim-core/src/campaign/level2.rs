@@ -23,6 +23,14 @@ use crate::level_definition::{
 };
 use crate::{PLAYER_MIN_SPEED, SpellHolder};
 
+pub(crate) struct CarriedSpellProgress {
+    pub family: u8,
+    pub persistent_experience: i32,
+    pub runtime_experience: i32,
+    pub unlocked_tier: i8,
+    pub selected_tier: i8,
+}
+
 /// Typed payload selected from the fixed numeric source slot at visit time.
 ///
 /// This replaces the former friendly `u8` route tags.  The payload locates
@@ -4214,6 +4222,111 @@ impl Level2ResetSession {
         fire.holders = holders;
     }
 
+    pub(crate) fn bank_carried_spell_experience(
+        &self,
+        family: u8,
+        persistent: i32,
+        runtime: i32,
+    ) -> i32 {
+        if family == 25 && self.canonical_terrain().map_type() != MapType::Cave {
+            return persistent;
+        }
+        persistent
+            .wrapping_add(runtime)
+            .min(LEVEL2_SPELL_TIER_THRESHOLDS[usize::from(family)][2])
+    }
+
+    pub(crate) fn apply_carried_spell_progression(
+        &mut self,
+        entries: &[CarriedSpellProgress],
+    ) -> Result<()> {
+        let mut seen = BTreeSet::new();
+        for entry in entries {
+            if usize::from(entry.family) >= PLAYER_SPELL_COUNT
+                || !seen.insert(entry.family)
+                || !(0..=2).contains(&entry.unlocked_tier)
+                || !(0..=entry.unlocked_tier).contains(&entry.selected_tier)
+            {
+                return Err(NativeWorldError::new("invalid carried spell progression"));
+            }
+        }
+        if entries.is_empty() {
+            return Ok(());
+        }
+        let live = &mut self.session.state.live;
+        let mut player = live.shared_spells.local_player.clone();
+        for entry in entries {
+            let family = usize::from(entry.family);
+            player.persistent_spell_experience[family] = entry.persistent_experience;
+            player.runtime_spell_experience[family] = entry.runtime_experience;
+            player.spell_unlocked_levels[family] = entry.unlocked_tier;
+            player.family_selected_tiers[family] = entry.selected_tier;
+            player.record[60 + family * 4..64 + family * 4]
+                .copy_from_slice(&entry.persistent_experience.to_le_bytes());
+            player.record[164 + family * 4..168 + family * 4]
+                .copy_from_slice(&entry.runtime_experience.to_le_bytes());
+            player.record[502 + family] = entry.unlocked_tier.cast_unsigned();
+            player.record[528 + family] = entry.selected_tier.cast_unsigned();
+            if player.left_spell_slot_raw == i16::from(entry.family) {
+                player.left_subspell_index = entry.selected_tier;
+                player.record[558] = entry.selected_tier.cast_unsigned();
+            }
+            if player.right_spell_slot_raw == i16::from(entry.family) {
+                player.right_subspell_index = entry.selected_tier;
+                player.record[559] = entry.selected_tier.cast_unsigned();
+            }
+            if SOURCE_SPELL_INDEX_MAP.get(usize::from(player.selected_spell_ui_index))
+                == Some(&entry.family)
+            {
+                player.selected_subspell_index = entry.selected_tier;
+                player.record[562] = entry.selected_tier.cast_unsigned();
+            }
+            if let Some(holder) = live
+                .shared_spells
+                .pickup_mut(player.enabled_spell_holders[family])
+            {
+                let profile =
+                    level2_set_spell_profile(entry.family, entry.selected_tier.cast_unsigned())
+                        .ok_or_else(|| {
+                            NativeWorldError::new("carried progression has no physical profile")
+                        })?;
+                holder.apply_nyphur_spell_profile(profile, entry.selected_tier.cast_unsigned());
+                let holder = holder.clone();
+                live.economy.entities[usize::from(holder.index)].clone_from(&holder);
+                live.shared_spells
+                    .bind_cold_holder_lifecycle(&holder, &player);
+            }
+        }
+        for target in live
+            .shared_spells
+            .players
+            .iter_mut()
+            .chain(live.core.players.iter_mut())
+        {
+            if target.entity_index == player.entity_index {
+                target.left_subspell_index = player.left_subspell_index;
+                target.right_subspell_index = player.right_subspell_index;
+                target.selected_subspell_index = player.selected_subspell_index;
+                target.record[558..560].copy_from_slice(&player.record[558..560]);
+                target.record[562] = player.record[562];
+                for entry in entries {
+                    let family = usize::from(entry.family);
+                    target.persistent_spell_experience[family] = entry.persistent_experience;
+                    target.record[60 + family * 4..64 + family * 4]
+                        .copy_from_slice(&entry.persistent_experience.to_le_bytes());
+                    target.sync_spell_progression_family_from(&player, family);
+                }
+            }
+        }
+        live.shared_spells.persistent_spell_experience = player.persistent_spell_experience;
+        live.shared_spells.spell_experience = player.runtime_spell_experience;
+        live.shared_spells.spell_levels = player.spell_unlocked_levels;
+        live.shared_spells.local_player = player;
+        self.sync_level2_spell_fire_context();
+        self.session.rebase();
+        Ok(())
+    }
+
     pub(crate) fn apply_carried_spell_families(
         &mut self,
         families: &[u8],
@@ -4304,6 +4417,30 @@ impl Level2ResetSession {
             }
         }
 
+        // InitialiseSpells retains the learned 0x3E9 flags but clears the
+        // per-mission 0x403 acquisition flags. Holder identities are rebuilt.
+        {
+            let shared = &mut self.session.state.live.shared_spells;
+            for &family in families {
+                let index = usize::from(family);
+                shared.local_player.spell_enabled_flags[index] = 1;
+                shared.local_player.acquired_spell_flags[index] = 0;
+                shared.local_player.record[450 + index] = 1;
+                shared.local_player.record[476 + index] = 0;
+                for state in shared
+                    .acquisitions
+                    .iter_mut()
+                    .filter(|state| state.family == family)
+                {
+                    state.learned = 0;
+                }
+            }
+            for player in &mut shared.players {
+                if player.entity_index == shared.local_player.entity_index {
+                    player.clone_from(&shared.local_player);
+                }
+            }
+        }
         let shared_players = self.session.state.live.shared_spells.players().to_vec();
         for player in &mut self.session.state.live.core.players {
             if let Some(source_player) = shared_players
@@ -4311,6 +4448,8 @@ impl Level2ResetSession {
                 .find(|source_player| source_player.entity_index == player.entity_index)
             {
                 player.sync_spell_acquisition_from(source_player);
+                player.spell_enabled_flags = source_player.spell_enabled_flags;
+                player.record[450..476].copy_from_slice(&source_player.record[450..476]);
             }
         }
         if let Some(family) = selected_family {
@@ -9894,7 +10033,7 @@ impl Level2ResetSession {
                     )
                     | (11, 0..=44)
                     | (14, 2 | 3 | 4 | 5)
-                    | (15, 2 | 3 | 4 | 5 | 6 | 8 | 9 | 10 | 11 | 25)
+                    | (15, 2 | 3 | 4 | 5 | 6 | 8 | 9 | 10 | 11 | 12 | 25)
             )
         }) {
             return Err(format!(
@@ -10757,7 +10896,7 @@ impl Level2ResetSession {
                         );
                     }
                 }
-                (15, 2 | 3 | 4 | 5 | 6 | 8 | 9 | 10 | 11 | 25) => {
+                (15, 2 | 3 | 4 | 5 | 6 | 8 | 9 | 10 | 11 | 12 | 25) => {
                     let terrain = &self.session.state.live.terrain;
                     self.session
                         .state
@@ -14871,6 +15010,30 @@ impl Level2ResetSession {
                     .live
                     .shared_spells
                     .pickup(source_slot)
+                    .is_some_and(|holder| holder.model == 4 && holder.action == 12)
+                {
+                    self.step_morph_holder_source_slot(source_slot)
+                        .map_err(|error| error.to_string())?;
+                    if let Some(holder) = self
+                        .session
+                        .state
+                        .live
+                        .shared_spells
+                        .pickup_mut(source_slot)
+                    {
+                        holder.phase = holder.phase.wrapping_add(1);
+                        holder.record[66] = holder.phase;
+                    }
+                    self.commit_imported_spell_source_projection(source_slot)
+                        .map_err(|error| error.to_string())?;
+                    return Ok(());
+                }
+                if self
+                    .session
+                    .state
+                    .live
+                    .shared_spells
+                    .pickup(source_slot)
                     .is_some_and(|holder| holder.model == 9 && holder.action == 27)
                 {
                     self.step_lightning_holder_source_slot(source_slot)?;
@@ -14959,10 +15122,18 @@ impl Level2ResetSession {
                         )
                     })?;
                 let terrain = &self.session.state.live.terrain;
-                let acquisition = if family == 3 && source_slot != 75 {
+                let acquisition = if self
+                    .session
+                    .state
+                    .live
+                    .shared_spells
+                    .acquisition_states()
+                    .iter()
+                    .any(|state| state.family == family && state.source_slot != source_slot)
+                {
                     // A direct-start/carry holder becomes an ordinary pickup
                     // when its player dies. Its lifecycle belongs to this
-                    // numeric slot, independently of the reset Speed pickup.
+                    // numeric slot, independently of another family pickup.
                     self.session
                         .state
                         .live
@@ -24428,6 +24599,100 @@ mod tests {
                     && message.contains("raw model")
             )
         }));
+    }
+
+    #[test]
+    fn spell_carry_repair_level_four_persistent_beyond_sight_uses_live_scheduler() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../generated/mc-bhq6-ordinary-20261025-zclu5fjj/level4");
+        let mut campaign =
+            CampaignSession::open(root, CampaignSelection::ordinary(4).unwrap()).unwrap();
+        let session = campaign.level2_compatibility_mut();
+        // Isolated source group boundary, not an earned mission/playthrough.
+        session.consume_authored_group(0, 0, 1).unwrap();
+        session.consume_authored_group(0, 0, 3).unwrap();
+        let pickup = *session
+            .economy()
+            .spell_pickups()
+            .iter()
+            .find(|row| row.authored_index == 102)
+            .expect("authored group3 row102");
+        assert_eq!((pickup.family, pickup.action), (12, 38));
+        session
+            .set_level2_entity_position(session.state.entity_index, pickup.position)
+            .unwrap();
+        for _ in 0..5 {
+            session.step_outer_turn(PlayerCommand::default(), 0);
+            assert!(
+                session
+                    .dispatch_events()
+                    .iter()
+                    .all(|event| !matches!(event, Level2DispatchEvent::Error { .. })),
+                "{:?}",
+                session.dispatch_events()
+            );
+        }
+        let held = session.shared_spells().local_player().enabled_spell_holders[12];
+        assert_eq!(held, pickup.source_entity_index);
+        let holder = session.shared_spells().pickup(held).unwrap();
+        assert_eq!((holder.model, holder.action), (12, 36));
+        assert_eq!(
+            session
+                .shared_spells()
+                .beyond_sight_state()
+                .unwrap()
+                .holder_entity_index,
+            held
+        );
+        assert!(
+            session
+                .economy()
+                .spell_replacements()
+                .iter()
+                .any(|row| row.family == 12 && row.active),
+            "persistent acquisition must allocate the source replacement"
+        );
+    }
+
+    #[test]
+    fn spell_carry_repair_all_destination_holders_have_acquisition_and_active_state() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../generated/level3-day-block32-campaign-recipe-v2");
+        let mut campaign = CampaignSession::open(root, CampaignSelection::LEVEL3).unwrap();
+        let session = campaign.level2_compatibility_mut();
+        session
+            .apply_carried_spell_families(&[4, 6, 9, 11, 12], Some(12))
+            .unwrap();
+        for family in [4, 6, 9, 11, 12] {
+            let slot =
+                session.shared_spells().local_player().enabled_spell_holders[usize::from(family)];
+            let holder = session.shared_spells().pickup(slot).unwrap();
+            assert_eq!(
+                (holder.class, holder.model, holder.action),
+                (15, family, family * 3)
+            );
+            assert!(
+                session
+                    .shared_spells()
+                    .acquisition_states()
+                    .iter()
+                    .any(|state| state.family == family)
+            );
+        }
+        assert!(session.shared_spells().shield_state().is_some());
+        assert!(session.shared_spells().invisible_state().is_some());
+        assert!(session.shared_spells().beyond_sight_state().is_some());
+        for _ in 0..4 {
+            session.step_outer_turn(PlayerCommand::default(), 0);
+            assert!(
+                session
+                    .dispatch_events()
+                    .iter()
+                    .all(|event| !matches!(event, Level2DispatchEvent::Error { .. })),
+                "{:?}",
+                session.dispatch_events()
+            );
+        }
     }
 
     #[test]

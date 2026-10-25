@@ -1320,7 +1320,7 @@ impl Level2EconomyState {
         family: u8,
         position: Position,
     ) -> Option<Level2StartingSpellHolderSource> {
-        if !matches!(family, 0..=3 | 5 | 8 | 10 | 25) || self.free_slot_count() == 0 {
+        if level2_set_spell_profile(family, 0).is_none() || self.free_slot_count() == 0 {
             return None;
         }
         let source_entity_index = self.allocate_slot()?;

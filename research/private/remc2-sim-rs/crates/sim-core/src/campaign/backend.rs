@@ -941,6 +941,18 @@ pub struct Mc2RuntimePackageResolver {
 struct Mc2SemanticSpellCarry {
     acquired: Vec<SpellKind>,
     selected: Option<SpellKind>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    progression: Vec<Mc2SemanticSpellProgress>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+struct Mc2SemanticSpellProgress {
+    spell: SpellKind,
+    persistent_experience: i32,
+    runtime_experience: i32,
+    unlocked_tier: i8,
+    selected_tier: i8,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1728,7 +1740,7 @@ impl Mc2RuntimePackageResolver {
                     }
                 }
             },
-            |session| session.backend().semantic_spell_carry(),
+            |session| session.backend().transition_spell_carry(),
         )?;
         let destination_level = match &receipt.completion_destination {
             RuntimeFlowDestination::Level { level_id } => level_id.clone(),
@@ -2346,6 +2358,32 @@ impl Mc2CampaignBackend {
         Self::semantic_spell_carry_from_campaign(&self.campaign)
     }
 
+    fn transition_spell_carry(
+        &self,
+    ) -> Result<Mc2SemanticSpellCarry, crate::game_runtime::RuntimeTransitionError> {
+        let mut carry = self.semantic_spell_carry()?;
+        // Victory calls sub_6DB50(1, 0): bank the earned total, capped at
+        // the last source threshold. New player construction clears the
+        // mission XP buffer and sub_5CF40 resets selected subspells, not
+        // SpellLevels or the learned family flags.
+        for progress in &mut carry.progression {
+            let family = mc2_spell_family(progress.spell).expect("exported semantic family");
+            if carry.acquired.contains(&progress.spell) {
+                progress.persistent_experience = self
+                    .campaign
+                    .level2_compatibility()
+                    .bank_carried_spell_experience(
+                        family,
+                        progress.persistent_experience,
+                        progress.runtime_experience,
+                    );
+            }
+            progress.runtime_experience = 0;
+            progress.selected_tier = 0;
+        }
+        Ok(carry)
+    }
+
     fn initial_semantic_spell_carry(
         &self,
     ) -> Result<Mc2SemanticSpellCarry, crate::game_runtime::RuntimeTransitionError> {
@@ -2361,8 +2399,13 @@ impl Mc2CampaignBackend {
         let shared = campaign.level2_compatibility().shared_spells();
         let player = shared.local_player();
         let mut acquired = Vec::new();
+        let mut progression = Vec::new();
         for (family, holder_index) in player.enabled_spell_holders.iter().copied().enumerate() {
-            if holder_index == 0 {
+            let index = family;
+            if holder_index == 0
+                && player.spell_enabled_flags[index] == 0
+                && player.acquired_spell_flags[index] == 0
+            {
                 continue;
             }
             let family = u8::try_from(family).expect("player spell family index fits u8");
@@ -2373,7 +2416,7 @@ impl Mc2CampaignBackend {
                     ),
                 }
             })?;
-            if spells::acquired_holder(shared, family).is_none() {
+            if holder_index != 0 && spells::acquired_holder(shared, family).is_none() {
                 return Err(
                     crate::game_runtime::RuntimeTransitionError::InvalidRuntimeFlow {
                         message: format!(
@@ -2385,11 +2428,36 @@ impl Mc2CampaignBackend {
             }
             acquired.push(kind);
         }
+        for family in 0..player.enabled_spell_holders.len() {
+            if player.persistent_spell_experience[family] == 0
+                && player.runtime_spell_experience[family] == 0
+                && player.spell_unlocked_levels[family] == 0
+                && player.family_selected_tiers[family] == 0
+            {
+                continue;
+            }
+            let spell = mc2_spell_kind_for_family(family as u8).ok_or_else(|| {
+                crate::game_runtime::RuntimeTransitionError::InvalidRuntimeFlow {
+                    message: format!("spell progression family {family} has no semantic binding"),
+                }
+            })?;
+            progression.push(Mc2SemanticSpellProgress {
+                spell,
+                persistent_experience: player.persistent_spell_experience[family],
+                runtime_experience: player.runtime_spell_experience[family],
+                unlocked_tier: player.spell_unlocked_levels[family],
+                selected_tier: player.family_selected_tiers[family],
+            });
+        }
         let selected = SOURCE_SPELL_INDEX_MAP
             .get(usize::from(player.selected_spell_ui_index))
             .and_then(|family| mc2_spell_kind_for_family(*family))
             .filter(|kind| acquired.contains(kind));
-        Ok(Mc2SemanticSpellCarry { acquired, selected })
+        Ok(Mc2SemanticSpellCarry {
+            acquired,
+            selected,
+            progression,
+        })
     }
 
     fn apply_semantic_spell_carry(
@@ -2402,10 +2470,14 @@ impl Mc2CampaignBackend {
         // materializer seals a new reset baseline, which is correct for real
         // cross-level additions but would otherwise change an unchanged
         // package's canonical state receipt before replay begins.
-        if self.semantic_spell_carry()? == *carry {
+        let current = self.semantic_spell_carry()?;
+        if current.acquired == carry.acquired
+            && current.selected == carry.selected
+            && (carry.progression.is_empty() || current.progression == carry.progression)
+        {
             return Ok(());
         }
-        let families = carry
+        let mut families = carry
             .acquired
             .iter()
             .map(|kind| {
@@ -2419,6 +2491,27 @@ impl Mc2CampaignBackend {
                 })
             })
             .collect::<Result<Vec<_>, _>>()?;
+        // sub_5CF40 allocates in family-number order, independent of the
+        // serialized semantic vector's ordering. Preserve replay slot/RNG identity.
+        families.sort_unstable();
+        if families.windows(2).any(|pair| pair[0] == pair[1]) {
+            return Err(
+                crate::game_runtime::RuntimeTransitionError::InvalidRuntimeFlow {
+                    message: "carried spell families are duplicated".to_owned(),
+                },
+            );
+        }
+        // Normalize package-present families too: saving the installed entry
+        // exports their learned flags alongside newly allocated families.
+        // Reinstallation must produce the same complete entry baseline.
+        families.extend(
+            current
+                .acquired
+                .iter()
+                .filter_map(|kind| mc2_spell_family(*kind)),
+        );
+        families.sort_unstable();
+        families.dedup();
         let selected_family = carry
             .selected
             .map(|kind| {
@@ -2433,9 +2526,31 @@ impl Mc2CampaignBackend {
             })
             .transpose()?;
         let apply = |campaign: &mut CampaignSession| {
+            let progression = carry
+                .progression
+                .iter()
+                .map(|entry| {
+                    Ok(crate::native_world::CarriedSpellProgress {
+                        family: mc2_spell_family(entry.spell).ok_or_else(|| {
+                            crate::game_runtime::RuntimeTransitionError::InvalidRuntimeFlow {
+                                message: "carried progression has no MC2 spell family".to_owned(),
+                            }
+                        })?,
+                        persistent_experience: entry.persistent_experience,
+                        runtime_experience: entry.runtime_experience,
+                        unlocked_tier: entry.unlocked_tier,
+                        selected_tier: entry.selected_tier,
+                    })
+                })
+                .collect::<Result<Vec<_>, crate::game_runtime::RuntimeTransitionError>>()?;
             campaign
                 .level2_compatibility_mut()
                 .apply_carried_spell_families(&families, selected_family)
+                .and_then(|()| {
+                    campaign
+                        .level2_compatibility_mut()
+                        .apply_carried_spell_progression(&progression)
+                })
                 .map_err(
                     |error| crate::game_runtime::RuntimeTransitionError::InvalidRuntimeFlow {
                         message: format!("cannot apply semantic spell carry: {error}"),
@@ -2454,6 +2569,19 @@ impl Mc2CampaignBackend {
             .iter()
             .all(|kind| installed.acquired.contains(kind))
             || installed.selected != carry.selected
+            || carry.progression.iter().any(|entry| {
+                let family =
+                    usize::from(mc2_spell_family(entry.spell).expect("validated carry family"));
+                let player = self
+                    .campaign
+                    .level2_compatibility()
+                    .shared_spells()
+                    .local_player();
+                player.persistent_spell_experience[family] != entry.persistent_experience
+                    || player.runtime_spell_experience[family] != entry.runtime_experience
+                    || player.spell_unlocked_levels[family] != entry.unlocked_tier
+                    || player.family_selected_tiers[family] != entry.selected_tier
+            })
         {
             return Err(
                 crate::game_runtime::RuntimeTransitionError::InvalidRuntimeFlow {
@@ -2471,7 +2599,11 @@ impl Mc2CampaignBackend {
         acquired: Vec<SpellKind>,
         selected: Option<SpellKind>,
     ) -> Result<(), crate::game_runtime::RuntimeTransitionError> {
-        self.apply_semantic_spell_carry(&Mc2SemanticSpellCarry { acquired, selected })
+        self.apply_semantic_spell_carry(&Mc2SemanticSpellCarry {
+            acquired,
+            selected,
+            progression: Vec::new(),
+        })
     }
 
     #[cfg(test)]
@@ -2755,6 +2887,149 @@ pub(crate) mod tests {
             },
             PathBuf::from,
         )
+    }
+
+    #[test]
+    fn spell_carry_repair_preserves_progression_through_two_entries_and_save_payload() {
+        let generated = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../generated");
+        let open = |path: &str| {
+            let root = generated.join(path);
+            let definition =
+                Arc::new(load_mc2_campaign(&root, &default_catalog().unwrap()).unwrap());
+            GameSession::open(
+                &Mc2CampaignAdapter,
+                definition,
+                1,
+                Mc2CampaignInputs::new(root),
+            )
+            .unwrap()
+        };
+        let mut level2 = open("level2-day-block32-campaign-v2");
+        let learned = vec![
+            SpellKind::Fireball,
+            SpellKind::Shield,
+            SpellKind::Invisibility,
+            SpellKind::BeyondSight,
+            SpellKind::Morph,
+            SpellKind::Lightning,
+        ];
+        // Controlled progression input tests the real carry consumer; no
+        // gameplay, pickup, or earned completion claim is made by this setup.
+        let carry = Mc2SemanticSpellCarry {
+            acquired: learned.clone(),
+            selected: Some(SpellKind::BeyondSight),
+            progression: vec![
+                Mc2SemanticSpellProgress {
+                    spell: SpellKind::Shield,
+                    persistent_experience: 17,
+                    runtime_experience: 450,
+                    unlocked_tier: 1,
+                    selected_tier: 1,
+                },
+                Mc2SemanticSpellProgress {
+                    spell: SpellKind::BeyondSight,
+                    persistent_experience: 20,
+                    runtime_experience: 2000,
+                    unlocked_tier: 2,
+                    selected_tier: 2,
+                },
+            ],
+        };
+        level2
+            .backend_mut()
+            .apply_semantic_spell_carry(&carry)
+            .unwrap();
+        let saved =
+            serde_json::to_vec(&level2.backend().initial_semantic_spell_carry().unwrap()).unwrap();
+        let saved: Mc2SemanticSpellCarry = serde_json::from_slice(&saved).unwrap();
+        let mut restored = open("level2-day-block32-campaign-v2");
+        restored
+            .backend_mut()
+            .apply_semantic_spell_carry(&saved)
+            .unwrap();
+        assert_eq!(
+            restored.backend().campaign.state_hash(),
+            level2.backend().campaign.state_hash()
+        );
+        let mut carry = level2.backend().transition_spell_carry().unwrap();
+        let resolver = Mc2RuntimePackageResolver::load(
+            [
+                "mc-bhq8-level1-collision-v5-night",
+                "level2-day-block32-campaign-v2",
+                "level3-day-block32-campaign-recipe-v2",
+                "mc-bhq6-ordinary-20261025-zclu5fjj/level4",
+            ]
+            .map(|path| Mc2CampaignInputs::new(generated.join(path))),
+        )
+        .unwrap();
+        for path in [
+            "level3-day-block32-campaign-recipe-v2",
+            "mc-bhq6-ordinary-20261025-zclu5fjj/level4",
+        ] {
+            let mut next = open(path);
+            next.backend_mut()
+                .apply_semantic_spell_carry(&carry)
+                .unwrap();
+            let shared = next
+                .backend()
+                .campaign
+                .level2_compatibility()
+                .shared_spells();
+            let player = shared.local_player();
+            for kind in &learned {
+                let family = mc2_spell_family(*kind).unwrap();
+                assert!(
+                    spells::acquired_holder(shared, family).is_some(),
+                    "{kind:?}"
+                );
+                assert_eq!(player.family_selected_tiers[usize::from(family)], 0);
+            }
+            assert_eq!(player.persistent_spell_experience[6], 467);
+            assert_eq!(player.persistent_spell_experience[12], 1080);
+            assert_eq!(
+                (
+                    player.runtime_spell_experience[6],
+                    player.runtime_spell_experience[12]
+                ),
+                (0, 0)
+            );
+            assert_eq!(
+                (
+                    player.spell_unlocked_levels[6],
+                    player.spell_unlocked_levels[12]
+                ),
+                (1, 2)
+            );
+            let save = Mc2CampaignReplaySave::new(
+                false,
+                next.definition().as_ref().clone(),
+                next.backend().initial_semantic_spell_carry().unwrap(),
+                Vec::new(),
+                Vec::new(),
+                &next.backend().snapshot(),
+            );
+            let bytes = serde_json::to_vec(&save).unwrap();
+            let mut runtime = crate::game_runtime::GameRuntime::title(910).unwrap();
+            let title = runtime.identity();
+            resolver
+                .load_replay(&mut runtime, title.guard(), 911, &bytes)
+                .unwrap();
+            assert_eq!(
+                runtime.session().unwrap().backend().snapshot(),
+                next.backend().snapshot()
+            );
+            let saved_again = resolver.save_replay(&runtime).unwrap();
+            let mut restored_runtime = crate::game_runtime::GameRuntime::title(912).unwrap();
+            let title = restored_runtime.identity();
+            resolver
+                .load_replay(&mut restored_runtime, title.guard(), 913, &saved_again)
+                .unwrap();
+            assert_eq!(
+                restored_runtime.session().unwrap().backend().snapshot(),
+                next.backend().snapshot()
+            );
+            carry = next.backend().transition_spell_carry().unwrap();
+        }
     }
 
     pub(super) fn level_three_descriptor_fixture_path() -> PathBuf {

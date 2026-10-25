@@ -509,6 +509,7 @@ pub(crate) mod area_damage;
 mod ballistic_scenery;
 #[path = "campaign/level2.rs"]
 mod campaign;
+pub(crate) use campaign::CarriedSpellProgress;
 mod campaign_shared_families;
 pub(crate) use crate::world::terrain::cave_features;
 mod cave_spells;
