@@ -451,7 +451,11 @@ impl FrontendMedia {
         }
         if self.awaiting_release {
             self.view.clear_input = true;
-            if !input && !escape && self.clock >= 50_000 {
+            if input || escape {
+                // ShowWelcomeScreen/Intros drain held input before their
+                // 50ms delay; time spent holding skip cannot consume it.
+                self.clock = 0;
+            } else if self.clock >= 50_000 {
                 self.awaiting_release = false;
                 self.view.clear_input = false;
                 if let Some(id) = self.next_clip.take() {
@@ -754,6 +758,10 @@ mod tests {
         frame(&mut owner, 100_000, true);
         assert_eq!(owner.view.clip_id, "welcome");
         frame(&mut owner, 0, false);
+        assert_eq!(owner.view.clip_id, "welcome");
+        frame(&mut owner, 49_999, false);
+        assert_eq!(owner.view.clip_id, "welcome");
+        frame(&mut owner, 1, false);
         assert_eq!(owner.view.clip_id, "intro1");
         skip(&mut owner);
         assert_eq!(owner.view.clip_id, "intro2");
