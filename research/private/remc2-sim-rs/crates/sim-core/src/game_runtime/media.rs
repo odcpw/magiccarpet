@@ -39,6 +39,8 @@ pub struct MediaEvent {
 pub enum MediaCommand {
     Install {
         catalog: MediaCatalog,
+        #[serde(default = "default_startup")]
+        startup: bool,
     },
     Frame {
         elapsed_us: u32,
@@ -131,6 +133,10 @@ fn safe_path(path: &str) -> bool {
         && path.split('/').all(|p| !matches!(p, "" | "." | ".."))
 }
 
+fn default_startup() -> bool {
+    true
+}
+
 fn source_deadline_us(ticks: u64) -> u64 {
     // Animation.cpp: static_cast<long long>(AnimCurrentTick * AnimTickTime),
     // with AnimTickTime = 8.4f. Rational arithmetic changes real deadlines.
@@ -209,14 +215,20 @@ impl FrontendMedia {
         self.view.actions.clear();
         self.view.clear_input = false;
         match command {
-            MediaCommand::Install { catalog } => {
+            MediaCommand::Install { catalog, startup } => {
                 if self.catalog.is_some() {
                     return Err("media catalog already installed".into());
                 }
                 catalog.validate()?;
                 self.catalog = Some(catalog);
-                self.startup = true;
-                self.begin("welcome");
+                self.startup = startup;
+                if startup {
+                    self.begin("welcome");
+                } else {
+                    // A save/direct-game launch first binds media when it
+                    // returns to MainMenu, after cold-start intros were bypassed.
+                    self.finish();
+                }
             }
             MediaCommand::Failed { message } => {
                 self.fading = false;
@@ -603,6 +615,7 @@ mod tests {
         let mut owner = FrontendMedia::default();
         owner
             .command(MediaCommand::Install {
+                startup: true,
                 catalog: MediaCatalog {
                     schema: MEDIA_CONTRACT.into(),
                     clips,
@@ -636,6 +649,39 @@ mod tests {
         assert_eq!(source_deadline_us(10), 84_000);
         assert_eq!(source_deadline_us(30), 251_000);
         assert_eq!(source_deadline_us(100), 839_000);
+    }
+
+    #[test]
+    fn first_title_after_direct_game_binds_menu_music_without_cold_start() {
+        let mut catalog = media().catalog.unwrap();
+        catalog.audio.push(MediaAudio {
+            kind: "music".into(),
+            bank: 0,
+            id: 4,
+            path: "audio/menu.wav".into(),
+        });
+        let mut owner = FrontendMedia::default();
+        owner
+            .command(MediaCommand::Install {
+                catalog,
+                startup: false,
+            })
+            .unwrap();
+        assert!(!owner.view.active);
+        assert!(owner.view.clip_id.is_empty());
+        assert!(owner.view.clear_input);
+        assert_eq!(
+            owner.view.actions.last().unwrap().asset_path.as_deref(),
+            Some("audio/menu.wav")
+        );
+        frame(&mut owner, 50_000, false);
+        assert!(!owner.active());
+        for _ in 0..12 {
+            frame(&mut owner, 5_000_000, false);
+        }
+        assert!(!owner.view.active);
+        frame(&mut owner, 1_000_000, false);
+        assert_eq!(owner.view.clip_id, "intro1");
     }
 
     #[test]

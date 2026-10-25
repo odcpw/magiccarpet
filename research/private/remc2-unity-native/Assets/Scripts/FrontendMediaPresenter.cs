@@ -30,6 +30,7 @@ namespace MagicCarpet.Native
         }
         private readonly string directory;
         private readonly Transform parent;
+        private readonly bool startup;
         private readonly Dictionary<string, AudioClip> clips = new();
         private readonly Dictionary<int, AudioSource> samples = new();
         private readonly Dictionary<int, int> sampleUnits = new();
@@ -50,10 +51,11 @@ namespace MagicCarpet.Native
         internal bool Visible => current?.active == true;
         internal string Error { get; private set; }
 
-        internal FrontendMediaPresenter(Transform parent, string directory)
+        internal FrontendMediaPresenter(Transform parent, string directory, bool startup = true)
         {
             this.parent = parent;
             this.directory = Path.GetFullPath(directory);
+            this.startup = startup;
         }
 
         internal bool Step(ulong handle, GameRuntimeTransport.Identity identity,
@@ -86,7 +88,8 @@ namespace MagicCarpet.Native
                     }
                     if (!catalog.glyphs.Any(g => g.index == 65 && g.width > 0 && g.height > 0))
                         throw new InvalidDataException("frontend subtitle font is missing glyph 65: " + PathFor("media.json"));
-                    Send(handle, identity, "{\"operation\":\"install\",\"catalog\":" + json + "}");
+                    Send(handle, identity, "{\"operation\":\"install\",\"catalog\":" + json +
+                        ",\"startup\":" + (startup ? "true" : "false") + "}");
                     return true;
                 }
                 Send(handle, identity, "{\"operation\":\"frame\",\"elapsed_us\":" + elapsedUs +
