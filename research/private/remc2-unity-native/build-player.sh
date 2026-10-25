@@ -144,6 +144,10 @@ def main():
         'Logs and previous full builds remain under Builds/.')
     parser.add_argument('--native-only', action='store_true', help='reuse a compatible Unity player')
     parser.add_argument('--release', action='store_true', help='use Cargo release artifacts (default: dev)')
+    parser.add_argument('--native-artifact', type=Path,
+                        help='reuse an already verified native artifact instead of invoking Cargo')
+    parser.add_argument('--expected-native-sha256',
+                        help='required exact SHA256 for --native-artifact')
     parser.add_argument('--check-installed', action='store_true', help='validate installed files and source compatibility')
     parser.add_argument('--launch', action='store_true', help=argparse.SUPPRESS)
     if sys.argv[2:3] == ['--launch']:
@@ -153,6 +157,16 @@ def main():
         options, player_args = parser.parse_known_args(sys.argv[2:])
     if player_args and not options.launch:
         parser.error('unrecognized arguments: ' + ' '.join(player_args))
+    if bool(options.native_artifact) != bool(options.expected_native_sha256):
+        parser.error('--native-artifact and --expected-native-sha256 must be supplied together')
+    if options.native_artifact:
+        if options.release or options.launch or options.check_installed:
+            parser.error('--native-artifact is only for a build/install, without --release')
+        options.native_artifact = options.native_artifact.resolve(strict=True)
+        if (not options.native_artifact.is_file() or
+                len(options.expected_native_sha256) != 64 or
+                digest(options.native_artifact) != options.expected_native_sha256):
+            raise RuntimeError('Reused native artifact does not match its required SHA256')
     (PROJECT / 'Builds').mkdir(exist_ok=True)
     with (PROJECT / 'Builds/.player-install.lock').open('a') as lock:
         if options.launch or options.check_installed:
@@ -188,23 +202,29 @@ def main():
                  '--message-format=json-render-diagnostics']
         if options.release:
             cargo.append('--release')
-        command(cargo, SIM, cargo_log)
-        artifacts = []
-        for line in cargo_log.read_text().splitlines():
-            try:
-                message = json.loads(line)
-            except ValueError:
-                continue  # Cargo progress and rendered diagnostics share this log.
-            if message.get('reason') == 'compiler-artifact' and message.get('target', {}).get('name') == 'sim_capi':
-                artifacts.extend(Path(name) for name in message['filenames'] if name.endswith('/libsim_capi.so'))
-        if len(artifacts) != 1 or not artifacts[0].is_file():
-            raise RuntimeError(f'Cargo did not produce one sim-capi shared library; read {cargo_log}')
-        artifact = artifacts[0]
+        if options.native_artifact:
+            artifact = options.native_artifact
+            print(f'Reusing verified native artifact: {artifact}; no Cargo invocation.', flush=True)
+        else:
+            command(cargo, SIM, cargo_log)
+            artifacts = []
+            for line in cargo_log.read_text().splitlines():
+                try:
+                    message = json.loads(line)
+                except ValueError:
+                    continue  # Cargo progress and rendered diagnostics share this log.
+                if message.get('reason') == 'compiler-artifact' and message.get('target', {}).get('name') == 'sim_capi':
+                    artifacts.extend(Path(name) for name in message['filenames'] if name.endswith('/libsim_capi.so'))
+            if len(artifacts) != 1 or not artifacts[0].is_file():
+                raise RuntimeError(f'Cargo did not produce one sim-capi shared library; read {cargo_log}')
+            artifact = artifacts[0]
         library = ctypes.CDLL(str(artifact))
         library.mc_native_abi_version.restype = ctypes.c_uint32
         if library.mc_native_abi_version() != 2:
             raise RuntimeError('Native ABI changed; migrate the Unity consumer before building.')
         native_hash = digest(artifact)
+        if options.native_artifact and native_hash != options.expected_native_sha256:
+            raise RuntimeError('Reused native artifact changed during capture')
         if before != unity_inputs() or contract != native_contract() or rust_before != rust_inputs():
             raise RuntimeError(f'Build inputs changed during Cargo; retry at a stable source point. Logs: {logs}')
         reject_running()
