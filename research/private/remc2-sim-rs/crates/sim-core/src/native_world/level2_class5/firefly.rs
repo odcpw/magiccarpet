@@ -374,7 +374,7 @@ impl Level2EconomyState {
     pub(crate) fn advance_authored_firefly_stage_rows(
         &mut self,
         runtime: &mut RuntimeSnapshot,
-    ) -> Result<(), String> {
+    ) -> std::result::Result<(), String> {
         let mut slots = self
             .authored_fireflies
             .iter()
