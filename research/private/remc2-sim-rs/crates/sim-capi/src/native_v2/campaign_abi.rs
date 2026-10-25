@@ -3472,8 +3472,7 @@ pub extern "C" fn mc_native_campaign_goats_copy(
                 live_world_hash: reset.campaign_state_hash(),
                 start_ordinal,
                 written: u32::try_from(count).expect("Level 2 Goat count fits u32"),
-                total_count: u32::try_from(LEVEL_TWO_GOAT_INDICES.len())
-                    .expect("Level 2 Goat count fits u32"),
+                total_count: u32::try_from(goats.len()).expect("campaign Goat count fits u32"),
                 has_more: u8::from(start + count < goats.len()),
                 reserved_0: [0; 3],
                 reserved: [0; 4],

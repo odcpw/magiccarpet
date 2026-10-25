@@ -1577,6 +1577,46 @@ mod tests {
             assert_eq!(initial["identity"]["tick"], "0");
             assert_eq!(initial["value"]["tick"], "0");
 
+            // The public family page describes this live campaign, including
+            // empty/different mission populations, rather than Level 2's
+            // historical reset census.
+            let mut goats = vec![McCampaignGoatSnapshotV2::default(); 1000];
+            let mut batch = McGoatBatchV2::default();
+            assert_eq!(
+                mc_native_campaign_goats_copy(
+                    handle,
+                    1,
+                    0,
+                    goats.as_mut_ptr(),
+                    goats.len() as u32,
+                    struct_size::<McCampaignGoatSnapshotV2>(),
+                    &raw mut batch,
+                    struct_size::<McGoatBatchV2>(),
+                ),
+                MC_STATUS_OK
+            );
+            assert_eq!(batch.total_count, batch.written);
+            assert_eq!(batch.has_more, 0);
+            let total = batch.total_count;
+            assert_eq!(
+                mc_native_campaign_goats_copy(
+                    handle,
+                    1,
+                    total,
+                    goats.as_mut_ptr(),
+                    1,
+                    struct_size::<McCampaignGoatSnapshotV2>(),
+                    &raw mut batch,
+                    struct_size::<McGoatBatchV2>(),
+                ),
+                MC_STATUS_OK
+            );
+            assert_eq!(
+                (batch.total_count, batch.written, batch.has_more),
+                (total, 0, 0)
+            );
+            assert_eq!(campaign_snapshot(handle), initial);
+
             assert_eq!(
                 mc_game_session_step_json_v1(handle, 1, 0, command.as_ptr(), command.len() as u32,),
                 MC_STATUS_OK,
