@@ -597,6 +597,10 @@ pub struct DayIndexedFrame {
     pub height: u16,
     pub indices: Vec<u8>,
     pub palette_rgb8: Vec<u8>,
+    /// Last source cell to paint each Cave terrain pixel; zero is unpainted.
+    pub cave_terrain_orders: Option<Vec<u16>>,
+    /// Source cell rank indexed by `(tile_y << 8) | tile_x`.
+    pub cave_cell_orders: Option<Vec<u16>>,
     pub index_hash: u64,
     pub terrain_input_hash: u64,
     pub terrain_command_hash: u64,
@@ -610,6 +614,31 @@ pub struct DayIndexedFrameState {
     generation: u64,
     current_tick: Option<u64>,
     current_frame: Option<DayIndexedFrame>,
+    current_view: Option<FrameView>,
+}
+
+/// Exit action12 advances its camera and sequence without advancing the
+/// flight tick. Palette-only paused updates do not advance image history.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct FrameView {
+    camera: Level1TerrainFrameCamera,
+    exit_phase: u8,
+    exit_timer: i16,
+    exit_blur: u8,
+    exit_blank: bool,
+}
+
+impl FrameView {
+    fn current(session: &Level2ResetSession) -> Result<Self, DayIndexedFrameError> {
+        let exit = session.level_exit_sequence();
+        Ok(Self {
+            camera: camera_from_session(session)?,
+            exit_phase: exit.phase,
+            exit_timer: exit.timer,
+            exit_blur: exit.blur_mode,
+            exit_blank: exit.display_blank,
+        })
+    }
 }
 
 impl DayIndexedFrameState {
@@ -619,6 +648,7 @@ impl DayIndexedFrameState {
             generation,
             current_tick: None,
             current_frame: None,
+            current_view: None,
         }
     }
 
@@ -641,6 +671,7 @@ impl DayIndexedFrameState {
         self.generation = generation;
         self.current_tick = None;
         self.current_frame = None;
+        self.current_view = None;
     }
 
     /// Render the next frame without mutating this carrier until the complete
@@ -670,6 +701,7 @@ impl DayIndexedFrameState {
                 "Day indexed frame tick {tick} is out of order; expected {expected_tick}"
             )));
         }
+        let view = FrameView::current(session)?;
         let frame = render_environment_indexed_frame(
             inspection,
             session,
@@ -678,6 +710,7 @@ impl DayIndexedFrameState {
             self.current_frame.as_ref(),
         )?;
         self.current_tick = Some(tick);
+        self.current_view = Some(view);
         self.current_frame = Some(frame.clone());
         Ok(frame)
     }
@@ -702,12 +735,13 @@ impl DayIndexedFrameState {
             )));
         }
         let tick = session.state.tick;
+        let view = FrameView::current(session)?;
         if self.current_tick.is_some_and(|current| tick < current) {
             return Err(DayIndexedFrameError::new(format!(
                 "Day indexed frame tick {tick} predates the committed presentation revision"
             )));
         }
-        if self.current_tick == Some(tick) {
+        if self.current_tick == Some(tick) && self.current_view == Some(view) {
             if let Some(frame) = self.current_frame.as_ref() {
                 if frame.cache_content_sha256 != assets.cache_content_sha256() {
                     return Err(DayIndexedFrameError::new(
@@ -732,6 +766,7 @@ impl DayIndexedFrameState {
             self.current_frame.as_ref(),
         )?;
         self.current_tick = Some(tick);
+        self.current_view = Some(view);
         self.current_frame = Some(frame.clone());
         Ok(frame)
     }
@@ -766,7 +801,7 @@ fn render_environment_indexed_frame(
     let exit = session.level_exit_sequence();
     let tables = assets.materials.renderer_tables(exit);
     let tick = session.state.tick;
-    let camera = camera_from_state(&session.state)?;
+    let camera = camera_from_session(session)?;
     let profile = ClassicHdRenderProfile::compatibility_320x200();
     let planes = session.canonical_terrain().planes();
     validate_terrain_planes(
@@ -838,6 +873,19 @@ fn render_environment_indexed_frame(
         )));
     }
     let mut provenance = vec![0_u8; extent];
+    let mut cave_terrain_orders = matches!(&terrain, Terrain::Cave(_)).then(|| vec![0_u16; extent]);
+    let cave_cell_orders = match &terrain {
+        Terrain::Cave(plan) => {
+            let orders = plan.cell_orders();
+            if orders.len() != TERRAIN_PLANE_BYTES {
+                return Err(DayIndexedFrameError::new(
+                    "Cave cell order plane has an invalid extent",
+                ));
+            }
+            Some(orders.to_vec())
+        }
+        Terrain::Outdoor(_) => None,
+    };
     let identity = {
         let mut writer = ClassicHdFrameWriter::from_planes(
             &profile,
@@ -860,14 +908,19 @@ fn render_environment_indexed_frame(
                 DAY_TERRAIN_PROVENANCE,
             )
             .map(|_| ()),
-            Terrain::Cave(plan) => plan
-                .rasterize(
+            Terrain::Cave(plan) => {
+                let orders = cave_terrain_orders.as_deref_mut().ok_or_else(|| {
+                    DayIndexedFrameError::new("Cave terrain order plane is absent")
+                })?;
+                plan.rasterize_with_occlusion(
                     &mut writer,
                     assets.terrain_atlas(),
                     tables,
                     DAY_TERRAIN_PROVENANCE,
+                    orders,
                 )
-                .map(|_| ()),
+                .map(|_| ())
+            }
         }
         .map_err(|error| {
             DayIndexedFrameError::new(format!("Day terrain raster failed: {error}"))
@@ -894,6 +947,8 @@ fn render_environment_indexed_frame(
             camera,
             &planes.terrain_types,
             &planes.shading,
+            &planes.angles,
+            inspection.metadata().map_type == MapType::Cave,
             tables,
         );
     }
@@ -908,6 +963,8 @@ fn render_environment_indexed_frame(
         height: DAY_FRAME_HEIGHT,
         indices,
         palette_rgb8,
+        cave_terrain_orders,
+        cave_cell_orders,
         index_hash,
         terrain_input_hash,
         terrain_command_hash,
@@ -916,7 +973,7 @@ fn render_environment_indexed_frame(
     })
 }
 
-/// Source `GameUI.cpp::sub_63670_draw_minimap_a`, non-cave opaque branch.
+/// Source `GameUI.cpp::sub_63670_draw_minimap_a`, selected opaque branch.
 /// The 128-source-pixel map is sampled onto the fixed 320x200 presentation.
 /// All world coordinates wrap through BYTE1 exactly as the source map index.
 fn draw_minimap_terrain(
@@ -925,6 +982,8 @@ fn draw_minimap_terrain(
     camera: Level1TerrainFrameCamera,
     terrain_types: &[u8],
     shading: &[u8],
+    angles: &[u8],
+    cave: bool,
     tables: &[u8],
 ) {
     const SOURCE_SIDE: i32 = 128;
@@ -950,8 +1009,12 @@ fn draw_minimap_terrain(
             let world_x = origin_x - source_y * sin + source_x * cos;
             let world_y = origin_y + source_y * cos + source_x * sin;
             let tile = (((world_y >> 8) & 255) * 256 + ((world_x >> 8) & 255)) as usize;
-            let base = usize::from(tables[0x14000 + usize::from(terrain_types[tile])]);
-            target[y * stride + x] = tables[(usize::from(shading[tile]) << 8) + base];
+            target[y * stride + x] = if cave && angles[tile] & 8 != 0 {
+                0
+            } else {
+                let base = usize::from(tables[0x14000 + usize::from(terrain_types[tile])]);
+                tables[(usize::from(shading[tile]) << 8) + base]
+            };
         }
     }
 }
@@ -1024,6 +1087,17 @@ fn validate_terrain_planes(
         }
     }
     Ok(())
+}
+
+fn camera_from_session(
+    session: &Level2ResetSession,
+) -> Result<Level1TerrainFrameCamera, DayIndexedFrameError> {
+    let mut camera = camera_from_state(&session.state)?;
+    let exit = session.level_exit_sequence();
+    if exit.active || exit.complete {
+        camera.fov = exit.camera_fov;
+    }
+    Ok(camera)
 }
 
 fn camera_from_state(
@@ -1554,6 +1628,185 @@ mod tests {
         path::PathBuf,
         time::{SystemTime, UNIX_EPOCH},
     };
+
+    #[test]
+    fn exit_camera_and_palette_refresh_without_a_flight_tick() {
+        let cache = generated_path("level3-day-spell-owner-cache-audio-v4/components/material");
+        let mut campaign = crate::campaign::CampaignSession::open_with_owner_cache(
+            generated_path("level3-day-block32-campaign-recipe-v2"),
+            &cache,
+            crate::campaign::spec::CampaignSelection::LEVEL3,
+        )
+        .expect("installed Level3 package and materials");
+        let assets = DayIndexedFrameAssets::load(&cache).unwrap();
+        let mut carrier = DayIndexedFrameState::new(campaign.generation());
+        let initial = carrier
+            .render_current(
+                campaign.inspection(),
+                campaign.level2_compatibility(),
+                &assets,
+                campaign.generation(),
+            )
+            .unwrap();
+        // Diagnose the action12 camera consumer directly. This neither earns
+        // an exit trigger nor advances gameplay or campaign progression.
+        {
+            let session = campaign.level2_compatibility_mut();
+            let profile = session.profile();
+            let live = &mut session.session.state.live;
+            live.level_exit = crate::level_exit::LevelExitSequence {
+                active: true,
+                phase: 5,
+                timer: 12,
+                ..crate::level_exit::LevelExitSequence::default()
+            };
+            live.level_exit.advance(
+                &live.terrain,
+                profile,
+                &mut live.core.state,
+                &mut live.core.context,
+                None,
+            );
+        }
+        assert_eq!(
+            camera_from_session(campaign.level2_compatibility())
+                .unwrap()
+                .fov,
+            127
+        );
+        let zoomed = carrier
+            .render_current(
+                campaign.inspection(),
+                campaign.level2_compatibility(),
+                &assets,
+                campaign.generation(),
+            )
+            .unwrap();
+        assert_eq!(zoomed.tick, initial.tick);
+        assert_ne!(zoomed.terrain_input_hash, initial.terrain_input_hash);
+        assert_ne!(zoomed.index_hash, initial.index_hash);
+        for request in [6, 5] {
+            {
+                let live = &mut campaign.level2_compatibility_mut().session.state.live;
+                let palette = &mut live.economy.fields.palette;
+                palette.request(crate::world::fields::PaletteRequest {
+                    mode: request,
+                    count: 0,
+                });
+                assert!(palette.advance_frame());
+                if request == 5 {
+                    // Source setup, step0, then one actual black-fade step.
+                    assert!(palette.advance_frame());
+                    assert!(palette.advance_frame());
+                }
+                live.level_exit.palette_submode = palette.mode();
+            }
+            let frame = carrier
+                .render_current(
+                    campaign.inspection(),
+                    campaign.level2_compatibility(),
+                    &assets,
+                    campaign.generation(),
+                )
+                .unwrap();
+            assert_eq!(frame.tick, zoomed.tick);
+            assert_eq!(frame.indices, zoomed.indices);
+            assert_ne!(frame.palette_rgb8, zoomed.palette_rgb8);
+            let mut expected = assets.palette_rgb8().to_vec();
+            campaign
+                .level2_compatibility()
+                .field_palette()
+                .apply_rgb8(&mut expected);
+            assert_eq!(frame.palette_rgb8, expected);
+            assert_eq!(
+                carrier
+                    .render_current(
+                        campaign.inspection(),
+                        campaign.level2_compatibility(),
+                        &assets,
+                        campaign.generation(),
+                    )
+                    .unwrap(),
+                frame,
+                "observing the same authority cannot advance palette or image history"
+            );
+        }
+    }
+
+    #[test]
+    fn cave_minimap_angle8_selects_opaque_black_only_in_caves() {
+        let mut tables = vec![0; TABLESD_BYTES];
+        for phase in 0..64 {
+            tables[0x14300 + phase * 4] = 255;
+        }
+        tables[0x14000] = 7;
+        tables[7] = 99;
+        let terrain = vec![0; TERRAIN_PLANE_BYTES];
+        let shading = vec![0; TERRAIN_PLANE_BYTES];
+        let camera = camera_from_state(&FlightState::default()).unwrap();
+        for (cave, angle, expected) in [(true, 8, 0), (true, 0, 99), (false, 8, 99)] {
+            let angles = vec![angle; TERRAIN_PLANE_BYTES];
+            let mut indices =
+                vec![42; usize::from(DAY_FRAME_WIDTH) * usize::from(DAY_FRAME_HEIGHT)];
+            draw_minimap_terrain(
+                &mut indices,
+                usize::from(DAY_FRAME_WIDTH),
+                camera,
+                &terrain,
+                &shading,
+                &angles,
+                cave,
+                &tables,
+            );
+            assert_eq!(indices[32 * usize::from(DAY_FRAME_WIDTH) + 32], expected);
+            assert_eq!(indices[100 * usize::from(DAY_FRAME_WIDTH) + 100], 42);
+        }
+    }
+
+    #[test]
+    fn real_level4_frame_retains_source_occlusion_planes() {
+        let cache = generated_path("mc-oi62-environment-level4-audio-v3");
+        let campaign = crate::campaign::CampaignSession::open_with_owner_cache(
+            generated_path("mc-bhq6-ordinary-20261025-zclu5fjj/level4"),
+            &cache,
+            crate::campaign::spec::CampaignSelection {
+                external_level: 4,
+                internal_level: 3,
+                map_type_id: 2,
+            },
+        )
+        .expect("installed Level4 package and owner assets");
+        let assets = DayIndexedFrameAssets::load(&cache).unwrap();
+        let before = campaign.state_hash();
+        let mut carrier = DayIndexedFrameState::new(campaign.generation());
+        let frame = carrier
+            .render_current(
+                campaign.inspection(),
+                campaign.level2_compatibility(),
+                &assets,
+                campaign.generation(),
+            )
+            .unwrap();
+        let terrain_orders = frame.cave_terrain_orders.as_ref().unwrap();
+        let cell_orders = frame.cave_cell_orders.as_ref().unwrap();
+        assert_eq!(terrain_orders.len(), frame.indices.len());
+        assert_eq!(cell_orders.len(), TERRAIN_PLANE_BYTES);
+        assert!(terrain_orders.iter().any(|&order| order != 0));
+        assert!(cell_orders.iter().any(|&order| order != 0));
+        assert_eq!(
+            carrier
+                .render_current(
+                    campaign.inspection(),
+                    campaign.level2_compatibility(),
+                    &assets,
+                    campaign.generation(),
+                )
+                .unwrap(),
+            frame
+        );
+        assert_eq!(campaign.state_hash(), before);
+        assert_eq!(frame.tick, 0);
+    }
 
     #[test]
     fn package_environment_binds_real_night_and_day_frames() {
