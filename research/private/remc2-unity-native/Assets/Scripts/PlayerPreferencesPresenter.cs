@@ -18,6 +18,7 @@ namespace MagicCarpet.Native
         public bool sound_enabled, music_enabled, speech_enabled;
         public int sound_volume, music_volume;
         public bool show_help;
+        public bool auto_show_objectives_for_foreign_languages;
         public int[] brightness;
         public bool flight_assistance, fullscreen;
     }

@@ -42,6 +42,26 @@ namespace MagicCarpet.Native.Tests
                 Assert.That(surface.WorldReady && surface.LiveMinimapReady, Is.True);
                 Assert.That(surface.FrameHash, Is.Not.Zero);
                 Assert.That(surface.Tick, Is.Zero, "isolated entry diagnostic performs no gameplay");
+                Assert.That(session.CaveTerrainOrders.Length, Is.EqualTo(320 * 200));
+                Assert.That(session.CaveCellOrders.Length, Is.EqualTo(256 * 256));
+                Assert.That(Array.Exists(session.CaveTerrainOrders, rank => rank != 0), Is.True);
+                var shortPlane = new ushort[] { 1234 };
+                var shortCells = new ushort[] { 5678 };
+                var shortStatus = NativeSim.mc_native_campaign_cave_occlusion_copy(
+                    session.Handle, session.Generation, session.Tick, shortPlane, 1, shortCells, 1,
+                    out var terrainWritten, out var cellWritten);
+                Assert.That(shortStatus, Is.Not.EqualTo(NativeSim.Ok));
+                Assert.That(terrainWritten, Is.Zero);
+                Assert.That(cellWritten, Is.Zero);
+                Assert.That(shortPlane[0], Is.EqualTo(1234));
+                Assert.That(shortCells[0], Is.EqualTo(5678));
+                var staleStatus = NativeSim.mc_native_campaign_cave_occlusion_copy(
+                    session.Handle, session.Generation + 1, session.Tick, session.CaveTerrainOrders,
+                    (uint)session.CaveTerrainOrders.Length, session.CaveCellOrders,
+                    (uint)session.CaveCellOrders.Length, out terrainWritten, out cellWritten);
+                Assert.That(staleStatus, Is.EqualTo(NativeSim.GenerationMismatch));
+                Assert.That(terrainWritten, Is.Zero);
+                Assert.That(cellWritten, Is.Zero);
                 session.Reset();
                 surface.PresentEnvironment(session, cache);
                 Assert.That(surface.Generation, Is.EqualTo(session.Generation),
@@ -51,6 +71,32 @@ namespace MagicCarpet.Native.Tests
                     "the same package and cache do not authorize a different session owner");
             }
             finally { UnityEngine.Object.DestroyImmediate(root); }
+        }
+
+        [Test]
+        public void AbilityImprovedUsesNamedSourceTextAndTwoHundredOuterDraws()
+        {
+            var path = Path.Combine(LevelOneOwnerCache, "font/language-l1.records-nul.bin");
+            var bytes = File.ReadAllBytes(path);
+            var records = Encoding.GetEncoding(28591).GetString(bytes).Split('\0');
+            var notification = new MagicCarpetRuntime.AbilityImprovedNotification(bytes);
+            notification.Improve(0);
+            var expected = records[159].Replace("%s", records[160]);
+            Assert.That(notification.Text, Is.EqualTo(expected.Length > 48 ? expected.Substring(0, 48) : expected));
+            for (var i = 0; i < 200; i++)
+            {
+                notification.Advance(false);
+                Assert.That(notification.Visible, Is.True, "source draw " + i);
+            }
+            notification.Advance(false);
+            Assert.That(notification.Visible, Is.False);
+            notification.Improve(1);
+            for (var i = 0; i < 201; i++) notification.Advance(true);
+            Assert.That(notification.Visible, Is.False, "source menu suppression freezes the carrier");
+            notification.Advance(false);
+            Assert.That(notification.Visible, Is.True);
+            Assert.That(notification.Text, Does.Contain(records[161]));
+            Assert.Throws<InvalidDataException>(() => notification.Improve(26));
         }
 
         [Test]
@@ -121,7 +167,7 @@ namespace MagicCarpet.Native.Tests
             }
             var fixture = Path.Combine(Path.GetTempPath(), "mc-campaign-menu-negative-" + Guid.NewGuid().ToString("N"));
             Directory.CreateDirectory(fixture);
-            foreach (var file in Directory.GetFiles(source)) File.Copy(file, Path.Combine(fixture, Path.GetFileName(file)));
+            CopyOwnerMenuFixture(source, fixture);
             var pixels = Path.Combine(fixture, "world-map.indices.u8");
             using (var file = File.Open(pixels, FileMode.Open, FileAccess.ReadWrite))
             {
@@ -130,6 +176,169 @@ namespace MagicCarpet.Native.Tests
                 file.WriteByte((byte)(value ^ 1));
             }
             try { Assert.Throws<InvalidDataException>(() => new OwnerCampaignMenuCache(fixture)); }
+            finally { Directory.Delete(fixture, true); }
+        }
+
+        private static void CopyOwnerMenuFixture(string source, string destination)
+        {
+            foreach (var file in Directory.GetFiles(source, "*", SearchOption.AllDirectories))
+            {
+                var target = Path.Combine(destination, Path.GetRelativePath(source, file));
+                Directory.CreateDirectory(Path.GetDirectoryName(target));
+                File.Copy(file, target);
+            }
+        }
+
+        [Test]
+        public void CaveSpriteShaderClipsLaterTerrainPerPixelAndKeepsEqualRank()
+        {
+            Assert.That(SystemInfo.graphicsDeviceType, Is.Not.EqualTo(UnityEngine.Rendering.GraphicsDeviceType.Null),
+                "This focused shader check requires a graphics device, not a Null renderer");
+            var shader = Shader.Find("MagicCarpet/EntitySprite");
+            Assert.That(shader, Is.Not.Null);
+            Assert.That(shader.isSupported, Is.True);
+            var material = new Material(shader);
+            var indices = new Texture2D(1, 1, TextureFormat.R8, false, true);
+            var palette = new Texture2D(256, 1, TextureFormat.RGBA32, false, true);
+            var orders = new Texture2D(320, 200, TextureFormat.RGBA32, false, true);
+            var output = new RenderTexture(320, 200, 0, RenderTextureFormat.ARGB32, RenderTextureReadWrite.Linear);
+            var captured = new Texture2D(320, 200, TextureFormat.RGBA32, false, true);
+            var previous = RenderTexture.active;
+            var fog = RenderSettings.fog;
+            try
+            {
+                indices.LoadRawTextureData(new byte[] { 1 }); indices.Apply();
+                var palettePixels = new Color32[256];
+                Array.Fill(palettePixels, new Color32(255, 0, 0, 255));
+                palette.SetPixels32(palettePixels); palette.Apply();
+                var ranks = new Color32[320 * 200];
+                for (var y = 0; y < 200; y++)
+                    for (var x = 0; x < 320; x++)
+                    {
+                        var rank = x < 160 ? 501 : 500;
+                        ranks[y * 320 + x] = new Color32(unchecked((byte)rank), (byte)(rank >> 8), 0, 255);
+                    }
+                orders.SetPixels32(ranks); orders.Apply(); orders.filterMode = FilterMode.Point;
+                material.SetTexture("_Indices", indices);
+                material.SetTexture("_Palette", palette);
+                material.SetTexture("_CaveOrders", orders);
+                material.SetFloat("_CaveOcclusionEnabled", 1);
+                material.SetFloat("_CaveCellOrder", 500);
+                RenderSettings.fog = false;
+                output.Create();
+                RenderTexture.active = output; GL.Clear(true, true, Color.black);
+                Graphics.Blit(Texture2D.whiteTexture, output, material);
+                RenderTexture.active = output;
+                captured.ReadPixels(new Rect(0, 0, 320, 200), 0, 0); captured.Apply();
+                Assert.That(captured.GetPixel(80, 100).r, Is.LessThan(.05f), "later terrain clips only covered fragments");
+                Assert.That(captured.GetPixel(240, 100).r, Is.GreaterThan(.95f), "the source draws sprites after their own cell");
+                material.SetFloat("_CaveCellOrder", 0);
+                RenderTexture.active = output; GL.Clear(true, true, Color.black);
+                Graphics.Blit(Texture2D.whiteTexture, output, material);
+                RenderTexture.active = output;
+                captured.ReadPixels(new Rect(0, 0, 320, 200), 0, 0); captured.Apply();
+                Assert.That(captured.GetPixel(240, 100).r, Is.LessThan(.05f), "an unsubmitted source cell cannot draw a sprite");
+            }
+            finally
+            {
+                RenderTexture.active = previous; RenderSettings.fog = fog;
+                output.Release();
+                foreach (var resource in new UnityEngine.Object[] { material, indices, palette, orders, output, captured })
+                    UnityEngine.Object.DestroyImmediate(resource);
+            }
+        }
+
+        [Test]
+        public void ProductionCampaignMapSaveRestoresWithoutGameplayOwner()
+        {
+            var packages = new[] {
+                Package(LevelOnePackage), Package(LevelTwoPackage), Package(LevelThreePackage),
+                Package(Path.Combine(PrivateRoot, "generated/mc-bhq6-ordinary-20261025-zclu5fjj/level4"))
+            };
+            using var frontend = NativeSession.OpenGameRuntimeFrontend(packages);
+            var map = frontend.GameRuntimeBeginNewGame();
+            Assert.That(map.mode, Is.EqualTo(GameRuntimeTransport.CampaignMode));
+            var saved = frontend.GameRuntimeSaveReplay();
+            var loaded = NativeSession.OpenGameRuntimeReplay(saved, packages);
+            var root = new GameObject("campaign map save attachment");
+            root.SetActive(false);
+            var runtime = root.AddComponent<MagicCarpetRuntime>();
+            try
+            {
+                typeof(MagicCarpetRuntime).GetMethod("AttachAndValidateGameRuntimeProductionSession",
+                    System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)
+                    .Invoke(runtime, new object[] { loaded, false });
+                var restored = runtime.GameRuntimeProductionIdentity;
+                Assert.That(restored.mode, Is.EqualTo(GameRuntimeTransport.CampaignMode));
+                Assert.That(restored.session, Is.Null);
+                Assert.That(restored.campaign_menu.selected_level_id, Is.EqualTo(map.campaign_menu.selected_level_id));
+                CollectionAssert.AreEqual(map.campaign_menu.available_levels, restored.campaign_menu.available_levels);
+                Assert.That(runtime.GameRuntimeProductionStartupReady, Is.False);
+            }
+            finally
+            {
+                runtime.QualificationDisposeGameRuntimeProduction();
+                loaded.Dispose();
+                UnityEngine.Object.DestroyImmediate(root);
+            }
+        }
+
+        [Test]
+        public void PortalClockPreservesSourceOvershootAndDoesNotCatchUp()
+        {
+            var state = new CampaignMenuPresenter.PortalState { Selector = 83 };
+            Assert.That(state.Advance(7, 70, 83, 8), Is.False);
+            Assert.That(state.DrawSelector, Is.EqualTo(83));
+            Assert.That(state.Advance(8, 70, 83, 8), Is.False);
+            Assert.That(state.DrawSelector, Is.EqualTo(84));
+            Assert.That(state.Advance(16, 70, 83, 8), Is.True);
+            Assert.That(state.DrawSelector, Is.EqualTo(70));
+            state.Selector = 33;
+            Assert.That(state.Advance(1000, 33, 35, 8), Is.False);
+            Assert.That(state.DrawSelector, Is.EqualTo(34), "a delayed frame advances once");
+        }
+
+        [Test]
+        public void FreshMenuV2BindsOwnerBriefingAndRejectsAlteredLanguage()
+        {
+            var source = Environment.GetEnvironmentVariable("MC_MENU_CACHE_V2") ??
+                Path.Combine(PrivateRoot, "generated/mc-a3-startup-review-cache-v2");
+            Assert.That(File.ReadAllText(Path.Combine(source, "manifest.json")),
+                Does.Contain("mc2-owner-campaign-menu-cache/v2"));
+            using (var cache = new OwnerCampaignMenuCache(source))
+            {
+                var language = Encoding.GetEncoding(28591).GetString(File.ReadAllBytes(
+                    Path.Combine(LevelOneOwnerCache, "font/language-l1.records-nul.bin"))).Split('\0');
+                Assert.That(cache.ForMission("level.magic_carpet_2.night_spire").briefing, Is.EqualTo(language[23]));
+                Assert.That(cache.ForMission("level.magic_carpet_2.spider_cave").briefing, Is.EqualTo(language[26]));
+                Assert.That(cache.StartupBackground.width, Is.EqualTo(640));
+                Assert.That(cache.Startup.animations.Length, Is.EqualTo(4));
+                Assert.That(cache.PortalBitmap(84), Is.Not.Null, "source opening overshoot is retained");
+                Assert.That(cache.ReadPortalOpeningSound().Length, Is.GreaterThan(44));
+                var first = "level.magic_carpet_2.night_spire";
+                var menu = new GameRuntimeTransport.CampaignMenuSnapshot {
+                    phase = "mission_select", selected_level_id = first,
+                    available_levels = new[] { first }, completed_levels = Array.Empty<string>()
+                };
+                var view = cache.SourceView(menu);
+                Assert.That(cache.HitTestPortal(menu, view.position + new Vector2(305, 343) * (view.width / 640)), Is.EqualTo(first));
+                Assert.That(cache.HitTestPortal(menu, view.position + new Vector2(303, 343) * (view.width / 640)), Is.Null);
+            }
+            var fixture = Path.Combine(Path.GetTempPath(), "mc-menu-v2-tamper-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(fixture);
+            try
+            {
+                CopyOwnerMenuFixture(source, fixture);
+                var records = Directory.GetFiles(Path.Combine(fixture, "language/text"), "*.records-nul.u8");
+                Assert.That(records.Length, Is.GreaterThan(0));
+                using (var stream = File.Open(records[0], FileMode.Open, FileAccess.ReadWrite))
+                {
+                    var first = stream.ReadByte();
+                    stream.Position = 0;
+                    stream.WriteByte((byte)(first ^ 1));
+                }
+                Assert.Throws<InvalidDataException>(() => new OwnerCampaignMenuCache(fixture));
+            }
             finally { Directory.Delete(fixture, true); }
         }
 

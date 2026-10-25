@@ -7,6 +7,46 @@ namespace MagicCarpet.Native
 {
     public sealed partial class MagicCarpetRuntime
     {
+        // sub_6DC40_improve_ability -> SetCurrentNotificationMessage_19760.
+        // DrawTextPauseEndOfLevel consumes one count per outer draw, including
+        // paused draws; multiple Unity IMGUI passes must not consume it twice.
+        internal sealed class AbilityImprovedNotification
+        {
+            private readonly string[] records;
+            private int remaining;
+            internal string Text { get; private set; }
+            internal bool Visible { get; private set; }
+
+            internal AbilityImprovedNotification(byte[] language)
+            {
+                records = Encoding.GetEncoding(28591).GetString(language).Split('\0');
+                if (records.Length <= 185 || string.IsNullOrEmpty(records[159]))
+                    throw new InvalidDataException("Missing source ability notification language");
+            }
+
+            internal void Improve(int family)
+            {
+                if (family < 0 || family >= 26 || string.IsNullOrEmpty(records[160 + family]))
+                    throw new InvalidDataException("Unbound source spell notification family");
+                var format = records[159];
+                var placeholder = format.IndexOf("%s", StringComparison.Ordinal);
+                if (placeholder < 0 || format.IndexOf("%s", placeholder + 2, StringComparison.Ordinal) >= 0)
+                    throw new InvalidDataException("Invalid source spell notification format");
+                var text = format.Substring(0, placeholder) + records[160 + family] + format.Substring(placeholder + 2);
+                // Source notification storage is 49 bytes, including NUL.
+                Text = text.Length > 48 ? text.Substring(0, 48) : text;
+                remaining = 200;
+                Visible = false;
+            }
+
+            internal void Advance(bool suppressed)
+            {
+                Visible = !suppressed && remaining > 0;
+                if (Visible) remaining--;
+            }
+        }
+
+        private AbilityImprovedNotification gameRuntimeAbilityNotification;
         // The only gameplay hint emitted by the opening spell activation path.
         // engine_support.cpp str_E2A74[41]: text 329, duration 50, age 800,
         // base priority 2. sub_88B60 raises priority to 6; it does not create a
@@ -84,6 +124,7 @@ namespace MagicCarpet.Native
             // This approved output is the source language record table shared
             // by every opening mission, not an encoded LANGUAGE_L1.TXT file.
             var records = languageCache.ReadOutput("font/language-l1.records-nul.bin");
+            gameRuntimeAbilityNotification = new AbilityImprovedNotification(records);
             var record = 0;
             var start = 0;
             gameRuntimeManaHintText = null;
@@ -146,8 +187,17 @@ namespace MagicCarpet.Native
                 gameRuntimeManaHintText, gameRuntimeManaHintStyle);
         }
 
+        private void DrawGameRuntimeAbilityNotification()
+        {
+            if (gameRuntimeAbilityNotification?.Visible != true) return;
+            var scale = Mathf.Max(1f, Screen.width / 640f);
+            GUI.Label(new Rect(132 * scale, 50 * scale, 500 * scale, 30 * scale),
+                gameRuntimeAbilityNotification.Text, hudStyle);
+        }
+
         private void ResetGameRuntimeHelpHint()
         {
+            gameRuntimeAbilityNotification = null;
             gameRuntimeManaHint = null;
             gameRuntimeManaHintText = null;
             gameRuntimeManaHintStyle = null;

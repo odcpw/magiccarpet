@@ -162,6 +162,8 @@ namespace MagicCarpet.Native
             public Motion player_motion;
             public PlayerVitals player_vitals;
             public SpellObservation[] player_spells;
+            public ushort player_immobilized_ticks;
+            public short source_camera_fov;
             public ObjectiveProgress objective_progress;
             public byte objective_textbox_ticks;
             public bool exit_sequence_active;
@@ -320,6 +322,8 @@ namespace MagicCarpet.Native
             public bool cast_selected;
             public bool recenter;
             public bool full_stop;
+            public bool recover_player;
+            public uint elapsed_centiseconds;
             public int look_yaw;
             public int look_pitch;
         }
@@ -521,7 +525,9 @@ namespace MagicCarpet.Native
             uint maximumCommandJsonBytes,
             string selectSpell = null,
             bool recenter = false,
-            bool fullStop = false)
+            bool fullStop = false,
+            bool recoverPlayer = false,
+            uint elapsedCentiseconds = 0)
         {
             ValidateIdentityForHandle(handle, identity);
             var bits = unchecked((byte)flags);
@@ -545,6 +551,8 @@ namespace MagicCarpet.Native
             command.cast_selected = (bits & 0x40) != 0;
             command.recenter = recenter;
             command.full_stop = fullStop;
+            command.recover_player = recoverPlayer;
+            command.elapsed_centiseconds = elapsedCentiseconds;
             command.look_yaw = unchecked((short)lookYaw);
             command.look_pitch = unchecked((short)lookPitch);
             var bytes = Encoding.UTF8.GetBytes(JsonUtility.ToJson(command));

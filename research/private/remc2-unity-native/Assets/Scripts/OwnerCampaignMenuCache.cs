@@ -74,6 +74,7 @@ namespace MagicCarpet.Native
         private readonly Dictionary<int, Texture2D> startupBitmaps = new();
         private readonly Dictionary<int, Texture2D> portalFrames = new();
         private byte[] portalSound;
+        private string[] languageRecords;
         internal Texture2D World { get; private set; }
         internal Texture2D StartupBackground { get; private set; }
         internal StartupBinding Startup { get; private set; }
@@ -230,6 +231,10 @@ namespace MagicCarpet.Native
             throw new InvalidDataException("unbound source portal sprite " + selector);
         internal byte[] ReadPortalOpeningSound() => portalSound ??
             throw new InvalidDataException("unbound source portal opening sound");
+        internal string LanguageText(int selector) => languageRecords != null &&
+            selector >= 0 && selector < languageRecords.Length ? languageRecords[selector] :
+            throw new InvalidDataException("unbound source menu language record " + selector);
+        internal bool HasLanguage => languageRecords != null;
 
         private static string Digest(byte[] bytes)
         {
@@ -252,7 +257,7 @@ namespace MagicCarpet.Native
             return File.ReadAllBytes(path);
         }
 
-        private static void BindLanguage(string root, Manifest menu)
+        private void BindLanguage(string root, Manifest menu)
         {
             var binding = menu.language_cache;
             if (binding == null || binding.path != "language" || binding.binding_sha256?.Length != 64)
@@ -297,6 +302,8 @@ namespace MagicCarpet.Native
                 cursor += bytes.Length + 1;
             }
             if (cursor != text.Length) throw new InvalidDataException("campaign language contains unbound bytes");
+            languageRecords = locale.records.Select(record =>
+                Encoding.GetEncoding(28591).GetString(text, record.offset, record.bytes)).ToArray();
             for (var index = 0; index < menu.missions.Length; index++)
             {
                 var mission = menu.missions[index];

@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
 using System.Linq;
@@ -344,6 +345,20 @@ namespace MagicCarpet.Native
         }
 
         [Serializable]
+        internal sealed class CompletionStatistics
+        {
+            public int spells_found_percent, hit_accuracy_percent, creatures_killed_percent, mana_collected_percent;
+            public uint time_taken_seconds;
+        }
+
+        [Serializable]
+        internal sealed class CompletedLevelStatistics
+        {
+            public string level_id;
+            public CompletionStatistics statistics;
+        }
+
+        [Serializable]
         internal sealed class CampaignMenuSnapshot
         {
             public string phase;
@@ -353,6 +368,8 @@ namespace MagicCarpet.Native
             public string selected_level_id;
             public string briefing_level_id;
             public CampaignSpeechSegment briefing_speech;
+            public CompletionStatistics completion_statistics;
+            public CompletedLevelStatistics[] level_statistics;
         }
 
         [Serializable]
@@ -496,15 +513,16 @@ namespace MagicCarpet.Native
 
         internal byte[] SaveReplay()
         {
-            RequireSessionMode(allowPaused: true, "save replay");
+            var campaign = Current?.mode == CampaignMode;
+            if (!campaign) RequireSessionMode(allowPaused: true, "save replay");
             var before = Current;
             var bytes = ReadBytes(
                 (IntPtr buffer, uint capacity, out uint length) =>
                     NativeSim.mc_game_runtime_save_replay_json_v1(
                         RequireHandle(),
                         ParseCounter(before.generation, "generation"),
-                        ParseCounter(before.session.generation, "session_generation"),
-                        ParseCounter(before.session.tick, "tick"),
+                        campaign ? 0 : ParseCounter(before.session.generation, "session_generation"),
+                        campaign ? 0 : ParseCounter(before.session.tick, "tick"),
                         buffer,
                         capacity,
                         out length),
@@ -512,9 +530,11 @@ namespace MagicCarpet.Native
                 "save game replay");
             var after = IdentitySnapshot();
             if (after.mode != before.mode || after.generation != before.generation ||
-                after.session.generation != before.session.generation ||
-                after.session.tick != before.session.tick ||
-                !PreservesSessionBinding(before.session, after.session) ||
+                (campaign ? HasSessionIdentityData(after.session) ||
+                    JsonUtility.ToJson(after.campaign_menu) != JsonUtility.ToJson(before.campaign_menu) :
+                    after.session.generation != before.session.generation ||
+                    after.session.tick != before.session.tick ||
+                    !PreservesSessionBinding(before.session, after.session)) ||
                 !SameRuntimeFlow(before.active_runtime_flow, after.active_runtime_flow))
             {
                 throw new InvalidOperationException("saving replay mutated the game runtime");
@@ -550,16 +570,17 @@ namespace MagicCarpet.Native
                     checked((uint)saveJson.Length)),
                 "load game replay");
             var identity = IdentitySnapshot();
-            if ((identity.mode != PlayingMode && identity.mode != PausedMode) ||
+            var loadedCampaign = identity.mode == CampaignMode;
+            if ((!loadedCampaign && identity.mode != PlayingMode && identity.mode != PausedMode) ||
                 ParseCounter(identity.generation, "generation") !=
                     checked(beforeGeneration + 1) ||
                 HasDefinitionIdentityData(identity.pending_definition) ||
-                !HasSessionIdentity(identity) ||
-                ParseCounter(identity.session.session_id, "session_id") != Handle ||
+                (loadedCampaign ? HasSessionIdentityData(identity.session) || identity.campaign_menu == null :
+                    !HasSessionIdentity(identity) || ParseCounter(identity.session.session_id, "session_id") != Handle) ||
                 !HasRuntimeFlowData(identity.active_runtime_flow))
             {
                 throw new InvalidOperationException(
-                    "replay load did not enter a bound Playing or Paused session");
+                    "replay load did not enter a bound gameplay session or retained campaign map");
             }
             return identity;
         }
@@ -717,7 +738,7 @@ namespace MagicCarpet.Native
             return receipt;
         }
 
-        internal EngineSessionTransport.CampaignSnapshotObservation CampaignPausedFrame()
+        internal EngineSessionTransport.CampaignSnapshotObservation CampaignPausedFrame(uint elapsedCentiseconds = 0)
         {
             RequireSessionMode(allowPaused: true, "campaign paused frame");
             if (Current.mode != PausedMode)
@@ -727,11 +748,11 @@ namespace MagicCarpet.Native
             }
             var before = Current;
             Check(
-                NativeSim.mc_game_runtime_paused_frame_v1(
+                NativeSim.mc_game_runtime_paused_frame_timed_v1(
                     RequireHandle(),
                     ParseCounter(before.generation, "generation"),
                     ParseCounter(before.session.generation, "session_generation"),
-                    ParseCounter(before.session.tick, "tick")),
+                    ParseCounter(before.session.tick, "tick"), elapsedCentiseconds),
                 "service game runtime paused frame");
             var identity = IdentitySnapshot();
             if (identity.mode != PausedMode ||
@@ -793,7 +814,9 @@ namespace MagicCarpet.Native
             ushort lookPitch,
             string selectSpell = null,
             bool recenter = false,
-            bool fullStop = false)
+            bool fullStop = false,
+            bool recoverPlayer = false,
+            uint elapsedCentiseconds = 0)
         {
             RequireSessionMode(allowPaused: false, "campaign step");
             var before = Current;
@@ -810,7 +833,7 @@ namespace MagicCarpet.Native
                 lookYaw,
                 lookPitch,
                 NegotiatedSessionContract.limits.maximum_command_json_bytes,
-                selectSpell, recenter, fullStop);
+                selectSpell, recenter, fullStop, recoverPlayer, elapsedCentiseconds);
             var identity = IdentitySnapshot();
             if (identity.mode != PlayingMode ||
                 ParseCounter(identity.generation, "generation") != beforeRuntimeGeneration ||
@@ -987,6 +1010,15 @@ namespace MagicCarpet.Native
                 "read game runtime contract");
         }
 
+        private static void ValidateCompletionStatistics(CompletionStatistics statistics)
+        {
+            if (statistics == null || statistics.spells_found_percent < 0 || statistics.spells_found_percent > 100 ||
+                statistics.hit_accuracy_percent < 0 || statistics.hit_accuracy_percent > 100 ||
+                statistics.creatures_killed_percent < 0 || statistics.creatures_killed_percent > 100 ||
+                statistics.mana_collected_percent < 0 || statistics.mana_collected_percent > 100)
+                throw new InvalidOperationException("Campaign results are outside source percentage bounds");
+        }
+
         internal static void ValidateIdentity(Identity identity, ulong handle)
         {
             if (identity == null || identity.runtime_contract != RuntimeContract ||
@@ -1036,6 +1068,24 @@ namespace MagicCarpet.Native
                         (menu.phase == "results" && !string.IsNullOrEmpty(menu.selected_level_id)) ||
                         (!string.IsNullOrEmpty(menu.briefing_level_id) && !menu.available_levels.Contains(menu.briefing_level_id)))
                         throw new InvalidOperationException("Campaign menu is not bound to its retained flow and phase");
+                    if (menu.level_statistics != null)
+                    {
+                        var seenStatistics = new HashSet<string>(StringComparer.Ordinal);
+                        foreach (var row in menu.level_statistics)
+                        {
+                            if (row == null || !menu.completed_levels.Contains(row.level_id) ||
+                                !seenStatistics.Add(row.level_id))
+                                throw new InvalidOperationException("Campaign statistics have an unbound or duplicate mission");
+                            ValidateCompletionStatistics(row.statistics);
+                        }
+                    }
+                    if (menu.completion_statistics != null)
+                    {
+                        ValidateCompletionStatistics(menu.completion_statistics);
+                        var completedStatistics = menu.level_statistics?.SingleOrDefault(row => row.level_id == menu.completed_level_id);
+                        if (completedStatistics == null || JsonUtility.ToJson(completedStatistics.statistics) != JsonUtility.ToJson(menu.completion_statistics))
+                            throw new InvalidOperationException("Current results differ from retained campaign statistics");
+                    }
                     break;
                 case TitleMode:
                     if (HasDefinitionIdentityData(identity.pending_definition) ||
