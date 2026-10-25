@@ -544,9 +544,15 @@ pub(super) fn with_campaign_session<T>(
     // state is created.  Mutating campaign exports deliberately continue to
     // reject this handle through `with_campaign_session_mut`.
     let entry = super::game_session_abi::neutral_session_arc(handle)?;
-    let guard = entry
+    let mut guard = entry
         .lock()
         .map_err(|_| AbiError::new(MC_STATUS_LOCK_FAILED, "neutral session lock is poisoned"))?;
+    if let super::game_session_abi::NeutralSession::Runtime(runtime) = &mut *guard {
+        let record = runtime.take_campaign_presentation_record()?;
+        let result = operation(&record);
+        runtime.retain_campaign_presentation_record(record);
+        return result;
+    }
     let (backend, generation) = guard.campaign_backend_and_generation()?;
     let campaign = backend.campaign_presentation_source().clone();
     let record = CampaignSessionRecord {
@@ -1337,7 +1343,7 @@ pub extern "C" fn mc_native_campaign_day_music_state(
     out_state_size: u32,
 ) -> i32 {
     boundary_value(out_state, out_state_size, || {
-        with_campaign_session(handle, |session| {
+        with_campaign_presentation_session_mut(handle, |session, _| {
             with_level2_campaign_day_music(session, generation, expected_tick, |music| {
                 Ok(campaign_day_music_snapshot(
                     generation,
@@ -1365,7 +1371,7 @@ pub extern "C" fn mc_native_campaign_day_music_advance(
                 "campaign Day music callback count exceeds 1024",
             ));
         }
-        with_campaign_session_mut(handle, |session| {
+        with_campaign_presentation_session_mut(handle, |session, _| {
             with_level2_campaign_day_music(session, generation, expected_tick, |_| Ok(()))?;
             let music = session.day_music.as_mut().expect("validated Day music");
             music.advance(callback_count);
@@ -1387,7 +1393,7 @@ pub extern "C" fn mc_native_campaign_day_music_stop(
     out_state_size: u32,
 ) -> i32 {
     boundary_value(out_state, out_state_size, || {
-        with_campaign_session_mut(handle, |session| {
+        with_campaign_presentation_session_mut(handle, |session, _| {
             with_level2_campaign_day_music(session, generation, expected_tick, |_| Ok(()))?;
             let music = session.day_music.as_mut().expect("validated Day music");
             music.stop();
@@ -1409,7 +1415,7 @@ pub extern "C" fn mc_native_campaign_day_music_end(
     out_state_size: u32,
 ) -> i32 {
     boundary_value(out_state, out_state_size, || {
-        with_campaign_session_mut(handle, |session| {
+        with_campaign_presentation_session_mut(handle, |session, _| {
             with_level2_campaign_day_music(session, generation, expected_tick, |_| Ok(()))?;
             let music = session.day_music.as_mut().expect("validated Day music");
             music.end();

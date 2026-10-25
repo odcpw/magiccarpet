@@ -32,6 +32,7 @@ pub(super) const MC_CAMPAIGN_EFFECT_DISPATCH: u32 = 0x100;
 pub(super) const MC_CAMPAIGN_EFFECT_SHARED_SPELL: u32 = 0x101;
 pub(super) const MC_CAMPAIGN_EFFECT_FLIGHT: u32 = 0x102;
 pub(super) const MC_CAMPAIGN_EFFECT_SCENE_CHANGE: u32 = 0x103;
+pub(super) const MC_CAMPAIGN_EFFECT_OBJECTIVE_PRESENTATION: u32 = 0x104;
 
 /// Project one canonical campaign effect into the already-frozen `McEventV2`
 /// transport layout. The broad `kind` selects the effect domain; `code` and
@@ -127,6 +128,9 @@ pub(super) fn campaign_effect_snapshot(
                     row.entity_index = entity_index;
                     row.player_index = player_index;
                     row.value_0 = i32::from(sound_id);
+                    if record.audio.is_some() {
+                        row.asset_ref_index = u32::from(sound_id);
+                    }
                 }
                 FlightEvent::EndLoop {
                     entity_index,
@@ -138,6 +142,9 @@ pub(super) fn campaign_effect_snapshot(
                     row.entity_index = entity_index;
                     row.player_index = player_index;
                     row.value_0 = i32::from(sound_id);
+                    if record.audio.is_some() {
+                        row.asset_ref_index = u32::from(sound_id);
+                    }
                 }
                 FlightEvent::UpdateMusic {
                     mode,
@@ -173,6 +180,16 @@ pub(super) fn campaign_effect_snapshot(
             row.code = 1;
             row.value_0 = i32::from(*scene);
             row.value_1 = i32::try_from(record.turn).unwrap_or(i32::MAX);
+        }
+        CampaignEffect::ObjectivePresentation(actions) => {
+            row.kind = MC_CAMPAIGN_EFFECT_OBJECTIVE_PRESENTATION;
+            row.code = u32::from(actions.palette_flash) | (u32::from(actions.duck_audio) << 1);
+            row.entity_index = u16::from(actions.textbox_ticks.unwrap_or(0));
+            if let Some(speech) = actions.speech {
+                row.code |= u32::from(speech.track) << 8 | u32::from(speech.segment) << 16;
+                row.value_0 = speech.start_ms as i32;
+                row.value_1 = speech.length_ms as i32;
+            }
         }
     }
     row

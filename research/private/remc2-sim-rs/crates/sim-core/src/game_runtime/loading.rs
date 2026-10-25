@@ -13,7 +13,7 @@ pub(super) enum LoadingOrigin {
         definition: Arc<GameDefinition>,
         selected_definition: Option<Arc<GameDefinition>>,
         phase: CampaignMenuPhase,
-        completed_level: SemanticLevelId,
+        completed_level: Option<SemanticLevelId>,
     },
 }
 

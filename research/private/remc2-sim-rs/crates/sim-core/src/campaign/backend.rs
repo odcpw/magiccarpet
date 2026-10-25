@@ -1180,6 +1180,25 @@ impl Mc2RuntimePackageResolver {
         })
     }
 
+    /// PresentLevelDescription's source segment belongs to the selected map
+    /// briefing, not the loading screen or an inferred ordinal in the client.
+    #[must_use]
+    pub fn campaign_briefing_speech(
+        &self,
+        runtime: &crate::game_runtime::GameRuntime<Mc2CampaignBackend>,
+    ) -> Option<super::objective_speech::SpeechSegment> {
+        let identity = runtime.identity();
+        let menu = identity.campaign_menu?;
+        if menu.phase != crate::game_runtime::CampaignMenuPhase::MissionSelect {
+            return None;
+        }
+        let package = self.package(menu.briefing_level_id.as_ref()?)?;
+        super::objective_speech::ordinary_speech_segment(
+            u8::try_from(package.selection.internal_level).ok()?,
+            0,
+        )
+    }
+
     /// Restore the generic Loading origin atomically with resolver carry state.
     pub fn cancel_loading(
         &self,
@@ -1440,6 +1459,7 @@ impl Mc2RuntimePackageResolver {
                     }
                     Ok(())
                 },
+                |candidate, enabled| candidate.backend_mut().set_speech_enabled(enabled),
                 observe,
             )
             .map_err(Mc2CampaignReplaySaveError::Restore)
@@ -1679,6 +1699,31 @@ pub struct Mc2CampaignBackend {
 }
 
 impl Mc2CampaignBackend {
+    pub fn speech_enabled(&self) -> bool {
+        self.campaign.speech_enabled()
+    }
+
+    pub fn set_speech_enabled(&mut self, enabled: bool) {
+        if self.campaign.speech_enabled() != enabled {
+            self.campaign.set_speech_enabled(enabled);
+            self.replay_operations
+                .push(crate::game_runtime::ReplayOperation::SpeechPreference { enabled });
+        }
+    }
+
+    pub fn replay_operation_count(&self) -> usize {
+        self.replay_operations.len()
+    }
+
+    pub fn restore_speech_preference_after_rejection(
+        &mut self,
+        enabled: bool,
+        operation_count: usize,
+    ) {
+        self.campaign.set_speech_enabled(enabled);
+        self.replay_operations.truncate(operation_count);
+    }
+
     /// Borrow the one live campaign authority for compatibility presentation
     /// adapters.  This never exposes mutation or creates another session; the
     /// neutral [`GameSession`] remains the sole lifecycle and step owner.
@@ -2440,6 +2485,7 @@ impl Mc2CampaignBackend {
                 FlightEvent::ShowHelpHint { .. } => ("ui.help_hint_requested", None, None),
             },
             CampaignEffect::SceneChange { .. } => ("session.scene_changed", None, None),
+            CampaignEffect::ObjectivePresentation { .. } => ("ui.objective_presented", None, None),
         };
         Ok(GameEvent {
             sequence: record.sequence.wrapping_add(1),
@@ -15772,6 +15818,10 @@ pub(crate) mod tests {
         for (operation_index, operation) in trace.operations.into_iter().enumerate() {
             let guard = current.identity().guard();
             match operation {
+                ReplayOperation::SpeechPreference { enabled } => {
+                    current.backend_mut().set_speech_enabled(enabled);
+                    continue;
+                }
                 ReplayOperation::Step { command } => {
                     current.step(guard, command).map_err(|error| {
                         Mc2CampaignReplaySaveError::Restore(RestorePlayingError::ReplayStep {

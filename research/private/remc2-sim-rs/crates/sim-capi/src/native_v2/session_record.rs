@@ -4006,76 +4006,10 @@ impl SessionRecord {
     }
 
     pub(crate) fn drain_pending_audio_commands(&mut self) {
-        let unresolved = self
-            .audio_commands
-            .iter()
-            .filter_map(|(sequence, command)| {
-                (command.action == 0).then_some((*sequence, *command))
-            })
-            .collect::<Vec<_>>();
-        let pooled_flush_id = unresolved
-            .iter()
-            .filter(|(_, command)| !matches!(command.sound_id, 1 | 2 | 5 | 31))
-            .map(|(sequence, _)| *sequence)
-            .min()
-            .unwrap_or(0);
-        let mut pending = BTreeMap::<u16, u64>::new();
-        for (sequence, command) in unresolved {
-            if matches!(command.sound_id, 1 | 2 | 5 | 31) {
-                let mut command = command;
-                let (action, voice_index) = self.allocate_audio_voice(command);
-                command.action = if action == MC_AUDIO_ACTION_SUPPRESS_EXISTING {
-                    MC_AUDIO_ACTION_UPDATE_EXISTING
-                } else {
-                    action
-                };
-                command.voice_index = voice_index;
-                command.pooled_flush_rank = 0;
-                self.audio_commands.insert(sequence, command);
-                continue;
-            }
-            if let Some(current_sequence) = pending.get(&command.sound_id).copied() {
-                let current = self.audio_commands[&current_sequence];
-                if positional_sound_should_replace(
-                    i32::from(command.volume_q15),
-                    i32::from(current.volume_q15),
-                ) {
-                    self.audio_commands
-                        .get_mut(&current_sequence)
-                        .expect("pending command remains present")
-                        .action = MC_AUDIO_ACTION_SUPPRESS_PENDING_REPLACED;
-                    pending.insert(command.sound_id, sequence);
-                } else {
-                    self.audio_commands
-                        .get_mut(&sequence)
-                        .expect("new command remains present")
-                        .action = MC_AUDIO_ACTION_SUPPRESS_PENDING_REPLACED;
-                }
-            } else {
-                pending.insert(command.sound_id, sequence);
-            }
-        }
-        let mut pooled_flush_rank = 1_u8;
-        for sequence in pending.into_values() {
-            let mut command = self.audio_commands[&sequence];
-            let (action, voice_index) = self.allocate_audio_voice(command);
-            command.action = action;
-            command.voice_index = voice_index;
-            if matches!(
-                command.action,
-                MC_AUDIO_ACTION_START | MC_AUDIO_ACTION_RESTART | MC_AUDIO_ACTION_UPDATE_EXISTING
-            ) {
-                command.pooled_flush_rank = pooled_flush_rank;
-                command.reserved[0] = pooled_flush_id as u32;
-                command.reserved[1] = (pooled_flush_id >> 32) as u32;
-                pooled_flush_rank = pooled_flush_rank
-                    .checked_add(1)
-                    .expect("ordinary sound pool has at most 70 winners");
-            } else {
-                command.pooled_flush_rank = 0;
-            }
-            self.audio_commands.insert(sequence, command);
-        }
+        super::audio_voice_pool::drain_pending_audio_commands(
+            &mut self.audio_commands,
+            &mut self.audio_voices,
+        );
     }
 
     pub(crate) fn insert_prepared_audio_command(
@@ -4111,50 +4045,7 @@ impl SessionRecord {
     }
 
     pub(crate) fn allocate_audio_voice(&mut self, command: McAudioCommandV2) -> (u8, u16) {
-        let matching = self.audio_voices.iter().position(|voice| {
-            voice.is_some_and(|voice| {
-                voice.sound_id == command.sound_id && voice.sound_flags == command.sound_flags
-            })
-        });
-        // `play_type` is the queued `EntitySounds.playType_0` value for
-        // PrepareEventSound events (1 = restart-or-start, 3 = if-not-playing).
-        // The four direct ambience loops retain the lower PlaySample enum
-        // value 2 for if-not-playing.
-        let is_direct_ambience_if_not_playing = matches!(command.sound_id, 1 | 2 | 5 | 31)
-            && command.play_type == POSITIONAL_SOUND_PLAY_IF_NOT_PLAYING;
-        if (command.play_type == 3 || is_direct_ambience_if_not_playing)
-            && let Some(index) = matching
-        {
-            return (
-                MC_AUDIO_ACTION_SUPPRESS_EXISTING,
-                u16::try_from(index).expect("ten voices fit u16"),
-            );
-        }
-        if command.play_type == 1
-            && let Some(index) = matching
-        {
-            self.audio_voices[index] = Some(AudioVoice {
-                sound_id: command.sound_id,
-                sound_flags: command.sound_flags,
-                event_sequence: command.event_sequence,
-            });
-            return (
-                MC_AUDIO_ACTION_RESTART,
-                u16::try_from(index).expect("ten voices fit u16"),
-            );
-        }
-        let Some(index) = self.audio_voices.iter().position(Option::is_none) else {
-            return (MC_AUDIO_ACTION_SUPPRESS_NO_VOICE, MC_AUDIO_VOICE_NONE);
-        };
-        self.audio_voices[index] = Some(AudioVoice {
-            sound_id: command.sound_id,
-            sound_flags: command.sound_flags,
-            event_sequence: command.event_sequence,
-        });
-        (
-            MC_AUDIO_ACTION_START,
-            u16::try_from(index).expect("ten voices fit u16"),
-        )
+        super::audio_voice_pool::allocate_audio_voice(&mut self.audio_voices, command)
     }
 
     pub(crate) fn encode_flight_event(&mut self, event: FlightEvent, hash: u64) -> McEventV2 {

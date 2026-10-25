@@ -23,6 +23,7 @@ pub enum CampaignEffect {
     SharedSpell(Level2SharedSpellEvent),
     Flight(FlightEvent),
     SceneChange { scene: u8 },
+    ObjectivePresentation(super::objective_speech::ObjectivePresentationActions),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -30,6 +31,9 @@ pub struct EffectRecord {
     pub sequence: u64,
     pub turn: u32,
     pub effect: CampaignEffect,
+    /// PrepareEventSound inputs are resolved at the producer boundary, before
+    /// the source slot can move, be reclaimed, or be reused by another entity.
+    pub audio: Option<crate::PreparedEventSoundCommand>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -125,8 +129,28 @@ impl EffectJournal {
         self.append(turn, CampaignEffect::Flight(event));
     }
 
+    pub(crate) fn append_prepared_flight(
+        &mut self,
+        turn: u32,
+        event: FlightEvent,
+        audio: Option<crate::PreparedEventSoundCommand>,
+    ) {
+        self.append(turn, CampaignEffect::Flight(event));
+        if let Some(record) = self.records.last_mut() {
+            record.audio = audio;
+        }
+    }
+
     pub(crate) fn append_scene_change(&mut self, turn: u32, scene: u8) {
         self.append(turn, CampaignEffect::SceneChange { scene });
+    }
+
+    pub(crate) fn append_objective_presentation(
+        &mut self,
+        turn: u32,
+        actions: super::objective_speech::ObjectivePresentationActions,
+    ) {
+        self.append(turn, CampaignEffect::ObjectivePresentation(actions));
     }
 
     fn append(&mut self, turn: u32, effect: CampaignEffect) {
@@ -135,6 +159,7 @@ impl EffectJournal {
             sequence: self.next_sequence,
             turn,
             effect,
+            audio: None,
         });
         self.next_sequence = self.next_sequence.wrapping_add(1);
         if self.records.len() > MAX_RETAINED_EFFECTS {
@@ -205,6 +230,21 @@ impl EffectJournal {
         for record in &self.records {
             hasher.update(record.sequence.to_le_bytes());
             hasher.update(record.turn.to_le_bytes());
+            if let Some(audio) = record.audio {
+                let command = audio.command;
+                hasher.update([1, audio.play_type, u8::from(command.audible)]);
+                hasher.update(command.relative_x.to_le_bytes());
+                hasher.update(command.relative_y.to_le_bytes());
+                hasher.update(command.relative_z.to_le_bytes());
+                hasher.update(command.distance_xy.to_le_bytes());
+                hasher.update(command.relative_yaw.to_le_bytes());
+                hasher.update(command.volume_q15.to_le_bytes());
+                hasher.update(command.pan_q16.to_le_bytes());
+                hasher.update(command.rate_delta_percent.to_le_bytes());
+                hasher.update(command.sound_flags.to_le_bytes());
+            } else {
+                hasher.update([0]);
+            }
             match &record.effect {
                 CampaignEffect::Dispatch(event) => {
                     hasher.update([1]);
@@ -222,6 +262,22 @@ impl EffectJournal {
                 }
                 CampaignEffect::SceneChange { scene } => {
                     hasher.update([4, *scene]);
+                }
+                CampaignEffect::ObjectivePresentation(actions) => {
+                    hasher.update([
+                        5,
+                        u8::from(actions.palette_flash),
+                        u8::from(actions.duck_audio),
+                    ]);
+                    hasher.update(actions.sound_id.unwrap_or(0).to_le_bytes());
+                    hasher.update([actions.textbox_ticks.unwrap_or(0)]);
+                    if let Some(speech) = actions.speech {
+                        hasher.update([1, speech.track, speech.segment]);
+                        hasher.update(speech.start_ms.to_le_bytes());
+                        hasher.update(speech.length_ms.to_le_bytes());
+                    } else {
+                        hasher.update([0]);
+                    }
                 }
             }
         }

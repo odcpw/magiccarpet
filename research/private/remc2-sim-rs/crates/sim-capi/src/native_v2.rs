@@ -3,7 +3,10 @@
 //! All paths and data are supplied explicitly by the caller. This module does
 //! not use the embedded owner regression bytes retained by the legacy v1 ABI.
 
+mod audio_voice_pool;
 mod campaign_abi;
+mod campaign_audio;
+mod campaign_audio_state;
 mod campaign_facade;
 mod events_audio_abi;
 mod game_runtime_abi;

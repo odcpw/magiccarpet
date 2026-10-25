@@ -18,6 +18,7 @@ pub mod backend;
 pub mod dispatch;
 pub mod journal;
 pub(crate) mod mc2_level_definition;
+pub mod objective_speech;
 pub mod objectives;
 pub mod schedule;
 #[doc(hidden)]
@@ -61,6 +62,7 @@ pub struct CampaignSession {
     definition: Arc<CampaignDefinition>,
     inspection: Arc<NativeWorldInspection>,
     level2: Level2ResetSession,
+    speech_enabled: bool,
 }
 
 impl CampaignSession {
@@ -152,6 +154,7 @@ impl CampaignSession {
             definition: Arc::new(definition),
             inspection: Arc::new(inspection),
             level2,
+            speech_enabled: true,
         })
     }
 
@@ -165,9 +168,17 @@ impl CampaignSession {
         &self.inspection
     }
 
+    pub(crate) fn speech_enabled(&self) -> bool {
+        self.speech_enabled
+    }
+
+    pub(crate) fn set_speech_enabled(&mut self, enabled: bool) {
+        self.speech_enabled = enabled;
+    }
+
     /// Step the one authoritative Rust state through the source scheduler.
     pub fn step(&mut self, command: PlayerCommand, speed_index: u8) -> Vec<StepEvidence> {
-        self.level2.step_outer_turn(command, speed_index)
+        self.step_with_tuning(command, speed_index, crate::FlightTuning::CLASSIC)
     }
 
     pub(crate) fn step_with_tuning(
@@ -176,14 +187,32 @@ impl CampaignSession {
         speed_index: u8,
         tuning: crate::FlightTuning,
     ) -> Vec<StepEvidence> {
-        self.level2
-            .step_outer_turn_with_tuning(command, speed_index, tuning)
+        let evidence = self
+            .level2
+            .step_outer_turn_with_tuning(command, speed_index, tuning);
+        if self.definition.identity.internal_level < 3
+            && !self
+                .level2
+                .dispatch_events()
+                .iter()
+                .any(|event| matches!(event, Level2DispatchEvent::Error { .. }))
+        {
+            self.level2.service_campaign_objective_presentation(
+                self.definition.identity.internal_level,
+                self.speech_enabled,
+            );
+        }
+        evidence
     }
 
     /// Service exactly one source-authorized paused frame without advancing
     /// the gameplay command path or tick.
     pub(crate) fn paused_frame(&mut self) {
         self.level2.service_paused_outer_frame();
+        self.level2.service_campaign_objective_presentation(
+            self.definition.identity.internal_level,
+            self.speech_enabled,
+        );
     }
 
     pub fn reset(&mut self) {
@@ -685,6 +714,55 @@ mod tests {
             },
             PathBuf::from,
         )
+    }
+
+    #[test]
+    fn opening_objective_speech_is_emitted_by_real_outer_and_paused_frames() {
+        use crate::campaign::{journal::CampaignEffect, objective_speech::ordinary_speech_segment};
+        for (root, selection) in [
+            (
+                level_one_descriptor_fixture_path(),
+                CampaignSelection::LEVEL1,
+            ),
+            (descriptor_fixture_path(), CampaignSelection::LEVEL2),
+            (
+                level_three_descriptor_fixture_path(),
+                CampaignSelection::LEVEL3,
+            ),
+        ] {
+            let mut session = CampaignSession::open(root, selection).unwrap();
+            let local = usize::from(session.level2.runtime().local_player_slot);
+            let owner = usize::from(session.level2.players()[local].player_color_index());
+            let objective = session.level2.runtime().objectives[owner].text_selector;
+            let expected =
+                ordinary_speech_segment(selection.internal_level as u8, objective + 1).unwrap();
+            for _ in 0..10 {
+                session.step(PlayerCommand::default(), 0);
+            }
+            let speech: Vec<_> = session
+                .level2
+                .effect_journal()
+                .records()
+                .iter()
+                .filter_map(|record| match record.effect {
+                    CampaignEffect::ObjectivePresentation(actions) => actions.speech,
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(
+                speech,
+                [expected],
+                "ordinary opening emits exactly its source objective segment"
+            );
+            let tick = session.level2.state.tick;
+            let phase = session.level2.runtime().objective_presentation_phase;
+            session.paused_frame();
+            assert_eq!(session.level2.state.tick, tick);
+            assert_eq!(
+                session.level2.runtime().objective_presentation_phase,
+                phase.wrapping_add(1)
+            );
+        }
     }
 
     #[test]

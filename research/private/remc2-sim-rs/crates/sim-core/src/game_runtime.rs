@@ -28,7 +28,7 @@ use loading::LoadingOrigin;
 // sub_46830_main_loop -> NewGameDialog_77350 return path. Completion releases
 // gameplay into Results; map selection is a later guarded operation. Existing
 // gameplay/asset goldens and the immutable definition contract stay intact.
-pub const GAME_RUNTIME_CONTRACT: &str = "carpet-flight-game-runtime/v11";
+pub const GAME_RUNTIME_CONTRACT: &str = "carpet-flight-game-runtime/v12";
 pub const COMPLETION_TRANSITION_RECEIPT: &str = "carpet-flight-completion-transition-receipt/v2";
 
 fn serialize_u64_decimal<S>(value: &u64, serializer: S) -> Result<S::Ok, S::Error>
@@ -92,6 +92,7 @@ impl RuntimePresentationCue {
 pub(crate) enum ReplayOperation<C> {
     Step { command: C },
     PausedFrame,
+    SpeechPreference { enabled: bool },
 }
 
 impl RuntimeMode {
@@ -396,7 +397,7 @@ enum RuntimeState<B> {
         selected_definition: Option<Arc<GameDefinition>>,
         session_generation: NonZeroU64,
         phase: CampaignMenuPhase,
-        completed_level: SemanticLevelId,
+        completed_level: Option<SemanticLevelId>,
     },
     Playing {
         session: GameSession<B>,
@@ -477,7 +478,7 @@ impl<B: GameSessionBackend> GameRuntime<B> {
                         definition,
                         selected_definition.as_deref(),
                         *phase,
-                        completed_level,
+                        completed_level.as_ref(),
                     ),
                     None,
                     definition.runtime_flow().cloned(),
@@ -605,6 +606,37 @@ impl<B: GameSessionBackend> GameRuntime<B> {
         Ok(self.identity())
     }
 
+    /// The normal frontend visits NewGameDraw's mission-selection boundary
+    /// before starting the first level, so its authored briefing can play.
+    pub fn show_new_game_map(
+        &mut self,
+        guard: RuntimeGuard,
+    ) -> Result<RuntimeIdentity, RuntimeTransitionError> {
+        self.validate_guard(guard)
+            .map_err(Box::new)
+            .map_err(RuntimeTransitionError::Guard)?;
+        let RuntimeState::Loading {
+            definition,
+            session_generation,
+            origin: LoadingOrigin::Title { .. },
+        } = &self.state
+        else {
+            return Err(RuntimeTransitionError::InvalidRuntimeFlow {
+                message: "new-game map requires the pending Title entry".to_owned(),
+            });
+        };
+        let next_generation = self.next_generation()?;
+        self.state = RuntimeState::Campaign {
+            definition: Arc::clone(definition),
+            selected_definition: Some(Arc::clone(definition)),
+            session_generation: *session_generation,
+            phase: CampaignMenuPhase::MissionSelect,
+            completed_level: None,
+        };
+        self.generation = next_generation;
+        Ok(self.identity())
+    }
+
     /// Open the pending definition through a concrete gameplay adapter.
     ///
     /// # Errors
@@ -697,7 +729,7 @@ impl<B: GameSessionBackend> GameRuntime<B> {
     /// and the caller's exact receipt verifier all succeed before the runtime
     /// publishes the candidate. Observations borrow the private candidate;
     /// callers must discard them when final receipt verification fails.
-    pub(crate) fn restore_playing_resolved<A, F, P, V, I, O>(
+    pub(crate) fn restore_playing_resolved<A, F, P, V, I, O, S>(
         &mut self,
         guard: RuntimeGuard,
         definition: Arc<GameDefinition>,
@@ -709,6 +741,7 @@ impl<B: GameSessionBackend> GameRuntime<B> {
         resolve_input: F,
         prepare: P,
         verify: V,
+        mut set_speech: S,
         mut observe: O,
     ) -> Result<RuntimeIdentity, RestorePlayingError<A::Error>>
     where
@@ -718,6 +751,7 @@ impl<B: GameSessionBackend> GameRuntime<B> {
         V: FnOnce(&GameSession<B>) -> Result<(), RuntimeTransitionError>,
         I: IntoIterator<Item = ReplayOperation<B::Command>>,
         O: FnMut(&GameSession<B>),
+        S: FnMut(&mut GameSession<B>, bool),
     {
         self.validate_guard(guard)
             .map_err(Box::new)
@@ -769,6 +803,10 @@ impl<B: GameSessionBackend> GameRuntime<B> {
         for (operation_index, operation) in operations.into_iter().enumerate() {
             let guard = candidate.identity().guard();
             match operation {
+                ReplayOperation::SpeechPreference { enabled } => {
+                    set_speech(&mut candidate, enabled);
+                    continue;
+                }
                 ReplayOperation::Step { command } => {
                     candidate.step(guard, command).map_err(|error| {
                         RestorePlayingError::ReplayStep {
@@ -983,7 +1021,7 @@ impl<B: GameSessionBackend> GameRuntime<B> {
             selected_definition: next_definition,
             session_generation: next_session_generation,
             phase: CampaignMenuPhase::Results,
-            completed_level: completed_level_id.clone(),
+            completed_level: Some(completed_level_id.clone()),
         };
         self.generation = next_runtime_generation;
         let after = self.identity();
@@ -1279,6 +1317,63 @@ fn completion_receipt_sha256(
         .iter()
         .map(|byte| format!("{byte:02x}"))
         .collect()
+}
+
+impl GameRuntime<crate::campaign::backend::Mc2CampaignBackend> {
+    /// Apply the current speech option at the same guarded pre-gate boundary
+    /// as a paused frame, without exposing paused gameplay mutation.
+    pub fn paused_campaign_frame(
+        &mut self,
+        guard: RuntimeGuard,
+        session_guard: SessionGuard,
+    ) -> Result<
+        RuntimeIdentity,
+        PausedFrameError<
+            <crate::campaign::backend::Mc2CampaignBackend as GameSessionBackend>::Error,
+        >,
+    > {
+        self.validate_guard(guard)
+            .map_err(Box::new)
+            .map_err(RuntimeTransitionError::Guard)
+            .map_err(PausedFrameError::Transition)?;
+        let actual = self.identity().mode;
+        if actual != RuntimeMode::Paused {
+            return Err(PausedFrameError::Transition(
+                RuntimeTransitionError::InvalidMode {
+                    expected: RuntimeMode::Paused,
+                    actual,
+                },
+            ));
+        }
+        let enabled = self
+            .identity()
+            .player_preferences
+            .preferences
+            .speech_enabled;
+        let RuntimeState::Playing {
+            session,
+            paused: true,
+        } = &mut self.state
+        else {
+            unreachable!("validated paused campaign owns its session")
+        };
+        session
+            .completion_status(session_guard)
+            .map_err(sim_session::GameSessionError::Guard)
+            .map_err(PausedFrameError::Session)?;
+        let previous = (
+            session.backend().speech_enabled(),
+            session.backend().replay_operation_count(),
+        );
+        session.backend_mut().set_speech_enabled(enabled);
+        if let Err(error) = session.paused_frame(session_guard) {
+            session
+                .backend_mut()
+                .restore_speech_preference_after_rejection(previous.0, previous.1);
+            return Err(PausedFrameError::Session(error));
+        }
+        Ok(self.identity())
+    }
 }
 
 #[cfg(test)]

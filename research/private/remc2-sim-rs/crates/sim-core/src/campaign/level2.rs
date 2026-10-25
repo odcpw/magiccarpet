@@ -5131,8 +5131,92 @@ impl Level2ResetSession {
     fn push_flight_effect(&mut self, event: FlightEvent) {
         self.flush_shared_effects();
         let turn = self.session.state.live.core.runtime.global_turn;
-        self.effect_journal_mut().append_flight(turn, event);
+        let audio = self.prepare_campaign_audio(event);
+        self.effect_journal_mut()
+            .append_prepared_flight(turn, event, audio);
         Vec::push(&mut self.session.state.live.shared_spells.events, event);
+    }
+
+    fn prepare_campaign_audio(
+        &self,
+        event: FlightEvent,
+    ) -> Option<crate::PreparedEventSoundCommand> {
+        let (entity_index, sound_id) = match event {
+            FlightEvent::PrepareSound {
+                entity_index,
+                sound_id,
+                ..
+            }
+            | FlightEvent::EndLoop {
+                entity_index,
+                sound_id,
+                ..
+            } => (entity_index, sound_id),
+            _ => return None,
+        };
+        if matches!(sound_id, 1 | 2 | 5 | 31) {
+            return Some(crate::PreparedEventSoundCommand {
+                command: crate::PositionalSoundCommand {
+                    relative_x: 0,
+                    relative_y: 0,
+                    relative_z: 0,
+                    distance_xy: 0,
+                    relative_yaw: 0,
+                    volume_q15: 0,
+                    pan_q16: 0x7fff,
+                    rate_delta_percent: 0,
+                    sound_flags: 0,
+                    audible: true,
+                },
+                play_type: crate::POSITIONAL_SOUND_PLAY_IF_NOT_PLAYING,
+            });
+        }
+        if entity_index == 0 {
+            // PrepareEventSound's null source row bypasses position and uses
+            // full centred volume. Objective announcements use this branch.
+            let mut prepared = crate::prepare_event_sound_command(
+                self.state.position,
+                self.state.yaw,
+                self.state.position,
+                sound_id,
+                self.session.state.live.economy.global_rng,
+                0,
+                0,
+            )?;
+            prepared.command.volume_q15 = 0x7fff;
+            prepared.command.pan_q16 = 0x7fff;
+            prepared.command.relative_x = 0;
+            prepared.command.relative_y = 0;
+            prepared.command.relative_z = 0;
+            prepared.command.rate_delta_percent = 0;
+            prepared.command.sound_flags = 0;
+            prepared.command.audible = true;
+            return Some(prepared);
+        }
+        let source = self
+            .session
+            .state
+            .live
+            .economy
+            .entities
+            .get(usize::from(entity_index))?;
+        if source.control_flags & 0x80 != 0 {
+            return None;
+        }
+        let source_position = if entity_index == self.state.entity_index {
+            self.state.position
+        } else {
+            source.position
+        };
+        crate::prepare_event_sound_command(
+            self.state.position,
+            self.state.yaw,
+            source_position,
+            sound_id,
+            self.session.state.live.economy.global_rng,
+            source.source_id,
+            source.action,
+        )
     }
 
     fn push_scene_change_effect(&mut self, scene: u8) {
@@ -5147,9 +5231,10 @@ impl Level2ResetSession {
         }
         self.flush_shared_effects();
         let turn = self.session.state.live.core.runtime.global_turn;
-        let journal = self.effect_journal_mut();
         for event in events {
-            journal.append_flight(turn, event);
+            let audio = self.prepare_campaign_audio(event);
+            self.effect_journal_mut()
+                .append_prepared_flight(turn, event, audio);
         }
     }
 
@@ -5164,8 +5249,14 @@ impl Level2ResetSession {
             return;
         }
         let turn = self.session.state.live.core.runtime.global_turn;
-        let journal = self.effect_journal_mut();
         for effect in effects {
+            let audio = match &effect {
+                crate::campaign::journal::CampaignEffect::Flight(event) => {
+                    self.prepare_campaign_audio(*event)
+                }
+                _ => None,
+            };
+            let journal = self.effect_journal_mut();
             match effect {
                 crate::campaign::journal::CampaignEffect::Dispatch(event) => {
                     journal.append_dispatch(turn, event);
@@ -5174,10 +5265,13 @@ impl Level2ResetSession {
                     journal.append_shared_spell(turn, event);
                 }
                 crate::campaign::journal::CampaignEffect::Flight(event) => {
-                    journal.append_flight(turn, event);
+                    journal.append_prepared_flight(turn, event, audio);
                 }
                 crate::campaign::journal::CampaignEffect::SceneChange { scene } => {
                     journal.append_scene_change(turn, scene);
+                }
+                crate::campaign::journal::CampaignEffect::ObjectivePresentation(actions) => {
+                    journal.append_objective_presentation(turn, actions);
                 }
             }
         }
@@ -21924,13 +22018,62 @@ impl Level2ResetSession {
             .source_model45_building_selectors
             .clone();
         self.advance_level2_objectives(&class5_model_present, &model45_building_selectors);
-        self.session
+        self.flush_shared_effects();
+    }
+
+    /// The descriptor owns the source level identity. Service PresentObjective
+    /// once after the outer objective pass, including paused frames.
+    pub(crate) fn service_campaign_objective_presentation(
+        &mut self,
+        source_level: u16,
+        speech_enabled: bool,
+    ) {
+        use crate::campaign::objective_speech::{
+            ObjectivePresentationActions, ObjectivePresentationInput,
+        };
+        let runtime = &self.session.state.live.core.runtime;
+        let player_slot = usize::from(runtime.local_player_slot);
+        let Some(player) = self.session.state.live.core.players.get(player_slot) else {
+            return;
+        };
+        let Some(objective) = runtime
+            .objectives
+            .get(usize::from(player.player_color_index()))
+            .copied()
+        else {
+            return;
+        };
+        let input = ObjectivePresentationInput {
+            palette_mod: runtime.objective_presentation_palette_mod,
+            objective_index: objective.text_selector,
+            level_ended: objective.is_level_end != 0,
+            speech_enabled: speech_enabled && source_level < 3,
+            show_foreign_text: false,
+            source_level: u8::try_from(source_level).unwrap_or(u8::MAX),
+        };
+        let actions = self
+            .session
             .state
             .live
             .core
             .runtime
-            .service_paused_objective_presentation();
+            .service_campaign_objective_presentation(input);
+        if actions == ObjectivePresentationActions::default() {
+            return;
+        }
+        if let Some(sound_id) = actions.sound_id {
+            self.push_flight_effect(FlightEvent::PrepareSound {
+                #[cfg(test)]
+                audio_site: crate::MissionAudioSite::ObjectiveAnnouncement,
+                entity_index: 0,
+                player_index: -1,
+                sound_id,
+            });
+        }
         self.flush_shared_effects();
+        let turn = self.session.state.live.core.runtime.global_turn;
+        self.effect_journal_mut()
+            .append_objective_presentation(turn, actions);
     }
 
     pub(crate) fn step_outer_turn_with_tuning(
@@ -24733,8 +24876,24 @@ mod tests {
         // package-bound chain member. This plants both the imported-list and
         // successor-tail negatives without claiming an organic vault edit.
         let (imported_target_slot, imported_original_selector) = ordinary_house_rows[0];
-        session.session.state.live.economy.entities[usize::from(imported_target_slot)]
-            .set_source_byte_46(54);
+        session
+            .session
+            .state
+            .live
+            .ordinary
+            .house_mut(imported_target_slot)
+            .expect("real imported house")
+            .building_index = 54;
+        assert!(
+            session
+                .session
+                .state
+                .live
+                .ordinary
+                .current_building_rows(&session.session.state.live.economy)
+                .iter()
+                .any(|&(slot, selector, _)| slot == imported_target_slot && selector == 54)
+        );
         let hash_at_frame_17 = session.campaign_state_hash();
         session.session.state.live.source_frame_timing_index = 31;
         assert_ne!(session.campaign_state_hash(), hash_at_frame_17);
@@ -24745,8 +24904,14 @@ mod tests {
             1,
             "the imported selector-54 chain tail must block completion"
         );
-        session.session.state.live.economy.entities[usize::from(imported_target_slot)]
-            .set_source_byte_46(imported_original_selector);
+        session
+            .session
+            .state
+            .live
+            .ordinary
+            .house_mut(imported_target_slot)
+            .expect("real imported house")
+            .building_index = imported_original_selector;
         assert!(
             session
                 .campaign_building_objective_targets(FINAL_STAGE)

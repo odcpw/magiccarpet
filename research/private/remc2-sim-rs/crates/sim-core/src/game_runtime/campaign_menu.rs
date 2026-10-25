@@ -25,7 +25,8 @@ pub enum CampaignMenuCommand {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct CampaignMenuSnapshot {
     pub phase: CampaignMenuPhase,
-    pub completed_level_id: SemanticLevelId,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub completed_level_id: Option<SemanticLevelId>,
     pub completed_levels: Vec<SemanticLevelId>,
     pub available_levels: Vec<SemanticLevelId>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -38,30 +39,33 @@ pub(super) fn presentation(
     definition: &GameDefinition,
     selected: Option<&GameDefinition>,
     phase: CampaignMenuPhase,
-    completed: &SemanticLevelId,
+    completed: Option<&SemanticLevelId>,
 ) -> RuntimePresentationCue {
     let flow = definition
         .runtime_flow()
         .expect("campaign retains its validated flow");
     match phase {
-        CampaignMenuPhase::Results => RuntimePresentationCue {
-            cue_id: flow
-                .presentation()
-                .entry(completed)
-                .unwrap()
-                .completion_cue()
-                .clone(),
-            phase: RuntimePresentationPhase::LevelCompletion,
-            level_id: Some(completed.clone()),
-            completion_destination: Some(
-                flow.entries()
-                    .iter()
-                    .find(|entry| entry.level_id() == completed)
+        CampaignMenuPhase::Results => {
+            let completed = completed.expect("Results is entered only with an earned completion");
+            RuntimePresentationCue {
+                cue_id: flow
+                    .presentation()
+                    .entry(completed)
                     .unwrap()
-                    .completion_destination()
+                    .completion_cue()
                     .clone(),
-            ),
-        },
+                phase: RuntimePresentationPhase::LevelCompletion,
+                level_id: Some(completed.clone()),
+                completion_destination: Some(
+                    flow.entries()
+                        .iter()
+                        .find(|entry| entry.level_id() == completed)
+                        .unwrap()
+                        .completion_destination()
+                        .clone(),
+                ),
+            }
+        }
         CampaignMenuPhase::MissionSelect => RuntimePresentationCue {
             cue_id: SemanticPresentationCueId::parse("presentation.campaign.map").unwrap(),
             phase: RuntimePresentationPhase::CampaignMap,
@@ -305,7 +309,7 @@ mod tests {
                 selected_definition: Some(Arc::clone(&definitions[1])),
                 session_generation: NonZeroU64::new(2).unwrap(),
                 phase: CampaignMenuPhase::Results,
-                completed_level: first.clone(),
+                completed_level: Some(first.clone()),
             },
         };
         let results = runtime.identity();
@@ -429,7 +433,7 @@ mod tests {
                 selected_definition: None,
                 session_generation: NonZeroU64::new(4).unwrap(),
                 phase: CampaignMenuPhase::Results,
-                completed_level: third,
+                completed_level: Some(third),
             },
         };
         let guard = terminal.identity().guard();

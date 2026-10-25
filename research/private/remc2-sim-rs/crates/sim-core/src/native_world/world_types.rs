@@ -3698,7 +3698,10 @@ impl RuntimeSnapshot {
     /// Service the source-visible objective presentation cadence that remains
     /// outside the paused `UpdateEntities` gate. This changes presentation
     /// carriers only; it never advances the gameplay turn or player input.
-    pub(super) fn service_paused_objective_presentation(&mut self) {
+    pub(super) fn service_campaign_objective_presentation(
+        &mut self,
+        mut input: crate::campaign::objective_speech::ObjectivePresentationInput,
+    ) -> crate::campaign::objective_speech::ObjectivePresentationActions {
         self.objective_presentation_palette_mod = self
             .objective_presentation_palette_mod
             .saturating_add(1)
@@ -3707,12 +3710,17 @@ impl RuntimeSnapshot {
             self.objective_textbox_ticks -= 1;
             self.bytes[69] = self.objective_textbox_ticks;
         }
-        if self.objective_presentation_phase != 0 && self.objective_presentation_palette_mod >= 3 {
-            self.objective_presentation_phase = 0;
-            self.objective_textbox_ticks = 200;
-            self.bytes[67] = 0;
-            self.bytes[69] = 200;
+        input.palette_mod = self.objective_presentation_palette_mod;
+        let actions = crate::campaign::objective_speech::service_objective_presentation(
+            &mut self.objective_presentation_phase,
+            input,
+        );
+        self.bytes[67] = self.objective_presentation_phase;
+        if let Some(ticks) = actions.textbox_ticks {
+            self.objective_textbox_ticks = ticks;
+            self.bytes[69] = ticks;
         }
+        actions
     }
 
     pub(super) fn request_objective_presentation(&mut self) {
