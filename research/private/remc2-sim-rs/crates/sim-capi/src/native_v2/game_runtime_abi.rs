@@ -1564,7 +1564,7 @@ mod tests {
         assert_eq!(
             contract["replay_save"],
             serde_json::json!({
-                "save_contract": "carpet-flight-mc2-campaign-replay-save/v5",
+                "save_contract": "carpet-flight-mc2-campaign-replay-save/v6",
                 "save_transport": "mc_game_runtime_save_replay_json_v1",
                 "load_transport": "mc_game_runtime_load_replay_json_v1",
                 "load_package_authority": "complete_unordered_resource_set",
@@ -2017,8 +2017,9 @@ mod tests {
         let save_json: Value = serde_json::from_slice(&save).unwrap();
         assert_eq!(
             save_json["save_contract"],
-            "carpet-flight-mc2-campaign-replay-save/v5"
+            "carpet-flight-mc2-campaign-replay-save/v6"
         );
+        assert_eq!(save_json["completed_levels"], serde_json::json!([]));
         let operations = save_json["operations"].as_array().unwrap();
         assert_eq!(operations.len(), 5);
         assert_eq!(operations[3]["operation"], "paused_frame");
@@ -2028,6 +2029,32 @@ mod tests {
         let mut restored = 0_u64;
         assert_eq!(mc_game_runtime_create_v1(&raw mut restored), MC_STATUS_OK);
         let restored_title = identity(restored);
+        // The native save receipt covers earned campaign progress. Neither
+        // a fabricated unlock nor an omitted v6 frontier may publish a
+        // candidate session, consume the resolver, or alter the title guard.
+        let mut fabricated_progress = save_json.clone();
+        fabricated_progress["completed_levels"] =
+            serde_json::json!([source_identity["active_runtime_flow"]["bound_level_id"]]);
+        let mut missing_progress = save_json.clone();
+        missing_progress
+            .as_object_mut()
+            .unwrap()
+            .remove("completed_levels");
+        for invalid in [fabricated_progress, missing_progress] {
+            let bytes = serde_json::to_vec(&invalid).unwrap();
+            assert_eq!(
+                mc_game_runtime_load_replay_json_v1(
+                    restored,
+                    1,
+                    package_set.as_ptr(),
+                    package_set.len() as u32,
+                    bytes.as_ptr(),
+                    bytes.len() as u32,
+                ),
+                MC_STATUS_VALIDATION_FAILED
+            );
+            assert_eq!(identity(restored), restored_title);
+        }
         let mut stale_save_json = save_json.clone();
         stale_save_json["save_contract"] =
             Value::String("carpet-flight-mc2-campaign-replay-save/v4".to_owned());
@@ -2086,6 +2113,14 @@ mod tests {
             mc_game_session_snapshot_json_v1(restored, buffer, capacity, length)
         });
         assert_eq!(restored_snapshot["value"], source_snapshot["value"]);
+        let restored_save = read_bytes(|buffer, capacity, length| {
+            mc_game_runtime_save_replay_json_v1(restored, 2, 1, 3, buffer, capacity, length)
+        });
+        let restored_save_json: Value = serde_json::from_slice(&restored_save).unwrap();
+        assert_eq!(
+            restored_save_json["completed_levels"],
+            save_json["completed_levels"]
+        );
         let neutral = br#"{}"#;
         assert_eq!(
             mc_game_session_step_json_v1(restored, 1, 3, neutral.as_ptr(), neutral.len() as u32,),
