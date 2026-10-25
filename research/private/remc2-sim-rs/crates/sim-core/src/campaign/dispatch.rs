@@ -90,6 +90,10 @@ pub enum ExistingHandler {
     CaveFeatures = 31,
     CaveSpell = 32,
     TerrainDisasters = 33,
+    Fields = 34,
+    Creature22 = 35,
+    Creature24 = 36,
+    Mushrooms = 37,
 }
 
 impl ExistingHandler {
@@ -132,6 +136,12 @@ impl ExistingHandler {
             Self::CaveFeatures => "authored cave geometry and ground-feature descendants",
             Self::CaveSpell => "CaveIn projectile and collapse",
             Self::TerrainDisasters => "authored and spell-produced live terrain disasters",
+            Self::Fields => {
+                "authored transport and hostile projectile impacts; action37 explicit state"
+            }
+            Self::Creature22 => "authored model22 creature root and its retained descendants",
+            Self::Creature24 => "authored model24 creature root and its retained descendants",
+            Self::Mushrooms => "authored cave mushroom constructor",
         }
     }
 
@@ -171,6 +181,10 @@ impl ExistingHandler {
             Self::CaveFeatures => "cave-features",
             Self::CaveSpell => "cave-spell",
             Self::TerrainDisasters => "terrain-disasters",
+            Self::Fields => "world-fields",
+            Self::Creature22 => "creature22-family",
+            Self::Creature24 => "creature24-family",
+            Self::Mushrooms => "mushrooms",
         }
     }
 }
@@ -323,6 +337,7 @@ compiled_registry! {
         (Stone, 2, [3]);
         (Dolmen, 2, [6]);
         (BadStone, 2, [9]);
+        (Mushrooms, 2, [18, 19]);
         (PlayerFlight, 3, [0]);
         (NyphurPlayer, 3, [1]);
         (PlayerFlight, 3, [2, 3, 12]);
@@ -341,12 +356,15 @@ compiled_registry! {
         (TraderFamily, 5, [112, 113, 114, 115, 116, 117, 118, 119]);
         (CastleAuxiliary, 5, [120, 121, 122, 123, 124, 125, 127]);
         (FireflyFamily, 5, [153, 154, 155, 156, 157, 159]);
+        (Creature22, 5, [176, 177, 178, 179, 180, 181, 183]);
+        (Creature24, 5, [192, 193, 194, 195, 196, 197, 198, 199]);
         (MultipartFamily, 5, [232]);
         (ProjectileFamily, 9, [0, 1, 10, 13]);
         (Model6ProjectileChild, 9, [15]);
         (ProjectileFamily, 9, [18]);
         (CaveSpell, 9, [31]);
         (TerrainDisasters, 10, [11]);
+        (Fields, 10, [36, 37, 70, 71]);
         (Class10Effects, 10, [0, 1, 2, 3, 4, 5, 6, 7, 12, 13, 14, 16, 17, 18, 19, 22, 41, 42, 43, 44, 45, 48, 51, 52, 53, 58, 59, 64, 65, 76, 77, 80, 83, 86, 98]);
         (SwitchProducers, 11, [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 31]);
         (ObjectiveSwitch, 11, [32]);
@@ -369,6 +387,7 @@ compiled_registry! {
         (Stone, 2, [1]);
         (Dolmen, 2, [2]);
         (BadStone, 2, [3]);
+        (Mushrooms, 2, [6]);
         (BallisticScenery, 2, [8]);
         (PlayerFlight, 3, [0]);
         (NyphurPlayer, 3, [1]);
@@ -385,6 +404,8 @@ compiled_registry! {
         (TraderFamily, 5, [14]);
         (CastleAuxiliary, 5, [15]);
         (FireflyFamily, 5, [19]);
+        (Creature22, 5, [22]);
+        (Creature24, 5, [24]);
         (ProjectileFamily, 9, [0, 1, 10, 13]);
         (Model6ProjectileChild, 9, [14]);
         (ProjectileFamily, 9, [17]);
@@ -394,6 +415,7 @@ compiled_registry! {
         (CaveFeatures, 10, [80, 81, 82, 83, 84, 85, 86]);
         (CaveSpell, 10, [89]);
         (TerrainDisasters, 10, [11]);
+        (Fields, 10, [34, 65, 66]);
         (SwitchProducers, 11, [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 31]);
         (CountdownSwitch, 11, [13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44]);
         (ObjectiveSwitch, 11, [32]);
@@ -633,6 +655,7 @@ mod tests {
     fn cf10_supplemental_handlers() -> BTreeMap<String, &'static str> {
         let mut expected = BTreeMap::new();
         for (class, actions, handler) in [
+            (2_u16, &[18_u16, 19][..], "mushrooms"),
             (3_u16, &[2_u16, 3, 12][..], "player-flight"),
             (3, &[4, 6][..], "castle-root"),
             (5, &[1, 2, 3, 4, 5][..], "dragon-family"),
@@ -663,6 +686,17 @@ mod tests {
             ),
             (9, &[31][..], "cave-spell"),
             (10, &[11][..], "terrain-disasters"),
+            (10, &[36, 37, 70, 71][..], "world-fields"),
+            (
+                5,
+                &[176, 177, 178, 179, 180, 181, 183][..],
+                "creature22-family",
+            ),
+            (
+                5,
+                &[192, 193, 194, 195, 196, 197, 198, 199][..],
+                "creature24-family",
+            ),
         ] {
             for action in actions {
                 for site in ["ApplyEvents", "UpdateEntities"] {
@@ -702,6 +736,7 @@ mod tests {
             }
         }
         for (class, models, handler) in [
+            (2_u16, &[6_u16][..], "mushrooms"),
             (2_u16, &[8_u16][..], "ballistic-scenery"),
             (10, &[3, 4, 7, 16, 18, 87, 88, 90][..], "class10-effects"),
             (10, &[63, 64][..], "terrain-strip-controller"),
@@ -725,6 +760,9 @@ mod tests {
             (9, &[30][..], "cave-spell"),
             (10, &[89][..], "cave-spell"),
             (10, &[11][..], "terrain-disasters"),
+            (10, &[34, 65, 66][..], "world-fields"),
+            (5, &[22][..], "creature22-family"),
+            (5, &[24][..], "creature24-family"),
         ] {
             for model in models {
                 expected.insert(format!("Constructor:ClassModel:{class}:{model}"), handler);

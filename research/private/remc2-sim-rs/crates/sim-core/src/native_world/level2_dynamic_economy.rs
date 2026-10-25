@@ -1,5 +1,237 @@
 use super::*;
 
+impl crate::world::fields::wind::Arena for Level2EconomyState {
+    fn available(&self) -> usize {
+        self.free_slots.len()
+    }
+
+    fn allocate(&mut self) -> Option<(u16, u16)> {
+        let slot = self.allocate_slot()?;
+        Some((slot, self.new_event_rng(slot)))
+    }
+
+    fn release(&mut self, slot: u16, rng: u16) {
+        self.release_slot(slot, Some(rng));
+    }
+
+    fn position(&mut self, slot: u16, position: Position) -> bool {
+        self.map_chains
+            .sync_entity(RenderableMapSeed {
+                entity_index: slot,
+                active: true,
+                x: position.x,
+                y: position.y,
+            })
+            .is_ok()
+    }
+
+    fn rng(&mut self, slot: u16, rng: u16) {
+        self.source_rng.insert(slot, rng);
+    }
+}
+
+impl Level2EconomyState {
+    /// sub_33710's Castle lane always adds the payload, independently of
+    /// sub_11900's Contact replacement policy. The root's existing damage
+    /// callback consumes these same pending words on its source visit.
+    pub(crate) fn apply_wind_castle_contact(
+        &mut self,
+        slot: u16,
+        _parent_slot: u16,
+        owner: u16,
+        payload: u16,
+    ) -> bool {
+        let Some(castle) = self
+            .castle
+            .as_mut()
+            .filter(|s| s.active && s.source_entity_index == slot)
+        else {
+            return false;
+        };
+        castle.source_word_30 = 30;
+        castle.pending_damage = castle.pending_damage.wrapping_add(i32::from(payload));
+        castle.pending_attacker_entity_index = owner;
+        true
+    }
+
+    /// Resolve a current typed actor before consulting the common source row.
+    /// The supplied row owns descriptor/word30 fields which these carriers do
+    /// not duplicate. Family-owned movement, RNG and flags override it here.
+    pub(crate) fn wind_actor(
+        &self,
+        slot: u16,
+        mut base: crate::world::fields::wind::Actor,
+    ) -> Option<crate::world::fields::wind::Actor> {
+        if let Some(actor) = self
+            .bee_creatures
+            .iter()
+            .find(|s| s.active && s.source_entity_index == slot)
+        {
+            base.position = actor.position;
+            base.class = 5;
+            base.model = actor.model;
+            base.yaw = actor.yaw;
+            base.rng = actor.entity_rng;
+            base.flags = actor.control_flags;
+            return Some(base);
+        }
+        if let Some(actor) = self
+            .authored_class5
+            .iter()
+            .find(|s| s.active && s.source_entity_index == slot)
+        {
+            base.position = actor.position;
+            base.class = 5;
+            base.model = actor.model;
+            base.yaw = actor.yaw;
+            base.rng = actor.entity_rng;
+            if let Some(state) = self
+                .authored_class5_archer
+                .iter()
+                .find(|s| s.source_entity_index == slot)
+            {
+                base.flags = state.control_flags;
+            } else if let Some(state) = self
+                .authored_fireflies
+                .iter()
+                .find(|s| s.source_entity_index == slot)
+            {
+                base.flags = state.control_flags;
+            } else if let Some(state) = self
+                .authored_dragons
+                .iter()
+                .find(|s| s.source_entity_index == slot)
+            {
+                base.flags = state.control_flags;
+            }
+            return Some(base);
+        }
+        if let Some(actor) = self
+            .spheres
+            .iter()
+            .find(|s| s.active && s.source_entity_index == slot)
+        {
+            base.position = actor.position;
+            base.class = 10;
+            base.model = 39;
+            base.yaw = actor.yaw;
+            base.rng = actor.entity_rng;
+            base.flags = actor.control_flags;
+            return Some(base);
+        }
+        None
+    }
+
+    /// Commit to the actual dynamic authority. The root publishes the common
+    /// record/map projection in the same source visit after this succeeds.
+    pub(crate) fn apply_wind_motion(
+        &mut self,
+        slot: u16,
+        motion: crate::world::fields::wind::Motion,
+    ) -> bool {
+        if let Some(actor) = self
+            .bee_creatures
+            .iter_mut()
+            .find(|s| s.active && s.source_entity_index == slot)
+        {
+            actor.position = motion.actor.position;
+            actor.yaw = motion.actor.yaw;
+            actor.entity_rng = motion.actor.rng;
+            actor.control_flags = motion.actor.flags;
+            if let Some(speed) = motion.actual_speed {
+                actor.actual_speed = speed;
+            }
+        } else if let Some(actor) = self
+            .authored_class5
+            .iter_mut()
+            .find(|s| s.active && s.source_entity_index == slot)
+        {
+            actor.position = motion.actor.position;
+            actor.yaw = motion.actor.yaw;
+            actor.entity_rng = motion.actor.rng;
+            if let Some(speed) = motion.actual_speed {
+                actor.actual_speed = speed;
+            }
+            if let Some(state) = self
+                .authored_class5_archer
+                .iter_mut()
+                .find(|s| s.source_entity_index == slot)
+            {
+                state.control_flags = motion.actor.flags;
+            } else if let Some(state) = self
+                .authored_fireflies
+                .iter_mut()
+                .find(|s| s.source_entity_index == slot)
+            {
+                state.control_flags = motion.actor.flags;
+            } else if let Some(state) = self
+                .authored_dragons
+                .iter_mut()
+                .find(|s| s.source_entity_index == slot)
+            {
+                state.control_flags = motion.actor.flags;
+            }
+        } else if let Some(actor) = self
+            .spheres
+            .iter_mut()
+            .find(|s| s.active && s.source_entity_index == slot)
+        {
+            actor.position = motion.actor.position;
+            actor.yaw = motion.actor.yaw;
+            actor.entity_rng = motion.actor.rng;
+            actor.control_flags = motion.actor.flags;
+        } else {
+            return false;
+        }
+        self.source_rng.insert(slot, motion.actor.rng);
+        true
+    }
+
+    pub(crate) fn clear_wind_flags(&mut self, slot: u16) -> bool {
+        let clear = crate::world::fields::wind::clear_flags;
+        if let Some(actor) = self
+            .bee_creatures
+            .iter_mut()
+            .find(|s| s.active && s.source_entity_index == slot)
+        {
+            actor.control_flags = clear(actor.control_flags);
+        } else if let Some(actor) = self
+            .spheres
+            .iter_mut()
+            .find(|s| s.active && s.source_entity_index == slot)
+        {
+            actor.control_flags = clear(actor.control_flags);
+        } else if self
+            .authored_class5
+            .iter()
+            .any(|s| s.active && s.source_entity_index == slot)
+        {
+            if let Some(state) = self
+                .authored_class5_archer
+                .iter_mut()
+                .find(|s| s.source_entity_index == slot)
+            {
+                state.control_flags = clear(state.control_flags);
+            } else if let Some(state) = self
+                .authored_fireflies
+                .iter_mut()
+                .find(|s| s.source_entity_index == slot)
+            {
+                state.control_flags = clear(state.control_flags);
+            } else if let Some(state) = self
+                .authored_dragons
+                .iter_mut()
+                .find(|s| s.source_entity_index == slot)
+            {
+                state.control_flags = clear(state.control_flags);
+            }
+        } else {
+            return false;
+        }
+        true
+    }
+}
+
 /// Pinned `MSPRD0-0.TAB` half-dimensions used by model 41/action 43's
 /// `sub_377F0` callback at VGA selector 1.  Model 42/action 44 does not use
 /// this table: its source callback is 37BC0 and consumes DATA_BUILD00.
@@ -1070,7 +1302,14 @@ impl Level2EconomyState {
                 && self.map_chains.is_linked(source.source_entity_index))
             .then_some(Level2FireballCollisionTarget {
                 source_slot: source.source_entity_index,
-                source_id: source.source_entity_index,
+                source_id: if source.model == level2_class5::archer::ARCHER_MODEL {
+                    self.authored_class5_archer
+                        .iter()
+                        .find(|actor| actor.source_entity_index == source.source_entity_index)
+                        .map_or(source.source_entity_index, |actor| actor.entity_id)
+                } else {
+                    source.source_entity_index
+                },
                 position: source.position,
                 half_width: source.shift_rot_x,
                 vertical_offset: if source.model == level2_class5::archer::ARCHER_MODEL {

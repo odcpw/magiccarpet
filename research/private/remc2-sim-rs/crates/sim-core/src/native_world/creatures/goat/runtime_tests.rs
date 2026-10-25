@@ -118,7 +118,7 @@ fn level_twenty_two_follow_route_runs_through_the_live_arena_adapter() {
         control_flags: actor.control_flags,
     }];
     let end = package.member("feature-end.bin").unwrap();
-    let terrain = SessionTerrain::from_planes(
+    let mut terrain = SessionTerrain::from_planes(
         MapType::Day,
         parse_terrain(package.member("terrain.bin").unwrap()).unwrap(),
         u16::from_le_bytes([end[8], end[9]]),
@@ -159,7 +159,7 @@ fn level_twenty_two_follow_route_runs_through_the_live_arena_adapter() {
             family
                 .step_runtime_slot(
                     *slot,
-                    &terrain,
+                    &mut terrain,
                     &targets,
                     &mut arena,
                     &runtime,

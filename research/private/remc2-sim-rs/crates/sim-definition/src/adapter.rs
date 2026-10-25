@@ -335,6 +335,82 @@ pub const fn effect_entity_definition(
 }
 
 #[must_use]
+pub const fn mc2_field_definition(
+    kind: crate::level_definition::FieldKind,
+    destination: TilePosition,
+) -> crate::level_definition::FieldDefinition {
+    use crate::level_definition::{FieldDefinition, FieldKind};
+    match kind {
+        FieldKind::Wind => FieldDefinition::Wind {
+            lifetime: 500,
+            damage: 1000,
+        },
+        FieldKind::Transport => FieldDefinition::Transport {
+            destination,
+            lifetime: 0,
+        },
+        FieldKind::Slowing => FieldDefinition::Slowing {
+            max_stages: 3,
+            interval: 8,
+            first_boost: -80,
+        },
+        FieldKind::Web => FieldDefinition::Web {
+            duration: 10,
+            damage: 200,
+            first_boost: -80,
+        },
+    }
+}
+
+#[must_use]
+pub const fn field_entity_definition(
+    id: LevelEntityId,
+    position: TilePosition,
+    activation_group: Option<ActivationGroupId>,
+    position_access: LevelEntityPositionAccess,
+    config: crate::level_definition::FieldDefinition,
+) -> LevelEntityDefinition {
+    LevelEntityDefinition::new(
+        id,
+        LevelEntityKind::Mechanic(MechanicKind::Field {
+            kind: config.kind(),
+        }),
+        position,
+        activation_group,
+        position_access,
+        None,
+        None,
+        None,
+        None,
+        None,
+    )
+    .with_field(config)
+}
+
+#[must_use]
+pub const fn mushroom_entity_definition(
+    id: LevelEntityId,
+    position: TilePosition,
+    activation_group: Option<ActivationGroupId>,
+    position_access: LevelEntityPositionAccess,
+    config: crate::level_definition::MushroomDefinition,
+) -> LevelEntityDefinition {
+    LevelEntityDefinition::new(
+        id,
+        LevelEntityKind::Scenery(crate::level_definition::SceneryKind::Mushroom),
+        position,
+        activation_group,
+        position_access,
+        None,
+        None,
+        None,
+        None,
+        None,
+    )
+    .with_mushroom(config)
+}
+
+#[must_use]
 pub const fn cave_corridor_entity_definition(
     id: LevelEntityId,
     position: TilePosition,

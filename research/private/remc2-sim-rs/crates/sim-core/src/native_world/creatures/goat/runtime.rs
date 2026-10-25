@@ -19,6 +19,81 @@ pub(crate) struct GoatRuntimeStep {
 }
 
 impl GoatFamily {
+    /// sub_11900 has already selected the target and has no same-id gate.
+    pub(crate) fn submit_source_contact(&mut self, slot: u16, payload: u16, owner: u16) -> bool {
+        let Some(goat) = self
+            .goats
+            .iter_mut()
+            .find(|s| s.active && s.entity_index == slot)
+        else {
+            return false;
+        };
+        let mut pending = goat.pending_attacker as u16;
+        crate::combat::actors::DamageMailboxMut::new(&mut goat.pending_damage, &mut pending)
+            .submit(
+                i32::from(payload),
+                owner,
+                crate::combat::actors::DamageWriter::Contact,
+            );
+        goat.pending_attacker = pending as i16;
+        true
+    }
+
+    /// Commit source-world motion to the actual Goat before its next callback.
+    /// Wind changes no life, phase, route stage or combat mailbox here.
+    pub(crate) fn apply_external_motion(
+        &mut self,
+        arena: &mut SourceArena,
+        slot: u16,
+        motion: crate::world::fields::wind::Motion,
+    ) -> Result<bool, String> {
+        let Some(goat) = self
+            .goats
+            .iter_mut()
+            .find(|s| s.active && s.entity_index == slot)
+        else {
+            return Ok(false);
+        };
+        goat.position = motion.actor.position;
+        goat.yaw = motion.actor.yaw;
+        goat.rng = motion.actor.rng;
+        goat.control_flags = motion.actor.flags;
+        // Source word30 shares the carrier called initial_lifetime by Goat's
+        // ordinary callback. It is not the StageVar destination at byte4A.
+        goat.initial_lifetime = motion.actor.move_heading;
+        if let Some(speed) = motion.actual_speed {
+            goat.actual_speed = speed;
+        }
+        let source = arena
+            .entities
+            .get_mut(usize::from(slot))
+            .ok_or_else(|| format!("wind Goat {slot} has no source slot"))?;
+        project_imported(source, goat);
+        arena.map_chains.sync_entity(RenderableMapSeed {
+            entity_index: slot,
+            active: true,
+            x: goat.position.x,
+            y: goat.position.y,
+        })?;
+        Ok(true)
+    }
+
+    /// Wind expiry clears its latch in the same family carrier as movement.
+    pub(crate) fn clear_external_wind_flags(&mut self, arena: &mut SourceArena, slot: u16) -> bool {
+        let Some(goat) = self
+            .goats
+            .iter_mut()
+            .find(|s| s.active && s.entity_index == slot)
+        else {
+            return false;
+        };
+        goat.control_flags = crate::world::fields::wind::clear_flags(goat.control_flags);
+        if let Some(source) = arena.entities.get_mut(usize::from(slot)) {
+            source.set_control_flags(goat.control_flags);
+        }
+        true
+    }
+
     /// Import views of other authorities afresh for this callback. Own Goat
     /// reads always resolve to the family; these views carry no independent AI.
     fn refresh_views(&mut self, arena: &SourceArena) {
@@ -60,6 +135,40 @@ impl GoatFamily {
                 stage_var_1: 0,
                 stage_var_2: 0,
                 stage_target: 0,
+            };
+            if let Some(old) = views.get_mut(usize::from(view.entity_index)) {
+                *old = view;
+            }
+        }
+        // The global StageVar pass runs here once for every family. A Bee
+        // adopted from a package or born later in the arena supersedes the
+        // reset row just as an authored class5 carrier does above.
+        for source in arena.bee_creatures() {
+            let view = SourceEntityState {
+                entity_index: source.source_entity_index,
+                source_id: source.entity_id,
+                class: source.source_class,
+                model: source.model,
+                active: source.active,
+                control_flags: source.control_flags,
+                life: source.life,
+                current_attacker: source.damage_attacker_entity_index as i16,
+                kill_credit_entity: source.kill_credit_entity_index as i16,
+                action: source.action,
+                position: source.position,
+                child_relation: relation_index(source.linked_child_entity_index),
+                actual_speed: source.actual_speed,
+                maximum_speed: source.maximum_speed,
+                behavior_flags: 0,
+                partner_entity_index: relation_index(source.linked_peer_entity_index),
+                target_entity_index: source.target_entity_index,
+                parent_entity_index: source.parent_entity_index,
+                yaw: source.yaw,
+                roll: source.roll,
+                half_width: source.shift_rot_x as i16,
+                stage_var_1: source.stage_var1 as i8,
+                stage_var_2: source.stage_var2 as i8,
+                stage_target: source.stage_relation,
             };
             if let Some(old) = views.get_mut(usize::from(view.entity_index)) {
                 *old = view;
@@ -319,7 +428,7 @@ impl GoatFamily {
     pub(crate) fn step_runtime_slot(
         &mut self,
         slot: u16,
-        world: &SessionTerrain,
+        world: &mut SessionTerrain,
         players: &[GoatPlayerTarget],
         arena: &mut SourceArena,
         runtime: &RuntimeSnapshot,
@@ -510,14 +619,14 @@ fn project_imported(source: &mut EntitySnapshot, goat: &GoatState) {
 /// sub_51A00 constructs model 73 at action 80 (sub_3A630), not action 73.
 pub(crate) fn spawn_expiry_visual(
     arena: &mut SourceArena,
-    world: &SessionTerrain,
+    world: &mut SessionTerrain,
     position: Position,
     particles: &[ParticleParameter],
 ) -> Result<(), String> {
     let particle = particles
         .get(220)
         .ok_or_else(|| "Goat expiry requires particle descriptor 220".to_owned())?;
-    let Some(slot) = arena.allocate_slot() else {
+    let Some(slot) = arena.allocate_source_slot_with_terrain(world) else {
         return Ok(());
     };
     let seed = arena.new_event_rng(slot);
