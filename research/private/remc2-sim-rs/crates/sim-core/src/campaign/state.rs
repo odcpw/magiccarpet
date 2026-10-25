@@ -728,6 +728,11 @@ fn digest_players_and_runtime(state: &CanonicalRuntimeState) -> CanonicalDigest 
         for player in &state.players {
             append_len(hasher, player.record_bytes().len());
             hasher.update(player.record_bytes());
+            if player.projectile_attempts != 0 || player.projectile_hits != 0 {
+                hasher.update(b"source-projectile-accuracy-v1");
+                hasher.update(player.projectile_attempts.to_le_bytes());
+                hasher.update(player.projectile_hits.to_le_bytes());
+            }
         }
         append_len(hasher, state.runtime.bytes().len());
         hasher.update(state.runtime.bytes());

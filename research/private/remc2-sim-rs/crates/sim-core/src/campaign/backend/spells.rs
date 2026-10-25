@@ -81,6 +81,12 @@ const BINDINGS: &[SpellBinding] = &[
         name: "Rebound",
     },
     SpellBinding {
+        kind: SpellKind::Lightning,
+        family: 9,
+        id: "spell.lightning",
+        name: "Lightning",
+    },
+    SpellBinding {
         kind: SpellKind::Teleport,
         family: 10,
         id: "spell.teleport",

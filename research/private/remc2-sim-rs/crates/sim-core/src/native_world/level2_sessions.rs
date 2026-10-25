@@ -1570,6 +1570,7 @@ impl Level2SharedSpellResetSession {
         economy: &mut Level2EconomyState,
         authored: AuthoredFeature,
         terrain: &SessionTerrain,
+        particles: &[ParticleParameter],
     ) -> Result<Option<u16>> {
         if let Some(source_slot) = self.authored_pickup_slots.get(&authored.index) {
             return Ok(Some(*source_slot));
@@ -1581,6 +1582,7 @@ impl Level2SharedSpellResetSession {
             5 => 5,
             6 => 6,
             8 => 8,
+            9 => 9,
             10 => 10,
             11 => 11,
             25 => 25,
@@ -1605,22 +1607,11 @@ impl Level2SharedSpellResetSession {
                 "authored spell family {family} has no constructor profile"
             ))
         })?;
-        // Select the source-shaped record before consuming a NewEvent slot.
-        // Level 1 has no reset pickup, but its reset holders carry the same
-        // 168-byte entity record used by the generic class-15 constructor.
-        // A missing template is an adapter error, not source arena exhaustion.
-        let template = self
-            .pickups
-            .first()
-            .or_else(|| self.holders.first())
-            .cloned()
-            .ok_or_else(|| NativeWorldError::new("shared spell source template is absent"))?;
-        if !template.active || template.class != 15 || template.record.len() != ENTITY_RECORD_BYTES
-        {
-            return Err(NativeWorldError::new(
-                "shared spell source template is not a live class-15 entity record",
-            ));
-        }
+        // AddSpellXX starts from NewEvent, including when the mission has
+        // no initial spell rows. Its presentation comes from particle77.
+        let particle = *particles
+            .get(77)
+            .ok_or_else(|| NativeWorldError::new("authored spell requires retained particle77"))?;
         let position = authored.world_position(terrain.ground_height(authored.world_position(0)));
         let Some(mut source) =
             economy.allocate_spell_pickup(authored.index, family, ordinary_action, position)
@@ -1646,7 +1637,12 @@ impl Level2SharedSpellResetSession {
                 ));
             }
         }
-        let mut entity = template;
+        let mut entity = cave_features::new_event(
+            source.source_entity_index,
+            source.entity_rng,
+            source.position,
+        );
+        cave_features::bind_particle(&mut entity, 77, particle).map_err(NativeWorldError::new)?;
         entity.index = source.source_entity_index;
         entity.source_id = source.source_entity_index;
         entity.authority = EntityAuthority::SpellActivationLive;
@@ -1704,7 +1700,6 @@ impl Level2SharedSpellResetSession {
         entity.record[80..82].copy_from_slice(&source.position.x.to_le_bytes());
         entity.record[82..84].copy_from_slice(&source.position.y.to_le_bytes());
         entity.record[84..86].copy_from_slice(&source.position.z.to_le_bytes());
-        entity.record[86..88].copy_from_slice(&75_i16.to_le_bytes());
         entity.record[88..90].copy_from_slice(&768_i16.to_le_bytes());
         entity.record[90..92].copy_from_slice(&768_i16.to_le_bytes());
         entity.record[92..94].copy_from_slice(&1280_i16.to_le_bytes());

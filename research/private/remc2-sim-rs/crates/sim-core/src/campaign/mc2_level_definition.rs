@@ -53,6 +53,7 @@ pub(crate) enum Mc2MovableRuntimeHint {
 pub(crate) struct Mc2LevelDefinition {
     pub(crate) semantic: LevelDefinition,
     pub(crate) creature_by_authored_record: BTreeMap<u16, CreatureKind>,
+    pub(crate) creature_entity_by_authored_record: BTreeMap<u16, LevelEntityId>,
     pub(crate) creature_model_by_kind: BTreeMap<CreatureKind, u8>,
     pub(crate) spell_by_authored_record: BTreeMap<u16, SpellKind>,
     pub(crate) spell_family_by_kind: BTreeMap<SpellKind, u8>,
@@ -159,6 +160,7 @@ impl Mc2LevelDefinition {
             (15, 5) => Some(LevelEntityKind::SpellPickup(SpellKind::Heal)),
             (15, 6) => Some(LevelEntityKind::SpellPickup(SpellKind::Shield)),
             (15, 8) => Some(LevelEntityKind::SpellPickup(SpellKind::Rebound)),
+            (15, 9) => Some(LevelEntityKind::SpellPickup(SpellKind::Lightning)),
             (15, 10) => Some(LevelEntityKind::SpellPickup(SpellKind::Teleport)),
             (15, 11) => Some(LevelEntityKind::SpellPickup(SpellKind::Invisibility)),
             (15, 12) => Some(LevelEntityKind::SpellPickup(SpellKind::BeyondSight)),
@@ -387,6 +389,7 @@ impl Mc2LevelDefinition {
             (15, 5, 16) => Some(SpellKind::Heal),
             (15, 6, 19) => Some(SpellKind::Shield),
             (15, 8, 25) => Some(SpellKind::Rebound),
+            (15, 9, 28 | 29) => Some(SpellKind::Lightning),
             (15, 10, 31) => Some(SpellKind::Teleport),
             (15, 11, 34) => Some(SpellKind::Invisibility),
             (15, 12, 37) => Some(SpellKind::BeyondSight),
@@ -952,6 +955,7 @@ impl Mc2LevelDefinition {
                 (15, 5) => Some(SpellKind::Heal),
                 (15, 6) => Some(SpellKind::Shield),
                 (15, 8) => Some(SpellKind::Rebound),
+                (15, 9) => Some(SpellKind::Lightning),
                 (15, 10) => Some(SpellKind::Teleport),
                 (15, 11) => Some(SpellKind::Invisibility),
                 (15, 12) => Some(SpellKind::BeyondSight),
@@ -1284,6 +1288,11 @@ impl Mc2LevelDefinition {
         }
 
         Ok(Self {
+            creature_entity_by_authored_record: authored_record_by_entity_id
+                .into_iter()
+                .filter(|(_, record)| creature_by_authored_record.contains_key(record))
+                .map(|(id, record)| (record, id))
+                .collect(),
             semantic: build_level_definition(entities, objectives, activation_groups)?,
             creature_by_authored_record,
             creature_model_by_kind,

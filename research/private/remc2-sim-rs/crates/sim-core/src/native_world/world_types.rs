@@ -1848,6 +1848,10 @@ pub struct PlayerSnapshot {
     /// this authoritative value; v3/v4 inspection rows retain `None` and
     /// cannot construct a qualified mutable Level 2 session.
     pub banishment_state_0x006: Option<u8>,
+    /// Source sub_65780 accuracy counters (A4 0x165/0x169). These are not
+    /// offsets into the exporter's compact player record.
+    pub projectile_attempts: u32,
+    pub projectile_hits: u32,
     pub(super) record: Box<[u8]>,
 }
 

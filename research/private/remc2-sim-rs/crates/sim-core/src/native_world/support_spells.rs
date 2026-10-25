@@ -414,7 +414,12 @@ mod tests {
                 let live = &mut session.session.state.live;
                 let slot = live
                     .shared_spells
-                    .materialize_authored_spell_pickup(&mut live.economy, feature, &live.terrain)
+                    .materialize_authored_spell_pickup(
+                        &mut live.economy,
+                        feature,
+                        &live.terrain,
+                        &session.session.definition.presentation.particles,
+                    )
                     .expect("real persistent constructor")
                     .expect("NewEvent slot");
                 let holder = live.shared_spells.pickup(slot).expect("new source");

@@ -2196,6 +2196,8 @@ impl GameSessionBackend for Mc2CampaignBackend {
                 total_count,
                 all_objectives_satisfied,
             },
+            objective_textbox_ticks: compatibility.runtime().objective_textbox_ticks,
+            exit_sequence_active: compatibility.level_exit_sequence().active,
             presentation_entities,
         }
     }
@@ -7726,17 +7728,18 @@ pub(crate) mod tests {
     #[test]
     fn campaign_snapshot_projects_semantic_objective_progress_for_real_levels_one_two_and_three() {
         let catalog = default_catalog().unwrap();
+        let generated = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../generated");
         let cases = [
             (
-                level_one_descriptor_fixture_path(),
+                generated.join("mc-bhq8-level1-collision-v5-night"),
                 "objective.reach.my_beacon",
             ),
             (
-                descriptor_fixture_path(),
+                generated.join("level2-day-block32-campaign-v2"),
                 "objective.reach.payahandra_ruins",
             ),
             (
-                level_three_descriptor_fixture_path(),
+                generated.join("level3-day-block32-campaign-recipe-v2"),
                 "objective.clear.undead_horde",
             ),
         ];
@@ -7749,7 +7752,26 @@ pub(crate) mod tests {
                 Mc2CampaignInputs::new(&root),
             )
             .unwrap();
-            let progress = session.snapshot().value.objective_progress;
+            let snapshot = session.snapshot().value;
+            assert_eq!(
+                snapshot.objective_textbox_ticks,
+                session
+                    .backend()
+                    .campaign
+                    .level2_compatibility()
+                    .runtime()
+                    .objective_textbox_ticks
+            );
+            assert_eq!(
+                snapshot.exit_sequence_active,
+                session
+                    .backend()
+                    .campaign
+                    .level2_compatibility()
+                    .level_exit_sequence()
+                    .active
+            );
+            let progress = snapshot.objective_progress;
             assert_eq!(
                 progress.current_objective.as_ref().map(SemanticId::as_str),
                 Some(current_objective)
@@ -7758,8 +7780,13 @@ pub(crate) mod tests {
             assert_eq!(progress.total_count, 5);
             assert!(!progress.all_objectives_satisfied);
         }
+    }
 
-        let root = level_one_descriptor_fixture_path();
+    #[test]
+    fn campaign_snapshot_projects_completed_waypoint() {
+        let catalog = default_catalog().unwrap();
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../generated/mc-bhq8-level1-collision-v5-night");
         let definition = load_mc2_campaign(&root, &catalog).unwrap();
         let mut session = GameSession::open(
             &Mc2CampaignAdapter,

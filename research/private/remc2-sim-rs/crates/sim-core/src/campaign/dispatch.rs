@@ -96,6 +96,7 @@ pub enum ExistingHandler {
     Mushrooms = 37,
     Spider = 38,
     SpiderWeb = 39,
+    LightningProjectile = 40,
 }
 
 impl ExistingHandler {
@@ -146,6 +147,7 @@ impl ExistingHandler {
             Self::Mushrooms => "authored cave mushroom constructor",
             Self::Spider => "authored Spider constructor and live web attack",
             Self::SpiderWeb => "Spider ranged web projectile and status impact",
+            Self::LightningProjectile => "Lightning holder projectile and Meteor impact",
         }
     }
 
@@ -190,6 +192,7 @@ impl ExistingHandler {
             Self::Creature24 => "creature24-family",
             Self::Spider => "spider-family",
             Self::SpiderWeb => "spider-web-projectile",
+            Self::LightningProjectile => "lightning-projectile",
             Self::Mushrooms => "mushrooms",
         }
     }
@@ -367,6 +370,7 @@ compiled_registry! {
         (Creature24, 5, [192, 193, 194, 195, 196, 197, 198, 199]);
         (MultipartFamily, 5, [232]);
         (ProjectileFamily, 9, [0, 1, 10, 13]);
+        (LightningProjectile, 9, [3]);
         (Model6ProjectileChild, 9, [15]);
         (ProjectileFamily, 9, [18]);
         (SpiderWeb, 9, [22]);
@@ -377,7 +381,7 @@ compiled_registry! {
         (SwitchProducers, 11, [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 31]);
         (ObjectiveSwitch, 11, [32]);
         (Class14Events, 14, [8, 9, 10]);
-        (SpellHolderAndPickup, 15, [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 15, 16, 17, 18, 19, 20, 24, 25, 26, 30, 31, 32, 33, 34, 35, 36, 37, 38, 75, 76, 77, 78]);
+        (SpellHolderAndPickup, 15, [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 15, 16, 17, 18, 19, 20, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 75, 76, 77, 78]);
     }
     update_only_actions {
         (BallisticScenery, 2, [21]);
@@ -416,6 +420,7 @@ compiled_registry! {
         (Creature22, 5, [22]);
         (Creature24, 5, [24]);
         (ProjectileFamily, 9, [0, 1, 10, 13]);
+        (LightningProjectile, 9, [3]);
         (Model6ProjectileChild, 9, [14]);
         (ProjectileFamily, 9, [17]);
         (SpiderWeb, 9, [21]);
@@ -431,7 +436,7 @@ compiled_registry! {
         (ObjectiveSwitch, 11, [32]);
         (TerrainStripController, 14, [1, 2]);
         (Class14Events, 14, [3, 4, 5]);
-        (SpellHolderAndPickup, 15, [0, 1, 2, 3, 5, 6, 8, 10, 11, 12, 25]);
+        (SpellHolderAndPickup, 15, [0, 1, 2, 3, 5, 6, 8, 9, 10, 11, 12, 25]);
     }
 }
 
@@ -679,6 +684,7 @@ mod tests {
             (5, &[32][..], "archer-family"),
             (5, &[160, 161, 162, 163, 164, 165, 167][..], "spider-family"),
             (9, &[22][..], "spider-web-projectile"),
+            (9, &[3][..], "lightning-projectile"),
             (
                 5,
                 &[120, 121, 122, 123, 124, 125, 127][..],
@@ -693,7 +699,7 @@ mod tests {
             (14, &[9][..], "level2-class14-events"),
             (
                 15,
-                &[15, 16, 17, 24, 25, 26, 30, 31, 32, 75, 76, 77][..],
+                &[15, 16, 17, 24, 25, 26, 27, 28, 29, 30, 31, 32, 75, 76, 77][..],
                 "spell-holder-and-pickup-family",
             ),
             (9, &[31][..], "cave-spell"),
@@ -768,7 +774,7 @@ mod tests {
             ),
             (14, &[1, 2][..], "terrain-strip-controller"),
             (14, &[4][..], "level2-class14-events"),
-            (15, &[5, 8, 10, 25][..], "spell-holder-and-pickup-family"),
+            (15, &[5, 8, 9, 10, 25][..], "spell-holder-and-pickup-family"),
             (9, &[30][..], "cave-spell"),
             (10, &[89][..], "cave-spell"),
             (10, &[11][..], "terrain-disasters"),
@@ -777,6 +783,7 @@ mod tests {
             (5, &[24][..], "creature24-family"),
             (5, &[20][..], "spider-family"),
             (9, &[21][..], "spider-web-projectile"),
+            (9, &[3][..], "lightning-projectile"),
         ] {
             for model in models {
                 expected.insert(format!("Constructor:ClassModel:{class}:{model}"), handler);
@@ -803,7 +810,7 @@ mod tests {
         assert_eq!(registry["action_dispatch_sites"][0], "ApplyEvents");
         assert_eq!(registry["action_dispatch_sites"][1], "UpdateEntities");
         assert_eq!(registry["constructor_dispatch_site"], "Constructor");
-        assert_eq!(CAMPAIGN_BEHAVIOR_REGISTRY.entries().len(), 622);
+        assert_eq!(CAMPAIGN_BEHAVIOR_REGISTRY.entries().len(), 632);
         validate_against_source(CAMPAIGN_BEHAVIOR_REGISTRY.entries(), &source_keys)
             .expect("compiled entries retain exact pinned sites and selector shapes");
 
@@ -918,7 +925,7 @@ mod tests {
             );
         }
         expected_handlers.extend(supplemental_handlers);
-        assert_eq!(expected_handlers.len(), 622);
+        assert_eq!(expected_handlers.len(), 632);
 
         for entry in CAMPAIGN_BEHAVIOR_REGISTRY.entries() {
             assert_eq!(

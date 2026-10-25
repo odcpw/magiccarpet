@@ -605,6 +605,7 @@ pub struct CampaignDefinition {
     pub completed_stage: ValidationStage,
     level_definition: LevelDefinition,
     creature_by_authored_record: BTreeMap<u16, CreatureKind>,
+    creature_entity_by_authored_record: BTreeMap<u16, LevelEntityId>,
     creature_by_initial_source_slot: BTreeMap<u16, CreatureKind>,
     creature_model_by_kind: BTreeMap<CreatureKind, u8>,
     spell_by_authored_record: BTreeMap<u16, SpellKind>,
@@ -2071,6 +2072,7 @@ impl CampaignDefinition {
             completed_stage: ValidationStage::ResetState,
             level_definition: semantic_level.semantic,
             creature_by_authored_record: semantic_level.creature_by_authored_record,
+            creature_entity_by_authored_record: semantic_level.creature_entity_by_authored_record,
             creature_by_initial_source_slot,
             creature_model_by_kind: semantic_level.creature_model_by_kind,
             spell_by_authored_record: semantic_level.spell_by_authored_record,
@@ -2145,16 +2147,9 @@ impl CampaignDefinition {
     }
 
     pub(crate) fn authored_creature_entity_bindings(&self) -> BTreeMap<u16, LevelEntityId> {
-        self.movable_entity_bindings
-            .iter()
-            .filter_map(|(entity_id, binding)| match binding {
-                Mc2EntityRuntimeBinding::AuthoredFeature {
-                    authored_record,
-                    kind: LevelEntityKind::Creature(_),
-                } => Some((*authored_record, entity_id.clone())),
-                _ => None,
-            })
-            .collect()
+        // Runtime health belongs to every authored creature, including
+        // read-only placements. Editing access is a separate contract.
+        self.creature_entity_by_authored_record.clone()
     }
 
     pub(crate) fn creature_models(&self) -> &BTreeMap<CreatureKind, u8> {

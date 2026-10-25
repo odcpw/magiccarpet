@@ -706,6 +706,7 @@ pub enum MissionAudioSite {
     ReboundReflection,
     CaveGroundFeature,
     CaveInLaunch,
+    LightningLaunch,
     CaveInCapture,
     MeteorImpact,
     FireSphereCollision,
@@ -1170,6 +1171,7 @@ impl MissionAudioSite {
         Self::ReboundReflection,
         Self::CaveGroundFeature,
         Self::CaveInLaunch,
+        Self::LightningLaunch,
         Self::CaveInCapture,
         Self::MeteorImpact,
         Self::FireSphereCollision,
@@ -1594,7 +1596,7 @@ impl MissionAudioSite {
                 "EventsFunctions.cpp:22845 (sub_31120)",
                 true,
             ),
-            Self::CaveInLaunch => (
+            Self::CaveInLaunch | Self::LightningLaunch => (
                 "15",
                 "spell parent",
                 "1",

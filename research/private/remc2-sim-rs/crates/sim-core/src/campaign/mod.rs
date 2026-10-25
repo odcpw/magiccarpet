@@ -754,6 +754,16 @@ mod tests {
                 [expected],
                 "ordinary opening emits exactly its source objective segment"
             );
+            let palette_sample = |session: &CampaignSession| {
+                let mut colors = [0_u8, 0, 0, 4, 8, 12];
+                session.level2.field_palette().apply_rgb8(&mut colors);
+                colors
+            };
+            assert_eq!(
+                palette_sample(&session),
+                [0, 0, 0, 196, 200, 204],
+                "real objective request reaches the indexed RGB6 palette consumer"
+            );
             let tick = session.level2.state.tick;
             let phase = session.level2.runtime().objective_presentation_phase;
             session.paused_frame();
@@ -761,6 +771,18 @@ mod tests {
             assert_eq!(
                 session.level2.runtime().objective_presentation_phase,
                 phase.wrapping_add(1)
+            );
+            assert_eq!(
+                palette_sample(&session),
+                [0, 0, 0, 196, 200, 204],
+                "the first case9 call installs the fade's source palette"
+            );
+            session.paused_frame();
+            assert_eq!(session.level2.state.tick, tick);
+            assert_eq!(
+                palette_sample(&session),
+                [0, 0, 0, 184, 188, 192],
+                "paused outer frames advance the same sixteen-step fade"
             );
         }
     }

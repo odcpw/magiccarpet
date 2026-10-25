@@ -714,7 +714,14 @@ impl DayIndexedFrameState {
                         "environment cache changed within a live frame generation",
                     ));
                 }
-                return Ok(frame.clone());
+                // Paused outer frames advance PaletteChanges without a
+                // gameplay tick. Reuse the indexed image/history, but read
+                // the current palette from authority on every observation.
+                let mut frame = frame.clone();
+                frame.palette_rgb8 = assets.palette_rgb8().to_vec();
+                session.field_palette().apply_rgb8(&mut frame.palette_rgb8);
+                self.current_frame = Some(frame.clone());
+                return Ok(frame);
             }
         }
         let frame = render_environment_indexed_frame(
@@ -1609,6 +1616,28 @@ mod tests {
                 .expect("following runtime frame");
             assert_eq!(moved.tick, first.tick + 1);
             assert_ne!(moved.index_hash, first.index_hash);
+            // Objective speech/flash progresses through real paused outer
+            // frames while the terrain/image tick remains fixed.
+            for _ in 0..8 {
+                campaign.paused_frame();
+            }
+            let paused = state
+                .render_current(
+                    campaign.inspection(),
+                    campaign.level2_compatibility(),
+                    &assets,
+                    campaign.generation(),
+                )
+                .expect("paused objective flash observes the current palette");
+            assert_eq!(paused.tick, moved.tick);
+            assert_eq!(paused.indices, moved.indices);
+            assert_ne!(paused.palette_rgb8, moved.palette_rgb8);
+            let mut expected_palette = assets.palette_rgb8().to_vec();
+            campaign
+                .level2_compatibility()
+                .field_palette()
+                .apply_rgb8(&mut expected_palette);
+            assert_eq!(paused.palette_rgb8, expected_palette);
         }
         assert!(
             DayIndexedFrameAssets::load_night(generated_path("mc-oi62-environment-level2-v2"))

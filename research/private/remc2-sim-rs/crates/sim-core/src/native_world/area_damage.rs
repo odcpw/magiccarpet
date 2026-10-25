@@ -1509,7 +1509,7 @@ mod tests {
         assert!(
             arena
                 .economy
-                .step_authored_dragon_roam_slot(root.source_entity_index, &[], &[], terrain)
+                .step_authored_dragon_roam_slot(root.source_entity_index, &[], &[], terrain, &[])
                 .unwrap()
         );
         let source = arena
@@ -1552,7 +1552,13 @@ mod tests {
         assert!(
             arena
                 .economy
-                .step_authored_dragon_roam_slot(direct_root.source_entity_index, &[], &[], terrain)
+                .step_authored_dragon_roam_slot(
+                    direct_root.source_entity_index,
+                    &[],
+                    &[],
+                    terrain,
+                    &[]
+                )
                 .unwrap()
         );
         let source = arena

@@ -444,6 +444,17 @@ pub struct Level2SetSpellProfile {
 /// the initial `mana` by dividing it by `word_0x30` when that word is nonzero.
 #[must_use]
 pub const fn level2_set_spell_profile(family: u8, tier: u8) -> Option<Level2SetSpellProfile> {
+    if family == 9 && tier < 3 {
+        let rule = crate::level_definition::LIGHTNING_PROPERTIES.tiers[tier as usize];
+        return Some(Level2SetSpellProfile {
+            subspell_index: rule.damage,
+            word_0x30: rule.cooldown,
+            byte_0x3b: 1,
+            mana_regen: rule.castle_mana_required,
+            max_mana: rule.mana_cost,
+            mana: rule.mana_cost / rule.cooldown as i32,
+        });
+    }
     if family == 25 && tier < 3 {
         let tier = tier as usize;
         let cost = [11_000, 13_000, 26_000][tier];
@@ -804,7 +815,7 @@ pub fn acquire_level2_spell_holder_with_return_side(
     overlaps: bool,
     return_side: i16,
 ) -> SpellHolderAcquisitionResult {
-    if !matches!(state.family, 0..=6 | 8 | 10..=12 | 25) {
+    if !matches!(state.family, 0..=6 | 8..=12 | 25) {
         return SpellHolderAcquisitionResult::Rejected(
             SpellHolderAcquisitionFailure::UnsupportedFamily,
         );
@@ -2378,6 +2389,9 @@ mod tests {
             (8, 0, 0, 125, 1, 40_000, 5_000, 40),
             (8, 1, 0, 251, 1, 80_000, 15_000, 59),
             (8, 2, 0, 125, 1, 160_000, 25_000, 200),
+            (9, 0, 1_750, 9, 1, 5_000, 1_000, 111),
+            (9, 1, 3_500, 17, 1, 9_000, 1_500, 88),
+            (9, 2, 7_000, 25, 1, 18_000, 2_000, 80),
             (10, 0, 0, 11, 1, 5_000, 5_000, 454),
             (10, 1, 0, 11, 1, 40_000, 20_000, 1_818),
             (10, 2, 0, 11, 1, 60_000, 40_000, 3_636),

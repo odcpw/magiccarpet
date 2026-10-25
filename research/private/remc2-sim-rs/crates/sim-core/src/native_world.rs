@@ -515,8 +515,10 @@ mod cave_spells;
 mod countdown_switch;
 pub(crate) mod creatures;
 mod effects;
+mod guided_projectile;
 pub(crate) use effects::hidden_slots as hidden_effect_slots;
 mod level2_nyphur;
+mod lightning;
 mod night_cache;
 mod support_spells;
 pub(crate) mod terrain_strip;
@@ -2203,6 +2205,8 @@ pub struct AuthoredDragonRuntime {
     pub word_0x36: i16,
     pub control_flags: u32,
     pub font_type_index: u8,
+    /// Source word_0x2C: remaining lateral projectile-evasion steps.
+    pub dodge_remaining: i16,
     pub render_yaw: i16,
     pub render_pitch: i16,
     pub render_roll: i16,
@@ -7352,6 +7356,10 @@ fn parse_players(
             spell_unlocked_levels,
             type_str_164_auxiliary,
             banishment_state_0x006,
+            // Campaign packages contain reset players; projectile accounting
+            // begins at the ordinary runtime producer, not an imported save.
+            projectile_attempts: 0,
+            projectile_hits: 0,
             record: record.to_vec().into_boxed_slice(),
         });
     }

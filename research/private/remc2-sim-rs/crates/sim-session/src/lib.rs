@@ -176,6 +176,9 @@ pub struct CampaignSnapshot {
     pub player_vitals: PlayerVitals,
     pub player_spells: Vec<SpellObservation>,
     pub objective_progress: ObjectiveProgress,
+    /// Authoritative objective-panel countdown; clients never invent a timer.
+    pub objective_textbox_ticks: u8,
+    pub exit_sequence_active: bool,
     pub presentation_entities: Vec<PresentationEntity>,
 }
 

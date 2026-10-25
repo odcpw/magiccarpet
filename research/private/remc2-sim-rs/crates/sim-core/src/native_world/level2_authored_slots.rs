@@ -7255,6 +7255,10 @@ impl Level2EconomyState {
             hasher.update(state.word_0x36.to_le_bytes());
             hasher.update(state.control_flags.to_le_bytes());
             hasher.update([state.font_type_index, u8::from(state.movement_blocked)]);
+            if state.dodge_remaining != 0 {
+                hasher.update(b"dragon-dodge-v1");
+                hasher.update(state.dodge_remaining.to_le_bytes());
+            }
             hasher.update(state.render_yaw.to_le_bytes());
             hasher.update(state.render_pitch.to_le_bytes());
             hasher.update(state.render_roll.to_le_bytes());

@@ -20,6 +20,8 @@ mod effects;
 pub use effects::{EffectDefinition, EffectKind};
 mod fields;
 pub use fields::{FieldDefinition, FieldKind};
+mod lightning;
+pub use lightning::{LIGHTNING_PROPERTIES, LightningProperties, LightningTier};
 mod scenery;
 pub use scenery::MushroomDefinition;
 mod spider;
@@ -253,6 +255,7 @@ pub enum SpellKind {
     Heal,
     Shield,
     Rebound,
+    Lightning,
     Teleport,
     Invisibility,
     BeyondSight,
@@ -271,6 +274,7 @@ impl SpellKind {
             Self::Heal => "heal",
             Self::Shield => "shield",
             Self::Rebound => "rebound",
+            Self::Lightning => "lightning",
             Self::Teleport => "teleport",
             Self::Invisibility => "invisibility",
             Self::BeyondSight => "beyond_sight",

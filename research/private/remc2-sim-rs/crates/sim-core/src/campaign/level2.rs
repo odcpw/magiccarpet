@@ -666,6 +666,7 @@ struct Level2SourceSchedulerWorld<'session, 'evidence> {
     /// before the numeric scan; callbacks read member fields live.
     pass_start_class5_model_slots: [Vec<u16>; 29],
     pass_start_class3_slots: Vec<u16>,
+    pass_start_capture_slots: Vec<u16>,
     effect_lists: area_damage::EffectLists,
     pass_start_settlement_building_slots: Vec<u16>,
     /// The same pass-start census across imported and typed class-5 carriers.
@@ -883,6 +884,20 @@ impl SourceSchedulerWorld for Level2SourceSchedulerWorld<'_, '_> {
                         .entities
                         .iter()
                         .filter(|row| row.active && row.class == 3 && row.life >= 0)
+                        .map(|row| row.index)
+                        .collect();
+                    // Source dword_38535, frozen with the other class heads.
+                    // Its capture controller has no life>=0 admission gate.
+                    self.pass_start_capture_slots = economy
+                        .entities
+                        .iter()
+                        .filter(|row| {
+                            row.active
+                                && matches!(
+                                    (row.class, row.model),
+                                    (10, 42 | 67 | 78) | (11, 12 | 31)
+                                )
+                        })
                         .map(|row| row.index)
                         .collect();
                     self.pass_start_class5_model_present = std::array::from_fn(|model| {
@@ -1238,6 +1253,7 @@ impl SourceSchedulerWorld for Level2SourceSchedulerWorld<'_, '_> {
             &self.pass_start_class5_model_slots,
             &self.pass_start_class3_slots,
             &self.effect_lists,
+            &self.pass_start_capture_slots,
             &self.pass_start_settlement_building_slots,
             &self.pass_start_castle_auxiliary_membership,
             self.pass_start_castle_root_slot,
@@ -2665,6 +2681,128 @@ impl Level2ResetSession {
         if imported_source {
             self.commit_imported_spell_source_projection(holder_index)
                 .map_err(|error| (holder_index, error.to_string()))?;
+        }
+        Ok(())
+    }
+
+    fn step_lightning_holder_source_slot(
+        &mut self,
+        source_slot: u16,
+    ) -> std::result::Result<(), String> {
+        let live = &mut self.session.state.live;
+        let parent_slot = live
+            .shared_spells
+            .pickup(source_slot)
+            .ok_or("Lightning source holder disappeared")?
+            .source_spell_parent_entity_index();
+        let owner = live
+            .shared_spells
+            .players
+            .iter()
+            .find(|player| player.entity_index == parent_slot);
+        let auxiliary = owner.and_then(PlayerSnapshot::type_str_164_auxiliary);
+        let (aim_yaw, aim_pitch) = if parent_slot == live.shared_spells.player_entity.index {
+            let aim = live.shared_spells.beyond_sight_auxiliary();
+            (aim.next_entity, aim.entity_index2)
+        } else {
+            owner
+                .and_then(|player| {
+                    player
+                        .record
+                        .get(PLAYER_LEGACY_RECORD_BYTES + 24..PLAYER_LEGACY_RECORD_BYTES + 28)
+                })
+                .map_or((0, 0), |bytes| {
+                    (
+                        i16::from_le_bytes([bytes[0], bytes[1]]),
+                        i16::from_le_bytes([bytes[2], bytes[3]]),
+                    )
+                })
+        };
+        let castle_mana = live
+            .economy
+            .castle()
+            .filter(|castle| {
+                castle.active
+                    && castle.owner_entity_index == parent_slot
+                    && live.economy.player_castle_entity_index() == castle.source_entity_index
+            })
+            .map(|castle| castle.mana)
+            .or_else(|| {
+                let player = owner?;
+                let slot = u16::from_le_bytes([player.record[42], player.record[43]]);
+                live.economy
+                    .entities
+                    .get(usize::from(slot))
+                    .filter(|row| slot != 0 && row.active)
+                    .map(|row| row.mana)
+            });
+        let input = lightning::CastInput {
+            aim_yaw,
+            aim_pitch,
+            auxiliary_byte: auxiliary.map_or(0, |aux| aux.byte_0x154_340),
+            castle_mana,
+        };
+        let outcome = lightning::step_holder(
+            &mut live.shared_spells,
+            &mut live.economy,
+            &mut live.terrain,
+            &self.session.definition.presentation.particles,
+            source_slot,
+            input,
+        )?;
+        if let Some(parent_slot) = outcome.clear_player_aux {
+            for player in live
+                .shared_spells
+                .players
+                .iter_mut()
+                .chain(live.core.players.iter_mut())
+                .filter(|player| player.entity_index == parent_slot)
+            {
+                if let Some(aux) = player.type_str_164_auxiliary.as_mut() {
+                    aux.byte_0x154_340 = 0;
+                    player.record[PLAYER_LEGACY_RECORD_BYTES + 16] = 0;
+                }
+            }
+            if live.shared_spells.local_player.entity_index == parent_slot
+                && let Some(player) = live
+                    .shared_spells
+                    .players
+                    .iter()
+                    .find(|player| player.entity_index == parent_slot)
+            {
+                live.shared_spells.local_player = player.clone();
+            }
+        }
+        if let Some(holder) = live.shared_spells.pickup(source_slot)
+            && let Some(fire) = live.core.context.spell_fire.as_mut()
+            && let Some(target) = fire
+                .holders
+                .iter_mut()
+                .find(|holder| holder.entity_index == source_slot)
+        {
+            target.active_value = holder.active_value;
+            target.activation_value = holder.activation_value;
+            target.level_gate = holder.level_gate;
+            target.mana_cost = holder.mana_cost;
+        }
+        // Dynamic pickup cursors retain their phase carrier. The scheduler
+        // verifies this single common increment; imported rows use its tail.
+        let advanced = match live
+            .economy
+            .live_arena_cursor_row(source_slot)
+            .map(|row| row.kind)
+        {
+            Some(Level2DynamicArenaKind::SpellPickup) => {
+                live.economy.step_spell_pickup_slot(source_slot)
+            }
+            Some(Level2DynamicArenaKind::SpellReplacement) => {
+                live.economy.step_spell_replacement_slot(source_slot)
+            }
+            _ => false,
+        };
+        if advanced && let Some(holder) = live.shared_spells.pickup_mut(source_slot) {
+            holder.set_phase(holder.phase.wrapping_add(1));
+            live.economy.entities[usize::from(source_slot)] = holder.clone();
         }
         Ok(())
     }
@@ -9755,11 +9893,11 @@ impl Level2ResetSession {
                     | (5, 0 | 1 | 2 | 3 | 4 | 9 | 14 | 19 | 20 | 22 | 24)
                     | (
                         10,
-                        0..=7 | 13 | 14 | 16 | 17 | 18 | 19 | 22 | 34 | 39 | 45 | 54 | 58 | 59 | 60 | 63 | 64 | 70 | 76 | 80..=88 | 90
+                        0..=7 | 11 | 13 | 14 | 16 | 17 | 18 | 19 | 22 | 34 | 39 | 45 | 54 | 58 | 59 | 60 | 63 | 64 | 70 | 76 | 80..=88 | 90
                     )
                     | (11, 0..=44)
                     | (14, 2 | 3 | 4 | 5)
-                    | (15, 2 | 3 | 4 | 5 | 6 | 8 | 10 | 11 | 25)
+                    | (15, 2 | 3 | 4 | 5 | 6 | 8 | 9 | 10 | 11 | 25)
             )
         }) {
             return Err(format!(
@@ -10226,6 +10364,44 @@ impl Level2ResetSession {
                             .insert(feature.index);
                     }
                 }
+                (10, 11) => {
+                    let properties = self
+                        .session
+                        .definition
+                        .mechanic_entity_for_authored_record(feature.index)
+                        .and_then(|id| {
+                            self.session
+                                .definition
+                                .semantic_level()?
+                                .entity(id)?
+                                .terrain_disaster()
+                        })
+                        .filter(|properties| {
+                            properties.kind()
+                                == crate::level_definition::TerrainDisasterKind::LoweringRing
+                        })
+                        .ok_or_else(|| {
+                            format!(
+                                "authored lowering ring {} lacks its definition",
+                                feature.index
+                            )
+                        })?;
+                    let live = &mut self.session.state.live;
+                    let position = feature
+                        .world_position(live.terrain.ground_height(feature.world_position(0)));
+                    if let Some(slot) =
+                        crate::world::terrain::disasters::mc2::runtime::construct_defined(
+                            &mut live.economy,
+                            &mut live.terrain,
+                            position,
+                            properties,
+                        )?
+                    {
+                        live.core
+                            .runtime
+                            .bind_authored_stage_entity(feature.index, slot);
+                    }
+                }
                 (10, 13) => {
                     if self
                         .allocate_level2_authored_model13(feature.index)
@@ -10584,7 +10760,7 @@ impl Level2ResetSession {
                         );
                     }
                 }
-                (15, 2 | 3 | 4 | 5 | 6 | 8 | 10 | 11 | 25) => {
+                (15, 2 | 3 | 4 | 5 | 6 | 8 | 9 | 10 | 11 | 25) => {
                     let terrain = &self.session.state.live.terrain;
                     self.session
                         .state
@@ -10594,6 +10770,7 @@ impl Level2ResetSession {
                             &mut self.session.state.live.economy,
                             feature,
                             terrain,
+                            &self.session.definition.presentation.particles,
                         )
                         .map_err(|error| error.to_string())?;
                 }
@@ -12029,6 +12206,7 @@ impl Level2ResetSession {
                 &mut self.session.state.live.economy,
                 feature,
                 terrain,
+                &self.session.definition.presentation.particles,
             ) {
             Ok(Some(source_slot)) => source_slot,
             Ok(None) => {
@@ -12189,7 +12367,7 @@ impl Level2ResetSession {
                     && row.class == 15
                     && matches!(
                         row.model,
-                        3 | 5 | 8 | 10 | 25 | SHIELD_FAMILY | INVISIBLE_FAMILY | BEYOND_SIGHT_FAMILY
+                        3 | 5 | 8 | 9 | 10 | 25 | SHIELD_FAMILY | INVISIBLE_FAMILY | BEYOND_SIGHT_FAMILY
                     )
                     && (physical_spell_action(row.model, PhysicalSpellActionRole::Active)
                         == Some(row.action)
@@ -12197,7 +12375,7 @@ impl Level2ResetSession {
                             row.model,
                             PhysicalSpellActionRole::OrdinaryPickup,
                         ) == Some(row.action)
-                        || (matches!(row.model, 5 | 8 | 10 | 25)
+                        || (matches!(row.model, 5 | 8 | 9 | 10 | 25)
                             && physical_spell_action(
                                 row.model,
                                 PhysicalSpellActionRole::PersistentPickup,
@@ -12373,8 +12551,8 @@ impl Level2ResetSession {
                                     5,
                                     25 | 26 | 27 | 28 | 29 | 31 | 72 | 73 | 74 | 76 | 77 | 79 | 160..=167 | 176..=181 | 183 | 192..=199 | 232
                                 )
-                                | (9, 22 | 31)
-                                | (10, 0..=7 | 13 | 14 | 16 | 18 | 19 | 36 | 37 | 65 | 68..=71 | 77 | 87..=94 | 96)
+                                | (9, 3 | 22 | 31)
+                                | (10, 0..=7 | 11 | 13 | 14 | 16 | 18 | 19 | 36 | 37 | 65 | 68..=71 | 77 | 87..=94 | 96)
                                 | (11, 0..=44)
                                 | (14, 6 | 7 | 8 | 9)
                         )
@@ -13298,6 +13476,7 @@ impl Level2ResetSession {
                     | ExistingHandler::Creature24
                     | ExistingHandler::Spider
                     | ExistingHandler::SpiderWeb
+                    | ExistingHandler::LightningProjectile
             ),
             Level2SourceRoute::Dynamic(row) => match row.kind {
                 Level2DynamicArenaKind::CastleProjectile
@@ -13857,6 +14036,7 @@ impl Level2ResetSession {
         pass_start_class5_model_slots: &[Vec<u16>; 29],
         pass_start_class3_slots: &[u16],
         effect_lists: &area_damage::EffectLists,
+        pass_start_capture_slots: &[u16],
         pass_start_settlement_building_slots: &[u16],
         pass_start_castle_auxiliary_membership:
             &level2_dynamic_economy::Level2CastleAuxiliaryMembership,
@@ -13997,6 +14177,134 @@ impl Level2ResetSession {
                         -1,
                         u16::from(sound),
                     );
+                }
+                self.append_new_economy_events(pass, source_slot);
+            }
+            (ExistingHandler::LightningProjectile, Level2SourceRoute::Imported) => {
+                let live = &mut self.session.state.live;
+                let owner_range = live
+                    .economy
+                    .entities
+                    .get(usize::from(source_slot))
+                    .and_then(|row| live.economy.entities.get(usize::from(row.source_id)))
+                    .and_then(|owner| owner.parameter_relation)
+                    .and_then(|index| {
+                        self.session
+                            .definition
+                            .presentation
+                            .entity_parameters
+                            .get(usize::from(index))
+                    })
+                    .map_or(0, |row| u16::from_le_bytes([row[28], row[29]]));
+                let empty_models = std::array::from_fn(|_| Vec::new());
+                let valid_heads = effect_lists.is_current(&live.economy);
+                let targets = guided_projectile::Targets {
+                    class3: if valid_heads {
+                        pass_start_class3_slots
+                    } else {
+                        &[]
+                    },
+                    class5: if valid_heads {
+                        pass_start_class5_model_slots
+                    } else {
+                        &empty_models
+                    },
+                    class10: if valid_heads {
+                        pass_start_capture_slots
+                    } else {
+                        &[]
+                    },
+                    owner_target_range: owner_range,
+                };
+                let outcome = lightning::step_projectile(
+                    &mut live.economy,
+                    &mut live.terrain,
+                    &self.session.definition.presentation.particles,
+                    source_slot,
+                    Some(&targets),
+                )?;
+                if let Some((owner, family, count)) = outcome.experience {
+                    live.shared_spells
+                        .award_spell_experience(owner, family, i32::from(count));
+                    if let Some(source) = live
+                        .shared_spells
+                        .players
+                        .iter()
+                        .find(|player| player.entity_index == owner)
+                        && let Some(player) = live
+                            .core
+                            .players
+                            .iter_mut()
+                            .find(|player| player.entity_index == owner)
+                    {
+                        player.sync_spell_progression_family_from(source, usize::from(family));
+                    }
+                    if owner == player_entity_index
+                        && let Some(fire) = live.core.context.spell_fire.as_mut()
+                    {
+                        fire.spell_experience[usize::from(family)] =
+                            live.shared_spells.spell_experience[usize::from(family)];
+                        fire.spell_levels[usize::from(family)] =
+                            live.shared_spells.spell_levels[usize::from(family)];
+                    }
+                }
+                for (slot, mana) in outcome.mana_updates {
+                    if let Some(player) = live.economy.entities.get_mut(usize::from(slot)) {
+                        player.set_mana(mana);
+                        live.shared_spells.sync_player_entity_from_authority(player);
+                        if slot == player_entity_index {
+                            live.shared_spells.player_mana = mana;
+                            live.shared_spells.caster.mana = mana;
+                            live.shared_spells
+                                .sync_typed_spell_parent_caches_from_player_entity();
+                            if let Some(fire) = live.core.context.spell_fire.as_mut() {
+                                fire.caster.mana = mana;
+                            }
+                        }
+                    }
+                }
+                if outcome.music_player == Some(player_entity_index) {
+                    live.core.state.music_countdown = 100;
+                }
+                if let Some((owner, hit)) = outcome.accuracy {
+                    for player in live
+                        .core
+                        .players
+                        .iter_mut()
+                        .chain(live.shared_spells.players.iter_mut())
+                        .filter(|player| player.entity_index == owner)
+                    {
+                        player.projectile_attempts = player.projectile_attempts.wrapping_add(1);
+                        if hit {
+                            player.projectile_hits = player.projectile_hits.wrapping_add(1);
+                        }
+                    }
+                    if live.shared_spells.local_player.entity_index == owner
+                        && let Some(player) = live
+                            .shared_spells
+                            .players
+                            .iter()
+                            .find(|player| player.entity_index == owner)
+                    {
+                        live.shared_spells.local_player = player.clone();
+                    }
+                }
+                if let Some(slot) = outcome.captured_holder {
+                    if let Some(holder) = live.shared_spells.pickup_mut(slot) {
+                        holder.active_value = 1;
+                        holder.record[50..52].copy_from_slice(&1_i16.to_le_bytes());
+                    }
+                    if let Some(fire) = live.core.context.spell_fire.as_mut()
+                        && let Some(holder) = fire
+                            .holders
+                            .iter_mut()
+                            .find(|holder| holder.entity_index == slot)
+                    {
+                        holder.active_value = 1;
+                    }
+                }
+                for (slot, sound) in outcome.sounds {
+                    live.economy.prepare_sound(slot, slot, -1, sound);
                 }
                 self.append_new_economy_events(pass, source_slot);
             }
@@ -14566,6 +14874,17 @@ impl Level2ResetSession {
                     .live
                     .shared_spells
                     .pickup(source_slot)
+                    .is_some_and(|holder| holder.model == 9 && holder.action == 27)
+                {
+                    self.step_lightning_holder_source_slot(source_slot)?;
+                    return Ok(());
+                }
+                if self
+                    .session
+                    .state
+                    .live
+                    .shared_spells
+                    .pickup(source_slot)
                     .is_some_and(|holder| holder.model == 3 && holder.action == 9)
                 {
                     if !self.step_speed_holder_source_slot(source_slot) {
@@ -14961,6 +15280,10 @@ impl Level2ResetSession {
                     }
                     return Ok(());
                 }
+                // sub_1F0C0 searches live map chains, so resolve current
+                // projectile carriers here rather than at the pass prefix.
+                let projectiles = self.current_dragon_projectile_threats();
+                let terrain = &self.session.state.live.terrain;
                 let live = match action {
                     level2_class5::dragon::DRAGON_ROAM_ACTION => self
                         .session
@@ -14972,6 +15295,7 @@ impl Level2ResetSession {
                             goat_players,
                             frozen_model0_slots,
                             terrain,
+                            &projectiles,
                         )?,
                     level2_class5::dragon::DRAGON_ATTACK_ACTION => {
                         let target_entity_index = self
@@ -14999,6 +15323,7 @@ impl Level2ResetSession {
                                 target,
                                 frozen_model0_slots,
                                 terrain,
+                                &projectiles,
                             )?;
                         if let Some(launch) = step.fireball {
                             let source_arena = &mut self.session.state.live.economy;
@@ -15045,6 +15370,7 @@ impl Level2ResetSession {
                             source_slot,
                             frozen_model0_slots,
                             terrain,
+                            &projectiles,
                         )?,
                     _ => {
                         return Err(format!(
@@ -15360,6 +15686,26 @@ impl Level2ResetSession {
                     {
                         self.activate_level2_authored_spell_group(pass, source_slot, target_group);
                     }
+                }
+                if matches!(
+                    row.kind,
+                    Level2DynamicArenaKind::SpellPickup | Level2DynamicArenaKind::SpellReplacement
+                ) && self
+                    .session
+                    .state
+                    .live
+                    .shared_spells
+                    .pickup(source_slot)
+                    .is_some_and(|holder| holder.model == 9 && holder.action == 27)
+                {
+                    self.step_lightning_holder_source_slot(source_slot)?;
+                    self.append_new_economy_events(pass, source_slot);
+                    self.push_dispatch_effect(Level2DispatchEvent::DynamicArena {
+                        pass,
+                        source_slot,
+                        kind: row.kind,
+                    });
+                    return Ok(());
                 }
                 if matches!(
                     row.kind,
@@ -17486,6 +17832,7 @@ impl Level2ResetSession {
             pass_start_mana_sphere_slots: BTreeSet::new(),
             pass_start_class5_model_slots: std::array::from_fn(|_| Vec::new()),
             pass_start_class3_slots: Vec::new(),
+            pass_start_capture_slots: Vec::new(),
             effect_lists: Default::default(),
             pass_start_settlement_building_slots: Vec::new(),
             pass_start_class5_model_present: [false; 29],
@@ -17853,6 +18200,111 @@ impl Level2ResetSession {
             holder.active_value = transition.active_value;
         }
         Ok(true)
+    }
+
+    fn current_dragon_projectile_threats(
+        &self,
+    ) -> Vec<level2_class5::dragon::DragonProjectileThreat> {
+        use level2_class5::dragon::DragonProjectileThreat;
+        let arena = &self.session.state.live.economy;
+        let dynamic_slots = arena
+            .live_arena_slots()
+            .into_iter()
+            .map(|(slot, _)| slot)
+            .collect::<BTreeSet<_>>();
+        let mut rows = arena
+            .entities
+            .iter()
+            .filter(|row| row.active && row.class == 9 && !dynamic_slots.contains(&row.index))
+            .map(|row| DragonProjectileThreat {
+                source_slot: row.index,
+                target: row.source_word_96(),
+                life: row.life,
+                flags: row.control_flags,
+                yaw: row.yaw,
+            })
+            .collect::<Vec<_>>();
+        rows.extend(
+            arena
+                .fireball_projectiles()
+                .iter()
+                .filter(|row| row.active)
+                .map(|row| DragonProjectileThreat {
+                    source_slot: row.source_entity_index,
+                    target: row.target_source_entity_index,
+                    life: i32::from(row.life),
+                    yaw: row.yaw,
+                    flags: row.control_flags
+                        | if row.drawing_disabled {
+                            ENTITY_DRAW_DISABLED_BIT
+                        } else {
+                            0
+                        },
+                }),
+        );
+        rows.extend(
+            arena
+                .possession_projectiles()
+                .iter()
+                .filter(|row| row.active)
+                .map(|row| DragonProjectileThreat {
+                    source_slot: row.source_entity_index,
+                    target: row.target_source_entity_index,
+                    life: i32::from(row.life),
+                    yaw: row.yaw,
+                    flags: 0,
+                }),
+        );
+        rows.extend(
+            arena
+                .castle_projectiles()
+                .iter()
+                .filter(|row| row.active)
+                .map(|row| DragonProjectileThreat {
+                    source_slot: row.source_entity_index,
+                    target: row.source_word_96,
+                    life: row.life,
+                    yaw: row.yaw,
+                    flags: row.control_flags
+                        | if row.drawing_disabled {
+                            ENTITY_DRAW_DISABLED_BIT
+                        } else {
+                            0
+                        },
+                }),
+        );
+        rows.extend(
+            arena
+                .authored_class5_archer_children()
+                .iter()
+                .filter(|row| row.active && row.source_class == 9)
+                .map(|row| DragonProjectileThreat {
+                    source_slot: row.source_entity_index,
+                    target: row.word_0x96,
+                    life: i32::from(row.life),
+                    yaw: row.yaw,
+                    flags: row.control_flags
+                        | if row.drawing_enabled {
+                            0
+                        } else {
+                            ENTITY_DRAW_DISABLED_BIT
+                        },
+                }),
+        );
+        rows.extend(
+            arena
+                .model6_spawned_children()
+                .iter()
+                .filter(|row| row.active && row.source_class == 9)
+                .map(|row| DragonProjectileThreat {
+                    source_slot: row.source_entity_index,
+                    target: 0,
+                    life: i32::from(row.life),
+                    yaw: row.yaw,
+                    flags: row.control_flags,
+                }),
+        );
+        rows
     }
 
     fn commit_spell_parent_mana_regen(&mut self, parent_entity_index: u16, mana_regen: i32) {
@@ -22117,6 +22569,7 @@ impl Level2ResetSession {
     /// service that remain live while `UpdateEntities` is paused. No source
     /// callback, player input, gameplay turn, or flight tick is advanced.
     pub(crate) fn service_paused_outer_frame(&mut self) {
+        self.advance_campaign_palette_frame();
         self.session.state.scratch.dispatch_events.clear();
         self.session.state.scratch.nyphur_dispatch_traces.clear();
         self.session.state.live.economy.advance_global_rng();
@@ -22176,6 +22629,15 @@ impl Level2ResetSession {
         if actions == ObjectivePresentationActions::default() {
             return;
         }
+        if actions.palette_flash {
+            self.session
+                .state
+                .live
+                .economy
+                .fields
+                .palette
+                .request(crate::world::fields::PaletteRequest { mode: 8, count: 0 });
+        }
         if let Some(sound_id) = actions.sound_id {
             self.push_flight_effect(FlightEvent::PrepareSound {
                 #[cfg(test)]
@@ -22191,15 +22653,9 @@ impl Level2ResetSession {
             .append_objective_presentation(turn, actions);
     }
 
-    pub(crate) fn step_outer_turn_with_tuning(
-        &mut self,
-        command: PlayerCommand,
-        speed_index: u8,
-        flight_tuning: crate::FlightTuning,
-    ) -> Vec<crate::StepEvidence> {
-        #[cfg(test)]
-        CF10_PRODUCTION_SCHEDULE_RECEIPTS.with(|receipts| receipts.borrow_mut().clear());
-        let state_before = self.session.state.clone();
+    // PaletteChanges runs in the outer-frame prefix, including while entity
+    // dispatch is paused. PresentObjective requests the following frame's flash.
+    fn advance_campaign_palette_frame(&mut self) {
         let field_speed_gate = self
             .session
             .state
@@ -22213,6 +22669,18 @@ impl Level2ResetSession {
         {
             effects.move_speed_flag = 1;
         }
+    }
+
+    pub(crate) fn step_outer_turn_with_tuning(
+        &mut self,
+        command: PlayerCommand,
+        speed_index: u8,
+        flight_tuning: crate::FlightTuning,
+    ) -> Vec<crate::StepEvidence> {
+        #[cfg(test)]
+        CF10_PRODUCTION_SCHEDULE_RECEIPTS.with(|receipts| receipts.borrow_mut().clear());
+        let state_before = self.session.state.clone();
+        self.advance_campaign_palette_frame();
         self.session.state.scratch.dispatch_events.clear();
         self.session.state.scratch.nyphur_dispatch_traces.clear();
         self.session.state.scratch.economy_event_cursor =
@@ -23963,6 +24431,108 @@ mod tests {
                     && message.contains("raw model")
             )
         }));
+    }
+
+    #[test]
+    fn mission_four_lightning_reward_reaches_acquisition_and_live_holder_dispatch() {
+        let root = std::env::var_os("MC_ORDINARY_CAMPAIGN_PACKAGES").map_or_else(
+            || {
+                std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../../generated/mc-bhq6-ordinary-20261025-zclu5fjj")
+            },
+            std::path::PathBuf::from,
+        );
+        let mut campaign =
+            CampaignSession::open(root.join("level4"), CampaignSelection::ordinary(4).unwrap())
+                .expect("actual Arachnium package opens");
+        let creature_bindings = campaign.definition().authored_creature_entity_bindings();
+        let spider = campaign
+            .definition()
+            .level_definition()
+            .entity(&creature_bindings[&137])
+            .expect("authored Spider has an immutable semantic join");
+        assert_eq!(
+            spider.position_access(),
+            crate::level_definition::LevelEntityPositionAccess::ReadOnly
+        );
+        assert_eq!(spider.creature_health().unwrap().max_life(), 5500);
+        let session = campaign.level2_compatibility_mut();
+        // Diagnostic at the authored group boundary, not earned mission progress.
+        session
+            .consume_authored_group(0, 0, 6)
+            .expect("source group6 admits its Lightning reward");
+        let ring = session
+            .entities()
+            .iter()
+            .find(|row| row.active && (row.class, row.model, row.action) == (10, 11, 11))
+            .expect("the same authored group produces its lowering-ring controller");
+        let (ring_slot, ring_life) = (ring.index, ring.life);
+        let pickup = session
+            .economy()
+            .spell_pickups()
+            .iter()
+            .find(|row| row.authored_index == 255)
+            .copied()
+            .expect("actual row255 is materialized");
+        assert_eq!((pickup.family, pickup.action), (9, 28));
+        assert_eq!(
+            session.spell_kind_for_source_slot(pickup.source_entity_index),
+            Some(SpellKind::Lightning)
+        );
+        let player = session.state.entity_index;
+        session
+            .set_level2_entity_position(player, pickup.position)
+            .unwrap();
+        let visits = usize::from((4_u8.wrapping_sub(pickup.phase & 3)) & 3) + 1;
+        for _ in 0..visits {
+            session.step_outer_turn(PlayerCommand::default(), 0);
+            assert!(
+                session
+                    .dispatch_events()
+                    .iter()
+                    .all(|event| !matches!(event, Level2DispatchEvent::Error { .. })),
+                "real pickup source visits must remain dispatchable: {:?}",
+                session.dispatch_events()
+            );
+        }
+        assert!(
+            session.entities()[usize::from(ring_slot)].life < ring_life,
+            "authored lowering ring reaches the existing terrain callback"
+        );
+        let holder = session
+            .shared_spells()
+            .pickup(pickup.source_entity_index)
+            .unwrap();
+        assert_eq!(
+            (
+                holder.model,
+                holder.action,
+                holder.source_spell_parent_entity_index()
+            ),
+            (9, 27, player)
+        );
+        assert_eq!(
+            (holder.max_mana, holder.mana_regen, holder.activation_value),
+            (1000, 5000, 9)
+        );
+        let phase = holder.phase;
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        let holder = session
+            .shared_spells()
+            .pickup(pickup.source_entity_index)
+            .unwrap();
+        assert_eq!((holder.action, holder.phase), (27, phase.wrapping_add(1)));
+        assert!(
+            session
+                .dispatch_events()
+                .iter()
+                .all(|event| !matches!(event, Level2DispatchEvent::Error { .. })),
+            "acquired Lightning dispatches its active owner without changing objectives"
+        );
+        assert_eq!(
+            session.players()[0].enabled_spell_holders[9],
+            pickup.source_entity_index
+        );
     }
 
     #[test]

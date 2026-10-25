@@ -1079,7 +1079,12 @@ mod tests {
             live.terrain.planes.secondary_heights = planes.secondary_heights;
             let slot = live
                 .shared_spells
-                .materialize_authored_spell_pickup(&mut live.economy, feature, &live.terrain)
+                .materialize_authored_spell_pickup(
+                    &mut live.economy,
+                    feature,
+                    &live.terrain,
+                    &session.session.definition.presentation.particles,
+                )
                 .unwrap()
                 .unwrap();
             let mut start = live.shared_spells.pickup(slot).unwrap().position;
