@@ -5513,9 +5513,9 @@ impl Level2ResetSession {
                 castle.position,
             ));
         }
-        // SetManaSphereColorAndRot_36920 reads the raw player relation, not
-        // the semantic ownership projection. TransformPlayerColorIndex's
-        // offline permutation applies to both spheres and Castle balloons.
+        // Spheres retain their particle from the actual model-39 callback.
+        // Castle balloons still resolve their current raw player relation
+        // through TransformPlayerColorIndex's offline permutation here.
         let source_owner_color = |relation: u16| -> Result<Option<u16>> {
             self.players()
                 .iter()
@@ -5535,13 +5535,10 @@ impl Level2ResetSession {
                 && !sphere.pending_delete
                 && sphere.control_flags & (ENTITY_DRAW_DISABLED_BIT | 0x21) == 0
         }) {
-            let color_base =
-                source_owner_color(sphere.player_entity_index)?.map_or(52, |color| 105 + 8 * color);
             candidates.push((
                 sphere.source_entity_index,
                 sphere.source_entity_index,
-                color_base
-                    + u16::from(crate::level1_mission::mana_sphere_size_ordinal(sphere.mana)),
+                sphere.particle_index,
                 sphere.yaw,
                 sphere.position,
             ));
@@ -6049,25 +6046,26 @@ impl Level2ResetSession {
         pass_start_class5_model_present: &[bool; 29],
         pass_start_model45_building_selectors: &[u8],
     ) {
-        let owner_colors = self
+        let owners = self
             .session
             .state
             .live
             .core
             .players
             .iter()
+            .enumerate()
             .take(usize::from(
                 self.session.state.live.core.runtime.player_count,
             ))
-            .filter(|player| player.active_player_index >= 0)
-            .map(|player| usize::from(player.player_color_index()))
+            .filter(|(_, player)| player.active_player_index >= 0)
+            .map(|(source_slot, player)| (source_slot, usize::from(player.player_color_index())))
             .collect::<Vec<_>>();
         let stage_count = usize::from(self.session.state.live.core.runtime.stage_index)
             .min(self.session.state.live.core.runtime.stages.len());
         let player_x = i32::from(self.session.state.live.core.state.position.x as i16);
         let player_y = i32::from(self.session.state.live.core.state.position.y as i16);
 
-        for objective_index in owner_colors {
+        for (source_player_slot, objective_index) in owners {
             let Some(objective) = self
                 .session
                 .state
@@ -6092,6 +6090,17 @@ impl Level2ResetSession {
             if objective.is_level_end != 0 {
                 continue;
             }
+            let other_players_banished = crate::campaign::objectives::all_other_players_banished(
+                source_player_slot,
+                self.session.state.live.core.runtime.player_count,
+                self.session
+                    .state
+                    .live
+                    .core
+                    .players
+                    .iter()
+                    .map(|player| player.objective_player_state()),
+            );
             let mut completed = Vec::new();
             for stage_index in 0..stage_count {
                 if objective.stage_selectors[stage_index] != 1 {
@@ -6167,6 +6176,10 @@ impl Level2ResetSession {
                             } else {
                                 false
                             }
+                        }
+                        ObjectiveCondition::AllOtherPlayersBanished => {
+                            objective.text_selector as usize == stage_index
+                                && other_players_banished
                         }
                         ObjectiveCondition::ReachLocation(location) => {
                             if objective.text_selector as usize != stage_index {
@@ -6279,6 +6292,10 @@ impl Level2ResetSession {
                                     <= LEVEL2_OBJECTIVE_POINT_RADIUS
                                 && (i32::from(stage.axis_y) - player_y).abs()
                                     <= LEVEL2_OBJECTIVE_POINT_RADIUS
+                        }
+                        8 => {
+                            objective.text_selector as usize == stage_index
+                                && other_players_banished
                         }
                         7 => {
                             objective.text_selector as usize == stage_index
@@ -8425,8 +8442,11 @@ impl Level2EconomyTestView<'_> {
         (source_slot: u16) -> bool);
     terrain_method!(step_possession_projectile_slot,
         (source_slot: u16) -> bool);
-    terrain_method!(step_mana_sphere_slot,
-        (sphere_slot: u16) -> bool);
+    pub(crate) fn step_mana_sphere_slot(&mut self, sphere_slot: u16) -> bool {
+        self.session
+            .step_level2_mana_sphere_source_slot(sphere_slot)
+            .expect("qualified player colors remain valid during sphere dispatch")
+    }
     terrain_method!(step_mana_carrier_slot,
         (carrier_slot: u16) -> bool);
 
@@ -19564,6 +19584,32 @@ impl Level2ResetSession {
         true
     }
 
+    fn step_level2_mana_sphere_source_slot(&mut self, source_slot: u16) -> Result<bool> {
+        const OFFLINE_COLORS: [u16; 8] = [0, 1, 4, 3, 2, 5, 7, 6];
+        let live = &mut self.session.state.live;
+        let players = &live.core.players;
+        // Reject malformed source colors before mutating the sphere. The
+        // callback resolves its final raw owner after mailbox/merge handling.
+        if players.iter().any(|player| {
+            player.entity_index != 0
+                && usize::from(player.player_color_index()) >= OFFLINE_COLORS.len()
+        }) {
+            return Err(NativeWorldError::new(
+                "campaign owner color is out of bounds",
+            ));
+        }
+        Ok(live
+            .economy
+            .step_mana_sphere_slot(source_slot, &live.terrain, |relation| {
+                players
+                    .iter()
+                    .find(|player| relation != 0 && player.entity_index == relation)
+                    .map_or(52, |player| {
+                        105 + 8 * OFFLINE_COLORS[usize::from(player.player_color_index())]
+                    })
+            }))
+    }
+
     /// Dispatch one live dynamic row. The source class-10/model-1 burst
     /// handler applies its `life-- < 0` drawing gate; all dynamic families
     /// remain on the shared cursor and reclaim policy.
@@ -19655,12 +19701,17 @@ impl Level2ResetSession {
                     .step_castle_defender_slot(source_slot, terrain)
             }
             Level2DynamicArenaKind::ManaSphere => {
-                let terrain = &self.session.state.live.terrain;
-                self.session
-                    .state
-                    .live
-                    .economy
-                    .step_mana_sphere_slot(source_slot, terrain)
+                match self.step_level2_mana_sphere_source_slot(source_slot) {
+                    Ok(live) => live,
+                    Err(error) => {
+                        self.push_dispatch_effect(Level2DispatchEvent::Error {
+                            pass,
+                            source_slot,
+                            message: error.to_string(),
+                        });
+                        false
+                    }
+                }
             }
             Level2DynamicArenaKind::ManaCarrier => {
                 let terrain = &self.session.state.live.terrain;

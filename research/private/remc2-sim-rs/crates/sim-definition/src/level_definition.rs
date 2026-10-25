@@ -865,6 +865,7 @@ const fn is_read_only_entity_parameter(access: &LevelEntityParameterAccess) -> b
 pub enum ObjectiveCondition {
     ReachLocation(TilePosition),
     DefeatRivalWizard(RivalWizardId),
+    AllOtherPlayersBanished,
     NoLivingCreatures(CreatureKind),
     CastleManaPercent(u16),
     NoStandingBuildings,

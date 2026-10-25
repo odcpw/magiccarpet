@@ -64,7 +64,6 @@ use crate::{
         TREE_DEAD_RENDER_INDEX_B, TREE_LOGICAL_HEIGHT, TREE_RENDER_INDEX_A, TREE_RENDER_INDEX_B,
         TREE_RENDER_MODE, WATER_SPLASH_BASE_TMAP, WATER_SPLASH_LOGICAL_HEIGHT,
         WATER_SPLASH_RENDER_INDEX, ground_fire_presentation, impact_is_presentational,
-        mana_sphere_size_ordinal,
     },
     mode5_raster::{Mode5Vertex, rasterize_mode5_triangle_from_tile_atlas},
     mode26_raster::{
@@ -2066,26 +2065,25 @@ fn raster_world_chain(
             if !sphere.active || sphere.pending_delete {
                 continue;
             }
-            let selector = if sphere.owner_entity_index == 0 {
+            let selector = if (MANA_SPHERE_NEUTRAL_RENDER_BASE..MANA_SPHERE_NEUTRAL_RENDER_BASE + 8)
+                .contains(&sphere.particle_index)
+            {
                 MANA_SPHERE_NEUTRAL_BASE_TMAP
-            } else if sphere.owner_entity_index == world_resources.local_player_entity_index {
+            } else if (MANA_SPHERE_PLAYER_ONE_RENDER_BASE..MANA_SPHERE_PLAYER_ONE_RENDER_BASE + 8)
+                .contains(&sphere.particle_index)
+            {
                 MANA_SPHERE_PLAYER_ONE_BASE_TMAP
             } else {
                 return Err(TerrainFrameError(format!(
-                    "mana sphere entity {entity_index} owner {} has no qualified Level 1 color selector",
-                    sphere.owner_entity_index
+                    "mana sphere entity {entity_index} particle {} has no qualified Level 1 color selector",
+                    sphere.particle_index
                 )));
             };
-            let size_ordinal = mana_sphere_size_ordinal(sphere.mana);
-            let render_index = if sphere.owner_entity_index == 0 {
-                MANA_SPHERE_NEUTRAL_RENDER_BASE + u16::from(size_ordinal)
-            } else {
-                MANA_SPHERE_PLAYER_ONE_RENDER_BASE + u16::from(size_ordinal)
-            };
+            let size_ordinal = sphere.particle_size_ordinal();
             Some((
                 sphere.position,
                 sphere.yaw,
-                render_index,
+                sphere.particle_index,
                 selector,
                 u16::from(size_ordinal + 1) * 50,
                 true,

@@ -1598,16 +1598,12 @@ impl Level2EconomyState {
                     continue;
                 };
                 let sphere = self.spheres[sphere_index];
-                let dimension = level2_mana_sphere_dimension(sphere.mana);
-                if crate::level1_mission::source_entities_overlap(
+                if sphere.overlaps_source_axes(
                     effect.position,
+                    POSSESSION_IMPACT_COLLISION_HALF_WIDTH,
                     POSSESSION_IMPACT_COLLISION_HALF_WIDTH,
                     POSSESSION_IMPACT_COLLISION_VERTICAL_OFFSET,
                     POSSESSION_IMPACT_COLLISION_HALF_HEIGHT,
-                    sphere.position,
-                    dimension,
-                    dimension,
-                    dimension,
                 ) {
                     let sphere = &mut self.spheres[sphere_index];
                     sphere.incoming_owner_entity_index = effect.source_id_entity_index;
@@ -1807,6 +1803,11 @@ impl Level2EconomyState {
             max_life: 300,
             life: 300,
             mana: sphere_mana,
+            particle_index: 53,
+            collision_yaw: 28,
+            collision_pitch: 28,
+            collision_roll: 28,
+            collision_fov: 28,
             owner_entity_index,
             player_entity_index: owner_entity_index,
             incoming_owner_entity_index: 0,
@@ -2847,7 +2848,12 @@ impl Level2EconomyState {
     /// production handler: carrier attraction and possession mailbox input
     /// remain separate source actions, while this method makes the dynamic
     /// arena row itself stateful and reclaimable by the outer dispatcher.
-    pub fn step_mana_sphere_slot(&mut self, sphere_slot: u16, terrain: &SessionTerrain) -> bool {
+    pub fn step_mana_sphere_slot(
+        &mut self,
+        sphere_slot: u16,
+        terrain: &SessionTerrain,
+        color_base_for_owner: impl Fn(u16) -> u16,
+    ) -> bool {
         let Some(sphere_index) = self
             .spheres
             .iter()
@@ -2855,6 +2861,17 @@ impl Level2EconomyState {
         else {
             return false;
         };
+        // Source byte1 bit8 skips this entire callback body once, including
+        // the color update; the common phase epilogue still runs.
+        if self.spheres[sphere_index].control_flags & 0x800 != 0 {
+            let sphere = &mut self.spheres[sphere_index];
+            sphere.control_flags &= !0x800;
+            sphere.phase = sphere.phase.wrapping_add(1);
+            return true;
+        }
+        let owner_changed = self.spheres[sphere_index].incoming_owner_entity_index != 0
+            && self.spheres[sphere_index].incoming_owner_entity_index
+                != self.spheres[sphere_index].player_entity_index;
         // `TransformArcherToMana_35940` consumes the model-12 mailbox before
         // movement. A tier-0 pulse transfers only when the raw protected bit
         // is clear. The accepted source branch writes `word_0x68` into
@@ -3176,6 +3193,11 @@ impl Level2EconomyState {
             .iter_mut()
             .find(|sphere| sphere.active && sphere.source_entity_index == sphere_slot)
             .expect("the source sphere remains after absorbing a collision peer");
+        // Source36920 follows collision/merge in the ordinary movement
+        // branch, and is skipped while fading unless a new owner was offered.
+        if !merge_suppressed || owner_changed {
+            sphere.apply_particle_color(color_base_for_owner(sphere.player_entity_index));
+        }
         if sphere.control_flags & LEVEL2_MANA_SPHERE_TARGET_SUPPRESSION_BIT != 0 {
             sphere.life = sphere.life.wrapping_sub(1);
             match sphere.life {
@@ -4896,6 +4918,11 @@ impl Level2EconomyState {
                 max_life: 300,
                 life: 300,
                 mana: sphere_mana,
+                particle_index: 53,
+                collision_yaw: 28,
+                collision_pitch: 28,
+                collision_roll: 28,
+                collision_fov: 28,
                 owner_entity_index: castle.owner_entity_index,
                 // `sub_5FD00` writes the Castle root's raw id relation, not
                 // the separate presentation owner field.  The defender's

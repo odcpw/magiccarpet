@@ -1922,6 +1922,31 @@ mod tests {
                     row.control_flags & !crate::level1_mission::SOURCE_REPLACEABLE_FLAG,
                 );
             }
+            let old_tile = (0..=u16::MAX)
+                .find(|tile| arena.economy.map_chains.tile_head(*tile) == 0)
+                .unwrap();
+            let old_position = Position {
+                x: ((old_tile & 255) << 8) + 128,
+                y: (old_tile & 0xff00) + 128,
+                z: 128,
+            };
+            // Capture lower addresses before the root exists. Their death
+            // products must wait for the following ascending source scan.
+            let mut replaced = Vec::new();
+            for _ in 0..capacity {
+                let victim = crate::world::effects::allocate(
+                    &mut arena,
+                    &mut terrain,
+                    sim_definition::adapter::mc2_effect_definition(
+                        crate::level_definition::EffectKind::Impact,
+                    ),
+                    old_position,
+                    &inspection.presentation().particles,
+                )
+                .unwrap()
+                .unwrap();
+                replaced.push((victim, arena.slot_generation(victim)));
+            }
             let parent = construct_campaign_archer(
                 &mut arena,
                 &mut terrain,
@@ -1947,29 +1972,6 @@ mod tests {
                 .economy
                 .source_owner
                 .insert(slot, session.state.entity_index);
-            let old_tile = (0..=u16::MAX)
-                .find(|tile| arena.economy.map_chains.tile_head(*tile) == 0)
-                .unwrap();
-            let old_position = Position {
-                x: ((old_tile & 255) << 8) + 128,
-                y: (old_tile & 0xff00) + 128,
-                z: 128,
-            };
-            let mut replaced = Vec::new();
-            for _ in 0..capacity {
-                let victim = crate::world::effects::allocate(
-                    &mut arena,
-                    &mut terrain,
-                    sim_definition::adapter::mc2_effect_definition(
-                        crate::level_definition::EffectKind::Impact,
-                    ),
-                    old_position,
-                    &inspection.presentation().particles,
-                )
-                .unwrap()
-                .unwrap();
-                replaced.push((victim, arena.slot_generation(victim)));
-            }
             arena.economy.exhaust_new_event_capacity_for_test();
             arena.rebuild_source_free_arena();
             assert_eq!(arena.economy.free_slot_count(), 0);
@@ -1997,6 +1999,7 @@ mod tests {
             assert_eq!(arena.economy.source_owner(slot), 0);
             if capacity > 0 {
                 let (child, generation) = replaced[0];
+                assert!(child < slot);
                 let sphere = arena
                     .spheres()
                     .iter()
@@ -2006,6 +2009,20 @@ mod tests {
                 assert_eq!(sphere.mana, 321);
                 assert_eq!(sphere.player_entity_index, session.state.entity_index);
                 assert!(sphere.active && !sphere.pending_delete);
+                assert_eq!(sphere.phase, child as u8);
+                // 500C0 colors the default neutral 512 packet before 36BA0
+                // copies this Archer's mana and owner. Those copies do not
+                // execute 36920 or change the retained collision axes.
+                assert_eq!(
+                    (
+                        sphere.particle_index,
+                        sphere.collision_yaw,
+                        sphere.collision_pitch,
+                        sphere.collision_roll,
+                        sphere.collision_fov,
+                    ),
+                    (53, 28, 28, 28, 28)
+                );
                 assert_eq!(arena.slot_generation(child), generation.wrapping_add(1));
             }
             if capacity == 2 {
@@ -2029,7 +2046,147 @@ mod tests {
                 .rebuild_source_arena_with_terrain(&mut terrain, &[])
                 .unwrap();
             assert!(arena.resolve(old).is_none());
+            if capacity > 0 {
+                let child = replaced[0].0;
+                // The palette resolver is an explicit callback input here;
+                // actual player-color lookup belongs to the root adapter.
+                assert!(
+                    arena
+                        .economy
+                        .step_mana_sphere_slot(child, &terrain, |owner| {
+                            assert_eq!(owner, session.state.entity_index);
+                            105
+                        },)
+                );
+                let sphere = arena
+                    .spheres()
+                    .iter()
+                    .find(|row| row.source_entity_index == child)
+                    .unwrap();
+                assert_eq!(
+                    (
+                        sphere.particle_index,
+                        sphere.collision_yaw,
+                        sphere.collision_pitch,
+                        sphere.collision_roll,
+                        sphere.collision_fov,
+                    ),
+                    (106, 28, 28, 28, 28)
+                );
+                assert_eq!(sphere.phase, (child as u8).wrapping_add(1));
+            }
         }
+    }
+
+    #[test]
+    fn archer_free_stack_reuse_retires_raw_packet_through_hidden_reclaim() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path()).unwrap();
+        let session = inspection.level2_reset_session().unwrap();
+        let mut arena = session.source_arena().clone();
+        let mut terrain = session.canonical_terrain().clone();
+        let mut runtime = session.runtime.clone();
+        let position = archer_position();
+        let slot = crate::world::effects::allocate(
+            &mut arena,
+            &mut terrain,
+            sim_definition::adapter::mc2_effect_definition(
+                crate::level_definition::EffectKind::DarkSmoke,
+            ),
+            position,
+            &inspection.presentation().particles,
+        )
+        .unwrap()
+        .unwrap();
+        let raw_handle = arena.handle(slot).unwrap();
+        let raw_rng = arena.entities[usize::from(slot)].entity_rng;
+        // Reproduce the actual raw/pool boundary seen in A1's 3aa trace.
+        // The pool owns the address; an old raw packet still has class10/14.
+        crate::world::effects::sync_position(
+            &mut arena,
+            &mut terrain,
+            slot,
+            position,
+            false,
+            false,
+        )
+        .unwrap();
+        arena.economy.release_slot(slot, Some(raw_rng));
+        assert!(arena.entities[usize::from(slot)].active);
+        let parent =
+            construct_campaign_archer(&mut arena, &mut terrain, 232, position, ARCHER_MAX_LIFE)
+                .unwrap();
+        assert_eq!(parent.source_entity_index, slot);
+        assert!(!arena.entities[usize::from(slot)].active);
+        assert_eq!(arena.entities[usize::from(slot)].class, 0);
+        assert!(arena.resolve(raw_handle).is_none());
+        let root_handle = arena.handle(slot).unwrap();
+        assert_eq!(
+            root_handle.generation,
+            raw_handle.generation.wrapping_add(1)
+        );
+        for row in &mut arena.entities {
+            row.set_control_flags(
+                row.control_flags & !crate::level1_mission::SOURCE_REPLACEABLE_FLAG,
+            );
+        }
+        arena.economy.exhaust_new_event_capacity_for_test();
+        arena.rebuild_source_free_arena();
+        let root = arena
+            .economy
+            .authored_class5
+            .iter_mut()
+            .find(|row| row.source_entity_index == slot)
+            .unwrap();
+        root.action = ARCHER_ACTION_KILL;
+        root.source_byte_3e = 0;
+        root.phase = 0;
+        root.mana = 0;
+        let families = arena.rebuilt_class5_model_slots();
+        step_source_runtime(
+            &mut arena,
+            &mut runtime,
+            &mut terrain,
+            &inspection.presentation().particles,
+            slot,
+            &families,
+            &[],
+            &[],
+        )
+        .unwrap();
+        assert!(arena.resolve(root_handle).is_some());
+        assert!(
+            !arena
+                .authored_class5()
+                .iter()
+                .find(|row| row.source_entity_index == slot)
+                .unwrap()
+                .drawing_enabled
+        );
+        assert_eq!(arena.economy.free_slot_count(), 0);
+        // The real following-pass owner sequence unlinks, then releases.
+        crate::world::effects::sync_position(
+            &mut arena,
+            &mut terrain,
+            slot,
+            position,
+            false,
+            false,
+        )
+        .unwrap();
+        arena.reclaim_hidden_archer_rows_at_source_boundary();
+        assert!(arena.handle(slot).is_none());
+        assert!(arena.resolve(root_handle).is_none());
+        assert_eq!(arena.economy.free_slot_count(), 1);
+        arena.reclaim_hidden_archer_rows_at_source_boundary();
+        assert_eq!(arena.economy.free_slot_count(), 1);
+        let replacement =
+            construct_campaign_archer(&mut arena, &mut terrain, 233, position, ARCHER_MAX_LIFE)
+                .unwrap();
+        assert_eq!(replacement.source_entity_index, slot);
+        assert_eq!(
+            arena.handle(slot).unwrap().generation,
+            root_handle.generation.wrapping_add(1)
+        );
     }
 
     #[test]

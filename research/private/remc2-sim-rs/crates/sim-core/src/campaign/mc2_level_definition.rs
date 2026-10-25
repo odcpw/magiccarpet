@@ -1185,6 +1185,7 @@ impl Mc2LevelDefinition {
                             })?;
                         ObjectiveCondition::NoLivingCreatures(kind)
                     }
+                    8 => ObjectiveCondition::AllOtherPlayersBanished,
                     9 => {
                         let authored_record =
                             u16::try_from(operation.objective_selector).map_err(|_| {

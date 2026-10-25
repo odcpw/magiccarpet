@@ -7,6 +7,32 @@
 
 use crate::native_world::RuntimeObjective;
 
+/// Source objective condition 8 reads the declared player-array extent and
+/// excludes its current owner. Actor life, player colour and records beyond
+/// `NumberOfPlayers` do not participate in this predicate. The caller retains
+/// the source current-objective gate and common stage-completion epilogue.
+#[must_use]
+pub(crate) fn all_other_players_banished(
+    current_player_slot: usize,
+    source_player_count: u8,
+    player_states: impl IntoIterator<Item = Option<u8>>,
+) -> bool {
+    let player_count = usize::from(source_player_count);
+    if player_count == 0 || current_player_slot >= player_count {
+        return false;
+    }
+    let mut player_states = player_states.into_iter();
+    for slot in 0..player_count {
+        let Some(state) = player_states.next() else {
+            return false;
+        };
+        if slot != current_player_slot && state != Some(0) {
+            return false;
+        }
+    }
+    true
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ObjectiveState {
     pub stage_index: u8,
@@ -46,6 +72,57 @@ mod tests {
     use crate::{PlayerCommand, level_definition::ObjectiveCondition};
 
     use crate::campaign::{CampaignSelection, CampaignSession};
+
+    #[test]
+    fn condition_eight_uses_only_declared_other_player_flags() {
+        use super::all_other_players_banished as achieved;
+
+        assert!(achieved(1, 3, [Some(0), Some(7), Some(0), Some(255)]));
+        assert!(achieved(0, 1, [None, Some(1)]));
+        assert!(!achieved(0, 2, [Some(0), Some(1)]));
+        assert!(!achieved(0, 2, [Some(0), None]));
+        assert!(!achieved(0, 3, [Some(0), Some(0)]));
+        assert!(!achieved(2, 2, [Some(0), Some(0)]));
+        assert!(!achieved(0, 0, []));
+    }
+
+    #[test]
+    fn owner_seven_condition_eight_has_a_read_only_semantic_binding() {
+        use crate::campaign::{
+            mc2_level_definition::Mc2LevelDefinition, source_facts::decode_building_parameters,
+            spec::DecodedCampaignPackage,
+        };
+        use sim_definition::level_definition::LevelObjectiveConditionAccess;
+
+        let root = std::env::var_os("MC_ORDINARY_CAMPAIGN_PACKAGES").map_or_else(
+            || {
+                PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../../generated/mc-bhq6-ordinary-20261025-zclu5fjj")
+            },
+            PathBuf::from,
+        );
+        let selection = CampaignSelection::ordinary(7).unwrap();
+        let package = DecodedCampaignPackage::decode(root.join("level7"), selection).unwrap();
+        let parameters =
+            decode_building_parameters(package.member("building-parameters.bin").unwrap()).unwrap();
+        let binding = Mc2LevelDefinition::from_authored_bytes(
+            package.authored_bytes(),
+            &package.campaign_spec.objectives,
+            selection,
+            Some(&parameters),
+        )
+        .unwrap();
+        let objectives = binding.semantic.objectives();
+        assert_eq!(objectives.len(), 1);
+        assert_eq!(
+            objectives[0].condition(),
+            ObjectiveCondition::AllOtherPlayersBanished
+        );
+        assert_eq!(
+            objectives[0].condition_access(),
+            LevelObjectiveConditionAccess::ReadOnly
+        );
+    }
 
     fn level_two_session() -> crate::native_world::Level2ResetSession {
         let package = std::env::var_os("MC_CAMPAIGN_PACKAGE").map_or_else(

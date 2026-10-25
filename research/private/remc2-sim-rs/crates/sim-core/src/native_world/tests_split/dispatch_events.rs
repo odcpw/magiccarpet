@@ -1,4 +1,106 @@
 #[test]
+fn condition_eight_root_uses_current_stage_and_source_player_slot() {
+    let inspection = NativeWorld::inspect_level2(level_two_fixture_path()).unwrap();
+    let mut session = inspection.level2_reset_session().unwrap();
+    let baseline = session.campaign_state_hash();
+    // A source-slot/colour permutation discriminates exclusion by the actual
+    // player-array index from exclusion by the objective colour index.
+    for player in session.players.iter_mut() {
+        player.active_player_index = -1;
+        player.banishment_state_0x006 = Some(9);
+    }
+    session.players[0].record[40] = 1;
+    session.players[1].record[40] = 0;
+    session.players[1].active_player_index = 0;
+    session.runtime.player_count = 2;
+    session.runtime.stage_index = 2;
+    session.runtime.stages[0].kind = 8;
+    session.runtime.stages[1].kind = 8;
+    session.runtime.objectives[0] = RuntimeObjective {
+        is_level_end: 0, text_selector: 0, done: 0,
+        stage_selectors: [1, 1, 0, 0, 0, 0, 0, 0],
+    };
+    let target = session.players[0].entity_index;
+    session.economy.entities[usize::from(target)].life = -1;
+    for state in [None, Some(1)] {
+        session.players[0].banishment_state_0x006 = state;
+        session.advance_level2_objectives(&[false; 29], &[]);
+        assert_eq!(&session.runtime.objectives[0].stage_selectors[..2], &[1, 1],
+            "missing/nonzero counted player state remains incomplete despite actor death");
+    }
+    session.players[0].banishment_state_0x006 = Some(0);
+    session.advance_level2_objectives(&[false; 29], &[]);
+    assert_eq!(&session.runtime.objectives[0].stage_selectors[..2], &[2, 1],
+        "only the current stage completes; own and undeclared player flags are excluded");
+    assert_eq!(session.runtime.objectives[0].text_selector, 1);
+    assert_eq!(session.runtime.objectives[0].is_level_end, 0);
+    session.advance_level2_objectives(&[false; 29], &[]);
+    assert_eq!(&session.runtime.objectives[0].stage_selectors[..2], &[2, 2]);
+    assert_eq!(session.runtime.objectives[0].is_level_end, 1);
+    assert_ne!(session.campaign_state_hash(), baseline);
+    session.reset();
+    assert_eq!(session.campaign_state_hash(), baseline);
+}
+
+#[test]
+fn imported_mana_sphere_retains_particle_and_axes_until_current_owner_callback() {
+    let mut session = level_two_campaign_session();
+    let player = session.players().iter().find(|player| player.entity_index != 0)
+        .unwrap().clone();
+    let position = session.session.state.live.core.state.position;
+    let created = session.economy_mut().allocate_authored_model39(0, 0, position)
+        .expect("ordinary sphere constructor reserves the source address");
+    let slot = created.source_entity_index;
+    // Exercise the import boundary with source fields deliberately differing
+    // from what current mana would derive. This is a field-preservation
+    // regression, not an ordinary-play capture.
+    let mut raw = session.entities()[0].clone();
+    raw.index = slot;
+    raw.active = true;
+    raw.class = 10;
+    raw.model = 39;
+    raw.position = position;
+    raw.life = 300;
+    raw.max_life = 300;
+    raw.mana = 8_000;
+    raw.control_flags = 4;
+    raw.particle_parameter_index = Some(53);
+    raw.record[94..96].copy_from_slice(&53_u16.to_le_bytes());
+    for (offset, value) in [(86, 13_i16), (88, 31), (90, 45), (92, 57)] {
+        raw.record[offset..offset + 2].copy_from_slice(&value.to_le_bytes());
+    }
+    let mut imported = level2_static_mana_spheres_from_entities(
+        &[raw.clone()], &BTreeMap::from([(slot, 0)]),
+    ).remove(0);
+    assert_eq!((imported.particle_index, imported.collision_yaw,
+        imported.collision_pitch, imported.collision_roll, imported.collision_fov),
+        (53, 13, 31, 45, 57));
+    raw.particle_parameter_index = None;
+    raw.record[94..96].copy_from_slice(&u16::MAX.to_le_bytes());
+    assert_eq!(level2_static_mana_spheres_from_entities(&[raw],
+        &BTreeMap::from([(slot, 0)]))[0].particle_index, u16::MAX,
+        "an absent decoded index does not discard its raw source bits");
+    imported.incoming_owner_entity_index = player.entity_index;
+    *session.economy_mut().spheres_mut().iter_mut()
+        .find(|sphere| sphere.source_entity_index == slot).unwrap() = imported;
+    let presentation = session.campaign_entity_presentations(0).unwrap();
+    assert_eq!(presentation.iter().find(|row| row.entity_index == slot)
+        .unwrap().render_parameter_index, 53);
+    assert!(session.economy_mut().step_mana_sphere_slot(slot));
+    let sphere = session.economy().spheres().iter()
+        .find(|sphere| sphere.source_entity_index == slot).unwrap();
+    let color = [0_u16, 1, 4, 3, 2, 5, 7, 6][usize::from(player.player_color_index())];
+    assert_eq!(sphere.player_entity_index, player.entity_index);
+    // The source thresholds put 8000 between 4096 and 9192: ordinal5.
+    assert_eq!(sphere.particle_index, 105 + 8 * color + 5);
+    assert_eq!((sphere.collision_yaw, sphere.collision_pitch,
+        sphere.collision_roll, sphere.collision_fov), (84, 84, 84, 84));
+    assert_eq!(session.campaign_entity_presentations(0).unwrap().iter()
+        .find(|row| row.entity_index == slot).unwrap().render_parameter_index,
+        sphere.particle_index);
+}
+
+#[test]
 fn ordinary_player_death_advances_its_dropped_speed_holder() {
     use crate::{
         campaign::backend::{Mc2CampaignAdapter, Mc2CampaignInputs, load_mc2_campaign},

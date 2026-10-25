@@ -1902,12 +1902,7 @@ pub(super) fn level1_house_completion_effects(
 }
 
 pub(super) fn mana_sphere_snapshot(sphere: &ManaSphere) -> McManaSphereSnapshotV2 {
-    let size = usize::from(mana_sphere_size_ordinal(sphere.mana));
-    let render_base = if sphere.owner_entity_index == 0 {
-        MANA_SPHERE_NEUTRAL_RENDER_BASE
-    } else {
-        MANA_SPHERE_PLAYER_ONE_RENDER_BASE
-    };
+    let size = usize::from(sphere.particle_size_ordinal());
     McManaSphereSnapshotV2 {
         abi_version: MC_NATIVE_ABI_VERSION,
         struct_size: struct_size::<McManaSphereSnapshotV2>(),
@@ -1930,12 +1925,12 @@ pub(super) fn mana_sphere_snapshot(sphere: &ManaSphere) -> McManaSphereSnapshotV
         velocity_x: sphere.velocity_x,
         velocity_y: sphere.velocity_y,
         vertical_velocity: sphere.vertical_velocity,
-        render_parameter_index: render_base
-            + u16::try_from(size).expect("eight mana sphere sizes fit u16"),
-        base_tmap: if sphere.owner_entity_index == 0 {
+        render_parameter_index: sphere.particle_index,
+        base_tmap: if sphere.particle_index < MANA_SPHERE_PLAYER_ONE_RENDER_BASE {
             MANA_SPHERE_NEUTRAL_BASE_TMAP
         } else {
             MANA_SPHERE_PLAYER_ONE_BASE_TMAP
+                + (sphere.particle_index - MANA_SPHERE_PLAYER_ONE_RENDER_BASE) / 8
         },
         logical_height: u16::try_from((size + 1) * 50)
             .expect("mana sphere logical height fits u16"),

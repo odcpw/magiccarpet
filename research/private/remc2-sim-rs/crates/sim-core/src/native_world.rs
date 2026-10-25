@@ -75,9 +75,9 @@ use crate::{
         MANA_CARRIER_COLLISION_HALF_WIDTH, MANA_CARRIER_COLLISION_VERTICAL_OFFSET,
         MANA_CARRIER_DESCENT, MANA_CARRIER_GROUND_CLEARANCE, MANA_CARRIER_LOGICAL_HEIGHT,
         MANA_CARRIER_MAX_LIFE, MANA_CARRIER_MAX_MANA, MANA_CARRIER_RENDER_INDEX,
-        MANA_CARRIER_RENDER_MODE, MANA_CARRIER_SPEED, MANA_SPHERE_COLLISION_DIMENSIONS,
-        MANA_SPHERE_GRAVITY, MANA_SPHERE_MAX_XY_VELOCITY, MANA_SPHERE_TERMINAL_VELOCITY,
-        ManaCarrier, ManaSphere, PLAYER_DEATH_BURST_MAX_LIFE, PLAYER_DEATH_BURST_SUBSPELL_INDEX,
+        MANA_CARRIER_RENDER_MODE, MANA_CARRIER_SPEED, MANA_SPHERE_GRAVITY,
+        MANA_SPHERE_MAX_XY_VELOCITY, MANA_SPHERE_TERMINAL_VELOCITY, ManaCarrier, ManaSphere,
+        PLAYER_DEATH_BURST_MAX_LIFE, PLAYER_DEATH_BURST_SUBSPELL_INDEX,
         POSSESSION_ATTRACTION_BASE_TMAP, POSSESSION_ATTRACTION_LOGICAL_HEIGHT,
         POSSESSION_ATTRACTION_RENDER_INDEX, POSSESSION_ATTRACTION_RENDER_MODE,
         POSSESSION_IMPACT_ACTION, POSSESSION_IMPACT_BASE_TMAP, POSSESSION_IMPACT_CLASS,
@@ -90,9 +90,8 @@ use crate::{
         POSSESSION_PROJECTILE_MODEL, POSSESSION_PROJECTILE_SPEED, POSSESSION_SPELL_FAMILY,
         PROJECTILE_ACQUISITION_ANGLE, SOURCE_REPLACEABLE_FLAG, SPEED_SPELL_ACTIVATION_TICKS,
         SPEED_SPELL_FAMILY, SPEED_SPELL_MANA_COST, SPELL_JAR_BASE_TMAP, SPELL_JAR_LOGICAL_HEIGHT,
-        SPELL_JAR_RENDER_INDEX, SPELL_JAR_RENDER_MODE, mana_sphere_size_ordinal,
-        projectile_guidance_angles, projectile_target_score, source_map_search_slots,
-        source_search_offsets,
+        SPELL_JAR_RENDER_INDEX, SPELL_JAR_RENDER_MODE, projectile_guidance_angles,
+        projectile_target_score, source_map_search_slots, source_search_offsets,
     },
     mark_source_audio_call,
     mission_content::{
@@ -1315,6 +1314,13 @@ fn level2_static_mana_spheres_from_entities(
                 max_life: entity.max_life,
                 life: entity.life,
                 mana: entity.mana,
+                particle_index: entity
+                    .particle_parameter_index
+                    .unwrap_or_else(|| u16::from_le_bytes([entity.record[94], entity.record[95]])),
+                collision_yaw: entity.array_yaw(),
+                collision_pitch: entity.array_pitch(),
+                collision_roll: entity.array_roll(),
+                collision_fov: entity.array_fov(),
                 owner_entity_index: player_entity_index,
                 player_entity_index,
                 incoming_owner_entity_index: 0,
@@ -3937,6 +3943,7 @@ impl NativeWorld {
             capture_frame: 0,
             vga_resolution_selector,
         };
+        let entities = parse_entities(&entities_bytes)?;
         let mut terrain_planes = parse_terrain(&terrain_bytes)?;
         let terrain_rng = if map_type == MapType::Cave
             && definition
@@ -3946,7 +3953,7 @@ impl NativeWorld {
             definition
                 .generate_cave_startup()
                 .map_err(|error| NativeWorldError::new(error.to_string()))?
-                .write_geometry_into(&mut terrain_planes)
+                .write_geometry_into(&mut terrain_planes, &entities)
                 .map_err(NativeWorldError::new)?
         } else {
             read_u16(&feature_end, 8, "campaign feature-end terrain RNG")?
@@ -3958,7 +3965,6 @@ impl NativeWorld {
             terrain_planes.angles.to_vec(),
         )
         .map_err(NativeWorldError::new)?;
-        let entities = parse_entities(&entities_bytes)?;
         let players = parse_players(
             &players_bytes,
             if definition.identity == CampaignSelection::LEVEL1 {
@@ -7041,7 +7047,7 @@ pub(crate) fn parse_terrain(bytes: &[u8]) -> Result<TerrainPlanes> {
     })
 }
 
-fn parse_entities(bytes: &[u8]) -> Result<Vec<EntitySnapshot>> {
+pub(crate) fn parse_entities(bytes: &[u8]) -> Result<Vec<EntitySnapshot>> {
     validate_header(
         bytes,
         *b"MCE1",

@@ -2402,6 +2402,11 @@ impl Level2EconomyState {
             max_life: 300,
             life: 300,
             mana: AUTHORED_MANA,
+            particle_index: 53,
+            collision_yaw: 28,
+            collision_pitch: 28,
+            collision_roll: 28,
+            collision_fov: 28,
             owner_entity_index: 0,
             player_entity_index: 0,
             incoming_owner_entity_index: 0,
@@ -6427,6 +6432,11 @@ impl Level2EconomyState {
             hasher.update(sphere.max_life.to_le_bytes());
             hasher.update(sphere.life.to_le_bytes());
             hasher.update(sphere.mana.to_le_bytes());
+            hasher.update(sphere.particle_index.to_le_bytes());
+            hasher.update(sphere.collision_yaw.to_le_bytes());
+            hasher.update(sphere.collision_pitch.to_le_bytes());
+            hasher.update(sphere.collision_roll.to_le_bytes());
+            hasher.update(sphere.collision_fov.to_le_bytes());
             hasher.update(sphere.owner_entity_index.to_le_bytes());
             hasher.update(sphere.player_entity_index.to_le_bytes());
             hasher.update(sphere.incoming_owner_entity_index.to_le_bytes());

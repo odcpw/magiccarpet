@@ -1215,6 +1215,11 @@ fn owner_cache_goat_world_frame_is_interleaved_and_deterministic() {
         max_life: 300,
         life: 300,
         mana: 256,
+        particle_index: 52,
+        collision_yaw: 13,
+        collision_pitch: 13,
+        collision_roll: 13,
+        collision_fov: 13,
         owner_entity_index: 0,
         player_entity_index: 0,
         incoming_owner_entity_index: 0,
@@ -1515,6 +1520,7 @@ fn owner_cache_goat_world_frame_is_interleaved_and_deterministic() {
 
     let hostile_sphere = ManaSphere {
         owner_entity_index: local_player.wrapping_add(1),
+        particle_index: 113,
         ..neutral_sphere
     };
     let mut hostile_chains = map_chains.clone();

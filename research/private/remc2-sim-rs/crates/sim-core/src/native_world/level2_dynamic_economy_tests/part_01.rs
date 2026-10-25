@@ -1520,6 +1520,11 @@
                     max_life: 300,
                     life: 300,
                     mana: 512,
+                    particle_index: 53,
+                    collision_yaw: 28,
+                    collision_pitch: 28,
+                    collision_roll: 28,
+                    collision_fov: 28,
                     owner_entity_index: 0,
                     player_entity_index: 0,
                     incoming_owner_entity_index: 0,
@@ -4990,6 +4995,125 @@
         assert_eq!(session.terrain_hash(), replay_terrain_hash);
         assert_eq!(session.campaign_state_hash(), replay_campaign_hash);
         assert_eq!(session.ordinary().reset_hash(), replay_ordinary_hash);
+    }
+
+    #[test]
+    fn level_two_mana_sphere_retains_birth_particle_until_color_callback() {
+        let mut session = level_two_possession_lifecycle_session();
+        let id = session
+            .economy_mut()
+            .spawn_mana_sphere_from_death(
+                42,
+                Position {
+                    x: 30_000,
+                    y: 30_000,
+                    z: 12_000,
+                },
+                0,
+                0x4321,
+                128,
+                0,
+            )
+            .expect("ordinary death sphere");
+        let slot = u16::try_from(id).unwrap();
+        let read = |session: &Level2ResetSession| {
+            *session
+                .economy()
+                .spheres()
+                .iter()
+                .find(|sphere| sphere.source_entity_index == slot)
+                .unwrap()
+        };
+        let born = read(&session);
+        assert_eq!(
+            (born.mana, born.particle_index, born.collision_pitch),
+            (128, 53, 28)
+        );
+        assert_eq!(
+            level2_possession_guidance_target_top(&born).z,
+            born.position.z + 28
+        );
+        let mut peer = born;
+        peer.position.x += 40;
+        assert!(
+            born.overlaps_source_axes(peer.position, 13, 13, 28, 13),
+            "birth collision uses28 even though actual mana128 would select13"
+        );
+        {
+            let mut economy = session.economy_mut();
+            let sphere = economy
+                .spheres
+                .iter_mut()
+                .find(|sphere| sphere.source_entity_index == slot)
+                .unwrap();
+            sphere.control_flags |= 0x800;
+        }
+        assert!(session.economy_mut().step_mana_sphere_slot(slot));
+        assert_eq!(
+            read(&session).particle_index,
+            53,
+            "source skip bit defers36920"
+        );
+        assert!(session.economy_mut().step_mana_sphere_slot(slot));
+        let updated = read(&session);
+        assert_eq!(
+            (
+                updated.particle_index,
+                updated.collision_yaw,
+                updated.collision_pitch,
+                updated.collision_roll,
+                updated.collision_fov
+            ),
+            (52, 13, 13, 13, 13)
+        );
+
+        let baseline_hash = session.economy().reset_hash();
+        {
+            let mut economy = session.economy_mut();
+            let sphere = economy
+                .spheres
+                .iter_mut()
+                .find(|sphere| sphere.source_entity_index == slot)
+                .unwrap();
+            sphere.collision_roll = 31;
+            sphere.apply_particle_color(52);
+            assert_eq!(
+                sphere.collision_roll, 31,
+                "unchanged particle preserves stored axes"
+            );
+        }
+        assert_ne!(
+            session.economy().reset_hash(),
+            baseline_hash,
+            "retained axes participate in replay state"
+        );
+        let mut same_particle = read(&session);
+        same_particle.mana = 1_025;
+        same_particle.apply_particle_color(52);
+        assert_eq!(
+            (
+                same_particle.particle_index,
+                same_particle.collision_yaw,
+                same_particle.collision_pitch,
+                same_particle.collision_roll,
+                same_particle.collision_fov
+            ),
+            (55, 56, 56, 56, 56)
+        );
+        same_particle.position.z = i16::MAX;
+        assert!(
+            !same_particle.overlaps_source_axes(
+                Position {
+                    z: i16::MIN,
+                    ..same_particle.position
+                },
+                56,
+                56,
+                56,
+                56
+            ),
+            "source Z arithmetic promotes before addition, unlike wrapped X/Y"
+        );
     }
 
     #[test]

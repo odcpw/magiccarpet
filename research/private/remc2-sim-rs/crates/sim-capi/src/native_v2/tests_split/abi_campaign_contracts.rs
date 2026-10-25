@@ -915,6 +915,11 @@ fn campaign_mana_sphere_snapshot_exposes_attraction_mailbox_without_layout_chang
         max_life: 300,
         life: 300,
         mana: 321,
+        particle_index: 53,
+        collision_yaw: 28,
+        collision_pitch: 28,
+        collision_roll: 28,
+        collision_fov: 28,
         owner_entity_index: 111,
         player_entity_index: 111,
         incoming_owner_entity_index: 0,
@@ -933,6 +938,16 @@ fn campaign_mana_sphere_snapshot_exposes_attraction_mailbox_without_layout_chang
     });
     assert_eq!(size_of::<McManaSphereSnapshotV2>(), 64);
     assert_eq!(snapshot.reserved, [877, 42 | (3 << 16), 0]);
+    assert_eq!(
+        (
+            snapshot.owner_entity_index,
+            snapshot.render_parameter_index,
+            snapshot.base_tmap,
+            snapshot.logical_height,
+        ),
+        (111, 53, 58, 100),
+        "the ABI retains constructor visuals after the death producer copies owner111"
+    );
 }
 
 #[test]

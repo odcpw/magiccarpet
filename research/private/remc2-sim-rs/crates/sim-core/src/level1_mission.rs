@@ -5179,6 +5179,13 @@ pub struct ManaSphere {
     pub max_life: i32,
     pub life: i32,
     pub mana: i32,
+    /// Retained `word_0x5A` and `array_0x52` state. Death/overflow producers
+    /// copy mana and owner after constructor512 has installed particle53.
+    pub particle_index: u16,
+    pub collision_yaw: i16,
+    pub collision_pitch: i16,
+    pub collision_roll: i16,
+    pub collision_fov: i16,
     /// Zero is neutral; otherwise this is the owning player entity.
     pub owner_entity_index: u16,
     /// Source `playerEntityIndex_0x94_148` used by `sub_5F810` target
@@ -5215,6 +5222,70 @@ pub struct ManaSphere {
     /// ascending reclaim pass; the typed row remains dispatchable for the
     /// rest of the current source turn.
     pub pending_delete: bool,
+}
+
+impl ManaSphere {
+    pub(crate) fn overlaps_source_axes(
+        &self,
+        position: Position,
+        pitch: i16,
+        roll: i16,
+        yaw: i16,
+        fov: i16,
+    ) -> bool {
+        let dx = i32::from(position.x.wrapping_sub(self.position.x).cast_signed()).abs();
+        let dy = i32::from(position.y.wrapping_sub(self.position.y).cast_signed()).abs();
+        let dz = (i32::from(position.z) + i32::from(yaw)
+            - i32::from(self.position.z)
+            - i32::from(self.collision_yaw))
+        .abs();
+        dx < i32::from(self.collision_pitch) + i32::from(pitch)
+            && dy < i32::from(self.collision_roll) + i32::from(roll)
+            && dz < i32::from(self.collision_fov) + i32::from(fov)
+    }
+
+    /// `SetManaSphereColorAndRot_36920`: unchanged particle indices preserve
+    /// every stored axis, including distinct axes imported from source rows.
+    pub fn apply_particle_color(&mut self, color_base: u16) {
+        let ordinal = mana_sphere_size_ordinal(self.mana);
+        let particle_index = color_base + u16::from(ordinal);
+        if self.particle_index != particle_index {
+            self.particle_index = particle_index;
+            let extent = MANA_SPHERE_COLLISION_DIMENSIONS[usize::from(ordinal)];
+            self.collision_yaw = extent;
+            self.collision_pitch = extent;
+            self.collision_roll = extent;
+            self.collision_fov = extent;
+        }
+    }
+
+    /// Presentation size follows the retained particle, never pending mana.
+    pub fn particle_size_ordinal(&self) -> u8 {
+        if self.particle_index < MANA_SPHERE_PLAYER_ONE_RENDER_BASE {
+            self.particle_index
+                .saturating_sub(MANA_SPHERE_NEUTRAL_RENDER_BASE) as u8
+        } else {
+            ((self.particle_index - MANA_SPHERE_PLAYER_ONE_RENDER_BASE) % 8) as u8
+        }
+    }
+
+    fn apply_level1_particle_color(
+        &mut self,
+        player_entity_index: u16,
+        source_slots: &[Level1ResetSourceSlot],
+    ) {
+        let color_base = if self.player_entity_index == player_entity_index
+            && player_entity_index != 0
+            && source_slots
+                .get(usize::from(player_entity_index))
+                .is_some_and(|slot| slot.class == 3)
+        {
+            MANA_SPHERE_PLAYER_ONE_RENDER_BASE
+        } else {
+            MANA_SPHERE_NEUTRAL_RENDER_BASE
+        };
+        self.apply_particle_color(color_base);
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -9175,6 +9246,17 @@ impl Level1MissionState {
     pub fn source_arena_hash_v1(&self) -> u64 {
         let mut hash = Level1Fnv1a64::new();
         hash.bytes(b"mc2-level1-source-arena-v1\0");
+        if !self.mana_spheres.is_empty() {
+            hash.bytes(b"mana-sphere-particle-axes\0");
+            for sphere in &self.mana_spheres {
+                hash.u16(sphere.source_entity_index);
+                hash.u16(sphere.particle_index);
+                hash.u16(sphere.collision_yaw.cast_unsigned());
+                hash.u16(sphere.collision_pitch.cast_unsigned());
+                hash.u16(sphere.collision_roll.cast_unsigned());
+                hash.u16(sphere.collision_fov.cast_unsigned());
+            }
+        }
         if !self.player_creature_kills.is_empty() {
             hash.bytes(b"player-creature-kills\0");
             hash.u32(
@@ -10197,9 +10279,21 @@ impl Level1MissionState {
             i16::try_from((*parent_rng & 0x7f).wrapping_add(SPELL_JAR_REWARD_VERTICAL_BASE))
                 .expect("slot-98 vertical speed fits i16");
         *parent_rng = next_rng16(*parent_rng);
-        let _render_variant = (*parent_rng % 9).wrapping_sub(1);
+        let render_variant = (*parent_rng % 9).wrapping_sub(1);
         *parent_rng = next_rng16(*parent_rng);
         let mana = i32::from(*parent_rng % 0x0a00) + 1;
+        // Unlike death/overflow, sub_32CF0 explicitly replaces the birth
+        // particle via SetEntityIndexAndRot_49CD0 after writing actual mana.
+        let color_base = if render_variant == u16::MAX {
+            MANA_SPHERE_NEUTRAL_RENDER_BASE
+        } else {
+            MANA_SPHERE_PLAYER_ONE_RENDER_BASE
+                + 8 * [0_u16, 1, 4, 3, 2, 5, 7, 6][usize::from(render_variant)]
+        };
+        let ordinal = mana_sphere_size_ordinal(mana);
+        // Pinned particle rows52..59/105..168 have speed0 and rotation
+        // 50*(ordinal+1); 49CD0 halves those words, unlike36920's size table.
+        let particle_height = 25 * (i16::from(ordinal) + 1);
         *parent_rng = next_rng16(*parent_rng);
         let yaw = i16::try_from(*parent_rng & 0x07ff).expect("slot-98 sphere yaw is 11-bit");
         let mut velocity = Position::default();
@@ -10224,6 +10318,11 @@ impl Level1MissionState {
             life: 300,
             mana,
             owner_entity_index: 0,
+            particle_index: color_base + u16::from(ordinal),
+            collision_yaw: particle_height,
+            collision_pitch: 0,
+            collision_roll: 0,
+            collision_fov: particle_height,
             player_entity_index: 0,
             incoming_owner_entity_index: 0,
             incoming_possession_payload: 0,
@@ -10383,6 +10482,11 @@ impl Level1MissionState {
             mana,
             owner_entity_index,
             player_entity_index: owner_entity_index,
+            particle_index: 53,
+            collision_yaw: 28,
+            collision_pitch: 28,
+            collision_roll: 28,
+            collision_fov: 28,
             incoming_owner_entity_index: 0,
             incoming_possession_payload: 0,
             ordinary_damage_payload: 0,
@@ -11460,6 +11564,7 @@ impl Level1MissionState {
                         == Some(SourceOccupant::ManaSphere(sphere.id))
                 {
                     sphere.owner_entity_index = marker.source_entity_index;
+                    sphere.player_entity_index = marker.source_entity_index;
                     self.player_lifecycle_trace.push(PlayerLifecycleTraceEntry {
                         step: PLAYER_LIFECYCLE_TRACE_REDIRECT,
                         detail: i32::from(sphere.source_entity_index),
@@ -15771,13 +15876,10 @@ impl Level1MissionState {
             .mana_spheres
             .iter()
             .filter(|sphere| sphere.active && sphere.owner_entity_index != owner_entity_index)
-            .map(|sphere| {
-                let dimension = mana_sphere_collision_dimension(sphere.mana);
-                ProjectileGuidanceTarget {
-                    entity_index: sphere.source_entity_index,
-                    source_id: sphere.owner_entity_index,
-                    top_position: collision_target_top(sphere.position, dimension),
-                }
+            .map(|sphere| ProjectileGuidanceTarget {
+                entity_index: sphere.source_entity_index,
+                source_id: sphere.owner_entity_index,
+                top_position: collision_target_top(sphere.position, sphere.collision_yaw),
             })
             .collect::<Vec<_>>();
         mana_targets.sort_unstable_by_key(|target| target.entity_index);
@@ -15945,14 +16047,13 @@ impl Level1MissionState {
             });
         }
         for sphere in self.mana_spheres.iter().filter(|sphere| sphere.active) {
-            let dimension = mana_sphere_collision_dimension(sphere.mana);
             upsert(ProjectileCollisionCandidate {
                 entity_index: sphere.source_entity_index,
                 source_id: sphere.source_entity_index,
                 position: sphere.position,
-                collision_half_width: dimension,
-                collision_vertical_offset: dimension,
-                collision_half_height: dimension,
+                collision_half_width: sphere.collision_pitch,
+                collision_vertical_offset: sphere.collision_yaw,
+                collision_half_height: sphere.collision_fov,
                 kind: ProjectileCollisionKind::ManaSphere,
             });
         }
@@ -17313,6 +17414,11 @@ impl Level1MissionState {
             life: 300,
             mana,
             owner_entity_index: self.castle_owner_entity_index,
+            particle_index: 53,
+            collision_yaw: 28,
+            collision_pitch: 28,
+            collision_roll: 28,
+            collision_fov: 28,
             player_entity_index: self.castle_owner_entity_index,
             incoming_owner_entity_index: 0,
             incoming_possession_payload: 0,
@@ -17357,7 +17463,6 @@ impl Level1MissionState {
                     && sphere.owner_entity_index == self.castle_owner_entity_index
                     && candidates.contains(&sphere.source_entity_index)
                     && {
-                        let sphere_extent = mana_sphere_collision_dimension(sphere.mana);
                         let dx = i32::from(
                             sphere
                                 .position
@@ -17374,8 +17479,11 @@ impl Level1MissionState {
                                 .cast_signed(),
                         )
                         .abs();
-                        dx < i32::from(CASTLE_STAGE_ONE_COLLISION_HALF_WIDTH + sphere_extent)
-                            && dy < i32::from(CASTLE_STAGE_ONE_COLLISION_HALF_WIDTH + sphere_extent)
+                        dx < i32::from(CASTLE_STAGE_ONE_COLLISION_HALF_WIDTH)
+                            + i32::from(sphere.collision_pitch)
+                            && dy
+                                < i32::from(CASTLE_STAGE_ONE_COLLISION_HALF_WIDTH)
+                                    + i32::from(sphere.collision_roll)
                     }
             })
             .min_by_key(|(_, sphere)| sphere.source_entity_index)
@@ -17931,7 +18039,7 @@ impl Level1MissionState {
     fn step_mana_sphere_slot<W: FlightWorld>(
         &mut self,
         world: &W,
-        _player_entity_index: u16,
+        player_entity_index: u16,
         source_slot: u16,
     ) {
         let Some(sphere_index) = self
@@ -17941,6 +18049,15 @@ impl Level1MissionState {
         else {
             return;
         };
+        if self.source_slots[usize::from(source_slot)].control_flags & 0x800 != 0 {
+            self.source_slots[usize::from(source_slot)].control_flags &= !0x800;
+            self.mana_spheres[sphere_index].phase =
+                self.mana_spheres[sphere_index].phase.wrapping_add(1);
+            return;
+        }
+        let owner_changed = self.mana_spheres[sphere_index].incoming_owner_entity_index != 0
+            && self.mana_spheres[sphere_index].incoming_owner_entity_index
+                != self.mana_spheres[sphere_index].player_entity_index;
         let assigned_attraction_position = {
             let assigned = self.mana_spheres[sphere_index].assigned_carrier_id;
             self.impacts
@@ -17965,6 +18082,7 @@ impl Level1MissionState {
                     && (payload != 0 || !protected)
                 {
                     self.mana_spheres[sphere_index].owner_entity_index = pending_owner;
+                    self.mana_spheres[sphere_index].player_entity_index = pending_owner;
                     self.source_slots[source_slot].control_flags &= !0x40;
                     if payload != 0 {
                         self.source_slots[source_slot].control_flags |= 0x0020_0000;
@@ -18113,6 +18231,10 @@ impl Level1MissionState {
                 *life == 0
             });
         if let Some(expired) = temporary_expired {
+            if owner_changed {
+                self.mana_spheres[sphere_index]
+                    .apply_level1_particle_color(player_entity_index, &self.source_slots);
+            }
             if expired {
                 let sphere = &mut self.mana_spheres[sphere_index];
                 sphere.pending_delete = true;
@@ -18131,10 +18253,14 @@ impl Level1MissionState {
             return;
         }
         if !grounded {
+            self.mana_spheres[sphere_index]
+                .apply_level1_particle_color(player_entity_index, &self.source_slots);
             return;
         }
 
         let Some(absorbed_slot) = self.first_colliding_mana_sphere_slot(source_slot) else {
+            self.mana_spheres[sphere_index]
+                .apply_level1_particle_color(player_entity_index, &self.source_slots);
             return;
         };
         let absorbed_index = self
@@ -18157,6 +18283,8 @@ impl Level1MissionState {
             survivor_owner,
             absorbed.owner_entity_index,
         );
+        self.mana_spheres[survivor_index].player_entity_index =
+            self.mana_spheres[survivor_index].owner_entity_index;
 
         self.mana_sphere_map_chains
             .sync_entity(RenderableMapSeed {
@@ -18172,6 +18300,11 @@ impl Level1MissionState {
         );
         clear_source_record(&mut self.source_slots[usize::from(absorbed_slot)]);
         self.mana_spheres.remove(absorbed_index);
+        self.mana_spheres
+            .iter_mut()
+            .find(|sphere| sphere.active && sphere.source_entity_index == source_slot)
+            .expect("dispatched sphere survives its merge")
+            .apply_level1_particle_color(player_entity_index, &self.source_slots);
     }
 
     fn first_colliding_mana_sphere_slot(&self, source_slot: u16) -> Option<u16> {
@@ -18376,16 +18509,12 @@ impl Level1MissionState {
                     } else {
                         self.mana_spheres[sphere_index].assigned_carrier_id =
                             u32::from(source_slot);
-                        let sphere_dimension = mana_sphere_collision_dimension(sphere.mana);
-                        if overlaps_source_entities(
+                        if sphere.overlaps_source_axes(
                             position,
+                            MANA_CARRIER_COLLISION_HALF_WIDTH,
                             MANA_CARRIER_COLLISION_HALF_WIDTH,
                             MANA_CARRIER_COLLISION_VERTICAL_OFFSET,
                             MANA_CARRIER_COLLISION_HALF_HEIGHT,
-                            sphere.position,
-                            sphere_dimension,
-                            sphere_dimension,
-                            sphere_dimension,
                         ) {
                             carried_mana = carried_mana.wrapping_add(sphere.mana);
                             owner_entity_index = sphere.owner_entity_index;
@@ -18459,13 +18588,7 @@ impl Level1MissionState {
             .mana_spheres
             .iter()
             .filter(|sphere| sphere.active)
-            .map(|sphere| {
-                (
-                    sphere.source_entity_index,
-                    sphere.position,
-                    mana_sphere_collision_dimension(sphere.mana),
-                )
-            })
+            .copied()
             .collect::<Vec<_>>();
         let mut possession_building_mailboxes = Vec::new();
         let mut possession_sphere_mailboxes = Vec::new();
@@ -18624,25 +18747,17 @@ impl Level1MissionState {
                         0,
                     ));
                 }
-                for (sphere_entity_index, _, _) in
-                    possession_sphere_targets
-                        .iter()
-                        .copied()
-                        .filter(|(_, position, dimension)| {
-                            overlaps_source_entities(
-                                impact.position,
-                                POSSESSION_IMPACT_COLLISION_HALF_WIDTH,
-                                POSSESSION_IMPACT_COLLISION_VERTICAL_OFFSET,
-                                POSSESSION_IMPACT_COLLISION_HALF_HEIGHT,
-                                *position,
-                                *dimension,
-                                *dimension,
-                                *dimension,
-                            )
-                        })
-                {
+                for sphere in possession_sphere_targets.iter().copied().filter(|sphere| {
+                    sphere.overlaps_source_axes(
+                        impact.position,
+                        POSSESSION_IMPACT_COLLISION_HALF_WIDTH,
+                        POSSESSION_IMPACT_COLLISION_HALF_WIDTH,
+                        POSSESSION_IMPACT_COLLISION_VERTICAL_OFFSET,
+                        POSSESSION_IMPACT_COLLISION_HALF_HEIGHT,
+                    )
+                }) {
                     possession_sphere_mailboxes.push((
-                        sphere_entity_index,
+                        sphere.source_entity_index,
                         impact.owner_entity_index,
                         0,
                     ));
@@ -18696,25 +18811,17 @@ impl Level1MissionState {
                         1,
                     ));
                 }
-                for (sphere_entity_index, _, _) in
-                    possession_sphere_targets
-                        .iter()
-                        .copied()
-                        .filter(|(_, position, dimension)| {
-                            overlaps_source_entities(
-                                impact.position,
-                                POSSESSION_IMPACT_COLLISION_HALF_WIDTH,
-                                POSSESSION_IMPACT_COLLISION_VERTICAL_OFFSET,
-                                POSSESSION_IMPACT_COLLISION_HALF_HEIGHT,
-                                *position,
-                                *dimension,
-                                *dimension,
-                                *dimension,
-                            )
-                        })
-                {
+                for sphere in possession_sphere_targets.iter().copied().filter(|sphere| {
+                    sphere.overlaps_source_axes(
+                        impact.position,
+                        POSSESSION_IMPACT_COLLISION_HALF_WIDTH,
+                        POSSESSION_IMPACT_COLLISION_HALF_WIDTH,
+                        POSSESSION_IMPACT_COLLISION_VERTICAL_OFFSET,
+                        POSSESSION_IMPACT_COLLISION_HALF_HEIGHT,
+                    )
+                }) {
                     possession_sphere_mailboxes.push((
-                        sphere_entity_index,
+                        sphere.source_entity_index,
                         impact.owner_entity_index,
                         POSSESSION_STRONG_IMPACT_PAYLOAD.cast_unsigned(),
                     ));
@@ -21717,17 +21824,12 @@ fn mana_sphere_collision_dimension(mana: i32) -> i16 {
 }
 
 fn mana_spheres_overlap(left: ManaSphere, right: ManaSphere) -> bool {
-    let left_dimension = mana_sphere_collision_dimension(left.mana);
-    let right_dimension = mana_sphere_collision_dimension(right.mana);
-    overlaps_source_entities(
-        left.position,
-        left_dimension,
-        left_dimension,
-        left_dimension,
+    left.overlaps_source_axes(
         right.position,
-        right_dimension,
-        right_dimension,
-        right_dimension,
+        right.collision_pitch,
+        right.collision_roll,
+        right.collision_yaw,
+        right.collision_fov,
     )
 }
 
@@ -22155,16 +22257,12 @@ fn first_possession_source_map_hit(
             {
                 return false;
             }
-            let dimension = mana_sphere_collision_dimension(sphere.mana);
-            overlaps_source_entities(
+            sphere.overlaps_source_axes(
                 projectile.position,
+                POSSESSION_PROJECTILE_COLLISION_HALF_WIDTH,
                 POSSESSION_PROJECTILE_COLLISION_HALF_WIDTH,
                 POSSESSION_PROJECTILE_COLLISION_VERTICAL_OFFSET,
                 POSSESSION_PROJECTILE_COLLISION_HALF_HEIGHT,
-                sphere.position,
-                dimension,
-                dimension,
-                dimension,
             )
         }) {
             return Some(ProjectileCollisionHit {
@@ -22172,7 +22270,7 @@ fn first_possession_source_map_hit(
                 source_id: sphere.owner_entity_index,
                 position: sphere.position,
                 kind: ProjectileCollisionKind::ManaSphere,
-                vertical_offset: mana_sphere_collision_dimension(sphere.mana),
+                vertical_offset: sphere.collision_yaw,
             });
         }
     }
@@ -38490,6 +38588,28 @@ mod tests {
                 EXPECTED_SPHERES[..success_count],
                 "fixed source-derived sphere vector mismatch for {success_count} successes"
             );
+            // Independent source32CF0 vector: every successful allocation
+            // consumes five parent draws; draw3 selects color and draw4 mana.
+            // 49CD0 copies the selected particle's speed/rotation halves.
+            assert_eq!(
+                reward
+                    .mana_spheres
+                    .iter()
+                    .map(|sphere| (
+                        sphere.particle_index,
+                        sphere.collision_yaw,
+                        sphere.collision_pitch,
+                        sphere.collision_roll,
+                        sphere.collision_fov,
+                    ))
+                    .collect::<Vec<_>>(),
+                [
+                    (163, 75, 0, 0, 75),
+                    (121, 25, 0, 0, 25),
+                    (129, 25, 0, 0, 25)
+                ][..success_count],
+                "reward spheres retain the explicit source49CD0 write, not a recomputed36920 shape"
+            );
             assert!(reward.mana_spheres.iter().all(|sphere| {
                 sphere.position
                     == Position {
@@ -38747,8 +38867,15 @@ mod tests {
         let mut reward = full_reward.expect("three-success reward case");
         let reward_hash = reward.source_arena_hash_v1();
         assert_eq!(
-            reward_hash, 0xa44e_1e04_860b_4eda,
-            "the arena digest includes the action-51 raw topology and versioned resident-observation state"
+            reward_hash, 0x5443_dc1c_21c2_bd9f,
+            "the arena digest includes retained sphere particle/axes as well as action-51 topology and resident observations"
+        );
+        let mut changed_particle = reward.clone();
+        changed_particle.mana_spheres[0].particle_index = 53;
+        assert_ne!(
+            changed_particle.source_arena_hash_v1(),
+            reward_hash,
+            "identical mana/owner with a different retained particle must hash differently"
         );
         let mut reordered_experience = reward.clone();
         reordered_experience

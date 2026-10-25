@@ -737,7 +737,7 @@ impl EntitySnapshot {
     /// Raw source `array_0x52_82.roll`, the Y half-width used by
     /// `CompareAxisWithShift_10750`.
     #[must_use]
-    pub(super) fn array_roll(&self) -> i16 {
+    pub(crate) fn array_roll(&self) -> i16 {
         i16::from_le_bytes([self.record[90], self.record[91]])
     }
 
@@ -1208,10 +1208,6 @@ pub(super) fn level2_wrapping_target_distance(left: Position, right: Position) -
     )
 }
 
-pub(crate) fn level2_mana_sphere_dimension(mana: i32) -> i16 {
-    MANA_SPHERE_COLLISION_DIMENSIONS[usize::from(mana_sphere_size_ordinal(mana))]
-}
-
 /// `sub_4ABA0` installs the defender's source collision axes through
 /// `SetEntityIndexAndRot_49CD0(169)`.  The qualified particle row 169 is
 /// speed 545 / rotation 800, so the source stores 272 for X/Y and 400 for
@@ -1227,7 +1223,6 @@ pub(super) fn level2_castle_defender_sphere_overlap(
     defender_position: Position,
     sphere: &ManaSphere,
 ) -> bool {
-    let sphere_extent = i32::from(level2_mana_sphere_dimension(sphere.mana));
     let defender_width = i32::from(LEVEL2_CASTLE_DEFENDER_COLLISION_HALF_WIDTH);
     let dx = i32::from(
         sphere
@@ -1243,12 +1238,14 @@ pub(super) fn level2_castle_defender_sphere_overlap(
             .wrapping_sub(defender_position.y)
             .cast_signed(),
     );
-    let dz = i32::from(sphere.position.z) + sphere_extent
+    let dz = i32::from(sphere.position.z) + i32::from(sphere.collision_yaw)
         - i32::from(defender_position.z)
         - i32::from(LEVEL2_CASTLE_DEFENDER_COLLISION_VERTICAL_OFFSET);
-    dx.abs() < sphere_extent + defender_width
-        && dy.abs() < sphere_extent + defender_width
-        && dz.abs() < sphere_extent + i32::from(LEVEL2_CASTLE_DEFENDER_COLLISION_VERTICAL_OFFSET)
+    dx.abs() < i32::from(sphere.collision_pitch) + defender_width
+        && dy.abs() < i32::from(sphere.collision_roll) + defender_width
+        && dz.abs()
+            < i32::from(sphere.collision_fov)
+                + i32::from(LEVEL2_CASTLE_DEFENDER_COLLISION_VERTICAL_OFFSET)
 }
 
 /// Pinned remc2 `sub_10A50` SEARCH.DAT walk for model-39 mana spheres. The
@@ -1300,17 +1297,12 @@ pub(super) fn level2_first_colliding_mana_sphere_slot(
             }) else {
                 continue;
             };
-            let left = level2_mana_sphere_dimension(sphere.mana);
-            let right = level2_mana_sphere_dimension(candidate.mana);
-            if crate::level1_mission::source_entities_overlap(
-                sphere.position,
-                left,
-                left,
-                left,
+            if sphere.overlaps_source_axes(
                 candidate.position,
-                right,
-                right,
-                right,
+                candidate.collision_pitch,
+                candidate.collision_roll,
+                candidate.collision_yaw,
+                candidate.collision_fov,
             ) {
                 return Some(candidate_slot);
             }
@@ -1341,16 +1333,12 @@ pub(super) fn level2_first_possession_target_sphere_slot(
         }) else {
             continue;
         };
-        let dimension = level2_mana_sphere_dimension(candidate.mana);
-        if crate::level1_mission::source_entities_overlap(
+        if candidate.overlaps_source_axes(
             projectile.position,
+            POSSESSION_PROJECTILE_COLLISION_HALF_WIDTH,
             POSSESSION_PROJECTILE_COLLISION_HALF_WIDTH,
             POSSESSION_PROJECTILE_COLLISION_VERTICAL_OFFSET,
             POSSESSION_PROJECTILE_COLLISION_HALF_HEIGHT,
-            candidate.position,
-            dimension,
-            dimension,
-            dimension,
         ) {
             return Some(candidate_slot);
         }
@@ -1360,10 +1348,7 @@ pub(super) fn level2_first_possession_target_sphere_slot(
 
 pub(super) fn level2_possession_guidance_target_top(sphere: &ManaSphere) -> Position {
     Position {
-        z: sphere
-            .position
-            .z
-            .wrapping_add(level2_mana_sphere_dimension(sphere.mana)),
+        z: sphere.position.z.wrapping_add(sphere.collision_yaw),
         ..sphere.position
     }
 }
@@ -1433,19 +1418,20 @@ pub(super) fn level2_possession_guidance_relation(
 }
 
 pub(super) fn level2_carrier_sphere_overlap(carrier: Position, sphere: &ManaSphere) -> bool {
-    let extent = level2_mana_sphere_dimension(sphere.mana);
     let dx = i32::from(sphere.position.x.wrapping_sub(carrier.x).cast_signed());
     let dy = i32::from(sphere.position.y.wrapping_sub(carrier.y).cast_signed());
     // `sub_106C0(sphere, carrier)` compares the source sphere axis (including
     // its mana-sized yaw/fov extent) against the carrier's 272/400/400
     // collision axes.  Keep the strict signed source expression rather than
     // treating the sphere as a point at its centre.
-    let dz = i32::from(sphere.position.z) + i32::from(extent)
+    let dz = i32::from(sphere.position.z) + i32::from(sphere.collision_yaw)
         - i32::from(carrier.z)
         - i32::from(MANA_CARRIER_COLLISION_VERTICAL_OFFSET);
-    dx.abs() < i32::from(MANA_CARRIER_COLLISION_HALF_WIDTH + extent)
-        && dy.abs() < i32::from(MANA_CARRIER_COLLISION_HALF_WIDTH + extent)
-        && dz.abs() < i32::from(MANA_CARRIER_COLLISION_HALF_HEIGHT + extent)
+    dx.abs() < i32::from(MANA_CARRIER_COLLISION_HALF_WIDTH) + i32::from(sphere.collision_pitch)
+        && dy.abs()
+            < i32::from(MANA_CARRIER_COLLISION_HALF_WIDTH) + i32::from(sphere.collision_roll)
+        && dz.abs()
+            < i32::from(MANA_CARRIER_COLLISION_HALF_HEIGHT) + i32::from(sphere.collision_fov)
 }
 
 /// `AddBallon_60AB0` compares a class-10 target's raw
@@ -1461,11 +1447,11 @@ pub(super) fn level2_carrier_sphere_relation_matches(
 }
 
 pub(super) fn level2_castle_sphere_overlap(castle: Position, sphere: &ManaSphere) -> bool {
-    let extent = level2_mana_sphere_dimension(sphere.mana);
     let dx = i32::from(sphere.position.x.wrapping_sub(castle.x).cast_signed());
     let dy = i32::from(sphere.position.y.wrapping_sub(castle.y).cast_signed());
-    dx.abs() < i32::from(CASTLE_STAGE_ONE_COLLISION_HALF_WIDTH + extent)
-        && dy.abs() < i32::from(CASTLE_STAGE_ONE_COLLISION_HALF_WIDTH + extent)
+    dx.abs() < i32::from(CASTLE_STAGE_ONE_COLLISION_HALF_WIDTH) + i32::from(sphere.collision_pitch)
+        && dy.abs()
+            < i32::from(CASTLE_STAGE_ONE_COLLISION_HALF_WIDTH) + i32::from(sphere.collision_roll)
 }
 
 /// `sub_60810`'s stage table with the imported player spell coefficient

@@ -124,13 +124,15 @@ pub struct SourceArena {
 impl SourceArena {
     #[must_use]
     pub(crate) fn new(entities: Box<[EntitySnapshot]>, economy: Level2EconomyState) -> Self {
-        Self {
+        let mut arena = Self {
             entities,
             economy,
             effects: crate::world::effects::State::default(),
             replacement_slots: Vec::new(),
             raw_creature_origins: BTreeMap::new(),
-        }
+        };
+        arena.adopt_reset_settlement_sources();
+        arena
     }
 
     /// The effect owner contributes its source-global relations to the same
@@ -435,6 +437,10 @@ impl SourceArena {
     fn allocate_source_slot_notifying(&mut self, mut publish: impl FnMut(u16, u16)) -> Option<u16> {
         if self.economy.free_slot_count() != 0 {
             let slot = self.economy.allocate_slot()?;
+            // The free stack owns this address now. A typed constructor can
+            // replace its occupant without publishing a raw record; retaining
+            // the old active packet would resurrect it when that owner retires.
+            self.entities[usize::from(slot)].reclaim_source_row();
             self.raw_creature_origins.remove(&slot);
             return Some(slot);
         }
@@ -842,8 +848,12 @@ impl SourceArena {
                 kind: source.semantic_kind,
                 root_slot: source_slot,
                 role: CreatureRuntimeRole::Root,
-                origin: CreatureRootOrigin::HouseSpawn {
-                    house_slot: source.parent_house_entity_index,
+                origin: if source.initial_package {
+                    CreatureRootOrigin::InitialPackage
+                } else {
+                    CreatureRootOrigin::HouseSpawn {
+                        house_slot: source.parent_house_entity_index,
+                    }
                 },
                 raw_model: Some(source.model),
                 living: source.active

@@ -1489,6 +1489,8 @@ pub(crate) fn resident_constructor(
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Level2HouseResidentSource {
     pub source_entity_index: u16,
+    /// Reset rows retain their package origin when adopted into this owner.
+    pub initial_package: bool,
     pub entity_rng: u16,
     pub parent_house_entity_index: u16,
     pub owner_entity_index: u16,
@@ -1535,6 +1537,79 @@ pub struct Level2HouseResidentSource {
 pub const SETTLEMENT_MAX_LIFE: i32 = 1_000;
 
 impl Level2HouseResidentSource {
+    /// Adopt the already-constructed source packet. This performs no NewEvent,
+    /// constructor draw, population increment, or mutation of the reset arena.
+    fn from_reset_snapshot(source: &crate::native_world::EntitySnapshot) -> Option<Self> {
+        if !source.active || source.class != 5 {
+            return None;
+        }
+        let (semantic_kind, appearance) = match source.model {
+            BUILDER_MODEL => (
+                crate::level_definition::CreatureKind::Builder,
+                BUILDER_APPEARANCE,
+            ),
+            TRADER_MODEL => (
+                crate::level_definition::CreatureKind::Trader,
+                TRADER_APPEARANCE,
+            ),
+            _ => return None,
+        };
+        let bytes = source.record_bytes();
+        let word = |offset| u16::from_le_bytes([bytes[offset], bytes[offset + 1]]);
+        let signed = |offset| i16::from_le_bytes([bytes[offset], bytes[offset + 1]]);
+        let dword = |offset| i32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap());
+        Some(Self {
+            source_entity_index: source.index,
+            initial_package: true,
+            entity_rng: source.entity_rng,
+            parent_house_entity_index: 0,
+            owner_entity_index: word(152),
+            attacker_entity_index: word(102),
+            semantic_kind,
+            position: source.position,
+            model: source.model,
+            action: source.action,
+            life: source.life,
+            phase: source.phase,
+            drawing_enabled: !source.drawing_disabled(),
+            active: source.active,
+            source_id: source.source_id,
+            max_life: dword(8),
+            pending_damage: dword(98),
+            current_attacker: word(42),
+            kill_credit_entity: word(40),
+            yaw: source.yaw,
+            desired_heading: signed(36),
+            minimum_speed: signed(136),
+            actual_speed: signed(134),
+            maximum_speed: signed(138),
+            target_entity_index: word(154),
+            linked_entity_index: word(56),
+            stage: SettlementStageLinks {
+                parent: word(44),
+                remaining: signed(50),
+                duration: signed(52),
+                relation: word(78),
+            },
+            stage_var_1: bytes[76] as i8,
+            source_byte_39: bytes[61],
+            reset_counter: dword(20),
+            mana: source.mana,
+            stage_var_2: bytes[77] as i8,
+            builder_placement_latch: bytes[65],
+            movement_blocked: source.control_flags & 0x40000 != 0,
+            suppress_death_burst: source.control_flags & 0x100000 != 0,
+            collision_half_width: signed(88),
+            collision_vertical_offset: signed(86),
+            collision_half_height: signed(92),
+            render_parameter_index: word(94),
+            base_tmap: appearance.base_tmap,
+            render_mode: 20,
+            logical_height: appearance.logical_height,
+            control_flags: source.control_flags,
+        })
+    }
+
     pub(crate) fn publish_source(&self, source: &mut crate::native_world::EntitySnapshot) {
         debug_assert_eq!(source.index, self.source_entity_index);
         source.active = self.active;
@@ -1604,6 +1679,7 @@ impl Level2HouseResidentSource {
     ) -> Self {
         Self {
             source_entity_index: state.source_entity_index,
+            initial_package: false,
             entity_rng: state.entity_rng,
             parent_house_entity_index: parent_house_entity_index,
             owner_entity_index: state.owner_entity_index,
@@ -1744,6 +1820,9 @@ impl Level2HouseResidentSource {
 
     pub(crate) fn digest_behavior(&self, hasher: &mut sha2::Sha256) {
         use sha2::Digest;
+        if self.initial_package {
+            hasher.update(b"settlement-reset-origin-v1\0");
+        }
         hasher.update(self.source_id.to_le_bytes());
         hasher.update(self.max_life.to_le_bytes());
         hasher.update(self.pending_damage.to_le_bytes());
@@ -2103,6 +2182,29 @@ impl crate::native_world::Level2EconomyState {
 }
 
 impl crate::campaign::source_arena::SourceArena {
+    /// Reset Builders/Traders use the same callbacks and lifetime carrier as
+    /// later population births. Imported Villagers retain their existing owner.
+    pub(crate) fn adopt_reset_settlement_sources(&mut self) {
+        for source in &self.entities {
+            if self
+                .economy
+                .house_residents
+                .iter()
+                .any(|row| row.source_entity_index == source.index)
+                || self
+                    .economy
+                    .authored_class5
+                    .iter()
+                    .any(|row| row.source_entity_index == source.index)
+            {
+                continue;
+            }
+            if let Some(resident) = Level2HouseResidentSource::from_reset_snapshot(source) {
+                self.economy.house_residents.push(resident);
+            }
+        }
+    }
+
     /// sub_23340/sub_237B0 mutate the live household regardless of whether
     /// it came from reset data, a Builder, or an authored group constructor.
     pub(crate) fn try_enter_settlement_house(
@@ -2689,6 +2791,97 @@ mod production_tests {
             .clone()
     }
 
+    fn ordinary_level_seven() -> crate::native_world::Level2ResetSession {
+        let package = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../generated/mc-bhq6-ordinary-20261024-b/level7");
+        CampaignSession::open(package, CampaignSelection::ordinary(7).unwrap())
+            .expect("actual ordinary Level7 package")
+            .level2_compatibility()
+            .clone()
+    }
+
+    #[test]
+    fn ordinary_level_seven_reset_traders_preserve_packets_and_reach_callbacks() {
+        let mut session = ordinary_level_seven();
+        let before = session
+            .session
+            .state
+            .live
+            .economy
+            .reset_hash_with_terrain(&session.session.state.live.terrain);
+        session
+            .session
+            .state
+            .live
+            .economy
+            .adopt_reset_settlement_sources();
+        assert_eq!(
+            session
+                .session
+                .state
+                .live
+                .economy
+                .reset_hash_with_terrain(&session.session.state.live.terrain,),
+            before,
+            "reset adoption must be idempotent, without RNG or allocator changes"
+        );
+        let rows = session
+            .economy()
+            .house_residents()
+            .iter()
+            .filter(|row| row.initial_package && row.model == TRADER_MODEL)
+            .copied()
+            .collect::<Vec<_>>();
+        assert_eq!(
+            rows.iter()
+                .map(|row| row.source_entity_index)
+                .collect::<Vec<_>>(),
+            [101, 102, 103, 104]
+        );
+        for row in &rows {
+            assert_eq!((row.action, row.stage_var_1, row.stage_var_2), (113, 0, 0));
+            let original = &session.entities()[usize::from(row.source_entity_index)];
+            let mut projected = original.clone();
+            row.publish_source(&mut projected);
+            assert_eq!(
+                projected.record_bytes(),
+                original.record_bytes(),
+                "adopted Trader {} changed its source packet",
+                row.source_entity_index
+            );
+        }
+        session.step_level2_source_pass(0);
+        assert!(
+            !session.dispatch_events().iter().any(|event| matches!(
+                event,
+                crate::native_world::Level2DispatchEvent::Error { .. }
+            )),
+            "ordinary Level7 source dispatch failed: {:?}",
+            session.dispatch_events()
+        );
+        for old in rows {
+            let current = session
+                .economy()
+                .house_residents()
+                .iter()
+                .find(|row| row.source_entity_index == old.source_entity_index)
+                .unwrap();
+            assert_eq!(current.phase, old.phase.wrapping_add(1));
+            assert_eq!(
+                session.entities()[usize::from(current.source_entity_index)].phase,
+                current.phase
+            );
+            eprintln!(
+                "actual Level7 reset Trader {} -> action {} phase {} target {} at {:?}",
+                current.source_entity_index,
+                current.action,
+                current.phase,
+                current.target_entity_index,
+                current.position
+            );
+        }
+    }
+
     fn village_placement_through_authoring() -> crate::native_world::Level2ResetSession {
         use crate::campaign::backend::load_mc2_campaign;
         use crate::game_definition::{
@@ -2894,35 +3087,106 @@ mod production_tests {
     }
 
     #[test]
-    fn ordinary_authored_trader_joins_the_authoritative_household() {
+    fn ordinary_authored_traders_follow_their_source_stage_route() {
         let mut session = ordinary_level_two();
         ordinary_group_three_through_controls(&mut session);
-        for pass in 0..4096_u16 {
+        use crate::native_world::creatures::archer::ArcherStageRuntime;
+        let route = |index| session.runtime().descriptor(index).unwrap();
+        assert_eq!(
+            (
+                route(1).kind,
+                route(1).next,
+                route(1).point.x,
+                route(1).point.y
+            ),
+            (1, 2, 116 << 8, 13 << 8)
+        );
+        assert_eq!(
+            (route(2).kind, route(2).next, route(2).scalar),
+            (6, 3, 2000)
+        );
+        assert_eq!(
+            (
+                route(3).kind,
+                route(3).next,
+                route(3).point.x,
+                route(3).point.y
+            ),
+            (1, 4, 2 << 8, 153 << 8)
+        );
+        assert_eq!(
+            (route(4).kind, route(4).next, route(4).scalar),
+            (6, 5, 2020)
+        );
+        assert_eq!((route(5).kind, route(5).next), (1, 0));
+        let before = *session
+            .economy()
+            .authored_class5()
+            .iter()
+            .find(|row| row.authored_index == 125)
+            .unwrap();
+        for pass in 0..64 {
+            session.step_level2_source_pass(pass % 3);
+        }
+        let row = session
+            .economy()
+            .authored_class5()
+            .iter()
+            .find(|row| row.source_entity_index == before.source_entity_index)
+            .unwrap();
+        let behavior =
+            session.session.state.live.economy.house_residents.traders[&row.source_entity_index];
+        // These actors follow three waypoints and 4020 waiting passes before
+        // free trade. Bypassing their StageVars must not satisfy this gate.
+        assert_eq!((row.action, behavior.index, behavior.mode), (119, 1, 1));
+        assert_eq!(row.word_0x96_150, 0);
+        assert_eq!(row.source_byte_3e, before.source_byte_3e.wrapping_add(64));
+        assert_ne!(row.position, before.position);
+        let raw = &session.entities()[usize::from(row.source_entity_index)];
+        assert_eq!(raw.position, row.position);
+        assert_eq!((raw.action, raw.phase), (row.action, row.source_byte_3e));
+        assert_eq!((raw.record_bytes()[76], raw.record_bytes()[77]), (1, 1));
+        assert!(
+            session
+                .economy()
+                .map_chains
+                .is_linked(row.source_entity_index)
+        );
+        eprintln!(
+            "actual group3 Trader {} follows source route 1 in action119 at {:?}",
+            row.source_entity_index, row.position
+        );
+    }
+
+    #[test]
+    fn ordinary_level_seven_reset_trader_joins_the_authoritative_household() {
+        let mut session = ordinary_level_seven();
+        for pass in 0..1024_u16 {
             let before = household_counts(&session);
             session.step_level2_source_pass((pass % 3) as u8);
             if pass % 64 == 0 && std::env::var_os("MC_SETTLEMENT_TRACE").is_some() {
                 let trader = session
                     .economy()
-                    .authored_class5()
+                    .house_residents()
                     .iter()
-                    .find(|row| row.model == TRADER_MODEL && row.authored_index == 125);
+                    .find(|row| row.initial_package && row.model == TRADER_MODEL);
                 let target = trader.and_then(|row| {
                     crate::native_world::level2_class5::trader::target_in_arena(
                         &session.session.state.live.economy,
                         &session.session.state.live.ordinary.houses,
-                        row.word_0x96_150,
+                        row.target_entity_index,
                     )
                 });
-                eprintln!("ordinary Trader pass {pass}: {trader:?}; target {target:?}");
+                eprintln!("ordinary Level7 Trader pass {pass}: {trader:?}; target {target:?}");
             }
-            if let Some(row) = session.economy().authored_class5().iter().find(|row| {
-                row.model == TRADER_MODEL
-                    && (125..=151).contains(&row.authored_index)
+            if let Some(row) = session.economy().house_residents().iter().find(|row| {
+                row.initial_package
+                    && row.model == TRADER_MODEL
                     && row.action == 116
-                    && row.dword_0x10 == 1
+                    && row.reset_counter == 1
             }) {
                 let slot = row.source_entity_index;
-                let target = row.word_0x96_150;
+                let target = row.target_entity_index;
                 let occupants = household_counts(&session)[&target];
                 assert!(occupants > before[&target]);
                 assert_eq!(
@@ -2930,8 +3194,8 @@ mod production_tests {
                     occupants
                 );
                 eprintln!(
-                    "actual Level2 ordinary group3 record {} -> Trader {} -> House {} occupants {} at source pass {}",
-                    row.authored_index, slot, target, occupants, pass
+                    "actual Level7 reset Trader {} -> House {} occupants {} at source pass {}",
+                    slot, target, occupants, pass
                 );
                 session.step_level2_source_pass(0);
                 assert!(session.entities()[usize::from(slot)].drawing_disabled());
@@ -2939,7 +3203,7 @@ mod production_tests {
                 assert!(
                     !session
                         .economy()
-                        .authored_class5()
+                        .house_residents()
                         .iter()
                         .any(|row| row.source_entity_index == slot)
                 );
@@ -2947,13 +3211,14 @@ mod production_tests {
             }
         }
         panic!(
-            "ordinary authored Traders never joined a household; final rows {:?}",
+            "ordinary free Level7 Traders never joined a household; final rows {:?}; dispatch {:?}",
             session
                 .economy()
-                .authored_class5()
+                .house_residents()
                 .iter()
                 .filter(|row| row.model == TRADER_MODEL)
-                .collect::<Vec<_>>()
+                .collect::<Vec<_>>(),
+            session.dispatch_events()
         );
     }
 

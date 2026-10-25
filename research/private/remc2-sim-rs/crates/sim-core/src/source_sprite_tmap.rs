@@ -13,10 +13,9 @@ use crate::{
         CastleDefenseController, CastleDefenseShot, DEATH_BURST_ACTION, DEATH_BURST_CLASS,
         DEATH_BURST_MODEL, DeathBurst, DynamicResidentKind, DynamicResidentState, Level1SpeedTrail,
         MANA_SPHERE_ACTION, MANA_SPHERE_CLASS, MANA_SPHERE_MODEL, MANA_SPHERE_NEUTRAL_BASE_TMAP,
-        MANA_SPHERE_NEUTRAL_RENDER_BASE, MANA_SPHERE_PLAYER_ONE_BASE_TMAP,
-        MANA_SPHERE_PLAYER_ONE_RENDER_BASE, MANA_SPHERE_RENDER_MODE, ManaSphere,
-        PLAYER_DEATH_MARKER_ACTION, PLAYER_DEATH_MARKER_CLASS, PLAYER_DEATH_MARKER_MODEL,
-        PLAYER_DEATH_MARKER_PARTICLE_PARAMETER, PlayerDeathMarker, mana_sphere_size_ordinal,
+        MANA_SPHERE_PLAYER_ONE_BASE_TMAP, MANA_SPHERE_PLAYER_ONE_RENDER_BASE,
+        MANA_SPHERE_RENDER_MODE, ManaSphere, PLAYER_DEATH_MARKER_ACTION, PLAYER_DEATH_MARKER_CLASS,
+        PLAYER_DEATH_MARKER_MODEL, PLAYER_DEATH_MARKER_PARTICLE_PARAMETER, PlayerDeathMarker,
     },
 };
 
@@ -629,25 +628,20 @@ pub fn level1_source_sprite_dispositions(
             .iter()
             .filter(|sphere| sphere.active && !sphere.pending_delete)
             .map(|sphere| {
-                let owner_is_marker = state
-                    .neutral_owner_entity_indices
-                    .contains(&sphere.owner_entity_index);
-                let player_owned =
-                    sphere.owner_entity_index == state.player.entity_index && !owner_is_marker;
-                let ordinal = u16::from(mana_sphere_size_ordinal(sphere.mana));
-                let (render_parameter_index, base_tmap, palette_owner) = if player_owned {
-                    (
-                        MANA_SPHERE_PLAYER_ONE_RENDER_BASE + ordinal,
-                        MANA_SPHERE_PLAYER_ONE_BASE_TMAP,
-                        SourceSpritePaletteOwner::PlayerColour,
-                    )
-                } else {
-                    (
-                        MANA_SPHERE_NEUTRAL_RENDER_BASE + ordinal,
-                        MANA_SPHERE_NEUTRAL_BASE_TMAP,
-                        SourceSpritePaletteOwner::NightLevel,
-                    )
-                };
+                let ordinal = u16::from(sphere.particle_size_ordinal());
+                let (base_tmap, palette_owner) =
+                    if sphere.particle_index >= MANA_SPHERE_PLAYER_ONE_RENDER_BASE {
+                        (
+                            MANA_SPHERE_PLAYER_ONE_BASE_TMAP
+                                + (sphere.particle_index - MANA_SPHERE_PLAYER_ONE_RENDER_BASE) / 8,
+                            SourceSpritePaletteOwner::PlayerColour,
+                        )
+                    } else {
+                        (
+                            MANA_SPHERE_NEUTRAL_BASE_TMAP,
+                            SourceSpritePaletteOwner::NightLevel,
+                        )
+                    };
                 render_contract_row(
                     sphere.source_entity_index,
                     sphere.position,
@@ -661,7 +655,7 @@ pub fn level1_source_sprite_dispositions(
                     0,
                     0,
                     runtime_template(
-                        render_parameter_index,
+                        sphere.particle_index,
                         base_tmap,
                         MANA_SPHERE_RENDER_MODE,
                         (ordinal + 1) * 50,
