@@ -180,6 +180,7 @@ impl Mc2LevelDefinition {
             14 => Some(CreatureKind::Trader),
             15 => Some(CreatureKind::CastleDefender),
             19 => Some(CreatureKind::Firefly),
+            20 => Some(CreatureKind::Spider),
             22 => Some(CreatureKind::Creature22),
             24 => Some(CreatureKind::Creature24),
             _ => None,
@@ -560,6 +561,7 @@ impl Mc2LevelDefinition {
                 (5, 14) => Some(CreatureKind::Trader),
                 (5, 15) => Some(CreatureKind::CastleDefender),
                 (5, 19) => Some(CreatureKind::Firefly),
+                (5, 20) => Some(CreatureKind::Spider),
                 (5, 22) => Some(CreatureKind::Creature22),
                 (5, 24) => Some(CreatureKind::Creature24),
                 _ => None,
@@ -609,6 +611,7 @@ impl Mc2LevelDefinition {
                         | CreatureKind::Bee
                         | CreatureKind::Dragon
                         | CreatureKind::Skeleton
+                        | CreatureKind::Spider
                         | CreatureKind::Trader
                         | CreatureKind::Villager
                         | CreatureKind::Worm
@@ -634,6 +637,9 @@ impl Mc2LevelDefinition {
                         }
                         CreatureKind::Dragon => crate::native_world::level2_class5::DRAGON_LIFE,
                         CreatureKind::Skeleton => 1_000,
+                        CreatureKind::Spider => {
+                            crate::level_definition::SPIDER_CLASS_PROPERTIES.max_life
+                        }
                         CreatureKind::Trader => crate::native_world::level2_class5::TRADER_MAX_LIFE,
                         CreatureKind::Villager => crate::villager::VILLAGER_MAX_LIFE,
                         CreatureKind::Worm => crate::native_world::level2_class5::WORM_MAX_LIFE,

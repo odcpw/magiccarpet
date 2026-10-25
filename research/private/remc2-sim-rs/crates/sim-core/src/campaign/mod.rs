@@ -190,7 +190,7 @@ impl CampaignSession {
         let evidence = self
             .level2
             .step_outer_turn_with_tuning(command, speed_index, tuning);
-        if self.definition.identity.internal_level < 3
+        if self.definition.identity.internal_level < 4
             && !self
                 .level2
                 .dispatch_events()

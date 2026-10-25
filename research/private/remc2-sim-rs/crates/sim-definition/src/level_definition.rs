@@ -22,6 +22,8 @@ mod fields;
 pub use fields::{FieldDefinition, FieldKind};
 mod scenery;
 pub use scenery::MushroomDefinition;
+mod spider;
+pub use spider::{SPIDER_CLASS_PROPERTIES, SpiderClassProperties};
 mod terrain_disasters;
 pub use terrain_disasters::{TerrainDisasterDefinition, TerrainDisasterKind};
 
@@ -39,6 +41,7 @@ pub enum CreatureKind {
     Villager,
     Trader,
     Firefly,
+    Spider,
     #[serde(rename = "creature_22")]
     Creature22,
     #[serde(rename = "creature_24")]
@@ -183,6 +186,7 @@ impl CreatureKind {
             Self::Villager => "villager",
             Self::Trader => "trader",
             Self::Firefly => "firefly",
+            Self::Spider => "spider",
             Self::Creature22 => "creature_22",
             Self::Creature24 => "creature_24",
         }
@@ -201,6 +205,7 @@ pub const fn supports_complete_creature_lifecycle(kind: CreatureKind) -> bool {
             | CreatureKind::Archer
             | CreatureKind::Firefly
             | CreatureKind::Skeleton
+            | CreatureKind::Spider
     )
 }
 
@@ -229,6 +234,7 @@ pub const fn creature_max_life_upper_bound(kind: CreatureKind) -> Option<u32> {
         | CreatureKind::Firefly
         | CreatureKind::Goat
         | CreatureKind::Skeleton
+        | CreatureKind::Spider
         | CreatureKind::Trader
         | CreatureKind::Villager
         | CreatureKind::Worm => Some(2_147_483_647),

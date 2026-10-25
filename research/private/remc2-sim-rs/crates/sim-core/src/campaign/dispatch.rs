@@ -94,6 +94,8 @@ pub enum ExistingHandler {
     Creature22 = 35,
     Creature24 = 36,
     Mushrooms = 37,
+    Spider = 38,
+    SpiderWeb = 39,
 }
 
 impl ExistingHandler {
@@ -142,6 +144,8 @@ impl ExistingHandler {
             Self::Creature22 => "authored model22 creature root and its retained descendants",
             Self::Creature24 => "authored model24 creature root and its retained descendants",
             Self::Mushrooms => "authored cave mushroom constructor",
+            Self::Spider => "authored Spider constructor and live web attack",
+            Self::SpiderWeb => "Spider ranged web projectile and status impact",
         }
     }
 
@@ -184,6 +188,8 @@ impl ExistingHandler {
             Self::Fields => "world-fields",
             Self::Creature22 => "creature22-family",
             Self::Creature24 => "creature24-family",
+            Self::Spider => "spider-family",
+            Self::SpiderWeb => "spider-web-projectile",
             Self::Mushrooms => "mushrooms",
         }
     }
@@ -356,12 +362,14 @@ compiled_registry! {
         (TraderFamily, 5, [112, 113, 114, 115, 116, 117, 118, 119]);
         (CastleAuxiliary, 5, [120, 121, 122, 123, 124, 125, 127]);
         (FireflyFamily, 5, [153, 154, 155, 156, 157, 159]);
+        (Spider, 5, [160, 161, 162, 163, 164, 165, 167]);
         (Creature22, 5, [176, 177, 178, 179, 180, 181, 183]);
         (Creature24, 5, [192, 193, 194, 195, 196, 197, 198, 199]);
         (MultipartFamily, 5, [232]);
         (ProjectileFamily, 9, [0, 1, 10, 13]);
         (Model6ProjectileChild, 9, [15]);
         (ProjectileFamily, 9, [18]);
+        (SpiderWeb, 9, [22]);
         (CaveSpell, 9, [31]);
         (TerrainDisasters, 10, [11]);
         (Fields, 10, [36, 37, 70, 71]);
@@ -404,11 +412,13 @@ compiled_registry! {
         (TraderFamily, 5, [14]);
         (CastleAuxiliary, 5, [15]);
         (FireflyFamily, 5, [19]);
+        (Spider, 5, [20]);
         (Creature22, 5, [22]);
         (Creature24, 5, [24]);
         (ProjectileFamily, 9, [0, 1, 10, 13]);
         (Model6ProjectileChild, 9, [14]);
         (ProjectileFamily, 9, [17]);
+        (SpiderWeb, 9, [21]);
         (CaveSpell, 9, [30]);
         (Class10Effects, 10, [0, 1, 2, 3, 4, 5, 6, 7, 12, 13, 14, 16, 17, 18, 19, 22, 39, 40, 41, 42, 43, 45, 53, 54, 59, 60, 70, 76, 79, 87, 88, 90, 91]);
         (TerrainStripController, 10, [63, 64]);
@@ -667,6 +677,8 @@ mod tests {
             (5, &[74, 76, 77][..], "level2-model9-family"),
             (5, &[8][..], "goat-family"),
             (5, &[32][..], "archer-family"),
+            (5, &[160, 161, 162, 163, 164, 165, 167][..], "spider-family"),
+            (9, &[22][..], "spider-web-projectile"),
             (
                 5,
                 &[120, 121, 122, 123, 124, 125, 127][..],
@@ -763,6 +775,8 @@ mod tests {
             (10, &[34, 65, 66][..], "world-fields"),
             (5, &[22][..], "creature22-family"),
             (5, &[24][..], "creature24-family"),
+            (5, &[20][..], "spider-family"),
+            (9, &[21][..], "spider-web-projectile"),
         ] {
             for model in models {
                 expected.insert(format!("Constructor:ClassModel:{class}:{model}"), handler);
@@ -789,7 +803,7 @@ mod tests {
         assert_eq!(registry["action_dispatch_sites"][0], "ApplyEvents");
         assert_eq!(registry["action_dispatch_sites"][1], "UpdateEntities");
         assert_eq!(registry["constructor_dispatch_site"], "Constructor");
-        assert_eq!(CAMPAIGN_BEHAVIOR_REGISTRY.entries().len(), 556);
+        assert_eq!(CAMPAIGN_BEHAVIOR_REGISTRY.entries().len(), 622);
         validate_against_source(CAMPAIGN_BEHAVIOR_REGISTRY.entries(), &source_keys)
             .expect("compiled entries retain exact pinned sites and selector shapes");
 
@@ -812,6 +826,22 @@ mod tests {
                 },
             };
             assert!(report_keys.remove(&source_key(&key)));
+            assert!(CAMPAIGN_BEHAVIOR_REGISTRY.entry(&key).is_none());
+            assert!(matches!(
+                CAMPAIGN_BEHAVIOR_REGISTRY.validate_declared_closure(&BTreeSet::from([key])),
+                Err(RegistryValidationError::UnknownImplementedKey(_))
+            ));
+        }
+        // Spider action166 has a table address but no source dispatcher case.
+        // A complete ordinary family must not silently turn it into a no-op.
+        for site in [DispatchSite::ApplyEvents, DispatchSite::UpdateEntities] {
+            let key = BehaviorKey {
+                dispatch_site: site.id(),
+                selector: BehaviorSelector::ClassAction {
+                    class: 5,
+                    action: 166,
+                },
+            };
             assert!(CAMPAIGN_BEHAVIOR_REGISTRY.entry(&key).is_none());
             assert!(matches!(
                 CAMPAIGN_BEHAVIOR_REGISTRY.validate_declared_closure(&BTreeSet::from([key])),
@@ -888,7 +918,7 @@ mod tests {
             );
         }
         expected_handlers.extend(supplemental_handlers);
-        assert_eq!(expected_handlers.len(), 556);
+        assert_eq!(expected_handlers.len(), 622);
 
         for entry in CAMPAIGN_BEHAVIOR_REGISTRY.entries() {
             assert_eq!(

@@ -185,6 +185,7 @@ impl SourceArena {
         origin: CreatureRootOrigin,
     ) -> bool {
         let expected_model = match kind {
+            CreatureKind::Spider => 20,
             CreatureKind::Creature22 => 22,
             CreatureKind::Creature24 => 24,
             _ => return false,
@@ -208,7 +209,7 @@ impl SourceArena {
         source: &EntitySnapshot,
         initial: &BTreeMap<u16, CreatureKind>,
     ) -> Option<CreatureRuntimeIdentity> {
-        if !source.active || source.class != 5 || !matches!(source.model, 22 | 24) {
+        if !source.active || source.class != 5 || !matches!(source.model, 20 | 22 | 24) {
             return None;
         }
         let part = source.model == 22 && source.action == 180;
@@ -230,10 +231,11 @@ impl SourceArena {
         ) {
             return None;
         }
-        let expected = if source.model == 22 {
-            CreatureKind::Creature22
-        } else {
-            CreatureKind::Creature24
+        let expected = match source.model {
+            20 => CreatureKind::Spider,
+            22 => CreatureKind::Creature22,
+            24 => CreatureKind::Creature24,
+            _ => return None,
         };
         let origin = match self.raw_creature_origins.get(&root_slot) {
             Some((generation, kind, origin))
@@ -649,7 +651,8 @@ impl SourceArena {
                 .filter(|source| {
                     source.active
                         && source.class == 5
-                        && (matches!(source.action, 29 | 232) || matches!(source.model, 22 | 24))
+                        && (matches!(source.action, 29 | 232)
+                            || matches!(source.model, 20 | 22 | 24))
                 })
                 .map(|source| source.index),
         );
@@ -708,7 +711,7 @@ impl SourceArena {
         if !source.active || source.class != 5 {
             return None;
         }
-        if matches!(source.model, 22 | 24) {
+        if matches!(source.model, 20 | 22 | 24) {
             return self.raw_creature_identity(source, initial_bindings);
         }
         let handle = SourceEntityHandle {
@@ -910,7 +913,7 @@ impl SourceArena {
         {
             return None;
         }
-        if matches!(source.model, 22 | 24) {
+        if matches!(source.model, 20 | 22 | 24) {
             return self.raw_creature_identity(source, initial_bindings);
         }
         if source.class == 5

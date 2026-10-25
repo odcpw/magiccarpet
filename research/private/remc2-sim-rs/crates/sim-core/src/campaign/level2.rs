@@ -97,6 +97,7 @@ enum Level2EpiloguePolicy {
     SchedulerAdvance {
         before: u8,
         route: Level2SourceRoute,
+        generation: u32,
     },
     /// Retained delegates still contain their historical common increment.
     /// The scheduler verifies exactly one advance and supplies it only when a
@@ -128,6 +129,7 @@ fn validate_semantic_creature_dispatch(
                 ));
             }
             let expected = match (identity.kind, identity.role) {
+                (CreatureKind::Spider, _) => Some(&[ExistingHandler::Spider][..]),
                 (CreatureKind::Creature22, _) => Some(&[ExistingHandler::Creature22][..]),
                 (CreatureKind::Creature24, _) => Some(&[ExistingHandler::Creature24][..]),
                 (
@@ -187,6 +189,7 @@ fn validate_semantic_creature_dispatch(
             | ExistingHandler::TraderFamily
             | ExistingHandler::Creature22
             | ExistingHandler::Creature24
+            | ExistingHandler::Spider
             | ExistingHandler::FireflyFamily,
         ) => Err(format!(
             "creature source slot {source_slot} has no package-authored semantic identity"
@@ -984,6 +987,13 @@ impl SourceSchedulerWorld for Level2SourceSchedulerWorld<'_, '_> {
                         &live.terrain,
                         &self.pass_start_class5_model_slots,
                     );
+                    creatures::spider::mc2::prepare_source_pass(
+                        &mut live.economy,
+                        &mut live.core.runtime,
+                        &live.terrain,
+                        &self.pass_start_class5_model_slots,
+                        &self.owner.session.definition.presentation.particles,
+                    )?;
                     {
                         let mut context = creatures::creature_22::mc2::Context {
                             arena: &mut live.economy,
@@ -1009,6 +1019,11 @@ impl SourceSchedulerWorld for Level2SourceSchedulerWorld<'_, '_> {
                     creatures::bee::mc2::proximity_prepass_in_arena(
                         &mut live.economy,
                         &self.pass_start_class5_model_slots[2],
+                        state.position,
+                    );
+                    creatures::spider::mc2::proximity_prepass(
+                        &mut live.economy,
+                        &self.pass_start_class5_model_slots[20],
                         state.position,
                     );
                     live.economy.step_raw_creature_proximity(
@@ -1093,6 +1108,7 @@ impl SourceSchedulerWorld for Level2SourceSchedulerWorld<'_, '_> {
                         },
                     };
                 };
+                let generation = self.owner.session.state.live.economy.slot_generation(slot);
                 let epilogue = match visit.route {
                     Level2SourceRoute::Nyphur
                     | Level2SourceRoute::Dolmen
@@ -1102,6 +1118,7 @@ impl SourceSchedulerWorld for Level2SourceSchedulerWorld<'_, '_> {
                     | Level2SourceRoute::FireballHolder => Level2EpiloguePolicy::SchedulerAdvance {
                         before,
                         route: visit.route,
+                        generation,
                     },
                     Level2SourceRoute::Player
                         if visit.key.selector
@@ -1113,6 +1130,7 @@ impl SourceSchedulerWorld for Level2SourceSchedulerWorld<'_, '_> {
                         Level2EpiloguePolicy::SchedulerAdvance {
                             before,
                             route: visit.route,
+                            generation,
                         }
                     }
                     Level2SourceRoute::Dynamic(row)
@@ -1137,11 +1155,13 @@ impl SourceSchedulerWorld for Level2SourceSchedulerWorld<'_, '_> {
                         Level2EpiloguePolicy::SchedulerAdvance {
                             before,
                             route: visit.route,
+                            generation,
                         }
                     }
                     Level2SourceRoute::Imported => Level2EpiloguePolicy::SchedulerAdvance {
                         before,
                         route: visit.route,
+                        generation,
                     },
                     _ => Level2EpiloguePolicy::EnsureDelegateAdvanced {
                         before,
@@ -1234,10 +1254,29 @@ impl SourceSchedulerWorld for Level2SourceSchedulerWorld<'_, '_> {
         current: &CurrentOccupant<Self::Selector>,
     ) -> std::result::Result<(), Self::Error> {
         match *instruction {
-            Level2EpiloguePolicy::SchedulerAdvance { before, route } => {
+            Level2EpiloguePolicy::SchedulerAdvance {
+                before,
+                route,
+                generation,
+            } => {
                 let current_route = match current {
                     CurrentOccupant::Known { selector, .. } => selector.route(),
                     CurrentOccupant::Inactive => route,
+                };
+                let replaced =
+                    self.owner.session.state.live.economy.slot_generation(slot) != generation;
+                let current_before = if replaced {
+                    // NewEvent can replace the callback's own fixed address.
+                    // Its constructor's phase, not the dead actor's phase,
+                    // receives the source common increment.
+                    match current {
+                        CurrentOccupant::Known { selector, .. } => selector.phase(),
+                        CurrentOccupant::Inactive => None,
+                    }
+                    .or_else(|| self.owner.level2_retained_source_phase(slot, current_route))
+                    .ok_or_else(|| format!("replacement source slot {slot} has no phase carrier"))?
+                } else {
+                    before
                 };
                 self.owner
                     .advance_level2_outer_owned_phase(slot, current_route)?;
@@ -1247,10 +1286,10 @@ impl SourceSchedulerWorld for Level2SourceSchedulerWorld<'_, '_> {
                     .and_then(|plan| plan.phase())
                     .or_else(|| self.owner.level2_retained_source_phase(slot, current_route))
                     .ok_or_else(|| format!("source slot {slot} lost its phase after epilogue"))?;
-                if after != before.wrapping_add(1) {
+                if after != current_before.wrapping_add(1) {
                     return Err(format!(
-                        "scheduler epilogue at source slot {slot} advanced phase {before} -> {after}, expected {}; original={route:?} current={current:?}",
-                        before.wrapping_add(1),
+                        "scheduler epilogue at source slot {slot} advanced phase {current_before} -> {after}, expected {}; original={route:?} current={current:?}",
+                        current_before.wrapping_add(1),
                     ));
                 }
             }
@@ -1763,7 +1802,7 @@ impl Level2ResetSession {
         Ok(slot)
     }
 
-    fn allocate_authored_creature24_feature(
+    fn allocate_authored_raw_creature_feature(
         &mut self,
         feature: AuthoredFeature,
     ) -> std::result::Result<Option<u16>, String> {
@@ -1779,20 +1818,37 @@ impl Level2ResetSession {
             .definition
             .authored_creature_max_life(feature.index)
             .map(u32::cast_signed)
-            .ok_or_else(|| format!("model24 record {} lost semantic health", feature.index))?;
+            .ok_or_else(|| format!("creature record {} lost semantic health", feature.index))?;
         let live = &mut self.session.state.live;
         let position =
             feature.world_position(live.terrain.ground_height(feature.world_position(0)));
-        let slot = creatures::creature_24::mc2::allocate_authored(
-            &mut live.economy,
-            &mut live.core.runtime,
-            &mut live.terrain,
-            &self.session.definition.presentation.particles,
-            position,
-            max_life,
-            stage,
-            feature.index,
-        )?;
+        let slot = match feature.subtype {
+            20 => creatures::spider::mc2::allocate_authored(
+                &mut live.economy,
+                &mut live.core.runtime,
+                &mut live.terrain,
+                &self.session.definition.presentation.particles,
+                position,
+                max_life,
+                stage,
+                feature.index,
+            ),
+            24 => creatures::creature_24::mc2::allocate_authored(
+                &mut live.economy,
+                &mut live.core.runtime,
+                &mut live.terrain,
+                &self.session.definition.presentation.particles,
+                position,
+                max_life,
+                stage,
+                feature.index,
+            ),
+            model => {
+                return Err(format!(
+                    "no raw authored creature constructor for model {model}"
+                ));
+            }
+        }?;
         if let Some(slot) = slot {
             for stage in live
                 .mission
@@ -1804,7 +1860,7 @@ impl Level2ResetSession {
                     .bind_authored_stage_variable_entity(stage, slot)
                 {
                     return Err(format!(
-                        "model24 record {} StageVar {stage} bind failed",
+                        "creature record {} StageVar {stage} bind failed",
                         feature.index
                     ));
                 }
@@ -4799,9 +4855,16 @@ impl Level2ResetSession {
                     })
             })
             .or_else(|| {
-                self.session
-                    .definition
-                    .scenery_for_initial_source_slot(source_slot)
+                // Initial package bindings belong to the original occupant.
+                // A reclaimed mushroom slot can now contain a live creature
+                // or projectile with a different semantic identity.
+                (self.session.state.live.economy.slot_generation(source_slot) == 0)
+                    .then(|| {
+                        self.session
+                            .definition
+                            .scenery_for_initial_source_slot(source_slot)
+                    })
+                    .flatten()
             })
     }
 
@@ -9689,7 +9752,7 @@ impl Level2ResetSession {
             !matches!(
                 (feature.kind, feature.subtype),
                 (2, 0 | 1 | 6 | 7)
-                    | (5, 0 | 1 | 2 | 3 | 4 | 9 | 14 | 19 | 22 | 24)
+                    | (5, 0 | 1 | 2 | 3 | 4 | 9 | 14 | 19 | 20 | 22 | 24)
                     | (
                         10,
                         0..=7 | 13 | 14 | 16 | 17 | 18 | 19 | 22 | 34 | 39 | 45 | 54 | 58 | 59 | 60 | 63 | 64 | 70 | 76 | 80..=88 | 90
@@ -10081,8 +10144,8 @@ impl Level2ResetSession {
                 (5, 22) => {
                     self.allocate_authored_creature22_feature(feature)?;
                 }
-                (5, 24) => {
-                    self.allocate_authored_creature24_feature(feature)?;
+                (5, 20 | 24) => {
+                    self.allocate_authored_raw_creature_feature(feature)?;
                 }
                 (5, 3) => {
                     let position = feature.world_position(
@@ -10984,7 +11047,7 @@ impl Level2ResetSession {
                             || is_class5_model4
                             || is_class5_model3
                             || is_model22
-                            || (feature.kind == 5 && matches!(feature.subtype, 22 | 24))
+                            || (feature.kind == 5 && matches!(feature.subtype, 20 | 22 | 24))
                             || is_model39
                             || is_model6
                             || is_model59
@@ -10995,7 +11058,7 @@ impl Level2ResetSession {
         };
         let mut activated = Vec::new();
         for feature in rows {
-            if feature.kind == 5 && matches!(feature.subtype, 22 | 24) {
+            if feature.kind == 5 && matches!(feature.subtype, 20 | 22 | 24) {
                 if self
                     .session
                     .state
@@ -11008,7 +11071,7 @@ impl Level2ResetSession {
                 let result = if feature.subtype == 22 {
                     self.allocate_authored_creature22_feature(feature)
                 } else {
-                    self.allocate_authored_creature24_feature(feature)
+                    self.allocate_authored_raw_creature_feature(feature)
                 };
                 match result {
                     Ok(Some(slot)) => activated.push((feature.index, slot)),
@@ -12308,9 +12371,9 @@ impl Level2ResetSession {
                             (2, 0 | 3 | 18 | 19 | 21)
                                 | (
                                     5,
-                                    25 | 26 | 27 | 28 | 29 | 31 | 72 | 73 | 74 | 76 | 77 | 79 | 176..=181 | 183 | 192..=199 | 232
+                                    25 | 26 | 27 | 28 | 29 | 31 | 72 | 73 | 74 | 76 | 77 | 79 | 160..=167 | 176..=181 | 183 | 192..=199 | 232
                                 )
-                                | (9, 31)
+                                | (9, 22 | 31)
                                 | (10, 0..=7 | 13 | 14 | 16 | 18 | 19 | 36 | 37 | 65 | 68..=71 | 77 | 87..=94 | 96)
                                 | (11, 0..=44)
                                 | (14, 6 | 7 | 8 | 9)
@@ -13233,6 +13296,8 @@ impl Level2ResetSession {
                     | ExistingHandler::Mushrooms
                     | ExistingHandler::Creature22
                     | ExistingHandler::Creature24
+                    | ExistingHandler::Spider
+                    | ExistingHandler::SpiderWeb
             ),
             Level2SourceRoute::Dynamic(row) => match row.kind {
                 Level2DynamicArenaKind::CastleProjectile
@@ -13348,6 +13413,7 @@ impl Level2ResetSession {
                 | ExistingHandler::FireflyFamily
                 | ExistingHandler::Creature22
                 | ExistingHandler::Creature24
+                | ExistingHandler::Spider
         );
         let semantic_creature = match visit.route {
             Level2SourceRoute::Dynamic(Level2DynamicArenaCursorRow {
@@ -13838,7 +13904,10 @@ impl Level2ResetSession {
                 }
                 self.append_new_economy_events(pass, source_slot);
             }
-            (ExistingHandler::Creature24, Level2SourceRoute::Imported) => {
+            (
+                ExistingHandler::Creature24 | ExistingHandler::Spider,
+                Level2SourceRoute::Imported,
+            ) => {
                 let empty_models = std::array::from_fn(|_| Vec::new());
                 let (models, players) = if effect_lists.is_current(&self.session.state.live.economy)
                 {
@@ -13846,19 +13915,51 @@ impl Level2ResetSession {
                 } else {
                     (&empty_models, &[][..])
                 };
-                let outcome = {
+                let (melee, kill_credit, feedback, sound, web_launched_target) = {
+                    let local_player_status =
+                        Some((player_entity_index, self.state.immobilize_counter));
                     let live = &mut self.session.state.live;
-                    creatures::creature_24::mc2::step_row(
-                        &mut live.economy,
-                        &mut live.core.runtime,
-                        &mut live.terrain,
-                        &self.session.definition.presentation.particles,
-                        source_slot,
-                        players,
-                        models,
-                    )?
+                    if visit.handler == ExistingHandler::Spider {
+                        let outcome = creatures::spider::mc2::step_row(
+                            &mut live.economy,
+                            &mut live.core.runtime,
+                            &mut live.terrain,
+                            &self.session.definition.presentation.particles,
+                            source_slot,
+                            players,
+                            models,
+                            local_player_status,
+                        )?;
+                        (
+                            outcome.melee,
+                            outcome.kill_credit,
+                            outcome.feedback,
+                            outcome.sound,
+                            outcome.web_launched_target,
+                        )
+                    } else {
+                        let outcome = creatures::creature_24::mc2::step_row(
+                            &mut live.economy,
+                            &mut live.core.runtime,
+                            &mut live.terrain,
+                            &self.session.definition.presentation.particles,
+                            source_slot,
+                            players,
+                            models,
+                        )?;
+                        (
+                            outcome.melee,
+                            outcome.kill_credit,
+                            outcome.feedback,
+                            outcome.sound,
+                            None,
+                        )
+                    }
                 };
-                if let Some((target, damage, attacker)) = outcome.melee {
+                if web_launched_target == Some(player_entity_index) {
+                    self.state.music_countdown = 100;
+                }
+                if let Some((target, damage, attacker)) = melee {
                     if target == player_entity_index {
                         self.queue_level2_player_contact_damage(damage, attacker);
                     } else {
@@ -13875,27 +13976,41 @@ impl Level2ResetSession {
                         )?;
                     }
                 }
-                if let Some(killer) = outcome.kill_credit {
+                if let Some(killer) = kill_credit {
                     self.session
                         .state
                         .live
                         .economy
                         .record_authored_creature_kill(killer);
                 }
-                if let Some((owner, family)) = outcome.feedback {
+                if let Some((owner, family)) = feedback {
                     self.session
                         .state
                         .live
                         .shared_spells
                         .award_spell_experience(owner, family, 1);
                 }
-                if let Some(sound) = outcome.sound {
+                if let Some(sound) = sound {
                     self.session.state.live.economy.prepare_sound(
                         source_slot,
                         source_slot,
                         -1,
                         u16::from(sound),
                     );
+                }
+                self.append_new_economy_events(pass, source_slot);
+            }
+            (ExistingHandler::SpiderWeb, Level2SourceRoute::Imported) => {
+                let live = &mut self.session.state.live;
+                let outcome = creatures::spider::web::step(
+                    &mut live.economy,
+                    &mut live.terrain,
+                    &self.session.definition.presentation.particles,
+                    source_slot,
+                )?;
+                if let Some((owner, family, count)) = outcome.experience {
+                    live.shared_spells
+                        .award_spell_experience(owner, family, i32::from(count));
                 }
                 self.append_new_economy_events(pass, source_slot);
             }
@@ -22047,7 +22162,7 @@ impl Level2ResetSession {
             palette_mod: runtime.objective_presentation_palette_mod,
             objective_index: objective.text_selector,
             level_ended: objective.is_level_end != 0,
-            speech_enabled: speech_enabled && source_level < 3,
+            speech_enabled: speech_enabled && source_level < 4,
             show_foreign_text: false,
             source_level: u8::try_from(source_level).unwrap_or(u8::MAX),
         };

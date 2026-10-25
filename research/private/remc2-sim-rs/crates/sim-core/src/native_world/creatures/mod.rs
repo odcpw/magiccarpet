@@ -10,3 +10,4 @@ pub(crate) mod creature_15;
 pub(crate) mod creature_22;
 pub(crate) mod creature_24;
 pub(crate) mod settlements;
+pub(crate) mod spider;

@@ -15,10 +15,10 @@ pub struct SpeechSegment {
     pub length_ms: u32,
 }
 
-/// `Type_DB080_CdTrack.h`, ordinary source levels 0, 1 and 2. Segment zero is
+/// `Type_DB080_CdTrack.h`, ordinary source levels 0 through 3. Segment zero is
 /// the briefing, 1..8 are objectives, and 9 is level completion. Zero-length
 /// rows deliberately produce no speech; they must not borrow another row.
-const OPENING_SEGMENTS: [[(u16, u16); 10]; 3] = [
+const OPENING_SEGMENTS: [[(u16, u16); 10]; 4] = [
     [
         (0x0000, 0x02ee),
         (0x0339, 0x012c),
@@ -54,6 +54,18 @@ const OPENING_SEGMENTS: [[(u16, u16); 10]; 3] = [
         (0, 0),
         (0, 0),
         (0x0dc5, 0x0177),
+    ],
+    [
+        (0x0000, 0x020d),
+        (0x0258, 0x012c),
+        (0x03cf, 0x01c2),
+        (0, 0),
+        (0, 0),
+        (0, 0),
+        (0, 0),
+        (0, 0),
+        (0, 0),
+        (0x05dc, 0x0258),
     ],
 ];
 
@@ -230,6 +242,41 @@ mod tests {
     }
 
     #[test]
+    fn level_four_uses_authored_briefing_two_objectives_and_completion_only() {
+        for (segment, start_ms, length_ms) in [
+            (0, 0, 6_999),
+            (1, 7_999, 3_999),
+            (2, 12_999, 5_999),
+            (9, 19_999, 7_999),
+        ] {
+            assert_eq!(
+                ordinary_speech_segment(3, segment),
+                Some(SpeechSegment {
+                    track: 4,
+                    segment,
+                    start_ms,
+                    length_ms
+                })
+            );
+        }
+        for segment in 3..=8 {
+            assert!(ordinary_speech_segment(3, segment).is_none());
+        }
+        let mut input = level_three_input();
+        input.source_level = 3;
+        input.objective_index = 1;
+        assert_eq!(
+            service_objective_presentation(&mut 8, input).speech,
+            ordinary_speech_segment(3, 2)
+        );
+        input.level_ended = true;
+        assert_eq!(
+            service_objective_presentation(&mut 8, input).speech,
+            ordinary_speech_segment(3, 9)
+        );
+    }
+
+    #[test]
     fn unsigned_source_tail_wraps_and_unbound_segments_do_not_substitute() {
         let input = level_three_input();
         let mut phase = 200;
@@ -246,7 +293,7 @@ mod tests {
         assert_eq!(phase, 0);
         assert!(ordinary_speech_segment(2, 6).is_none());
         assert!(ordinary_speech_segment(2, 10).is_none());
-        assert!(ordinary_speech_segment(3, 1).is_none());
+        assert!(ordinary_speech_segment(4, 1).is_none());
         assert_eq!(ordinary_speech_segment(0, 1).unwrap().track, 1);
         assert_eq!(ordinary_speech_segment(1, 1).unwrap().track, 2);
     }
