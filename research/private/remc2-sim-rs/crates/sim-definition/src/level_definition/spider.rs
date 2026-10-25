@@ -1,0 +1,63 @@
+//! Source Spider movement, attack and lifetime content.
+
+use serde::{Deserialize, Serialize};
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct SpiderClassProperties {
+    pub max_life: i32,
+    pub initial_mana: i32,
+    pub minimum_speed: i16,
+    pub maximum_speed: i16,
+    pub attack_damage: u16,
+    pub melee_range: u32,
+    pub scan_period: u8,
+    pub target_range: u32,
+    pub target_half_angle: i16,
+    pub turn_limit: i16,
+    pub ground_clearance: i16,
+    pub descent: i16,
+    pub maximum_slope: i32,
+    pub terrain_mask: u32,
+    pub collision_half_width: i16,
+    pub collision_half_height: i16,
+    pub behavior_flags: u8,
+    pub charge_ticks: i32,
+    pub web_speed: i16,
+    pub web_range: i32,
+    pub web_lift: i16,
+    pub web_damage: u16,
+    pub web_yaw_turn: i16,
+    pub web_pitch_turn: i16,
+    pub web_half_width: i16,
+    pub web_half_height: i16,
+}
+
+/// `sub_4C7F0`, descriptor89 and `sub_25E40` in source6806c720.
+pub const SPIDER_CLASS_PROPERTIES: SpiderClassProperties = SpiderClassProperties {
+    max_life: 5500,
+    initial_mana: 2750,
+    minimum_speed: 32,
+    maximum_speed: 20,
+    attack_damage: 100,
+    melee_range: 1024,
+    scan_period: 35,
+    target_range: 5120,
+    target_half_angle: 682,
+    turn_limit: 227,
+    ground_clearance: 0,
+    descent: -128,
+    maximum_slope: 20,
+    terrain_mask: 0xfff0_80fe,
+    collision_half_width: 384,
+    collision_half_height: 512,
+    behavior_flags: 0,
+    charge_ticks: 32,
+    web_speed: 394,
+    web_range: 7680,
+    web_lift: 128,
+    web_damage: 780,
+    web_yaw_turn: 0,
+    web_pitch_turn: 22,
+    web_half_width: 256,
+    web_half_height: 512,
+};
