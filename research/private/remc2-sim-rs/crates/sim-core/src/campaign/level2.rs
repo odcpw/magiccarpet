@@ -11988,7 +11988,12 @@ impl Level2ResetSession {
             .iter()
             .chain(live.shared_spells.dynamic_pickups())
             .find(|row| {
-                row.active && row.index == source_slot && row.class == 15 && row.action == 10
+                row.active
+                    && row.index == source_slot
+                    && row.index == 75
+                    && row.class == 15
+                    && row.model == 3
+                    && row.action == 10
             })
         {
             // Reset-imported family-3 pickups retain the legacy shared row.
@@ -14409,19 +14414,38 @@ impl Level2ResetSession {
                         )
                     })?;
                 let terrain = &self.session.state.live.terrain;
-                match self
-                    .session
-                    .state
-                    .live
-                    .shared_spells
-                    .step_level2_spell_acquisition_with_economy_in_source_order(
-                        &mut self.session.state.live.economy,
-                        family,
-                        player_entity_index,
-                        *player_position,
-                        terrain,
-                        source_player_order,
-                    ) {
+                let acquisition = if family == 3 && source_slot != 75 {
+                    // A direct-start/carry holder becomes an ordinary pickup
+                    // when its player dies. Its lifecycle belongs to this
+                    // numeric slot, independently of the reset Speed pickup.
+                    self.session
+                        .state
+                        .live
+                        .shared_spells
+                        .step_level2_spell_replacement_acquisition_with_economy_in_source_order(
+                            &mut self.session.state.live.economy,
+                            source_slot,
+                            family,
+                            player_entity_index,
+                            *player_position,
+                            terrain,
+                            source_player_order,
+                        )
+                } else {
+                    self.session
+                        .state
+                        .live
+                        .shared_spells
+                        .step_level2_spell_acquisition_with_economy_in_source_order(
+                            &mut self.session.state.live.economy,
+                            family,
+                            player_entity_index,
+                            *player_position,
+                            terrain,
+                            source_player_order,
+                        )
+                };
+                match acquisition {
                     Ok(result) => {
                         self.push_dispatch_effect(Level2DispatchEvent::SpellAcquisition {
                             pass,
@@ -14445,9 +14469,7 @@ impl Level2ResetSession {
                     .state
                     .live
                     .shared_spells
-                    .pickups
-                    .iter_mut()
-                    .find(|entity| entity.index == source_slot)
+                    .pickup_mut(source_slot)
                 {
                     pickup.phase = pickup.phase.wrapping_add(1);
                     pickup.record[66] = pickup.phase;
@@ -17103,31 +17125,10 @@ impl Level2ResetSession {
         &mut self,
         source_slot: u16,
     ) -> std::result::Result<(), String> {
-        let (position, life_before, mut controller) = {
-            let source = &self.session.state.live.economy.entities[usize::from(source_slot)];
-            (
-                source.position,
-                source.life,
-                terrain_strip::TerrainStripControllerState {
-                    life: source.life,
-                    subspell_index: source.subspell_index,
-                    direction: source.level_gate,
-                    span: source.source_dword_10(),
-                },
-            )
-        };
-        let visit = self
-            .session
-            .state
-            .live
-            .terrain
-            .apply_terrain_strip_visit(position, &mut controller);
-        {
-            let source = &mut self.session.state.live.economy.entities[usize::from(source_slot)];
-            source.set_life(controller.life);
-            source.set_subspell_index(controller.subspell_index);
-            source.set_source_dword_10(controller.span);
-        }
+        let live = &mut self.session.state.live;
+        let source = &mut live.economy.entities[usize::from(source_slot)];
+        let life_before = source.life;
+        let visit = terrain_strip::visit_source(source, &mut live.terrain);
         match visit.audio {
             Some(terrain_strip::TerrainStripAudioOutcome::Prepare47) => {
                 mark_source_audio_call(if life_before == 1 {

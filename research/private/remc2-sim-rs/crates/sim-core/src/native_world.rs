@@ -520,7 +520,7 @@ pub(crate) use effects::hidden_slots as hidden_effect_slots;
 mod level2_nyphur;
 mod night_cache;
 mod support_spells;
-mod terrain_strip;
+pub(crate) mod terrain_strip;
 use creatures::worm::imported as campaign_multipart;
 pub(crate) use level2_class5::archer::creature_runtime_identity as archer_creature_runtime_identity;
 pub(crate) use level2_nyphur::level2_nyphur_source_identity_parts;

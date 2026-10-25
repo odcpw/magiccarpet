@@ -1,4 +1,45 @@
 #[test]
+fn ordinary_player_death_advances_its_dropped_speed_holder() {
+    use crate::{
+        campaign::backend::{Mc2CampaignAdapter, Mc2CampaignInputs, load_mc2_campaign},
+        game_definition::default_catalog,
+        game_session::{GameCommand, GameSession, LongitudinalControl, SessionGuard},
+    };
+    let root = level_two_campaign_fixture_path();
+    let definition = load_mc2_campaign(&root, &default_catalog().unwrap()).unwrap();
+    let mut game = GameSession::open(&Mc2CampaignAdapter, std::sync::Arc::new(definition),
+        37, Mc2CampaignInputs::new(root)).unwrap();
+    let slot = game.backend().compatibility_campaign().level2_compatibility()
+        .shared_spells().local_player().enabled_spell_holders[3];
+    assert_eq!(slot, 118, "the ordinary package constructs its own Speed holder");
+    let mut first_drop_life = None;
+    let mut last_drop_life = None;
+    // Exact ordinary control prefix that exposed the installed-player failure:
+    // keep accelerating; the real enemy contact kills the player, whose
+    // grounded death releases Speed as a new ordinary pickup at this slot.
+    for tick in 0..260 {
+        let id = game.identity();
+        game.step(SessionGuard { session_id: id.session_id, generation: id.generation, expected_tick: id.tick },
+            GameCommand { longitudinal: LongitudinalControl::Accelerate,
+                ..GameCommand::default() }).unwrap_or_else(|error| panic!("ordinary turn {tick}: {error:?}"));
+        let session = game.backend().compatibility_campaign().level2_compatibility();
+        let holder = session.shared_spells().pickup(slot).unwrap();
+        if holder.action == 10 {
+            assert!(session.shared_spells().player_entity().life < 0,
+                "the actual player death produced this drop");
+            first_drop_life.get_or_insert(holder.life);
+            last_drop_life = Some(holder.life);
+            let numeric = &session.economy.entities[usize::from(slot)];
+            assert_eq!((numeric.action, numeric.life, numeric.phase),
+                (holder.action, holder.life, holder.phase));
+        }
+    }
+    assert!(first_drop_life.is_some(), "the ordinary route must reach the death/drop producer");
+    assert!(last_drop_life.unwrap() < first_drop_life.unwrap(),
+        "the dropped slot keeps receiving its own pickup lifecycle");
+}
+
+#[test]
 fn carried_speed_holder_runs_its_imported_callback_after_public_cast() {
     use crate::{
         campaign::backend::{Mc2CampaignAdapter, Mc2CampaignInputs, load_mc2_campaign},
