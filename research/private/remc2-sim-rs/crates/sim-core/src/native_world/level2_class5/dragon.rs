@@ -23,6 +23,17 @@ pub(crate) const DRAGON_MAXIMUM_SPEED: i16 = 16;
 pub(crate) const DRAGON_ACTUAL_SPEED: i16 = 30;
 pub(crate) const DRAGON_LIFE: i32 = 4_000;
 pub(crate) const DRAGON_MAX_MANA: i32 = 4_500;
+
+/// Current class9 carrier fields read by source sub_1F0C0. The caller
+/// projects raw and typed projectiles before the Dragon's actual visit.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct DragonProjectileThreat {
+    pub source_slot: u16,
+    pub target: u16,
+    pub life: i32,
+    pub flags: u32,
+    pub yaw: i16,
+}
 pub(crate) const DRAGON_INITIAL_MANA: i32 = 2_250;
 pub(crate) const DRAGON_SEGMENT_MANA: i32 = DRAGON_MAX_MANA >> 5;
 pub(crate) const DRAGON_SUBSPELL_INDEX: u16 = 100;
@@ -332,6 +343,7 @@ impl Level2EconomyState {
             word_0x36: 96,
             control_flags: 8,
             font_type_index: 0,
+            dodge_remaining: 0,
             render_yaw: DRAGON_RENDER_ROTATION / 2,
             render_pitch: DRAGON_RENDER_SPEED / 2,
             render_roll: DRAGON_RENDER_SPEED / 2,
@@ -351,6 +363,7 @@ impl Level2EconomyState {
         players: &[GoatPlayerTarget],
         frozen_model0_slots: &[u16],
         terrain: &SessionTerrain,
+        projectiles: &[DragonProjectileThreat],
     ) -> std::result::Result<bool, String> {
         let Some(source_index) = self.authored_class5.iter().position(|source| {
             source.active
@@ -405,7 +418,13 @@ impl Level2EconomyState {
             }
         }
 
-        step_dragon_tails(&mut source, state, terrain);
+        step_dragon_tails(
+            &mut source,
+            &mut state,
+            terrain,
+            &self.map_chains,
+            projectiles,
+        );
 
         self.source_rng.insert(source_slot, source.entity_rng);
         self.authored_class5[source_index] = source;
@@ -432,6 +451,7 @@ impl Level2EconomyState {
         target: Option<GoatPlayerTarget>,
         frozen_model0_slots: &[u16],
         terrain: &SessionTerrain,
+        projectiles: &[DragonProjectileThreat],
     ) -> std::result::Result<DragonAttackStep, String> {
         let Some(source_index) = self.authored_class5.iter().position(|source| {
             source.active
@@ -517,7 +537,13 @@ impl Level2EconomyState {
             }
         }
 
-        step_dragon_tails(&mut source, state, terrain);
+        step_dragon_tails(
+            &mut source,
+            &mut state,
+            terrain,
+            &self.map_chains,
+            projectiles,
+        );
         self.source_rng.insert(source_slot, source.entity_rng);
         self.authored_class5[source_index] = source;
         self.authored_class5_runtime[runtime_index] = runtime;
@@ -545,6 +571,7 @@ impl Level2EconomyState {
         source_slot: u16,
         frozen_model0_slots: &[u16],
         terrain: &SessionTerrain,
+        projectiles: &[DragonProjectileThreat],
     ) -> std::result::Result<bool, String> {
         let Some(source_index) = self.authored_class5.iter().position(|source| {
             source.active
@@ -663,7 +690,13 @@ impl Level2EconomyState {
             }
         }
 
-        step_dragon_tails(&mut source, state, terrain);
+        step_dragon_tails(
+            &mut source,
+            &mut state,
+            terrain,
+            &self.map_chains,
+            projectiles,
+        );
         self.source_rng.insert(source_slot, source.entity_rng);
         self.authored_class5[source_index] = source;
         self.authored_class5_runtime[runtime_index] = runtime;
@@ -1001,11 +1034,12 @@ fn consume_dragon_damage(
 
 fn step_dragon_tails(
     source: &mut Level2AuthoredClass5Source,
-    state: AuthoredDragonRuntime,
+    state: &mut AuthoredDragonRuntime,
     terrain: &SessionTerrain,
+    map_chains: &crate::renderable_map_chain::RenderableMapChains,
+    projectiles: &[DragonProjectileThreat],
 ) {
-    // `sub_1F0C0` is inert while the constructor-owned font counter is 0.
-    debug_assert_eq!(state.font_type_index, 0);
+    step_dragon_font_counter(source, state, map_chains, projectiles);
     source.position.z = source.position.z.wrapping_add(source.dword_0x10 as i16);
     source.dword_0x10 = source.dword_0x10.wrapping_sub(5);
     let ground = terrain.ground_height(source.position);
@@ -1015,6 +1049,66 @@ fn step_dragon_tails(
         && source.position.z > ceiling.wrapping_sub(256)
     {
         source.dword_0x10 = -150;
+    }
+}
+
+/// Source sub_1F0C0, activated by a guided projectile's real target-selection
+/// write. The counter and dodge fields remain on the existing Dragon rows.
+fn step_dragon_font_counter(
+    source: &mut Level2AuthoredClass5Source,
+    state: &mut AuthoredDragonRuntime,
+    map_chains: &crate::renderable_map_chain::RenderableMapChains,
+    projectiles: &[DragonProjectileThreat],
+) {
+    if state.font_type_index == 0 {
+        return;
+    }
+    state.font_type_index = state.font_type_index.wrapping_sub(1);
+    if source.byte_0x46_70 != 0 {
+        if state.dodge_remaining != 0 {
+            let threat = projectiles
+                .iter()
+                .find(|row| row.source_slot == source.word_0x24);
+            if let Some(threat) =
+                threat.filter(|row| row.life >= 0 && row.flags & ENTITY_DRAW_DISABLED_BIT == 0)
+            {
+                let yaw = if source.word_0x24 & 1 != 0 {
+                    threat.yaw.wrapping_add(512)
+                } else {
+                    threat.yaw.wrapping_sub(512)
+                } & 2047;
+                crate::move_entity(
+                    &mut source.position,
+                    yaw,
+                    0,
+                    48_i16.wrapping_mul(state.dodge_remaining),
+                );
+                state.dodge_remaining = state.dodge_remaining.wrapping_sub(1);
+            } else {
+                source.byte_0x46_70 = 0;
+                source.word_0x24 = 0;
+            }
+        } else {
+            source.byte_0x46_70 = 0;
+            source.word_0x24 = 0;
+        }
+    } else {
+        let threat = crate::level1_mission::source_map_search_slots(
+            map_chains,
+            source.position,
+            &crate::level1_mission::source_search_offsets(4),
+        )
+        .into_iter()
+        .find(|slot| {
+            projectiles
+                .iter()
+                .any(|row| row.source_slot == *slot && row.target == source.source_entity_index)
+        });
+        if let Some(threat) = threat {
+            state.dodge_remaining = 5;
+            source.byte_0x46_70 = source.byte_0x46_70.wrapping_add(1);
+            source.word_0x24 = threat;
+        }
     }
 }
 
@@ -1132,4 +1226,110 @@ fn squared_wrapping_xy_distance(left: Position, right: Position) -> u32 {
     dx.wrapping_mul(dx)
         .cast_unsigned()
         .wrapping_add(dy.wrapping_mul(dy).cast_unsigned())
+}
+
+#[cfg(test)]
+mod lightning_consumer_tests {
+    use super::*;
+
+    #[test]
+    fn selected_dragon_tracks_current_projectile_and_clears_hidden_threat() {
+        let mut session = crate::native_world::tests::level_two_campaign_session();
+        let live = &mut session.session.state.live;
+        let mut source = live
+            .economy
+            .economy
+            .allocate_authored_dragon(575, live.core.state.position, DRAGON_LIFE, &live.terrain)
+            .unwrap();
+        let mut state = *live
+            .economy
+            .economy
+            .authored_dragons
+            .iter()
+            .find(|state| state.source_entity_index == source.source_entity_index)
+            .unwrap();
+        state.font_type_index = 32;
+        let slot = if source.source_entity_index & 1 == 0 {
+            915
+        } else {
+            914
+        };
+        live.economy
+            .economy
+            .map_chains
+            .sync_entity(RenderableMapSeed {
+                entity_index: slot,
+                active: true,
+                x: source.position.x,
+                y: source.position.y,
+            })
+            .unwrap();
+        let mut projectile = DragonProjectileThreat {
+            source_slot: slot,
+            target: source.source_entity_index,
+            life: 1,
+            flags: 4,
+            yaw: 0,
+        };
+        let rng = source.entity_rng;
+        let position = source.position;
+        step_dragon_font_counter(
+            &mut source,
+            &mut state,
+            &live.economy.economy.map_chains,
+            &[projectile],
+        );
+        assert_eq!(
+            (
+                state.font_type_index,
+                state.dodge_remaining,
+                source.byte_0x46_70,
+                source.word_0x24
+            ),
+            (31, 5, 1, slot)
+        );
+        assert_eq!(source.position, position, "first scan arms the next visit");
+        let mut expected = position;
+        crate::move_entity(
+            &mut expected,
+            if slot & 1 != 0 { 512 } else { 1536 },
+            0,
+            240,
+        );
+        step_dragon_font_counter(
+            &mut source,
+            &mut state,
+            &live.economy.economy.map_chains,
+            &[projectile],
+        );
+        assert_eq!(
+            source.position, expected,
+            "dodge side uses projectile-slot parity"
+        );
+        assert_eq!(
+            (
+                state.font_type_index,
+                state.dodge_remaining,
+                source.entity_rng
+            ),
+            (30, 4, rng)
+        );
+        projectile.flags |= ENTITY_DRAW_DISABLED_BIT;
+        step_dragon_font_counter(
+            &mut source,
+            &mut state,
+            &live.economy.economy.map_chains,
+            &[projectile],
+        );
+        assert_eq!(
+            (
+                state.font_type_index,
+                state.dodge_remaining,
+                source.byte_0x46_70,
+                source.word_0x24
+            ),
+            (29, 4, 0, 0)
+        );
+        assert_eq!(source.position, expected);
+    }
 }
