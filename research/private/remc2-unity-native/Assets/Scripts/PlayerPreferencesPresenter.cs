@@ -112,7 +112,37 @@ namespace MagicCarpet.Native
             captureKey = -1;
         }
 
+        internal bool Apply()
+        {
+            if (draft == null) return false;
+            try
+            {
+                Synchronize(command(JsonUtility.ToJson(new ApplyCommand { preferences = draft })));
+                draft = null;
+                captureKey = -1;
+                Debug.Log($"MC_PREFERENCES_APPLIED player={Current.preferences.player_name} forward={Current.preferences.keys[0]} sound={Current.preferences.sound_volume} help={Current.preferences.show_help}");
+                return true;
+            }
+            catch (Exception error) { status = error.Message; return false; }
+        }
+
         internal void Center() { roll = 0; pitch = 0; }
+
+        internal void BeginKeyCapture(int slot)
+        {
+            if (draft == null) throw new InvalidOperationException("preferences are not open");
+            if (slot < 0 || slot >= draft.keys.Length) throw new ArgumentOutOfRangeException(nameof(slot));
+            captureKey = slot;
+        }
+
+        internal bool CaptureKey(Event input)
+        {
+            if (captureKey < 0 || input.type != EventType.KeyDown) return false;
+            if (input.keyCode != KeyCode.Escape) draft.keys[captureKey] = input.keyCode.ToString();
+            captureKey = -1;
+            input.Use();
+            return true;
+        }
 
         internal bool Held(int slot) => Enum.TryParse<KeyCode>(Current.preferences.keys[slot], out var key) && Input.GetKey(key);
         internal bool Pressed(int slot) => Enum.TryParse<KeyCode>(Current.preferences.keys[slot], out var key) && Input.GetKeyDown(key);
@@ -167,6 +197,9 @@ namespace MagicCarpet.Native
         internal void Draw()
         {
             if (!IsOpen) return;
+            // A focused TextField consumes character keys during GUILayout.
+            // Capture first so rebinding cannot edit the player's name instead.
+            CaptureKey(Event.current);
             var width = Mathf.Min(660, Screen.width - 24);
             var height = Mathf.Min(680, Screen.height - 24);
             var rect = new Rect((Screen.width - width) / 2, (Screen.height - height) / 2, width, height);
@@ -197,15 +230,12 @@ namespace MagicCarpet.Native
             {
                 GUILayout.BeginHorizontal();
                 GUILayout.Label(labels[i]);
-                if (GUILayout.Button(captureKey == i ? "Press key (Esc cancels)" : draft.keys[i], GUILayout.Width(220))) captureKey = i;
+                if (GUILayout.Button(captureKey == i ? "Press key (Esc cancels)" : draft.keys[i], GUILayout.Width(220)))
+                {
+                    BeginKeyCapture(i);
+                    GUI.FocusControl(null);
+                }
                 GUILayout.EndHorizontal();
-            }
-            var keyEvent = Event.current;
-            if (captureKey >= 0 && keyEvent.type == EventType.KeyDown)
-            {
-                if (keyEvent.keyCode != KeyCode.Escape) draft.keys[captureKey] = keyEvent.keyCode.ToString();
-                captureKey = -1;
-                keyEvent.Use();
             }
             var priorAudio = (draft.sound_enabled, draft.music_enabled, draft.speech_enabled, draft.sound_volume, draft.music_volume);
             draft.sound_enabled = GUILayout.Toggle(draft.sound_enabled, "Sound effects");
@@ -232,16 +262,7 @@ namespace MagicCarpet.Native
             GUILayout.EndArea();
             var y = rect.yMax - 50;
             if (GUI.Button(new Rect(rect.x + 12, y, (width - 36) / 2, 38), "Apply and save"))
-            {
-                try
-                {
-                    Synchronize(command(JsonUtility.ToJson(new ApplyCommand { preferences = draft })));
-                    draft = null;
-                    captureKey = -1;
-                    Debug.Log($"MC_PREFERENCES_APPLIED player={Current.preferences.player_name} forward={Current.preferences.keys[0]} sound={Current.preferences.sound_volume} help={Current.preferences.show_help}");
-                }
-                catch (Exception error) { status = error.Message; }
-            }
+                Apply();
             if (GUI.Button(new Rect(rect.x + width / 2 + 6, y, (width - 36) / 2, 38), "Cancel")) Cancel();
         }
 
