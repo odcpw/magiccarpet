@@ -2800,7 +2800,8 @@ namespace MagicCarpet.Native
                 if (selectSpell != null)
                 {
                     var selected = Level2SpellPresenter.FindSpell(gameRuntimeCampaignSnapshot?.value, selectSpell);
-                    gameRuntimeSpellInputStatus = selected == null ? null : selected.display_name + " selected. Space to cast.";
+                    gameRuntimeSpellInputStatus = selected != null && selected.selected
+                        ? selected.display_name + " selected. Space to cast." : null;
                     gameRuntimeSpellInputStatusUntil = Time.unscaledTime + 3f;
                 }
             }

@@ -2676,6 +2676,58 @@ namespace MagicCarpet.Native.Tests
             }
         }
 
+        [TestCase("preferenceFullStopRequested")]
+        [TestCase("preferenceRecenterRequested")]
+        [Timeout(180000)]
+        public void ProductionSpellSelectionFeedbackUsesObservedSelection(string inputFlag)
+        {
+            var root = new GameObject("spell selection and source control priority");
+            root.SetActive(false);
+            var runtime = root.AddComponent<MagicCarpetRuntime>();
+            try
+            {
+                var generated = Path.Combine(PrivateRoot, "generated");
+                var night = Path.Combine(generated, "mc2-level1-night-cache-v2");
+                runtime.QualificationInitializeGameRuntimeProductionFromArguments(
+                    new[] {
+                        "-mc-game-runtime", "-mc-runtime-loading-cache", night,
+                        "-mc-runtime-package", Path.Combine(generated, "mc-bhq8-level1-collision-v5-night"),
+                        "-mc-runtime-owner-cache", night, "-mc-runtime-presentation-cache", night,
+                        "-mc-runtime-package", Path.Combine(generated, "level2-day-block32-campaign-v2"),
+                        "-mc-runtime-owner-cache", Path.Combine(generated, "level2-day-spell-owner-cache-v3/components/material"),
+                        "-mc-runtime-presentation-cache", Path.Combine(generated, "level2-day-spell-owner-cache-v3"),
+                        "-mc-runtime-package", Path.Combine(generated, "level3-day-block32-campaign-recipe-v2"),
+                        "-mc-runtime-owner-cache", Path.Combine(generated, "level3-day-spell-owner-cache-v3/components/material"),
+                        "-mc-runtime-presentation-cache", Path.Combine(generated, "level3-day-spell-owner-cache-v3")
+                    });
+                Assert.That(Level2SpellPresenter.FindSpell(
+                    runtime.GameRuntimeProductionCampaignSnapshot.value, "spell.fireball").selected, Is.True);
+                Assert.That(runtime.SubmitGameRuntimeSpellKey(2), Is.True);
+                // Queue the same input bit as SampleInput, without changing
+                // native player state or bypassing ordinary frame dispatch.
+                var flags = System.Reflection.BindingFlags.Instance |
+                    System.Reflection.BindingFlags.NonPublic;
+                typeof(MagicCarpetRuntime).GetField(inputFlag, flags).SetValue(runtime, true);
+                runtime.QualificationDriveGameRuntimeFrames(1);
+                var observed = runtime.GameRuntimeProductionCampaignSnapshot;
+                Assert.That(observed.identity.tick, Is.EqualTo("1"));
+                Assert.That(Level2SpellPresenter.FindSpell(observed.value, "spell.fireball").selected,
+                    Is.True, "source recenter/full-stop takes priority over selection");
+                Assert.That(Level2SpellPresenter.FindSpell(observed.value, "spell.possession").selected,
+                    Is.False);
+                Assert.That(observed.value.presentation_entities, Is.Empty);
+                var status = (string)typeof(MagicCarpetRuntime)
+                    .GetField("gameRuntimeSpellInputStatus", flags).GetValue(runtime);
+                Assert.That(status, Is.Null,
+                    "Unity must not announce a requested selection that native authority did not apply");
+            }
+            finally
+            {
+                runtime.QualificationDisposeNativeOwners();
+                UnityEngine.Object.DestroyImmediate(root);
+            }
+        }
+
         [Test]
         [Timeout(180000)]
         public void ProductionSpellKeysRejectUnacquiredSelectionWithoutCastingOrStoppingFlight()
