@@ -10,10 +10,36 @@ namespace MagicCarpet.Native.Tests
     {
         [Serializable]
         private sealed class CacheIdentity { public string cache_content_sha256; }
-        [TestCase(false)]
-        [TestCase(true)]
-        public void ProductionRootUsesPackageEnvironmentWithQualifiedHudCompanion(bool restoreEarnedOpening)
+
+        private static void AssertNativeSpriteJoin(MagicCarpetRuntime runtime, CampaignPresentationSurface surface)
         {
+            var campaign = (NativeCampaignSession)typeof(MagicCarpetRuntime).GetField("campaignSession",
+                System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic).GetValue(runtime);
+            var snapshots = campaign.Entities();
+            var yaw = runtime.GameRuntimeProductionCampaignSnapshot.value.player_pose.yaw;
+            var draws = campaign.EntityPresentations(yaw);
+            var markers = surface.Root.GetComponentsInChildren<Level3EntitySurfaceMarker>();
+            var admitted = new HashSet<ushort>();
+            foreach (var draw in draws)
+            {
+                Assert.That(snapshots[draw.entityIndex].active, Is.EqualTo(1),
+                    $"drawn entity {draw.entityIndex} must be present in the live roster");
+                var marker = Array.Find(markers, row => row.EntityIndex == draw.entityIndex);
+                Assert.That(marker, Is.Not.Null, $"drawn entity {draw.entityIndex} must have a Unity marker");
+                Assert.That(marker.SpriteReady, Is.True);
+                Assert.That(marker.AssetSelector, Is.EqualTo(draw.selectedTmap));
+                admitted.Add(draw.entityIndex);
+            }
+            foreach (var marker in markers)
+                Assert.That(marker.SpriteReady, Is.EqualTo(admitted.Contains(marker.EntityIndex)),
+                    $"entity {marker.EntityIndex} must follow this revision's source draw admission");
+        }
+        [TestCase(0)]
+        [TestCase(326)]
+        [TestCase(2418)]
+        public void ProductionRootUsesPackageEnvironmentWithQualifiedHudCompanion(int checkpointTick)
+        {
+            var restoreEarnedOpening = checkpointTick != 0;
             var generated = Path.GetFullPath(Path.Combine(Application.dataPath, "../../generated"));
             var root = new GameObject("package environment production root");
             root.SetActive(false);
@@ -43,7 +69,9 @@ namespace MagicCarpet.Native.Tests
                 });
             }
             if (restoreEarnedOpening) arguments.AddRange(new[] { "-mc-runtime-replay-load",
-                Path.Combine(generated, "mc-a1-opening.Lcb3s1/earned-progress.json") });
+                Path.Combine(generated, checkpointTick == 326
+                    ? "mc-a1-opening.Lcb3s1/native-beacon-branch.json"
+                    : "mc-a1-opening.Lcb3s1/earned-progress.json") });
             else arguments.Add("-mc-runtime-menu");
             try
             {
@@ -65,7 +93,16 @@ namespace MagicCarpet.Native.Tests
                         ? JsonUtility.FromJson<CacheIdentity>(File.ReadAllText(Path.Combine(night, "manifest.json"))).cache_content_sha256
                         : expected.ContentHash),
                     "the production surface consumes the package-selected products");
-                if (restoreEarnedOpening)
+                if (checkpointTick == 326)
+                {
+                    Assert.That(surface.Tick, Is.EqualTo(326ul));
+                    var marker = Array.Find(surface.Root.GetComponentsInChildren<Level3EntitySurfaceMarker>(),
+                        row => row.EntityIndex == 122);
+                    Assert.That(marker, Is.Not.Null, "the actual earned beacon draw must have its live snapshot");
+                    Assert.That(marker.SpriteReady, Is.True);
+                    Assert.That(marker.AssetSelector, Is.EqualTo(57), "the genuine earned326 draw that failed on installed2c");
+                }
+                else if (checkpointTick == 2418)
                 {
                     Assert.That(surface.Tick, Is.EqualTo(2418ul));
                     runtime.QualificationDriveGameRuntimeFrames(1);
@@ -73,15 +110,23 @@ namespace MagicCarpet.Native.Tests
                     var marker = Array.Find(surface.Root.GetComponentsInChildren<Level3EntitySurfaceMarker>(),
                         row => row.EntityIndex == 151);
                     Assert.That(marker, Is.Not.Null, "actual saved actor must reach the ordinary presentation consumer");
-                    Assert.That(marker.SpriteReady, Is.True);
-                    Assert.That(marker.AssetSelector, Is.EqualTo(57), "the actual saved actor's selector reaches its native marker");
+                    // The exact native probe establishes a class11 trigger at
+                    // saved2418/neutral2419. The original fatal followed C/J/C/
+                    // forward input at an unknown later tick, not this turn.
+                    Assert.That(marker.ClassId, Is.EqualTo(11));
+                    Assert.That(marker.Model, Is.Zero);
                 }
+                AssertNativeSpriteJoin(runtime, surface);
                 Assert.That(runtime.Level2ProductionDayHudPresenterReady, Is.True,
                     "qualified HUD companion remains live alongside the selected world materials");
                 var before = surface.FrameHash;
                 runtime.QualificationApplyGameRuntimeProductionMovement(true, false, true, false);
                 runtime.QualificationApplyGameRuntimeProductionSteering(24f, -8f);
-                runtime.QualificationDriveGameRuntimeFrames(3);
+                for (var turn = 0; turn < 3; turn++)
+                {
+                    runtime.QualificationDriveGameRuntimeFrames(1);
+                    AssertNativeSpriteJoin(runtime, surface);
+                }
                 Assert.That(surface.FrameHash, Is.Not.EqualTo(before));
                 Assert.That(surface.Generation, Is.EqualTo(ulong.Parse(runtime.GameRuntimeProductionIdentity.session.generation)));
             }

@@ -833,6 +833,8 @@ fn render_environment_indexed_frame(
         );
     }
     let index_hash = byte_hash(&indices);
+    let mut palette_rgb8 = assets.palette_rgb8().to_vec();
+    session.field_palette().apply_rgb8(&mut palette_rgb8);
     Ok(DayIndexedFrame {
         profile: assets.profile(),
         generation,
@@ -840,7 +842,7 @@ fn render_environment_indexed_frame(
         width: DAY_FRAME_WIDTH,
         height: DAY_FRAME_HEIGHT,
         indices,
-        palette_rgb8: assets.palette_rgb8().to_vec(),
+        palette_rgb8,
         index_hash,
         terrain_input_hash: terrain.input_hash,
         terrain_command_hash: terrain.command_hash,
