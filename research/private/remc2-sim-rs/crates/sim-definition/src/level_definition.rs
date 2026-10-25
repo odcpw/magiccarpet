@@ -11,8 +11,17 @@ use std::collections::BTreeSet;
 
 mod cave_features;
 pub use cave_features::{CaveFeatureDefinition, CaveFeatureKind};
+mod creatures;
+pub use creatures::{
+    BEE_CLASS_PROPERTIES, BeeClassProperties, CREATURE22_CLASS_PROPERTIES,
+    CREATURE24_CLASS_PROPERTIES, Creature22ClassProperties, Creature24ClassProperties,
+};
 mod effects;
 pub use effects::{EffectDefinition, EffectKind};
+mod fields;
+pub use fields::{FieldDefinition, FieldKind};
+mod scenery;
+pub use scenery::MushroomDefinition;
 mod terrain_disasters;
 pub use terrain_disasters::{TerrainDisasterDefinition, TerrainDisasterKind};
 
@@ -30,6 +39,10 @@ pub enum CreatureKind {
     Villager,
     Trader,
     Firefly,
+    #[serde(rename = "creature_22")]
+    Creature22,
+    #[serde(rename = "creature_24")]
+    Creature24,
 }
 
 /// Typed class properties consumed by Archer construction, ground motion,
@@ -170,6 +183,8 @@ impl CreatureKind {
             Self::Villager => "villager",
             Self::Trader => "trader",
             Self::Firefly => "firefly",
+            Self::Creature22 => "creature_22",
+            Self::Creature24 => "creature_24",
         }
     }
 }
@@ -208,6 +223,8 @@ pub const fn creature_max_life_upper_bound(kind: CreatureKind) -> Option<u32> {
         CreatureKind::Bee => Some(32_767),
         CreatureKind::Archer
         | CreatureKind::CastleDefender
+        | CreatureKind::Creature22
+        | CreatureKind::Creature24
         | CreatureKind::Dragon
         | CreatureKind::Firefly
         | CreatureKind::Goat
@@ -259,6 +276,7 @@ impl SpellKind {
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MechanicKind {
+    Field { kind: FieldKind },
     AbsenceCountdown { creature: CreatureKind },
     CaveCorridor,
     CaveFeature { kind: CaveFeatureKind },
@@ -306,6 +324,7 @@ impl CaveCorridorDefinition {
 pub enum SceneryKind {
     Tree,
     Stone,
+    Mushroom,
     ExitPortal,
 }
 
@@ -315,6 +334,7 @@ impl SceneryKind {
         match self {
             Self::Tree => "tree",
             Self::Stone => "stone",
+            Self::Mushroom => "mushroom",
             Self::ExitPortal => "exit_portal",
         }
     }
@@ -394,6 +414,7 @@ impl MechanicKind {
             Self::CaveFeature { kind } => kind.as_str(),
             Self::EnvironmentalEffect { kind } => kind.as_str(),
             Self::TerrainDisaster { kind } => kind.as_str(),
+            Self::Field { kind } => kind.as_str(),
         }
     }
 
@@ -404,6 +425,7 @@ impl MechanicKind {
             Self::CaveCorridor
             | Self::CaveFeature { .. }
             | Self::EnvironmentalEffect { .. }
+            | Self::Field { .. }
             | Self::TerrainDisaster { .. } => None,
         }
     }
@@ -925,6 +947,10 @@ pub struct LevelEntityDefinition {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     terrain_disaster: Option<TerrainDisasterDefinition>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    field: Option<FieldDefinition>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    mushroom: Option<MushroomDefinition>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     creature_health: Option<CreatureHealthDefinition>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     experience_scroll: Option<ExperienceScrollDefinition>,
@@ -959,6 +985,8 @@ impl LevelEntityDefinition {
             cave_feature: None,
             effect: None,
             terrain_disaster: None,
+            field: None,
+            mushroom: None,
             creature_health,
             experience_scroll,
             house_construction,
@@ -1048,6 +1076,26 @@ impl LevelEntityDefinition {
     }
 
     #[must_use]
+    pub const fn field(&self) -> Option<FieldDefinition> {
+        self.field
+    }
+
+    pub(crate) const fn with_field(mut self, config: FieldDefinition) -> Self {
+        self.field = Some(config);
+        self
+    }
+
+    #[must_use]
+    pub const fn mushroom(&self) -> Option<MushroomDefinition> {
+        self.mushroom
+    }
+
+    pub(crate) const fn with_mushroom(mut self, config: MushroomDefinition) -> Self {
+        self.mushroom = Some(config);
+        self
+    }
+
+    #[must_use]
     pub const fn experience_scroll(&self) -> Option<ExperienceScrollDefinition> {
         self.experience_scroll
     }
@@ -1082,6 +1130,44 @@ impl LevelDefinition {
     ) -> Result<Self, String> {
         let mut ids = BTreeSet::new();
         for entity in &entities {
+            match (entity.kind, entity.mushroom) {
+                (LevelEntityKind::Scenery(SceneryKind::Mushroom), Some(config)) => {
+                    config.validate()?
+                }
+                (LevelEntityKind::Scenery(SceneryKind::Mushroom), _) => {
+                    return Err(format!(
+                        "mushroom {} lacks valid construction properties",
+                        entity.id.as_str()
+                    ));
+                }
+                (_, Some(_)) => {
+                    return Err(format!(
+                        "non-mushroom {} carries mushroom properties",
+                        entity.id.as_str()
+                    ));
+                }
+                (_, None) => {}
+            }
+            match (entity.kind, entity.field) {
+                (LevelEntityKind::Mechanic(MechanicKind::Field { kind }), Some(config))
+                    if kind == config.kind() =>
+                {
+                    config.validate()?
+                }
+                (LevelEntityKind::Mechanic(MechanicKind::Field { .. }), _) => {
+                    return Err(format!(
+                        "field {} lacks matching construction properties",
+                        entity.id.as_str()
+                    ));
+                }
+                (_, Some(_)) => {
+                    return Err(format!(
+                        "non-field {} carries field properties",
+                        entity.id.as_str()
+                    ));
+                }
+                (_, None) => {}
+            }
             match (entity.kind, entity.terrain_disaster) {
                 (
                     LevelEntityKind::Mechanic(MechanicKind::TerrainDisaster { kind }),
@@ -1782,6 +1868,8 @@ impl LevelDefinition {
                 || candidate.cave_corridor != original.cave_corridor
                 || candidate.effect != original.effect
                 || candidate.terrain_disaster != original.terrain_disaster
+                || candidate.field != original.field
+                || candidate.mushroom != original.mushroom
                 || candidate.cave_feature != original.cave_feature
             {
                 return Err(format!(
@@ -2273,6 +2361,62 @@ impl LevelDefinition {
 #[cfg(test)]
 mod tests {
     use super::{ObjectiveCondition, RivalWizardId};
+
+    #[test]
+    fn retained_field_and_mushroom_rules_survive_serialization_and_reject_rebinding() {
+        use super::*;
+        use crate::adapter::{field_entity_definition, mushroom_entity_definition};
+        let field = field_entity_definition(
+            LevelEntityId::parse("mechanic.transport.test").unwrap(),
+            TilePosition { x: 10, y: 20 },
+            None,
+            LevelEntityPositionAccess::ReadOnly,
+            FieldDefinition::Transport {
+                destination: TilePosition { x: 30, y: 40 },
+                lifetime: 0,
+            },
+        );
+        let mushroom = mushroom_entity_definition(
+            LevelEntityId::parse("scenery.mushroom.test").unwrap(),
+            TilePosition { x: 12, y: 14 },
+            None,
+            LevelEntityPositionAccess::ReadOnly,
+            MushroomDefinition::default(),
+        );
+        let base =
+            LevelDefinition::new(vec![field.clone(), mushroom.clone()], vec![], vec![]).unwrap();
+        let decoded: LevelDefinition =
+            serde_json::from_slice(&serde_json::to_vec(&base).unwrap()).unwrap();
+        assert_eq!(decoded, base);
+        assert!(decoded.verify_session_reset_variant_of(&base).is_ok());
+        let mut rebound = decoded.clone();
+        rebound.entities[0].field = Some(FieldDefinition::Transport {
+            destination: TilePosition { x: 31, y: 40 },
+            lifetime: 0,
+        });
+        assert!(rebound.verify_session_reset_variant_of(&base).is_err());
+        let mut rebound = decoded;
+        rebound.entities[1].mushroom.as_mut().unwrap().minimum_life += 1;
+        assert!(rebound.verify_session_reset_variant_of(&base).is_err());
+
+        let mut invalid = field.clone();
+        invalid.kind = LevelEntityKind::Mechanic(MechanicKind::Field {
+            kind: FieldKind::Wind,
+        });
+        assert!(LevelDefinition::new(vec![invalid], vec![], vec![]).is_err());
+        let mut invalid = field.clone();
+        invalid.field = None;
+        assert!(LevelDefinition::new(vec![invalid], vec![], vec![]).is_err());
+        let mut invalid = field;
+        invalid.kind = LevelEntityKind::Scenery(SceneryKind::Tree);
+        assert!(LevelDefinition::new(vec![invalid], vec![], vec![]).is_err());
+        let mut invalid = mushroom.clone();
+        invalid.mushroom.as_mut().unwrap().life_variation = 0;
+        assert!(LevelDefinition::new(vec![invalid], vec![], vec![]).is_err());
+        let mut invalid = mushroom;
+        invalid.kind = LevelEntityKind::Scenery(SceneryKind::Tree);
+        assert!(LevelDefinition::new(vec![invalid], vec![], vec![]).is_err());
+    }
 
     #[test]
     fn goat_absence_objective_requires_a_package_present_root() {

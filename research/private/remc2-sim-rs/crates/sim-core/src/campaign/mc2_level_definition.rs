@@ -12,8 +12,9 @@ use sim_definition::adapter::{
     cave_corridor_entity_definition, cave_feature_entity_definition, creature_entity_definition,
     effect_entity_definition, entity_definition_with_position_access,
     exit_sequence_trigger_entity_definition, experience_scroll_entity_definition,
-    house_construction_entity_definition, mc2_authored_terrain_disaster_definition,
-    mc2_effect_definition, objective_definition, stable_entity_id, stable_objective_id,
+    field_entity_definition, house_construction_entity_definition,
+    mc2_authored_terrain_disaster_definition, mc2_effect_definition, mc2_field_definition,
+    mushroom_entity_definition, objective_definition, stable_entity_id, stable_objective_id,
     stable_rival_wizard_id, terrain_disaster_entity_definition,
 };
 
@@ -21,10 +22,11 @@ use crate::{
     house::HouseParameter,
     level_definition::{
         BuildingKind, CaveFeatureDefinition, CaveFeatureKind, CorridorOrientation, CreatureKind,
-        EffectKind, ItemKind, LevelDefinition, LevelEntityId, LevelEntityKind,
+        EffectKind, FieldKind, ItemKind, LevelDefinition, LevelEntityId, LevelEntityKind,
         LevelEntityParameterAccess, LevelEntityPositionAccess, LevelObjectiveConditionAccess,
-        LevelObjectiveId, MechanicKind, ObjectiveCondition, RivalWizardId, SceneryKind, SpellKind,
-        SwitchKind, TerrainDisasterKind, TilePosition, supports_authorable_creature_placement,
+        LevelObjectiveId, MechanicKind, MushroomDefinition, ObjectiveCondition, RivalWizardId,
+        SceneryKind, SpellKind, SwitchKind, TerrainDisasterKind, TilePosition,
+        supports_authorable_creature_placement,
     },
     level1_mission::{AuthoredFeature, parse_authored_features},
 };
@@ -100,6 +102,12 @@ impl Mc2LevelDefinition {
             ));
         }
         match (class, subtype) {
+            (10, 22) => Some(LevelEntityKind::Mechanic(MechanicKind::Field {
+                kind: FieldKind::Wind,
+            })),
+            (10, 34) => Some(LevelEntityKind::Mechanic(MechanicKind::Field {
+                kind: FieldKind::Transport,
+            })),
             (10, 11) => Some(LevelEntityKind::Mechanic(MechanicKind::TerrainDisaster {
                 kind: TerrainDisasterKind::LoweringRing,
             })),
@@ -109,6 +117,7 @@ impl Mc2LevelDefinition {
             },
             (2, 0) => Some(LevelEntityKind::Scenery(SceneryKind::Tree)),
             (2, 1) => Some(LevelEntityKind::Scenery(SceneryKind::Stone)),
+            (2, 6) => Some(LevelEntityKind::Scenery(SceneryKind::Mushroom)),
             (10, 45) => Some(LevelEntityKind::Building(BuildingKind::House)),
             (10, model @ 80..=86) => match Self::cave_feature_kind(model) {
                 Some(kind) => Some(LevelEntityKind::Mechanic(MechanicKind::CaveFeature {
@@ -171,6 +180,8 @@ impl Mc2LevelDefinition {
             14 => Some(CreatureKind::Trader),
             15 => Some(CreatureKind::CastleDefender),
             19 => Some(CreatureKind::Firefly),
+            22 => Some(CreatureKind::Creature22),
+            24 => Some(CreatureKind::Creature24),
             _ => None,
         }
     }
@@ -205,6 +216,12 @@ impl Mc2LevelDefinition {
         action: u8,
     ) -> Option<MechanicKind> {
         match (class, model, action) {
+            (10, 22, 22) => Some(MechanicKind::Field {
+                kind: FieldKind::Wind,
+            }),
+            (10, 34, 36) => Some(MechanicKind::Field {
+                kind: FieldKind::Transport,
+            }),
             (10, model @ 80..=86, action) if action == model as u8 + 7 => {
                 match Self::cave_feature_kind(model as u8) {
                     Some(kind) => Some(MechanicKind::CaveFeature { kind }),
@@ -319,6 +336,7 @@ impl Mc2LevelDefinition {
         match (class, model, action) {
             (2, 0, 0) => Some(SceneryKind::Tree),
             (2, 1, 3) => Some(SceneryKind::Stone),
+            (2, 6, 18 | 19) => Some(SceneryKind::Mushroom),
             (14, 3, 8) => Some(SceneryKind::ExitPortal),
             _ => None,
         }
@@ -472,6 +490,8 @@ impl Mc2LevelDefinition {
             };
             let role = match (feature.kind, model) {
                 (10, 11) => "mechanic.lowering_ring".to_owned(),
+                (10, 22) => "mechanic.wind".to_owned(),
+                (10, 34) => "mechanic.transport".to_owned(),
                 (10, model) => {
                     let Some(kind) = Self::effect_kind(model) else {
                         continue;
@@ -479,6 +499,7 @@ impl Mc2LevelDefinition {
                     format!("mechanic.{}", kind.as_str())
                 }
                 (5, 15) => "creature.castle_defender".to_owned(),
+                (2, 6) => "scenery.mushroom".to_owned(),
                 _ => continue,
             };
             if stable_entity_ids.contains_key(&feature.index) {
@@ -539,6 +560,8 @@ impl Mc2LevelDefinition {
                 (5, 14) => Some(CreatureKind::Trader),
                 (5, 15) => Some(CreatureKind::CastleDefender),
                 (5, 19) => Some(CreatureKind::Firefly),
+                (5, 22) => Some(CreatureKind::Creature22),
+                (5, 24) => Some(CreatureKind::Creature24),
                 _ => None,
             };
             let activation_group = u16::try_from(feature.activation_group)
@@ -581,6 +604,8 @@ impl Mc2LevelDefinition {
                         | CreatureKind::Goat
                         | CreatureKind::Archer
                         | CreatureKind::CastleDefender
+                        | CreatureKind::Creature22
+                        | CreatureKind::Creature24
                         | CreatureKind::Bee
                         | CreatureKind::Dragon
                         | CreatureKind::Skeleton
@@ -597,6 +622,12 @@ impl Mc2LevelDefinition {
                         CreatureKind::CastleDefender => {
                             crate::level_definition::CASTLE_DEFENDER_CLASS_PROPERTIES.max_life
                                 as i32
+                        }
+                        CreatureKind::Creature22 => {
+                            crate::level_definition::CREATURE22_CLASS_PROPERTIES.max_life
+                        }
+                        CreatureKind::Creature24 => {
+                            crate::level_definition::CREATURE24_CLASS_PROPERTIES.max_life
                         }
                         CreatureKind::Bee => {
                             i32::from(crate::native_world::level2_class5::BEE_MAX_LIFE)
@@ -638,6 +669,7 @@ impl Mc2LevelDefinition {
             let scenery_kind = match (feature.kind, feature.subtype) {
                 (2, 0) => Some(SceneryKind::Tree),
                 (2, 1) => Some(SceneryKind::Stone),
+                (2, 6) => Some(SceneryKind::Mushroom),
                 // `sub_51570` constructs the package's class-14 exit target.
                 // Shared callers see the scenery role, never its MC2 selector.
                 (14, 3) => Some(SceneryKind::ExitPortal),
@@ -657,13 +689,23 @@ impl Mc2LevelDefinition {
                     LevelEntityKind::Scenery(kind),
                     position_access,
                 )?;
-                entities.push(entity_definition_with_position_access(
-                    id,
-                    LevelEntityKind::Scenery(kind),
-                    position,
-                    activation_group,
-                    position_access,
-                ));
+                entities.push(if kind == SceneryKind::Mushroom {
+                    mushroom_entity_definition(
+                        id,
+                        position,
+                        activation_group,
+                        position_access,
+                        MushroomDefinition::default(),
+                    )
+                } else {
+                    entity_definition_with_position_access(
+                        id,
+                        LevelEntityKind::Scenery(kind),
+                        position,
+                        activation_group,
+                        position_access,
+                    )
+                });
                 scenery_by_authored_record.insert(feature.index, kind);
                 continue;
             }
@@ -947,6 +989,12 @@ impl Mc2LevelDefinition {
             }
 
             let mechanic_kind = match (feature.kind, feature.subtype) {
+                (10, 22) => MechanicKind::Field {
+                    kind: FieldKind::Wind,
+                },
+                (10, 34) => MechanicKind::Field {
+                    kind: FieldKind::Transport,
+                },
                 (10, model @ 80..=86) => MechanicKind::CaveFeature {
                     kind: Self::cave_feature_kind(model as u8).expect("bounded cave model"),
                 },
@@ -989,7 +1037,22 @@ impl Mc2LevelDefinition {
                 LevelEntityKind::Mechanic(mechanic_kind),
                 position_access,
             )?;
-            if let MechanicKind::TerrainDisaster { kind } = mechanic_kind {
+            if let MechanicKind::Field { kind } = mechanic_kind {
+                let config = mc2_field_definition(
+                    kind,
+                    TilePosition {
+                        x: feature.parameter_2,
+                        y: feature.parameter_1,
+                    },
+                );
+                entities.push(field_entity_definition(
+                    id.clone(),
+                    position,
+                    activation_group,
+                    position_access,
+                    config,
+                ));
+            } else if let MechanicKind::TerrainDisaster { kind } = mechanic_kind {
                 entities.push(terrain_disaster_entity_definition(
                     id.clone(),
                     position,
@@ -1426,6 +1489,16 @@ fn bind_private_entity(
             LevelEntityKind::Item(ItemKind::ExperienceScroll)
             | LevelEntityKind::Scenery(SceneryKind::ExitPortal) => {
                 Mc2MovableRuntimeHint::AuthoredFeature(feature.index)
+            }
+            LevelEntityKind::Mechanic(MechanicKind::Field { .. }) => {
+                Mc2MovableRuntimeHint::AuthoredFeature(feature.index)
+            }
+            LevelEntityKind::Scenery(SceneryKind::Mushroom) => {
+                if feature.activation_group != 0 {
+                    Mc2MovableRuntimeHint::AuthoredFeature(feature.index)
+                } else {
+                    Mc2MovableRuntimeHint::ResetKindAndPosition
+                }
             }
             LevelEntityKind::SpellPickup(_)
             | LevelEntityKind::Scenery(SceneryKind::Stone | SceneryKind::Tree)
