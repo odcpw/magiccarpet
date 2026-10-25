@@ -47,12 +47,14 @@ struct Vertex {
     uv: u8,
 }
 
+#[derive(Clone)]
 struct Triangle {
     vertices: [Mode5Vertex; 3],
     texture: u8,
     ceiling: bool,
 }
 
+#[derive(Clone)]
 pub struct CaveTerrainPlan {
     profile_revision: u64,
     clear_index: u8,
@@ -61,7 +63,21 @@ pub struct CaveTerrainPlan {
     pub command_hash: u64,
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct CaveRasterReceipt {
+    pub floor_pixels_written: u64,
+    pub ceiling_pixels_written: u64,
+}
+
 impl CaveTerrainPlan {
+    #[cfg(test)]
+    pub(crate) fn without_ceiling_submissions_for_test(&self) -> Self {
+        let mut plan = self.clone();
+        plan.triangles.retain(|triangle| !triangle.ceiling);
+        plan.command_hash = hash_commands(&plan.triangles);
+        plan
+    }
+
     pub fn initial_indices(&self, profile: &ClassicHdRenderProfile) -> Vec<u8> {
         vec![self.clear_index; profile.extent()]
     }
@@ -73,7 +89,7 @@ impl CaveTerrainPlan {
         atlas: &[u8],
         tables: &[u8],
         provenance: u8,
-    ) -> Result<(), ClassicHdRasterError> {
+    ) -> Result<CaveRasterReceipt, ClassicHdRasterError> {
         if writer.profile().profile_revision != self.profile_revision
             || atlas.len() != CLASSIC_HD_TERRAIN_ATLAS_BYTES
             || tables.len() != 83_456
@@ -85,8 +101,9 @@ impl CaveTerrainPlan {
         for triangle in &self.triangles {
             terrain_texture_base(triangle.texture)?;
         }
+        let mut receipt = CaveRasterReceipt::default();
         for triangle in &self.triangles {
-            rasterize_classic_hd_mode5_triangle(
+            let stage = rasterize_classic_hd_mode5_triangle(
                 writer,
                 triangle.vertices,
                 atlas,
@@ -94,8 +111,13 @@ impl CaveTerrainPlan {
                 &tables[..CLASSIC_HD_TABLESN_BYTES],
                 provenance | if triangle.ceiling { 4 } else { 2 },
             )?;
+            if triangle.ceiling {
+                receipt.ceiling_pixels_written += stage.written_pixels;
+            } else {
+                receipt.floor_pixels_written += stage.written_pixels;
+            }
         }
-        Ok(())
+        Ok(receipt)
     }
 }
 
@@ -194,8 +216,19 @@ pub fn build_cave_terrain(
     ] {
         input.extend_from_slice(plane);
     }
+    let command_hash = hash_commands(&triangles);
+    Ok(CaveTerrainPlan {
+        profile_revision: profile.profile_revision,
+        clear_index: resources.clear_index,
+        triangles,
+        input_hash: byte_hash(&input),
+        command_hash,
+    })
+}
+
+fn hash_commands(triangles: &[Triangle]) -> u64 {
     let mut commands = Vec::new();
-    for triangle in &triangles {
+    for triangle in triangles {
         commands.extend_from_slice(&[triangle.texture, u8::from(triangle.ceiling)]);
         for v in triangle.vertices {
             for value in [v.x, v.y, v.u, v.v, v.pnt5] {
@@ -203,13 +236,7 @@ pub fn build_cave_terrain(
             }
         }
     }
-    Ok(CaveTerrainPlan {
-        profile_revision: profile.profile_revision,
-        clear_index: resources.clear_index,
-        triangles,
-        input_hash: byte_hash(&input),
-        command_hash: byte_hash(&commands),
-    })
+    byte_hash(&commands)
 }
 
 fn append_triangles(

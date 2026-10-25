@@ -853,12 +853,14 @@ fn render_environment_indexed_frame(
                 DAY_TERRAIN_PROVENANCE,
             )
             .map(|_| ()),
-            Terrain::Cave(plan) => plan.rasterize(
-                &mut writer,
-                assets.terrain_atlas(),
-                tables,
-                DAY_TERRAIN_PROVENANCE,
-            ),
+            Terrain::Cave(plan) => plan
+                .rasterize(
+                    &mut writer,
+                    assets.terrain_atlas(),
+                    tables,
+                    DAY_TERRAIN_PROVENANCE,
+                )
+                .map(|_| ()),
         }
         .map_err(|error| {
             DayIndexedFrameError::new(format!("Day terrain raster failed: {error}"))
@@ -1665,22 +1667,64 @@ mod tests {
             0,
         )
         .unwrap();
-        plan.rasterize(
-            &mut writer,
-            assets.terrain_atlas(),
-            assets.tablesd(),
-            DAY_TERRAIN_PROVENANCE,
-        )
-        .unwrap();
-        writer.finish();
+        let receipt = plan
+            .rasterize(
+                &mut writer,
+                assets.terrain_atlas(),
+                assets.tablesd(),
+                DAY_TERRAIN_PROVENANCE,
+            )
+            .unwrap();
+        let _ = writer.finish();
         let floor = provenance.iter().filter(|&&value| value == 3).count();
         let ceiling = provenance.iter().filter(|&&value| value == 5).count();
-        assert!(floor > 0, "actual reset must write floor pixels");
-        assert!(ceiling > 0, "actual reset must write ceiling pixels");
         eprintln!(
-            "genuine Cave12 reset: floor_pixels={floor}, ceiling_pixels={ceiling}, frame_hash={:016x}",
+            "genuine Cave12 reset: visible_floor_pixels={floor}, visible_ceiling_pixels={ceiling}, writes={receipt:?}, camera={:?}, frame_hash={:016x}",
+            camera_from_state(&reset.state).unwrap(),
             frame.index_hash
         );
+        assert!(floor > 0, "actual reset must write floor pixels");
+        // Both original renderers draw each ceiling before its floor. This
+        // high-vault reset overpaints the roof; material consumption must not
+        // require a final visible roof pixel at this particular camera.
+        let consumes_both = |writes: &crate::presentation::cave_terrain::CaveRasterReceipt| {
+            writes.floor_pixels_written > 0 && writes.ceiling_pixels_written > 0
+        };
+        assert!(
+            consumes_both(&receipt),
+            "actual reset must rasterize both owner materials"
+        );
+        // Negative control uses the same real camera, geometry and resources,
+        // with only the ceiling submissions omitted. It is not a game state
+        // or a second runtime route and must fail the same consumption gate.
+        let omitted = plan.without_ceiling_submissions_for_test();
+        let mut omitted_pixels = omitted.initial_indices(&profile);
+        let mut omitted_provenance = vec![0; profile.extent()];
+        let mut writer = ClassicHdFrameWriter::from_planes(
+            &profile,
+            &mut omitted_pixels,
+            &mut omitted_provenance,
+            campaign.generation(),
+            0,
+            omitted.input_hash,
+            0,
+        )
+        .unwrap();
+        let omitted_receipt = omitted
+            .rasterize(
+                &mut writer,
+                assets.terrain_atlas(),
+                assets.tablesd(),
+                DAY_TERRAIN_PROVENANCE,
+            )
+            .unwrap();
+        let _ = writer.finish();
+        assert!(omitted_receipt.floor_pixels_written > 0);
+        assert!(
+            !consumes_both(&omitted_receipt),
+            "omitting the roof must fail material consumption"
+        );
+        assert_ne!(omitted.command_hash, plan.command_hash);
         let repeated = carrier
             .render_current(campaign.inspection(), reset, &assets, campaign.generation())
             .unwrap();
