@@ -47,6 +47,17 @@ def unity_inputs():
                         PROJECT, (ASSET_PLUGIN,))
 
 
+def player_inputs(inputs):
+    # These C# files compile only into the existing Editor test assembly.
+    # Keep its asmdef and all metadata/assets in the compatibility comparison:
+    # changing that platform contract must still require a player rebuild.
+    test_root = Path('Assets/Tests/EditMode')
+    definition = PROJECT / test_root / 'MagicCarpet.Native.EditModeTests.asmdef'
+    editor_only = json.loads(definition.read_text()).get('includePlatforms') == ['Editor']
+    return {name: value for name, value in inputs.items()
+            if not (editor_only and Path(name).parent == test_root and Path(name).suffix == '.cs')}
+
+
 def native_contract():
     return files_digest([SIM / 'crates/sim-capi/include'], SIM)
 
@@ -73,7 +84,7 @@ def check_install(check_inputs=True):
             raise ValueError('installed Unity player files changed')
         if receipt['native_sha256'] != digest(INSTALLED / PLUGIN):
             raise ValueError('installed native plugin changed')
-        if check_inputs and (receipt['unity_inputs'] != unity_inputs() or
+        if check_inputs and (player_inputs(receipt['unity_inputs']) != player_inputs(unity_inputs()) or
                              receipt['native_contract'] != native_contract()):
             raise ValueError('Unity source, settings, packaged assets or native contract changed')
         return receipt
