@@ -984,13 +984,18 @@ fn restore_actual_staged_bee_trace_frontier() -> GameSession<Mc2CampaignBackend>
     assert_eq!(session.backend().campaign.state_hash(), trace.initial_hash);
     for operation in trace.operations {
         match operation {
-            crate::game_runtime::ReplayOperation::SpeechPreference { enabled } => {
-                session.backend_mut().set_speech_enabled(enabled);
+            crate::game_runtime::ReplayOperation::SpeechPreference {
+                enabled,
+                show_foreign_text,
+            } => {
+                session
+                    .backend_mut()
+                    .set_objective_presentation_preferences(enabled, show_foreign_text);
             }
             crate::game_runtime::ReplayOperation::Step { command } => {
                 session.step(guard(&session), command).unwrap();
             }
-            crate::game_runtime::ReplayOperation::PausedFrame => {
+            crate::game_runtime::ReplayOperation::PausedFrame { .. } => {
                 panic!("the staged Bee combat driver never pauses");
             }
         }
@@ -1057,13 +1062,20 @@ fn staged_bee_pilot_departs_on_live_contact_cadence_and_heals_at_real_castle() {
             break;
         }
         match operation {
-            crate::game_runtime::ReplayOperation::SpeechPreference { enabled } => {
-                session.backend_mut().set_speech_enabled(enabled);
+            crate::game_runtime::ReplayOperation::SpeechPreference {
+                enabled,
+                show_foreign_text,
+            } => {
+                session
+                    .backend_mut()
+                    .set_objective_presentation_preferences(enabled, show_foreign_text);
             }
             crate::game_runtime::ReplayOperation::Step { command } => {
                 session.step(guard(&session), command).unwrap();
             }
-            crate::game_runtime::ReplayOperation::PausedFrame => panic!("combat does not pause"),
+            crate::game_runtime::ReplayOperation::PausedFrame { .. } => {
+                panic!("combat does not pause")
+            }
         }
     }
     assert!(

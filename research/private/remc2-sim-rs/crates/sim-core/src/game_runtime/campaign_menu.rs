@@ -6,7 +6,7 @@
 
 use super::*;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CampaignMenuPhase {
     Results,
@@ -22,6 +22,29 @@ pub enum CampaignMenuCommand {
     ReturnTitle,
 }
 
+/// The source's five-value per-mission results row, retained after the
+/// gameplay session is released and overwritten when that mission is replayed.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct CompletedLevelStatistics {
+    pub level_id: SemanticLevelId,
+    pub statistics: GameCompletionStatistics,
+}
+
+/// Source map saves contain frontier, spell carry and retained results rather
+/// than an invented active gameplay session. The package adapter owns the
+/// outer receipt and spell carry; this is the runtime's exact menu state.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct CampaignSaveState {
+    pub definition: GameDefinition,
+    pub phase: CampaignMenuPhase,
+    pub completed_level_id: Option<SemanticLevelId>,
+    pub selected_level_id: Option<SemanticLevelId>,
+    pub completed_levels: Vec<SemanticLevelId>,
+    pub level_statistics: Vec<CompletedLevelStatistics>,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct CampaignMenuSnapshot {
     pub phase: CampaignMenuPhase,
@@ -33,6 +56,10 @@ pub struct CampaignMenuSnapshot {
     pub selected_level_id: Option<SemanticLevelId>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub briefing_level_id: Option<SemanticLevelId>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub completion_statistics: Option<GameCompletionStatistics>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub level_statistics: Vec<CompletedLevelStatistics>,
 }
 
 pub(super) fn presentation(
@@ -127,7 +154,162 @@ impl<B: GameSessionBackend> GameRuntime<B> {
                 })
                 .flatten(),
             briefing_level_id,
+            completion_statistics: completed_level.as_ref().and_then(|level| {
+                self.level_statistics
+                    .iter()
+                    .find(|row| &row.level_id == level)
+                    .map(|row| row.statistics.clone())
+            }),
+            level_statistics: self.level_statistics.clone(),
         })
+    }
+
+    pub(crate) fn campaign_save_state(&self) -> Option<CampaignSaveState> {
+        let RuntimeState::Campaign {
+            definition,
+            selected_definition,
+            phase,
+            completed_level,
+            ..
+        } = &self.state
+        else {
+            return None;
+        };
+        Some(CampaignSaveState {
+            definition: definition.as_ref().clone(),
+            phase: *phase,
+            completed_level_id: completed_level.clone(),
+            selected_level_id: selected_definition
+                .as_ref()
+                .and_then(|definition| definition.runtime_flow())
+                .map(|flow| flow.bound_level_id().clone()),
+            completed_levels: self.completed_levels.clone(),
+            level_statistics: self.level_statistics.clone(),
+        })
+    }
+
+    pub(crate) fn campaign_session_generation(&self) -> Option<u64> {
+        match &self.state {
+            RuntimeState::Campaign {
+                session_generation, ..
+            } => Some(session_generation.get()),
+            _ => None,
+        }
+    }
+
+    /// Publish a validated map/results save directly at the source menu
+    /// boundary. Candidate resolution and all validation precede mutation.
+    pub(crate) fn restore_campaign_resolved<F>(
+        &mut self,
+        guard: RuntimeGuard,
+        saved: CampaignSaveState,
+        resolve_selected: F,
+    ) -> Result<RuntimeIdentity, RuntimeTransitionError>
+    where
+        F: FnOnce(
+            &GameDefinition,
+            &SemanticLevelId,
+        ) -> Result<Arc<GameDefinition>, RuntimeTransitionError>,
+    {
+        self.validate_guard(guard)
+            .map_err(Box::new)
+            .map_err(RuntimeTransitionError::Guard)?;
+        let RuntimeState::Title {
+            session_generation, ..
+        } = &self.state
+        else {
+            return Err(RuntimeTransitionError::InvalidMode {
+                expected: RuntimeMode::Title,
+                actual: self.identity().mode,
+            });
+        };
+        let session_generation = *session_generation;
+        let next_generation = self.next_generation()?;
+        saved.definition.verify_identity().map_err(|error| {
+            RuntimeTransitionError::InvalidReplay {
+                message: error.to_string(),
+            }
+        })?;
+        let flow = saved.definition.runtime_flow().ok_or_else(|| {
+            RuntimeTransitionError::InvalidReplay {
+                message: "saved campaign menu has no runtime flow".to_owned(),
+            }
+        })?;
+        let mut seen = std::collections::BTreeSet::new();
+        if saved.completed_levels.iter().any(|level| {
+            !flow.entries().iter().any(|entry| entry.level_id() == level) || !seen.insert(level)
+        }) {
+            return Err(RuntimeTransitionError::InvalidReplay {
+                message: "saved campaign menu has unknown or repeated completed missions"
+                    .to_owned(),
+            });
+        }
+        validate_statistics(flow, &saved.completed_levels, &saved.level_statistics)?;
+        if saved.completed_level_id.as_ref().is_some_and(|level| {
+            !saved.completed_levels.contains(level) || flow.bound_level_id() != level
+        }) || (saved.phase == CampaignMenuPhase::Results && saved.completed_level_id.is_none())
+        {
+            return Err(RuntimeTransitionError::InvalidReplay {
+                message: "saved results do not bind an earned completed mission".to_owned(),
+            });
+        }
+        if saved.phase == CampaignMenuPhase::MissionSelect {
+            let frontier = flow
+                .entries()
+                .iter()
+                .position(|entry| !saved.completed_levels.contains(entry.level_id()))
+                .map_or(flow.entries().len(), |index| index + 1);
+            if saved.selected_level_id.as_ref().is_some_and(|level| {
+                !flow
+                    .entries()
+                    .iter()
+                    .take(frontier)
+                    .any(|entry| entry.level_id() == level)
+            }) {
+                return Err(RuntimeTransitionError::InvalidReplay {
+                    message: "saved selected mission is beyond the earned frontier".to_owned(),
+                });
+            }
+        } else {
+            let destination = flow
+                .entries()
+                .iter()
+                .find(|entry| entry.level_id() == flow.bound_level_id())
+                .expect("validated flow binds its current mission")
+                .completion_destination();
+            let matches_destination = match (destination, &saved.selected_level_id) {
+                (RuntimeFlowDestination::Level { level_id }, Some(selected)) => {
+                    level_id == selected
+                }
+                (RuntimeFlowDestination::Title { .. }, None) => true,
+                _ => false,
+            };
+            if !matches_destination {
+                return Err(RuntimeTransitionError::InvalidReplay {
+                    message: "saved results bind the wrong completion destination".to_owned(),
+                });
+            }
+        }
+        let selected_definition = saved
+            .selected_level_id
+            .as_ref()
+            .map(|level| {
+                let selected = resolve_selected(&saved.definition, level)?;
+                validate_selected(&saved.definition, &selected, level)?;
+                Ok::<_, RuntimeTransitionError>(selected)
+            })
+            .transpose()?;
+        self.state = RuntimeState::Campaign {
+            definition: Arc::new(saved.definition),
+            selected_definition,
+            session_generation,
+            phase: saved.phase,
+            completed_level: saved.completed_level_id,
+        };
+        self.completed_levels = saved.completed_levels;
+        self.level_statistics = saved.level_statistics;
+        self.generation = next_generation;
+        Ok(self.identity())
     }
 
     /// A semantic mission choice is resolved by the installed package owner;
@@ -227,6 +409,43 @@ impl<B: GameSessionBackend> GameRuntime<B> {
     }
 }
 
+pub(super) fn validate_statistics(
+    flow: &RuntimeFlowDefinition,
+    completed_levels: &[SemanticLevelId],
+    records: &[CompletedLevelStatistics],
+) -> Result<(), RuntimeTransitionError> {
+    let mut seen = std::collections::BTreeSet::new();
+    for record in records {
+        let stats = &record.statistics;
+        if !completed_levels.contains(&record.level_id)
+            || !flow
+                .entries()
+                .iter()
+                .any(|entry| entry.level_id() == &record.level_id)
+            || !seen.insert(&record.level_id)
+            || !valid_percentages(stats)
+        {
+            return Err(RuntimeTransitionError::InvalidReplay {
+                message:
+                    "saved completion statistics have an invalid mission, duplicate or percentage"
+                        .to_owned(),
+            });
+        }
+    }
+    Ok(())
+}
+
+pub(super) fn valid_percentages(stats: &GameCompletionStatistics) -> bool {
+    [
+        stats.spells_found_percent,
+        stats.hit_accuracy_percent,
+        stats.creatures_killed_percent,
+        stats.mana_collected_percent,
+    ]
+    .iter()
+    .all(|value| (0..=100).contains(value))
+}
+
 fn validate_selected(
     definition: &GameDefinition,
     selected: &GameDefinition,
@@ -299,6 +518,16 @@ mod tests {
             runtime_id: 771,
             generation: 4,
             completed_levels: vec![first.clone()],
+            level_statistics: vec![CompletedLevelStatistics {
+                level_id: first.clone(),
+                statistics: GameCompletionStatistics {
+                    spells_found_percent: 50,
+                    hit_accuracy_percent: 60,
+                    creatures_killed_percent: 70,
+                    mana_collected_percent: 80,
+                    time_taken_seconds: 90,
+                },
+            }],
             state: RuntimeState::Campaign {
                 definition: Arc::clone(&definitions[0]),
                 selected_definition: Some(Arc::clone(&definitions[1])),
@@ -308,6 +537,54 @@ mod tests {
             },
         };
         let results = runtime.identity();
+        let saved = runtime.campaign_save_state().unwrap();
+        let saved: CampaignSaveState =
+            serde_json::from_slice(&serde_json::to_vec(&saved).unwrap()).unwrap();
+        let mut restored = GameRuntime::<Mc2CampaignBackend>::title(772).unwrap();
+        let restore_guard = restored.identity().guard();
+        restored
+            .restore_campaign_resolved(restore_guard, saved.clone(), |_, level| {
+                Ok(definitions
+                    .iter()
+                    .find(|definition| definition.runtime_flow().unwrap().bound_level_id() == level)
+                    .unwrap()
+                    .clone())
+            })
+            .unwrap();
+        assert!(
+            restored.session().is_none(),
+            "map restore must not create gameplay"
+        );
+        assert_eq!(restored.identity().mode, RuntimeMode::Campaign);
+        assert_eq!(restored.campaign_save_state().unwrap(), saved);
+        assert_eq!(
+            restored
+                .campaign_menu_snapshot()
+                .unwrap()
+                .completion_statistics,
+            Some(runtime.level_statistics[0].statistics.clone())
+        );
+        assert_eq!(restored.campaign_session_generation(), Some(1));
+        let mut duplicate = saved;
+        duplicate
+            .level_statistics
+            .push(duplicate.level_statistics[0].clone());
+        let mut rejected = GameRuntime::<Mc2CampaignBackend>::title(773).unwrap();
+        let before_rejection = rejected.identity();
+        assert!(
+            rejected
+                .restore_campaign_resolved(
+                    before_rejection.guard(),
+                    duplicate,
+                    |_, _| unreachable!("invalid statistics must reject before package resolution")
+                )
+                .is_err()
+        );
+        assert_eq!(
+            rejected.identity(),
+            before_rejection,
+            "invalid map saves publish no state"
+        );
         assert_eq!(
             runtime.identity(),
             results,
@@ -423,6 +700,7 @@ mod tests {
                 .iter()
                 .map(|entry| entry.level_id().clone())
                 .collect(),
+            level_statistics: Vec::new(),
             state: RuntimeState::Campaign {
                 definition: Arc::clone(&definitions[2]),
                 selected_definition: None,
@@ -490,6 +768,7 @@ mod tests {
             runtime_id: 773,
             generation: 4,
             completed_levels: vec![first.clone()],
+            level_statistics: Vec::new(),
             state: RuntimeState::Campaign {
                 definition: Arc::clone(&definitions[0]),
                 selected_definition: None,

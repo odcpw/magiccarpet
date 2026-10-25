@@ -10,8 +10,9 @@ use crate::game_definition::{
     TITLE_PRESENTATION_CUE_ID,
 };
 use crate::game_session::{
-    GameAdapter, GameCompletion, GameCompletionStatus, GameSession, GameSessionBackend,
-    GameSessionError, OpenSessionError, SessionGuard, SessionGuardError, SessionIdentity,
+    GameAdapter, GameCompletion, GameCompletionStatistics, GameCompletionStatus, GameSession,
+    GameSessionBackend, GameSessionError, OpenSessionError, SessionGuard, SessionGuardError,
+    SessionIdentity,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -21,7 +22,10 @@ mod campaign_menu;
 mod loading;
 pub mod media;
 pub mod preferences;
-pub use campaign_menu::{CampaignMenuCommand, CampaignMenuPhase, CampaignMenuSnapshot};
+pub(crate) use campaign_menu::CampaignSaveState;
+pub use campaign_menu::{
+    CampaignMenuCommand, CampaignMenuPhase, CampaignMenuSnapshot, CompletedLevelStatistics,
+};
 use loading::LoadingOrigin;
 
 // GOLDEN-CHANGE candidate: v11 adds the campaign owner required by remc2's
@@ -90,9 +94,26 @@ impl RuntimePresentationCue {
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(tag = "operation", rename_all = "snake_case")]
 pub(crate) enum ReplayOperation<C> {
-    Step { command: C },
-    PausedFrame,
-    SpeechPreference { enabled: bool },
+    Step {
+        command: C,
+    },
+    PausedFrame {
+        #[serde(default, skip_serializing_if = "is_zero")]
+        elapsed_centiseconds: u32,
+    },
+    SpeechPreference {
+        enabled: bool,
+        #[serde(default, skip_serializing_if = "is_false")]
+        show_foreign_text: bool,
+    },
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
+fn is_zero(value: &u32) -> bool {
+    *value == 0
 }
 
 impl RuntimeMode {
@@ -417,6 +438,7 @@ pub struct GameRuntime<B> {
     generation: u64,
     state: RuntimeState<B>,
     completed_levels: Vec<SemanticLevelId>,
+    level_statistics: Vec<CompletedLevelStatistics>,
     frontend_media: media::FrontendMedia,
     player_preferences: preferences::PreferenceStore,
 }
@@ -436,6 +458,7 @@ impl<B: GameSessionBackend> GameRuntime<B> {
             runtime_id,
             generation: 1,
             completed_levels: Vec::new(),
+            level_statistics: Vec::new(),
             frontend_media: media::FrontendMedia::default(),
             player_preferences: preferences::PreferenceStore::default(),
             state: RuntimeState::Title {
@@ -534,6 +557,10 @@ impl<B: GameSessionBackend> GameRuntime<B> {
         &self.completed_levels
     }
 
+    pub(crate) fn completed_level_statistics(&self) -> &[CompletedLevelStatistics] {
+        &self.level_statistics
+    }
+
     /// Advance presentation-only frontend work using the same guarded owner.
     pub fn frontend_media_command(
         &mut self,
@@ -602,6 +629,7 @@ impl<B: GameSessionBackend> GameRuntime<B> {
             origin: LoadingOrigin::Title { presentation_cue },
         };
         self.completed_levels.clear();
+        self.level_statistics.clear();
         self.generation = next_generation;
         Ok(self.identity())
     }
@@ -738,6 +766,7 @@ impl<B: GameSessionBackend> GameRuntime<B> {
         operations: I,
         paused: bool,
         completed_levels: Vec<SemanticLevelId>,
+        level_statistics: Vec<CompletedLevelStatistics>,
         resolve_input: F,
         prepare: P,
         verify: V,
@@ -751,7 +780,7 @@ impl<B: GameSessionBackend> GameRuntime<B> {
         V: FnOnce(&GameSession<B>) -> Result<(), RuntimeTransitionError>,
         I: IntoIterator<Item = ReplayOperation<B::Command>>,
         O: FnMut(&GameSession<B>),
-        S: FnMut(&mut GameSession<B>, bool),
+        S: FnMut(&mut GameSession<B>, bool, bool),
     {
         self.validate_guard(guard)
             .map_err(Box::new)
@@ -789,6 +818,8 @@ impl<B: GameSessionBackend> GameRuntime<B> {
                 },
             ));
         }
+        campaign_menu::validate_statistics(flow, &completed_levels, &level_statistics)
+            .map_err(RestorePlayingError::Transition)?;
         let input = resolve_input(definition.as_ref()).map_err(RestorePlayingError::Transition)?;
         let mut candidate = GameSession::open_with_generation(
             adapter,
@@ -803,8 +834,11 @@ impl<B: GameSessionBackend> GameRuntime<B> {
         for (operation_index, operation) in operations.into_iter().enumerate() {
             let guard = candidate.identity().guard();
             match operation {
-                ReplayOperation::SpeechPreference { enabled } => {
-                    set_speech(&mut candidate, enabled);
+                ReplayOperation::SpeechPreference {
+                    enabled,
+                    show_foreign_text,
+                } => {
+                    set_speech(&mut candidate, enabled, show_foreign_text);
                     continue;
                 }
                 ReplayOperation::Step { command } => {
@@ -815,12 +849,14 @@ impl<B: GameSessionBackend> GameRuntime<B> {
                         }
                     })?
                 }
-                ReplayOperation::PausedFrame => candidate.paused_frame(guard).map_err(|error| {
-                    RestorePlayingError::ReplayPausedFrame {
+                ReplayOperation::PausedFrame {
+                    elapsed_centiseconds,
+                } => candidate
+                    .paused_frame_timed(guard, elapsed_centiseconds)
+                    .map_err(|error| RestorePlayingError::ReplayPausedFrame {
                         operation_index,
                         error,
-                    }
-                })?,
+                    })?,
             };
             observe(&candidate);
         }
@@ -830,6 +866,7 @@ impl<B: GameSessionBackend> GameRuntime<B> {
             paused,
         };
         self.completed_levels = completed_levels;
+        self.level_statistics = level_statistics;
         self.generation = next_generation;
         Ok(self.identity())
     }
@@ -932,6 +969,15 @@ impl<B: GameSessionBackend> GameRuntime<B> {
             }
         };
         let source_session = session.identity();
+        if completion
+            .statistics
+            .as_ref()
+            .is_some_and(|stats| !campaign_menu::valid_percentages(stats))
+        {
+            return Err(RuntimeTransitionError::InvalidCompletion {
+                message: "completion statistics contain a percentage outside 0..100".to_owned(),
+            });
+        }
         let current_flow = session.definition().runtime_flow().ok_or_else(|| {
             RuntimeTransitionError::InvalidRuntimeFlow {
                 message: "playing definition has no semantic runtime flow".to_owned(),
@@ -1009,6 +1055,21 @@ impl<B: GameSessionBackend> GameRuntime<B> {
         if !self.completed_levels.contains(&completed_level_id) {
             self.completed_levels.push(completed_level_id.clone());
         }
+        if let Some(statistics) = completion.statistics.clone() {
+            let record = CompletedLevelStatistics {
+                level_id: completed_level_id.clone(),
+                statistics,
+            };
+            if let Some(previous) = self
+                .level_statistics
+                .iter_mut()
+                .find(|entry| entry.level_id == completed_level_id)
+            {
+                *previous = record;
+            } else {
+                self.level_statistics.push(record);
+            }
+        }
         // remc2 sub_46830_main_loop -> MainMenu_76FA0 -> NewGameDialog_77350:
         // gameplay ends before the results/map owner runs. Loading the next
         // mission is a later player selection, never this completion edge.
@@ -1084,6 +1145,15 @@ impl<B: GameSessionBackend> GameRuntime<B> {
         guard: RuntimeGuard,
         session_guard: SessionGuard,
     ) -> Result<RuntimeIdentity, PausedFrameError<B::Error>> {
+        self.paused_frame_timed(guard, session_guard, 0)
+    }
+
+    pub fn paused_frame_timed(
+        &mut self,
+        guard: RuntimeGuard,
+        session_guard: SessionGuard,
+        elapsed_centiseconds: u32,
+    ) -> Result<RuntimeIdentity, PausedFrameError<B::Error>> {
         self.validate_guard(guard)
             .map_err(Box::new)
             .map_err(RuntimeTransitionError::Guard)
@@ -1105,7 +1175,7 @@ impl<B: GameSessionBackend> GameRuntime<B> {
             unreachable!("validated Paused mode owns a paused gameplay session")
         };
         session
-            .paused_frame(session_guard)
+            .paused_frame_timed(session_guard, elapsed_centiseconds)
             .map_err(PausedFrameError::Session)?;
         Ok(self.identity())
     }
@@ -1328,6 +1398,16 @@ impl GameRuntime<crate::campaign::backend::Mc2CampaignBackend> {
             <crate::campaign::backend::Mc2CampaignBackend as GameSessionBackend>::Error,
         >,
     > {
+        self.paused_campaign_frame_timed(guard, session_guard, 0)
+    }
+
+    pub fn paused_campaign_frame_timed(
+        &mut self,
+        guard: RuntimeGuard,
+        session_guard: SessionGuard,
+        elapsed_centiseconds: u32,
+    ) -> Result<RuntimeIdentity, PausedFrameError<crate::campaign::backend::CampaignBackendError>>
+    {
         self.validate_guard(guard)
             .map_err(Box::new)
             .map_err(RuntimeTransitionError::Guard)
@@ -1346,6 +1426,7 @@ impl GameRuntime<crate::campaign::backend::Mc2CampaignBackend> {
             .player_preferences
             .preferences
             .speech_enabled;
+        let show_foreign_text = self.show_foreign_objective_text();
         let RuntimeState::Playing {
             session,
             paused: true,
@@ -1359,13 +1440,16 @@ impl GameRuntime<crate::campaign::backend::Mc2CampaignBackend> {
             .map_err(PausedFrameError::Session)?;
         let previous = (
             session.backend().speech_enabled(),
+            session.backend().show_foreign_objective_text(),
             session.backend().replay_operation_count(),
         );
-        session.backend_mut().set_speech_enabled(enabled);
-        if let Err(error) = session.paused_frame(session_guard) {
+        session
+            .backend_mut()
+            .set_objective_presentation_preferences(enabled, show_foreign_text);
+        if let Err(error) = session.paused_frame_timed(session_guard, elapsed_centiseconds) {
             session
                 .backend_mut()
-                .restore_speech_preference_after_rejection(previous.0, previous.1);
+                .restore_speech_preference_after_rejection(previous.0, previous.1, previous.2);
             return Err(PausedFrameError::Session(error));
         }
         Ok(self.identity())
@@ -1375,6 +1459,62 @@ impl GameRuntime<crate::campaign::backend::Mc2CampaignBackend> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn legacy_speech_preference_replay_keeps_its_original_wire_shape() {
+        let legacy = r#"{"operation":"speech_preference","enabled":true}"#;
+        let operation: ReplayOperation<serde_json::Value> = serde_json::from_str(legacy).unwrap();
+        assert_eq!(
+            operation,
+            ReplayOperation::SpeechPreference {
+                enabled: true,
+                show_foreign_text: false,
+            }
+        );
+        assert_eq!(serde_json::to_string(&operation).unwrap(), legacy);
+        let foreign: ReplayOperation<serde_json::Value> = serde_json::from_str(
+            r#"{"operation":"speech_preference","enabled":true,"show_foreign_text":true}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            foreign,
+            ReplayOperation::SpeechPreference {
+                enabled: true,
+                show_foreign_text: true,
+            }
+        );
+        assert!(
+            serde_json::to_value(foreign).unwrap()["show_foreign_text"]
+                .as_bool()
+                .unwrap()
+        );
+    }
+
+    #[test]
+    fn timed_paused_replay_preserves_legacy_zero_shape_and_retains_elapsed_clock() {
+        let legacy = r#"{"operation":"paused_frame"}"#;
+        let operation: ReplayOperation<serde_json::Value> = serde_json::from_str(legacy).unwrap();
+        assert_eq!(
+            operation,
+            ReplayOperation::PausedFrame {
+                elapsed_centiseconds: 0
+            }
+        );
+        assert_eq!(serde_json::to_string(&operation).unwrap(), legacy);
+        let timed: ReplayOperation<serde_json::Value> =
+            serde_json::from_str(r#"{"operation":"paused_frame","elapsed_centiseconds":125}"#)
+                .unwrap();
+        assert_eq!(
+            timed,
+            ReplayOperation::PausedFrame {
+                elapsed_centiseconds: 125
+            }
+        );
+        assert_eq!(
+            serde_json::to_value(timed).unwrap()["elapsed_centiseconds"],
+            125
+        );
+    }
     use crate::game_definition::{
         RuntimeFlowDefinition, RuntimeFlowDestination, RuntimeFlowEntry, RuntimeFlowNodeId,
         SemanticGameId, SemanticId, SemanticLevelId,
@@ -1789,6 +1929,7 @@ mod tests {
             frontend_media: media::FrontendMedia::default(),
             player_preferences: preferences::PreferenceStore::default(),
             completed_levels: vec![resolver.flow().entry_level_id().clone()],
+            level_statistics: Vec::new(),
             state: RuntimeState::Loading {
                 definition,
                 session_generation: NonZeroU64::new(2).unwrap(),
@@ -1833,6 +1974,7 @@ mod tests {
                 .take(2)
                 .map(|entry| entry.level_id().clone())
                 .collect(),
+            level_statistics: Vec::new(),
             state: RuntimeState::Loading {
                 definition,
                 session_generation: NonZeroU64::new(3).unwrap(),
@@ -2976,6 +3118,7 @@ mod tests {
                 player_preferences: preferences::PreferenceStore::default(),
                 generation: 6,
                 completed_levels: Vec::new(),
+                level_statistics: Vec::new(),
                 state: RuntimeState::Loading {
                     definition,
                     session_generation: NonZeroU64::new(3).unwrap(),
@@ -3087,6 +3230,7 @@ mod tests {
             player_preferences: preferences::PreferenceStore::default(),
             generation: 6,
             completed_levels: Vec::new(),
+            level_statistics: Vec::new(),
             state: RuntimeState::Loading {
                 definition,
                 session_generation: NonZeroU64::new(3).unwrap(),
@@ -4320,6 +4464,7 @@ mod tests {
             runtime_id: 223,
             generation: 4,
             completed_levels: Vec::new(),
+            level_statistics: Vec::new(),
             state: RuntimeState::Loading {
                 definition: reissued_level_two,
                 session_generation: NonZeroU64::new(2).unwrap(),
