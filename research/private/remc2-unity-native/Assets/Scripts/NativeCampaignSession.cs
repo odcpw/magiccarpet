@@ -122,6 +122,8 @@ namespace MagicCarpet.Native
         internal byte[] DayIndexedFrameIndices => dayIndexedFrameIndices;
 
         internal byte[] DayIndexedFramePalette => dayIndexedFramePalette;
+        internal ushort[] CaveTerrainOrders { get; private set; }
+        internal ushort[] CaveCellOrders { get; private set; }
 
         internal static NativeCampaignSession OpenLevel2(string packagePath)
         {
@@ -690,6 +692,17 @@ namespace MagicCarpet.Native
                 dayIndexedFrameIndices,
                 0,
                 dayIndexedFrameIndices.Length);
+            if (Selection.mapType == 2)
+            {
+                CaveTerrainOrders ??= new ushort[320 * 200];
+                CaveCellOrders ??= new ushort[256 * 256];
+                NativeSession.Check(NativeSim.mc_native_campaign_cave_occlusion_copy(
+                    Handle, generation, expectedTick, CaveTerrainOrders, (uint)CaveTerrainOrders.Length,
+                    CaveCellOrders, (uint)CaveCellOrders.Length, out var terrainWritten, out var cellWritten),
+                    "copy source Cave occlusion order");
+                if (terrainWritten != CaveTerrainOrders.Length || cellWritten != CaveCellOrders.Length)
+                    throw new InvalidOperationException("Cave occlusion copy returned incomplete planes");
+            }
             return info;
         }
 

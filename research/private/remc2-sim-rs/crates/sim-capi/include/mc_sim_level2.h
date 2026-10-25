@@ -745,6 +745,14 @@ int32_t mc_native_campaign_day_indexed_frame_copy(
     uint8_t *index_buffer, uint32_t index_capacity,
     uint8_t *palette_buffer, uint32_t palette_capacity,
     uint32_t *out_index_written, uint32_t *out_palette_written);
+/* Source painter-order ranks for the committed Cave frame: 320*200 pixels
+ * and 256*256 world tiles, indexed y*256+x. Capacities/counts are u16 elements.
+ * Zero means no terrain/no submitted cell; equal ranks keep the sprite. */
+int32_t mc_native_campaign_cave_occlusion_copy(
+    uint64_t handle, uint64_t generation, uint64_t expected_tick,
+    uint16_t *terrain_orders, uint32_t terrain_capacity,
+    uint16_t *cell_orders, uint32_t cell_capacity,
+    uint32_t *out_terrain_written, uint32_t *out_cell_written);
 int32_t mc_native_campaign_minimap_state(
     uint64_t handle, uint64_t generation, uint64_t expected_tick,
     McCampaignMinimapStateV2 *out_state, uint32_t out_state_size);

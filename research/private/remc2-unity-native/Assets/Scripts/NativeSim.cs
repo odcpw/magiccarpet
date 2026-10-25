@@ -2444,6 +2444,13 @@ namespace MagicCarpet.Native
             out uint paletteWritten);
 
         [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+        internal static extern int mc_native_campaign_cave_occlusion_copy(
+            ulong handle, ulong generation, ulong expectedTick,
+            [Out] ushort[] terrainOrders, uint terrainCapacity,
+            [Out] ushort[] cellOrders, uint cellCapacity,
+            out uint terrainWritten, out uint cellWritten);
+
+        [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
         internal static extern int mc_native_campaign_terrain_plane_length(
             ulong handle,
             ulong generation,

@@ -2526,26 +2526,30 @@ pub extern "C" fn mc_native_campaign_day_indexed_frame_render(
                     ),
                 ));
             }
-            if let Some(frame) = day_frame_state.current_frame()
-                && frame.generation == generation
-                && frame.tick == expected_tick
-            {
-                return Ok(campaign_day_indexed_frame_info(frame));
-            }
             let assets = day_frame_assets.as_ref().ok_or_else(|| {
                 AbiError::new(
                     MC_STATUS_VALIDATION_FAILED,
                     "campaign Day indexed frame requires a qualified owner cache",
                 )
             })?;
-            let frame = day_frame_state
-                .render(inspection, reset, assets, generation)
-                .map_err(|error| {
-                    AbiError::new(
-                        MC_STATUS_VALIDATION_FAILED,
-                        format!("campaign Day indexed frame render failed: {error}"),
-                    )
-                })?;
+            // Exit camera/blur and paused palette can advance without a flight
+            // tick. Let the canonical frame key decide whether pixels changed.
+            // Retain the compatibility endpoint's sequential admission for a
+            // genuinely new tick.
+            let same_tick = day_frame_state
+                .current_frame()
+                .is_some_and(|frame| frame.generation == generation && frame.tick == expected_tick);
+            let rendered = if same_tick {
+                day_frame_state.render_current(inspection, reset, assets, generation)
+            } else {
+                day_frame_state.render(inspection, reset, assets, generation)
+            };
+            let frame = rendered.map_err(|error| {
+                AbiError::new(
+                    MC_STATUS_VALIDATION_FAILED,
+                    format!("campaign Day indexed frame render failed: {error}"),
+                )
+            })?;
             Ok(campaign_day_indexed_frame_info(&frame))
         })
     })
@@ -2603,6 +2607,71 @@ pub extern "C" fn mc_native_campaign_day_indexed_frame_copy(
                 }
                 write_output(out_index_written, index_required);
                 write_output(out_palette_written, palette_required);
+                Ok(())
+            })
+        })
+    })
+}
+
+/// Copy source painter-order planes from the same committed Cave frame.
+/// Counts/capacities are u16 elements; no frame is rendered by a copy request.
+#[unsafe(no_mangle)]
+pub extern "C" fn mc_native_campaign_cave_occlusion_copy(
+    handle: u64,
+    generation: u64,
+    expected_tick: u64,
+    terrain_orders: *mut u16,
+    terrain_capacity: u32,
+    cell_orders: *mut u16,
+    cell_capacity: u32,
+    out_terrain_written: *mut u32,
+    out_cell_written: *mut u32,
+) -> i32 {
+    boundary(|| {
+        require_output(out_terrain_written, "Cave terrain order count")?;
+        require_output(out_cell_written, "Cave cell order count")?;
+        write_output(out_terrain_written, 0);
+        write_output(out_cell_written, 0);
+        with_campaign_presentation_session_mut(handle, |session, _borrowed_runtime| {
+            with_level2_campaign_day_frame(session, generation, expected_tick, |frame| {
+                let (Some(terrain), Some(cells)) = (
+                    frame.cave_terrain_orders.as_ref(),
+                    frame.cave_cell_orders.as_ref(),
+                ) else {
+                    return Err(AbiError::new(
+                        MC_STATUS_INVALID_ARGUMENT,
+                        "occlusion orders require a committed Cave frame",
+                    ));
+                };
+                if terrain.len() != 320 * 200 || cells.len() != 256 * 256 {
+                    return Err(AbiError::new(
+                        MC_STATUS_VALIDATION_FAILED,
+                        "Cave source order plane extent is invalid",
+                    ));
+                }
+                if terrain_capacity < 320 * 200 || cell_capacity < 256 * 256 {
+                    return Err(AbiError::new(
+                        MC_STATUS_BUFFER_TOO_SMALL,
+                        "Cave orders require 64000 pixel and 65536 cell elements",
+                    ));
+                }
+                require_output(terrain_orders, "Cave terrain order buffer")?;
+                require_output(cell_orders, "Cave cell order buffer")?;
+                if !terrain_orders.is_aligned() || !cell_orders.is_aligned() {
+                    return Err(AbiError::new(
+                        MC_STATUS_INVALID_ARGUMENT,
+                        "Cave order buffers must be aligned for u16",
+                    ));
+                }
+                // SAFETY: the caller supplies writable nonoverlapping arrays;
+                // null, alignment and complete element capacities are checked
+                // before either output buffer is touched. Source is retained.
+                unsafe {
+                    terrain_orders.copy_from_nonoverlapping(terrain.as_ptr(), terrain.len());
+                    cell_orders.copy_from_nonoverlapping(cells.as_ptr(), cells.len());
+                }
+                write_output(out_terrain_written, 320 * 200);
+                write_output(out_cell_written, 256 * 256);
                 Ok(())
             })
         })
