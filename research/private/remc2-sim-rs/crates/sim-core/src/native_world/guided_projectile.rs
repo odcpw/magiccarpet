@@ -78,6 +78,81 @@ fn aim_at(row: &mut EntitySnapshot, position: Position) {
     row.set_fov(pitch);
 }
 
+/// Acquisition reads the current byte39/StageVar2/parentId, not the decoded
+/// packet left at an address now occupied by a typed creature. Membership
+/// stays frozen; this projects only fields used by sub_67CB0's class5 gate.
+fn class5_eligible(arena: &SourceArena, slot: u16, owner: u16) -> bool {
+    let fields = if let Some(row) = arena
+        .authored_class5()
+        .iter()
+        .find(|row| row.active && row.source_entity_index == slot)
+    {
+        let stage = arena
+            .authored_class5_archer()
+            .iter()
+            .find(|state| state.source_entity_index == slot)
+            .map(|state| (state.stage.mode, state.stage.parent))
+            .or_else(|| {
+                arena
+                    .authored_fireflies
+                    .iter()
+                    .find(|state| state.source_entity_index == slot)
+                    .map(|state| (state.stage_var2, 0))
+            })
+            .unwrap_or((0, 0));
+        Some((row.source_byte_39, stage.0, stage.1))
+    } else if let Some(row) = arena
+        .authored_dragon_parts()
+        .iter()
+        .find(|row| row.active && row.source_entity_index == slot)
+    {
+        Some((row.source_byte_39, 0, row.parent_entity_index))
+    } else if let Some(row) = arena
+        .authored_class5_model3_children()
+        .iter()
+        .find(|row| row.active && row.source_entity_index == slot)
+    {
+        Some((row.source_byte_39, 0, row.parent_entity_index))
+    } else if let Some(row) = arena
+        .house_residents()
+        .iter()
+        .find(|row| row.active && row.source_entity_index == slot)
+    {
+        Some((row.source_byte_39, row.stage_var_2 as u8, row.stage.parent))
+    } else if let Some(row) = arena
+        .bee_creatures()
+        .iter()
+        .find(|row| row.active && row.source_entity_index == slot)
+    {
+        Some((
+            row.source_byte_39 as u8,
+            row.stage_var2,
+            row.parent_entity_index,
+        ))
+    } else if let Some(row) = arena
+        .castle_defenders()
+        .iter()
+        .find(|row| row.active && row.source_entity_index == slot)
+    {
+        Some((row.source_byte_39, row.stage.mode, row.stage.parent))
+    } else if let Some(row) = arena
+        .castle_children()
+        .iter()
+        .find(|row| row.active && row.source_entity_index == slot)
+    {
+        Some((row.source_byte_39, 0, row.parent_entity_index))
+    } else if arena.live_arena_cursor_row(slot).is_some() {
+        // A different current typed occupant cannot expose an old packet.
+        None
+    } else {
+        arena
+            .entities
+            .get(usize::from(slot))
+            .map(|row| (row.record[61], row.record[77], word(row, 44)))
+    };
+    fields.is_some_and(|(cadence, stage, parent)| cadence != 0 && !(stage == 14 && parent == owner))
+}
+
 /// sub_10780: preserve map-chain order, selectors and strict source extents.
 fn collision(arena: &mut SourceArena, row: &EntitySnapshot) -> Option<(u16, Position)> {
     let width = i32::from(row.array_pitch()) + 255;
@@ -226,14 +301,16 @@ fn acquire(
             continue;
         }
         for &slot in slots {
-            let target = &arena.entities[usize::from(slot)];
-            if target.source_id == row.source_id
-                || target.record[61] == 0
-                || target.record[77] == 14 && word(target, 44) == row.source_id
-            {
+            let Some(target) = area_damage::source_actor(arena, None, slot) else {
+                continue;
+            };
+            if target.source_id == row.source_id || !class5_eligible(arena, slot, row.source_id) {
                 continue;
             }
-            let value = score(row, target_position(arena, slot)?);
+            let value = score(
+                row,
+                centre(target.position, target.model, target.shape.vertical_offset),
+            );
             if value < best {
                 best = value;
                 selected = Some(slot);
@@ -265,12 +342,22 @@ fn acquire(
     if let Some(slot) = selected {
         put(row, 154, slot);
         aim_at(row, target_position(arena, slot)?);
-        let target = &mut arena.entities[usize::from(slot)];
-        if (target.class, target.model) == (5, 0) {
+        let identity =
+            area_damage::source_actor(arena, None, slot).map(|actor| (actor.class, actor.model));
+        if identity == Some((5, 0)) {
+            let target = &mut arena.entities[usize::from(slot)];
             target.font_type_index = 32;
             target.record[65] = 32; // sub_68BD0, fontTypeIndex.
+            if let Some(dragon) = arena
+                .economy
+                .authored_dragons
+                .iter_mut()
+                .find(|dragon| dragon.source_entity_index == slot)
+            {
+                dragon.font_type_index = 32;
+            }
         }
-        if (target.class, target.model) == (3, 0) {
+        if identity == Some((3, 0)) {
             outcome.music_player = Some(slot); // sub_5EF70.
         }
     }

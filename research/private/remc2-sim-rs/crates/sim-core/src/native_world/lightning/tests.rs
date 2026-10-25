@@ -348,3 +348,123 @@ fn lightning_terminal_projectile_uses_existing_model17_damage_and_lifetime_consu
             != 0
     );
 }
+
+#[test]
+fn lightning_acquires_current_typed_dragon_despite_stale_raw_header() {
+    let (mut session, holder, parent) = ready_holder();
+    let particles = session.session.definition.presentation.particles.clone();
+    let live = &mut session.session.state.live;
+    live.economy.entities[usize::from(holder)] = live.shared_spells.pickup(holder).unwrap().clone();
+    let projectile = launch(
+        &mut live.economy,
+        &mut live.terrain,
+        &particles,
+        holder,
+        parent,
+        CastInput::default(),
+    )
+    .unwrap()
+    .unwrap();
+    let mut position = live.economy.entities[usize::from(projectile)].position;
+    move_entity(&mut position, 0, 0, 1536);
+    let dragon = live
+        .economy
+        .economy
+        .allocate_authored_dragon(575, position, 1000, &live.terrain)
+        .unwrap();
+    let dragon_slot = dragon.source_entity_index;
+    assert_ne!(dragon.source_byte_39, 0);
+    let frozen = live.economy.rebuilt_class5_model_slots();
+    assert!(frozen[0].contains(&dragon_slot));
+    // Isolate this candidate from the existing spell-owner fixture. Its
+    // membership comes from the actual Dragon constructor and frozen head.
+    let mut families = std::array::from_fn(|_| Vec::new());
+    families[0].push(dragon_slot);
+    let targets = super::super::guided_projectile::Targets {
+        class3: &[],
+        class5: &families,
+        class10: &[],
+        owner_target_range: 8192,
+    };
+    let actor =
+        super::super::area_damage::source_actor(&mut live.economy, None, dragon_slot).unwrap();
+    let centre = Position {
+        z: actor.position.z.wrapping_add(actor.shape.vertical_offset),
+        ..actor.position
+    };
+    let mut origin = live.economy.entities[usize::from(projectile)].position;
+    origin.z = centre.z;
+    let (yaw, pitch) = crate::level1_mission::projectile_guidance_angles(origin, centre);
+    let row = &mut live.economy.entities[usize::from(projectile)];
+    row.set_position(origin);
+    row.set_actual_speed(0);
+    put(row, 136, 0);
+    row.set_yaw(yaw);
+    row.set_pitch(pitch);
+    let phase = row.phase;
+    crate::world::effects::sync_position(
+        &mut live.economy,
+        &mut live.terrain,
+        projectile,
+        origin,
+        true,
+        false,
+    )
+    .unwrap();
+    // A typed birth does not publish its decoded packet. Poison the old
+    // packet's ownership/cadence/stage to reject this valid current target.
+    let stale = &mut live.economy.entities[usize::from(dragon_slot)];
+    stale.reclaim_source_row();
+    set_owner(stale, parent);
+    stale.record[61] = 0;
+    stale.record[77] = 14;
+    put(stale, 44, parent);
+    let outcome = step_projectile(
+        &mut live.economy,
+        &mut live.terrain,
+        &particles,
+        projectile,
+        Some(&targets),
+    )
+    .unwrap();
+    assert_eq!(outcome.impact_slot, None);
+    let row = &live.economy.entities[usize::from(projectile)];
+    assert_eq!(word(row, 154), dragon_slot);
+    assert_eq!((row.yaw, row.pitch, row.phase), (yaw, pitch, phase));
+    assert_eq!(live.economy.entities[usize::from(dragon_slot)].class, 0);
+    assert_eq!(
+        live.economy
+            .economy
+            .authored_dragons
+            .iter()
+            .find(|state| state.source_entity_index == dragon_slot)
+            .unwrap()
+            .font_type_index,
+        32
+    );
+    // The reverse mismatch must still reject: a stale positive cadence is
+    // not permission to acquire a current zero-cadence typed target.
+    live.economy
+        .economy
+        .authored_class5
+        .iter_mut()
+        .find(|source| source.source_entity_index == dragon_slot)
+        .unwrap()
+        .source_byte_39 = 0;
+    live.economy.entities[usize::from(dragon_slot)].record[61] = 255;
+    let row = &mut live.economy.entities[usize::from(projectile)];
+    row.set_control_flags(row.control_flags & !2);
+    put(row, 154, 0);
+    step_projectile(
+        &mut live.economy,
+        &mut live.terrain,
+        &particles,
+        projectile,
+        Some(&targets),
+    )
+    .unwrap();
+    assert_eq!(
+        word(&live.economy.entities[usize::from(projectile)], 154),
+        0
+    );
+}
