@@ -8,25 +8,6 @@ impl ParticleParameter {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) enum AuthoredBeeSound {
-    Action17Acquire(u16),
-    Action18Contact(u16),
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) struct AuthoredBeeStepOutcome {
-    pub(super) live: bool,
-    pub(super) sound: Option<AuthoredBeeSound>,
-}
-
-impl AuthoredBeeStepOutcome {
-    const INACTIVE: Self = Self {
-        live: false,
-        sound: None,
-    };
-}
-
 impl Level2EconomyState {
     #[cfg(test)]
     pub(crate) fn from_parts(
@@ -243,9 +224,7 @@ impl Level2EconomyState {
 
             model17_spawned_children: Vec::new(),
 
-            authored_model22: Vec::new(),
-
-            model22_spawned_children: Vec::new(),
+            fields: crate::world::fields::State::default(),
 
             authored_model76: Vec::new(),
 
@@ -826,12 +805,12 @@ impl Level2EconomyState {
 
     #[must_use]
     pub fn authored_model22(&self) -> &[Level2AuthoredModel22Source] {
-        &self.authored_model22
+        &self.fields.authored_model22
     }
 
     #[must_use]
     pub fn model22_spawned_children(&self) -> &[Level2Model22SpawnedChild] {
-        &self.model22_spawned_children
+        &self.fields.model22_spawned_children
     }
 
     #[must_use]
@@ -1550,7 +1529,7 @@ impl Level2EconomyState {
         authored_index: u16,
         position: Position,
         stage_route: Option<Level2BeeStageRoute>,
-        max_life: i16,
+        max_life: i32,
         terrain: &SessionTerrain,
     ) -> Option<BeeCreatureRuntime> {
         let (action, stage_var1, stage_var2, stage_target) =
@@ -1598,7 +1577,7 @@ impl Level2EconomyState {
             0,
             12,
             None,
-            level2_class5::BEE_MAX_LIFE,
+            i32::from(level2_class5::BEE_MAX_LIFE),
             terrain,
         )
     }
@@ -1614,13 +1593,36 @@ impl Level2EconomyState {
         stage_var1: u8,
         stage_var2: u8,
         stage_target: Option<Position>,
-        max_life: i16,
+        max_life: i32,
         terrain: &SessionTerrain,
     ) -> Option<BeeCreatureRuntime> {
         if terrain.map_type != MapType::Day || max_life <= 0 {
             return None;
         }
         let source_entity_index = self.allocate_slot()?;
+        self.initialize_bee_creature_at_slot(
+            source_entity_index, origin, position, parent_entity_index, parent_entity_id,
+            action, stage_var1, stage_var2, stage_target, max_life, terrain,
+        )
+    }
+
+    /// Initialize an already allocated shared SourceArena slot. The source
+    /// allocator, rather than this packet initializer, chooses replacements.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn initialize_bee_creature_at_slot(
+        &mut self,
+        source_entity_index: u16,
+        origin: BeeCreatureOrigin,
+        position: Position,
+        parent_entity_index: u16,
+        parent_entity_id: u16,
+        action: u8,
+        stage_var1: u8,
+        stage_var2: u8,
+        stage_target: Option<Position>,
+        max_life: i32,
+        terrain: &SessionTerrain,
+    ) -> Option<BeeCreatureRuntime> {
         let initial_rng = self.new_event_rng(source_entity_index);
         if self
             .map_chains
@@ -1635,67 +1637,29 @@ impl Level2EconomyState {
             self.release_slot(source_entity_index, None);
             return None;
         }
-        // Pinned `sub_4B590`: NewEvent supplies the initial rand word, the
-        // constructor advances it once, and the same low 11 bits seed yaw,
-        // roll, and pitch.  The descriptor is `str_D7BD6[73]`.
-        let entity_rng = level2_next_rng16(initial_rng);
-        let angle = (entity_rng & 0x07ff) as i16 - 1;
-        let source_byte_3e = self.bee_model2_constructor_phase;
-        self.bee_model2_constructor_phase = source_byte_3e.wrapping_add(1);
-        let action_window = 30;
-        let source_byte_39 = action_window
-            - i16::from(source_byte_3e % u8::try_from(action_window).expect("positive window"))
-            + 4;
-        let source = BeeCreatureRuntime {
+        let mut source = creatures::bee::construct(
             source_entity_index,
-            entity_id: if parent_entity_id == 0 {
-                source_entity_index
-            } else {
-                parent_entity_id
-            },
-            entity_rng,
+            initial_rng,
+            self.bee_model2_constructor_phase,
             origin,
-            parent_entity_index,
-            source_class: 5,
-            model: 2,
-            action,
-            minimum_speed: 64,
-            maximum_speed: 30,
-            actual_speed: 32,
-            // NewEvent_4A050 initializes the control dword to 8. The
-            // movement helper only consumes the later byte-1 bit 8 (0x800),
-            // so the constructor's low-byte marker remains intact here.
-            control_flags: 8 | u32::from(parent_entity_index != 0),
-            mana: i32::from(max_life) / 2,
-            max_life,
-            life: max_life,
-            pending_damage: 0,
-            pending_attacker_entity_index: 0,
-            damage_attacker_entity_index: 0,
-            kill_credit_entity_index: 0,
-            subspell_index: 200,
-            dword_0x10: i32::from(source_entity_index % 100),
-            target_entity_index: None,
-            yaw: angle,
-            pitch: angle,
-            roll: angle,
-            source_byte_3e,
-            source_byte_39,
-            vertical_step: -32,
-            action_window,
-            stage_var1,
-            stage_var2,
-            stage_target,
-            last_sound_id: 0,
             position,
-            particle_index: 3,
-            shift_rot_x: 128,
-            shift_rot_y: 128,
-            phase: 0,
-            drawing_enabled: true,
-            active: true,
+            max_life,
+            terrain.map_type,
+        )?;
+        self.bee_model2_constructor_phase = self.bee_model2_constructor_phase.wrapping_add(1);
+        source.entity_id = if parent_entity_id == 0 {
+            source_entity_index
+        } else {
+            parent_entity_id
         };
-        self.source_rng.insert(source_entity_index, entity_rng);
+        source.parent_entity_index = parent_entity_index;
+        source.control_flags |= u32::from(parent_entity_index != 0);
+        source.action = action;
+        source.stage_var1 = stage_var1;
+        source.stage_var2 = stage_var2;
+        source.stage_target = stage_target;
+        self.source_rng
+            .insert(source_entity_index, source.entity_rng);
         self.bee_creatures.push(source);
         Some(source)
     }
@@ -1713,56 +1677,6 @@ impl Level2EconomyState {
         };
         source.target_entity_index = target;
         true
-    }
-
-    /// Run Morph's action-23 selector-12 follower at the Bee's ordinary
-    /// numeric source visit. This callback owns no RNG; it follows the live
-    /// parent exactly and leaves the common Bee phase advance in this one
-    /// authoritative carrier.
-    pub(super) fn step_morph_bee_follower(
-        &mut self,
-        source_slot: u16,
-        parent: Option<BeeFollowerParent>,
-    ) -> bool {
-        let Some(source_index) = self.bee_creatures.iter().position(|source| {
-            source.active
-                && source.source_entity_index == source_slot
-                && matches!(source.origin, BeeCreatureOrigin::MorphSpell { .. })
-                && source.action == 23
-                && source.stage_var2 == 12
-        }) else {
-            return false;
-        };
-        let mut source = self.bee_creatures[source_index];
-        let parent = parent.filter(|parent| {
-            parent.active && parent.life >= 0 && parent.entity_index == source.parent_entity_index
-        });
-        if let Some(parent) = parent {
-            source.position = parent.position;
-            source.yaw = parent.yaw;
-            source.roll = parent.roll;
-        } else {
-            source.drawing_enabled = false;
-            self.deferred_bee_reclaims.insert(source_slot);
-        }
-        source.source_byte_3e = source.source_byte_3e.wrapping_add(1);
-        source.phase = source.phase.wrapping_add(1);
-        self.source_rng.insert(source_slot, source.entity_rng);
-        self.bee_creatures[source_index] = source;
-        if source.drawing_enabled {
-            self.map_chains
-                .sync_entity(RenderableMapSeed {
-                    entity_index: source_slot,
-                    active: true,
-                    x: source.position.x,
-                    y: source.position.y,
-                })
-                .is_ok()
-        } else {
-            // DisableEntityDrawing retains the map link through the rest of
-            // this pass. The following source boundary owns unlink/release.
-            true
-        }
     }
 
     /// Apply Morph holder expiry to its related Bee. The disabled row stays
@@ -1791,80 +1705,6 @@ impl Level2EconomyState {
         };
         *source = updated;
         true
-    }
-
-    /// Run the source `sub_1BF90` class-3 target scan for an action-17 Bee.
-    ///
-    /// The caller supplies the live `dword_38519` class-3 list in source
-    /// order. This method owns the action-17 `sub_1B8C0` movement prelude,
-    /// model-2 descriptor cadence, and two wander RNG draws; the normal
-    /// action-17 callback remains responsible for the follow-up sound draw
-    /// and action transition.
-    pub fn acquire_authored_bee_target(
-        &mut self,
-        source_slot: u16,
-        candidates: &[(u16, Position, u32)],
-        terrain: &SessionTerrain,
-    ) -> Option<u16> {
-        let Some(source_index) = self
-            .bee_creatures
-            .iter()
-            .position(|source| source.active && source.source_entity_index == source_slot)
-        else {
-            return None;
-        };
-        let mut source = self.bee_creatures[source_index];
-        if source.action != 17 {
-            return None;
-        }
-
-        // `sub_1BF90(a1, 16)` always runs `sub_1B8C0` first. That movement
-        // callback is intentionally before the cadence guard: even a
-        // non-cadence action-17 turn changes position/yaw and only then
-        // decides whether to consume the two wander draws and scan targets.
-        move_level2_bee_source(&mut source, terrain);
-        if source.action_window <= 0 {
-            self.source_rng.insert(source_slot, source.entity_rng);
-            self.bee_creatures[source_index] = source;
-            return None;
-        }
-        if source.source_byte_3e
-            % u8::try_from(source.action_window).expect("positive Bee action window")
-            != 0
-        {
-            self.source_rng.insert(source_slot, source.entity_rng);
-            self.bee_creatures[source_index] = source;
-            return None;
-        }
-
-        // `sub_1BF90` wanders before scanning `dword_38519`: both LCG draws
-        // are observable even when no target survives the source filters.
-        let first = level2_next_rng16(source.entity_rng);
-        let second = level2_next_rng16(first);
-        let direction = 2 * (u32::from(first % 0x9d) / 79);
-        let roll_delta = i32::from((second & 0xff) as u8) + 85;
-        let roll_sign = i32::try_from(direction).expect("Bee roll direction fits") - 1;
-        source.roll = (i32::from(source.roll) + roll_delta * roll_sign) as i16 & 0x07ff;
-        source.entity_rng = second;
-
-        // The source performs the two wander draws before consulting
-        // byte-0x39; a zero window suppresses only the class-3 scan.
-        if source.source_byte_39 == 0 {
-            self.source_rng.insert(source_slot, source.entity_rng);
-            self.bee_creatures[source_index] = source;
-            return None;
-        }
-
-        let selected = select_level2_bee_class3_target(&source, candidates);
-        // `sub_1BF90` writes word_0x96 only when a new class-3 target wins.
-        // On a gated or empty scan the stale relation remains in the source
-        // row; action 17 itself does not consume that relation as a target.
-        if let Some(target_index) = selected {
-            source.target_entity_index = Some(target_index);
-        }
-        self.source_rng.insert(source_slot, source.entity_rng);
-        self.bee_creatures[source_index] = source;
-        selected
     }
 
     /// Allocate an implemented authored class-11 switch producer using
@@ -2627,430 +2467,6 @@ impl Level2EconomyState {
             })
             .ok();
         true
-    }
-
-    /// Bounded projection of the generic `sub_1BD90`/`sub_1BF90` awareness
-    /// search used by actions 16 and 17.  The pinned descriptor permits an
-    /// XY search radius of `word_0x1C_28 == 0x1400`; a mailbox pointing at an
-    /// active entity outside that band is not an actionable target for these
-    /// transitions.  This keeps the explicit target mailbox from becoming a
-    /// synthetic "any target means attack" shortcut.
-    pub(super) fn bee_target_in_awareness_band(
-        source: &BeeCreatureRuntime,
-        target: Position,
-    ) -> bool {
-        let dx = i32::from(target.x) - i32::from(source.position.x);
-        let dy = i32::from(target.y) - i32::from(source.position.y);
-        let distance_squared = i64::from(dx) * i64::from(dx) + i64::from(dy) * i64::from(dy);
-        distance_squared <= 5_120_i64 * 5_120_i64
-    }
-
-    /// Run the `byte_0x3E & 3 == 0` steering tail in `sub_1C310`. The source
-    /// first points its roll at the live target, then lets the first nearby
-    /// same-model peer override that roll. Peer bounds use the entity's
-    /// source pitch field exactly as the decompilation does.
-    pub(super) fn steer_authored_bee_source(
-        source: &mut BeeCreatureRuntime,
-        target: Position,
-        peers: &[(u16, Position)],
-    ) {
-        if source.source_byte_3e & 3 != 0 {
-            return;
-        }
-        source.roll = i16::try_from(heading_for_positions(source.position, target))
-            .expect("Bee target heading fits i16");
-        let peer_bound = i32::from(source.pitch);
-        if peer_bound <= 0 {
-            return;
-        }
-        for &(peer_id, peer_position) in peers {
-            if peer_id == source.entity_id {
-                continue;
-            }
-            let dx = (i32::from(source.position.x) - i32::from(peer_position.x)).abs();
-            let dy = (i32::from(source.position.y) - i32::from(peer_position.y)).abs();
-            if dx < peer_bound && dy < peer_bound {
-                source.roll = i16::try_from(heading_for_positions(peer_position, source.position))
-                    .expect("Bee peer heading fits i16");
-                break;
-            }
-        }
-    }
-
-    /// Advance one authored Bee through the live action 16..19 band.  The
-    /// generic creature helpers are represented only for the fields this
-    /// family actually consumes: the action-18 latch, target-Z tracking,
-    /// strict target contact/recoil, and source RNG/phase ordering. The live
-    /// outer dispatcher runs action-17's movement/acquisition prelude through
-    /// `acquire_authored_bee_target` before calling this state transition.
-    pub fn step_authored_bee_slot(
-        &mut self,
-        source_slot: u16,
-        target_position: Option<Position>,
-        terrain: &SessionTerrain,
-    ) -> bool {
-        let action17_entry_dead = self.bee_creatures.iter().any(|source| {
-            source.active
-                && source.source_entity_index == source_slot
-                && source.action == 17
-                && source.life < 0
-        });
-        self.step_authored_bee_slot_with_target(
-            source_slot,
-            target_position.map(|position| (position, 0, true)),
-            action17_entry_dead,
-            terrain,
-        )
-        .live
-    }
-
-    pub(super) fn step_authored_bee_slot_with_target(
-        &mut self,
-        source_slot: u16,
-        target: Option<(Position, i16, bool)>,
-        action17_entry_dead: bool,
-        terrain: &SessionTerrain,
-    ) -> AuthoredBeeStepOutcome {
-        self.step_authored_bee_slot_with_target_and_peers(
-            source_slot,
-            target,
-            &[],
-            &[],
-            action17_entry_dead,
-            terrain,
-        )
-    }
-
-    pub(super) fn step_authored_bee_slot_with_target_and_peers(
-        &mut self,
-        source_slot: u16,
-        target: Option<(Position, i16, bool)>,
-        peers: &[(u16, Position)],
-        class3_candidates: &[(u16, Position, u32)],
-        action17_entry_dead: bool,
-        terrain: &SessionTerrain,
-    ) -> AuthoredBeeStepOutcome {
-        let Some(source_index) = self
-            .bee_creatures
-            .iter()
-            .position(|source| source.active && source.source_entity_index == source_slot)
-        else {
-            return AuthoredBeeStepOutcome::INACTIVE;
-        };
-        let mut source = self.bee_creatures[source_index];
-        let mut sound = None;
-        // `sub_1F660` consumes the action-17 mailbox before dispatching the
-        // ordinary callback body.  A consumed mailbox selects action 18 or
-        // action 20 directly, so the target scan and its RNG tail must not
-        // run again on this same source visit.
-        if self
-            .consume_authored_bee_damage_mailbox(&mut source)
-            .is_some()
-        {
-            source.source_byte_3e = source.source_byte_3e.wrapping_add(1);
-            source.phase = source.phase.wrapping_add(1);
-            self.source_rng.insert(source_slot, source.entity_rng);
-            self.bee_creatures[source_index] = source;
-            let live = self
-                .map_chains
-                .sync_entity(RenderableMapSeed {
-                    entity_index: source_slot,
-                    active: source.active,
-                    x: source.position.x,
-                    y: source.position.y,
-                })
-                .is_ok();
-            return AuthoredBeeStepOutcome { live, sound };
-        }
-        // `sub_1BF90` clears word_0x26 when no damage mailbox is pending,
-        // then tests the life value captured at callback entry. A Bee killed
-        // by the prior action-17 movement prelude therefore enters action 20
-        // on this following visit without inheriting an older attacker's
-        // credit. The separate entry flag preserves the source distinction
-        // from a movement failure produced later in this same callback.
-        if source.action == 17 {
-            source.damage_attacker_entity_index = 0;
-        }
-        if action17_entry_dead {
-            source.kill_credit_entity_index = source.damage_attacker_entity_index;
-            source.action = 20;
-            source.source_byte_3e = source.source_byte_3e.wrapping_add(1);
-            source.phase = source.phase.wrapping_add(1);
-            self.source_rng.insert(source_slot, source.entity_rng);
-            self.bee_creatures[source_index] = source;
-            let live = self
-                .map_chains
-                .sync_entity(RenderableMapSeed {
-                    entity_index: source_slot,
-                    active: source.active,
-                    x: source.position.x,
-                    y: source.position.y,
-                })
-                .is_ok();
-            return AuthoredBeeStepOutcome { live, sound };
-        }
-        match source.action {
-            16 => {
-                if target
-                    .map(|(position, _, valid)| {
-                        valid && Self::bee_target_in_awareness_band(&source, position)
-                    })
-                    .unwrap_or(false)
-                {
-                    source.action = 18;
-                    source.dword_0x10 = 1;
-                }
-            }
-            17 => {
-                if target
-                    .map(|(position, _, valid)| {
-                        valid && Self::bee_target_in_awareness_band(&source, position)
-                    })
-                    .unwrap_or(false)
-                {
-                    source.action = 18;
-                    source.entity_rng = level2_next_rng16(source.entity_rng);
-                    source.last_sound_id = (source.entity_rng & 1) + 12;
-                    sound = Some(AuthoredBeeSound::Action17Acquire(source.last_sound_id));
-                    source.dword_0x10 = 1;
-                }
-            }
-            18 => {
-                let countdown_before = source.dword_0x10;
-                if countdown_before != 0 {
-                    source.dword_0x10 -= 1;
-                    if countdown_before == 1 {
-                        source.actual_speed = 5 * source.minimum_speed / 2;
-                    }
-                }
-                if let Some((target, target_height_offset, target_valid)) = target {
-                    let desired_z = target_height_offset.wrapping_add(target.z);
-                    let delta = source.position.z.wrapping_sub(desired_z);
-                    let direction: i16 = if delta == 0 {
-                        0
-                    } else if delta < 0 {
-                        -1
-                    } else {
-                        1
-                    };
-                    source.position.z = source
-                        .position
-                        .z
-                        .wrapping_add(direction.wrapping_mul(source.vertical_step));
-                    // `sub_1F6D0` updates target-Z before entering
-                    // `sub_1C310`; that helper performs movement even when
-                    // its subsequent target validity check rejects the
-                    // relation, but skips steering/cadence in that case.
-                    move_level2_bee_source(&mut source, terrain);
-                    if !target_valid {
-                        source.action = 17;
-                    } else {
-                        Self::steer_authored_bee_source(&mut source, target, peers);
-                        let on_action_window = source.action_window > 0
-                            && source.source_byte_3e
-                                % u8::try_from(source.action_window)
-                                    .expect("positive Bee action window")
-                                == 0;
-                        let distance_squared =
-                            level2_wrapping_source_distance_3d(source.position, target);
-                        let out_of_range = source.action_window > 0
-                            && on_action_window
-                            && crate::legacy_sqrt(distance_squared)
-                                >= u32::try_from(LEVEL2_BEE_AWARENESS_RADIUS)
-                                    .expect("Bee awareness radius fits");
-                        if out_of_range {
-                            // `sub_1C310` drops a live relation only at the
-                            // source cadence; the stale word_0x96 remains for
-                            // the next action-17 scan to overwrite.
-                            source.action = 17;
-                        } else if source.action == 18
-                            && on_action_window
-                            && distance_squared
-                                < u32::from(LEVEL2_BEE_CONTACT_RADIUS)
-                                    .saturating_mul(u32::from(LEVEL2_BEE_CONTACT_RADIUS))
-                        {
-                            source.entity_rng = level2_next_rng16(source.entity_rng);
-                            source.last_sound_id = (source.entity_rng & 1) + 12;
-                            sound = Some(AuthoredBeeSound::Action18Contact(source.last_sound_id));
-                            source.actual_speed = -source.maximum_speed;
-                            source.dword_0x10 = i32::from(3 * source.action_window);
-                        }
-                    }
-                } else {
-                    source.action = 17;
-                }
-                if source.action != 18 {
-                    source.actual_speed = source.minimum_speed;
-                }
-            }
-            19 => {
-                // `sub_1C560` only re-evaluates its linked-target relation on
-                // the descriptor's 30-tick byte-3E window.  A valid mailbox
-                // outside that window remains in action 19 until the next
-                // helper visit rather than jumping directly to attack.
-                if source.action_window > 0
-                    && source.source_byte_3e
-                        % u8::try_from(source.action_window).expect("positive action window")
-                        == 0
-                    && target
-                        .map(|(position, _, valid)| {
-                            valid && Self::bee_target_in_awareness_band(&source, position)
-                        })
-                        .unwrap_or(false)
-                {
-                    source.action = 18;
-                    source.dword_0x10 = 1;
-                }
-            }
-            20 => {
-                // `sub_1F830` -> `PreKillEntity_1C890(a1, 16)` changes the
-                // root and any linked children to action 21. Authored Day
-                // Bees have no child chain in this bounded arena.
-                source.kill_credit_entity_index = source.damage_attacker_entity_index;
-                source.action = 21;
-            }
-            21 => {
-                // `sub_1F850` -> `KillEntity_1C930` is phase-gated by the
-                // source byte-0x3E.  The class-5 helper keeps phases 1..7
-                // live and performs the ordered sphere/burst conversion only
-                // at the admitted phase-0 boundary.
-                self.step_authored_bee_death_tail(&mut source, terrain);
-            }
-            23 => {
-                // `sub_1F8A0 -> sub_1D5D0(16)` dispatches the bounded
-                // authored L2-06 selector-2 callback before its own roll
-                // tail. Other selectors remain deliberately fail-closed.
-                if source.stage_var2 == 2 {
-                    if source.life < 0 {
-                        // Both selector-2 helpers select their terminal
-                        // branch before `sub_1B8C0`. A helper which itself
-                        // exhausts movement retries remains action 23 until
-                        // the following callback reaches here.
-                        source.action = 20;
-                    } else if let Some(stage_target) = source.stage_target {
-                        let outside_point_band = (i32::from(stage_target.x as i16)
-                            - i32::from(source.position.x as i16))
-                        .abs()
-                            > 3_072
-                            || (i32::from(stage_target.y as i16)
-                                - i32::from(source.position.y as i16))
-                            .abs()
-                                > 3_072;
-                        move_level2_bee_source(&mut source, terrain);
-                        if outside_point_band {
-                            if source.source_byte_3e & 7 == 0 {
-                                if source.control_flags & LEVEL2_BEE_OBSTRUCTION_BIT == 0 {
-                                    source.roll = i16::try_from(heading_for_positions(
-                                        source.position,
-                                        stage_target,
-                                    ))
-                                    .expect("Bee StageVar heading fits i16");
-                                    if source.source_byte_3e & 0x3f == 0 {
-                                        let first = level2_next_rng16(source.entity_rng);
-                                        let second = level2_next_rng16(first);
-                                        let direction = 2 * (u32::from(first % 0x9d) / 79);
-                                        let delta = (i32::from((second & 0xff) as u8) + 85)
-                                            * (i32::try_from(direction)
-                                                .expect("Bee roll direction fits")
-                                                - 1);
-                                        source.roll =
-                                            ((i32::from(source.roll) + delta) as i16) & 0x07ff;
-                                        source.entity_rng = second;
-                                    }
-                                }
-                                let peer_bound = i32::from(source.pitch);
-                                if peer_bound > 0 {
-                                    for &(peer_id, peer_position) in peers {
-                                        if peer_id == source.entity_id {
-                                            continue;
-                                        }
-                                        let dx = (i32::from(source.position.x)
-                                            - i32::from(peer_position.x))
-                                        .abs();
-                                        let dy = (i32::from(source.position.y)
-                                            - i32::from(peer_position.y))
-                                        .abs();
-                                        if dx < peer_bound && dy < peer_bound {
-                                            source.roll = i16::try_from(heading_for_positions(
-                                                peer_position,
-                                                source.position,
-                                            ))
-                                            .expect("Bee peer heading fits i16");
-                                            break;
-                                        }
-                                    }
-                                }
-                            }
-                        } else if source.source_byte_3e & 0x0f == 0
-                            && source.control_flags & LEVEL2_BEE_OBSTRUCTION_BIT == 0
-                        {
-                            source.entity_rng = level2_next_rng16(source.entity_rng);
-                            source.roll = ((i32::from(source.roll)
-                                + i32::from(source.entity_rng % 0x71)
-                                + 142) as i16)
-                                & 0x07ff;
-                        }
-
-                        if source.action == 23
-                            && source.stage_var2 == 2
-                            && source.source_byte_39 != 0
-                            && source.action_window > 0
-                            && source.source_byte_3e
-                                % u8::try_from(source.action_window)
-                                    .expect("positive Bee action window")
-                                == 0
-                            && let Some(target_index) =
-                                select_level2_bee_class3_target(&source, class3_candidates)
-                        {
-                            source.target_entity_index = Some(target_index);
-                            source.stage_var2 = 10;
-                            // Model 2's descriptor lacks the bit-8 route, so
-                            // `sub_1E040(..., 16)` selects action 18.
-                            source.action = 18;
-                        }
-                    }
-                } else if source.stage_var2 == 10 {
-                    // Existing selector-10 preservation route.
-                    source.action = 18;
-                }
-                if source.source_byte_3e & 7 == 0 && (1..=9).contains(&source.stage_var2) {
-                    source.entity_rng = level2_next_rng16(source.entity_rng);
-                    let direction = 2 * (u32::from(source.entity_rng % 0x9d) / 79);
-                    source.entity_rng = level2_next_rng16(source.entity_rng);
-                    let delta = i32::from(source.entity_rng % 0x55)
-                        * (i32::try_from(direction).expect("Bee roll direction fits") - 1);
-                    source.roll = ((i32::from(source.roll) + delta) as i16) & 0x07ff;
-                }
-                if source.action == 18 {
-                    // The source applies the action-18 latch after the
-                    // selector callback and action-23 roll tail.
-                    source.dword_0x10 = 1;
-                }
-            }
-            22 => {
-                // Deliberate missing callback slot: the source body is empty,
-                // but the outer ApplyEvents bookkeeping below still advances
-                // the per-entity cursor/phase once for the visited row.
-            }
-            _ => {}
-        }
-        // `ApplyEvents_498A0` advances byte 0x3E after every live callback;
-        // action 19's generic helper uses that advancing cursor for its
-        // descriptor-windowed reevaluation.
-        source.source_byte_3e = source.source_byte_3e.wrapping_add(1);
-        source.phase = source.phase.wrapping_add(1);
-        self.source_rng.insert(source_slot, source.entity_rng);
-        self.bee_creatures[source_index] = source;
-        let live = self
-            .map_chains
-            .sync_entity(RenderableMapSeed {
-                entity_index: source_slot,
-                active: source.active,
-                x: source.position.x,
-                y: source.position.y,
-            })
-            .is_ok();
-        AuthoredBeeStepOutcome { live, sound }
     }
 
     /// Allocate the authored class-10/model-13 emitter initialized by the
@@ -4013,6 +3429,38 @@ impl Level2EconomyState {
         shift_rot_y: i16,
     ) -> Option<u16> {
         let source_entity_index = self.allocate_slot()?;
+        self.initialize_class10_model0_effect_at_slot(
+            source_entity_index,
+            parent_entity_index,
+            parent_entity_id,
+            parent_yaw,
+            parent_pitch,
+            position,
+            subspell_index,
+            target_source_entity_index,
+            control_flags,
+            shift_rot_x,
+            shift_rot_y,
+        )
+    }
+
+    /// Initialize the shared impact carrier after the canonical arena has
+    /// selected a free slot or a frozen replacement.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn initialize_class10_model0_effect_at_slot(
+        &mut self,
+        source_entity_index: u16,
+        parent_entity_index: u16,
+        parent_entity_id: u16,
+        parent_yaw: i16,
+        parent_pitch: i16,
+        position: Position,
+        subspell_index: u16,
+        target_source_entity_index: u16,
+        control_flags: u32,
+        shift_rot_x: i16,
+        shift_rot_y: i16,
+    ) -> Option<u16> {
         let entity_rng = self.new_event_rng(source_entity_index);
         if self
             .map_chains
@@ -4157,10 +3605,7 @@ impl Level2EconomyState {
         }
     }
 
-    /// Allocate the authored class-10/model-22 wind parent and its eleven
-    /// cloned model-75/action-82 chain rows from `AddWind_4F040`. The source
-    /// requires twelve available arena rows before it starts; no synthetic
-    /// success is reported for an exhausted constructor.
+    /// Delegate the owned wind constructor while lending only source arena services.
     pub fn allocate_authored_model22(
         &mut self,
         authored_index: u16,
@@ -4168,237 +3613,57 @@ impl Level2EconomyState {
         position: Position,
         terrain: &SessionTerrain,
     ) -> Option<Level2AuthoredModel22Source> {
-        // `AddWind_4F040` refuses to start unless the source free-list has
-        // room for the parent plus all eleven cloned chain rows.
-        if self.free_slots.len() < 12 {
-            return None;
-        }
-        let source_entity_index = self.allocate_slot()?;
-        let entity_rng = level2_next_rng16(self.new_event_rng(source_entity_index));
-        let mut position = position;
-        position.z = terrain.ground_height(position);
-        let yaw = i16::try_from((i32::from(entity_rng & 0x07ff) - 1) & 0x07ff)
-            .expect("Level 2 wind yaw fits");
-        let parent = Level2AuthoredModel22Source {
-            source_entity_index,
-            entity_id: source_entity_index,
-            entity_rng,
+        self.allocate_authored_wind(
             authored_index,
-            source_class: 10,
-            model: 22,
-            action: 22,
-            word_0x2c: 0,
-            word_0x2e: 1,
-            byte_0x38: 1,
-            actual_speed: 50,
-            minimum_speed: 20,
-            maximum_speed: 10,
-            max_life: 500,
-            life: 500,
-            subspell_index: 1_000,
-            control_flags: 0,
-            word_0x30: 0,
-            yaw,
-            pitch: yaw,
-            roll: yaw,
-            particle_index: LEVEL2_MODEL22_PARTICLE_INDEXES[0],
-            shift_rot_x: LEVEL2_MODEL22_SHIFT_X[0],
-            shift_rot_y: LEVEL2_MODEL22_SHIFT_Y[0],
             axis_position,
             position,
-            // NewEvent seeds byte 0x3e from the source slot; ApplyEvents
-            // increments it after the action callback returns.
-            phase: source_entity_index as u8,
-            active: true,
-        };
-        if self
-            .map_chains
-            .sync_entity(RenderableMapSeed {
-                entity_index: source_entity_index,
-                active: true,
-                x: position.x,
-                y: position.y,
-            })
-            .is_err()
-        {
-            self.release_slot(source_entity_index, None);
-            return None;
-        }
-        self.source_rng.insert(source_entity_index, entity_rng);
-        self.authored_model22.push(parent);
-
-        let mut z_offset = 2 * LEVEL2_MODEL22_SHIFT_Y[0];
-        for segment_index in 1..=11_u8 {
-            let Some(child_slot) = self.allocate_slot() else {
-                break;
-            };
-            let child_z = i32::from(position.z)
-                .saturating_add(i32::from(z_offset))
-                .clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16;
-            let child_position = Position {
-                z: child_z,
-                ..position
-            };
-            let child = Level2Model22SpawnedChild {
-                source_entity_index: child_slot,
-                entity_id: source_entity_index,
-                entity_rng,
-                max_life: 500,
-                life: 500,
-                parent_entity_index: source_entity_index,
-                parent_entity_id: source_entity_index,
-                source_class: 10,
-                model: 75,
-                action: 82,
-                segment_index,
-                word_0x2c: i16::from(segment_index),
-                word_0x36: z_offset,
-                yaw,
-                pitch: yaw,
-                roll: yaw,
-                particle_index: LEVEL2_MODEL22_PARTICLE_INDEXES[usize::from(segment_index)],
-                shift_rot_x: LEVEL2_MODEL22_SHIFT_X[usize::from(segment_index)],
-                shift_rot_y: LEVEL2_MODEL22_SHIFT_Y[usize::from(segment_index)],
-                position: child_position,
-                phase: segment_index - 1,
-                drawing_enabled: true,
-                active: true,
-            };
-            if self
-                .map_chains
-                .sync_entity(RenderableMapSeed {
-                    entity_index: child_slot,
-                    active: true,
-                    x: child_position.x,
-                    y: child_position.y,
-                })
-                .is_err()
-            {
-                self.release_slot(child_slot, None);
-                break;
-            }
-            self.source_rng.insert(child_slot, entity_rng);
-            self.model22_spawned_children.push(child);
-            z_offset = z_offset.saturating_add(2 * child.shift_rot_y);
-        }
-        if let Some(parent) = self
-            .authored_model22
-            .iter_mut()
-            .find(|parent| parent.source_entity_index == source_entity_index)
-        {
-            parent.entity_rng = entity_rng;
-        }
-        self.source_rng.insert(source_entity_index, entity_rng);
-        self.authored_model22
-            .iter()
-            .find(|parent| parent.source_entity_index == source_entity_index)
-            .copied()
+            terrain,
+            crate::world::fields::wind::Definition::default(),
+        )
     }
 
-    /// Advance one authored wind parent through the bounded kinematic portion
-    /// of `sub_33110`: source life, parent heading/translation, and linked
-    /// chain spacing. The source's cross-entity pulse helpers (`sub_33340`
-    /// and `sub_33710`) remain a separate relation-heavy follow-up.
+    /// The authored production path supplies immutable field properties and
+    /// dimensions derived from the retained, draw-consumed particle rows.
+    pub(crate) fn allocate_authored_wind(
+        &mut self,
+        authored_index: u16,
+        axis_position: Position,
+        position: Position,
+        terrain: &SessionTerrain,
+        definition: crate::world::fields::wind::Definition,
+    ) -> Option<Level2AuthoredModel22Source> {
+        let mut fields = std::mem::take(&mut self.fields);
+        let result = fields.construct_wind(
+            self,
+            terrain,
+            authored_index,
+            axis_position,
+            position,
+            definition,
+        );
+        self.fields = fields;
+        result
+    }
+
+    /// Preserve the MC2 adapter API; the field owner performs kinematics.
     pub fn step_authored_model22_slot(
         &mut self,
         source_slot: u16,
         terrain: &SessionTerrain,
     ) -> bool {
-        let Some(parent_index) = self
+        let mut fields = std::mem::take(&mut self.fields);
+        let result = fields.step_wind(self, terrain, source_slot);
+        if let Some(parent) = fields
             .authored_model22
-            .iter()
-            .position(|parent| parent.active && parent.source_entity_index == source_slot)
-        else {
-            return false;
-        };
-        let mut parent = self.authored_model22[parent_index];
-        parent.life = parent.life.wrapping_sub(1);
-        if parent.life < 0 {
-            parent.control_flags |= ENTITY_DRAW_DISABLED_BIT;
-            self.authored_model22[parent_index] = parent;
-            let child_slots = self
-                .model22_spawned_children
-                .iter()
-                .filter(|child| child.active && child.parent_entity_index == source_slot)
-                .map(|child| child.source_entity_index)
-                .collect::<Vec<_>>();
-            for child in &mut self.model22_spawned_children {
-                if child_slots.contains(&child.source_entity_index) {
-                    child.active = false;
-                }
-            }
-            return true;
-        }
-        parent.word_0x30 = parent.position.z as i16;
-        if parent.phase & 0x0f == 0 {
-            parent.entity_rng = level2_next_rng16(parent.entity_rng);
-            if parent.entity_rng & 1 == 0 {
-                parent.word_0x2e = -parent.word_0x2e;
-            }
-        }
-        parent.roll = (parent.roll + 11 * parent.word_0x2e) & 0x07ff;
-        let mut predicted = parent.position;
-        crate::move_entity(&mut predicted, parent.roll, 0, 32);
-        parent.axis_position = predicted;
-        parent.yaw = (parent.yaw + 341) & 0x07ff;
-        crate::move_entity(&mut predicted, parent.yaw, 0, 120);
-        predicted.z = terrain.ground_height(predicted);
-        parent.position = predicted;
-
-        let mut previous = parent.position;
-        let mut child_sync_rows = Vec::new();
-        for child in self
-            .model22_spawned_children
             .iter_mut()
-            .filter(|child| child.active && child.parent_entity_index == source_slot)
+            .find(|s| s.active && s.source_entity_index == source_slot)
         {
-            child.yaw = i16::try_from(heading_for_positions(child.position, previous))
-                .expect("Level 2 wind child heading fits");
-            let distance = level2_wrapping_source_distance_3d(previous, child.position);
-            let minimum_gap = 72 - 4 * (12 - child.word_0x2c);
-            let mut child_position = child.position;
-            if distance > u32::try_from(minimum_gap).unwrap_or(0) {
-                crate::move_entity(
-                    &mut child_position,
-                    child.yaw,
-                    0,
-                    i16::try_from(distance - u32::try_from(minimum_gap).unwrap_or(0))
-                        .unwrap_or(i16::MAX),
-                );
+            if parent.control_flags & ENTITY_DRAW_DISABLED_BIT == 0 {
+                parent.phase = parent.phase.wrapping_add(1);
             }
-            child_position.z = i32::from(parent.position.z)
-                .saturating_add(i32::from(child.word_0x36))
-                .clamp(i32::from(i16::MIN), i32::from(i16::MAX))
-                as i16;
-            child.position = child_position;
-            previous = child.position;
-            child_sync_rows.push((
-                child.source_entity_index,
-                child.position.x,
-                child.position.y,
-            ));
         }
-        for (child_slot, x, y) in child_sync_rows {
-            self.map_chains
-                .sync_entity(RenderableMapSeed {
-                    entity_index: child_slot,
-                    active: true,
-                    x,
-                    y,
-                })
-                .expect("Level 2 wind child slot fits the map chain");
-        }
-        parent.phase = parent.phase.wrapping_add(1);
-        self.source_rng.insert(source_slot, parent.entity_rng);
-        self.authored_model22[parent_index] = parent;
-        self.map_chains
-            .sync_entity(RenderableMapSeed {
-                entity_index: source_slot,
-                active: true,
-                x: parent.position.x,
-                y: parent.position.y,
-            })
-            .is_ok()
+        self.fields = fields;
+        result
     }
 
     /// Advance one class-10/model-75/action-82 child through `ApplyEvents`.
@@ -4409,6 +3674,7 @@ impl Level2EconomyState {
     /// emits audio, changes action/life, or settles terrain.
     pub fn step_model22_spawned_child_slot(&mut self, source_slot: u16) -> bool {
         let Some(child) = self
+            .fields
             .model22_spawned_children
             .iter_mut()
             .find(|child| child.active && child.source_entity_index == source_slot)
@@ -5605,13 +4871,19 @@ impl Level2EconomyState {
                 Level2DynamicArenaKind::Model17SpawnedChild,
             );
         }
-        for source in self.authored_model22.iter().filter(|source| source.active) {
+        for source in self
+            .fields
+            .authored_model22
+            .iter()
+            .filter(|source| source.active)
+        {
             visit(
                 source.source_entity_index,
                 Level2DynamicArenaKind::AuthoredModel22,
             );
         }
         for child in self
+            .fields
             .model22_spawned_children
             .iter()
             .filter(|child| child.active)
@@ -5859,9 +5131,9 @@ impl Level2EconomyState {
             Level2DynamicArenaKind::Model17SpawnedChild => {
                 selector!(self.model17_spawned_children)
             }
-            Level2DynamicArenaKind::AuthoredModel22 => selector!(self.authored_model22),
+            Level2DynamicArenaKind::AuthoredModel22 => selector!(self.fields.authored_model22),
             Level2DynamicArenaKind::Model22SpawnedChild => {
-                selector!(self.model22_spawned_children)
+                selector!(self.fields.model22_spawned_children)
             }
             Level2DynamicArenaKind::AuthoredModel76 => selector!(self.authored_model76),
             Level2DynamicArenaKind::Model76Child => selector!(self.model76_children),
@@ -6808,12 +6080,14 @@ impl Level2EconomyState {
             self.release_slot(slot, Some(entity_rng));
         }
         let reclaimed_model22 = self
+            .fields
             .authored_model22
             .iter()
             .filter(|source| !source.active || source.control_flags & ENTITY_DRAW_DISABLED_BIT != 0)
             .map(|source| (source.source_entity_index, source.entity_rng))
             .collect::<Vec<_>>();
-        self.authored_model22
+        self.fields
+            .authored_model22
             .retain(|source| source.active && source.control_flags & ENTITY_DRAW_DISABLED_BIT == 0);
         for (slot, entity_rng) in reclaimed_model22 {
             let _ = self.map_chains.sync_entity(RenderableMapSeed {
@@ -6825,12 +6099,15 @@ impl Level2EconomyState {
             self.release_slot(slot, Some(entity_rng));
         }
         let reclaimed_model22_children = self
+            .fields
             .model22_spawned_children
             .iter()
             .filter(|child| !child.active)
             .map(|child| (child.source_entity_index, child.entity_rng))
             .collect::<Vec<_>>();
-        self.model22_spawned_children.retain(|child| child.active);
+        self.fields
+            .model22_spawned_children
+            .retain(|child| child.active);
         for (slot, entity_rng) in reclaimed_model22_children {
             let _ = self.map_chains.sync_entity(RenderableMapSeed {
                 entity_index: slot,
@@ -7365,6 +6642,9 @@ impl Level2EconomyState {
             hasher.update(source.entity_id.to_le_bytes());
             hasher.update(source.entity_rng.to_le_bytes());
             match source.origin {
+                BeeCreatureOrigin::InitialPackage => {
+                    hasher.update(b"initial-package-bee-origin-v1");
+                }
                 BeeCreatureOrigin::AuthoredRecord { authored_index } => {
                     // Preserve the established authored-Bee hash stream
                     // byte-for-byte. Package identity already proves this
@@ -7374,9 +6654,10 @@ impl Level2EconomyState {
                 BeeCreatureOrigin::MorphSpell { holder_slot } => {
                     hasher.update(b"morph-bee-origin-v1");
                     hasher.update(holder_slot.to_le_bytes());
-                    hasher.update(source.parent_entity_index.to_le_bytes());
                 }
             }
+            hasher.update(source.parent_entity_index.to_le_bytes());
+            source.hash_owned_relations(&mut hasher);
             hasher.update([
                 source.source_class,
                 source.model,
@@ -7743,7 +7024,7 @@ impl Level2EconomyState {
             hasher.update(child.position.z.to_le_bytes());
             hasher.update([u8::from(child.active)]);
         }
-        for source in &self.authored_model22 {
+        for source in &self.fields.authored_model22 {
             hasher.update(source.source_entity_index.to_le_bytes());
             hasher.update(source.entity_id.to_le_bytes());
             hasher.update(source.entity_rng.to_le_bytes());
@@ -7774,7 +7055,7 @@ impl Level2EconomyState {
             hasher.update(source.position.z.to_le_bytes());
             hasher.update([source.phase, u8::from(source.active)]);
         }
-        for child in &self.model22_spawned_children {
+        for child in &self.fields.model22_spawned_children {
             hasher.update(child.source_entity_index.to_le_bytes());
             hasher.update(child.entity_id.to_le_bytes());
             hasher.update(child.entity_rng.to_le_bytes());
@@ -8603,6 +7884,7 @@ impl Level2EconomyState {
                     .to_le_bytes(),
             );
         }
+        self.fields.palette.hash(&mut hasher);
         format!("{:x}", hasher.finalize())
     }
 }

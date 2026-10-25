@@ -26,7 +26,7 @@ pub(crate) use archer::ARCHER_ACTION_HIT;
 pub(crate) use archer::ARCHER_MAX_LIFE;
 pub(crate) use dragon::DRAGON_LIFE;
 
-pub(crate) const BEE_MAX_LIFE: i16 = 3_000;
+pub(crate) const BEE_MAX_LIFE: i32 = crate::level_definition::BEE_CLASS_PROPERTIES.max_life;
 pub(crate) const WORM_MAX_LIFE: i32 = 9_000;
 
 #[cfg(test)]
@@ -45,42 +45,14 @@ impl Level2EconomyState {
         &mut self,
         source: &mut BeeCreatureRuntime,
     ) -> Option<bool> {
-        if source.pending_attacker_entity_index == 0 {
-            return None;
-        }
-
-        let attacker_entity_index = source.pending_attacker_entity_index;
-        let damage = source.pending_damage;
-        let damage_i16 = i16::from_ne_bytes((damage as u16).to_ne_bytes());
-        source.life = source.life.wrapping_sub(damage_i16);
-        source.damage_attacker_entity_index = attacker_entity_index;
-        // `sub_1BF90` clears word 0x62 but retains dword 0x5E for the
-        // source-visible post-hit payload and later lethal bookkeeping.
-        source.pending_attacker_entity_index = 0;
-
-        let lethal = source.life < 0;
-        if lethal {
-            // The source copies word 0x26 to word 0x24 before entering the
-            // action-20 pre-kill callback.
-            source.kill_credit_entity_index = attacker_entity_index;
-            source.action = 20;
-        } else {
-            // `sub_1BF90` writes the qualifying attacker into word 0x96 and
-            // selects action 18.  `sub_1F660` then consumes exactly one
-            // source-local LCG step for the action-18 sound tail.
-            source.target_entity_index = Some(attacker_entity_index);
-            source.action = 18;
-            source.entity_rng = level2_next_rng16(source.entity_rng);
-            source.last_sound_id = (source.entity_rng & 1) + 12;
-            source.dword_0x10 = 1;
-        }
+        let hit = creatures::bee::consume_action17_mailbox(source)?;
         self.events.push(Level2EconomyEvent::DamageApplied {
             target_entity_index: source.entity_id,
-            attacker_entity_index,
-            damage,
-            lethal,
+            attacker_entity_index: hit.attacker,
+            damage: hit.damage,
+            lethal: hit.lethal,
         });
-        Some(lethal)
+        Some(hit.lethal)
     }
 
     /// Record one `PreKillEntity_1C890` creature-credit increment.  The
@@ -131,7 +103,7 @@ impl Level2EconomyState {
         source: &mut BeeCreatureRuntime,
         terrain: &SessionTerrain,
     ) {
-        if source.source_byte_3e & 7 != 0 {
+        if !creatures::bee::death_conversion_requested(source) {
             return;
         }
 
@@ -141,21 +113,16 @@ impl Level2EconomyState {
             source.yaw,
             source.entity_rng,
             source.mana,
-            source.entity_id,
+            self.source_owner(source.source_entity_index),
             terrain,
         );
-        // The Bee constructor has no suppression bit, so the ordered
-        // class-10/model-1 burst follows the mana sphere allocation.
-        let _ = self.spawn_death_burst_from_death_with_id(
-            source.source_entity_index,
-            source.entity_id,
-            source.position,
-        );
-        source.action = 21;
-        source.drawing_enabled = false;
-        source.active = false;
-        source.life = -1;
-        source.target_entity_index = None;
+        if source.control_flags & 0x0010_0000 == 0 {
+            let _ = self.spawn_death_burst_from_death_with_id(
+                source.source_entity_index,
+                source.entity_id,
+                source.position,
+            );
+        }
         self.deferred_bee_reclaims
             .insert(source.source_entity_index);
     }

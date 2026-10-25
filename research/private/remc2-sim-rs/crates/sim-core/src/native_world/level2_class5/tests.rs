@@ -1495,11 +1495,14 @@ fn level_two_bee_death_tail_is_phase_gated_and_orders_outputs() {
     session
         .economy_mut()
         .step_authored_bee_death_tail(&mut gated);
-    assert!(!gated.active);
+    assert!(
+        gated.active,
+        "KillEntity only hides; the following pass reclaims"
+    );
     assert!(!gated.drawing_enabled);
-    assert_eq!(gated.life, -1);
+    assert_eq!(gated.life, bee.life, "KillEntity does not rewrite life");
     assert_eq!(gated.action, 21);
-    assert_eq!(gated.entity_rng, initial_rng);
+    assert_eq!(gated.entity_rng, level2_next_rng16(initial_rng));
     assert!(session.economy().events().iter().any(|event| matches!(
         event,
         Level2EconomyEvent::ManaSphereSpawned {
@@ -1571,14 +1574,18 @@ fn level_two_bee_death_tail_allocation_failure_still_closes_without_partial_outp
     let terrain = session.canonical_terrain().clone();
     exhausted.step_authored_bee_death_tail(&mut gated, &terrain);
 
-    assert!(!gated.active);
+    assert!(
+        gated.active,
+        "allocation failure still preserves the retained source slot"
+    );
     assert!(!gated.drawing_enabled);
-    assert_eq!(gated.life, -1);
-    assert_eq!(gated.entity_rng, initial_rng);
+    assert_eq!(gated.life, bee.life);
+    let death_rng = level2_next_rng16(initial_rng);
+    assert_eq!(gated.entity_rng, death_rng);
     assert_eq!(exhausted.events.len(), events_before);
     assert_eq!(exhausted.spheres.len(), spheres_before);
     assert_eq!(exhausted.death_bursts.len(), death_bursts_before);
-    assert_eq!(exhausted.source_rng.get(&source_slot), Some(&initial_rng));
+    assert_eq!(exhausted.source_rng.get(&source_slot), Some(&death_rng));
     assert_eq!(exhausted.source_owner.get(&source_slot), Some(&0));
 }
 
