@@ -65,23 +65,35 @@ impl<'a> ActorDomains<'a> {
             })
     }
 
-    fn submit(&mut self, slot: u16, payload: u16, owner: u16) -> bool {
+    fn submit(&mut self, slot: u16, payload: u16, owner: u16, writer: DamageWriter) -> bool {
         if self
             .houses
             .houses()
             .iter()
             .any(|row| row.source_retained() && row.entity_index == slot)
         {
-            self.houses.submit_source_damage(slot, payload, owner)
+            match writer {
+                DamageWriter::Ordinary => self.houses.submit_source_damage(slot, payload, owner),
+                DamageWriter::Contact => self.houses.submit_source_contact(slot, payload, owner),
+                DamageWriter::FirstWriter => false,
+            }
         } else if self
             .villagers
             .villagers()
             .iter()
             .any(|row| row.source_retained() && row.entity_index == slot)
         {
-            self.villagers.submit_source_damage(slot, payload, owner)
+            match writer {
+                DamageWriter::Ordinary => self.villagers.submit_source_damage(slot, payload, owner),
+                DamageWriter::Contact => self.villagers.submit_source_contact(slot, payload, owner),
+                DamageWriter::FirstWriter => false,
+            }
         } else {
-            self.goats.submit_source_damage(slot, payload, owner)
+            match writer {
+                DamageWriter::Ordinary => self.goats.submit_source_damage(slot, payload, owner),
+                DamageWriter::Contact => self.goats.submit_source_contact(slot, payload, owner),
+                DamageWriter::FirstWriter => false,
+            }
         }
     }
 }
@@ -100,6 +112,24 @@ pub(crate) fn apply(
         },
         request,
     )
+}
+
+/// `sub_11900` mode zero after the caller selected its actual target. Contact
+/// replaces an owned payload and adds to ownerless residue; it does not repeat
+/// the producer's distance, geometry, class or identity admission.
+pub(crate) fn contact(
+    arena: &mut SourceArena,
+    actors: Option<ActorDomains<'_>>,
+    slot: u16,
+    payload: u16,
+    owner: u16,
+) -> Result<(), String> {
+    ArenaTargets {
+        arena,
+        actors,
+        player: None,
+    }
+    .submit_damage(slot, payload, owner, DamageWriter::Contact)
 }
 
 /// Read the same current carrier used by damage writers. Terrain owns cell
@@ -279,6 +309,12 @@ pub(crate) struct EffectLists {
     epoch: u32,
 }
 
+impl EffectLists {
+    pub(crate) fn is_current(&self, arena: &SourceArena) -> bool {
+        self.epoch == arena.economy.replacement_list_epoch
+    }
+}
+
 pub(crate) fn capture_effect_lists(
     arena: &mut SourceArena,
     actors: Option<ActorDomains<'_>>,
@@ -345,7 +381,7 @@ struct EffectTargets<'arena, 'actors, 'assets> {
 
 impl AreaWorld for EffectTargets<'_, '_, '_> {
     fn class3_slots(&self) -> Vec<u16> {
-        if self.targets.arena.economy.replacement_list_epoch == self.lists.epoch {
+        if self.lists.is_current(self.targets.arena) {
             self.lists.class3.clone()
         } else {
             Vec::new()
@@ -368,7 +404,7 @@ impl AreaWorld for EffectTargets<'_, '_, '_> {
 
 impl crate::world::effects::DamageWorld for EffectTargets<'_, '_, '_> {
     fn model45_slots(&self) -> Vec<u16> {
-        if self.targets.arena.economy.replacement_list_epoch == self.lists.epoch {
+        if self.lists.is_current(self.targets.arena) {
             self.lists.model45.clone()
         } else {
             Vec::new()
@@ -570,15 +606,19 @@ impl AreaWorld for ArenaTargets<'_, '_> {
             .iter()
             .find(|row| row.active && row.source_entity_index == slot)
         {
-            // SetEvent144 uses source byte38=1 and particle 144's collision
-            // axes; the domain's animation shifts are distinct render fields.
-            let extent = super::LEVEL2_BEE_COLLISION_HALF_EXTENT;
+            // Particle 3 supplies array.yaw; SetEntityShiftRot replaces only
+            // pitch/roll/fov. Read the current carrier after either operation.
             return Some(Actor {
                 source_id: row.entity_id,
                 class: row.source_class,
                 model: row.model,
                 position: row.position,
-                shape: shape(extent, extent, 0, extent),
+                shape: shape(
+                    row.shift_rot_x as i16,
+                    row.shift_rot_x as i16,
+                    row.collision_vertical_offset,
+                    row.shift_rot_y as i16,
+                ),
                 damage_mask: 1,
                 control_flags: row.control_flags,
             });
@@ -793,10 +833,22 @@ impl AreaWorld for ArenaTargets<'_, '_> {
     }
 
     fn ordinary_damage(&mut self, slot: u16, payload: u16, owner: u16) -> Result<(), String> {
+        self.submit_damage(slot, payload, owner, DamageWriter::Ordinary)
+    }
+}
+
+impl ArenaTargets<'_, '_> {
+    fn submit_damage(
+        &mut self,
+        slot: u16,
+        payload: u16,
+        owner: u16,
+        writer: DamageWriter,
+    ) -> Result<(), String> {
         if let Some(actors) = self.actors.as_mut()
             && actors.source_view(slot).is_some()
         {
-            if !actors.submit(slot, payload, owner) {
+            if !actors.submit(slot, payload, owner, writer) {
                 return Err(format!(
                     "area live-world mailbox {slot} rejected an admitted target"
                 ));
@@ -821,7 +873,7 @@ impl AreaWorld for ArenaTargets<'_, '_> {
                 &mut row.ordinary_damage_payload,
                 &mut row.ordinary_damage_owner,
             )
-            .submit(i32::from(payload), owner, DamageWriter::Ordinary);
+            .submit(i32::from(payload), owner, writer);
             return Ok(());
         }
         if let Some(row) = economy
@@ -833,7 +885,7 @@ impl AreaWorld for ArenaTargets<'_, '_> {
                 &mut row.pending_damage,
                 &mut row.pending_attacker_entity_index,
             )
-            .submit(i32::from(payload), owner, DamageWriter::Ordinary);
+            .submit(i32::from(payload), owner, writer);
             return Ok(());
         }
         if let Some(row) = economy
@@ -845,7 +897,7 @@ impl AreaWorld for ArenaTargets<'_, '_> {
                 &mut row.pending_damage,
                 &mut row.pending_attacker_entity_index,
             )
-            .submit(i32::from(payload), owner, DamageWriter::Ordinary);
+            .submit(i32::from(payload), owner, writer);
             return Ok(());
         }
         if let Some(row) = economy
@@ -857,7 +909,7 @@ impl AreaWorld for ArenaTargets<'_, '_> {
                 &mut row.pending_damage,
                 &mut row.pending_attacker_entity_index,
             )
-            .submit(i32::from(payload), owner, DamageWriter::Ordinary);
+            .submit(i32::from(payload), owner, writer);
             return Ok(());
         }
         if economy
@@ -865,12 +917,7 @@ impl AreaWorld for ArenaTargets<'_, '_> {
             .iter()
             .any(|row| row.active && row.source_entity_index == slot)
         {
-            if !economy.submit_settlement_damage(
-                slot,
-                i32::from(payload),
-                owner,
-                DamageWriter::Ordinary,
-            ) {
+            if !economy.submit_settlement_damage(slot, i32::from(payload), owner, writer) {
                 return Err(format!("area settlement slot {slot} rejected its mailbox"));
             }
             return Ok(());
@@ -883,7 +930,7 @@ impl AreaWorld for ArenaTargets<'_, '_> {
             DamageMailboxMut::new(&mut row.pending_damage, &mut row.pending_word_0x62).submit(
                 i32::from(payload),
                 owner,
-                DamageWriter::Ordinary,
+                writer,
             );
             return Ok(());
         }
@@ -893,7 +940,7 @@ impl AreaWorld for ArenaTargets<'_, '_> {
             .find(|row| row.active && row.source_entity_index == slot)
         {
             DamageMailboxMut::new(&mut row.damage_dword_0x5e_94, &mut row.pending_word_0x62)
-                .submit(i32::from(payload), owner, DamageWriter::Ordinary);
+                .submit(i32::from(payload), owner, writer);
             return Ok(());
         }
         if let Some(row) = economy
@@ -944,9 +991,14 @@ impl AreaWorld for ArenaTargets<'_, '_> {
             DamageMailboxMut::new(damage, &mut row.pending_word_0x62).submit(
                 i32::from(payload),
                 owner,
-                DamageWriter::Ordinary,
+                writer,
             );
             return Ok(());
+        }
+        if economy.live_arena_cursor_row(slot).is_some() {
+            return Err(format!(
+                "damage slot {slot} has no canonical mailbox writer"
+            ));
         }
         let row = self
             .arena
@@ -954,7 +1006,11 @@ impl AreaWorld for ArenaTargets<'_, '_> {
             .get_mut(usize::from(slot))
             .filter(|row| row.active)
             .ok_or_else(|| format!("area raw slot {slot} no longer live"))?;
-        row.apply_model76_mailbox(owner, payload);
+        let mut damage = row.source_wind_spell_payload();
+        let mut attacker = row.source_wind_spell_owner();
+        DamageMailboxMut::new(&mut damage, &mut attacker).submit(i32::from(payload), owner, writer);
+        row.record[98..102].copy_from_slice(&damage.to_le_bytes());
+        row.record[102..104].copy_from_slice(&attacker.to_le_bytes());
         Ok(())
     }
 }
@@ -963,6 +1019,132 @@ impl AreaWorld for ArenaTargets<'_, '_> {
 mod tests {
     use super::*;
     use crate::world::terrain::disasters::{RingProfile, mc2};
+
+    #[test]
+    fn selected_contact_uses_authored_bee_geometry_and_mailbox() {
+        let session = super::super::tests::level_two_campaign_session();
+        let mut arena = session.source_arena().clone();
+        let bee = arena
+            .economy
+            .allocate_authored_bee(
+                1,
+                session.state.position,
+                None,
+                3000,
+                &session.session.state.live.terrain,
+            )
+            .expect("authored Day Bee birth");
+        let slot = bee.source_entity_index;
+        let target = source_actor(&mut arena, None, slot).expect("current Bee carrier");
+        assert_eq!(target.shape.half_width, 128);
+        assert_eq!(target.shape.half_height, 128);
+        assert_eq!(target.shape.vertical_offset, 75);
+        contact(&mut arena, None, slot, 200, session.state.entity_index).unwrap();
+        let current = arena
+            .economy
+            .bee_creatures
+            .iter()
+            .find(|row| row.source_entity_index == slot)
+            .unwrap();
+        assert_eq!(current.pending_damage, 200);
+        assert_eq!(
+            current.pending_attacker_entity_index,
+            session.state.entity_index
+        );
+        assert_eq!(current.life, bee.life);
+    }
+
+    #[test]
+    fn selected_contact_preserves_raw_mailbox_rules_without_readmission() {
+        let session = super::super::tests::level_two_campaign_session();
+        let mut arena = session.source_arena().clone();
+        let slot = session.state.entity_index;
+        let row = &mut arena.entities[usize::from(slot)];
+        let owner = row.source_id;
+        // An already-selected target may share source identity. An ownerless
+        // payload is residue, not an empty mailbox, and addition wraps.
+        row.record[98..102].copy_from_slice(&i32::MAX.to_le_bytes());
+        row.record[102..104].copy_from_slice(&0_u16.to_le_bytes());
+        contact(&mut arena, None, slot, 1, owner).unwrap();
+        assert_eq!(
+            arena.entities[usize::from(slot)].source_wind_spell_payload(),
+            i32::MIN
+        );
+        assert_eq!(
+            arena.entities[usize::from(slot)].source_wind_spell_owner(),
+            owner
+        );
+        contact(&mut arena, None, slot, 200, owner).unwrap();
+        assert_eq!(
+            arena.entities[usize::from(slot)].source_wind_spell_payload(),
+            200
+        );
+        ArenaTargets {
+            arena: &mut arena,
+            actors: None,
+            player: None,
+        }
+        .ordinary_damage(slot, 8, owner)
+        .unwrap();
+        assert_eq!(
+            arena.entities[usize::from(slot)].source_wind_spell_payload(),
+            208
+        );
+        contact(&mut arena, None, slot, 0, 0).unwrap();
+        assert_eq!(
+            arena.entities[usize::from(slot)].source_wind_spell_payload(),
+            0
+        );
+        assert_eq!(
+            arena.entities[usize::from(slot)].source_wind_spell_owner(),
+            0
+        );
+        assert!(contact(&mut arena, None, u16::MAX, 200, owner).is_err());
+    }
+
+    #[test]
+    fn selected_contact_updates_actual_sphere_carrier_not_shadow_record() {
+        let session = super::super::tests::level_two_campaign_session();
+        let mut arena = session.source_arena().clone();
+        let sphere = arena
+            .economy
+            .allocate_authored_model39(1, session.state.entity_index, session.state.position)
+            .expect("ordinary authored sphere birth");
+        let slot = sphere.source_entity_index;
+        let shadow = arena.entities[usize::from(slot)].clone();
+        // Ordinary damage first owns the retained typed mailbox. Contact
+        // replaces that hit; another ordinary hit then adds to Contact.
+        ArenaTargets {
+            arena: &mut arena,
+            actors: None,
+            player: None,
+        }
+        .ordinary_damage(slot, 123, session.state.entity_index)
+        .unwrap();
+        contact(&mut arena, None, slot, 200, session.state.entity_index).unwrap();
+        ArenaTargets {
+            arena: &mut arena,
+            actors: None,
+            player: None,
+        }
+        .ordinary_damage(slot, 8, session.state.entity_index)
+        .unwrap();
+        let current = arena
+            .economy
+            .spheres()
+            .iter()
+            .find(|row| row.source_entity_index == slot)
+            .unwrap();
+        assert_eq!(
+            (
+                current.ordinary_damage_payload,
+                current.ordinary_damage_owner
+            ),
+            (208, session.state.entity_index)
+        );
+        assert_eq!(current.mana, sphere.mana);
+        assert_eq!(arena.entities[usize::from(slot)].record, shadow.record);
+    }
 
     fn ring_near(
         arena: &mut SourceArena,
