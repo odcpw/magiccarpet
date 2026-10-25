@@ -564,6 +564,10 @@ namespace MagicCarpet.Native
         private Camera gameRuntimeTransitionCamera;
         private CampaignMenuPresenter gameRuntimeMenu;
         private FrontendMediaPresenter frontendMedia;
+        private CampaignSpeechPresenter campaignSpeech;
+        private ulong gameRuntimeAudioGeneration;
+        private string gameRuntimeBriefingKey;
+        private bool gameRuntimeBriefingPlayed;
         private string gameRuntimeMediaCachePath;
         private AudioListener gameRuntimeAudioListener;
         private PlayerPreferencesPresenter playerPreferences;
@@ -2553,6 +2557,7 @@ namespace MagicCarpet.Native
                         steeringPitch = playerPreferences.SteeringPitch;
                         ownerAudio?.ApplyPreferences(playerPreferences.Current.preferences);
                         frontendMedia?.ApplyPreferences(playerPreferences.Current.preferences);
+                        campaignSpeech?.ApplyPreferences(playerPreferences.Current.preferences);
                         gameRuntimeNightSurface?.RefreshPreferences();
                         level2DayPresentationSurface?.RefreshPreferences();
                         level3PresentationSurface?.RefreshPreferences();
@@ -2892,6 +2897,137 @@ namespace MagicCarpet.Native
                 cursor == head,
                 "semantic event drain reaches the authoritative retained head");
             gameRuntimeSemanticEventCursor = cursor;
+            ConsumeGameRuntimeAudioEffects();
+        }
+
+        private void InitializeGameRuntimeAudioEffects(
+            EngineSessionTransport.CampaignSnapshotObservation observation, bool preserveSpeech = false)
+        {
+            if (campaignSession == null) return;
+            campaignSession.BeginRuntimeEffectConsumption(observation);
+            if (!preserveSpeech) campaignSpeech?.Stop();
+            ownerAudio?.Dispose();
+            ownerAudio = null;
+            deferredAudioEvents.Clear();
+            if (string.IsNullOrWhiteSpace(gameRuntimeLoadingCachePath)) return;
+            EnsureGameRuntimeSpeech();
+            if (playerPreferences != null)
+                campaignSpeech.ApplyPreferences(playerPreferences.Current.preferences);
+            if (ownerAssetCache == null) return;
+            var selection = campaignSession.Selection;
+            if (selection.mapType == 1)
+            {
+                ownerAudio = OwnerAudioPresentation.Load(ownerAssetCache,
+                    "audio/sound-bank-1-822.json", "audio/music-channel-0-f.json",
+                    transform, session.CompleteAudioVoice, legacyAssetReferences: false);
+                var day = ResolveGameRuntimePresentationResource(NativeSim.CampaignSelection.Level2Day());
+                ownerAudio.LoadObjectiveSound61(
+                    OwnerAssetCache.OpenAndValidateLevel2(day.presentation_cache_path),
+                    "components/audio/audio/sfx/061.wav");
+            }
+            else
+                ownerAudio = OwnerAudioPresentation.LoadCampaignDay(ownerAssetCache,
+                    selection, transform, session.CompleteAudioVoice);
+            if (playerPreferences != null)
+                ownerAudio.ApplyPreferences(playerPreferences.Current.preferences);
+            InitializeLevel2DayMusicPresentation();
+            ownerAudio.ApplyCampaignMusic(level2DayMusic);
+            gameRuntimeAudioGeneration = campaignSession.Generation;
+            ownerAudio.SetSpeechMix(campaignSpeech.SoundMix, campaignSpeech.MusicMix);
+        }
+
+        private void RebindGameRuntimeAudioGeneration()
+        {
+            if (ownerAudio == null || session == null) return;
+            var identity = session.GameRuntimeIdentity();
+            if (identity.mode != GameRuntimeTransport.PlayingMode &&
+                identity.mode != GameRuntimeTransport.PausedMode) return;
+            var generation = ulong.Parse(identity.session.generation);
+            if (generation == gameRuntimeAudioGeneration) return;
+            ownerAudio.RebindCampaignGeneration(generation);
+            for (var index = 0; index < deferredAudioEvents.Count; index++)
+            {
+                var pending = deferredAudioEvents[index];
+                pending.generation = generation;
+                deferredAudioEvents[index] = pending;
+            }
+            gameRuntimeAudioGeneration = generation;
+        }
+
+        private void EnsureGameRuntimeSpeech()
+        {
+            campaignSpeech ??= new CampaignSpeechPresenter(transform,
+                Path.Combine(Path.GetDirectoryName(Path.GetFullPath(gameRuntimeLoadingCachePath)),
+                    "mc2-campaign-speech-cache"));
+        }
+
+        private void UpdateGameRuntimeBriefing()
+        {
+            if (session == null || gameRuntimeMenu == null) return;
+            var identity = session.GameRuntimeIdentity();
+            var menu = identity.campaign_menu;
+            if (identity.mode != GameRuntimeTransport.CampaignMode || menu?.phase != "mission_select")
+            {
+                if (gameRuntimeBriefingKey != null) campaignSpeech?.Stop();
+                gameRuntimeBriefingKey = null;
+                return;
+            }
+            var enabled = identity.player_preferences.preferences.speech_enabled;
+            var key = identity.runtime_id + "/" + menu.briefing_level_id;
+            if (key != gameRuntimeBriefingKey)
+            {
+                gameRuntimeBriefingKey = key;
+                gameRuntimeBriefingPlayed = false;
+                gameRuntimeMenu.BeginBriefing(enabled);
+            }
+            if (gameRuntimeMenu.StepBriefing(Time.unscaledDeltaTime,
+                playerPreferences?.IsOpen != true && Input.GetKeyDown(KeyCode.O)))
+                gameRuntimeBriefingPlayed = false;
+            if (!enabled || gameRuntimeBriefingPlayed || menu.briefing_speech == null) return;
+            EnsureGameRuntimeSpeech();
+            campaignSpeech.ApplyPreferences(identity.player_preferences.preferences);
+            var segment = menu.briefing_speech;
+            campaignSpeech.Play(segment.track, segment.start_ms, segment.length_ms);
+            gameRuntimeBriefingPlayed = true;
+        }
+
+        private void ConsumeGameRuntimeAudioEffects()
+        {
+            if (campaignSession == null || string.IsNullOrWhiteSpace(gameRuntimeLoadingCachePath)) return;
+            campaignSession.SynchronizeGameRuntimeIdentity(session.GameRuntimeIdentity());
+            RebindGameRuntimeAudioGeneration();
+            var pooledAudio = new List<(NativeSim.NativeEvent nativeEvent,
+                NativeSim.AudioCommand command)>();
+            DrainDeferredAudio(pooledAudio);
+            foreach (var effect in campaignSession.DrainEffects())
+            {
+                if (effect.kind == NativeSim.CampaignEffectFlight &&
+                    (effect.code == 1 || effect.code == 2) &&
+                    effect.assetRefIndex != uint.MaxValue)
+                {
+                    var sound = effect;
+                    sound.kind = effect.code == 1 ? NativeSim.EventPrepareSound : NativeSim.EventEndLoop;
+                    sound.code = checked((uint)effect.value0);
+                    RouteAudioSidecar(sound, pooledAudio);
+                    continue;
+                }
+                if (effect.kind != NativeSim.CampaignEffectObjectivePresentation) continue;
+                var track = (int)((effect.code >> 8) & 255);
+                if (track != 0)
+                {
+                    Require(campaignSpeech != null,
+                        "objective speech requires the installed campaign speech cache");
+                    campaignSpeech.Play(track, checked((uint)effect.value0), checked((uint)effect.value1));
+                    if ((effect.code & 2) != 0) campaignSpeech.Duck();
+                    ownerAudio?.SetSpeechMix(campaignSpeech.SoundMix, campaignSpeech.MusicMix);
+                }
+            }
+            FlushPooledAudio(pooledAudio);
+            if (ownerAudio != null)
+            {
+                UpdateLevel2DayMusicPresentation();
+                ownerAudio.ApplyCampaignMusic(level2DayMusic);
+            }
         }
 
         private void PresentLevel2SpellEffects(
@@ -3157,6 +3293,12 @@ namespace MagicCarpet.Native
         {
             if (gameRuntimeMode)
             {
+                UpdateGameRuntimeBriefing();
+                RebindGameRuntimeAudioGeneration();
+                campaignSpeech?.Tick(Time.unscaledDeltaTime);
+                if (campaignSpeech != null)
+                    ownerAudio?.SetSpeechMix(campaignSpeech.SoundMix, campaignSpeech.MusicMix);
+                ownerAudio?.Tick(Time.unscaledDeltaTime);
                 if (gameRuntimeTransitionPresenter?.HasFailure == true)
                 {
                     if (gameRuntimeTransitionPresenter.TryTakeRecoveryAction(out var recovery))
@@ -9388,6 +9530,7 @@ namespace MagicCarpet.Native
                     session.GameRuntimePresentationAsset(GameRuntimeFireballAssetSlot), observation);
                 ComposeGameRuntimeNightPresentation(identity, observation);
             }
+            InitializeGameRuntimeAudioEffects(observation);
             gameRuntimeLoadingPresentationGate.Complete(identity);
             gameRuntimeTransitionPresenter.ClearFailure();
             PresentGameRuntimeTransition(identity);
@@ -9397,6 +9540,9 @@ namespace MagicCarpet.Native
 
         private void BeginGameRuntimeLoadingPresentation(GameRuntimeTransport.Identity loading)
         {
+            // NewGameDialog stops its CD channel when the map loop exits.
+            campaignSpeech?.Stop();
+            gameRuntimeBriefingKey = null;
             gameRuntimeStartupReady = true;
             ReleaseGameRuntimeLoadingResources();
             gameRuntimeLoadingPresentationGate.Reset();
@@ -9616,9 +9762,12 @@ namespace MagicCarpet.Native
                 "New Game requires the retained Rust Title owner");
             EnsureGameRuntimeTransitionPresentation();
             frontendMedia?.StopAudio();
-            var loading = session.GameRuntimeBeginNewGame();
+            var map = session.GameRuntimeBeginNewGame();
             gameRuntimeLastCompletionTransitionReceipt = null;
-            BeginGameRuntimeLoadingPresentation(loading);
+            gameRuntimeStartupReady = false;
+            FreezeGameRuntimeInput();
+            PresentGameRuntimeTransition(map);
+            ReleaseMouse();
         }
 
         internal bool ExecuteGameRuntimeMenuAction(CampaignMenuPresenter.Action action)
@@ -9652,7 +9801,7 @@ namespace MagicCarpet.Native
                         session = null;
                         try
                         {
-                            AttachAndValidateGameRuntimeProductionSession(opened);
+                            AttachAndValidateGameRuntimeProductionSession(opened, preserveSpeech: true);
                             PreparePlayerPreferences(Environment.GetCommandLineArgs());
                             gameRuntimeMenu?.AttachPreferences(playerPreferences);
                             titleOwner.Dispose();
@@ -9974,6 +10123,10 @@ namespace MagicCarpet.Native
 
         private void DisposeGameRuntimeCampaignPresentation()
         {
+            campaignSpeech?.Stop();
+            ownerAudio?.Dispose();
+            ownerAudio = null;
+            deferredAudioEvents.Clear();
             gameRuntimeEnvironmentCache = null;
             gameRuntimeObjectiveInstruction = null;
             if (gameRuntimeNightSurface != null)
@@ -10169,6 +10322,7 @@ namespace MagicCarpet.Native
                 UpdateGameRuntimeFireballPresentation(gameRuntimeCampaignSnapshot);
                 UpdateGameRuntimeNightPresentation(identity, gameRuntimeCampaignSnapshot);
             }
+            InitializeGameRuntimeAudioEffects(gameRuntimeCampaignSnapshot);
         }
 
         private bool DispatchGameRuntimePublicControlInput(
@@ -11363,6 +11517,14 @@ namespace MagicCarpet.Native
             var pooledAudio = new List<(
                 NativeSim.NativeEvent nativeEvent,
                 NativeSim.AudioCommand command)>();
+            DrainDeferredAudio(pooledAudio);
+            DrainLegacyEvents(buffer, pooledAudio);
+            FlushPooledAudio(pooledAudio);
+        }
+
+        private void DrainDeferredAudio(List<(NativeSim.NativeEvent nativeEvent,
+            NativeSim.AudioCommand command)> pooledAudio)
+        {
             if (deferredAudioEvents.Count != 0)
             {
                 var stillDeferred = new List<NativeSim.NativeEvent>();
@@ -11387,6 +11549,11 @@ namespace MagicCarpet.Native
                 deferredAudioEvents.Clear();
                 deferredAudioEvents.AddRange(stillDeferred);
             }
+        }
+
+        private void DrainLegacyEvents(NativeSim.NativeEvent[] buffer,
+            List<(NativeSim.NativeEvent nativeEvent, NativeSim.AudioCommand command)> pooledAudio)
+        {
             while (true)
             {
                 var status = session.CopyEvents(
@@ -11454,6 +11621,11 @@ namespace MagicCarpet.Native
                 eventCursor = batch.nextCursor;
                 if (batch.hasMore == 0) break;
             }
+        }
+
+        private void FlushPooledAudio(List<(NativeSim.NativeEvent nativeEvent,
+            NativeSim.AudioCommand command)> pooledAudio)
+        {
             pooledAudio.Sort((left, right) =>
             {
                 var generationOrder = AudioFlushId(left.command).CompareTo(
@@ -11521,6 +11693,8 @@ namespace MagicCarpet.Native
                     nativeEvent.kind, nativeEvent.code) == 12;
             if (ownerAudio != null && !explicitNullSound)
             {
+                if (gameRuntimeMode)
+                    Require(audioCommand.HasValue, "campaign audio event retains its source command");
                 ownerAudio.Consume(nativeEvent, audioCommand);
                 if (audioCommand.HasValue)
                     session.ReleaseAudioCommand(nativeEvent);
@@ -14008,7 +14182,8 @@ namespace MagicCarpet.Native
                 OpenGameRuntimeReplaySessionForPackages(replaySave, packages));
         }
 
-        private void AttachAndValidateGameRuntimeProductionSession(NativeSession opened)
+        private void AttachAndValidateGameRuntimeProductionSession(NativeSession opened,
+            bool preserveSpeech = false)
         {
             try
             {
@@ -14059,6 +14234,7 @@ namespace MagicCarpet.Native
                     ConfigureGameRuntimeFireballPresentation(fireballAsset, observation);
                     ComposeGameRuntimeNightPresentation(identity, observation);
                 }
+                InitializeGameRuntimeAudioEffects(observation, preserveSpeech);
                 Debug.Log(
                     $"MC_GAME_RUNTIME_STARTUP VERIFIED handle={opened.Handle} " +
                     $"level={identity.active_runtime_flow.bound_level_id} " +
@@ -14816,6 +14992,8 @@ namespace MagicCarpet.Native
             playthroughRecorder = null;
             ownerAudio?.Dispose();
             ownerAudio = null;
+            campaignSpeech?.Dispose();
+            campaignSpeech = null;
             if (wasLevel2)
             {
                 DestroyLevel2IndexedFramePresentation();

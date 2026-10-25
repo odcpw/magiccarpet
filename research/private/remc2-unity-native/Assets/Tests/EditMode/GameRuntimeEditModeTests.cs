@@ -160,12 +160,30 @@ namespace MagicCarpet.Native.Tests
                     "-mc-runtime-package", LevelOnePackage,
                     "-mc-runtime-owner-cache", cache, "-mc-runtime-presentation-cache", cache,
                     "-mc-runtime-package", Path.Combine(generated, "level2-day-block32-campaign-v2"),
+                    "-mc-runtime-presentation-cache", Path.Combine(generated, "level2-day-spell-owner-cache-v3"),
                     "-mc-runtime-package", Path.Combine(generated, "level3-day-block32-campaign-recipe-v2") });
                 Assert.That(runtime.GameRuntimeProductionIdentity.mode, Is.EqualTo(GameRuntimeTransport.TitleMode));
                 Assert.That(runtime.GameRuntimeProductionIdentity.session?.session_id, Is.Null.Or.Empty,
                     "menu startup has not opened a hidden gameplay session");
                 Assert.That(runtime.GameRuntimeNightPresentationReady, Is.False);
                 Assert.That(runtime.ExecuteGameRuntimeMenuAction(CampaignMenuPresenter.Action.NewGame), Is.True);
+                Assert.That(runtime.GameRuntimeProductionIdentity.mode, Is.EqualTo(GameRuntimeTransport.CampaignMode));
+                Assert.That(runtime.GameRuntimeProductionIdentity.campaign_menu.completed_levels, Is.Empty);
+                Assert.That(runtime.GameRuntimeProductionIdentity.campaign_menu.completed_level_id, Is.Null.Or.Empty);
+                Assert.That(runtime.GameRuntimeProductionIdentity.campaign_menu.briefing_speech.track, Is.EqualTo(1));
+                Assert.That(runtime.GameRuntimeProductionIdentity.session?.session_id, Is.Null.Or.Empty);
+                var presentBriefing = typeof(MagicCarpetRuntime).GetMethod("UpdateGameRuntimeBriefing",
+                    System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
+                presentBriefing.Invoke(runtime, null);
+                presentBriefing.Invoke(runtime, null);
+                var speech = (CampaignSpeechPresenter)typeof(MagicCarpetRuntime)
+                    .GetField("campaignSpeech", System.Reflection.BindingFlags.Instance |
+                        System.Reflection.BindingFlags.NonPublic).GetValue(runtime);
+                Assert.That(speech.PlayCount, Is.EqualTo(1), "map polling consumes its authored briefing once");
+                Assert.That(speech.LastStartMs, Is.Zero);
+                Assert.That(speech.LastLengthMs, Is.EqualTo(9999));
+                Assert.That(speech.SoundMix, Is.EqualTo(1), "map briefing does not use objective ducking");
+                Assert.That(runtime.ExecuteGameRuntimeMenuAction(CampaignMenuPresenter.Action.StartMission), Is.True);
                 Assert.That(runtime.GameRuntimeLoadingPresentationVisible, Is.True);
                 runtime.QualificationDriveGameRuntimeFrames(1);
                 Assert.That(runtime.GameRuntimeProductionIdentity.mode, Is.EqualTo(GameRuntimeTransport.LoadingMode));
@@ -327,6 +345,8 @@ namespace MagicCarpet.Native.Tests
                 Assert.That(runtime.GameRuntimeNightPresentationReady, Is.False);
                 Assert.That(runtime.GameRuntimeObjectiveInstruction, Is.Null);
                 Assert.That(runtime.ExecuteGameRuntimeMenuAction(CampaignMenuPresenter.Action.NewGame), Is.True);
+                Assert.That(runtime.GameRuntimeProductionIdentity.mode, Is.EqualTo(GameRuntimeTransport.CampaignMode));
+                Assert.That(runtime.ExecuteGameRuntimeMenuAction(CampaignMenuPresenter.Action.StartMission), Is.True);
                 runtime.QualificationDriveGameRuntimeFrames(1);
                 Assert.That(runtime.GameRuntimeProductionIdentity.mode, Is.EqualTo(GameRuntimeTransport.LoadingMode));
                 runtime.QualificationObserveGameRuntimeLoadingPresentationFrame();
@@ -385,6 +405,8 @@ namespace MagicCarpet.Native.Tests
                     Is.True, "direct-game Title restores original menu music");
                 runtime.StepGameRuntimeTitleMedia(50_000, false, false);
                 Assert.That(runtime.ExecuteGameRuntimeMenuAction(CampaignMenuPresenter.Action.NewGame), Is.True);
+                Assert.That(runtime.GameRuntimeProductionIdentity.mode, Is.EqualTo(GameRuntimeTransport.CampaignMode));
+                Assert.That(runtime.ExecuteGameRuntimeMenuAction(CampaignMenuPresenter.Action.StartMission), Is.True);
                 Assert.That(runtime.GameRuntimeLoadingPresentationVisible, Is.True);
                 Assert.That(runtime.GameRuntimeProductionIdentity.mode, Is.EqualTo(GameRuntimeTransport.LoadingMode));
                 Assert.That(runtime.ExecuteGameRuntimeMenuAction(CampaignMenuPresenter.Action.NewGame), Is.False,
@@ -2720,6 +2742,63 @@ namespace MagicCarpet.Native.Tests
                     .GetField("gameRuntimeSpellInputStatus", flags).GetValue(runtime);
                 Assert.That(status, Is.Null,
                     "Unity must not announce a requested selection that native authority did not apply");
+            }
+            finally
+            {
+                runtime.QualificationDisposeNativeOwners();
+                UnityEngine.Object.DestroyImmediate(root);
+            }
+        }
+
+        [Test]
+        [Timeout(180000)]
+        public void OpeningObjectiveSpeechReachesRealPcmConsumerOnceAndRestartsOnReset()
+        {
+            var root = new GameObject("ordinary Night objective speech");
+            root.SetActive(false);
+            var runtime = root.AddComponent<MagicCarpetRuntime>();
+            var generated = Path.Combine(PrivateRoot, "generated");
+            var night = Path.Combine(generated, "mc2-level1-night-cache-v2");
+            try
+            {
+                runtime.QualificationInitializeGameRuntimeProductionFromArguments(new[] {
+                    "-mc-game-runtime", "-mc-runtime-loading-cache", night,
+                    "-mc-runtime-package", Path.Combine(generated, "mc-bhq8-level1-collision-v5-night"),
+                    "-mc-runtime-owner-cache", night, "-mc-runtime-presentation-cache", night,
+                    "-mc-runtime-package", Path.Combine(generated, "level2-day-block32-campaign-v2"),
+                    "-mc-runtime-owner-cache", Path.Combine(generated, "level2-day-spell-owner-cache-v3/components/material"),
+                    "-mc-runtime-presentation-cache", Path.Combine(generated, "level2-day-spell-owner-cache-v3"),
+                    "-mc-runtime-package", Path.Combine(generated, "level3-day-block32-campaign-recipe-v2")
+                });
+                var speech = (CampaignSpeechPresenter)typeof(MagicCarpetRuntime)
+                    .GetField("campaignSpeech", System.Reflection.BindingFlags.Instance |
+                        System.Reflection.BindingFlags.NonPublic).GetValue(runtime);
+                Assert.That(speech.PlayCount, Is.Zero);
+                runtime.QualificationDriveGameRuntimeFrames(10);
+                Assert.That(speech.PlayCount, Is.EqualTo(1));
+                Assert.That(speech.LastTrack, Is.EqualTo(1));
+                Assert.That(speech.LastStartMs, Is.EqualTo(10999));
+                Assert.That(speech.LastLengthMs, Is.EqualTo(3999));
+                Assert.That(speech.SoundMix, Is.EqualTo(42f / 127));
+                Assert.That(speech.MusicMix, Is.EqualTo(42f / 127));
+                runtime.QualificationDriveGameRuntimeFrames(2);
+                Assert.That(speech.PlayCount, Is.EqualTo(1), "polling must not restart a retained cue");
+                var audio = (OwnerAudioPresentation)typeof(MagicCarpetRuntime)
+                    .GetField("ownerAudio", System.Reflection.BindingFlags.Instance |
+                        System.Reflection.BindingFlags.NonPublic).GetValue(runtime);
+                var musicStarts = audio.QualificationMusicStartCount;
+                runtime.QualificationApplyGameRuntimeProductionInput(true, false);
+                runtime.QualificationDriveGameRuntimeFrames(2);
+                runtime.QualificationApplyGameRuntimeProductionInput(true, false);
+                runtime.QualificationDriveGameRuntimeFrames(2);
+                Assert.That(speech.PlayCount, Is.EqualTo(1), "pause does not replay speech");
+                Assert.That(audio.QualificationMusicStartCount, Is.EqualTo(musicStarts),
+                    "pause generation changes do not restart the music device");
+                runtime.QualificationResetGameRuntimeProduction();
+                Assert.That(speech.IsPlaying, Is.False);
+                Assert.That(speech.SoundMix, Is.EqualTo(1));
+                runtime.QualificationDriveGameRuntimeFrames(10);
+                Assert.That(speech.PlayCount, Is.EqualTo(2), "reset owns a fresh authored announcement");
             }
             finally
             {

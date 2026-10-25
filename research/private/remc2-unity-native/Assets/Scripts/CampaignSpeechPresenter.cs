@@ -25,6 +25,17 @@ namespace MagicCarpet.Native
         private readonly GameObject root;
         private readonly AudioSource source;
         internal bool IsPlaying => source.isPlaying;
+        internal int PlayCount { get; private set; }
+        internal int LastTrack { get; private set; }
+        internal uint LastStartMs { get; private set; }
+        internal uint LastLengthMs { get; private set; }
+        private int soundVolume = 127, musicVolume = 127;
+        private int soundUnits = 127, musicUnits = 127;
+        private bool ducked, restoring;
+        private double speechEnd;
+        private float restoreTicks;
+        internal float SoundMix => soundVolume == 0 ? 0 : soundUnits / (float)soundVolume;
+        internal float MusicMix => musicVolume == 0 ? 0 : musicUnits / (float)musicVolume;
 
         internal CampaignSpeechPresenter(Transform parent, string directory)
         {
@@ -72,17 +83,61 @@ namespace MagicCarpet.Native
             source.clip = clip;
             source.timeSamples = checked((int)startSample);
             source.Play();
-            source.SetScheduledEndTime(AudioSettings.dspTime + lengthMs / 1000.0);
+            speechEnd = AudioSettings.dspTime + lengthMs / 1000.0;
+            source.SetScheduledEndTime(speechEnd);
+            PlayCount++;
+            LastTrack = track;
+            LastStartMs = startMs;
+            LastLengthMs = lengthMs;
             Debug.Log($"MC_CAMPAIGN_SPEECH track={track} start_ms={startMs} length_ms={lengthMs}");
         }
 
         internal void ApplyPreferences(PlayerPreferences preferences)
         {
+            soundVolume = preferences.sound_volume;
+            musicVolume = preferences.music_volume;
+            if (!ducked && !restoring) { soundUnits = soundVolume; musicUnits = musicVolume; }
             source.volume = preferences.speech_enabled && preferences.sound_enabled
                 ? preferences.sound_volume / 127f : 0;
         }
 
-        internal void Stop() { source.Stop(); source.clip = null; }
+        internal void Duck()
+        {
+            // FadeDownSoundVolume_59A50 cancels restoration and divides the
+            // configured integer master volumes, not their floating gains.
+            restoring = false;
+            ducked = true;
+            restoreTicks = 0;
+            soundUnits = soundVolume / 3;
+            musicUnits = musicVolume / 3;
+        }
+
+        internal void Tick(float elapsed)
+        {
+            if (ducked && AudioSettings.dspTime >= speechEnd && !source.isPlaying)
+            {
+                ducked = false;
+                restoring = true;
+                restoreTicks = 0;
+                return;
+            }
+            if (!restoring) return;
+            // FadeUpSoundVolume_59B50 runs at 120 Hz independently of pause.
+            restoreTicks += elapsed * 120;
+            var ticks = Mathf.FloorToInt(restoreTicks);
+            restoreTicks -= ticks;
+            soundUnits = Math.Min(soundVolume, soundUnits + ticks);
+            musicUnits = Math.Min(musicVolume, musicUnits + ticks);
+            if (soundUnits == soundVolume && musicUnits == musicVolume) restoring = false;
+        }
+
+        internal void Stop()
+        {
+            source.Stop(); source.clip = null;
+            ducked = restoring = false;
+            soundUnits = soundVolume; musicUnits = musicVolume;
+            restoreTicks = 0;
+        }
         public void Dispose()
         {
             if (source != null) source.Stop();

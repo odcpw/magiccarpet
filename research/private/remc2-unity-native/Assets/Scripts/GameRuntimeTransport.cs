@@ -337,6 +337,13 @@ namespace MagicCarpet.Native
         }
 
         [Serializable]
+        internal sealed class CampaignSpeechSegment
+        {
+            public int track, segment;
+            public uint start_ms, length_ms;
+        }
+
+        [Serializable]
         internal sealed class CampaignMenuSnapshot
         {
             public string phase;
@@ -345,6 +352,7 @@ namespace MagicCarpet.Native
             public string[] available_levels;
             public string selected_level_id;
             public string briefing_level_id;
+            public CampaignSpeechSegment briefing_speech;
         }
 
         [Serializable]
@@ -648,6 +656,21 @@ namespace MagicCarpet.Native
                     "restart did not enter the resolver-owned entry Loading state");
             }
             return loading;
+        }
+
+        internal Identity ShowNewGameMap()
+        {
+            if (Current?.mode != LoadingMode)
+                throw new InvalidOperationException("new-game map requires the resolver entry loading state");
+            Check(NativeSim.mc_game_runtime_show_new_game_map_v1(RequireHandle(),
+                ParseCounter(Current.generation, "generation")), "show source new-game map");
+            var map = IdentitySnapshot();
+            if (map.mode != CampaignMode || map.campaign_menu.phase != "mission_select" ||
+                !string.IsNullOrEmpty(map.campaign_menu.completed_level_id) ||
+                map.campaign_menu.completed_levels.Length != 0 ||
+                map.campaign_menu.selected_level_id != map.active_runtime_flow.entry_level_id)
+                throw new InvalidOperationException("new-game map must precede all earned completions");
+            return map;
         }
 
         internal Identity Pause()
@@ -984,14 +1007,28 @@ namespace MagicCarpet.Native
                         !HasRuntimeFlowData(identity.active_runtime_flow) || identity.campaign_menu == null ||
                         !new[] { "results", "mission_select" }.Contains(identity.campaign_menu.phase) ||
                         identity.campaign_menu.completed_levels == null || identity.campaign_menu.available_levels == null ||
-                        !identity.campaign_menu.completed_levels.Contains(identity.campaign_menu.completed_level_id) ||
+                        (!string.IsNullOrEmpty(identity.campaign_menu.completed_level_id) &&
+                         !identity.campaign_menu.completed_levels.Contains(identity.campaign_menu.completed_level_id)) ||
                         (!string.IsNullOrEmpty(identity.campaign_menu.selected_level_id) &&
                          !identity.campaign_menu.available_levels.Contains(identity.campaign_menu.selected_level_id)))
                         throw new InvalidOperationException("Campaign runtime identity is incomplete");
                     ValidateRuntimeFlow(identity.active_runtime_flow);
                     var campaignLevels = identity.active_runtime_flow.entries.Select(entry => entry.level_id).ToArray();
                     var menu = identity.campaign_menu;
-                    if (menu.completed_level_id != identity.active_runtime_flow.bound_level_id ||
+                    if (menu.briefing_speech != null &&
+                        (menu.phase != "mission_select" || string.IsNullOrEmpty(menu.briefing_level_id) ||
+                         menu.briefing_speech.track < 1 || menu.briefing_speech.track > 3 ||
+                         menu.briefing_speech.segment != 0 || menu.briefing_speech.start_ms != 0 ||
+                         menu.briefing_speech.length_ms == 0))
+                        throw new InvalidOperationException("campaign briefing speech is not a source-bound map segment");
+                    var firstMap = string.IsNullOrEmpty(menu.completed_level_id);
+                    if ((firstMap && (menu.phase != "mission_select" || menu.completed_levels.Length != 0 ||
+                         identity.active_runtime_flow.bound_level_id != identity.active_runtime_flow.entry_level_id ||
+                         menu.available_levels.Length != 1 ||
+                         menu.available_levels[0] != identity.active_runtime_flow.entry_level_id ||
+                         menu.selected_level_id != identity.active_runtime_flow.entry_level_id ||
+                         menu.briefing_level_id != identity.active_runtime_flow.entry_level_id)) ||
+                        (!firstMap && menu.completed_level_id != identity.active_runtime_flow.bound_level_id) ||
                         menu.completed_levels.Distinct().Count() != menu.completed_levels.Length ||
                         menu.available_levels.Distinct().Count() != menu.available_levels.Length ||
                         menu.completed_levels.Any(level => !campaignLevels.Contains(level)) ||
@@ -1448,7 +1485,8 @@ namespace MagicCarpet.Native
         private static bool HasCampaignMenuData(CampaignMenuSnapshot menu) => menu != null &&
             (!string.IsNullOrEmpty(menu.phase) || !string.IsNullOrEmpty(menu.completed_level_id) ||
              menu.completed_levels?.Length > 0 || menu.available_levels?.Length > 0 ||
-             !string.IsNullOrEmpty(menu.selected_level_id) || !string.IsNullOrEmpty(menu.briefing_level_id));
+             !string.IsNullOrEmpty(menu.selected_level_id) || !string.IsNullOrEmpty(menu.briefing_level_id) ||
+             menu.briefing_speech != null);
 
         private static bool SameCampaignMenu(CampaignMenuSnapshot left, CampaignMenuSnapshot right)
         {
@@ -1456,7 +1494,15 @@ namespace MagicCarpet.Native
                 return !HasCampaignMenuData(left) && !HasCampaignMenuData(right);
             return left.phase == right.phase && left.completed_level_id == right.completed_level_id &&
                 left.selected_level_id == right.selected_level_id && left.briefing_level_id == right.briefing_level_id &&
+                SameBriefingSpeech(left.briefing_speech, right.briefing_speech) &&
                 left.completed_levels.SequenceEqual(right.completed_levels) && left.available_levels.SequenceEqual(right.available_levels);
+        }
+
+        private static bool SameBriefingSpeech(CampaignSpeechSegment left, CampaignSpeechSegment right)
+        {
+            if (left == null || right == null) return left == right;
+            return left.track == right.track && left.segment == right.segment &&
+                left.start_ms == right.start_ms && left.length_ms == right.length_ms;
         }
 
         private static bool SameDefinitionIdentity(

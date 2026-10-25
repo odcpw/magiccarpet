@@ -725,6 +725,14 @@ namespace MagicCarpet.Native
             clips.Add(61, clip);
         }
 
+        internal void RebindCampaignGeneration(ulong generation)
+        {
+            Require(generation != 0, "campaign audio generation is live");
+            foreach (var voice in positionalVoices)
+                if (voice.Generation != 0) voice.Generation = generation;
+            if (campaignMusicGeneration != 0) campaignMusicGeneration = generation;
+        }
+
         internal void ApplyCampaignMusic(NativeSim.CampaignDayMusicSnapshot state)
         {
             Require(state.abiVersion == NativeSim.AbiVersion && state.structSize == 80 &&

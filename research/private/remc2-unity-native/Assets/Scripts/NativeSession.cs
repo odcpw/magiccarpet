@@ -188,7 +188,10 @@ namespace MagicCarpet.Native
         internal bool UsesGameRuntimeContract => gameRuntime != null;
 
         internal GameRuntimeTransport.Identity GameRuntimeBeginNewGame()
-            => gameRuntime.BeginRestartNewGame();
+        {
+            gameRuntime.BeginRestartNewGame();
+            return gameRuntime.ShowNewGameMap();
+        }
 
         internal EngineSessionTransport.Contract EngineContract =>
             engine?.NegotiatedContract ?? throw new InvalidOperationException(
@@ -2170,7 +2173,10 @@ namespace MagicCarpet.Native
             out NativeSim.AudioCommand command,
             out string error)
         {
-            var status = NativeSim.mc_native_audio_command_for_event(
+            var status = UsesGameRuntimeContract
+                ? NativeSim.mc_game_runtime_audio_command_for_event_v1(
+                    Handle, nativeEvent.generation, nativeEvent.sequence, out command, 88)
+                : NativeSim.mc_native_audio_command_for_event(
                 Handle,
                 nativeEvent.generation,
                 nativeEvent.sequence,
@@ -2192,14 +2198,20 @@ namespace MagicCarpet.Native
 
         internal void ReleaseAudioCommand(NativeSim.NativeEvent nativeEvent)
         {
-            var status = NativeSim.mc_native_audio_command_release(
+            var status = UsesGameRuntimeContract
+                ? NativeSim.mc_game_runtime_audio_command_release_v1(
+                    Handle, nativeEvent.generation, nativeEvent.sequence)
+                : NativeSim.mc_native_audio_command_release(
                 Handle, nativeEvent.generation, nativeEvent.sequence);
             Check(status, $"release audio sidecar {nativeEvent.sequence}");
         }
 
         internal void DiscardAudioCommand(NativeSim.NativeEvent nativeEvent)
         {
-            var status = NativeSim.mc_native_audio_command_discard(
+            var status = UsesGameRuntimeContract
+                ? NativeSim.mc_game_runtime_audio_command_discard_v1(
+                    Handle, nativeEvent.generation, nativeEvent.sequence)
+                : NativeSim.mc_native_audio_command_discard(
                 Handle, nativeEvent.generation, nativeEvent.sequence);
             Check(status, $"discard audio sidecar {nativeEvent.sequence}");
         }
@@ -2209,7 +2221,10 @@ namespace MagicCarpet.Native
             ushort voiceIndex,
             ulong eventSequence)
         {
-            var status = NativeSim.mc_native_audio_voice_complete(
+            var status = UsesGameRuntimeContract
+                ? NativeSim.mc_game_runtime_audio_voice_complete_v1(
+                    Handle, generation, voiceIndex, eventSequence)
+                : NativeSim.mc_native_audio_voice_complete(
                 Handle, generation, voiceIndex, eventSequence);
             Check(status, $"complete audio voice {voiceIndex}");
         }

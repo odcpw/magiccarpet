@@ -17,6 +17,32 @@ namespace MagicCarpet.Native
         private GUIStyle button;
         private GUIStyle message;
         private PlayerPreferencesPresenter preferences;
+        private bool briefingVisible;
+        private float briefingElapsed;
+
+        internal void BeginBriefing(bool speechEnabled)
+        {
+            briefingVisible = !speechEnabled;
+            briefingElapsed = 0;
+        }
+
+        internal bool StepBriefing(float elapsed, bool toggle)
+        {
+            var replaySpeech = false;
+            if (toggle)
+            {
+                briefingVisible = !briefingVisible;
+                briefingElapsed = 0;
+                replaySpeech = briefingVisible;
+            }
+            if (briefingVisible)
+            {
+                // NewGameDraw uses hundredths / 100 > 15 for this text box.
+                briefingElapsed += elapsed;
+                if (briefingElapsed >= 16) briefingVisible = false;
+            }
+            return replaySpeech;
+        }
 
         internal void AttachPreferences(PlayerPreferencesPresenter owner) { preferences = owner; }
 
@@ -117,7 +143,7 @@ namespace MagicCarpet.Native
                         if (GUI.Button(new Rect(x, y, width, 42), "Enter selected mission", button)) return Action.StartMission;
                         GUI.enabled = true;
                         y += 50;
-                        if (!string.IsNullOrEmpty(menu.briefing_level_id))
+                        if (briefingVisible && !string.IsNullOrEmpty(menu.briefing_level_id))
                         {
                             GUI.Label(new Rect(x, y, width, 110), campaignCache.ForMission(menu.briefing_level_id).briefing, message);
                             y += 120;

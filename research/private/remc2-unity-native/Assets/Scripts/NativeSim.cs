@@ -82,6 +82,7 @@ namespace MagicCarpet.Native
         internal const uint CampaignEffectSharedSpell = 0x101;
         internal const uint CampaignEffectFlight = 0x102;
         internal const uint CampaignEffectSceneChange = 0x103;
+        internal const uint CampaignEffectObjectivePresentation = 0x104;
         internal const byte AudioActionPreparedPending = 0;
         internal const byte AudioActionStart = 1;
         internal const byte AudioActionRestart = 2;
@@ -3130,6 +3131,26 @@ namespace MagicCarpet.Native
             uint elementSize,
             out EventBatch batch,
             uint batchSize);
+
+        [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+        internal static extern int mc_game_runtime_show_new_game_map_v1(ulong handle, ulong generation);
+
+        [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+        internal static extern int mc_game_runtime_audio_command_for_event_v1(
+            ulong handle, ulong generation, ulong eventSequence,
+            out AudioCommand command, uint commandSize);
+
+        [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+        internal static extern int mc_game_runtime_audio_command_release_v1(
+            ulong handle, ulong generation, ulong eventSequence);
+
+        [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+        internal static extern int mc_game_runtime_audio_command_discard_v1(
+            ulong handle, ulong generation, ulong eventSequence);
+
+        [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+        internal static extern int mc_game_runtime_audio_voice_complete_v1(
+            ulong handle, ulong generation, ushort voiceIndex, ulong eventSequence);
 
         [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
         internal static extern int mc_native_audio_command_for_event(

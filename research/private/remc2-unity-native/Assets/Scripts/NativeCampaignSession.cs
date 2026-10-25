@@ -454,6 +454,19 @@ namespace MagicCarpet.Native
                 56);
         }
 
+        internal void BeginRuntimeEffectConsumption(
+            EngineSessionTransport.CampaignSnapshotObservation snapshot)
+        {
+            if (ownsHandle || snapshot?.identity == null || snapshot.value == null ||
+                snapshot.identity.session_id != Handle.ToString() ||
+                snapshot.identity.generation != generation.ToString() ||
+                snapshot.identity.tick != tick.ToString() ||
+                !ulong.TryParse(snapshot.value.effect_head, out var head))
+                throw new InvalidOperationException("effect cursor requires the bound runtime snapshot");
+            // Restore/reset begins at the authoritative head, not historical audio.
+            effectCursor = head;
+        }
+
         internal NativeSim.NativeEvent[] DrainEffects()
         {
             const int PageCapacity = 1_024;
@@ -531,7 +544,8 @@ namespace MagicCarpet.Native
                 (effect.kind != NativeSim.CampaignEffectDispatch &&
                  effect.kind != NativeSim.CampaignEffectSharedSpell &&
                  effect.kind != NativeSim.CampaignEffectFlight &&
-                 effect.kind != NativeSim.CampaignEffectSceneChange) ||
+                 effect.kind != NativeSim.CampaignEffectSceneChange &&
+                 effect.kind != NativeSim.CampaignEffectObjectivePresentation) ||
                 !AllZero(effect.reserved))
             {
                 throw new InvalidOperationException(
@@ -1760,7 +1774,7 @@ namespace MagicCarpet.Native
             Interlocked.Decrement(ref activeSessionCount);
         }
 
-        private static void ValidateDayMusicState(
+        private void ValidateDayMusicState(
             NativeSim.CampaignDayMusicSnapshot state,
             ulong expectedGeneration,
             ulong expectedTick)
@@ -1770,7 +1784,7 @@ namespace MagicCarpet.Native
                 state.generation != expectedGeneration ||
                 state.tick != expectedTick ||
                 state.assetSlot != 0 ||
-                state.track != 2 ||
+                state.track != (Selection.mapType == 1 ? 1 : 2) ||
                 state.volume != 127 ||
                 state.initialized > 1 ||
                 state.loaded > 1 ||
