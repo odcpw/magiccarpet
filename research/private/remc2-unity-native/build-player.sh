@@ -53,7 +53,8 @@ def player_inputs(inputs):
     # changing that platform contract must still require a player rebuild.
     test_root = Path('Assets/Tests/EditMode')
     definition = PROJECT / test_root / 'MagicCarpet.Native.EditModeTests.asmdef'
-    editor_only = json.loads(definition.read_text()).get('includePlatforms') == ['Editor']
+    editor_only = definition.is_file() and (
+        json.loads(definition.read_text()).get('includePlatforms') == ['Editor'])
     return {name: value for name, value in inputs.items()
             if not (editor_only and Path(name).parent == test_root and Path(name).suffix == '.cs')}
 

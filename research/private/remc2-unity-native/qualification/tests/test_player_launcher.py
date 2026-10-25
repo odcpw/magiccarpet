@@ -132,6 +132,25 @@ class PlayerLauncherTests(unittest.TestCase):
             player.terminate()
             player.communicate(timeout=5)
 
+    def test_editor_test_edits_reuse_player_but_assembly_contract_changes_do_not(self):
+        tests = self.root / "Assets/Tests/EditMode"
+        tests.mkdir(parents=True)
+        definition = tests / "MagicCarpet.Native.EditModeTests.asmdef"
+        definition.write_text(json.dumps({"includePlatforms": ["Editor"]}))
+        source = tests / "ExampleTests.cs"
+        source.write_text("// original Editor-only test\n")
+        self.install_receipt()
+        source.write_text("// changed Editor-only test\n")
+        self.assertEqual(self.launch().returncode, 0)
+        definition.write_text(json.dumps({"includePlatforms": []}))
+        result = self.launch()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("native contract changed", result.stderr)
+        # With no Editor-only contract, ordinary C# remains a player input.
+        self.install_receipt()
+        source.write_text("// changed runtime source\n")
+        self.assertNotEqual(self.launch().returncode, 0)
+
     def test_command_failure_keeps_log_and_existing_player(self):
         before = self.api["payload"](self.binary.parent)
         log = self.root / "failure.log"
