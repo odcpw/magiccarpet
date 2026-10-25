@@ -115,6 +115,7 @@ namespace MagicCarpet.Native
         private bool disposed;
         private bool night;
         private OwnerAssetCache environmentCache;
+        private ulong environmentSessionHandle;
         private Func<byte[], byte[]> paletteTransform;
         private byte[] worldPaletteSource;
         private byte[] entityPaletteSource;
@@ -326,8 +327,8 @@ namespace MagicCarpet.Native
                 package.PackagePath != cache.EnvironmentPackage.PackagePath ||
                 package.ManifestSha256 != cache.EnvironmentPackage.ManifestSha256 ||
                 package.DefinitionSha256 != cache.EnvironmentPackage.DefinitionSha256 ||
-                environmentCache != null && (!ReferenceEquals(environmentCache, cache) || Generation != session.Generation))
-                throw new InvalidOperationException("environment package/generation differs from this presentation surface");
+                environmentCache != null && (!ReferenceEquals(environmentCache, cache) || environmentSessionHandle != session.Handle))
+                throw new InvalidOperationException("environment package/session differs from this presentation surface");
             var generation = session.Generation;
             var tick = session.Tick;
             // Retrieve all authoritative inputs before changing the visible
@@ -343,6 +344,10 @@ namespace MagicCarpet.Native
             if (environmentCache == null)
             {
                 environmentCache = cache;
+                // Pause/resume advances the same runtime's generation. Bind
+                // immutable assets to its owner, then validate each returned
+                // frame against the current generation below/above.
+                environmentSessionHandle = session.Handle;
                 minimapTables = cache.ReadOutput(descriptor.tables.path);
                 foreach (var row in descriptor.tmaps.textures)
                     if (!row.source_empty) materialRows.Add(row.index, row);

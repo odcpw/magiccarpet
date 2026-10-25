@@ -386,6 +386,7 @@ namespace MagicCarpet.Native
             NativeSim.CampaignSelection selection)
         {
             return selection.externalLevel == 1 && selection.internalLevel == 0 && selection.mapType == 1 ||
+                   selection.externalLevel == 4 && selection.internalLevel == 3 && selection.mapType == 2 ||
                    selection.mapType == 0 &&
                    (selection.externalLevel == 2 && selection.internalLevel == 1 ||
                     selection.externalLevel == 3 && selection.internalLevel == 2);

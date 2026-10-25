@@ -163,6 +163,8 @@ namespace MagicCarpet.Native
             public PlayerVitals player_vitals;
             public SpellObservation[] player_spells;
             public ObjectiveProgress objective_progress;
+            public byte objective_textbox_ticks;
+            public bool exit_sequence_active;
             public PresentationEntity[] presentation_entities;
         }
 

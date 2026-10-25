@@ -10,6 +10,97 @@ namespace MagicCarpet.Native.Tests
     public sealed class GameRuntimeEditModeTests
     {
         [Test]
+        public void CaveOwnerHudAndWorldUseActualPackagePaletteAndSprites()
+        {
+            var generated = Path.Combine(PrivateRoot, "generated");
+            var package = Path.Combine(generated, "mc-bhq6-ordinary-20261025-zclu5fjj/level4");
+            var cachePath = Path.Combine(generated, "mc-oi62-environment-level4-audio-v3");
+            var cache = OwnerAssetCache.OpenAndValidateEnvironment(cachePath, package);
+            var root = new GameObject("actual Level4 presentation consumer");
+            root.SetActive(false);
+            var runtime = root.AddComponent<MagicCarpetRuntime>();
+            const System.Reflection.BindingFlags flags = System.Reflection.BindingFlags.Instance |
+                System.Reflection.BindingFlags.NonPublic;
+            try
+            {
+                typeof(MagicCarpetRuntime).GetField("ownerAssetCache", flags).SetValue(runtime, cache);
+                typeof(MagicCarpetRuntime).GetMethod("MaterializeCampaignEnvironmentHud", flags).Invoke(runtime, null);
+                foreach (var selector in new[] { 1, 2, 40, 41, 42, 43, 54, 123, 132 })
+                    Assert.That(runtime.QualificationHasMaterializedLevel2DayHudSprite(selector), Is.True);
+                var palette = (byte[])typeof(MagicCarpetRuntime).GetField("ownerHudPaletteRgb8", flags).GetValue(runtime);
+                CollectionAssert.AreEqual(cache.ReadOutput(cache.EnvironmentMaterials.palette.rgb8_path), palette);
+                Assert.That(cache.EnvironmentMaterials.profile.sprites, Is.EqualTo("MSPRC0-0"));
+                Assert.That(cache.EnvironmentMaterials.profile.palette, Is.EqualTo("PALC-0"));
+                var admits = typeof(NativeCampaignSession).GetMethod("IsPresentationSelection",
+                    System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.NonPublic);
+                Assert.That(admits.Invoke(null, new object[] { NativeSim.CampaignSelection.Create(4, 3, 2) }), Is.True);
+                Assert.That(admits.Invoke(null, new object[] { NativeSim.CampaignSelection.Create(4, 3, 0) }), Is.False);
+                Assert.That(admits.Invoke(null, new object[] { NativeSim.CampaignSelection.Create(5, 4, 2) }), Is.False);
+                using var session = NativeCampaignSession.Open(package, NativeSim.CampaignSelection.Create(4, 3, 2), cachePath);
+                using var surface = new CampaignPresentationSurface();
+                surface.PresentEnvironment(session, cache);
+                Assert.That(surface.WorldReady && surface.LiveMinimapReady, Is.True);
+                Assert.That(surface.FrameHash, Is.Not.Zero);
+                Assert.That(surface.Tick, Is.Zero, "isolated entry diagnostic performs no gameplay");
+                session.Reset();
+                surface.PresentEnvironment(session, cache);
+                Assert.That(surface.Generation, Is.EqualTo(session.Generation),
+                    "same owner adopts its current generation without stale palette or asset replacement");
+                using var another = NativeCampaignSession.Open(package, NativeSim.CampaignSelection.Create(4, 3, 2), cachePath);
+                Assert.Throws<InvalidOperationException>(() => surface.PresentEnvironment(another, cache),
+                    "the same package and cache do not authorize a different session owner");
+            }
+            finally { UnityEngine.Object.DestroyImmediate(root); }
+        }
+
+        [Test]
+        public void ManaHelpHintKeepsSourceEligibilityPauseAndDrawCadence()
+        {
+            var hint = new MagicCarpetRuntime.ManaHelpHint();
+            hint.Promote(41, 6);
+            for (var i = 0; i < 20; i++) hint.Advance(false, false, true, false, false);
+            Assert.That(hint.Visible, Is.False, "priority cannot bypass actual mana affordability");
+            hint.Advance(true, false, true, false, false);
+            Assert.That(hint.Visible, Is.False, "selection precedes the first source draw");
+            hint.Advance(true, false, true, true, false);
+            Assert.That(hint.Visible, Is.False, "pause freezes and hides the selected popup");
+            for (var i = 0; i < 50; i++)
+            {
+                hint.Advance(false, false, true, false, false);
+                Assert.That(hint.Visible, Is.True, "mana regeneration does not shorten the retained popup");
+            }
+            hint.Advance(true, false, true, false, false);
+            Assert.That(hint.Visible, Is.False);
+            Assert.That(hint.Priority, Is.EqualTo(2));
+            hint.Advance(true, false, true, false, true);
+            Assert.That(hint.Visible, Is.False, "objective/menu suppression closes the popup");
+        }
+
+        [Test]
+        public void FirstFourObjectivesUseAuthoredLanguageStageAndEndRecords()
+        {
+            var generated = Path.Combine(PrivateRoot, "generated");
+            var cache = OwnerAssetCache.OpenAndValidate(
+                Path.Combine(generated, "mc2-level1-night-cache-v2"),
+                "730d2fa084265df839f3f2b55ed766ac167a8b152ca4631b5ded9d0bb9104ac8",
+                "878123908f6de05f684f4cd1d73cff8d2ff08701cb6fdd12b7165bfcacc75719",
+                Path.Combine(generated, "mc-bhq8-level1-collision-v5-night"));
+            var text = new Mc2ObjectiveText(cache);
+            var records = Encoding.GetEncoding(28591).GetString(
+                cache.ReadOutput("font/language-l1.records-nul.bin")).Split('\0');
+            var starts = new[] { 48, 54, 60, 66 };
+            var ends = new[] { 53, 59, 65, 68 };
+            for (ushort level = 0; level < 4; level++)
+            {
+                Assert.That(text.Resolve(level, new NativeSim.CampaignObjectiveStageSnapshot { textSelector = 1 }),
+                    Is.EqualTo(records[starts[level] + 1]));
+                Assert.That(text.Resolve(level, new NativeSim.CampaignObjectiveStageSnapshot { isLevelEnd = 1 }),
+                    Is.EqualTo(records[ends[level]]));
+            }
+            Assert.Throws<ArgumentOutOfRangeException>(() => Mc2ObjectiveText.SourceRecordIndex(4, 0, false));
+        }
+
+        [Test]
         public void OwnerCampaignMapUsesSourceMissionNamesAndRejectsAlteredPixels()
         {
             var source = Path.Combine(PrivateRoot, "generated/mc2-campaign-menu-cache");
