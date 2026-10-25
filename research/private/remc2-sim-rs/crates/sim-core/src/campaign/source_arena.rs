@@ -389,7 +389,22 @@ impl SourceArena {
             self.economy.release_slot(slot, Some(rng));
             self.raw_creature_origins.remove(&slot);
         }
-        for (slot, position) in crate::native_world::hidden_effect_slots(self) {
+        let mut hidden_typed = crate::native_world::hidden_effect_slots(self);
+        // The economy removes these sphere carriers below. Publish their
+        // unlink to terrain and neighboring raw records before releasing the
+        // slot, while the old map cell and links are still authoritative.
+        hidden_typed.extend(
+            self.economy
+                .spheres()
+                .iter()
+                .filter(|sphere| {
+                    !sphere.active
+                        || sphere.control_flags & crate::level1_mission::SOURCE_DISABLED_FLAG != 0
+                })
+                .map(|sphere| (sphere.source_entity_index, sphere.position)),
+        );
+        hidden_typed.sort_unstable_by_key(|(slot, _)| *slot);
+        for (slot, position) in hidden_typed {
             crate::world::effects::sync_position(self, terrain, slot, position, false, false)?;
         }
         self.economy.reclaim_inactive_slots_at_source_boundary();
