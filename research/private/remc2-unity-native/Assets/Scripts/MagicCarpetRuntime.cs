@@ -821,6 +821,8 @@ namespace MagicCarpet.Native
         private sbyte appliedRoll;
         private sbyte appliedPitch;
         private int gameRuntimeMovementFlags;
+        private bool gameRuntimeLeftSpellHeld;
+        private bool gameRuntimeRightSpellHeld;
         private bool fireRequested;
         private bool rightSpellRequested;
         private bool selectedSpellRequested;
@@ -2768,12 +2770,12 @@ namespace MagicCarpet.Native
             }
             if (TryFinishGameRuntimeMission()) return;
             var flags = gameRuntimeMovementFlags;
-            if (fireRequested)
+            if (fireRequested || gameRuntimeLeftSpellHeld)
             {
                 flags |= 0x10;
                 fireRequested = false;
             }
-            if (rightSpellRequested)
+            if (rightSpellRequested || gameRuntimeRightSpellHeld)
             {
                 flags |= 0x20;
                 rightSpellRequested = false;
@@ -3236,11 +3238,13 @@ namespace MagicCarpet.Native
                     var mapped = playerPreferences?.SampleInput(Time.unscaledDeltaTime,
                         runtimeIdentity.mode == GameRuntimeTransport.PlayingMode &&
                         Cursor.lockState == CursorLockMode.Locked);
+                    ApplyGameRuntimeHeldSpellInput(
+                        mapped?.CastLeft ?? (Cursor.lockState == CursorLockMode.Locked && Input.GetMouseButton(0)),
+                        mapped?.CastRight ?? (Cursor.lockState == CursorLockMode.Locked && Input.GetMouseButton(1)));
                     ApplyGameRuntimeProductionInput(
                         Input.GetKeyDown(KeyCode.P) || Input.GetKeyDown(KeyCode.Escape),
                         false,
-                        mapped?.CastLeft ?? Input.GetMouseButtonDown(0),
-                        mapped?.CastRight ?? Input.GetMouseButtonDown(1));
+                        false);
                     var spellKey = 0;
                     for (var key = 1; key <= 9; key++)
                         if (Input.GetKeyDown((KeyCode)((int)KeyCode.Alpha1 + key - 1))) spellKey = key;
@@ -9065,6 +9069,18 @@ namespace MagicCarpet.Native
             ObserveGameRuntimeLoadingPresentationFrame();
         }
 
+        internal void ApplyGameRuntimeHeldSpellInput(bool leftHeld, bool rightHeld)
+        {
+            var playing = GameRuntimeProductionStartupReady &&
+                session.GameRuntimeIdentity().mode == GameRuntimeTransport.PlayingMode;
+            // A hold spans every fixed step, including several steps per render
+            // frame. The latches also retain a brief click until its first step.
+            fireRequested |= playing && leftHeld && !gameRuntimeLeftSpellHeld;
+            rightSpellRequested |= playing && rightHeld && !gameRuntimeRightSpellHeld;
+            gameRuntimeLeftSpellHeld = playing && leftHeld;
+            gameRuntimeRightSpellHeld = playing && rightHeld;
+        }
+
         private void ApplyGameRuntimeProductionInput(
             bool pausePressed,
             bool closePressed,
@@ -9098,6 +9114,7 @@ namespace MagicCarpet.Native
             {
                 CenterSteering();
                 gameRuntimeMovementFlags = 0;
+                gameRuntimeLeftSpellHeld = gameRuntimeRightSpellHeld = false;
                 fireRequested = false;
                 rightSpellRequested = false;
                 selectedSpellRequested = false;
@@ -9121,6 +9138,7 @@ namespace MagicCarpet.Native
             {
                 CenterSteering();
                 gameRuntimeMovementFlags = 0;
+                gameRuntimeLeftSpellHeld = gameRuntimeRightSpellHeld = false;
                 fireRequested = false;
                 rightSpellRequested = false;
                 selectedSpellRequested = false;
@@ -9707,6 +9725,7 @@ namespace MagicCarpet.Native
         private void FreezeGameRuntimeInput()
         {
             CenterSteering();
+            gameRuntimeLeftSpellHeld = gameRuntimeRightSpellHeld = false;
             preferenceRecenterRequested = preferenceFullStopRequested = false;
             gameRuntimeMovementFlags = 0;
             gameRuntimeReplaySaveRequested = false;

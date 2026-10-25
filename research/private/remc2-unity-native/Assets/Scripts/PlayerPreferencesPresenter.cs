@@ -128,7 +128,7 @@ namespace MagicCarpet.Native
             var prefs = Current.preferences;
             var frame = new InputFrame {
                 Forward = Held(0), Backward = Held(1), Left = Held(2), Right = Held(3),
-                CastLeft = Input.GetMouseButtonDown(0), CastRight = Input.GetMouseButtonDown(1),
+                CastLeft = Input.GetMouseButton(0), CastRight = Input.GetMouseButton(1),
                 CastSelected = Input.GetKeyDown(KeyCode.Space),
                 Recenter = Input.GetKeyDown(KeyCode.C) || Input.GetMouseButtonDown(2),
                 FullStop = Input.GetKeyDown(KeyCode.Backspace),
@@ -154,8 +154,8 @@ namespace MagicCarpet.Native
                 var dead = prefs.joystick_dead_zone / 100f;
                 roll = Mathf.Abs(x) <= dead ? 0 : x * 127f;
                 pitch = Mathf.Abs(y) <= dead ? 0 : y * (prefs.invert_mouse ? -127f : 127f);
-                frame.CastLeft |= Input.GetKeyDown(KeyCode.JoystickButton0);
-                frame.CastRight |= Input.GetKeyDown(KeyCode.JoystickButton1);
+                frame.CastLeft |= Input.GetKey(KeyCode.JoystickButton0);
+                frame.CastRight |= Input.GetKey(KeyCode.JoystickButton1);
             }
             if (frame.Recenter || frame.FullStop) Center();
             roll = Mathf.Clamp(roll, -128, 127);

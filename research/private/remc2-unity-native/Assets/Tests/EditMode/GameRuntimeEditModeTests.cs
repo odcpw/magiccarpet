@@ -465,6 +465,57 @@ namespace MagicCarpet.Native.Tests
             }
         }
 
+        [Test]
+        public void ProductionCampaignRetainsHeldHandsAcrossFixedStepsAndReleasesOnPause()
+        {
+            var root = new GameObject("campaign held hand input");
+            root.SetActive(false);
+            var runtime = root.AddComponent<MagicCarpetRuntime>();
+            try
+            {
+                runtime.QualificationInitializeGameRuntimeProductionFromArguments(
+                    RuntimeArguments(LevelThreePackage, LevelOnePackage, LevelTwoPackage));
+                runtime.ApplyGameRuntimeHeldSpellInput(true, true);
+                runtime.QualificationDriveGameRuntimeFrames(2);
+                runtime.ApplyGameRuntimeHeldSpellInput(true, true);
+                runtime.ApplyGameRuntimeHeldSpellInput(false, false);
+                runtime.QualificationDriveGameRuntimeFrames(1);
+                // Both render samples can precede the next fixed step.
+                runtime.ApplyGameRuntimeHeldSpellInput(true, true);
+                runtime.ApplyGameRuntimeHeldSpellInput(false, false);
+                runtime.QualificationDriveGameRuntimeFrames(2);
+                runtime.ApplyGameRuntimeHeldSpellInput(true, true);
+                runtime.QualificationApplyGameRuntimeProductionInput(true, false);
+                runtime.ApplyGameRuntimeHeldSpellInput(true, true);
+                runtime.QualificationApplyGameRuntimeProductionInput(true, false);
+                runtime.QualificationDriveGameRuntimeFrames(1);
+                var replay = JsonUtility.FromJson<RecordedInputReplay>(Encoding.UTF8.GetString(
+                    runtime.QualificationSaveGameRuntimeProductionReplay()));
+                Assert.That(replay.operations, Has.Length.EqualTo(6));
+                var expected = new[] { true, true, false, true, false, false };
+                for (var index = 0; index < expected.Length; index++)
+                {
+                    Assert.That(replay.operations[index].operation, Is.EqualTo("step"));
+                    Assert.That(replay.operations[index].command.cast_left, Is.EqualTo(expected[index]),
+                        $"left hand at step {index}: hold, release, brief click, pause");
+                    Assert.That(replay.operations[index].command.cast_right, Is.EqualTo(expected[index]),
+                        $"right hand at step {index}: hold, release, brief click, pause");
+                }
+                runtime.ApplyGameRuntimeHeldSpellInput(true, true);
+                runtime.QualificationResetGameRuntimeProduction();
+                runtime.QualificationDriveGameRuntimeFrames(1);
+                var reset = JsonUtility.FromJson<RecordedInputReplay>(Encoding.UTF8.GetString(
+                    runtime.QualificationSaveGameRuntimeProductionReplay()));
+                var last = reset.operations[reset.operations.Length - 1].command;
+                Assert.That(last.cast_left || last.cast_right, Is.False, "reset clears held hands");
+            }
+            finally
+            {
+                runtime.QualificationDisposeNativeOwners();
+                UnityEngine.Object.DestroyImmediate(root);
+            }
+        }
+
         private static string PrivateRoot =>
             Path.GetFullPath(Path.Combine(Application.dataPath, "../.."));
 
