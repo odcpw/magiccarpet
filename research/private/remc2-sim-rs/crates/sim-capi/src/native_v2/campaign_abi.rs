@@ -2992,6 +2992,18 @@ pub extern "C" fn mc_native_campaign_entities_copy(
                             ));
                         }
                         rows[slot] = campaign_live_class5_entity_snapshot(source);
+                        if source.model == 4
+                            && let Some(archer) = reset
+                                .economy()
+                                .authored_class5_archer()
+                                .iter()
+                                .find(|archer| {
+                                    archer.source_entity_index == source.source_entity_index
+                                })
+                        {
+                            rows[slot].source_id = archer.entity_id;
+                            rows[slot].active &= u8::from(archer.control_flags & 0x421 == 0);
+                        }
                     }
                     for source in reset.economy().castle_defenders() {
                         let slot = usize::from(source.source_entity_index);
@@ -3060,6 +3072,22 @@ pub extern "C" fn mc_native_campaign_entities_copy(
                             !source.drawing_disabled() && source.control_flags & 0x21 == 0,
                         );
                     }
+                    for source in reset.field_source_rows() {
+                        let slot = usize::from(source.index);
+                        if slot >= rows.len() || !occupied.insert(source.index) {
+                            return Err(AbiError::new(
+                                MC_STATUS_VALIDATION_FAILED,
+                                format!(
+                                    "campaign live field source slot {} is invalid or duplicated",
+                                    source.index
+                                ),
+                            ));
+                        }
+                        rows[slot] = campaign_entity_snapshot(&source);
+                        rows[slot].authority = MC_AUTHORITY_CAMPAIGN_LIVE;
+                        rows[slot].active =
+                            u8::from(source.active && source.control_flags & 0x421 == 0);
+                    }
                     let live_rows =
                         reset
                             .economy()
@@ -3081,6 +3109,30 @@ pub extern "C" fn mc_native_campaign_entities_copy(
                                     source.actual_speed,
                                 )
                             })
+                            .chain(
+                                reset
+                                    .economy()
+                                    .authored_class5_archer_children()
+                                    .iter()
+                                    .map(|source| {
+                                        (
+                                            source.source_entity_index,
+                                            source.entity_id,
+                                            source.active
+                                                && source.drawing_enabled
+                                                && source.control_flags & 0x421 == 0,
+                                            source.source_class,
+                                            source.model,
+                                            source.action,
+                                            source.source_byte_3e,
+                                            source.position,
+                                            source.yaw,
+                                            source.pitch,
+                                            source.fov,
+                                            source.actual_speed,
+                                        )
+                                    }),
+                            )
                             .chain(reset.economy().house_residents().iter().map(|source| {
                                 (
                                     source.source_entity_index,
