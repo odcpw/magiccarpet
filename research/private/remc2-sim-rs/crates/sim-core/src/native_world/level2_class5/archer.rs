@@ -578,7 +578,7 @@ pub(crate) fn apply_player_effects(
 pub(crate) fn step_source_runtime(
     arena: &mut SourceArena,
     runtime: &mut RuntimeSnapshot,
-    terrain: &SessionTerrain,
+    terrain: &mut SessionTerrain,
     particles: &[ParticleParameter],
     slot: u16,
     frozen_models: &[Vec<u16>; 29],
@@ -661,15 +661,51 @@ pub(crate) fn step_source_runtime(
         stage: state.stage,
         stage_runtime: Some(runtime),
     };
-    let result = arena
+    let mut result = arena
         .economy
-        .step_authored_archer_slot(slot, context, terrain)
+        .prepare_archer_source_slot(slot, context, terrain)
         .ok_or_else(|| {
             format!(
                 "Archer slot {slot} cannot execute source action {}",
                 source.action
             )
         })?;
+    if let Some(request) = result.effects.child_request
+        && construct_archer_arrow(arena, terrain, request).is_none()
+    {
+        result.effects.target_feedback_entity = None;
+    }
+    if let Some(death) = result.death {
+        let _ = arena.economy.spawn_mana_sphere_from_death(
+            death.slot,
+            death.position,
+            death.yaw,
+            death.rng,
+            death.mana,
+            death.owner,
+            terrain,
+        );
+        if death.burst
+            && let Some(burst) = crate::world::effects::allocate(
+                arena,
+                terrain,
+                sim_definition::adapter::mc2_effect_definition(
+                    crate::level_definition::EffectKind::RadialExplosion,
+                ),
+                death.position,
+                particles,
+            )?
+        {
+            let source_id = if arena.slot_generation(slot) == state.slot_generation {
+                death.source_id
+            } else {
+                slot
+            };
+            let row = &mut arena.entities[usize::from(burst)];
+            row.source_id = source_id;
+            row.record[30..32].copy_from_slice(&source_id.to_le_bytes());
+        }
+    }
     if result.effects.target_dword_0x10_incremented
         && let Some(target) = result.target
     {
@@ -686,20 +722,74 @@ pub(crate) fn step_source_runtime(
                 arena, terrain, position, particles,
             )?;
         }
-        if let Some(effect_slot) = arena
-            .economy
-            .allocate_class10_model0_effect(0, 0, 0, 0, position, 400, 0, 0x20000, 128, 128)
-            && let Some(effect) = arena
-                .economy
-                .model17_spawned_children
-                .iter_mut()
-                .find(|row| row.source_entity_index == effect_slot)
-        {
-            // Unparented NewAdd0A00 retains NewEvent's own id.
-            effect.parent_entity_id = effect_slot;
-        }
+        crate::world::effects::allocate(
+            arena,
+            terrain,
+            sim_definition::adapter::mc2_effect_definition(
+                crate::level_definition::EffectKind::Impact,
+            ),
+            position,
+            particles,
+        )?;
+    }
+    // NewEvent can overwrite a source address. Only the original incarnation
+    // may receive this family's epilogue after its constructors have run.
+    if arena.slot_generation(slot) == state.slot_generation
+        && let Some(source) =
+            arena.economy.authored_class5.iter_mut().find(|row| {
+                row.active && row.source_entity_index == slot && row.model == ARCHER_MODEL
+            })
+    {
+        source.source_byte_3e = source.source_byte_3e.wrapping_add(1);
+        source.phase = source.phase.wrapping_add(1);
     }
     Ok(result)
+}
+
+/// AddArchers through NewEvent's frozen replacement cursor, including the old
+/// terrain cell's head publication. The initializer owns the constructor RNG.
+pub(crate) fn construct_campaign_archer(
+    arena: &mut SourceArena,
+    terrain: &mut SessionTerrain,
+    authored_index: u16,
+    position: Position,
+    max_life: i32,
+) -> Option<Level2AuthoredClass5Source> {
+    if max_life <= 0 {
+        return None;
+    }
+    let slot = arena.allocate_source_slot_with_terrain(terrain)?;
+    let source = arena.economy.initialize_campaign_archer(
+        slot,
+        authored_index,
+        position,
+        max_life,
+        terrain,
+    )?;
+    crate::world::effects::sync_position(arena, terrain, slot, source.position, true, false)
+        .expect("canonical Archer constructor retains its valid source slot");
+    Some(source)
+}
+
+fn construct_archer_arrow(
+    arena: &mut SourceArena,
+    terrain: &mut SessionTerrain,
+    request: ArcherChildRequest,
+) -> Option<ArcherChildPacket> {
+    if !arena.authored_class5().iter().any(|source| {
+        source.active
+            && source.model == ARCHER_MODEL
+            && source.source_entity_index == request.parent_entity_index
+    }) {
+        return None;
+    }
+    let slot = arena.allocate_source_slot_with_terrain(terrain)?;
+    let packet = arena
+        .economy
+        .initialize_class9_model13_child(slot, request, false)?;
+    crate::world::effects::sync_position(arena, terrain, slot, packet.position, true, false)
+        .expect("canonical Archer arrow retains its valid source slot");
+    Some(packet)
 }
 
 /// Group-20 authored Archer rows, in owner package/source order.
@@ -914,6 +1004,23 @@ impl Level2EconomyState {
     ) -> Option<ArcherChildPacket> {
         let state_before = self.clone();
         let source_entity_index = self.allocate_slot()?;
+        let result = self.initialize_class9_model13_child(
+            source_entity_index,
+            request,
+            castle_auxiliary_tail,
+        );
+        if result.is_none() {
+            *self = state_before;
+        }
+        result
+    }
+
+    fn initialize_class9_model13_child(
+        &mut self,
+        source_entity_index: u16,
+        request: ArcherChildRequest,
+        castle_auxiliary_tail: bool,
+    ) -> Option<ArcherChildPacket> {
         let entity_rng = self.new_event_rng(source_entity_index);
         let mut packet = archer_child_packet(source_entity_index, entity_rng, request);
         if castle_auxiliary_tail {
@@ -943,7 +1050,6 @@ impl Level2EconomyState {
             })
             .is_err()
         {
-            *self = state_before;
             return None;
         }
         self.source_rng.insert(source_entity_index, entity_rng);
@@ -1195,6 +1301,19 @@ pub(crate) struct ArcherStepResult {
     pub(crate) effects: ArcherActionEffects,
     pub(crate) target: Option<ArcherTarget>,
     pub(crate) map_synced: bool,
+    death: Option<ArcherDeathRequest>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct ArcherDeathRequest {
+    slot: u16,
+    source_id: u16,
+    position: Position,
+    yaw: i16,
+    rng: u16,
+    mana: i32,
+    owner: u16,
+    burst: bool,
 }
 
 impl Level2EconomyState {
@@ -1202,11 +1321,31 @@ impl Level2EconomyState {
     /// The outer reset session supplies imported entity views; all action
     /// state, child allocation, source cadence, map projection, and rollback
     /// remain in this shared economy carrier.
+    #[cfg(test)]
     pub(crate) fn step_authored_archer_slot(
+        &mut self,
+        source_slot: u16,
+        context: ArcherActionContext<'_>,
+        terrain: &SessionTerrain,
+    ) -> Option<ArcherStepResult> {
+        self.step_archer_action_packet(source_slot, context, terrain, false)
+    }
+
+    fn prepare_archer_source_slot(
+        &mut self,
+        source_slot: u16,
+        context: ArcherActionContext<'_>,
+        terrain: &SessionTerrain,
+    ) -> Option<ArcherStepResult> {
+        self.step_archer_action_packet(source_slot, context, terrain, true)
+    }
+
+    fn step_archer_action_packet(
         &mut self,
         source_slot: u16,
         mut context: ArcherActionContext<'_>,
         terrain: &SessionTerrain,
+        arena_allocation: bool,
     ) -> Option<ArcherStepResult> {
         let source_index = self.authored_class5.iter().position(|source| {
             // The numeric callback scan tests the current class/action,
@@ -1223,6 +1362,7 @@ impl Level2EconomyState {
         let mut source = self.authored_class5[source_index];
         let mut archer_state = self.authored_class5_archer[archer_index];
         let mut word_0x32 = archer_state.word_0x32;
+        let mut death = None;
         context.linked_head = archer_state.word_0x34;
         context.control_flags = archer_state.control_flags;
         context.stage = archer_state.stage;
@@ -1280,21 +1420,34 @@ impl Level2EconomyState {
                         // the resulting stream value.
                         source.entity_rng = level2_next_rng16(source.entity_rng);
                     }
-                    let _ = self.spawn_mana_sphere_from_death(
-                        source.source_entity_index,
-                        source.position,
-                        source.yaw,
-                        source.entity_rng,
-                        source.mana,
-                        owner_entity_index,
-                        terrain,
-                    );
-                    if context.control_flags & 0x10_0000 == 0 {
-                        let _ = self.spawn_death_burst_from_death_with_id(
-                            source.source_entity_index,
+                    if arena_allocation {
+                        death = Some(ArcherDeathRequest {
+                            slot: source.source_entity_index,
+                            source_id: archer_state.entity_id,
+                            position: source.position,
+                            yaw: source.yaw,
+                            rng: source.entity_rng,
+                            mana: source.mana,
+                            owner: owner_entity_index,
+                            burst: context.control_flags & 0x10_0000 == 0,
+                        });
+                    } else {
+                        let _ = self.spawn_mana_sphere_from_death(
                             source.source_entity_index,
                             source.position,
+                            source.yaw,
+                            source.entity_rng,
+                            source.mana,
+                            owner_entity_index,
+                            terrain,
                         );
+                        if context.control_flags & 0x10_0000 == 0 {
+                            let _ = self.spawn_death_burst_from_death_with_id(
+                                source.source_entity_index,
+                                archer_state.entity_id,
+                                source.position,
+                            );
+                        }
                     }
                     source.drawing_enabled = false;
                 }
@@ -1306,7 +1459,7 @@ impl Level2EconomyState {
             _ => return None,
         };
 
-        if let Some(request) = effects.child_request {
+        if !arena_allocation && let Some(request) = effects.child_request {
             if self.allocate_archer_child_packet(request).is_none() {
                 effects.target_feedback_entity = None;
             }
@@ -1356,8 +1509,10 @@ impl Level2EconomyState {
         }
         archer_state.control_flags = context.control_flags;
         archer_state.stage = context.stage;
-        source.source_byte_3e = source.source_byte_3e.wrapping_add(1);
-        source.phase = source.phase.wrapping_add(1);
+        if !arena_allocation {
+            source.source_byte_3e = source.source_byte_3e.wrapping_add(1);
+            source.phase = source.phase.wrapping_add(1);
+        }
         archer_state.word_0x32 = word_0x32;
         archer_state.pending_damage = context.pending_damage;
         self.authored_class5[source_index] = source;
@@ -1380,6 +1535,7 @@ impl Level2EconomyState {
             effects,
             target: context.target,
             map_synced: true,
+            death,
         })
     }
 
@@ -1429,10 +1585,17 @@ impl Level2EconomyState {
             .find(|row| row.source_entity_index == slot)
         {
             let flags = self
-                .authored_dragons
+                .authored_class5_archer
                 .iter()
                 .find(|row| row.source_entity_index == slot)
-                .map_or(8, |row| row.control_flags);
+                .map(|row| row.control_flags)
+                .or_else(|| {
+                    self.authored_dragons
+                        .iter()
+                        .find(|row| row.source_entity_index == slot)
+                        .map(|row| row.control_flags)
+                })
+                .unwrap_or(8);
             return Some((5, root.model, flags, root.mana));
         }
         if let Some(bee) = self
@@ -1610,7 +1773,9 @@ impl Level2EconomyState {
 mod tests {
     use super::super::super::tests::level_two_fixture_path;
     use super::*;
-    use crate::native_world::{Level2EconomyEvent, NativeWorld, level2_next_rng32};
+    use crate::native_world::{
+        Level2EconomyEvent, NativeWorld, heading_for_positions, level2_next_rng32,
+    };
 
     fn archer_position() -> Position {
         Position {
@@ -1635,6 +1800,340 @@ mod tests {
             stage: ArcherStageState::default(),
             stage_runtime: None,
         }
+    }
+
+    #[test]
+    fn archer_constructors_use_frozen_arena_replacement_and_publish_old_cell() {
+        for arrow in [false, true] {
+            let inspection = NativeWorld::inspect_level2(level_two_fixture_path()).unwrap();
+            let session = inspection.level2_reset_session().unwrap();
+            let mut arena = session.source_arena().clone();
+            let mut terrain = session.canonical_terrain().clone();
+            for row in &mut arena.entities {
+                row.set_control_flags(row.control_flags & !8);
+            }
+            let parent = construct_campaign_archer(
+                &mut arena,
+                &mut terrain,
+                232,
+                archer_position(),
+                ARCHER_MAX_LIFE,
+            )
+            .unwrap();
+            let old_tile = (0..=u16::MAX)
+                .find(|tile| arena.economy.map_chains.tile_head(*tile) == 0)
+                .unwrap();
+            let old_position = Position {
+                x: ((old_tile & 255) << 8) + 128,
+                y: (old_tile & 0xff00) + 128,
+                z: 128,
+            };
+            let replaced = arena
+                .allocate_smoke13_with_terrain(old_position, &mut terrain)
+                .unwrap();
+            let generation = arena.slot_generation(replaced);
+            arena.rebuild_source_free_arena();
+            // Reserve actual free addresses; retain exactly the frozen Smoke
+            // replacement. This is an allocator regression, not a live capture.
+            while arena.economy.free_slot_count() != 0 {
+                arena.allocate_source_slot().unwrap();
+            }
+            let request = ArcherChildRequest {
+                parent_entity_index: parent.source_entity_index,
+                parent_entity_id: parent.source_entity_index,
+                parent_word_0x96: session.state.entity_index,
+                parent_roll: parent.roll,
+                parent_position: parent.position,
+                parent_fov: parent.shift_rot_y,
+                target_entity_index: session.state.entity_index,
+                target_class: 3,
+                target_model: 0,
+                target_position: session.state.position,
+            };
+            let slot = if arrow {
+                construct_archer_arrow(&mut arena, &mut terrain, request)
+                    .unwrap()
+                    .source_entity_index
+            } else {
+                construct_campaign_archer(&mut arena, &mut terrain, 233, archer_position(), 1234)
+                    .unwrap()
+                    .source_entity_index
+            };
+            assert_eq!(slot, replaced);
+            assert_eq!(arena.slot_generation(slot), generation.wrapping_add(1));
+            assert_eq!(arena.economy.map_chains.tile_head(old_tile), 0);
+            assert_eq!(terrain.planes().entity_indices[usize::from(old_tile)], 0);
+            let new_tile = arena.economy.map_chains.tile_of(slot);
+            assert_eq!(
+                terrain.planes().entity_indices[usize::from(new_tile)] as u16,
+                arena.economy.map_chains.tile_head(new_tile)
+            );
+            let before = (
+                arena.global_rng,
+                arena.class5_model4_constructor_phase,
+                arena.authored_class5_archer_children().len(),
+                arena.authored_class5().len(),
+            );
+            assert!(construct_archer_arrow(&mut arena, &mut terrain, request).is_none());
+            assert!(
+                construct_campaign_archer(&mut arena, &mut terrain, 234, archer_position(), 1000)
+                    .is_none()
+            );
+            assert_eq!(
+                (
+                    arena.global_rng,
+                    arena.class5_model4_constructor_phase,
+                    arena.authored_class5_archer_children().len(),
+                    arena.authored_class5().len()
+                ),
+                before
+            );
+        }
+    }
+
+    #[test]
+    fn archer_follow_helpers_compare_source_identity_and_live_collision_width() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path()).unwrap();
+        let mut session = inspection.level2_reset_session().unwrap();
+        let terrain = session.session.state.live.terrain.clone();
+        let mut root = session
+            .economy_mut()
+            .allocate_authored_archer(232, archer_position())
+            .unwrap();
+        root.actual_speed = 0;
+        // Common cadence of sub_1C310 (4/30), sub_1C560 (30), and 1D8C0 (8).
+        root.source_byte_3e = 120;
+        root.shift_rot_x = 256;
+        let mut target = target_in_arena(
+            &session.session.state.live.economy,
+            root.source_entity_index,
+        )
+        .unwrap();
+        target.entity_index = 777;
+        target.position.x = root.position.x.wrapping_add(1000);
+        let mut peer = target;
+        peer.entity_index = 778;
+        // Outside the old hard-coded 128, inside the retained collision width.
+        peer.position.x = root.position.x.wrapping_add(192);
+        // An earlier callback can kill/hide a member of the frozen peer list.
+        // The attack helper still uses that member's geometry this pass.
+        peer.life = -1;
+        peer.control_flags |= ENTITY_DRAW_DISABLED_BIT;
+        let relation = |target: ArcherTarget, source_id| ArcherRelation {
+            slot: target.entity_index,
+            target,
+            source_id,
+            parent: 0,
+            stage_index: 0,
+            stage_mode: 0,
+            stage_relation: 0,
+            attacker: 0,
+            yaw: 0,
+            roll: 0,
+            half_width: 0,
+            frozen_class5_member: true,
+        };
+        let self_target = ArcherTarget {
+            entity_index: root.source_entity_index,
+            position: root.position,
+            ..target
+        };
+        for same_identity in [true, false] {
+            let relations = [
+                relation(self_target, 42),
+                relation(target, 43),
+                relation(peer, if same_identity { 42 } else { 44 }),
+            ];
+            let expected_roll = if same_identity {
+                heading_for_positions(root.position, target.position)
+            } else {
+                heading_for_positions(peer.position, root.position)
+            } as i16;
+            for action in [
+                ARCHER_ACTION_ATTACK,
+                ARCHER_ACTION_LINK,
+                ARCHER_ACTION_IDLE_VISUAL,
+            ] {
+                let mut source = root;
+                source.action = action;
+                source.word_0x96_150 = target.entity_index;
+                let mut word_0x32 = target.entity_index;
+                let mut runtime = session.runtime.clone();
+                runtime.stage_variables[1].kind = 5;
+                runtime.stage_variables[1].flags = 0;
+                runtime.stage_variables[1].relation =
+                    RuntimeRelation::LiveEntity(target.entity_index);
+                let mut context = empty_context(&terrain);
+                context.target = Some(target);
+                context.peers = std::slice::from_ref(&peer);
+                context.relations = &relations;
+                context.stage = ArcherStageState {
+                    index: 1,
+                    mode: 5,
+                    ..ArcherStageState::default()
+                };
+                context.stage_runtime = Some(&mut runtime);
+                match action {
+                    ARCHER_ACTION_ATTACK => {
+                        step_archer_action34(&mut source, &mut context);
+                    }
+                    ARCHER_ACTION_LINK => {
+                        step_archer_action35(&mut source, &mut word_0x32, &mut context);
+                    }
+                    _ => {
+                        step_archer_action39(&mut source, &mut context);
+                    }
+                }
+                assert_eq!(
+                    source.roll, expected_roll,
+                    "action {action}, shared id {same_identity}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn archer_guard_scan_preserves_source_axis_promotion_at_world_boundary() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path()).unwrap();
+        let mut session = inspection.level2_reset_session().unwrap();
+        let terrain = session.session.state.live.terrain.clone();
+        let root = session
+            .economy_mut()
+            .allocate_authored_archer(232, archer_position())
+            .unwrap();
+        for seam_on_x in [true, false] {
+            let mut source = root;
+            source.position.x = 16;
+            source.position.y = 16;
+            source.position.z = terrain.ground_height(source.position);
+            source.actual_speed = 0;
+            source.action = ARCHER_ACTION_IDLE_VISUAL;
+            source.source_byte_3e = ARCHER_DESCRIPTOR_CADENCE;
+            source.source_byte_39 = 1;
+            let mut target = target_in_arena(
+                &session.session.state.live.economy,
+                session.state.entity_index,
+            )
+            .unwrap();
+            target.control_flags &= !0x20;
+            target.position = source.position;
+            if seam_on_x {
+                target.position.x = u16::MAX - 15;
+            } else {
+                target.position.y = u16::MAX - 15;
+            }
+            source.yaw = heading_for_positions(source.position, target.position) as i16;
+            let mut runtime = session.runtime.clone();
+            runtime.stage_variables[1].relation = RuntimeRelation::AxisScalar(
+                u32::from(source.position.x) | (u32::from(source.position.y) << 16),
+            );
+            let mut context = empty_context(&terrain);
+            context.entities = std::slice::from_ref(&target);
+            context.stage = ArcherStageState {
+                index: 1,
+                mode: 2,
+                ..ArcherStageState::default()
+            };
+            context.stage_runtime = Some(&mut runtime);
+            step_archer_action39(&mut source, &mut context);
+            assert_eq!(
+                source.action,
+                if seam_on_x {
+                    ARCHER_ACTION_IDLE_VISUAL
+                } else {
+                    ARCHER_ACTION_ATTACK
+                }
+            );
+            assert_eq!(context.stage.mode, if seam_on_x { 2 } else { 10 });
+        }
+    }
+
+    #[test]
+    fn archer_death_and_arrow_reflection_read_the_retained_family_identity() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path()).unwrap();
+        let mut session = inspection.level2_reset_session().unwrap();
+        let terrain = session.session.state.live.terrain.clone();
+        let root = session
+            .economy_mut()
+            .allocate_authored_archer(232, archer_position())
+            .unwrap();
+        let mut economy = session.economy().clone();
+        let state = economy
+            .authored_class5_archer
+            .iter_mut()
+            .find(|state| state.source_entity_index == root.source_entity_index)
+            .unwrap();
+        state.entity_id = 42;
+        state.control_flags |= 0x10;
+        assert_eq!(
+            economy.archer_arrow_target_properties(root.source_entity_index, &[]),
+            Some((5, 4, 0x14, ARCHER_MANA))
+        );
+        let parent = economy
+            .allocate_authored_archer(
+                233,
+                Position {
+                    x: root.position.x.wrapping_add(1000),
+                    ..root.position
+                },
+                &terrain,
+            )
+            .unwrap();
+        let arrow = economy
+            .allocate_archer_child_packet(ArcherChildRequest {
+                parent_entity_index: parent.source_entity_index,
+                parent_entity_id: parent.source_entity_index,
+                parent_word_0x96: root.source_entity_index,
+                parent_roll: parent.roll,
+                parent_position: parent.position,
+                parent_fov: parent.shift_rot_y,
+                target_entity_index: root.source_entity_index,
+                target_class: 5,
+                target_model: ARCHER_MODEL,
+                target_position: root.position,
+            })
+            .unwrap();
+        // The next projectile callback begins at the target's collision centre.
+        economy
+            .authored_class5_archer_children
+            .last_mut()
+            .unwrap()
+            .position = Position {
+            z: root
+                .position
+                .z
+                .wrapping_add(ARCHER_COLLISION_VERTICAL_OFFSET),
+            ..root.position
+        };
+        let (_, damage, reflection) = economy.step_authored_class5_archer_child_slot(
+            arrow.source_entity_index,
+            &terrain,
+            &[],
+        );
+        assert!(damage.is_none());
+        assert_eq!(reflection, Some(root.source_entity_index));
+        let reflected = economy.authored_class5_archer_children.last().unwrap();
+        assert_eq!((reflected.entity_id, reflected.subspell_index), (42, 500));
+        assert!(reflected.drawing_enabled);
+        let source = economy
+            .authored_class5
+            .iter_mut()
+            .find(|source| source.source_entity_index == root.source_entity_index)
+            .unwrap();
+        source.action = ARCHER_ACTION_KILL;
+        source.source_byte_3e = 0;
+        economy
+            .step_authored_archer_slot(root.source_entity_index, empty_context(&terrain), &terrain)
+            .unwrap();
+        assert_eq!(economy.death_bursts.last().unwrap().id_entity_index, 42);
+        assert!(
+            !economy
+                .authored_class5
+                .iter()
+                .find(|source| source.source_entity_index == root.source_entity_index)
+                .unwrap()
+                .drawing_enabled
+        );
     }
 
     #[test]

@@ -374,6 +374,14 @@ fn archer_distance_squared_2d(left: Position, right: Position) -> u32 {
         .cast_unsigned()
 }
 
+// sub_1DBF0 promotes the X subtraction to int but truncates Y to int16_t.
+// Its guard scan therefore differs from sub_1FAA0 at the world boundary.
+fn archer_guard_distance_squared(left: Position, right: Position) -> u32 {
+    let dx = i32::from(right.x) - i32::from(left.x);
+    let dy = i32::from(right.y.wrapping_sub(left.y).cast_signed());
+    dx.wrapping_mul(dx).wrapping_add(dy.wrapping_mul(dy)) as u32
+}
+
 /// Single-player `sub_68BF0 -> sub_68C70`, after StageVar prepass and before
 /// action callbacks. The returned countdown is propagated to the body chain.
 pub(crate) fn advance_archer_proximity(
@@ -647,6 +655,16 @@ fn archer_selected_target(context: &ArcherActionContext<'_>, slot: u16) -> Optio
         })
 }
 
+// The movement helpers compare id_0x1A, unlike target acquisition's pointer
+// comparison. Summoned/imported body rows can occupy distinct slots with one id.
+fn archer_source_id(context: &ArcherActionContext<'_>, slot: u16) -> u16 {
+    context
+        .relations
+        .iter()
+        .find(|row| row.slot == slot)
+        .map_or(slot, |row| row.source_id)
+}
+
 pub(crate) fn bind_archer_stage(
     source: &mut Level2AuthoredClass5Source,
     stage: &mut ArcherStageState,
@@ -823,7 +841,8 @@ fn stage_follow(
         }
     }
     if let Some(peer) = context.peers.iter().find(|peer| {
-        peer.entity_index != source.source_entity_index
+        archer_source_id(context, peer.entity_index)
+            != archer_source_id(context, source.source_entity_index)
             && if point_mode {
                 // 1DDA0 explicitly casts both coordinates to int16_t.
                 signed_axis_near(
@@ -1187,13 +1206,20 @@ pub(crate) fn step_archer_action39(
             && source
                 .source_byte_3e
                 .is_multiple_of(ARCHER_DESCRIPTOR_CADENCE)
-            && let Some(target) = archer_nearest_candidate(
-                source,
-                context.entities,
-                ARCHER_DESCRIPTOR_RANGE * ARCHER_DESCRIPTOR_RANGE,
-                true,
-                |target| target.class == 3 && target.control_flags & 0x20 == 0,
-            )
+            && let Some(target) = context
+                .entities
+                .iter()
+                .copied()
+                .filter(|target| {
+                    target.class == 3
+                        && target.control_flags & 0x20 == 0
+                        && archer_guard_distance_squared(source.position, target.position)
+                            <= ARCHER_DESCRIPTOR_RANGE * ARCHER_DESCRIPTOR_RANGE
+                        && archer_within_cone(source, *target)
+                })
+                .min_by_key(|target| {
+                    archer_guard_distance_squared(source.position, target.position)
+                })
         {
             source.word_0x96_150 = target.entity_index;
             context.stage.mode = 10;
@@ -1423,12 +1449,14 @@ pub(crate) fn step_archer_action34(
             source.roll = i16::try_from(heading_for_positions(source.position, target.position))
                 .expect("Archer target heading fits i16");
             if let Some(peer) = context.peers.iter().copied().find(|peer| {
-                peer.entity_index != source.source_entity_index
+                archer_source_id(context, peer.entity_index)
+                    != archer_source_id(context, source.source_entity_index)
                     && peer.class == ARCHER_SOURCE_CLASS
                     && peer.model == ARCHER_MODEL
-                    && archer_target_is_live(*peer)
-                    && peer.position.x.abs_diff(source.position.x) < 128
-                    && peer.position.y.abs_diff(source.position.y) < 128
+                    && i32::from(peer.position.x.abs_diff(source.position.x))
+                        < i32::from(source.shift_rot_x)
+                    && i32::from(peer.position.y.abs_diff(source.position.y))
+                        < i32::from(source.shift_rot_x)
             }) {
                 source.roll = i16::try_from(heading_for_positions(peer.position, source.position))
                     .expect("Archer peer heading fits i16");
@@ -1565,7 +1593,8 @@ pub(crate) fn step_archer_action35(
         source.roll = heading_for_positions(source.position, leader.position) as i16;
     }
     if let Some(neighbor) = context.peers.iter().find(|other| {
-        other.entity_index != source.source_entity_index
+        archer_source_id(context, other.entity_index)
+            != archer_source_id(context, source.source_entity_index)
             && i32::from(other.position.x.cast_signed())
                 .abs_diff(i32::from(source.position.x.cast_signed()))
                 < 256
