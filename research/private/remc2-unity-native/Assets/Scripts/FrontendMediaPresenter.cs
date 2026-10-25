@@ -154,7 +154,7 @@ namespace MagicCarpet.Native
                 pixels = new byte[checked(current.width * current.height)];
                 palette = new byte[768];
                 colors = new Color32[pixels.Length];
-                if (texture != null) UnityEngine.Object.Destroy(texture);
+                ReleaseObject(texture);
                 texture = new Texture2D(current.width, current.height, TextureFormat.RGBA32, false)
                 { name = "MC2 owner FMV " + current.clip_id, filterMode = FilterMode.Point };
             }
@@ -345,7 +345,7 @@ namespace MagicCarpet.Native
             frames?.Dispose(); frames = null;
             if (!retainTexture)
             {
-                if (texture != null) UnityEngine.Object.Destroy(texture);
+                ReleaseObject(texture);
                 texture = null;
             }
             pixels = null; palette = null; colors = null; frameIndex = -1;
@@ -353,18 +353,24 @@ namespace MagicCarpet.Native
         internal void StopAudio()
         {
             // The outer runtime owns the listener across frontend/gameplay.
-            foreach (var source in samples.Values) { source.Stop(); UnityEngine.Object.Destroy(source); }
+            foreach (var source in samples.Values) { source.Stop(); ReleaseObject(source); }
             samples.Clear();
             sampleUnits.Clear();
             if (music != null) { music.Stop(); music.clip = null; }
-            foreach (var clip in clips.Values) UnityEngine.Object.Destroy(clip);
+            foreach (var clip in clips.Values) ReleaseObject(clip);
             clips.Clear();
         }
         public void Dispose()
         {
             ReleaseSegment(); StopAudio();
-            if (audioRoot != null) UnityEngine.Object.Destroy(audioRoot);
+            ReleaseObject(audioRoot);
             audioRoot = null; music = null; current = null;
+        }
+        private static void ReleaseObject(UnityEngine.Object value)
+        {
+            if (value == null) return;
+            if (Application.isPlaying) UnityEngine.Object.Destroy(value);
+            else UnityEngine.Object.DestroyImmediate(value);
         }
     }
 }
