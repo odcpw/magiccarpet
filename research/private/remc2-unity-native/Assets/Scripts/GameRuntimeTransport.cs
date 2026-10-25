@@ -1017,7 +1017,7 @@ namespace MagicCarpet.Native
                     var menu = identity.campaign_menu;
                     if (menu.briefing_speech != null &&
                         (menu.phase != "mission_select" || string.IsNullOrEmpty(menu.briefing_level_id) ||
-                         menu.briefing_speech.track < 1 || menu.briefing_speech.track > 3 ||
+                         menu.briefing_speech.track < 1 || menu.briefing_speech.track > 4 ||
                          menu.briefing_speech.segment != 0 || menu.briefing_speech.start_ms != 0 ||
                          menu.briefing_speech.length_ms == 0))
                         throw new InvalidOperationException("campaign briefing speech is not a source-bound map segment");

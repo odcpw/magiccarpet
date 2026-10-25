@@ -2752,6 +2752,46 @@ namespace MagicCarpet.Native.Tests
 
         [Test]
         [Timeout(180000)]
+        public void LevelFourSpeechUsesOwnerPcmAndRejectsSegmentsOutsideTrack()
+        {
+            var root = new GameObject("ordinary Mission4 speech");
+            try
+            {
+                using var speech = new CampaignSpeechPresenter(root.transform,
+                    Path.Combine(PrivateRoot, "generated", "mc2-campaign-speech-cache"));
+                // Type_DB080_CdTrack.h fourth row, source floating conversion
+                // truncated to milliseconds. Rust supplies these selected cues.
+                var starts = new uint[] { 0, 7999, 12999, 19999 };
+                var lengths = new uint[] { 6999, 3999, 5999, 7999 };
+                for (var i = 0; i < starts.Length; i++)
+                {
+                    speech.Play(4, starts[i], lengths[i]);
+                    Assert.That(speech.PlayCount, Is.EqualTo(i + 1));
+                    Assert.That(speech.LastTrack, Is.EqualTo(4));
+                    Assert.That(speech.LastStartMs, Is.EqualTo(starts[i]));
+                    Assert.That(speech.LastLengthMs, Is.EqualTo(lengths[i]));
+                }
+                var channel = root.GetComponentInChildren<AudioSource>();
+                Assert.That(root.GetComponentsInChildren<AudioSource>(), Has.Length.EqualTo(1),
+                    "new speech interrupts the existing channel");
+                Assert.That(channel.clip.samples, Is.EqualTo(1374156));
+                Assert.That(channel.clip.frequency, Is.EqualTo(44100));
+                Assert.That(channel.clip.channels, Is.EqualTo(2));
+                Assert.Throws<InvalidDataException>(() => speech.Play(4, 31000, 161));
+                Assert.Throws<InvalidDataException>(() => speech.Play(4, 32000, 1));
+                Assert.Throws<InvalidDataException>(() => speech.Play(4, 0, 0));
+                Assert.Throws<InvalidDataException>(() => speech.Play(5, 0, 1));
+                Assert.That(speech.PlayCount, Is.EqualTo(4),
+                    "rejected cues must not replace the current source segment");
+                Assert.That(speech.LastStartMs, Is.EqualTo(19999));
+                speech.Stop();
+                Assert.That(channel.clip, Is.Null);
+            }
+            finally { UnityEngine.Object.DestroyImmediate(root); }
+        }
+
+        [Test]
+        [Timeout(180000)]
         public void OpeningObjectiveSpeechReachesRealPcmConsumerOnceAndRestartsOnReset()
         {
             var root = new GameObject("ordinary Night objective speech");

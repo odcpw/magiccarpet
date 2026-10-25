@@ -42,7 +42,7 @@ namespace MagicCarpet.Native
             var catalog = JsonUtility.FromJson<Catalog>(
                 File.ReadAllText(Path.Combine(directory, "speech.json")));
             if (catalog?.schema != "mc2-campaign-speech/v1" || catalog.sample_rate != 44100 ||
-                catalog.channels != 2 || catalog.sample_width != 2 || catalog.tracks?.Length != 3)
+                catalog.channels != 2 || catalog.sample_width != 2 || catalog.tracks?.Length != 4)
                 throw new InvalidDataException("Invalid campaign speech catalog");
             root = new GameObject("MC2 campaign speech");
             root.transform.SetParent(parent, false);
@@ -53,7 +53,7 @@ namespace MagicCarpet.Native
             {
                 foreach (var track in catalog.tracks)
                 {
-                    if (track.track < 1 || track.track > 3 || clips.ContainsKey(track.track) ||
+                    if (track == null || track.track < 1 || track.track > 4 || clips.ContainsKey(track.track) ||
                         track.path != $"TRACK{track.track:00}.wav" || track.frames <= 0)
                         throw new InvalidDataException("Invalid campaign speech track binding");
                     var bytes = File.ReadAllBytes(Path.Combine(directory, track.path));
@@ -77,8 +77,9 @@ namespace MagicCarpet.Native
             // PlayCdTrackSegment in port_sdl_sound.cpp divides integer milliseconds
             // by 1000 before assigning double startPosSec. Preserve that source seek.
             var startSample = checked((long)(startMs / 1000) * clip.frequency);
-            if (startSample >= clip.samples)
-                throw new InvalidDataException("Campaign speech segment starts beyond its track");
+            var lengthSamples = checked(((long)lengthMs * clip.frequency + 999) / 1000);
+            if (startSample >= clip.samples || startSample + lengthSamples > clip.samples)
+                throw new InvalidDataException("Campaign speech segment extends beyond its track");
             source.Stop(); // the source owns one interruptible speech channel
             source.clip = clip;
             source.timeSamples = checked((int)startSample);
