@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Security.Cryptography;
 using System.Threading;
 using UnityEngine;
 
@@ -265,12 +266,16 @@ namespace MagicCarpet.Native
         private readonly Action<ulong, ushort, ulong> voiceCompleted;
         private readonly bool legacyAssetReferences;
         private readonly bool soundTwelveIsExplicitNull;
+        private readonly byte campaignMusicTrack;
         private float fadeAccumulator;
         private float musicFadeAccumulator;
         private int oneShotPlayCount;
         private int musicStartCount;
         private bool musicUpdatesEnabled;
         private bool musicTimerActive;
+        private bool campaignMusicDriven;
+        private uint campaignMusicStartCount;
+        private ulong campaignMusicGeneration;
         private int musicTargetMode = MusicIdleMode;
         private int musicCurrentUnits;
         private int musicDirection = -1;
@@ -280,14 +285,37 @@ namespace MagicCarpet.Native
         internal bool HadSuppressedUnknown { get; private set; }
         internal bool HadSuppressedUnsupportedPositional { get; private set; }
         private float preferenceSoundGain = 1f;
+        private float preferenceMusicGain = 1f;
+        private float speechSoundGain = 1f;
+        private float speechMusicGain = 1f;
+        private float campaignMusicGain = 1f;
+
+        private float SoundGain => preferenceSoundGain * speechSoundGain;
 
         internal void ApplyPreferences(PlayerPreferences preferences)
         {
             preferenceSoundGain = preferences.sound_enabled ? preferences.sound_volume / 127f : 0;
-            musicSource.volume = 0.55f * (preferences.music_enabled ? preferences.music_volume / 127f : 0);
-            foreach (var voice in positionalVoices) voice.Source.volume = preferenceSoundGain;
+            preferenceMusicGain = preferences.music_enabled ? preferences.music_volume / 127f : 0;
+            ApplyMix();
+        }
+
+        internal void SetSpeechMix(float soundGain, float musicGain)
+        {
+            Require(!float.IsNaN(soundGain) && !float.IsInfinity(soundGain) &&
+                !float.IsNaN(musicGain) && !float.IsInfinity(musicGain) &&
+                soundGain >= 0f && soundGain <= 1f && musicGain >= 0f && musicGain <= 1f,
+                "bounded source speech mix gains");
+            speechSoundGain = soundGain;
+            speechMusicGain = musicGain;
+            ApplyMix();
+        }
+
+        private void ApplyMix()
+        {
+            musicSource.volume = 0.55f * preferenceMusicGain * speechMusicGain * campaignMusicGain;
+            foreach (var voice in positionalVoices) voice.Source.volume = SoundGain;
             foreach (var state in loops.Values)
-                state.Source.volume = state.CurrentUnits / 127f * preferenceSoundGain;
+                state.Source.volume = state.CurrentUnits / 127f * SoundGain;
         }
 
         private OwnerAudioPresentation(
@@ -297,7 +325,8 @@ namespace MagicCarpet.Native
             StreamingPcm16 musicStream,
             Action<ulong, ushort, ulong> voiceCompleted,
             bool legacyAssetReferences = true,
-            bool soundTwelveIsExplicitNull = true)
+            bool soundTwelveIsExplicitNull = true,
+            byte campaignMusicTrack = 1)
         {
             this.root = root;
             this.musicSource = musicSource;
@@ -306,6 +335,7 @@ namespace MagicCarpet.Native
             this.voiceCompleted = voiceCompleted;
             this.legacyAssetReferences = legacyAssetReferences;
             this.soundTwelveIsExplicitNull = soundTwelveIsExplicitNull;
+            this.campaignMusicTrack = campaignMusicTrack;
             positionalVoices = new PositionalVoice[10];
             for (var index = 0; index < positionalVoices.Length; index++)
             {
@@ -322,7 +352,8 @@ namespace MagicCarpet.Native
             string musicDescriptorPath,
             Transform parent,
             Action<ulong, ushort, ulong> voiceCompleted = null,
-            int qualificationFailAfterSoundRows = -1)
+            int qualificationFailAfterSoundRows = -1,
+            bool legacyAssetReferences = true)
         {
             var sound = JsonUtility.FromJson<SoundDescriptor>(
                 cache.ReadOutputText(soundDescriptorPath));
@@ -377,7 +408,8 @@ namespace MagicCarpet.Native
                 musicSource.volume = 0.55f;
 
                 presentation = new OwnerAudioPresentation(
-                    root, musicSource, musicClip, stream, voiceCompleted);
+                    root, musicSource, musicClip, stream, voiceCompleted,
+                    legacyAssetReferences: legacyAssetReferences);
                 for (var index = 0; index < ExactSoundOrder.Length; index++)
                 {
                     if (index == qualificationFailAfterSoundRows)
@@ -437,16 +469,30 @@ namespace MagicCarpet.Native
             Action<ulong, ushort, ulong> voiceCompleted = null,
             int qualificationFailAfterSoundRows = -1)
         {
+            return LoadCampaignDay(cache, NativeSim.CampaignSelection.Create(3, 2, 0),
+                parent, voiceCompleted, qualificationFailAfterSoundRows);
+        }
+
+        internal static OwnerAudioPresentation LoadCampaignDay(
+            OwnerAssetCache cache,
+            NativeSim.CampaignSelection expected,
+            Transform parent,
+            Action<ulong, ushort, ulong> voiceCompleted = null,
+            int qualificationFailAfterSoundRows = -1)
+        {
             Require(
-                cache != null && cache.IsDayAggregate,
-                "qualified Level 3 aggregate owner cache");
+                cache != null && cache.IsDayAggregate && expected.mapType == 0 &&
+                (expected.externalLevel == 2 || expected.externalLevel == 3) &&
+                expected.internalLevel == expected.externalLevel - 1,
+                "qualified campaign Day aggregate owner cache and destination");
             const string component = "components/audio/";
             var descriptor = JsonUtility.FromJson<CampaignDayAudioDescriptor>(
                 cache.ReadOutputText(component + "audio/descriptor.json"));
             Require(
                 descriptor != null && descriptor.schema == "mc2-day-audio/v1" &&
-                descriptor.profile != null && descriptor.profile.external_level == 3 &&
-                descriptor.profile.internal_level == 2 &&
+                descriptor.profile != null &&
+                descriptor.profile.external_level == expected.externalLevel &&
+                descriptor.profile.internal_level == expected.internalLevel &&
                 descriptor.profile.map_type != null &&
                 descriptor.profile.map_type.id == 0 &&
                 descriptor.profile.map_type.name == "Day" &&
@@ -454,7 +500,7 @@ namespace MagicCarpet.Native
                 descriptor.sound.reachable_occurrence_count == 34 &&
                 descriptor.sound.records != null &&
                 descriptor.sound.records.Length == ExactCampaignDaySoundOrder.Length,
-                "qualified Level 3 Day audio descriptor");
+                "qualified destination-bound campaign Day audio descriptor");
             ValidateCampaignDayMusic(descriptor.music);
 
             GameObject root = null;
@@ -463,7 +509,7 @@ namespace MagicCarpet.Native
             OwnerAudioPresentation presentation = null;
             try
             {
-                root = new GameObject("Owner-local Level 3 Day audio");
+                root = new GameObject($"Owner-local Level {expected.externalLevel} Day audio");
                 root.transform.SetParent(parent, false);
                 musicSource = AddSource(
                     root, "C2GAME1 Day owner-local presentation adaptation", true);
@@ -492,7 +538,8 @@ namespace MagicCarpet.Native
                     stream,
                     voiceCompleted,
                     legacyAssetReferences: false,
-                    soundTwelveIsExplicitNull: false);
+                    soundTwelveIsExplicitNull: false,
+                    campaignMusicTrack: 2);
                 for (var index = 0; index < ExactCampaignDaySoundOrder.Length; index++)
                 {
                     if (index == qualificationFailAfterSoundRows)
@@ -586,10 +633,10 @@ namespace MagicCarpet.Native
                     else if (state.CurrentUnits > state.TargetUnits)
                         state.CurrentUnits = Math.Max(
                             state.TargetUnits, state.CurrentUnits - callbacks);
-                    state.Source.volume = state.CurrentUnits / 127f * preferenceSoundGain;
+                    state.Source.volume = state.CurrentUnits / 127f * SoundGain;
                 }
             }
-            if (musicTimerActive)
+            if (musicTimerActive && !campaignMusicDriven)
             {
                 musicFadeAccumulator += deltaTime * MusicTimerHz(musicTimerMultiplier);
                 var musicCallbacks = Mathf.FloorToInt(musicFadeAccumulator);
@@ -641,6 +688,77 @@ namespace MagicCarpet.Native
             }
         }
 
+        internal void ConsumeObjectiveSound(
+            NativeSim.NativeEvent nativeEvent,
+            NativeSim.AudioCommand audioCommand)
+        {
+            Require(nativeEvent.kind == NativeSim.EventPrepareSound &&
+                (nativeEvent.code == 41 || nativeEvent.code == 61),
+                "source-authored objective sound event");
+            PrepareSound(nativeEvent, audioCommand, true);
+        }
+
+        internal void LoadObjectiveSound61(OwnerAssetCache cache, string validatedPath)
+        {
+            Require(!legacyAssetReferences && cache != null && !rows.ContainsKey(61),
+                "campaign-only missing objective sound binding");
+            var bytes = cache.ReadOutput(validatedPath);
+            using (var hash = SHA256.Create())
+                Require(BitConverter.ToString(hash.ComputeHash(bytes)).Replace("-", "")
+                    .ToLowerInvariant() ==
+                    "04d167b6abc8e7624827213ed14cf3d3e60cfc18e8251ace32b7705774e60d9e",
+                    "source Night/822 slot60 SUCCESS2.WAV payload");
+            var wave = ParseWave(bytes);
+            Require(wave.Channels == 1 && wave.SampleWidth == 1 &&
+                wave.SampleRate == 22050 && wave.Frames == 33857,
+                "source objective success sound PCM format");
+            var clip = CreatePcm8Clip("success2", wave);
+            rows.Add(61, new SoundRow {
+                sound_id = 61,
+                semantic_name = "success2",
+                play_class = "one_shot",
+                playback_scope = "original_stereo_positional",
+                asset_path = validatedPath,
+                mapping_status = "materialized_campaign_objective"
+            });
+            waves.Add(61, wave);
+            clips.Add(61, clip);
+        }
+
+        internal void ApplyCampaignMusic(NativeSim.CampaignDayMusicSnapshot state)
+        {
+            Require(state.abiVersion == NativeSim.AbiVersion && state.structSize == 80 &&
+                state.volume <= 127 && state.currentUnits <= 127 &&
+                (state.playing == 0 || (state.initialized != 0 && state.loaded != 0 &&
+                    state.active != 0 && state.track == campaignMusicTrack)),
+                "authoritative campaign music state");
+            campaignMusicDriven = true;
+            musicUpdatesEnabled = state.updatesEnabled != 0;
+            musicTimerActive = state.timerActive != 0;
+            musicTargetMode = state.targetMode;
+            musicCurrentUnits = state.currentUnits;
+            musicDirection = state.direction;
+            musicTimerMultiplier = state.timerMultiplier;
+            campaignMusicGain = state.volume / 127f;
+            var restarted = campaignMusicGeneration != state.generation ||
+                campaignMusicStartCount != state.startCount;
+            campaignMusicGeneration = state.generation;
+            campaignMusicStartCount = state.startCount;
+            if (state.playing == 0)
+                musicSource.Stop();
+            else if (restarted)
+            {
+                musicSource.Stop();
+                musicSource.timeSamples = 0;
+                musicStream.Seek(0);
+                musicSource.Play();
+                musicStartCount++;
+                Debug.Log($"MC_MUSIC_START generation={state.generation} tick={state.tick} " +
+                    $"logicalTrack={state.track} startCount={state.startCount}");
+            }
+            ApplyMix();
+        }
+
         internal static bool EventPreparesSound(uint kind)
         {
             return kind == NativeSim.EventPrepareSound ||
@@ -673,6 +791,11 @@ namespace MagicCarpet.Native
             musicStream.Seek(0);
             fadeAccumulator = 0f;
             ResetMusicEnvelope();
+            campaignMusicDriven = false;
+            campaignMusicGeneration = 0;
+            campaignMusicStartCount = 0;
+            campaignMusicGain = 1f;
+            SetSpeechMix(1f, 1f);
             musicStartCount = 0;
             oneShotPlayCount = 0;
             HadSuppressedUnknown = false;
@@ -1015,7 +1138,7 @@ namespace MagicCarpet.Native
                 rightGain);
             state.Source.clip = state.RenderedClip;
             state.Source.loop = false;
-            state.Source.volume = preferenceSoundGain;
+            state.Source.volume = SoundGain;
             state.Source.panStereo = 0f;
             state.Source.pitch = command.playbackRateHz / 22050f;
             state.SoundId = command.soundId;
