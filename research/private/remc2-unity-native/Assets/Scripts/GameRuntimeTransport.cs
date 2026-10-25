@@ -16,9 +16,9 @@ namespace MagicCarpet.Native
     /// </summary>
     internal sealed class GameRuntimeTransport : IDisposable
     {
-        internal const string RuntimeContract = "carpet-flight-game-runtime/v11";
+        internal const string RuntimeContract = "carpet-flight-game-runtime/v12";
         internal const string TransportContract =
-            "carpet-flight-native-game-runtime-json/v11";
+            "carpet-flight-native-game-runtime-json/v12";
         internal const string DefinitionContract =
             "carpet-flight-game-definition/v11";
         internal const string SemanticContractVersion = "36.0";
@@ -904,7 +904,7 @@ namespace MagicCarpet.Native
             if (contract == null ||
                 contract.runtime_contract != RuntimeContract ||
                 contract.transport_contract != TransportContract ||
-                contract.transport_version != 11 ||
+                contract.transport_version != 12 ||
                 contract.definition_contract != DefinitionContract ||
                 contract.semantic_contract_version != SemanticContractVersion ||
                 contract.encoding != "utf-8-json" ||
@@ -970,7 +970,7 @@ namespace MagicCarpet.Native
                     .SequenceEqual(contract.modes) ||
                 contract.transitions == null ||
                 !new[] {
-                    "bootstrap_package_set", "restart_new_game", "open_level", "cancel_loading",
+                    "bootstrap_package_set", "restart_new_game", "show_new_game_map", "open_level", "cancel_loading",
                     "load_replay_save", "pause", "paused_frame", "resume",
                     "accept_completion_transition", "finish_mission_if_ready", "campaign_menu_command", "close"
                 }
