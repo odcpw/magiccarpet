@@ -5,7 +5,7 @@
 //! publication. This module owns the coupled controller/terrain transaction
 //! and returns the exact sound-47 lifecycle request produced by one callback.
 
-use super::{MapType, Position, SessionTerrain, TerrainPlanes};
+use super::{EntitySnapshot, MapType, Position, SessionTerrain, TerrainPlanes};
 
 /// Cave corridor state and geometry, corresponding to `sub_5B100`.
 ///
@@ -412,6 +412,43 @@ impl TerrainStripControllerState {
             span,
         }
     }
+}
+
+/// Source `sub_51660` and the ordinary `sub_4A310` authored overrides.
+/// The caller owns NewEvent allocation and map insertion; this owner binds
+/// the hidden controller's authoritative words, consumed by every visit.
+pub(crate) fn bind_startup_construction(source: &mut EntitySnapshot, direction: i8, span: i32) {
+    source.class = 14;
+    source.model = 1;
+    source.record[67] = 14;
+    source.record[68] = 1;
+    source.set_source_action(6);
+    source.set_max_life(0);
+    source.set_life(0);
+    source.set_control_flags((source.control_flags & !9) | 5);
+    source.set_subspell_index(0);
+    source.level_gate = direction;
+    source.set_source_byte_46(direction as u8);
+    source.set_source_dword_10(span);
+}
+
+/// Visit the same authoritative row from ordinary play and startup replay.
+/// The caller publishes the returned audio before its common epilogue.
+pub(crate) fn visit_source(
+    source: &mut EntitySnapshot,
+    terrain: &mut SessionTerrain,
+) -> TerrainStripVisit {
+    let mut controller = TerrainStripControllerState {
+        life: source.life,
+        subspell_index: source.subspell_index,
+        direction: source.level_gate,
+        span: source.source_dword_10(),
+    };
+    let visit = terrain.apply_terrain_strip_visit(source.position, &mut controller);
+    source.set_life(controller.life);
+    source.set_subspell_index(controller.subspell_index);
+    source.set_source_dword_10(controller.span);
+    visit
 }
 
 /// The two audio calls reachable from one terrain-strip callback.

@@ -18,7 +18,7 @@ use crate::{
     level1_mission::{AuthoredFeature, parse_authored_features},
     native_world::{
         EntitySnapshot, Level2EconomyState, MapType, ParticleParameter, SessionTerrain,
-        cave_corridors, level1_load_house_base,
+        cave_corridors, level1_load_house_base, terrain_strip,
     },
     renderable_map_chain::RenderableMapSeed,
     world::terrain::disasters::{RingProfile, mc2 as rings},
@@ -72,7 +72,14 @@ impl CaveStartupWorld {
         // descending slots restores the actual numeric callback order.
         arena.rebuild_source_arena_with_terrain(&mut terrain, &[])?;
         for &row in self.authored.iter().skip(1) {
-            if row.activation_group != 0 || row.kind != 10 {
+            if row.activation_group != 0 {
+                continue;
+            }
+            if (row.kind, row.subtype) == (14, 1) {
+                construct_strip(&mut arena, &mut terrain, row)?;
+                continue;
+            }
+            if row.kind != 10 {
                 continue;
             }
             match row.subtype {
@@ -160,6 +167,9 @@ impl CaveStartupWorld {
                     step_house(&mut arena.entities[slot], &mut terrain, &self.buildings)?
                 }
                 (10, 63 | 64, _) => rings::runtime::step_trigger(&mut arena, slot as u16)?,
+                (14, 1, 6) => {
+                    terrain_strip::visit_source(&mut arena.entities[slot], &mut terrain);
+                }
                 (14, 2, _) => {
                     cave_corridors::visit(&mut arena, &mut terrain, slot as u16);
                 }
@@ -510,6 +520,33 @@ fn apply_damage(arena: &mut SourceArena, damage: rings::AreaDamage) -> Result<u1
     // Startup has not allocated player spell holders; sub6D8B0 rejects this
     // class10 self owner for XP. Damage still precedes the geometry writes.
     crate::native_world::area_damage::apply(arena, None, None, request)
+}
+
+fn construct_strip(
+    arena: &mut SourceArena,
+    terrain: &mut SessionTerrain,
+    feature: AuthoredFeature,
+) -> Result<Option<u16>, String> {
+    let Some(slot) = arena.allocate_source_slot_with_terrain(terrain) else {
+        return Ok(None);
+    };
+    let position = feature.world_position(terrain.ground_height(feature.world_position(0)));
+    let mut source = new_event(slot, arena.economy.new_event_rng(slot), position);
+    terrain_strip::bind_startup_construction(
+        &mut source,
+        feature.parameter_1 as i8,
+        i32::from(feature.parameter_2),
+    );
+    arena.economy.map_chains.sync_entity(RenderableMapSeed {
+        entity_index: slot,
+        active: true,
+        x: position.x,
+        y: position.y,
+    })?;
+    arena.economy.source_rng.insert(slot, source.entity_rng);
+    arena.entities[usize::from(slot)] = source;
+    synchronize_links(arena, terrain, slot);
+    Ok(Some(slot))
 }
 
 fn construct_house(
