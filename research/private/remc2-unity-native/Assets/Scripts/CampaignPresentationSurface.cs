@@ -6,6 +6,7 @@ using UnityEngine.Rendering;
 
 namespace MagicCarpet.Native
 {
+    [ExecuteAlways]
     internal sealed class CampaignIndexedSceneCapture : MonoBehaviour
     {
         internal Action Captured;
@@ -173,8 +174,9 @@ namespace MagicCarpet.Native
                 var blend = new byte[65536];
                 Buffer.BlockCopy(tables, 0x4000, blend, 0, blend.Length);
                 sceneBlendTable = CreateBlendTable(blend);
-                if (descriptor.day_exit_tables != null)
-                    exitBlendTable = CreateBlendTable(cache.ReadOutput(descriptor.day_exit_tables.path));
+                var exitTablePath = descriptor.day_exit_tables?.path;
+                if (descriptor.profile.map_type.id == 0 && !string.IsNullOrEmpty(exitTablePath))
+                    exitBlendTable = CreateBlendTable(cache.ReadOutput(exitTablePath));
                 sceneTarget = CreateSceneTarget("MC2 current world indices", 24);
                 composedHistory = CreateSceneTarget("MC2 composed scene history", 0);
                 nextHistory = CreateSceneTarget("MC2 next composed scene history", 0);
