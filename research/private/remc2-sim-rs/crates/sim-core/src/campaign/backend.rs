@@ -662,7 +662,8 @@ fn load_mc2_campaign_inputs(
     }
 }
 
-pub const MC2_CAMPAIGN_REPLAY_SAVE_CONTRACT: &str = "carpet-flight-mc2-campaign-replay-save/v5";
+pub const MC2_CAMPAIGN_REPLAY_SAVE_CONTRACT: &str = "carpet-flight-mc2-campaign-replay-save/v6";
+const LEGACY_MC2_CAMPAIGN_REPLAY_SAVE_CONTRACT: &str = "carpet-flight-mc2-campaign-replay-save/v5";
 pub const MAX_MC2_CAMPAIGN_REPLAY_SAVE_BYTES: usize = 16 * 1024 * 1024;
 pub const MAX_MC2_CAMPAIGN_REPLAY_OPERATIONS: usize = 1_000_000;
 
@@ -673,6 +674,10 @@ struct Mc2CampaignReplaySave {
     paused: bool,
     definition: GameDefinition,
     semantic_spell_carry: Mc2SemanticSpellCarry,
+    // v5 did not retain the campaign frontier. Omission must remain omission
+    // when checking its original receipt; it cannot imply earned completions.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    completed_levels: Option<Vec<SemanticLevelId>>,
     operations: Vec<crate::game_runtime::ReplayOperation<GameCommand>>,
     expected_tick: u64,
     expected_state_hash: u64,
@@ -688,6 +693,8 @@ struct Mc2CampaignReplaySavePayload<'a> {
     paused: bool,
     definition: &'a GameDefinition,
     semantic_spell_carry: &'a Mc2SemanticSpellCarry,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    completed_levels: Option<&'a [SemanticLevelId]>,
     operations: &'a [crate::game_runtime::ReplayOperation<GameCommand>],
     expected_tick: u64,
     expected_state_hash: u64,
@@ -701,6 +708,7 @@ impl Mc2CampaignReplaySave {
         paused: bool,
         definition: GameDefinition,
         semantic_spell_carry: Mc2SemanticSpellCarry,
+        completed_levels: Vec<SemanticLevelId>,
         operations: Vec<crate::game_runtime::ReplayOperation<GameCommand>>,
         snapshot: &CampaignSnapshot,
     ) -> Self {
@@ -709,6 +717,7 @@ impl Mc2CampaignReplaySave {
             paused,
             definition,
             semantic_spell_carry,
+            completed_levels: Some(completed_levels),
             operations,
             expected_tick: snapshot.tick,
             expected_state_hash: snapshot.state_hash,
@@ -727,6 +736,7 @@ impl Mc2CampaignReplaySave {
             paused: self.paused,
             definition: &self.definition,
             semantic_spell_carry: &self.semantic_spell_carry,
+            completed_levels: self.completed_levels.as_deref(),
             operations: &self.operations,
             expected_tick: self.expected_tick,
             expected_state_hash: self.expected_state_hash,
@@ -740,7 +750,10 @@ impl Mc2CampaignReplaySave {
     }
 
     fn verify(&self) -> bool {
-        self.save_contract == MC2_CAMPAIGN_REPLAY_SAVE_CONTRACT
+        ((self.save_contract == MC2_CAMPAIGN_REPLAY_SAVE_CONTRACT
+            && self.completed_levels.is_some())
+            || (self.save_contract == LEGACY_MC2_CAMPAIGN_REPLAY_SAVE_CONTRACT
+                && self.completed_levels.is_none()))
             && self.receipt_sha256 == self.compute_receipt_sha256()
     }
 }
@@ -1235,6 +1248,7 @@ impl Mc2RuntimePackageResolver {
             mode == crate::game_runtime::RuntimeMode::Paused,
             session.definition().as_ref().clone(),
             semantic_spell_carry,
+            runtime.completed_levels().to_vec(),
             session.backend().replay_operations.clone(),
             &snapshot,
         );
@@ -1325,6 +1339,7 @@ impl Mc2RuntimePackageResolver {
             .map_err(Mc2CampaignReplaySaveError::Definition)?;
         let definition = Arc::new(save.definition);
         let semantic_spell_carry = save.semantic_spell_carry;
+        let completed_levels = save.completed_levels.unwrap_or_default();
         let operations = save.operations;
         let expected_tick = save.expected_tick;
         let expected_state_hash = save.expected_state_hash;
@@ -1340,6 +1355,7 @@ impl Mc2RuntimePackageResolver {
                 session_id,
                 operations,
                 paused,
+                completed_levels,
                 |_| Ok(package.inputs.clone()),
                 move |candidate| {
                     candidate
@@ -1439,6 +1455,25 @@ impl Mc2RuntimePackageResolver {
     pub(crate) fn corrupt_save_expected_state_for_test(bytes: &[u8]) -> Vec<u8> {
         let mut save: Mc2CampaignReplaySave = serde_json::from_slice(bytes).unwrap();
         save.expected_state_hash ^= 1;
+        save.receipt_sha256 = save.compute_receipt_sha256();
+        serde_json::to_vec(&save).unwrap()
+    }
+
+    /// Construct receipt-valid progress negatives and an old-schema save for
+    /// focused loader checks, never for a retained route capture.
+    #[cfg(test)]
+    pub(crate) fn save_with_progress_for_test(
+        bytes: &[u8],
+        completed_levels: Option<Vec<SemanticLevelId>>,
+    ) -> Vec<u8> {
+        let mut save: Mc2CampaignReplaySave = serde_json::from_slice(bytes).unwrap();
+        save.save_contract = if completed_levels.is_some() {
+            MC2_CAMPAIGN_REPLAY_SAVE_CONTRACT
+        } else {
+            LEGACY_MC2_CAMPAIGN_REPLAY_SAVE_CONTRACT
+        }
+        .to_owned();
+        save.completed_levels = completed_levels;
         save.receipt_sha256 = save.compute_receipt_sha256();
         serde_json::to_vec(&save).unwrap()
     }
@@ -10770,6 +10805,7 @@ pub(crate) mod tests {
                 false,
                 session.definition().as_ref().clone(),
                 session.backend().initial_semantic_spell_carry()?,
+                Vec::new(),
                 session.backend().replay_operations.clone(),
                 &session.backend().snapshot(),
             );
@@ -14156,6 +14192,7 @@ pub(crate) mod tests {
                 false,
                 session.definition().as_ref().clone(),
                 session.backend().initial_semantic_spell_carry().unwrap(),
+                Vec::new(),
                 session.backend().replay_operations.clone(),
                 &session.backend().snapshot(),
             );
@@ -15679,6 +15716,7 @@ pub(crate) mod tests {
                 .backend()
                 .initial_semantic_spell_carry()
                 .map_err(Mc2CampaignReplaySaveError::Runtime)?,
+            trace.completed_levels.clone().unwrap_or_default(),
             current.backend().replay_operations.clone(),
             &actual,
         );
@@ -15730,6 +15768,7 @@ pub(crate) mod tests {
             false,
             definition.as_ref().clone(),
             original.backend().initial_semantic_spell_carry().unwrap(),
+            Vec::new(),
             original.backend().replay_operations.clone(),
             &expected,
         );
@@ -15755,6 +15794,7 @@ pub(crate) mod tests {
             false,
             definition.as_ref().clone(),
             original.backend().initial_semantic_spell_carry().unwrap(),
+            Vec::new(),
             original.backend().replay_operations.clone(),
             &alternate_snapshot,
         );
@@ -15828,6 +15868,7 @@ pub(crate) mod tests {
             false,
             definition.as_ref().clone(),
             original.backend().initial_semantic_spell_carry().unwrap(),
+            Vec::new(),
             original.backend().replay_operations.clone(),
             &original.backend().snapshot(),
         );

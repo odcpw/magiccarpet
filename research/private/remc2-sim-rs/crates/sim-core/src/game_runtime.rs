@@ -529,6 +529,10 @@ impl<B: GameSessionBackend> GameRuntime<B> {
         Ok(())
     }
 
+    pub(crate) fn completed_levels(&self) -> &[SemanticLevelId] {
+        &self.completed_levels
+    }
+
     /// Advance presentation-only frontend work using the same guarded owner.
     pub fn frontend_media_command(
         &mut self,
@@ -701,6 +705,7 @@ impl<B: GameSessionBackend> GameRuntime<B> {
         session_id: u64,
         operations: I,
         paused: bool,
+        completed_levels: Vec<SemanticLevelId>,
         resolve_input: F,
         prepare: P,
         verify: V,
@@ -734,6 +739,23 @@ impl<B: GameSessionBackend> GameRuntime<B> {
         let next_generation = self
             .next_generation()
             .map_err(RestorePlayingError::Transition)?;
+        let flow = definition.runtime_flow().ok_or_else(|| {
+            RestorePlayingError::Transition(RuntimeTransitionError::InvalidReplay {
+                message: "saved campaign progress has no runtime flow".to_owned(),
+            })
+        })?;
+        let mut seen = std::collections::BTreeSet::new();
+        if completed_levels.iter().any(|level| {
+            !flow.entries().iter().any(|entry| entry.level_id() == level)
+                || !seen.insert(level)
+        }) {
+            return Err(RestorePlayingError::Transition(
+                RuntimeTransitionError::InvalidReplay {
+                    message: "saved campaign progress contains an unknown or repeated mission"
+                        .to_owned(),
+                },
+            ));
+        }
         let input = resolve_input(definition.as_ref()).map_err(RestorePlayingError::Transition)?;
         let mut candidate = GameSession::open_with_generation(
             adapter,
@@ -770,6 +792,7 @@ impl<B: GameSessionBackend> GameRuntime<B> {
             session: candidate,
             paused,
         };
+        self.completed_levels = completed_levels;
         self.generation = next_generation;
         Ok(self.identity())
     }
@@ -2720,12 +2743,52 @@ mod tests {
         );
         assert_eq!(save_json["expected_tick"], 2);
 
+        assert_eq!(
+            save_json["completed_levels"],
+            serde_json::json!(["level.magic_carpet_2.night_spire"])
+        );
+
         let mut restored = GameRuntime::<Mc2CampaignBackend>::title(512).unwrap();
         let title = restored.identity();
+        for invalid_progress in [
+            vec![SemanticLevelId::parse("level.unknown").unwrap()],
+            vec![
+                resolver.flow().entry_level_id().clone(),
+                resolver.flow().entry_level_id().clone(),
+            ],
+        ] {
+            let invalid = Mc2RuntimePackageResolver::save_with_progress_for_test(
+                &save,
+                Some(invalid_progress),
+            );
+            assert!(matches!(
+                resolver.load_replay(&mut restored, title.guard(), 512, &invalid),
+                Err(Mc2CampaignReplaySaveError::Restore(
+                    RestorePlayingError::Transition(RuntimeTransitionError::InvalidReplay { .. })
+                ))
+            ));
+            assert_eq!(restored.identity(), title);
+            assert!(restored.completed_levels.is_empty());
+        }
+        // A progress change without updating the digest is rejected before
+        // either the world candidate or its campaign history is published.
+        let mut tampered = save_json.clone();
+        tampered["completed_levels"] = serde_json::json!([]);
+        assert!(matches!(
+            resolver.load_replay(
+                &mut restored,
+                title.guard(),
+                512,
+                &serde_json::to_vec(&tampered).unwrap(),
+            ),
+            Err(Mc2CampaignReplaySaveError::InvalidSave { .. })
+        ));
+        assert_eq!(restored.identity(), title);
         let restored_identity = resolver
             .load_replay(&mut restored, title.guard(), 512, &save)
             .unwrap();
         assert_eq!(restored_identity.mode, RuntimeMode::Playing);
+        assert_eq!(restored.completed_levels, source.completed_levels);
         assert_eq!(
             restored_identity.active_runtime_flow,
             source_identity.active_runtime_flow
@@ -2773,6 +2836,20 @@ mod tests {
             .step(guard, GameCommand::default())
             .unwrap();
         assert_eq!(after.identity.tick, 3);
+
+        // Old saves still replay their exact world; their schema did not
+        // record earned map history, so do not infer it from the bound level.
+        let legacy = Mc2RuntimePackageResolver::save_with_progress_for_test(&save, None);
+        let mut legacy_runtime = GameRuntime::<Mc2CampaignBackend>::title(513).unwrap();
+        let legacy_title = legacy_runtime.identity();
+        resolver
+            .load_replay(&mut legacy_runtime, legacy_title.guard(), 513, &legacy)
+            .unwrap();
+        assert!(legacy_runtime.completed_levels.is_empty());
+        assert_eq!(
+            legacy_runtime.session().unwrap().snapshot().value,
+            source_snapshot.value
+        );
 
         // No-Claim: this stages only the separately proved incoming Level 2
         // boundary and proves definition-bound Playing replay for that real
@@ -3114,6 +3191,7 @@ mod tests {
             .load_replay(&mut restored, title.guard(), 522, &save)
             .unwrap();
         assert_eq!(restored_identity.mode, RuntimeMode::Playing);
+        assert_eq!(restored.completed_levels, source.completed_levels);
         assert_eq!(
             restored_identity.active_runtime_flow,
             source_identity.active_runtime_flow
