@@ -39,6 +39,138 @@ const FIREFLY_ORBIT_REACHED_DISTANCE: u32 = 1_280;
 const FIREFLY_CHARGE_DURATION: i32 = 24;
 const FIREFLY_CHARGE_CONTACT_RANGE: u32 = 768;
 const FIREFLY_FIREBALL_PAYLOAD: u16 = 500;
+/// Imported reset roots have source-slot identity, not an authored placement
+/// index. Keep that provenance disjoint from the 1,200 authored records.
+pub(crate) const IMPORTED_FIREFLY_AUTHORED_INDEX: u16 = u16::MAX;
+
+/// Adopt the already constructed source roots, without rerunning NewEvent or
+/// sub_12330. Captured RNG, counters, slots, stage bindings and map links stay
+/// authoritative; this only transfers their live ownership to the Firefly.
+pub(crate) fn adopt_imported_fireflies(
+    arena: &mut crate::campaign::source_arena::SourceArena,
+    runtime: &RuntimeSnapshot,
+) -> std::result::Result<(), String> {
+    let imported = arena
+        .entities
+        .iter()
+        .filter(|row| row.active && row.class == 5 && row.model == FIREFLY_MODEL)
+        .filter(|row| {
+            !arena
+                .economy
+                .authored_class5
+                .iter()
+                .any(|source| source.source_entity_index == row.index)
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    for row in imported {
+        let record = row.record_bytes();
+        let word = |offset| u16::from_le_bytes([record[offset], record[offset + 1]]);
+        let stage_var1 = record[76];
+        let stage_var2 = record[77];
+        let stage_target = if stage_var1 == 0 {
+            Position::default()
+        } else {
+            let stage = runtime
+                .stage_variables
+                .get(usize::from(stage_var1))
+                .filter(|stage| matches!(stage.kind, 1 | 2))
+                .ok_or_else(|| {
+                    format!(
+                        "imported Firefly {} has unsupported StageVar {stage_var1}",
+                        row.index
+                    )
+                })?;
+            let RuntimeRelation::AxisScalar(point) = stage.relation else {
+                return Err(format!(
+                    "imported Firefly {} has no StageVar point",
+                    row.index
+                ));
+            };
+            Position {
+                x: point as u16,
+                y: (point >> 16) as u16,
+                z: 0,
+            }
+        };
+        let descriptor_index = row
+            .parameter_relation
+            .ok_or_else(|| format!("imported Firefly {} has no descriptor", row.index))?;
+        arena
+            .economy
+            .authored_class5
+            .push(Level2AuthoredClass5Source {
+                source_entity_index: row.index,
+                entity_rng: row.entity_rng,
+                authored_index: IMPORTED_FIREFLY_AUTHORED_INDEX,
+                model: row.model,
+                action: row.action,
+                minimum_speed: row.minimum_speed(),
+                maximum_speed: word(138) as i16,
+                actual_speed: row.actual_speed,
+                max_life: row.max_life,
+                life: row.life,
+                mana: row.mana,
+                max_mana: row.max_mana,
+                subspell_index: row.subspell_index,
+                dword_0x10: row.source_dword_10(),
+                pending_word_0x62: word(102),
+                word_0x26: row.word_26(),
+                word_0x24: row.word_24(),
+                byte_0x3b: row.byte_3b,
+                word_0x96_150: row.source_word_96(),
+                byte_0x46_70: record[74],
+                particle_index: word(94),
+                source_byte_3e: row.phase,
+                source_byte_39: record[61],
+                yaw: row.yaw,
+                pitch: row.pitch,
+                roll: row.source_roll(),
+                fov: row.fov,
+                shift_rot_x: row.array_pitch(),
+                shift_rot_y: row.array_fov(),
+                position: row.position,
+                phase: row.phase,
+                drawing_enabled: !row.drawing_disabled(),
+                active: true,
+            });
+        arena
+            .economy
+            .authored_class5_runtime
+            .push(Level2AuthoredClass5RuntimeState {
+                source_entity_index: row.index,
+                byte_0x38: record[60],
+                xtype: record[69],
+                descriptor_index,
+                pending_damage: i32::from_le_bytes(
+                    record[98..102]
+                        .try_into()
+                        .expect("imported Firefly damage dword extent"),
+                ),
+                linked_head: row.word_34(),
+            });
+        arena
+            .economy
+            .authored_fireflies
+            .push(AuthoredFireflyRuntime {
+                source_entity_index: row.index,
+                linked_entity_index: row.word_32(),
+                control_flags: row.control_flags,
+                byte_0x38: record[60],
+                xtype: record[69],
+                descriptor_index,
+                stage_var1,
+                stage_var2,
+                stage_target,
+                movement_blocked: row.control_flags & 0x0004_0000 != 0,
+            });
+        arena.economy.source_rng.insert(row.index, row.entity_rng);
+        let old = &mut arena.entities[usize::from(row.index)];
+        old.active = false;
+        old.record[2] = 0;
+    }
+    Ok(())
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct FireflyAttackTarget {
@@ -1550,7 +1682,7 @@ mod tests {
     }
 
     #[test]
-    fn cave_authored_kind_two_firefly_constructs_guards_attacks_and_rebinds() {
+    fn cave_imported_kind_two_firefly_adopts_guards_attacks_and_rebinds() {
         let package = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../../../generated/mc-bhq6-ordinary-20261025-zclu5fjj/level4");
         let campaign = CampaignSession::open(package, CampaignSelection::ordinary(4).unwrap())
@@ -1576,13 +1708,112 @@ mod tests {
             campaign.inspection().presentation().entity_parameters[88][32],
             1
         );
+        // The owner reset already constructed and stepped these roots. Its
+        // source slots are authoritative; authored placement683 is not a
+        // runtime origin field and must not be guessed from moved positions.
+        let imported = campaign
+            .inspection()
+            .entities()
+            .iter()
+            .filter(|row| row.active && row.class == 5 && row.model == FIREFLY_MODEL)
+            .collect::<Vec<_>>();
+        assert_eq!(imported.len(), 34);
+        assert_eq!(session.economy().authored_fireflies.len(), imported.len());
+        for raw in &imported {
+            let source = session
+                .economy()
+                .authored_class5
+                .iter()
+                .find(|source| source.active && source.source_entity_index == raw.index)
+                .expect("every imported Firefly has a live typed owner at its original slot");
+            assert_eq!(source.authored_index, IMPORTED_FIREFLY_AUTHORED_INDEX);
+            assert_eq!(
+                (source.position, source.entity_rng, source.life, source.mana),
+                (raw.position, raw.entity_rng, raw.life, raw.mana)
+            );
+            assert_eq!(
+                (source.action, source.source_byte_3e, source.actual_speed),
+                (raw.action, raw.phase, raw.actual_speed)
+            );
+            let state = session
+                .economy()
+                .authored_fireflies
+                .iter()
+                .find(|state| state.source_entity_index == raw.index)
+                .unwrap();
+            assert_eq!(
+                (state.stage_var1, state.stage_var2),
+                (raw.record[76], raw.record[77])
+            );
+            assert_eq!(
+                (state.control_flags, state.linked_entity_index),
+                (raw.control_flags, raw.word_32())
+            );
+            let retained = &session.source_arena().entities[usize::from(raw.index)];
+            assert!(
+                !retained.active,
+                "raw carrier cannot dispatch alongside its typed owner"
+            );
+            let mut expected_record = raw.record_bytes().to_vec();
+            expected_record[2] = 0;
+            assert_eq!(retained.record_bytes(), expected_record);
+            let identity = session
+                .source_arena()
+                .creature_runtime_identity(
+                    raw.index,
+                    session.session.definition.initial_creature_bindings(),
+                    session.session.definition.authored_creature_bindings(),
+                )
+                .unwrap();
+            assert_eq!(
+                identity.kind,
+                crate::level_definition::CreatureKind::Firefly
+            );
+            assert_eq!(
+                identity.origin,
+                crate::campaign::source_arena::CreatureRootOrigin::InitialPackage
+            );
+        }
+        assert_eq!(
+            session.runtime().stage_variables[1],
+            campaign.inspection().runtime().stage_variables[1],
+            "adoption cannot replay the source binding counter"
+        );
+        let mut adopted = session.source_arena().clone();
+        let before = adopted.clone();
+        adopt_imported_fireflies(&mut adopted, session.runtime()).unwrap();
+        assert_eq!(
+            adopted, before,
+            "adoption is idempotent, without new slots or RNG"
+        );
+        let mut dispatched = campaign.clone();
+        dispatched.step(crate::PlayerCommand::default(), 0);
+        assert!(
+            dispatched
+                .events()
+                .iter()
+                .all(|event| !matches!(event, Level2DispatchEvent::Error { .. })),
+            "{:?}",
+            dispatched.events()
+        );
+        assert!(
+            dispatched.events().iter().any(|event| matches!(
+                event,
+                Level2DispatchEvent::DynamicArena {
+                    source_slot: 132,
+                    kind: Level2DynamicArenaKind::AuthoredClass5,
+                    ..
+                }
+            )),
+            "ordinary scheduler dispatches the imported semantic Firefly owner"
+        );
         let mut economy = session.economy().clone();
         let mut runtime = session.runtime().clone();
         let source_index = economy
             .authored_class5
             .iter()
-            .position(|source| source.active && source.authored_index == 683)
-            .expect("kind2 row must be constructed, not silently skipped");
+            .position(|source| source.active && source.source_entity_index == 132)
+            .expect("ordinary open must adopt actual reset source132");
         let slot = economy.authored_class5[source_index].source_entity_index;
         let state_index = economy
             .authored_fireflies
