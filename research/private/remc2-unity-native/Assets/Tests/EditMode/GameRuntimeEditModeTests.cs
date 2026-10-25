@@ -205,6 +205,14 @@ namespace MagicCarpet.Native.Tests
             Assert.That(surface.WorldReady && surface.LiveMinimapReady, Is.True);
             Assert.That(surface.Tick, Is.Zero, "package/cache admission diagnostic performs no gameplay");
             Assert.That(surface.FrameHash, Is.Not.Zero);
+            // The reset view has no in-range world sprite. One public source
+            // producer supplies a real flyer for this isolated raster check.
+            session.Step(384, 62080, 8000, flags: 0x40, requestedSpell: 0);
+            var sourceRows = session.Entities();
+            Assert.That(Array.Exists(session.EntityPresentations(0), row =>
+                sourceRows[row.entityIndex].classId == 9 && sourceRows[row.entityIndex].model == 0), Is.True,
+                "the real Fireball producer admits its source flyer before composition");
+            surface.Present(session, environment);
             var player = session.Entities()[session.Players()[0].entityIndex];
             surface.PresentView(new EngineSessionTransport.Pose {
                 x = player.x, y = player.y, z = player.z, yaw = player.yaw, display_pitch = player.pitch
@@ -220,6 +228,18 @@ namespace MagicCarpet.Native.Tests
                 {
                     if (camera.targetTexture == null) camera.targetTexture = display;
                     camera.Render();
+                    if (camera.depth == -99f)
+                    {
+                        RenderTexture.active = camera.targetTexture;
+                        pixels.ReadPixels(new Rect(0, 0, 320, 200), 0, 0); pixels.Apply();
+                        var scene = pixels.GetPixels32();
+                        var changed = 0;
+                        for (var y = 0; y < 200; y++)
+                            for (var x = 0; x < 320; x++)
+                                if (scene[y * 320 + x].r != session.SceneFrameIndices[(199-y)*320+x]) changed++;
+                        Assert.That(changed, Is.GreaterThan(0),
+                            "the source flyer is drawn before final-camera history capture");
+                    }
                     if (camera.depth == -100f)
                     {
                         RenderTexture.active = camera.targetTexture;
@@ -436,6 +456,10 @@ namespace MagicCarpet.Native.Tests
                 Assert.That(restored.campaign_menu.selected_level_id, Is.EqualTo(map.campaign_menu.selected_level_id));
                 CollectionAssert.AreEqual(map.campaign_menu.available_levels, restored.campaign_menu.available_levels);
                 Assert.That(runtime.GameRuntimeProductionStartupReady, Is.False);
+                var loading = loaded.GameRuntimeCampaignMenuAction("start_mission");
+                Assert.That(GameRuntimeTransport.ReadLoadingPresentation(loading).level_id,
+                    Is.EqualTo(restored.campaign_menu.selected_level_id),
+                    "the loading observation preserves its embedded identity too");
             }
             finally
             {
