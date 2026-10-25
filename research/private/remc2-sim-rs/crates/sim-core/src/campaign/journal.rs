@@ -6,6 +6,7 @@
 //! projections.  Diagnostic parity traces are deliberately excluded.
 
 use sha2::{Digest as _, Sha256};
+use std::sync::OnceLock;
 
 use crate::{
     FlightEvent,
@@ -62,12 +63,25 @@ pub enum EffectPageError {
     },
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug)]
 pub struct EffectJournal {
     first_sequence: u64,
     next_sequence: u64,
     records: Vec<EffectRecord>,
+    // Observations of one unchanged journal share its exact receipt. This is
+    // derived data, excluded from canonical equality and invalidated on append.
+    receipt: OnceLock<CanonicalDigest>,
 }
+
+impl PartialEq for EffectJournal {
+    fn eq(&self, other: &Self) -> bool {
+        self.first_sequence == other.first_sequence
+            && self.next_sequence == other.next_sequence
+            && self.records == other.records
+    }
+}
+
+impl Eq for EffectJournal {}
 
 impl Default for EffectJournal {
     fn default() -> Self {
@@ -82,6 +96,7 @@ impl EffectJournal {
             first_sequence: 0,
             next_sequence: 0,
             records: Vec::new(),
+            receipt: OnceLock::new(),
         }
     }
 
@@ -115,6 +130,7 @@ impl EffectJournal {
     }
 
     fn append(&mut self, turn: u32, effect: CampaignEffect) {
+        self.receipt.take();
         self.records.push(EffectRecord {
             sequence: self.next_sequence,
             turn,
@@ -178,6 +194,10 @@ impl EffectJournal {
 
     #[must_use]
     pub fn receipt(&self) -> CanonicalDigest {
+        *self.receipt.get_or_init(|| self.calculate_receipt())
+    }
+
+    fn calculate_receipt(&self) -> CanonicalDigest {
         let mut hasher = Sha256::new();
         hasher.update(b"carpet-flight-effect-journal-v1");
         hasher.update(self.first_sequence.to_le_bytes());
@@ -383,8 +403,10 @@ mod tests {
 
         let ordered_receipt = session.effect_journal().receipt();
         let mut swapped = session.effect_journal().clone();
+        swapped.receipt.take();
         swapped.records.swap(collected, collected + 1);
         let mut duplicated = session.effect_journal().clone();
+        duplicated.receipt.take();
         duplicated
             .records
             .insert(collected + 1, duplicated.records[collected].clone());
@@ -398,6 +420,41 @@ mod tests {
         };
         replay.step_outer_turn(PlayerCommand::default(), 0);
         assert_eq!(replay.effect_journal(), session.effect_journal());
+    }
+
+    #[test]
+    fn receipt_cache_preserves_append_retention_clone_and_concurrent_observation() {
+        let mut journal = EffectJournal::new();
+        let empty = journal.receipt();
+        assert_eq!(empty, journal.calculate_receipt());
+        assert_eq!(journal, EffectJournal::new());
+        for turn in 0..MAX_RETAINED_EFFECTS {
+            journal.append_scene_change(turn as u32, (turn % 3) as u8);
+        }
+        assert!(journal.receipt.get().is_none());
+        let retained = journal.receipt();
+        assert_eq!(retained, journal.calculate_receipt());
+        assert_ne!(retained, empty);
+        let mut clone = journal.clone();
+        assert_eq!(clone.receipt(), retained);
+        clone.append_scene_change(MAX_RETAINED_EFFECTS as u32, 2);
+        assert!(clone.receipt.get().is_none());
+        assert_eq!(clone.first_sequence, 1);
+        assert_eq!(clone.records.len(), MAX_RETAINED_EFFECTS);
+        assert_eq!(clone.receipt(), clone.calculate_receipt());
+        assert_ne!(clone.receipt(), retained);
+        assert_eq!(journal.receipt(), retained);
+        assert_ne!(journal, clone);
+        journal.receipt.take();
+        std::thread::scope(|scope| {
+            let journal = &journal;
+            for _ in 0..4 {
+                scope.spawn(move || assert_eq!(journal.receipt(), retained));
+            }
+        });
+        assert_eq!(journal.receipt.get(), Some(&retained));
+        journal = EffectJournal::new();
+        assert_eq!(journal.receipt(), empty);
     }
 
     #[test]
