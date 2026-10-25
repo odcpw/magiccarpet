@@ -758,6 +758,7 @@ impl DecodedCampaignPackage {
             member("terrain-pre-features.bin")?,
             member("feature-start.bin")?,
             member("feature-construction-inputs.bin")?,
+            member("presentation.bin")?,
         )
     }
 }
@@ -769,6 +770,7 @@ fn generate_bound_cave_startup(
     pre_terrain: &[u8],
     boundary: &[u8],
     construction: &[u8],
+    presentation: &[u8],
 ) -> Result<CaveStartupWorld> {
     let fail = |message| CampaignPackageError {
         stage: ValidationStage::TypedMembers,
@@ -777,6 +779,9 @@ fn generate_bound_cave_startup(
     let mut caves = BTreeMap::new();
     let mut corridors = BTreeMap::new();
     let mut rings = BTreeMap::new();
+    let mut effects = BTreeMap::new();
+    let presentation = crate::native_world::parse_presentation(presentation)
+        .map_err(|error| fail(error.to_string()))?;
     for (&record, id) in bindings {
         let entity = level
             .entity(id)
@@ -790,6 +795,9 @@ fn generate_bound_cave_startup(
         if let Some(properties) = entity.terrain_disaster() {
             rings.insert(record, properties);
         }
+        if let Some(properties) = entity.effect() {
+            effects.insert(record, properties);
+        }
     }
     crate::world::terrain::cave_features::startup::generate(
         crate::world::terrain::cave_features::startup::Inputs {
@@ -800,6 +808,8 @@ fn generate_bound_cave_startup(
             caves: &caves,
             corridors: &corridors,
             rings: &rings,
+            effects: &effects,
+            particles: &presentation.particles,
         },
     )
     .map_err(fail)
@@ -2108,6 +2118,7 @@ impl CampaignDefinition {
             &self.read_member("terrain-pre-features.bin")?,
             &self.read_member("feature-start.bin")?,
             &self.read_member("feature-construction-inputs.bin")?,
+            &self.read_member("presentation.bin")?,
         )
     }
 

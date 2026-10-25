@@ -9,13 +9,16 @@ use super::{
 use crate::{
     FlightWorld, Position,
     campaign::source_arena::SourceArena,
+    dynamic_lighting::{DynamicLightLinkedEntity, DynamicLightingState},
     house::{HouseConstructionInput as Building, HouseState, decode_house_construction_inputs},
     legacy_terrain::LegacyTerrain,
-    level_definition::{CaveCorridorDefinition, CaveFeatureDefinition, TerrainDisasterDefinition},
+    level_definition::{
+        CaveCorridorDefinition, CaveFeatureDefinition, EffectDefinition, TerrainDisasterDefinition,
+    },
     level1_mission::{AuthoredFeature, parse_authored_features},
     native_world::{
-        EntitySnapshot, Level2EconomyState, MapType, SessionTerrain, cave_corridors,
-        level1_load_house_base,
+        EntitySnapshot, Level2EconomyState, MapType, ParticleParameter, SessionTerrain,
+        cave_corridors, level1_load_house_base,
     },
     renderable_map_chain::RenderableMapSeed,
     world::terrain::disasters::{RingProfile, mc2 as rings},
@@ -30,6 +33,8 @@ pub struct CaveStartupWorld {
     pub(crate) authored: Vec<AuthoredFeature>,
     pub(crate) allocation_count: usize,
     buildings: BTreeMap<u8, Building>,
+    effects: BTreeMap<u16, EffectDefinition>,
+    particles: Box<[ParticleParameter]>,
 }
 
 impl CaveStartupWorld {
@@ -60,6 +65,8 @@ impl CaveStartupWorld {
     pub fn reset_terrain(&self) -> Result<SessionTerrain, String> {
         let mut terrain = self.terrain.clone();
         let mut arena = self.arena.clone();
+        let mut lighting = DynamicLightingState::reset();
+        let mut effect_state = crate::world::effects::State::default();
         // sub_4A1E0 invokes sub_49F90 before group-zero construction. The
         // previous generation pass leaves a LIFO reclaim stack; rebuilding
         // descending slots restores the actual numeric callback order.
@@ -69,6 +76,29 @@ impl CaveStartupWorld {
                 continue;
             }
             match row.subtype {
+                0 => {
+                    let definition = *self.effects.get(&row.index).ok_or_else(|| {
+                        format!("missing ordinary impact content at row{}", row.index)
+                    })?;
+                    let position = row.world_position(terrain.ground_height(row.world_position(0)));
+                    if let Some(slot) = crate::world::effects::allocate(
+                        &mut arena,
+                        &mut terrain,
+                        definition,
+                        position,
+                        &self.particles,
+                    )? {
+                        // NewAdd0A00 -> AddEvent2_847D0. The light service owns
+                        // its RNG and footprint; the actual effect row owns life.
+                        if lighting
+                            .admit(true, true, slot, position, 128, 7, true)
+                            .is_some()
+                        {
+                            let source = &mut arena.entities[usize::from(slot)];
+                            source.set_control_flags(source.control_flags | 0x0008_0000);
+                        }
+                    }
+                }
                 45 => {
                     let building = self
                         .buildings
@@ -97,6 +127,7 @@ impl CaveStartupWorld {
             }
         }
         arena.finish_source_group();
+        let effect_lists = crate::native_world::area_damage::capture_effect_lists(&mut arena, None);
         // The same numeric source order used by UpdateEntities: group-zero
         // rows reuse free slots below the retained cave controllers. A close
         // trigger therefore selects life1 before the controller's callback.
@@ -106,6 +137,25 @@ impl CaveStartupWorld {
                 continue;
             }
             match (source.class, source.model, source.action) {
+                (10, 0, 0) => {
+                    crate::world::effects::visit(
+                        &mut arena,
+                        &mut terrain,
+                        slot as u16,
+                        &self.particles,
+                        &mut effect_state,
+                        |arena, damage| {
+                            crate::native_world::area_damage::apply_effect(
+                                arena,
+                                None,
+                                None,
+                                None,
+                                &effect_lists,
+                                damage,
+                            )
+                        },
+                    )?;
+                }
                 (10, 45, 51) => {
                     step_house(&mut arena.entities[slot], &mut terrain, &self.buildings)?
                 }
@@ -116,6 +166,26 @@ impl CaveStartupWorld {
                 _ => {}
             }
         }
+        let (ground, shading) = terrain.dynamic_lighting_planes();
+        lighting.service_recompute(
+            shading,
+            true,
+            |slot| {
+                arena
+                    .entities
+                    .get(usize::from(slot))
+                    .filter(|row| row.active)
+                    .map(|row| DynamicLightLinkedEntity {
+                        position: row.position,
+                        life: row.life,
+                        disabled: row.control_flags & 0x400 != 0,
+                    })
+            },
+            |x, y| {
+                i16::try_from(crate::legacy_terrain::interpolate_ground(ground, x, y))
+                    .expect("u8 terrain interpolation fits i16")
+            },
+        );
         Ok(terrain)
     }
 
@@ -150,10 +220,12 @@ pub(crate) struct Inputs<'a> {
     pub(crate) caves: &'a BTreeMap<u16, CaveFeatureDefinition>,
     pub(crate) corridors: &'a BTreeMap<u16, CaveCorridorDefinition>,
     pub(crate) rings: &'a BTreeMap<u16, TerrainDisasterDefinition>,
+    pub(crate) effects: &'a BTreeMap<u16, EffectDefinition>,
+    pub(crate) particles: &'a [ParticleParameter],
 }
 
-/// Other terrain families keep their existing startup owner until their
-/// constructors join this complete source-order generation composition.
+/// Admit only terrain constructors composed by this startup owner. Linked
+/// paths delegate to their existing disaster owners in the same source scan.
 pub(crate) fn supports_authored(authored: &[u8]) -> Result<bool, String> {
     Ok(!parse_authored_features(authored)?
         .iter()
@@ -161,7 +233,7 @@ pub(crate) fn supports_authored(authored: &[u8]) -> Result<bool, String> {
         .any(|row| {
             row.kind == 10
                 && ((row.activation_group == -1
-                    && matches!(row.subtype, 9 | 15 | 27..=32 | 50 | 51 | 88))
+                    && matches!(row.subtype, 9 | 15 | 27 | 30 | 32 | 51 | 88))
                     || (row.activation_group == 0
                         && matches!(row.subtype, 9..=11 | 15 | 27..=32 | 50 | 51 | 80..=86 | 88)))
         }))
@@ -179,10 +251,10 @@ pub(crate) fn generate(inputs: Inputs<'_>) -> Result<CaveStartupWorld, String> {
         .filter(|row| row.activation_group == -1)
     {
         match (row.kind, row.subtype) {
-            (10, 80..=85) | (10, 11) | (14, 2) | (10, 45) => {}
+            (10, 80..=85 | 11 | 28 | 29 | 31 | 45 | 50) | (14, 2) => {}
             // Other rows are constructed later by normal startup, outside
             // GenerateEvents' seven ordered preparation phases.
-            (10, 9 | 15 | 27..=32 | 50 | 51 | 88) => {
+            (10, 9 | 15 | 27 | 30 | 32 | 51 | 88) => {
                 return Err(format!(
                     "cave generation needs constructor {}/{} at authored row {}",
                     row.kind, row.subtype, row.index
@@ -235,6 +307,10 @@ pub(crate) fn generate(inputs: Inputs<'_>) -> Result<CaveStartupWorld, String> {
     .map_err(|e| e.to_string())?;
     let mut arena = SourceArena::new(entities.into_boxed_slice(), economy);
     let mut allocations = 0;
+    // PrepareEvents writes the shared predictedAxis Z for direct rows.
+    // Marked paths (sub_48690) replace only X/Y; other linked constructors
+    // use local positions and must not overwrite that retained scratch Z.
+    let mut scratch_z = 0;
     for phase in 0..7 {
         for index in 1..features.len() {
             let row = features[index];
@@ -243,9 +319,10 @@ pub(crate) fn generate(inputs: Inputs<'_>) -> Result<CaveStartupWorld, String> {
             }
             let selected = match phase {
                 0 => (row.kind, row.subtype) == (10, 82),
-                1 => row.kind == 10 && matches!(row.subtype, 11 | 83..=85),
+                1 => row.kind == 10 && matches!(row.subtype, 11 | 29 | 31 | 50 | 83..=85),
                 2 => row.kind == 10 && matches!(row.subtype, 80 | 81),
                 3 => (row.kind, row.subtype) == (14, 2),
+                4 => (row.kind, row.subtype) == (10, 28),
                 5 | 6 if (row.kind, row.subtype) == (10, 45) => {
                     let building = buildings
                         .get(&(row.parameter_1 as u8))
@@ -258,6 +335,9 @@ pub(crate) fn generate(inputs: Inputs<'_>) -> Result<CaveStartupWorld, String> {
                 continue;
             }
             let position = startup_position(row, terrain.ground_height(startup_position(row, 0)));
+            if !matches!(row.subtype, 28 | 29 | 31 | 50 | 80) {
+                scratch_z = position.z;
+            }
             match (row.kind, row.subtype) {
                 (10, 80..=85) => {
                     // Linked path nodes read the complete mutable table. Apply
@@ -294,6 +374,16 @@ pub(crate) fn generate(inputs: Inputs<'_>) -> Result<CaveStartupWorld, String> {
                         allocations += 1;
                     }
                 }
+                (10, 28 | 29 | 31 | 50) => {
+                    let prepared = rings::authored::prepare_chain(
+                        &mut arena,
+                        &mut terrain,
+                        &mut features,
+                        row.index,
+                        scratch_z,
+                    )?;
+                    allocations += prepared.source_slots.len();
+                }
                 (14, 2) => {
                     let properties = inputs.corridors.get(&row.index).ok_or_else(|| {
                         format!(
@@ -326,6 +416,8 @@ pub(crate) fn generate(inputs: Inputs<'_>) -> Result<CaveStartupWorld, String> {
         authored: features,
         allocation_count: allocations,
         buildings,
+        effects: inputs.effects.clone(),
+        particles: inputs.particles.to_vec().into_boxed_slice(),
     })
 }
 
@@ -358,26 +450,20 @@ fn apply_events(
                     }
                     (11, 11) => {
                         again = true;
-                        hide = rings::step(arena, terrain, slot as u16, |arena, damage| {
-                            let source = &arena.entities[usize::from(damage.source_slot)];
-                            let request = crate::combat::area::AreaDamage {
-                                position: damage.position,
-                                shape: crate::combat::area::Shape {
-                                    half_width: damage.half_width,
-                                    half_depth: damage.half_depth,
-                                    vertical_offset: damage.vertical_offset,
-                                    half_height: damage.half_height,
-                                },
-                                owner: damage.owner,
-                                payload: damage.payload,
-                                selector: (source.record[69], source.record[70]),
-                                mode: 0,
-                            };
-                            // Startup has not allocated player spell holders;
-                            // sub6D8B0 rejects this class10 self owner for XP.
-                            crate::native_world::area_damage::apply(arena, None, None, request)
-                        })?
-                        .hide;
+                        hide = rings::step(arena, terrain, slot as u16, apply_damage)?.hide;
+                    }
+                    (27, 27..=29) => {
+                        again = true;
+                        rings::ribbon::step(arena, terrain, slot as u16)?;
+                    }
+                    (30, 32) => {
+                        again = true;
+                        rings::paths::step(arena, terrain, slot as u16)?;
+                    }
+                    (32, 34) | (51, 55) => {
+                        again = true;
+                        hide = rings::travelling::step(arena, terrain, slot as u16, apply_damage)?
+                            .hide;
                     }
                     (45, 51) => {
                         again = true;
@@ -404,6 +490,26 @@ fn apply_events(
         }
     }
     Ok(())
+}
+
+fn apply_damage(arena: &mut SourceArena, damage: rings::AreaDamage) -> Result<u16, String> {
+    let source = &arena.entities[usize::from(damage.source_slot)];
+    let request = crate::combat::area::AreaDamage {
+        position: damage.position,
+        shape: crate::combat::area::Shape {
+            half_width: damage.half_width,
+            half_depth: damage.half_depth,
+            vertical_offset: damage.vertical_offset,
+            half_height: damage.half_height,
+        },
+        owner: damage.owner,
+        payload: damage.payload,
+        selector: (source.record[69], source.record[70]),
+        mode: 0,
+    };
+    // Startup has not allocated player spell holders; sub6D8B0 rejects this
+    // class10 self owner for XP. Damage still precedes the geometry writes.
+    crate::native_world::area_damage::apply(arena, None, None, request)
 }
 
 fn construct_house(
@@ -455,13 +561,22 @@ fn step_house(
     let mut house = HouseState::from_construction_snapshot(source, building.parameter)?;
     let remaining = house.life.wrapping_sub(1);
     let position = house.position;
+    // Source action51 samples its live Z before edge smoothing. The final
+    // sweep rebuilds topology without changing floor heights, so dispatch
+    // completion before the combined sweep/smoothing transaction. Ordinary
+    // countdown visits still consume their terrain writes before dispatch.
+    if remaining <= 0 {
+        house.dispatch_build_entry(terrain);
+    }
     terrain.apply_house_construction_with_clearance(
         position,
         (remaining > 0).then_some(remaining),
         &building.footprint,
         building.parameter.flags & 4 == 0,
     )?;
-    house.dispatch_build_entry(terrain);
+    if remaining > 0 {
+        house.dispatch_build_entry(terrain);
+    }
     source.set_life(house.life);
     source.set_source_action(house.action);
     source.set_control_flags(house.control_flags);
@@ -497,13 +612,15 @@ mod tests {
 
     #[test]
     fn ordinary_cave_reset_constructs_geometry_before_flight_consumption() {
-        for mission in [4, 6, 8] {
+        for mission in [4, 6, 8, 12, 15, 16, 21, 24] {
             let relative = if mission == 8 {
                 // This versioned owner export also retains the four ordinary
                 // BUILD53 constructor inputs absent from old feature-only v1.
                 "../../../generated/mc-bhq5-cave-reset-v2-level8".to_owned()
-            } else {
+            } else if matches!(mission, 4 | 6) {
                 format!("../../../generated/mc-bhq6-ordinary-20261024-b/level{mission}")
+            } else {
+                format!("../../../generated/mc-bhq6-ordinary-20261025-zclu5fjj/level{mission}")
             };
             let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(relative);
             let package = DecodedCampaignPackage::decode(
@@ -511,6 +628,10 @@ mod tests {
                 CampaignSelection::ordinary(mission).unwrap(),
             )
             .expect("ordinary owner package");
+            assert!(
+                supports_authored(package.authored_bytes()).unwrap(),
+                "Mission{mission} must use the ordinary source-construction path"
+            );
             let generated = package
                 .generate_cave_startup()
                 .expect("source feature constructors");
@@ -518,21 +639,97 @@ mod tests {
                 package.member("terrain-post-features.bin").unwrap(),
             )
             .unwrap();
-            let differences = generated
-                .terrain
-                .planes()
-                .angles
-                .iter()
-                .zip(feature_oracle.angles.iter())
-                .enumerate()
-                .filter(|(_, (a, b))| a != b)
-                .collect::<Vec<_>>();
-            assert!(
-                differences.is_empty(),
-                "Mission{mission} feature topology: {} mismatches; first {:?}",
-                differences.len(),
-                &differences[..differences.len().min(8)]
+            let end = package.member("feature-end.bin").unwrap();
+            assert_eq!(
+                generated.terrain.terrain_rng(),
+                word(end, 8).unwrap(),
+                "Mission{mission} feature terrain RNG"
             );
+            assert_eq!(
+                generated.arena.economy.global_rng,
+                dword(end, 12).unwrap(),
+                "Mission{mission} feature allocation RNG"
+            );
+            let allocator = package.member("feature-allocator.bin").unwrap();
+            let expected_free = (0..dword(allocator, 16).unwrap() as usize)
+                .map(|index| word(allocator, 32 + 2 * index).unwrap())
+                .collect::<Vec<_>>();
+            assert_eq!(
+                generated.arena.economy.free_source_slots(),
+                expected_free,
+                "Mission{mission} feature free-stack order"
+            );
+            let planes = generated.terrain.planes();
+            for (name, actual, expected) in [
+                (
+                    "material",
+                    planes.terrain_types.as_ref(),
+                    feature_oracle.terrain_types.as_ref(),
+                ),
+                (
+                    "floor",
+                    planes.ground_heights.as_ref(),
+                    feature_oracle.ground_heights.as_ref(),
+                ),
+                (
+                    "shading",
+                    planes.shading.as_ref(),
+                    feature_oracle.shading.as_ref(),
+                ),
+                (
+                    "topology",
+                    planes.angles.as_ref(),
+                    feature_oracle.angles.as_ref(),
+                ),
+                (
+                    "ceiling",
+                    planes.secondary_heights.as_ref(),
+                    feature_oracle.secondary_heights.as_ref(),
+                ),
+            ] {
+                let differences = actual
+                    .iter()
+                    .zip(expected)
+                    .enumerate()
+                    .filter(|(_, (a, b))| a != b)
+                    .collect::<Vec<_>>();
+                assert!(
+                    differences.is_empty(),
+                    "Mission{mission} feature {name}: {} mismatches; first {:?}",
+                    differences.len(),
+                    &differences[..differences.len().min(8)]
+                );
+            }
+            assert_eq!(
+                planes.entity_indices, feature_oracle.entity_indices,
+                "Mission{mission} feature map heads"
+            );
+            let rows = package.member("entities-post-features.bin").unwrap();
+            for row in generated.arena.entities.iter() {
+                let start = 12 + usize::from(row.index) * 176;
+                let expected = &rows[start..start + 176];
+                assert_eq!(
+                    row.active,
+                    expected[2] != 0,
+                    "Mission{mission} feature slot{} activity",
+                    row.index
+                );
+                if row.active {
+                    let differences = row
+                        .record
+                        .iter()
+                        .zip(expected)
+                        .enumerate()
+                        .filter(|(_, (a, b))| a != b)
+                        .collect::<Vec<_>>();
+                    assert!(
+                        differences.is_empty(),
+                        "Mission{mission} retained slot{}: {:?}",
+                        row.index,
+                        differences
+                    );
+                }
+            }
             let reset = generated
                 .reset_terrain()
                 .expect("ordinary terrain callbacks");
