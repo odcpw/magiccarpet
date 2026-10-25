@@ -8,7 +8,15 @@ namespace MagicCarpet.Native
     internal sealed class CampaignMinimapOverlay : MonoBehaviour
     {
         private Texture2D texture;
+        private Texture2D web;
+        private bool immobilized;
         private readonly Color32[] pixels = new Color32[64 * 64];
+
+        internal void PresentWeb(Texture2D retainedWeb, bool visible)
+        {
+            web = retainedWeb;
+            immobilized = visible;
+        }
 
         internal void Present(byte[] indices, byte[] palette, byte[] tables)
         {
@@ -43,6 +51,13 @@ namespace MagicCarpet.Native
                 view.width * Screen.width * (64f / 320f), view.height * Screen.height * (64f / 200f));
             var previousDepth = GUI.depth;
             var previousColor = GUI.color;
+            if (immobilized && web != null)
+            {
+                GUI.depth = 2; // Source WEB is after world sprites, before map/HUD.
+                GUI.color = Color.white;
+                GUI.DrawTexture(new Rect(view.x * Screen.width, (1f - view.yMax) * Screen.height,
+                    view.width * Screen.width, view.height * Screen.height), web, ScaleMode.StretchToFill, true);
+            }
             GUI.depth = 1; // Existing HUD depth 0 remains above the map.
             GUI.color = Color.white;
             GUI.DrawTexture(rectangle, texture, ScaleMode.StretchToFill, true);

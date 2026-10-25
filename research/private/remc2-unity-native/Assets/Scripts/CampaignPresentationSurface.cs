@@ -20,6 +20,7 @@ namespace MagicCarpet.Native
         internal ushort SourceX { get; private set; }
         internal ushort SourceY { get; private set; }
         internal short SourceZ { get; private set; }
+        private MaterialPropertyBlock occlusionProperties;
 
         internal void Bind(
             NativeSim.CampaignEntitySnapshot row,
@@ -75,6 +76,18 @@ namespace MagicCarpet.Native
             AssetSelector = row.selectedTmap;
             SpriteReady = true;
         }
+
+        internal void BindCaveOcclusion(Texture2D terrainOrders, ushort cellOrder)
+        {
+            var visual = transform.Find("package sprite");
+            if (visual == null) return;
+            occlusionProperties ??= new MaterialPropertyBlock();
+            occlusionProperties.Clear();
+            occlusionProperties.SetFloat("_CaveOcclusionEnabled", terrainOrders == null ? 0f : 1f);
+            occlusionProperties.SetFloat("_CaveCellOrder", cellOrder);
+            occlusionProperties.SetTexture("_CaveOrders", terrainOrders == null ? Texture2D.blackTexture : terrainOrders);
+            visual.GetComponent<MeshRenderer>().SetPropertyBlock(occlusionProperties);
+        }
     }
 
     /// <summary>
@@ -119,6 +132,107 @@ namespace MagicCarpet.Native
         private Func<byte[], byte[]> paletteTransform;
         private byte[] worldPaletteSource;
         private byte[] entityPaletteSource;
+        private Texture2D webTexture;
+        private byte[] webIndices, webMask;
+        private Color32[] webPixels;
+        private bool webVisible;
+        private Texture2D caveOrdersTexture;
+        private readonly Color32[] caveOrderPixels = new Color32[320 * 200];
+        private ushort[] caveCellOrders;
+
+        private void MaterializeCaveOcclusion(NativeCampaignSession session)
+        {
+            if (session.Selection.mapType != 2)
+            {
+                caveCellOrders = null;
+                return;
+            }
+            var orders = session.CaveTerrainOrders;
+            var cells = session.CaveCellOrders;
+            if (orders == null || orders.Length != 320 * 200 || cells == null || cells.Length != 65536)
+                throw new InvalidOperationException("Cave source-cell occlusion planes are incomplete");
+            caveOrdersTexture ??= new Texture2D(320, 200, TextureFormat.RGBA32, false, true) {
+                name = "MC2 Cave terrain source-cell order", filterMode = FilterMode.Point,
+                wrapMode = TextureWrapMode.Clamp
+            };
+            for (var i = 0; i < orders.Length; i++)
+                caveOrderPixels[i] = new Color32(unchecked((byte)orders[i]), (byte)(orders[i] >> 8), 0, 255);
+            // Keep native top-down row order. The sprite fragment shader
+            // reverses screen Y when sampling this CPU-supplied texture.
+            caveOrdersTexture.SetPixels32(caveOrderPixels);
+            caveOrdersTexture.Apply(false, false);
+            caveCellOrders = cells;
+        }
+
+        internal void PresentImmobilization(ushort ticks, bool alive)
+        {
+            webVisible = ticks != 0 && alive;
+            minimapOverlay?.PresentWeb(webTexture, webVisible);
+        }
+
+        private void MaterializeWeb(OwnerAssetCache cache)
+        {
+            var descriptor = cache.EnvironmentMaterials;
+            var bank = descriptor.bitmap_banks.Single(row => row.bank == descriptor.profile.web);
+            var lowResolution = (descriptor.profile.vga_resolution_selector & 1) != 0;
+            var width = lowResolution ? 320 : 640;
+            var height = lowResolution ? 200 : 480;
+            var columns = lowResolution ? 4 : 6;
+            var rows = lowResolution ? 2 : 4;
+            var sprites = bank.bitmaps.ToDictionary(row => row.selector);
+            webIndices = new byte[width * height];
+            webMask = new byte[width * height];
+            var selector = 1;
+            var y = 0;
+            for (var row = 0; row < rows; row++, y += sprites[1].height)
+            {
+                var x = 0;
+                for (var column = 0; column < columns; column++)
+                {
+                    var sprite = sprites[selector];
+                    if (sprite.source_empty || sprite.width <= 0 || sprite.height <= 0)
+                        throw new InvalidOperationException("source WEB bitmap is empty or has invalid dimensions");
+                    var indices = cache.ReadOutput(sprite.indices_path);
+                    var mask = cache.ReadOutput(sprite.mask_path);
+                    if (indices.Length != checked(sprite.width * sprite.height) || mask.Length != indices.Length)
+                        throw new InvalidOperationException("source WEB bitmap pixels or mask are incomplete");
+                    for (var sy = 0; sy < sprite.height; sy++)
+                        for (var sx = 0; sx < sprite.width; sx++)
+                        {
+                            if (x + sx < 0 || x + sx >= width || y + sy < 0 || y + sy >= height) continue;
+                            var source = sy * sprite.width + sx;
+                            if (mask[source] == 0) continue;
+                            var target = (y + sy) * width + x + sx;
+                            webIndices[target] = indices[source];
+                            webMask[target] = 255;
+                        }
+                    selector++;
+                    // DrawGameFrame advances x by the NEXT selector's width.
+                    if (column + 1 < columns) x += sprites[selector].width;
+                }
+            }
+            webPixels = new Color32[width * height];
+            webTexture = new Texture2D(width, height, TextureFormat.RGBA32, false) {
+                name = "MC2 source WEB overlay", filterMode = FilterMode.Point,
+                wrapMode = TextureWrapMode.Clamp
+            };
+        }
+
+        private void RefreshWebPalette(byte[] palette)
+        {
+            if (webTexture == null) return;
+            var colors = TransformPalette(palette);
+            for (var y = 0; y < webTexture.height; y++)
+                for (var x = 0; x < webTexture.width; x++)
+                {
+                    var source = y * webTexture.width + x;
+                    var color = webIndices[source] * 3;
+                    webPixels[(webTexture.height - 1 - y) * webTexture.width + x] =
+                        new Color32(colors[color], colors[color + 1], colors[color + 2], webMask[source]);
+                }
+            webTexture.SetPixels32(webPixels);
+            webTexture.Apply(false, false);
+        }
 
         /// Preferences transform retained source palette bytes; source caches
         /// and native indexed frames remain immutable presentation inputs.
@@ -140,6 +254,7 @@ namespace MagicCarpet.Native
                 hudPalette.LoadRawTextureData(TransformPalette(entityPaletteSource));
                 hudPalette.Apply(false, false);
             }
+            if (entityPaletteSource != null) RefreshWebPalette(entityPaletteSource);
         }
 
         private byte[] TransformPalette(byte[] source) => paletteTransform?.Invoke(source) ?? source;
@@ -348,6 +463,7 @@ namespace MagicCarpet.Native
                 // immutable assets to its owner, then validate each returned
                 // frame against the current generation below/above.
                 environmentSessionHandle = session.Handle;
+                MaterializeWeb(cache);
                 minimapTables = cache.ReadOutput(descriptor.tables.path);
                 foreach (var row in descriptor.tmaps.textures)
                     if (!row.source_empty) materialRows.Add(row.index, row);
@@ -366,6 +482,7 @@ namespace MagicCarpet.Native
             MaterializeMinimapMarks(presentedIndices, minimapMarks, minimapTables, generation, tick);
             var palette = session.DayIndexedFramePalette;
             EnsureWorld(presentedIndices, palette);
+            MaterializeCaveOcclusion(session);
             entityPaletteSource = palette;
             if (hudPalette != null)
             {
@@ -374,6 +491,8 @@ namespace MagicCarpet.Native
             }
             minimapOverlay ??= root.gameObject.AddComponent<CampaignMinimapOverlay>();
             minimapOverlay.Present(presentedIndices, palette, minimapTables);
+            RefreshWebPalette(palette);
+            minimapOverlay.PresentWeb(webTexture, webVisible);
             MaterializeEntities(entities, presentations, cache, generation, tick);
             LiveMinimapReady = minimap.entityCount == (uint)minimapEntities.Length && minimap.markCount == (uint)minimapMarks.Length;
             Generation = generation;
@@ -589,7 +708,7 @@ namespace MagicCarpet.Native
             worldObject.GetComponent<MeshRenderer>().enabled = true;
         }
 
-        internal void PresentView(EngineSessionTransport.Pose pose)
+        internal void PresentView(EngineSessionTransport.Pose pose, short sourceCameraFov = 128)
         {
             if (pose == null || entityCamera == null)
                 throw new InvalidOperationException("campaign view requires a current Rust player pose");
@@ -602,8 +721,9 @@ namespace MagicCarpet.Native
             var rotation = Quaternion.Euler(0f, pose.yaw * (360f / 2048f), 0f);
             entityCamera.transform.localPosition = new Vector3(0f, pose.z / 64f, 0f);
             entityCamera.transform.localRotation = rotation;
+            entityCamera.fieldOfView = Level1ExitPresentationMath.UnityVerticalFov(sourceCameraFov);
             entityCamera.projectionMatrix = SourceSpriteProjection(
-                pose.display_pitch, pose.roll, entityCamera.nearClipPlane, entityCamera.farClipPlane);
+                pose.display_pitch, pose.roll, entityCamera.nearClipPlane, entityCamera.farClipPlane, sourceCameraFov);
             foreach (var marker in entities.Values)
             {
                 // Always project immutable copied coordinates, so repeated
@@ -616,13 +736,16 @@ namespace MagicCarpet.Native
             entityCamera.enabled = !Application.isBatchMode;
         }
 
-        internal static Matrix4x4 SourceSpriteProjection(short pitch, short roll, float near, float far)
+        internal static Matrix4x4 SourceSpriteProjection(
+            short pitch, short roll, float near, float far, short sourceCameraFov = 128)
         {
             // GameRenderHD::DrawTerrainAndParticles_3C080 and Rust
             // ClassicHdProjection: project into 320x200 first; the complete
             // image is then stretched to the common 4:3 display rectangle.
             const float width = 320f, height = 200f;
-            const int scale = 7 * 377 * 128 >> 11;
+            if (sourceCameraFov <= 0)
+                throw new InvalidOperationException("source sprite camera FOV must be positive");
+            var scale = 7 * 377 * sourceCameraFov >> 11;
             var offset = (pitch * 320) >> 8;
             var angle = (roll & 2047) * (2f * Mathf.PI / 2048f);
             var sin = Mathf.Sin(angle);
@@ -756,6 +879,9 @@ namespace MagicCarpet.Native
                     texture,
                     worldMesh,
                     EnsureEntityMaterial(cache, texture));
+                var caveOrder = caveCellOrders == null ? (ushort)0 :
+                    caveCellOrders[(marker.SourceY >> 8) * 256 + (marker.SourceX >> 8)];
+                marker.BindCaveOcclusion(caveCellOrders == null ? null : caveOrdersTexture, caveOrder);
                 marker.transform.Find("package sprite").gameObject.layer = EntityLayer;
             }
             var live = new HashSet<ushort>(rows.Where(row => row.active != 0)
@@ -819,6 +945,8 @@ namespace MagicCarpet.Native
             DestroyObject(worldIndices);
             DestroyObject(worldPalette);
             DestroyObject(hudPalette);
+            DestroyObject(webTexture);
+            DestroyObject(caveOrdersTexture);
             foreach (var texture in hudTextures) DestroyObject(texture);
             foreach (var material in entityMaterials.Values) DestroyObject(material);
             foreach (var texture in entityTextures.Values) DestroyObject(texture);

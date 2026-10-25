@@ -1,4 +1,4 @@
-//! Original Cave floor/ceiling material pass. Actor interleaving is separate.
+//! Original Cave floor/ceiling pass and source-cell sprite occlusion order.
 //!
 //! `DrawTerrainAndParticles_3C080` uses the same yaw lattice as outdoors, but
 //! clears to key colour 1 and submits ceiling texture 1 before each floor cell.
@@ -12,7 +12,7 @@ use crate::{
         rasterize_classic_hd_mode5_triangle, source_uv_row, terrain_texture_base,
     },
     classic_hd_terrain::ClassicHdProjection,
-    mode5_raster::Mode5Vertex,
+    mode5_raster::{Mode5Vertex, rasterize_mode5_triangle_from_tile_atlas},
     render_camera::terrain_projection_divisor,
     terrain_frame::Level1TerrainFrameCamera,
     terrain_grid::{
@@ -52,6 +52,7 @@ struct Triangle {
     vertices: [Mode5Vertex; 3],
     texture: u8,
     ceiling: bool,
+    cell_order: u16,
 }
 
 #[derive(Clone)]
@@ -59,6 +60,7 @@ pub struct CaveTerrainPlan {
     profile_revision: u64,
     clear_index: u8,
     triangles: Vec<Triangle>,
+    cell_orders: Vec<u16>,
     pub input_hash: u64,
     pub command_hash: u64,
 }
@@ -82,13 +84,54 @@ impl CaveTerrainPlan {
         vec![self.clear_index; profile.extent()]
     }
 
-    /// Material-only pass: no sky, outdoor reflections, or actor-occlusion claim.
+    /// Source sprite-bucket order, indexed by wrapped map tile y*256+x.
+    /// Zero means the source did not submit that bucket in this view.
+    pub fn cell_orders(&self) -> &[u16] {
+        &self.cell_orders
+    }
+
+    pub fn cell_order(&self, tile_x: u8, tile_y: u8) -> u16 {
+        self.cell_orders[usize::from(tile_y) * 256 + usize::from(tile_x)]
+    }
+
+    /// Material-only compatibility path, retaining the existing frame bytes.
     pub fn rasterize(
         &self,
         writer: &mut ClassicHdFrameWriter<'_>,
         atlas: &[u8],
         tables: &[u8],
         provenance: u8,
+    ) -> Result<CaveRasterReceipt, ClassicHdRasterError> {
+        self.rasterize_inner(writer, atlas, tables, provenance, None)
+    }
+
+    /// Stamp the source cell's order at each pixel actually written by its
+    /// exact mode5 spans. Later terrain clips earlier sprites at fragment
+    /// granularity; a sprite follows its own cell's ceiling/floor submissions.
+    pub fn rasterize_with_occlusion(
+        &self,
+        writer: &mut ClassicHdFrameWriter<'_>,
+        atlas: &[u8],
+        tables: &[u8],
+        provenance: u8,
+        orders: &mut [u16],
+    ) -> Result<CaveRasterReceipt, ClassicHdRasterError> {
+        if orders.len() != writer.profile().extent() {
+            return Err(ClassicHdRasterError(
+                "Cave occlusion extent differs from frame".into(),
+            ));
+        }
+        orders.fill(0);
+        self.rasterize_inner(writer, atlas, tables, provenance, Some(orders))
+    }
+
+    fn rasterize_inner(
+        &self,
+        writer: &mut ClassicHdFrameWriter<'_>,
+        atlas: &[u8],
+        tables: &[u8],
+        provenance: u8,
+        mut orders: Option<&mut [u16]>,
     ) -> Result<CaveRasterReceipt, ClassicHdRasterError> {
         if writer.profile().profile_revision != self.profile_revision
             || atlas.len() != CLASSIC_HD_TERRAIN_ATLAS_BYTES
@@ -103,18 +146,46 @@ impl CaveTerrainPlan {
         }
         let mut receipt = CaveRasterReceipt::default();
         for triangle in &self.triangles {
-            let stage = rasterize_classic_hd_mode5_triangle(
-                writer,
-                triangle.vertices,
-                atlas,
-                terrain_texture_base(triangle.texture)?,
-                &tables[..CLASSIC_HD_TABLESN_BYTES],
-                provenance | if triangle.ceiling { 4 } else { 2 },
-            )?;
-            if triangle.ceiling {
-                receipt.ceiling_pixels_written += stage.written_pixels;
+            let provenance = provenance | if triangle.ceiling { 4 } else { 2 };
+            let written_pixels = if let Some(orders) = orders.as_deref_mut() {
+                let width = writer.width();
+                let pixels = rasterize_mode5_triangle_from_tile_atlas(
+                    triangle.vertices,
+                    width as i32,
+                    writer.height() as i32,
+                    atlas,
+                    terrain_texture_base(triangle.texture)?,
+                    &tables[..CLASSIC_HD_TABLESN_BYTES],
+                );
+                let mut written = 0;
+                for pixel in pixels {
+                    if writer.set_pixel(
+                        pixel.sample.x,
+                        pixel.y,
+                        pixel.sample.output_index,
+                        provenance,
+                    ) {
+                        orders[pixel.y as usize * width as usize + pixel.sample.x as usize] =
+                            triangle.cell_order;
+                        written += 1;
+                    }
+                }
+                written
             } else {
-                receipt.floor_pixels_written += stage.written_pixels;
+                rasterize_classic_hd_mode5_triangle(
+                    writer,
+                    triangle.vertices,
+                    atlas,
+                    terrain_texture_base(triangle.texture)?,
+                    &tables[..CLASSIC_HD_TABLESN_BYTES],
+                    provenance,
+                )?
+                .written_pixels
+            };
+            if triangle.ceiling {
+                receipt.ceiling_pixels_written += written_pixels;
+            } else {
+                receipt.floor_pixels_written += written_pixels;
             }
         }
         Ok(receipt)
@@ -160,11 +231,23 @@ pub fn build_cave_terrain(
         .map(|vertex| project(*vertex, camera, projection, resources))
         .collect();
     let mut triangles = Vec::new();
+    let mut cell_orders = vec![0; 65_536];
+    let mut cell_order = 0_u16;
     for row in (1..OUTDOOR_GRID_ROWS).rev() {
         let start = row * OUTDOOR_GRID_COLUMNS;
         let flags = std::array::from_fn(|column| grid[start + column].feature_flags);
         for owner in terrain_row_anchor_order(start, &flags) {
+            cell_order += 1;
             let indices = [owner, owner + 1, owner - 39, owner - 40];
+            // haveBillboard is set from the owner's accepted lattice point,
+            // independently of an adjacent vertex rejecting a material quad.
+            let sealed = indices
+                .iter()
+                .all(|&index| vertices[index].is_some_and(|vertex| vertex.flags & SEALED != 0));
+            if !sealed && vertices[owner].is_some() {
+                let (x, y) = sprite_cell(grid[owner].tile_x, grid[owner].tile_y, camera.yaw);
+                cell_orders[usize::from(y) * 256 + usize::from(x)] = cell_order;
+            }
             let Some(cell) = indices
                 .map(|index| vertices[index])
                 .into_iter()
@@ -186,14 +269,22 @@ pub fn build_cave_terrain(
             } else {
                 [[0, 2, 1], [0, 3, 2]]
             };
-            append_triangles(&mut triangles, &cell, uv, ceiling, 1, true);
+            append_triangles(&mut triangles, &cell, uv, ceiling, 1, true, cell_order);
             if all & OUTSIDE == 0 {
                 let floor = if parity {
                     [[0, 1, 3], [3, 1, 2]]
                 } else {
                     [[0, 1, 2], [0, 2, 3]]
                 };
-                append_triangles(&mut triangles, &cell, uv, floor, cell[0].texture, false);
+                append_triangles(
+                    &mut triangles,
+                    &cell,
+                    uv,
+                    floor,
+                    cell[0].texture,
+                    false,
+                    cell_order,
+                );
             }
         }
     }
@@ -221,6 +312,7 @@ pub fn build_cave_terrain(
         profile_revision: profile.profile_revision,
         clear_index: resources.clear_index,
         triangles,
+        cell_orders,
         input_hash: byte_hash(&input),
         command_hash,
     })
@@ -246,11 +338,13 @@ fn append_triangles(
     pairs: [[usize; 3]; 2],
     texture: u8,
     ceiling: bool,
+    cell_order: u16,
 ) {
     for corners in pairs {
         out.push(Triangle {
             texture,
             ceiling,
+            cell_order,
             vertices: corners.map(|corner| {
                 let mut vertex = if ceiling {
                     cell[corner].ceiling
@@ -261,6 +355,19 @@ fn append_triangles(
                 vertex
             }),
         });
+    }
+}
+
+/// GameRenderOriginal.h unk_D4328x: texture offset[2,3], followed by
+/// billboard offset[4,5]. The sprite bucket is NOT the lattice-point tile.
+fn sprite_cell(x: u8, y: u8, yaw: i16) -> (u8, u8) {
+    let quadrant = ((i32::from(yaw) & 2047) + 256) >> 9 & 3;
+    match quadrant {
+        0 => (x, y.wrapping_sub(1)),
+        1 => (x, y),
+        2 => (x.wrapping_sub(1), y),
+        3 => (x.wrapping_sub(1), y.wrapping_sub(1)),
+        _ => unreachable!("quadrant is masked"),
     }
 }
 
@@ -348,4 +455,94 @@ fn project(
         texture,
         uv,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cave_occlusion_uses_exact_spans_and_preserves_partial_sprite_visibility() {
+        let profile = ClassicHdRenderProfile::compatibility_320x200();
+        let point = |x, y| Mode5Vertex {
+            x,
+            y,
+            u: 0,
+            v: 0,
+            pnt5: 3 << 16,
+        };
+        let plan = CaveTerrainPlan {
+            profile_revision: profile.profile_revision,
+            clear_index: 254,
+            triangles: vec![
+                Triangle {
+                    vertices: [point(0, 0), point(20, 0), point(0, 20)],
+                    texture: 0,
+                    ceiling: true,
+                    cell_order: 1,
+                },
+                Triangle {
+                    vertices: [point(8, 0), point(20, 0), point(8, 12)],
+                    texture: 0,
+                    ceiling: false,
+                    cell_order: 2,
+                },
+            ],
+            cell_orders: vec![0; 65_536],
+            input_hash: 7,
+            command_hash: 9,
+        };
+        let atlas = vec![17; CLASSIC_HD_TERRAIN_ATLAS_BYTES];
+        let mut tables = vec![0; 83_456];
+        for row in tables[..CLASSIC_HD_TABLESN_BYTES].chunks_exact_mut(256) {
+            for (index, value) in row.iter_mut().enumerate() {
+                *value = index as u8;
+            }
+        }
+        let render = |occlusion| {
+            let mut indices = plan.initial_indices(&profile);
+            let mut provenance = vec![0; profile.extent()];
+            let mut orders = vec![0; profile.extent()];
+            let mut writer = ClassicHdFrameWriter::from_planes(
+                &profile,
+                &mut indices,
+                &mut provenance,
+                1,
+                0,
+                plan.input_hash,
+                0,
+            )
+            .unwrap();
+            if occlusion {
+                plan.rasterize_with_occlusion(&mut writer, &atlas, &tables, 1, &mut orders)
+                    .unwrap();
+            } else {
+                plan.rasterize(&mut writer, &atlas, &tables, 1).unwrap();
+            }
+            writer.finish();
+            (indices, provenance, orders)
+        };
+        let plain = render(false);
+        let ordered = render(true);
+        assert_eq!(ordered.0, plain.0, "source indexed samples unchanged");
+        assert_eq!(
+            ordered.1, plain.1,
+            "source floor/ceiling coverage unchanged"
+        );
+        assert_eq!(ordered.2[320 + 1], 1);
+        assert_eq!(ordered.2[320 + 9], 2);
+        assert_eq!(ordered.2[31 * 320 + 31], 0);
+        // The shader keeps equal/earlier terrain and clips later terrain.
+        // One source bucket therefore has both visible and hidden pixels.
+        assert!(1 >= ordered.2[320 + 1]);
+        assert!(1 < ordered.2[320 + 9]);
+    }
+
+    #[test]
+    fn cave_sprite_bucket_uses_source_quadrant_offsets_and_wrapping() {
+        assert_eq!(sprite_cell(0, 0, 0), (0, 255));
+        assert_eq!(sprite_cell(0, 0, 512), (0, 0));
+        assert_eq!(sprite_cell(0, 0, 1024), (255, 0));
+        assert_eq!(sprite_cell(0, 0, 1536), (255, 255));
+    }
 }

@@ -6,6 +6,9 @@ Shader "MagicCarpet/EntitySprite"
     {
         _Indices ("Indexed TMAP frame", 2D) = "black" {}
         _Palette ("Ordered PALN lookup", 2D) = "white" {}
+        _CaveOrders ("Cave terrain source-cell order", 2D) = "black" {}
+        _CaveCellOrder ("Sprite source-cell order", Float) = 0
+        _CaveOcclusionEnabled ("Use Cave source-cell occlusion", Float) = 0
     }
     SubShader
     {
@@ -24,6 +27,9 @@ Shader "MagicCarpet/EntitySprite"
 
             sampler2D _Indices;
             sampler2D _Palette;
+            sampler2D _CaveOrders;
+            float _CaveCellOrder;
+            float _CaveOcclusionEnabled;
 
             struct appdata
             {
@@ -35,7 +41,8 @@ Shader "MagicCarpet/EntitySprite"
             {
                 float4 position : SV_POSITION;
                 float2 uv : TEXCOORD0;
-                UNITY_FOG_COORDS(1)
+                float4 screenPosition : TEXCOORD1;
+                UNITY_FOG_COORDS(2)
             };
 
             v2f vert(appdata input)
@@ -43,6 +50,7 @@ Shader "MagicCarpet/EntitySprite"
                 v2f output;
                 output.position = UnityObjectToClipPos(input.vertex);
                 output.uv = input.uv;
+                output.screenPosition = ComputeScreenPos(output.position);
                 UNITY_TRANSFER_FOG(output, output.position);
                 return output;
             }
@@ -52,6 +60,18 @@ Shader "MagicCarpet/EntitySprite"
                 fixed sampleValue = tex2D(_Indices, input.uv).r;
                 float index = floor(sampleValue * 255.0 + 0.5);
                 clip(index - 0.5);
+                if (_CaveOcclusionEnabled > 0.5)
+                {
+                    // Source draws a sprite bucket after that cell's floor
+                    // and ceiling. A later terrain write hides only the
+                    // covered sprite fragments; equality remains visible.
+                    clip(_CaveCellOrder - 0.5);
+                    float2 screenUv = input.screenPosition.xy / input.screenPosition.w;
+                    float2 orderBytes = tex2D(_CaveOrders, float2(screenUv.x, 1.0 - screenUv.y)).rg;
+                    float terrainOrder = floor(orderBytes.r * 255.0 + 0.5)
+                        + floor(orderBytes.g * 255.0 + 0.5) * 256.0;
+                    clip(_CaveCellOrder - terrainOrder);
+                }
                 fixed4 color = tex2D(
                     _Palette, float2((index + 0.5) / 256.0, 0.5));
                 color.a = 1.0;
