@@ -13405,7 +13405,12 @@ namespace MagicCarpet.Native
                 if (!string.IsNullOrEmpty(gameRuntimeObjectiveInstruction))
                     GUI.Label(new Rect(Screen.width * .2f, Screen.height - 75,
                         Screen.width * .6f, 60), gameRuntimeObjectiveInstruction, hudStyle);
-                if (gameRuntimeMode) DrawGameRuntimePauseOverlay();
+                if (gameRuntimeMode)
+                {
+                    DrawGameRuntimePauseOverlay();
+                    playerPreferences?.DrawEffects(gameRuntimeNightSurface != null ? 1 : 0,
+                        session?.GameRuntimeIdentity().mode == GameRuntimeTransport.PlayingMode);
+                }
                 if (gameRuntimeMode && gameRuntimeSpellInputStatus != null &&
                     Time.unscaledTime <= gameRuntimeSpellInputStatusUntil)
                     GUI.Label(new Rect(20, 20, Screen.width - 40, 35),
