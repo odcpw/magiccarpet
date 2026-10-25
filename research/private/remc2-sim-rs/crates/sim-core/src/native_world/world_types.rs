@@ -4183,6 +4183,14 @@ impl NativeWorldInspection {
             .mission_content_template_from_definition(definition)?
             .session();
         let mut session = self.build_campaign_reset_session(definition, mission)?;
+        {
+            let live = &mut session.session.state.live;
+            super::level2_class5::firefly::adopt_imported_fireflies(
+                &mut live.economy,
+                &live.core.runtime,
+            )
+            .map_err(NativeWorldError::new)?;
+        }
         // Both reset builders expose the definition's exact BUILD parameter
         // bank. The qualified Day bundle also needs retained authored houses
         // and their destruction successors for later activation groups.

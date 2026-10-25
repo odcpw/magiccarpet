@@ -795,15 +795,30 @@ impl SourceArena {
                     include_retained,
                 );
             }
-            let &kind = authored_bindings.get(&source.authored_index)?;
+            let (kind, origin) = if source.model
+                == crate::native_world::level2_class5::firefly::FIREFLY_MODEL
+                && source.authored_index
+                    == crate::native_world::level2_class5::firefly::IMPORTED_FIREFLY_AUTHORED_INDEX
+            {
+                let &kind = initial_bindings.get(&source_slot)?;
+                if kind != CreatureKind::Firefly {
+                    return None;
+                }
+                (kind, CreatureRootOrigin::InitialPackage)
+            } else {
+                (
+                    *authored_bindings.get(&source.authored_index)?,
+                    CreatureRootOrigin::AuthoredRecord {
+                        authored_record: source.authored_index,
+                    },
+                )
+            };
             return Some(CreatureRuntimeIdentity {
                 handle: dynamic_handle,
                 kind,
                 root_slot: source_slot,
                 role: CreatureRuntimeRole::Root,
-                origin: CreatureRootOrigin::AuthoredRecord {
-                    authored_record: source.authored_index,
-                },
+                origin,
                 raw_model: Some(source.model),
                 living: source.active
                     && source.drawing_enabled

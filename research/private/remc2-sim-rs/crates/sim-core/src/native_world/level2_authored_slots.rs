@@ -2207,8 +2207,8 @@ impl Level2EconomyState {
     ///
     /// `sub_504B0` is the only pinned constructor for this action and creates
     /// model 53. The callback decrements life before its negative terminal
-    /// return, latches sound 30 and shifts, then consumes RNG-L2-0263 before
-    /// the three accepted SEARCH.DAT shape-0 cells (0264..0267). Each accepted
+    /// return, latches sound 30 and shifts, then advances the RNG before
+    /// walking the current SEARCH.DAT class (0,2,4,6,1,3,5). Each accepted
     /// child is the existing `NewAdd0A00_4E320` model-0 arena row with the
     /// source's copied identity and action-58 control/shift overrides.
     pub fn step_authored_model53_slot(&mut self, source_slot: u16) -> bool {
@@ -2229,25 +2229,29 @@ impl Level2EconomyState {
                 source.last_sound_id = 30;
             }
             let signed_term = 768_i32 * source.dword_0x10;
-            let sign = signed_term.signum();
-            source.shift_rot_x = i16::try_from((signed_term - sign * 5) >> 2)
+            source.shift_rot_x = i16::try_from(signed_term / 4)
                 .expect("Level 2 action-58 shift rotation fits i16");
             source.shift_rot_y = 512;
 
-            // `sub_10C80(a2 = 0)` is a no-RNG target-mailbox scan. Its
-            // cross-entity record writes remain outside this economy-owned
-            // carrier; the source transition and RNG-producing child path are
-            // kept exact here.
+            // The scheduler applies sub_10C80 before these child allocations.
+            // AddE7EE0x(n, n) selects only SEARCH class n; sub_10130's
+            // terminal coordinate is not consumed by the == 1 loop.
+            let search_class = source.dword_0x10 as u8;
+            let mut offsets = source_search_offsets(search_class);
+            if search_class != 0 {
+                offsets.drain(..source_search_offsets(search_class - 1).len());
+            }
+            offsets.pop();
             source.entity_rng = level2_next_rng16(source.entity_rng);
-            for (offset_x, offset_y) in [(0_i32, 0_i32), (1, 0), (0, 1)] {
+            for (offset_x, offset_y) in offsets {
                 source.entity_rng = level2_next_rng16(source.entity_rng);
                 let child_x = i32::from(source.position.x) - 96
-                    + 160 * offset_x
+                    + 160 * i32::from(offset_x)
                     + i32::from(source.entity_rng % 0x81)
                     - 64;
                 source.entity_rng = level2_next_rng16(source.entity_rng);
                 let child_y = i32::from(source.position.y) - 96
-                    + 160 * offset_y
+                    + 160 * i32::from(offset_y)
                     + i32::from(source.entity_rng % 0x81)
                     - 64;
                 let child_position = Position {

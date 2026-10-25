@@ -931,12 +931,9 @@ impl SourceSchedulerWorld for Level2SourceSchedulerWorld<'_, '_> {
                     live.ordinary.settlement_building_slots(&live.economy);
             }
             PassPhase::PreDispatch => {
-                self.owner
-                    .session
-                    .state
-                    .live
-                    .economy
-                    .advance_authored_firefly_stage_rows();
+                let live = &mut self.owner.session.state.live;
+                live.economy
+                    .advance_authored_firefly_stage_rows(&mut live.core.runtime)?;
                 // Authored groups are consumed synchronously by the numeric
                 // source callback which fires their class-11 producer.  A
                 // live producer row is not itself proof that the callback has
@@ -4909,6 +4906,8 @@ impl Level2ResetSession {
             source_frame_timing_index: 0,
             source_model45_building_selectors,
             player_pending_damage: initial_player_pending_damage,
+            player_protection_ticks: 0,
+            elapsed_centiseconds: 0,
             player_pending_attacker: initial_player_pending_attacker,
             player_life: initial_player_life,
             player_menu_state: 0,
@@ -8032,6 +8031,71 @@ impl Level2ResetSession {
         Some(source_slot)
     }
 
+    /// Authored vaults use the ordinary BUILD-to-House lifecycle. Their
+    /// selector and demolition successor come from the retained owner bank.
+    fn allocate_authored_vault(&mut self, feature: AuthoredFeature) -> Option<u16> {
+        self.allocate_authored_house_construction(
+            feature.index,
+            u8::try_from(feature.parameter_1).ok()?,
+            u8::try_from(feature.parameter_2).ok()?,
+            feature.world_position(0),
+            None,
+        )
+    }
+
+    fn allocate_authored_house_construction(
+        &mut self,
+        authored_record: u16,
+        selector: u8,
+        reward_group: u8,
+        candidate: Position,
+        base_z: Option<i16>,
+    ) -> Option<u16> {
+        let live = &mut self.session.state.live;
+        let parameter = *live.ordinary.house_parameters.get(&selector)?;
+        let footprint = live.ordinary.house_build_footprints.get(&selector)?.clone();
+        let (width, height) = (footprint.width, footprint.height);
+        let mut position = creatures::settlements::builder_house_position(
+            &live.terrain,
+            candidate,
+            creatures::settlements::BuilderBuildingSpec {
+                sprite_width: 0,
+                sprite_height: 0,
+                footprint_width: width,
+                footprint_height: height,
+            },
+        );
+        if let Some(z) = base_z {
+            position.z = z;
+        }
+        let (slot, rng) = live
+            .economy
+            .allocate_authored_house_slot(authored_record, position)?;
+        let mut source = cave_features::new_event(slot, rng, position);
+        crate::house::bind_startup_construction(
+            &mut source,
+            selector,
+            parameter,
+            &footprint,
+            u16::from(width) * u16::from(height) * 4,
+        );
+        source.record[69] = reward_group;
+        let house = match HouseState::from_construction_snapshot(&source, parameter) {
+            Ok(house) => house,
+            Err(_) => {
+                live.economy.rollback_authored_house_slot(slot);
+                return None;
+            }
+        };
+        if live.ordinary.houses.insert_builder_house(house).is_err() {
+            live.economy.rollback_authored_house_slot(slot);
+            return None;
+        }
+        live.economy.entities[usize::from(slot)] = source;
+        live.ordinary.publish_house_source(&mut live.economy, slot);
+        Some(slot)
+    }
+
     /// Materialize one authored class-2/model-1/action-3 stone through the
     /// shared lossless source arena. The authored-group producer owns when
     /// this constructor runs; the ordinary numeric scheduler owns its
@@ -8418,7 +8482,10 @@ impl Level2ResetSession {
             .live
             .mission
             .level2_authored_stage_variable_for(feature)?;
-        if stage_var.kind != 1 || !stage_var.subtype_match() || stage_var.flags & 0x60 != 0 {
+        if !matches!(stage_var.kind, 1 | 2)
+            || !stage_var.subtype_match()
+            || stage_var.flags & 0x60 != 0
+        {
             return None;
         }
         let runtime_stage_var = self
@@ -9431,43 +9498,30 @@ impl Level2ResetSession {
         }
         let economy_before = self.session.state.live.economy.clone();
         let shared_before = self.session.state.live.shared_spells.clone();
-        let terrain = &self.session.state.live.terrain;
+        let ordinary_before = self.session.state.live.ordinary.clone();
         let mut constructed = Vec::with_capacity(group_rows.len());
         let result = (|| -> Result<()> {
             for feature in group_rows.iter().copied() {
-                let position =
-                    feature.world_position(terrain.ground_height(feature.world_position(0)));
                 if (feature.kind, feature.subtype) != (10, 45) {
                     return Err(NativeWorldError::new(format!(
                         "unsupported Level 2 group-8 authored row {} ({}/{})",
                         feature.index, feature.kind, feature.subtype
                     )));
                 }
-                let source = self
-                    .session
-                    .state
-                    .live
-                    .economy
-                    .allocate_authored_model45(
-                        feature.index,
-                        feature.parameter_2,
-                        feature.parameter_1,
-                        position,
-                        terrain,
-                    )
-                    .ok_or_else(|| {
-                        NativeWorldError::new(format!(
-                            "Level 2 authored model45 row {} could not allocate",
-                            feature.index
-                        ))
-                    })?;
-                constructed.push((feature.index, source.source_entity_index));
+                let source_slot = self.allocate_authored_vault(feature).ok_or_else(|| {
+                    NativeWorldError::new(format!(
+                        "Level 2 authored model45 row {} could not allocate",
+                        feature.index
+                    ))
+                })?;
+                constructed.push((feature.index, source_slot));
             }
             Ok(())
         })();
         if let Err(error) = result {
             self.session.state.live.economy = economy_before;
             self.session.state.live.shared_spells = shared_before;
+            self.session.state.live.ordinary = ordinary_before;
             self.push_dispatch_effect(Level2DispatchEvent::Error {
                 pass,
                 source_slot: root_slot,
@@ -10668,31 +10722,12 @@ impl Level2ResetSession {
                         let _ = self.allocate_level_one_authored_house(feature);
                         continue;
                     }
-                    let position = feature.world_position(
-                        self.session
-                            .state
-                            .live
-                            .terrain
-                            .ground_height(feature.world_position(0)),
-                    );
-                    if let Some(source) = self.session.state.live.economy.allocate_authored_model45(
-                        feature.index,
-                        feature.parameter_2,
-                        feature.parameter_1,
-                        position,
-                        &self.session.state.live.terrain,
-                    ) {
+                    if self.allocate_authored_vault(feature).is_some() {
                         self.session
                             .state
                             .live
                             .level2_model45_activated
                             .insert(feature.index);
-                        debug_assert!(
-                            self.economy
-                                .authored_model45()
-                                .iter()
-                                .any(|row| row.source_entity_index == source.source_entity_index)
-                        );
                     }
                 }
                 (10, 54) => {
@@ -13951,6 +13986,83 @@ impl Level2ResetSession {
         &mut self,
         source_slot: u16,
     ) -> std::result::Result<Vec<HouseStepEvent>, String> {
+        let before = self
+            .session
+            .state
+            .live
+            .ordinary
+            .houses()
+            .iter()
+            .find(|house| house.entity_index == source_slot && house.active)
+            .copied();
+        if let Some(house) = before.filter(|house| {
+            house.action == crate::house::HOUSE_REMOVE_ACTION
+                && house.parameter.destruction_successor != 0
+        }) {
+            // RemoveCastleStage's successor branch constructs the replacement
+            // without demolishing the old BUILD footprint or firing xtype yet.
+            let authored = self
+                .session
+                .state
+                .live
+                .economy
+                .authored_house_record(source_slot)
+                .unwrap_or(0);
+            let raw = &self.session.state.live.economy.entities[usize::from(source_slot)];
+            let base_z = i16::from_le_bytes(raw.record[162..164].try_into().unwrap());
+            let events = {
+                let live = &mut self.session.state.live;
+                live.ordinary
+                    .step_house_action_52(source_slot, &live.terrain)
+            };
+            let replacement = self.allocate_authored_house_construction(
+                authored,
+                house.parameter.destruction_successor,
+                house.xtype,
+                house.position,
+                Some(base_z),
+            );
+            let live = &mut self.session.state.live;
+            if let Some(slot) = replacement {
+                let next = live
+                    .ordinary
+                    .houses
+                    .house_mut(slot)
+                    .expect("new House carrier");
+                next.owner_entity_index = house.owner_entity_index;
+                if house.owner_entity_index != 0 {
+                    next.control_flags |= 1;
+                }
+                live.ordinary.publish_house_source(&mut live.economy, slot);
+                let footprint = live
+                    .ordinary
+                    .house_build_footprints
+                    .get(&house.building_index)
+                    .ok_or("successor lost its source BUILD footprint")?;
+                let start_x = ((house.position.x.wrapping_add(128) >> 8) as u8)
+                    .wrapping_sub(footprint.width / 2);
+                let start_y = ((house.position.y.wrapping_add(128) >> 8) as u8)
+                    .wrapping_sub(footprint.height / 2);
+                for y in 0..footprint.height {
+                    for x in 0..footprint.width {
+                        if footprint.cells()
+                            [usize::from(y) * usize::from(footprint.width) + usize::from(x)]
+                            != [0xff, 0xff]
+                        {
+                            live.terrain.planes.angles[terrain_index(
+                                start_x.wrapping_add(x),
+                                start_y.wrapping_add(y),
+                            )] &= 0x7f;
+                        }
+                    }
+                }
+            } else if let Some(old) = live.ordinary.houses.house_mut(source_slot) {
+                old.parameter.destruction_successor = 0;
+            }
+            live.ordinary
+                .publish_house_source(&mut live.economy, source_slot);
+            return Ok(events);
+        }
         let live = &mut self.session.state.live;
         // Keep the cheap callback snapshot; actor burial begins only in the
         // nonempty terrain sink below.
@@ -13979,6 +14091,14 @@ impl Level2ResetSession {
             &mut live.terrain,
         ) {
             Ok(()) => {
+                if events
+                    .iter()
+                    .any(|event| matches!(event, HouseStepEvent::ConstructionCompleted { .. }))
+                    && let Some(previous) = before
+                {
+                    live.economy.entities[usize::from(source_slot)].record[162..164]
+                        .copy_from_slice(&previous.position.z.to_le_bytes());
+                }
                 live.ordinary
                     .publish_house_source(&mut live.economy, source_slot);
                 Ok(events)
@@ -15206,8 +15326,52 @@ impl Level2ResetSession {
                 }
             }
             (ExistingHandler::Class10Effects, Level2SourceRoute::House) => {
+                let demolition_group = self
+                    .session
+                    .state
+                    .live
+                    .ordinary
+                    .houses()
+                    .iter()
+                    .find(|house| {
+                        house.entity_index == source_slot
+                            && house.active
+                            && house.action == crate::house::HOUSE_REMOVE_ACTION
+                            && house.parameter.destruction_successor == 0
+                    })
+                    .map(|house| house.xtype)
+                    .filter(|group| *group != 0);
                 match self.step_level2_house_sink_with_rollback(source_slot) {
                     Ok(events) => {
+                        if let Some(group) = demolition_group {
+                            // RemoveCastleStage publishes xtype BEFORE hiding
+                            // its own row. Keep that row live across the group
+                            // allocator rebuild; otherwise its reward can reuse
+                            // the currently executing slot before the epilogue.
+                            let live = &mut self.session.state.live;
+                            let house = live
+                                .ordinary
+                                .houses
+                                .house_mut(source_slot)
+                                .expect("demolition retains its House carrier");
+                            house.active = true;
+                            house.control_flags &= !crate::level1_mission::SOURCE_DISABLED_FLAG;
+                            live.ordinary
+                                .publish_house_source(&mut live.economy, source_slot);
+                            let result =
+                                self.consume_authored_group(pass, source_slot, u16::from(group));
+                            let live = &mut self.session.state.live;
+                            let house = live
+                                .ordinary
+                                .houses
+                                .house_mut(source_slot)
+                                .expect("group publication cannot reclaim its live producer");
+                            house.active = false;
+                            house.control_flags |= crate::level1_mission::SOURCE_DISABLED_FLAG;
+                            live.ordinary
+                                .publish_house_source(&mut live.economy, source_slot);
+                            result?;
+                        }
                         for event in &events {
                             if let HouseStepEvent::RemoveFootprint { entity_index, .. } = *event
                                 && let Some(entity) = self
@@ -15577,7 +15741,7 @@ impl Level2ResetSession {
                     .state
                     .live
                     .economy
-                    .step_authored_firefly_lifecycle_slot(source_slot, terrain)?;
+                    .step_authored_firefly_lifecycle_slot(source_slot, goat_players, terrain)?;
                 if lifecycle.handled {
                     if let Some(killer_entity_index) = lifecycle.pre_kill_credit {
                         let qualifying_killer = killer_entity_index != source_slot
@@ -15626,6 +15790,7 @@ impl Level2ResetSession {
                         .economy
                         .step_authored_firefly_stage_slot(
                             source_slot,
+                            goat_players,
                             frozen_model19_slots,
                             terrain,
                         ),
@@ -19217,6 +19382,7 @@ impl Level2ResetSession {
             })
             .map(|portal| portal.position);
         let phase_before = self.session.state.live.level_exit.phase;
+        let palette_before = self.session.state.live.level_exit.palette_submode;
         let speed_holder_index = self.session.state.live.core.state.speed_spell_holder_index;
         let effects = {
             let live = &mut self.session.state.live;
@@ -19250,6 +19416,15 @@ impl Level2ResetSession {
             }
         }
 
+        let palette_after = self.session.state.live.level_exit.palette_submode;
+        if palette_after != palette_before && matches!(palette_after, 5 | 6) {
+            self.session.state.live.economy.fields.palette.request(
+                crate::world::fields::PaletteRequest {
+                    mode: palette_after,
+                    count: 0,
+                },
+            );
+        }
         if let Some(effect_state) = self.session.state.live.core.context.effects.as_mut() {
             effect_state.palette_submode = self.session.state.live.level_exit.palette_submode;
         }
@@ -19526,14 +19701,14 @@ impl Level2ResetSession {
             selector.0 == u8::MAX
                 || (selector.0 == class && (selector.1 == u8::MAX || selector.1 == model))
         };
+        let radius = (i32::from(shape.0) + 255) / 256;
+        let offsets = (-radius..=radius)
+            .flat_map(|y| (-radius..=radius).map(move |x| (x as i8, y as i8)))
+            .collect::<Vec<_>>();
         let generic_slots = source_map_search_slots(
             &self.session.state.live.economy.map_chains,
             step.position,
-            &if shape.0 == 0 {
-                vec![(0, 0)]
-            } else {
-                source_search_offsets(1)
-            },
+            &offsets,
         );
         let in_scope = |slot| shape.0 != 0 || generic_slots.contains(&slot);
         let overlaps_raw = |target: &EntitySnapshot| {
@@ -19605,6 +19780,49 @@ impl Level2ResetSession {
                 i32::from(step.payload),
                 step.owner_entity_index,
             );
+        }
+
+        // sub_10C80 visits the model45 list independently of map cells.
+        // Deliver to the House owner, not a raw projection overwritten at
+        // its next ordinary callback.
+        let houses = self
+            .session
+            .state
+            .live
+            .ordinary
+            .houses()
+            .iter()
+            .filter(|house| house.source_retained() && house.source_id != step.owner_entity_index)
+            .filter(|house| {
+                level2_compare_axis_with_shift(
+                    step.position,
+                    shape.0,
+                    shape.0,
+                    house.position,
+                    house.collision_half_width,
+                    house.collision_half_depth,
+                ) && self
+                    .session
+                    .definition
+                    .collision_masks
+                    .as_ref()
+                    .is_some_and(|bank| {
+                        level2_model76_model45_occupancy(
+                            bank,
+                            u16::from(house.building_index),
+                            step.position,
+                        )
+                    })
+            })
+            .map(|house| house.entity_index)
+            .collect::<Vec<_>>();
+        for slot in houses {
+            self.session
+                .state
+                .live
+                .ordinary
+                .houses
+                .submit_source_damage(slot, step.payload, step.owner_entity_index);
         }
 
         let settlement_slots = self
@@ -19799,10 +20017,10 @@ impl Level2ResetSession {
         for target_slot in goat_slots.into_iter().filter(|slot| {
             accepts(crate::goat::GOAT_CLASS, crate::goat::GOAT_MODEL) && in_scope(*slot)
         }) {
-            let _ = self.session.state.live.goats.inject_damage(
+            let _ = self.session.state.live.goats.submit_source_damage(
                 target_slot,
-                i32::from(step.payload),
-                step.owner_entity_index.cast_signed(),
+                step.payload,
+                step.owner_entity_index,
             );
         }
 
@@ -19903,6 +20121,7 @@ impl Level2ResetSession {
                         && target.source_byte_38() & 1 != 0
                         && target.control_flags & 8 != 0
                         && (target.class != 3 || target.model != 2)
+                        && (target.class != 10 || target.model != 45)
                         && (target.class != crate::goat::GOAT_CLASS
                             || target.model != crate::goat::GOAT_MODEL)
                         && overlaps_raw(target)
@@ -21205,12 +21424,41 @@ impl Level2ResetSession {
                     .economy
                     .step_model59_smoke_child_slot(source_slot, terrain)
             }
-            Level2DynamicArenaKind::AuthoredModel53 => self
-                .session
-                .state
-                .live
-                .economy
-                .step_authored_model53_slot(source_slot),
+            Level2DynamicArenaKind::AuthoredModel53 => {
+                let source = self
+                    .economy()
+                    .authored_model53()
+                    .iter()
+                    .find(|row| row.active && row.source_entity_index == source_slot)
+                    .copied();
+                if let Some(source) = source.filter(|row| row.life >= 0) {
+                    if source.control_flags & 2 == 0 {
+                        self.session.state.live.economy.prepare_sound(
+                            source_slot,
+                            source_slot,
+                            -1,
+                            30,
+                        );
+                    }
+                    let shift = 768_i32 * source.dword_0x10;
+                    let pulse = level2_dynamic_economy::Level2Class10Model0Step {
+                        live: true,
+                        first_impact: source.control_flags & 2 == 0,
+                        damage_pulse: true,
+                        owner_entity_index: source.entity_id,
+                        payload: (i32::from(source.subspell_index) / i32::from(source.max_life))
+                            as u16,
+                        position: source.position,
+                    };
+                    let shape = ((shift / 4) as i16, 0, 512);
+                    self.apply_level2_damage_pulse(pulse, shape, (u8::MAX, u8::MAX));
+                }
+                self.session
+                    .state
+                    .live
+                    .economy
+                    .step_authored_model53_slot(source_slot)
+            }
             Level2DynamicArenaKind::AuthoredModel5WaterSplash => self
                 .session
                 .state
@@ -21672,6 +21920,20 @@ impl Level2ResetSession {
             }
         }
         hasher.update(b"level2-player-contact-mailbox-v1");
+        if self.session.state.live.player_protection_ticks != 0 {
+            hasher.update(b"source-player-protection-v1");
+            hasher.update(
+                self.session
+                    .state
+                    .live
+                    .player_protection_ticks
+                    .to_le_bytes(),
+            );
+        }
+        if self.session.state.live.elapsed_centiseconds != 0 {
+            hasher.update(b"campaign-elapsed-centiseconds-v1");
+            hasher.update(self.session.state.live.elapsed_centiseconds.to_le_bytes());
+        }
         hasher.update(self.session.state.live.player_pending_damage.to_le_bytes());
         hasher.update(
             self.session
@@ -22058,16 +22320,100 @@ impl Level2ResetSession {
         true
     }
 
+    /// PlayerEvents action 15 reuses the dead human actor and the linked
+    /// Castle. It does not reset the mission, debit Castle mana, or recreate
+    /// the runtime generation.
+    fn revive_level2_player_at_castle(&mut self) -> Result<bool> {
+        let live = &mut self.session.state.live;
+        let actor_index = live.core.state.entity_index;
+        let castle_index = live.economy.player_castle_entity_index();
+        if live.player_life >= 0 || castle_index == 0 {
+            return Ok(false);
+        }
+        let Some(castle_position) = live
+            .economy
+            .castle()
+            .filter(|castle| castle.active && castle.source_entity_index == castle_index)
+            .map(|castle| castle.position)
+        else {
+            return Ok(false);
+        };
+        live.economy
+            .rebuild_source_arena_with_terrain(&mut live.terrain, &[])
+            .map_err(NativeWorldError::new)?;
+        crate::world::effects::sync_position(
+            &mut live.economy,
+            &mut live.terrain,
+            actor_index,
+            castle_position,
+            true,
+            false,
+        )
+        .map_err(NativeWorldError::new)?;
+        let actor = live.economy.entities[usize::from(actor_index)].clone();
+        live.shared_spells.sync_player_entity_from_authority(&actor);
+        let holders = live.shared_spells.revive_local_player_at_castle(
+            &mut live.economy.economy,
+            castle_position,
+            true,
+        )?;
+        for holder in holders {
+            let slot = holder.index;
+            let position = holder.position;
+            let active = holder.active;
+            live.economy.entities[usize::from(slot)] = holder;
+            crate::world::effects::sync_position(
+                &mut live.economy,
+                &mut live.terrain,
+                slot,
+                position,
+                active,
+                false,
+            )
+            .map_err(NativeWorldError::new)?;
+        }
+        let actor = live.shared_spells.player_entity().clone();
+        live.economy.entities[usize::from(actor_index)] = actor.clone();
+        crate::world::effects::sync_position(
+            &mut live.economy,
+            &mut live.terrain,
+            actor_index,
+            actor.position,
+            actor.active,
+            false,
+        )
+        .map_err(NativeWorldError::new)?;
+        live.player_life = actor.life;
+        live.player_protection_ticks = 100;
+        for player in &mut live.core.players {
+            if let Some(authority) = live
+                .shared_spells
+                .players
+                .iter()
+                .find(|candidate| candidate.entity_index == player.entity_index)
+            {
+                *player = authority.clone();
+            }
+        }
+        live.core.state.position = castle_position;
+        live.core.state.target_speed = 0;
+        live.core.state.strafe_speed = 0;
+        live.core.state.recoil_speed = 0;
+        live.core.state.recoil_yaw = 0;
+        live.core.state.ambient_loop_5_distance = 2048;
+        live.core.state.ambient_loop_31_distance = 2048;
+        live.economy.finish_source_group();
+        self.sync_level2_spell_fire_context();
+        self.refresh_level2_spell_fire_holder_projection();
+        Ok(true)
+    }
+
     /// Execute the source Castle protection prefix before the player body.
     /// Overlap refreshes word159 even without incoming damage. Its nonzero
     /// branch clears all 36 mailbox bytes, decrements once and skips sub5EFA0;
     /// the retained one visit also protects the first callback after departure.
     fn step_level2_player_castle_protection(&mut self, castle_overlap: bool) -> bool {
-        let mut counter = u16::from_le_bytes(
-            self.session.state.live.shared_spells.local_player.record[345..347]
-                .try_into()
-                .expect("qualified local player word159"),
-        );
+        let mut counter = self.session.state.live.player_protection_ticks;
         if castle_overlap {
             self.redirect_level2_player_damage_to_castle();
             counter = 2;
@@ -22089,22 +22435,7 @@ impl Level2ResetSession {
             live.player_pending_attacker = 0;
             counter = counter.wrapping_sub(1);
         }
-        let live = &mut self.session.state.live;
-        let player_entity_index = live.core.state.entity_index;
-        let bytes = counter.to_le_bytes();
-        live.shared_spells.local_player.record[345..347].copy_from_slice(&bytes);
-        for player in &mut live.shared_spells.players {
-            if player.entity_index == player_entity_index {
-                player.record[345..347].copy_from_slice(&bytes);
-            }
-        }
-        // The shared player record is also written by real spell callbacks;
-        // publish this same source counter to the canonical level player row.
-        for player in &mut live.core.players {
-            if player.entity_index == player_entity_index {
-                player.record[345..347].copy_from_slice(&bytes);
-            }
-        }
+        self.session.state.live.player_protection_ticks = counter;
         protected
     }
 
@@ -22733,6 +23064,53 @@ impl Level2ResetSession {
         self.step_outer_turn_with_tuning(command, speed_index, crate::FlightTuning::CLASSIC)
     }
 
+    pub(crate) fn advance_elapsed_centiseconds(&mut self, elapsed: u32) {
+        self.session.state.live.elapsed_centiseconds = self
+            .session
+            .state
+            .live
+            .elapsed_centiseconds
+            .wrapping_add(elapsed);
+    }
+
+    pub(crate) fn completion_statistics(&self) -> sim_session::GameCompletionStatistics {
+        use crate::campaign::completion_statistics::{SourceCompletionCounters, collect};
+        let live = &self.session.state.live;
+        let entry = &self.session.baseline.shared_spells.local_player;
+        let player = &live.shared_spells.local_player;
+        let mut available = [false; 26];
+        // sub_574A0 runs at entry after carried/enabled spells are installed.
+        // Its authored histogram includes dormant groups, not just live rows.
+        for feature in self.session.baseline.mission.authored_features() {
+            let Ok(family) = usize::try_from(feature.subtype) else {
+                continue;
+            };
+            if feature.kind == 15
+                && family < 26
+                && entry.enabled_spell_holders[family] == 0
+                && entry.spell_enabled_flags[family] == 0
+            {
+                available[family] = true;
+            }
+        }
+        let castle = live.economy.castle().filter(|castle| {
+            castle.active && castle.source_entity_index == live.economy.player_castle_entity_index()
+        });
+        collect(SourceCompletionCounters {
+            available_spell_types: available,
+            found_spell_types: player.acquired_spell_flags.map(|flag| flag != 0),
+            creatures_killed: live.economy.authored_bee_kill_census(player.entity_index) as i32,
+            total_creatures: live.economy.source_creature_population as i32,
+            projectile_attempts: player.projectile_attempts as i32,
+            projectile_hits: player.projectile_hits as i32,
+            owned_mana: live.economy.owner_mana_aggregate(player.entity_index),
+            castle_mana: castle.map(|castle| castle.mana),
+            global_mana_counter: live.economy.owner_mana_global(),
+            start_clock: 0,
+            completion_clock: live.elapsed_centiseconds,
+        })
+    }
+
     /// Execute the bounded source prefix and outer objective/presentation
     /// service that remain live while `UpdateEntities` is paused. No source
     /// callback, player input, gameplay turn, or flight tick is advanced.
@@ -22763,6 +23141,7 @@ impl Level2ResetSession {
         &mut self,
         source_level: u16,
         speech_enabled: bool,
+        show_foreign_text: bool,
     ) {
         use crate::campaign::objective_speech::{
             ObjectivePresentationActions, ObjectivePresentationInput,
@@ -22784,7 +23163,7 @@ impl Level2ResetSession {
             objective_index: objective.text_selector,
             level_ended: objective.is_level_end != 0,
             speech_enabled: speech_enabled && source_level < 4,
-            show_foreign_text: false,
+            show_foreign_text,
             source_level: u8::try_from(source_level).unwrap_or(u8::MAX),
         };
         let actions = self
@@ -22832,6 +23211,13 @@ impl Level2ResetSession {
             .fields
             .palette
             .advance_frame();
+        if self.session.state.live.level_exit.active {
+            let mode = self.session.state.live.economy.fields.palette.mode();
+            self.session.state.live.level_exit.palette_submode = mode;
+            if let Some(effects) = self.session.state.live.core.context.effects.as_mut() {
+                effects.palette_submode = mode;
+            }
+        }
         if field_speed_gate
             && let Some(effects) = self.session.state.live.core.context.effects.as_mut()
         {
@@ -22842,7 +23228,7 @@ impl Level2ResetSession {
     pub(crate) fn step_outer_turn_with_tuning(
         &mut self,
         command: PlayerCommand,
-        speed_index: u8,
+        mut speed_index: u8,
         flight_tuning: crate::FlightTuning,
     ) -> Vec<crate::StepEvidence> {
         #[cfg(test)]
@@ -22871,6 +23257,26 @@ impl Level2ResetSession {
         if command.opcode == 0x1e && command.argument_1 == 9 {
             self.session.state.live.shared_spells.free_spell_usage =
                 !self.session.state.live.shared_spells.free_spell_usage;
+        }
+        if command.opcode == 0x0f {
+            let revival = self.revive_level2_player_at_castle();
+            if matches!(revival, Ok(true)) {
+                speed_index = 0;
+            }
+            if let Err(error) = revival {
+                self.session.state = state_before;
+                self.session.state.scratch.dispatch_events.clear();
+                self.session
+                    .state
+                    .scratch
+                    .dispatch_events
+                    .push(Level2DispatchEvent::Error {
+                        pass: 0,
+                        source_slot: self.session.state.live.core.state.entity_index,
+                        message: error.to_string(),
+                    });
+                return Vec::new();
+            }
         }
         self.session
             .state
@@ -23432,6 +23838,333 @@ mod tests {
     }
 
     #[test]
+    fn qualified_castle_revival_public_action_preserves_world_and_rejects_free_heal() {
+        fn assert_no_dispatch_error(campaign: &CampaignSession) {
+            assert!(
+                campaign
+                    .level2_compatibility()
+                    .dispatch_events()
+                    .iter()
+                    .all(|event| !matches!(event, Level2DispatchEvent::Error { .. })),
+                "{:?}",
+                campaign.level2_compatibility().dispatch_events()
+            );
+        }
+        let package = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../generated/mc-cf02-campaign-package-v2-b/qualified-level2");
+        for (dead, with_castle) in [(true, true), (true, false), (false, true)] {
+            let mut campaign = CampaignSession::open(&package, CampaignSelection::LEVEL2).unwrap();
+            // Retain an already advanced world, rather than a reset-state-only fixture.
+            let _ = campaign.step(PlayerCommand::default(), 0);
+            assert_no_dispatch_error(&campaign);
+            let actor_slot = campaign.level2_compatibility().state.entity_index;
+            let held_before = campaign
+                .level2_compatibility()
+                .shared_spells()
+                .local_player()
+                .enabled_spell_holders;
+            let castle_position = if with_castle {
+                let live = &mut campaign.level2_compatibility_mut().session.state.live;
+                let terrain = live.terrain.clone();
+                live.economy
+                    .build_castle(live.core.state.position, actor_slot, &terrain)
+                    .expect("ordinary qualified Castle constructor");
+                let castle = live.economy.castle.as_mut().unwrap();
+                // Same source shift-AABB setup as the adjacent protection regression.
+                castle.shift_yaw = -8_192;
+                castle.shift_pitch = 1_664;
+                castle.shift_roll = 1_664;
+                castle.shift_fov = 0x4000;
+                Some(castle.position)
+            } else {
+                None
+            };
+            let away = {
+                let session = campaign.level2_compatibility();
+                let actor = &session.entities()[usize::from(actor_slot)];
+                let parameter = actor.parameter_relation.unwrap();
+                let row = &session.session.definition.presentation.entity_parameters
+                    [usize::from(parameter)];
+                let offset = i16::from_le_bytes([row[12], row[13]]);
+                let mut position = actor.position;
+                position.x = position.x.wrapping_add(0x4000);
+                position.z = session.terrain.ground_height(position).wrapping_add(offset);
+                position
+            };
+            let attacker = campaign
+                .level2_compatibility()
+                .session
+                .state
+                .live
+                .core
+                .players
+                .iter()
+                .find(|player| player.is_ai)
+                .unwrap()
+                .entity_index;
+            {
+                let session = campaign.level2_compatibility_mut();
+                session
+                    .set_level2_entity_position(actor_slot, away)
+                    .unwrap();
+                let damage = if dead { session.player_life + 1 } else { 750 };
+                session.queue_level2_player_contact_damage(damage, attacker);
+                assert_eq!(
+                    session.consume_level2_player_damage(),
+                    Some((damage, attacker, dead))
+                );
+                if dead {
+                    // Real grounded death tail releases the old holders. No direct
+                    // life/action/inventory assignments manufacture the precondition.
+                    session
+                        .step_level2_player_dying_action(0, actor_slot, away)
+                        .unwrap();
+                    assert!(session.player_life < 0);
+                    for (family, old_slot) in held_before.iter().enumerate() {
+                        if *old_slot != 0 {
+                            assert_eq!(
+                                session.shared_spells().local_player().enabled_spell_holders
+                                    [family],
+                                1
+                            );
+                            let old = &session.entities()[usize::from(*old_slot)];
+                            assert!(old.active);
+                            assert_eq!(
+                                (old.class, old.model, old.action),
+                                (15, family as u8, family as u8 * 3 + 1)
+                            );
+                            assert_eq!(old.control_flags & 1, 0);
+                        }
+                    }
+                }
+            }
+            let before = campaign.clone();
+            let before_live = &before.level2_compatibility().session.state.live;
+            let before_actor = &before_live.economy.entities[usize::from(actor_slot)];
+            let before_player = before_live.shared_spells.local_player().clone();
+            let castle_slot = before_live.economy.player_castle_entity_index();
+            let expected_protection = castle_position.map(|position| {
+                let mut probe = before_actor.clone();
+                probe.set_position(position);
+                if before_live.economy.player_castle_shift_aabb_overlap(&probe) {
+                    1
+                } else {
+                    99
+                }
+            });
+            let mut neutral = before.clone();
+            let _ = neutral.step(PlayerCommand::default(), 0);
+            assert_no_dispatch_error(&neutral);
+            let _ = campaign.step(
+                PlayerCommand {
+                    opcode: 0x0f,
+                    ..Default::default()
+                },
+                0,
+            );
+            assert_no_dispatch_error(&campaign);
+            let live = &campaign.level2_compatibility().session.state.live;
+            let reference = &neutral.level2_compatibility().session.state.live;
+            let actor = &live.economy.entities[usize::from(actor_slot)];
+            let player = live.shared_spells.local_player();
+            assert_eq!(campaign.generation(), before.generation());
+            assert_eq!(
+                live.core.runtime.global_turn,
+                reference.core.runtime.global_turn
+            );
+            // This raw campaign step retains the imported source wall clock.
+            // Its advancing authorities are the outer-frame index and the
+            // local player's source-pass tick (including action-3 orbit).
+            assert_eq!(
+                live.core.runtime.global_turn,
+                before_live.core.runtime.global_turn
+            );
+            assert_eq!(
+                live.source_frame_timing_index,
+                before_live.source_frame_timing_index.wrapping_add(1)
+            );
+            assert_eq!(
+                reference.source_frame_timing_index,
+                before_live.source_frame_timing_index.wrapping_add(1)
+            );
+            assert_eq!(
+                campaign.tick(),
+                before.tick().wrapping_add(1),
+                "one speed-0 player pass preserves prior progress and advances once"
+            );
+            assert_eq!(
+                neutral.tick(),
+                before.tick().wrapping_add(1),
+                "dead/no-Castle action 3 also advances its camera-orbit tick"
+            );
+            assert!(live.core.runtime.stage_index >= before_live.core.runtime.stage_index);
+            let completed = usize::from(before_live.core.runtime.stage_index);
+            assert_eq!(
+                &live.core.runtime.objectives[..completed],
+                &before_live.core.runtime.objectives[..completed]
+            );
+            assert!(
+                before_live
+                    .authored_features_consumed
+                    .is_subset(&live.authored_features_consumed)
+            );
+            assert_eq!(actor.index, before_actor.index);
+            assert_eq!(actor.source_id, before_actor.source_id);
+            assert_eq!(
+                live.economy.slot_generation(actor_slot),
+                before_live.economy.slot_generation(actor_slot)
+            );
+            assert_eq!(live.economy.player_castle_entity_index(), castle_slot);
+            if with_castle {
+                assert_eq!(
+                    live.economy.slot_generation(castle_slot),
+                    before_live.economy.slot_generation(castle_slot)
+                );
+                assert_eq!(
+                    live.economy.castle.unwrap().mana,
+                    reference.economy.castle.unwrap().mana,
+                    "recovery does not debit, refill or replace the Castle"
+                );
+            }
+            if dead && with_castle {
+                let position = castle_position.unwrap();
+                assert_eq!(
+                    (actor.max_life, actor.life, actor.action),
+                    (10_000, 10_000, 0)
+                );
+                assert_eq!(live.player_life, 10_000);
+                assert_eq!(
+                    (actor.position.x, actor.position.y),
+                    (position.x, position.y)
+                );
+                assert_eq!(live.core.state.position, actor.position);
+                // First normal source visit has already applied the old regen
+                // to the exact 1000-mana revival value, then projected max mana.
+                assert_eq!(
+                    actor.mana,
+                    1_000_i32
+                        .wrapping_add(before_actor.mana_regen)
+                        .clamp(0, actor.max_mana)
+                );
+                assert_eq!(live.shared_spells.player_mana(), actor.mana);
+                assert_eq!(live.player_protection_ticks, expected_protection.unwrap());
+                assert_eq!(
+                    player.persistent_spell_experience,
+                    before_player.persistent_spell_experience
+                );
+                assert_eq!(
+                    player.runtime_spell_experience,
+                    before_player.runtime_spell_experience
+                );
+                assert_eq!(
+                    (player.left_spell_slot_raw, player.right_spell_slot_raw),
+                    (
+                        before_player.left_spell_slot_raw,
+                        before_player.right_spell_slot_raw
+                    )
+                );
+                assert_eq!(
+                    player.acquired_spell_flags,
+                    before_player.acquired_spell_flags
+                );
+                let fire = live.core.context.spell_fire.as_ref().unwrap();
+                for (family, old_slot) in held_before.iter().enumerate() {
+                    if *old_slot == 0 {
+                        continue;
+                    }
+                    let new_slot = player.enabled_spell_holders[family];
+                    assert!(new_slot > 1 && new_slot != *old_slot);
+                    let holder = &live.economy.entities[usize::from(new_slot)];
+                    assert!(holder.active);
+                    assert_eq!(
+                        (holder.class, holder.model, holder.action),
+                        (15, family as u8, family as u8 * 3)
+                    );
+                    assert_eq!(holder.source_spell_parent_entity_index(), actor_slot);
+                    assert_eq!(fire.enabled_holder_indices[family], new_slot);
+                    assert!(fire.holders.iter().any(|row| row.entity_index == new_slot));
+                    let old = &live.economy.entities[usize::from(*old_slot)];
+                    let expected_old = &reference.economy.entities[usize::from(*old_slot)];
+                    assert_eq!(
+                        (
+                            old.active,
+                            old.class,
+                            old.model,
+                            old.action,
+                            old.life,
+                            old.position
+                        ),
+                        (
+                            expected_old.active,
+                            expected_old.class,
+                            expected_old.model,
+                            expected_old.action,
+                            expected_old.life,
+                            expected_old.position
+                        )
+                    );
+                    assert_eq!(
+                        live.economy.slot_generation(*old_slot),
+                        before_live.economy.slot_generation(*old_slot),
+                        "released world holder is not reclaimed to resurrect its owner"
+                    );
+                }
+                let core_player = live
+                    .core
+                    .players
+                    .iter()
+                    .find(|row| row.entity_index == actor_slot)
+                    .unwrap();
+                assert_eq!(
+                    core_player.enabled_spell_holders,
+                    player.enabled_spell_holders
+                );
+                let mut fast = before.clone();
+                let _ = fast.step(
+                    PlayerCommand {
+                        opcode: 0x0f,
+                        ..Default::default()
+                    },
+                    1,
+                );
+                assert_no_dispatch_error(&fast);
+                assert_eq!(
+                    fast.state_hash(),
+                    campaign.state_hash(),
+                    "successful source revival restores speedIndex=0 before entity dispatch"
+                );
+            } else {
+                let expected_actor = &reference.economy.entities[usize::from(actor_slot)];
+                assert_eq!(
+                    (
+                        actor.life,
+                        actor.max_life,
+                        actor.mana,
+                        actor.position,
+                        actor.action
+                    ),
+                    (
+                        expected_actor.life,
+                        expected_actor.max_life,
+                        expected_actor.mana,
+                        expected_actor.position,
+                        expected_actor.action
+                    ),
+                    "alive/no-Castle recovery is the same gameplay result as neutral input"
+                );
+                assert_eq!(
+                    player.enabled_spell_holders,
+                    reference.shared_spells.local_player().enabled_spell_holders
+                );
+                assert_eq!(
+                    live.player_protection_ticks,
+                    reference.player_protection_ticks
+                );
+            }
+        }
+    }
+
+    #[test]
     fn qualified_castle_protection_clears_each_mailbox_and_one_departure_visit() {
         fn assert_protected_projection(campaign: &CampaignSession, counter: u16) {
             let live = &campaign.level2_compatibility().session.state.live;
@@ -23455,24 +24188,7 @@ mod tests {
                 (live.player_pending_damage, live.player_pending_attacker),
                 (0, 0)
             );
-            assert_eq!(
-                &live.shared_spells.local_player.record[345..347],
-                &counter.to_le_bytes()
-            );
-            for player in live
-                .shared_spells
-                .players
-                .iter()
-                .chain(live.core.players.iter())
-            {
-                if player.entity_index == player_slot {
-                    assert_eq!(
-                        &player.record[345..347],
-                        &counter.to_le_bytes(),
-                        "one pre-body decrement is published to every player projection"
-                    );
-                }
-            }
+            assert_eq!(live.player_protection_ticks, counter);
             assert_eq!(
                 live.shared_spells.player_life_regen_cooldown, 0,
                 "the protected branch must skip the normal damage consumer"
@@ -23561,8 +24277,23 @@ mod tests {
                 )
         );
         // A zero-damage visit still refreshes 2 and consumes exactly one visit.
+        let compact_spell_bytes = campaign
+            .level2_compatibility()
+            .shared_spells()
+            .local_player()
+            .record[345..347]
+            .to_vec();
         let _ = campaign.step(PlayerCommand::default(), 0);
         assert_protected_projection(&campaign, 1);
+        assert_eq!(
+            &campaign
+                .level2_compatibility()
+                .shared_spells()
+                .local_player()
+                .record[345..347],
+            compact_spell_bytes.as_slice(),
+            "source word159 must not overwrite compact spell bytes"
+        );
         let castle_life = campaign
             .level2_compatibility()
             .economy()
@@ -24599,6 +25330,216 @@ mod tests {
                     && message.contains("raw model")
             )
         }));
+    }
+
+    #[test]
+    fn authored_explosion_repair_delivers_root_damage_sound_and_next_search_shape() {
+        let generated = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../generated");
+        for (level, path, group, record) in [
+            (2, "level2-day-block32-campaign-v2", 3, 439),
+            (3, "level3-day-block32-campaign-recipe-v2", 10, 230),
+        ] {
+            let mut campaign = CampaignSession::open(
+                generated.join(path),
+                CampaignSelection::ordinary(level).unwrap(),
+            )
+            .unwrap();
+            let session = campaign.level2_compatibility_mut();
+            // Isolated authored producer/callback diagnostic, not an earned route.
+            session.consume_authored_group(0, 0, group).unwrap();
+            let source = *session
+                .economy()
+                .authored_model53()
+                .iter()
+                .find(|row| row.authored_index == record)
+                .unwrap();
+            let player = session.state.entity_index;
+            session
+                .set_level2_entity_position(player, source.position)
+                .unwrap();
+            let before = i32::from_le_bytes(
+                session.session.state.live.economy.entities[usize::from(player)].record[98..102]
+                    .try_into()
+                    .unwrap(),
+            );
+            assert!(session.step_level2_dynamic_arena(
+                0,
+                source.source_entity_index,
+                Level2DynamicArenaKind::AuthoredModel53
+            ));
+            let target = &session.session.state.live.economy.entities[usize::from(player)];
+            // The first radius is zero. Source searches the rounded map
+            // cell, while this centred player is linked to the floor cell.
+            // The following radius-384 pulse reaches the real target cell.
+            assert_eq!(
+                i32::from_le_bytes(target.record[98..102].try_into().unwrap()),
+                before
+            );
+            assert!(session.economy().events().iter().any(|event| matches!(event,
+                Level2EconomyEvent::PreparedSound { entity_index, sound_id: 30, .. } if *entity_index == source.source_entity_index)));
+            let first_children = session.economy().model17_spawned_children().len();
+            assert!(session.step_level2_dynamic_arena(
+                0,
+                source.source_entity_index,
+                Level2DynamicArenaKind::AuthoredModel53
+            ));
+            let target = &session.session.state.live.economy.entities[usize::from(player)];
+            assert_eq!(
+                i32::from_le_bytes(target.record[98..102].try_into().unwrap()),
+                before + 500
+            );
+            assert_eq!(
+                session
+                    .economy()
+                    .authored_model53()
+                    .iter()
+                    .find(|row| row.source_entity_index == source.source_entity_index)
+                    .unwrap()
+                    .shift_rot_x,
+                384
+            );
+            let next_children = session.economy().model17_spawned_children().len() - first_children;
+            assert!(
+                next_children > 3,
+                "SEARCH class2 must not repeat the class0 three-cell shape"
+            );
+        }
+    }
+
+    #[test]
+    fn authored_vault_repair_stands_until_destroyed_then_constructs_successor_and_reward() {
+        let package = std::env::var_os("MC_LEVEL2_VAULT_PACKAGE")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| {
+                PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../../generated/mc-level2-vault-successor-closure-20261025")
+            });
+        let mut campaign = CampaignSession::open(package, CampaignSelection::LEVEL2).unwrap();
+        campaign.reset();
+        let session = campaign.level2_compatibility_mut();
+        for (selector, expected) in [(21, (6, 8, 54)), (54, (8, 8, 0))] {
+            let parameter = session.session.state.live.ordinary.house_parameters[&selector];
+            assert_eq!(
+                (
+                    parameter.life_mana_scalar,
+                    parameter.flags,
+                    parameter.destruction_successor
+                ),
+                expected,
+                "campaign reset must retain the actual BUILD bank"
+            );
+        }
+        session.consume_authored_group(0, 0, 8).unwrap();
+        let vaults = [153, 154].map(|record| {
+            session
+                .economy()
+                .authored_house_source_slot(record)
+                .expect("group8 vault House")
+        });
+        for _ in 0..32 {
+            session.step_outer_turn(PlayerCommand::default(), 0);
+            assert!(
+                session
+                    .dispatch_events()
+                    .iter()
+                    .all(|event| !matches!(event, Level2DispatchEvent::Error { .. })),
+                "{:?}",
+                session.dispatch_events()
+            );
+        }
+        for slot in vaults {
+            let house = session
+                .session
+                .state
+                .live
+                .ordinary
+                .houses()
+                .iter()
+                .find(|house| house.entity_index == slot)
+                .unwrap();
+            assert_eq!(
+                (house.active, house.action, house.building_index, house.life),
+                (true, 52, 21, 6000)
+            );
+            assert_eq!(house.parameter.destruction_successor, 54);
+        }
+        let player = session.state.entity_index;
+        let slot = vaults[0];
+        assert!(
+            session
+                .session
+                .state
+                .live
+                .ordinary
+                .houses
+                .submit_source_damage(slot, 6001, player)
+        );
+        for _ in 0..4 {
+            session.step_outer_turn(PlayerCommand::default(), 0);
+        }
+        let successor = *session
+            .session
+            .state
+            .live
+            .ordinary
+            .houses()
+            .iter()
+            .find(|house| house.active && house.building_index == 54)
+            .expect("source successor BUILD54");
+        assert_eq!(successor.xtype, 22);
+        for _ in 0..32 {
+            session.step_outer_turn(PlayerCommand::default(), 0);
+            assert!(
+                session
+                    .dispatch_events()
+                    .iter()
+                    .all(|event| !matches!(event, Level2DispatchEvent::Error { .. })),
+                "{:?}",
+                session.dispatch_events()
+            );
+        }
+        let standing = session
+            .session
+            .state
+            .live
+            .ordinary
+            .houses()
+            .iter()
+            .find(|house| house.entity_index == successor.entity_index)
+            .unwrap();
+        assert_eq!(
+            (standing.active, standing.action, standing.life),
+            (true, 52, 8000),
+            "{standing:?}"
+        );
+        assert!(
+            session
+                .session
+                .state
+                .live
+                .ordinary
+                .houses
+                .submit_source_damage(successor.entity_index, u16::MAX, player)
+        );
+        for _ in 0..4 {
+            session.step_outer_turn(PlayerCommand::default(), 0);
+            assert!(
+                session
+                    .dispatch_events()
+                    .iter()
+                    .all(|event| !matches!(event, Level2DispatchEvent::Error { .. })),
+                "{:?}",
+                session.dispatch_events()
+            );
+        }
+        assert!(
+            session
+                .economy()
+                .spell_pickups()
+                .iter()
+                .any(|row| row.authored_index == 155),
+            "final demolition must publish source reward group22"
+        );
     }
 
     #[test]

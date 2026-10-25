@@ -1291,7 +1291,7 @@ mod tests {
         );
         let firefly_lifecycle = arena
             .economy
-            .step_authored_firefly_lifecycle_slot(firefly.source_entity_index, &terrain)
+            .step_authored_firefly_lifecycle_slot(firefly.source_entity_index, &[], &terrain)
             .unwrap();
         assert!(firefly_lifecycle.handled);
         let after = arena

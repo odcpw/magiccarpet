@@ -984,7 +984,8 @@ impl HouseFamily {
         Ok(())
     }
 
-    #[cfg(test)]
+    /// Resolve the retained source carrier during successor construction and
+    /// reward publication, before the following allocator cleanup boundary.
     pub(crate) fn house_mut(&mut self, entity_index: u16) -> Option<&mut HouseState> {
         self.houses
             .iter_mut()

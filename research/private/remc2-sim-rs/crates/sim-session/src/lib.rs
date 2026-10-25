@@ -174,6 +174,9 @@ pub struct CampaignSnapshot {
     pub player_pose: PlayerPose,
     pub player_motion: PlayerMotion,
     pub player_vitals: PlayerVitals,
+    /// Source Spider immobilization countdown; presentation must not invent one.
+    pub player_immobilized_ticks: u16,
+    pub source_camera_fov: i16,
     pub player_spells: Vec<SpellObservation>,
     pub objective_progress: ObjectiveProgress,
     /// Authoritative objective-panel countdown; clients never invent a timer.
@@ -213,6 +216,14 @@ pub struct GameCommand {
     pub cast_left: bool,
     pub cast_right: bool,
     pub cast_selected: bool,
+    /// Rising dead-player recovery request; the simulation admits it only
+    /// when the source player has a surviving linked Castle.
+    #[serde(skip_serializing_if = "is_false")]
+    pub recover_player: bool,
+    /// Monotonic elapsed source clock input, recorded with the command so
+    /// completion time remains deterministic through replay and save/load.
+    #[serde(skip_serializing_if = "is_zero_u32")]
+    pub elapsed_centiseconds: u32,
     /// Select one acquired spell through its package-neutral semantic ID
     /// before this command's cast flags are consumed.
     pub select_spell: Option<SemanticId>,
@@ -226,6 +237,10 @@ pub struct GameCommand {
 
 fn is_false(value: &bool) -> bool {
     !*value
+}
+
+fn is_zero_u32(value: &u32) -> bool {
+    *value == 0
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize)]
@@ -470,6 +485,9 @@ pub trait GameSessionBackend {
     /// before its gameplay pause gate. Implementations must not advance the
     /// gameplay tick or execute a gameplay command.
     fn paused_frame(&mut self) -> Result<(), Self::Error>;
+    fn paused_frame_timed(&mut self, _elapsed_centiseconds: u32) -> Result<(), Self::Error> {
+        self.paused_frame()
+    }
     fn reset_for_definition(&mut self, definition: &GameDefinition) -> Result<(), Self::Error>;
 }
 
@@ -480,6 +498,17 @@ pub trait GameSessionBackend {
 pub struct GameCompletion {
     #[serde(serialize_with = "serialize_u64_hex")]
     pub state_hash: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub statistics: Option<GameCompletionStatistics>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct GameCompletionStatistics {
+    pub spells_found_percent: i32,
+    pub hit_accuracy_percent: i32,
+    pub creatures_killed_percent: i32,
+    pub mana_collected_percent: i32,
+    pub time_taken_seconds: u32,
 }
 
 /// Closed neutral projection of a backend's authoritative completion carrier.
@@ -699,10 +728,18 @@ impl<B: GameSessionBackend> GameSession<B> {
         &mut self,
         guard: SessionGuard,
     ) -> Result<SessionObservation<B::Snapshot>, GameSessionError<B::Error>> {
+        self.paused_frame_timed(guard, 0)
+    }
+
+    pub fn paused_frame_timed(
+        &mut self,
+        guard: SessionGuard,
+        elapsed_centiseconds: u32,
+    ) -> Result<SessionObservation<B::Snapshot>, GameSessionError<B::Error>> {
         self.validate_guard(guard)
             .map_err(GameSessionError::Guard)?;
         self.backend
-            .paused_frame()
+            .paused_frame_timed(elapsed_centiseconds)
             .map_err(GameSessionError::Backend)?;
         Ok(self.snapshot())
     }

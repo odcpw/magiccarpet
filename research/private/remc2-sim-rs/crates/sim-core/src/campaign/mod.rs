@@ -15,6 +15,7 @@ use crate::{
 };
 
 pub mod backend;
+pub(crate) mod completion_statistics;
 pub mod dispatch;
 pub mod journal;
 pub(crate) mod mc2_level_definition;

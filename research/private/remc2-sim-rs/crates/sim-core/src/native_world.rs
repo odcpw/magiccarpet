@@ -2845,6 +2845,9 @@ pub struct Level2LiveState {
     /// the next source-ordered visit.
     pub(crate) player_pending_damage: i32,
     pub(crate) player_pending_attacker: u16,
+    /// Source A4 word0x159, absent from the compact exported player record.
+    pub(crate) player_protection_ticks: u16,
+    pub(crate) elapsed_centiseconds: u32,
     pub(crate) player_life: i32,
     /// Source per-player `MenuState_0x3DF`, distinct from the spell-fire
     /// holder's `spell_menu_stage` byte.

@@ -37,12 +37,18 @@ struct InstalledPackageSetRequest {
 struct InstalledPackageLocation {
     package_dir: String,
     owner_cache_path: Option<String>,
+    presentation_cache_path: Option<String>,
+}
+
+struct InstalledCampaignInput {
+    campaign: Mc2CampaignInputs,
+    presentation_cache: Option<std::path::PathBuf>,
 }
 
 pub(super) struct RuntimeRecord {
     runtime: GameRuntime<Mc2CampaignBackend>,
     resolver: Option<Mc2RuntimePackageResolver>,
-    installed_inputs: Vec<Mc2CampaignInputs>,
+    installed_inputs: Vec<InstalledCampaignInput>,
     campaign_presentation: Option<super::campaign_abi::CampaignSessionRecord>,
     audio: super::campaign_audio_state::CampaignRuntimeAudio,
     completion_transition_receipt: Option<CompletionTransitionReceipt>,
@@ -136,7 +142,7 @@ impl RuntimeRecord {
         self.sync_audio(false)
     }
 
-    fn bind_speech_preference(&mut self, guard: SessionGuard) -> AbiResult<(bool, usize)> {
+    fn bind_speech_preference(&mut self, guard: SessionGuard) -> AbiResult<(bool, bool, usize)> {
         self.session()?.completion_status(guard).map_err(|error| {
             super::game_session_abi::map_campaign_session_error(
                 sim_session::GameSessionError::Guard(error),
@@ -148,17 +154,22 @@ impl RuntimeRecord {
             .player_preferences
             .preferences
             .speech_enabled;
+        let show_foreign_text = self.runtime.show_foreign_objective_text();
         let backend = self.session_mut()?.backend_mut();
-        let previous = (backend.speech_enabled(), backend.replay_operation_count());
-        backend.set_speech_enabled(enabled);
+        let previous = (
+            backend.speech_enabled(),
+            backend.show_foreign_objective_text(),
+            backend.replay_operation_count(),
+        );
+        backend.set_objective_presentation_preferences(enabled, show_foreign_text);
         Ok(previous)
     }
 
-    fn rollback_speech_preference(&mut self, previous: (bool, usize)) {
+    fn rollback_speech_preference(&mut self, previous: (bool, bool, usize)) {
         if let Some(session) = self.runtime.session_mut() {
             session
                 .backend_mut()
-                .restore_speech_preference_after_rejection(previous.0, previous.1);
+                .restore_speech_preference_after_rejection(previous.0, previous.1, previous.2);
         }
     }
 
@@ -229,12 +240,14 @@ impl RuntimeRecord {
             ));
         }
         let inputs = installed_package_set_inputs(request_json, request_json_len)?;
-        let resolver = Mc2RuntimePackageResolver::load(inputs.clone()).map_err(|error| {
-            AbiError::new(
-                MC_STATUS_VALIDATION_FAILED,
-                format!("cannot load installed game runtime package set: {error}"),
-            )
-        })?;
+        let resolver =
+            Mc2RuntimePackageResolver::load(inputs.iter().map(|input| input.campaign.clone()))
+                .map_err(|error| {
+                    AbiError::new(
+                        MC_STATUS_VALIDATION_FAILED,
+                        format!("cannot load installed game runtime package set: {error}"),
+                    )
+                })?;
         resolver
             .new_game(
                 &mut self.runtime,
@@ -342,13 +355,35 @@ impl RuntimeRecord {
         expected_tick: u64,
     ) -> AbiResult<Vec<u8>> {
         let mode = self.runtime.identity().mode;
-        if !matches!(mode, RuntimeMode::Playing | RuntimeMode::Paused) {
+        if !matches!(
+            mode,
+            RuntimeMode::Playing | RuntimeMode::Paused | RuntimeMode::Campaign
+        ) {
             return Err(map_transition_error(RuntimeTransitionError::InvalidMode {
                 expected: RuntimeMode::Playing,
                 actual: mode,
             }));
         }
         self.validate_transition(handle, runtime_generation, mode)?;
+        if mode == RuntimeMode::Campaign {
+            if session_generation != 0 || expected_tick != 0 || self.runtime.session().is_some() {
+                return Err(AbiError::new(
+                    MC_STATUS_INVALID_ARGUMENT,
+                    "INVALID_CAMPAIGN_SAVE_GUARD: map save requires no session and zero session generation/tick",
+                ));
+            }
+            return self
+                .resolver
+                .as_ref()
+                .ok_or_else(|| {
+                    AbiError::new(
+                        MC_STATUS_INVALID_ARGUMENT,
+                        "MISSING_RUNTIME_RESOLVER: map save requires installed packages",
+                    )
+                })?
+                .save_replay(&self.runtime)
+                .map_err(map_replay_save_error);
+        }
         let session = self.runtime.session().ok_or_else(|| {
             AbiError::new(
                 MC_STATUS_INVALID_ARGUMENT,
@@ -402,12 +437,14 @@ impl RuntimeRecord {
             ));
         }
         let inputs = installed_package_set_inputs(package_set_json, package_set_json_len)?;
-        let resolver = Mc2RuntimePackageResolver::load(inputs.clone()).map_err(|error| {
-            AbiError::new(
-                MC_STATUS_VALIDATION_FAILED,
-                format!("cannot load replay package set: {error}"),
-            )
-        })?;
+        let resolver =
+            Mc2RuntimePackageResolver::load(inputs.iter().map(|input| input.campaign.clone()))
+                .map_err(|error| {
+                    AbiError::new(
+                        MC_STATUS_VALIDATION_FAILED,
+                        format!("cannot load replay package set: {error}"),
+                    )
+                })?;
         resolver
             .load_replay(
                 &mut self.runtime,
@@ -441,7 +478,7 @@ impl RuntimeRecord {
             .iter()
             .find(|input| {
                 sim_core::campaign::spec::CampaignDefinition::declared_selection(
-                    &input.package_root,
+                    &input.campaign.package_root,
                 )
                 .is_ok_and(|candidate| candidate == selection)
             })
@@ -476,14 +513,17 @@ impl RuntimeRecord {
             Some(retained) => retained,
             None => (
                 load_optional_day_frame_assets(
-                    input.owner_cache.as_deref().and_then(Path::to_str),
+                    input.campaign.owner_cache.as_deref().and_then(Path::to_str),
                     inspection.as_ref(),
                     Some(&campaign.definition().package_sha256),
                 )?
                 .map(Arc::new),
                 DayIndexedFrameState::new(generation),
                 super::campaign_audio::load_campaign_music(
-                    input.owner_cache.as_deref(),
+                    input
+                        .presentation_cache
+                        .as_deref()
+                        .or(input.campaign.owner_cache.as_deref()),
                     selection,
                     inspection.package_sha256(),
                     &campaign.definition().package_sha256,
@@ -537,6 +577,23 @@ impl RuntimeRecord {
         session_generation: u64,
         expected_tick: u64,
     ) -> AbiResult<()> {
+        self.paused_frame_timed(
+            handle,
+            runtime_generation,
+            session_generation,
+            expected_tick,
+            0,
+        )
+    }
+
+    fn paused_frame_timed(
+        &mut self,
+        handle: u64,
+        runtime_generation: u64,
+        session_generation: u64,
+        expected_tick: u64,
+        elapsed_centiseconds: u32,
+    ) -> AbiResult<()> {
         self.validate_transition(handle, runtime_generation, RuntimeMode::Paused)?;
         let guard = SessionGuard {
             session_id: handle,
@@ -544,12 +601,13 @@ impl RuntimeRecord {
             expected_tick,
         };
         self.runtime
-            .paused_campaign_frame(
+            .paused_campaign_frame_timed(
                 RuntimeGuard {
                     runtime_id: handle,
                     generation: runtime_generation,
                 },
                 guard,
+                elapsed_centiseconds,
             )
             .map_err(map_paused_frame_error)?;
         self.sync_audio(true)?;
@@ -922,7 +980,7 @@ fn campaign_inputs(package: String, owner_cache: String) -> AbiResult<Mc2Campaig
 fn installed_package_set_inputs(
     request_json: String,
     request_json_len: u32,
-) -> AbiResult<Vec<Mc2CampaignInputs>> {
+) -> AbiResult<Vec<InstalledCampaignInput>> {
     if request_json_len > MAX_INSTALLED_PACKAGE_SET_JSON_BYTES {
         return Err(AbiError::new(
             MC_STATUS_BOUNDS,
@@ -970,16 +1028,27 @@ fn installed_package_set_inputs(
                     .owner_cache_path
                     .as_deref()
                     .is_some_and(|path| !path.is_empty() && path.trim().is_empty())
+                || location
+                    .presentation_cache_path
+                    .as_deref()
+                    .is_some_and(|path| !path.is_empty() && path.trim().is_empty())
             {
                 return Err(AbiError::new(
                     MC_STATUS_INVALID_ARGUMENT,
                     "installed package resource paths must be nonblank",
                 ));
             }
-            campaign_inputs(
+            let campaign = campaign_inputs(
                 location.package_dir,
                 location.owner_cache_path.unwrap_or_default(),
-            )
+            )?;
+            Ok(InstalledCampaignInput {
+                campaign,
+                presentation_cache: location
+                    .presentation_cache_path
+                    .filter(|path| !path.is_empty())
+                    .map(std::path::PathBuf::from),
+            })
         })
         .collect()
 }
@@ -1437,6 +1506,27 @@ pub extern "C" fn mc_game_runtime_resume_v1(handle: u64, generation: u64) -> i32
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn mc_game_runtime_paused_frame_timed_v1(
+    handle: u64,
+    runtime_generation: u64,
+    session_generation: u64,
+    expected_tick: u64,
+    elapsed_centiseconds: u32,
+) -> i32 {
+    boundary(|| {
+        with_runtime_mut(handle, |runtime| {
+            runtime.paused_frame_timed(
+                handle,
+                runtime_generation,
+                session_generation,
+                expected_tick,
+                elapsed_centiseconds,
+            )
+        })
+    })
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn mc_game_runtime_accept_transition_v1(
     handle: u64,
     runtime_generation: u64,
@@ -1638,6 +1728,55 @@ mod tests {
     };
     use serde_json::Value;
     use std::path::PathBuf;
+
+    #[test]
+    fn installed_day_environment_and_audio_companion_keep_exact_package_bindings() {
+        let generated = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../generated");
+        let request = serde_json::json!({
+            "request_contract": INSTALLED_PACKAGE_SET_CONTRACT,
+            "packages": [{
+                "package_dir": generated.join("mc-level2-vault-successor-closure-20261025"),
+                "owner_cache_path": generated.join("mc-level2-vault-successor-environment-20261025"),
+                "presentation_cache_path": generated.join("level2-vault-successor-owner-cache-20261025/components/material")
+            }]
+        }).to_string();
+        let inputs = installed_package_set_inputs(request.clone(), request.len() as u32).unwrap();
+        let input = &inputs[0];
+        let selection = CampaignSelection::LEVEL2;
+        let campaign = sim_core::campaign::CampaignSession::open_with_owner_cache(
+            &input.campaign.package_root,
+            input.campaign.owner_cache.as_ref().unwrap(),
+            selection,
+        )
+        .unwrap();
+        let assets = load_optional_day_frame_assets(
+            input.campaign.owner_cache.as_deref().and_then(Path::to_str),
+            campaign.inspection(),
+            Some(&campaign.definition().package_sha256),
+        )
+        .unwrap()
+        .unwrap();
+        assert!(assets.environment_resources().day_exit_tables().is_some());
+        let music = super::super::campaign_audio::load_campaign_music(
+            input.presentation_cache.as_deref(),
+            selection,
+            campaign.inspection().package_sha256(),
+            &campaign.definition().package_sha256,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(music.track, 2);
+        assert!(music.loaded && music.playing);
+        assert!(
+            super::super::campaign_audio::load_campaign_music(
+                input.presentation_cache.as_deref(),
+                selection,
+                campaign.inspection().package_sha256(),
+                "wrong-package",
+            )
+            .is_err()
+        );
+    }
 
     fn level_one_package() -> PathBuf {
         std::env::var_os("MC_CAMPAIGN_LEVEL1_PACKAGE").map_or_else(
@@ -2198,6 +2337,36 @@ mod tests {
         );
         assert_eq!(map["campaign_menu"]["briefing_speech"]["track"], 1);
         assert_eq!(map["campaign_menu"]["briefing_speech"]["segment"], 0);
+        let saved = with_runtime(handle, |record| record.save_replay(handle, 3, 0, 0)).unwrap();
+        assert!(with_runtime(handle, |record| record.save_replay(handle, 3, 1, 0)).is_err());
+        assert!(with_runtime(handle, |record| record.save_replay(handle, 3, 0, 1)).is_err());
+        assert!(with_runtime(handle, |record| record.save_replay(handle, 2, 0, 0)).is_err());
+        assert_eq!(
+            identity(handle),
+            map,
+            "map save and rejected guards are observational"
+        );
+        let mut restored = 0;
+        assert_eq!(mc_game_runtime_create_v1(&raw mut restored), MC_STATUS_OK);
+        let packages = installed_package_set_json(&[
+            level_one_package(),
+            level_two_package(),
+            level_three_package(),
+        ]);
+        assert_eq!(
+            mc_game_runtime_load_replay_json_v1(
+                restored,
+                1,
+                packages.as_ptr(),
+                packages.len() as u32,
+                saved.as_ptr(),
+                saved.len() as u32,
+            ),
+            MC_STATUS_OK
+        );
+        assert_eq!(identity(restored)["mode"], "campaign");
+        assert_eq!(identity(restored)["campaign_menu"], map["campaign_menu"]);
+        assert_eq!(mc_game_runtime_destroy_v1(restored), MC_STATUS_OK);
         assert_eq!(
             mc_game_runtime_open_level_v1(handle, 3),
             MC_STATUS_INVALID_ARGUMENT
@@ -2972,7 +3141,10 @@ mod tests {
             },
             completed_level_id: completed_level,
             completion_destination: destination,
-            completion: sim_session::GameCompletion { state_hash: 0x1234 },
+            completion: sim_session::GameCompletion {
+                state_hash: 0x1234,
+                statistics: None,
+            },
             presentation_sequence: vec![completion_cue, title.presentation.clone()],
             receipt_sha256: "0".repeat(64),
         };

@@ -893,6 +893,8 @@ mod tests {
             cast_left: true,
             cast_right: false,
             cast_selected: true,
+            recover_player: false,
+            elapsed_centiseconds: 0,
             select_spell: None,
             recenter: false,
             full_stop: false,
