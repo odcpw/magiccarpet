@@ -3518,31 +3518,84 @@ pub(super) const fn next_house_rng(seed: u16) -> u16 {
 pub(super) fn smooth_building_height(planes: &mut TerrainPlanes, x: u8, y: u8, map_type: MapType) {
     let index = terrain_index(x, y);
     let ordinary = |terrain_type: u8| terrain_type <= 5 || terrain_type > 0x22;
+    // The pinned FIX_SetHeightmapByBuilding_48B90 guard reads promoted,
+    // signed linear indices: negative material lookups return zero. The
+    // averaging loop below instead narrows its cursor to a wrapped u16.
+    let guard_type = |distance| {
+        index
+            .checked_sub(distance)
+            .map_or(0, |neighbor| planes.terrain_types[neighbor])
+    };
     if planes.angles[index] & 7 == 0
         || planes.ground_heights[index] == 0
-        || !ordinary(planes.terrain_types[terrain_index(x.wrapping_sub(1), y.wrapping_sub(1))])
-        || !ordinary(planes.terrain_types[terrain_index(x, y.wrapping_sub(1))])
-        || !ordinary(planes.terrain_types[terrain_index(x.wrapping_sub(1), y)])
+        || !ordinary(guard_type(0x101))
+        || !ordinary(guard_type(0x100))
+        || !ordinary(guard_type(1))
         || !ordinary(planes.terrain_types[index])
     {
         return;
     }
     let mut height_sum = 0_u32;
     let mut height_count = 0_u32;
-    for row_offset in [u8::MAX, 0, 1] {
-        for column_offset in [u8::MAX, 0, 1] {
-            let neighbor = terrain_index(x.wrapping_add(column_offset), y.wrapping_add(row_offset));
+    let mut cursor = (index as u16).wrapping_sub(0x101);
+    for _ in 0..3 {
+        for _ in 0..3 {
+            let neighbor = usize::from(cursor);
             if ordinary(planes.terrain_types[neighbor]) {
                 height_sum = height_sum.wrapping_add(u32::from(planes.ground_heights[neighbor]));
                 height_count += 1;
             }
+            cursor = cursor.wrapping_add(1);
         }
+        cursor = cursor.wrapping_add(0xfd);
     }
     if height_count != 0 {
         planes.ground_heights[index] = (height_sum / height_count) as u8;
         if map_type == MapType::Cave {
             normalize_cave_clearance(planes, index);
         }
+    }
+}
+
+#[cfg(test)]
+mod building_smoothing_tests {
+    use super::{MapType, TerrainPlanes, smooth_building_height};
+
+    fn planes() -> TerrainPlanes {
+        TerrainPlanes {
+            terrain_types: vec![1; 65_536].into_boxed_slice(),
+            ground_heights: vec![100; 65_536].into_boxed_slice(),
+            shading: vec![0; 65_536].into_boxed_slice(),
+            angles: vec![1; 65_536].into_boxed_slice(),
+            secondary_heights: vec![255; 65_536].into_boxed_slice(),
+            entity_indices: vec![0; 65_536].into_boxed_slice(),
+        }
+    }
+
+    #[test]
+    fn signed_material_guards_and_packed_neighbor_walk_match_source() {
+        let mut north_edge = planes();
+        north_edge.ground_heights[10] = 140;
+        north_edge.terrain_types[0xff09] = 6;
+        north_edge.terrain_types[0xff0a] = 82;
+        smooth_building_height(&mut north_edge, 10, 0, MapType::Cave);
+        // Negative guard indices admit the point; the wrapped averaging
+        // cursor still excludes material6, giving (140 + 7*100)/8.
+        assert_eq!(north_edge.ground_heights[10], 105);
+
+        let mut positive_guard = planes();
+        positive_guard.ground_heights[0x010a] = 140;
+        positive_guard.terrain_types[9] = 6;
+        smooth_building_height(&mut positive_guard, 10, 1, MapType::Cave);
+        assert_eq!(positive_guard.ground_heights[0x010a], 140);
+
+        let mut west_edge = planes();
+        west_edge.ground_heights[0x00ff] = 10;
+        west_edge.ground_heights[0x01ff] = 200;
+        smooth_building_height(&mut west_edge, 0, 2, MapType::Day);
+        // Packed row starts are 00ff/01ff/02ff, including both the 10 and 200
+        // samples. Independent byte wrapping produces a different mean.
+        assert_eq!(west_edge.ground_heights[0x0200], 101);
     }
 }
 
