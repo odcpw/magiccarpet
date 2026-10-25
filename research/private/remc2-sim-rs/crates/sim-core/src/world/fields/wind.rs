@@ -151,7 +151,7 @@ pub(crate) fn pulse_overlap(
     i32::from(position.x.wrapping_sub(parent.position.x) as i16).abs()
         < i32::from(parent.shift_rot_x) + i32::from(half_width)
         && i32::from(position.y.wrapping_sub(parent.position.y) as i16).abs()
-            < i32::from(parent.shift_rot_y) + i32::from(half_depth)
+            < i32::from(parent.shift_rot_x) + i32::from(half_depth)
 }
 
 impl Actor {
@@ -459,8 +459,8 @@ pub struct Wind {
     /// Source `array_0x52_82.pitch` from particle row 293, used as the
     /// parent's X half-width by `CompareAxisWithShift_10750`.
     pub shift_rot_x: i16,
-    /// Source `array_0x52_82.roll` from particle row 293, used as the
-    /// parent's Y half-width by `CompareAxisWithShift_10750`.
+    /// Source `array_0x52_82.fov`, the vertical half-height. The horizontal
+    /// pitch/roll extents both use shift_rot_x in SetEntityShiftRot_49EA0.
     pub shift_rot_y: i16,
     pub axis_position: Position,
     pub position: Position,

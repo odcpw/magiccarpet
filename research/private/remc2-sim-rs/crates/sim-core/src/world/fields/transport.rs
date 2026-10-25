@@ -68,6 +68,8 @@ pub(crate) fn construct(
         return Err(error);
     }
     source.set_source_overlap_half_extents(256, 256);
+    // SetEntityShiftRot(256, 256) also replaces the particle's FOV height.
+    source.record[92..94].copy_from_slice(&256_i16.to_le_bytes());
     let mut elevated = position;
     elevated.z = terrain.ground_height(position).wrapping_add(640);
     source.set_position(elevated);

@@ -105,7 +105,8 @@ impl State {
             row.set_subspell_index(source.subspell_index);
             row.particle_parameter_index = Some(source.particle_index);
             row.record[94..96].copy_from_slice(&source.particle_index.to_le_bytes());
-            row.set_source_overlap_half_extents(source.shift_rot_x, source.shift_rot_y);
+            row.set_source_overlap_half_extents(source.shift_rot_x, source.shift_rot_x);
+            row.record[92..94].copy_from_slice(&source.shift_rot_y.to_le_bytes());
             row.record[67] = row.class;
             row.record[68] = row.model;
             rows.push(row);
@@ -135,7 +136,8 @@ impl State {
             row.set_life(i32::from(source.life));
             row.particle_parameter_index = Some(source.particle_index);
             row.record[94..96].copy_from_slice(&source.particle_index.to_le_bytes());
-            row.set_source_overlap_half_extents(source.shift_rot_x, source.shift_rot_y);
+            row.set_source_overlap_half_extents(source.shift_rot_x, source.shift_rot_x);
+            row.record[92..94].copy_from_slice(&source.shift_rot_y.to_le_bytes());
             row.record[67] = row.class;
             row.record[68] = row.model;
             row.record[44..46].copy_from_slice(&source.parent_entity_index.to_le_bytes());

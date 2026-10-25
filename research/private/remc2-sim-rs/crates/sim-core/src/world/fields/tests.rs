@@ -106,6 +106,68 @@ fn campaign_step(session: &mut crate::native_world::Level2ResetSession) {
 }
 
 #[test]
+fn source_field_constructors_keep_horizontal_bounds_separate_from_height() {
+    let mut session = campaign();
+    let wind = session.allocate_level2_authored_model22(110).unwrap();
+    let rows = session.field_source_rows();
+    let root = rows
+        .iter()
+        .find(|row| row.index == wind.source_entity_index)
+        .unwrap();
+    assert_eq!((root.array_pitch(), root.array_fov()), (38, 31));
+    assert_eq!(
+        i16::from_le_bytes(root.record[90..92].try_into().unwrap()),
+        38
+    );
+    let child = rows.iter().find(|row| row.model == 75).unwrap();
+    assert_eq!(child.actual_speed, 50, "AddWind clones the parent's speed");
+    assert_eq!(
+        i16::from_le_bytes(child.record[90..92].try_into().unwrap()),
+        child.array_pitch()
+    );
+    assert!(child.array_fov() > 0);
+    let edge = Position {
+        y: wind.position.y.wrapping_add(37),
+        ..wind.position
+    };
+    assert!(
+        wind::pulse_overlap(wind, edge, 0, 0),
+        "vertical height31 cannot narrow the horizontal band38"
+    );
+    assert!(
+        !wind::pulse_overlap(
+            wind,
+            Position {
+                y: edge.y.wrapping_add(1),
+                ..edge
+            },
+            0,
+            0
+        ),
+        "source overlap remains strict at38"
+    );
+
+    let particle =
+        session.session.definition.presentation.particles[usize::from(transport::PARTICLE)];
+    let live = &mut session.session.state.live;
+    let slot = transport::construct(
+        &mut live.economy,
+        &mut live.terrain,
+        live.core.state.position,
+        definition(FieldKind::Transport),
+        particle,
+    )
+    .unwrap()
+    .unwrap();
+    let row = &live.economy.entities[usize::from(slot)];
+    assert_eq!((row.array_pitch(), row.array_fov()), (256, 256));
+    assert_eq!(
+        i16::from_le_bytes(row.record[90..92].try_into().unwrap()),
+        256
+    );
+}
+
+#[test]
 fn scheduled_slowing_reaches_player_upkeep_palette_and_reclaim() {
     let mut session = campaign();
     let slot = scheduled_impact(&mut session, FieldKind::Slowing);
