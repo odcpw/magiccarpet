@@ -335,6 +335,7 @@ namespace MagicCarpet.Native
             public string path;
             public long bytes;
             public string sha256;
+            public string[] source_asset_ids;
             public string component;
         }
 
@@ -436,6 +437,8 @@ namespace MagicCarpet.Native
             public int height;
             public int frame_count;
             public string indices_path;
+            public string decoded_payload_path;
+            public bool source_empty;
         }
 
         [Serializable]
@@ -517,6 +520,197 @@ namespace MagicCarpet.Native
         internal Level2DayHudDescriptor DayHud { get; }
         internal Level3MaterialDescriptor Level3Materials { get; }
         internal bool IsDayAggregate { get; }
+        internal EnvironmentDescriptor EnvironmentMaterials { get; private set; }
+        internal NativeCampaignSession.CampaignPackageIdentity EnvironmentPackage { get; private set; }
+        internal bool IsEnvironment => EnvironmentMaterials != null;
+
+        [Serializable]
+        internal sealed class EnvironmentProfile
+        {
+            public int external_level, internal_level, vga_resolution_selector, texture_size;
+            public int terrain_graphics_flags, key_color_1, key_color_2;
+            public Level2MapType map_type;
+            public string palette, tables, colors, blocks, dormant_blocks16, sky, sprites, web, tmaps;
+            public string campaign_package_sha256, owner_export_package_sha256, spec_commit;
+        }
+
+        [Serializable]
+        internal sealed class EnvironmentDescriptor
+        {
+            public string schema;
+            public EnvironmentProfile profile;
+            public EnvironmentProduct palette, tables, colors, blocks, sky, source16, day_exit_tables;
+            public Level3TextureBank tmaps;
+            public EnvironmentBitmapBank[] bitmap_banks;
+        }
+
+        [Serializable]
+        internal sealed class EnvironmentProduct
+        {
+            public string path, rgb8_path, atlas_path;
+            public int width, height, tile_size, tile_count, key_color_1, key_color_2;
+        }
+
+        [Serializable]
+        internal sealed class EnvironmentBitmapBank
+        {
+            public string bank;
+            public EnvironmentBitmap[] bitmaps;
+        }
+
+        [Serializable]
+        internal sealed class EnvironmentBitmap
+        {
+            public int selector, width, height;
+            public bool source_empty;
+            public string indices_path, mask_path;
+        }
+
+        [Serializable]
+        private sealed class EnvironmentManifest
+        {
+            public string schema, manifest_payload_sha256, cache_content_sha256;
+            public EnvironmentProfile profile;
+            public Level2Output[] outputs;
+            public EnvironmentSource[] source_files;
+        }
+
+        [Serializable]
+        private sealed class EnvironmentSource
+        {
+            public string asset_id, content_address;
+            public long size;
+        }
+
+        internal static bool HasEnvironmentMaterials(string path)
+        {
+            var text = File.ReadAllText(ConfinedPath(Path.GetFullPath(path), "manifest.json"));
+            return JsonUtility.FromJson<EnvironmentManifest>(text)?.schema == "mc2-environment-material-cache/v1";
+        }
+
+        /// Open against a real campaign package, before replacing a visible
+        /// generation. Content identity is derived from every immutable output.
+        internal static OwnerAssetCache OpenAndValidateEnvironment(string path, string packagePath)
+        {
+            var root = Path.GetFullPath(path);
+            RequireLevel2Directory(root, "environment cache root");
+            RequireLevel2File(ConfinedPath(root, "manifest.json"), "environment manifest");
+            var text = File.ReadAllText(ConfinedPath(root, "manifest.json"));
+            var manifest = JsonUtility.FromJson<EnvironmentManifest>(text);
+            RequireLevel2(manifest?.schema == "mc2-environment-material-cache/v1" && manifest.profile != null,
+                "environment manifest schema/profile");
+            // This dialect emits canonical compact JSON. Removing the parsed
+            // self-hash member recovers its exact unsigned byte encoding.
+            var member = "\"manifest_payload_sha256\":\"" + manifest.manifest_payload_sha256 + "\",";
+            var offset = text.IndexOf(member, StringComparison.Ordinal);
+            RequireLevel2(offset >= 0 && offset == text.LastIndexOf(member, StringComparison.Ordinal) &&
+                Sha256Bytes(Encoding.UTF8.GetBytes(text.Remove(offset, member.Length))) == manifest.manifest_payload_sha256,
+                "environment metadata hash");
+            var p = manifest.profile;
+            var map = p.map_type?.id ?? -1;
+            RequireLevel2(map >= 0 && map <= 2 && p.external_level > 0 &&
+                p.vga_resolution_selector >= 0 && p.vga_resolution_selector <= 1 && p.texture_size == 32,
+                "environment map/resolution");
+            var letter = new[] { "D", "N", "C" }[map];
+            var display = map == 1 && (p.terrain_graphics_flags & 2) != 0 ? "F" : letter;
+            var prefix = p.vga_resolution_selector == 1 ? "M" : "H";
+            RequireLevel2(p.map_type.name == new[] { "Day", "Night", "Cave" }[map] &&
+                IsLowerSha256(p.campaign_package_sha256) && IsLowerSha256(p.owner_export_package_sha256) &&
+                p.palette == $"PAL{display}-0" && p.tables == $"TABLES{letter}" &&
+                p.colors == $"CLR{letter}-0" &&
+                p.blocks == (map == 0 ? "BLOCK32" : $"BL32{display}0-0") &&
+                p.dormant_blocks16 == (map == 0 ? "BLOCK16" : $"BL16{display}0-0") &&
+                p.sky == (map == 2 ? null : $"SKY{letter}0-0") &&
+                p.sprites == $"{prefix}SPR{letter}0-0" && p.web == $"{prefix}WEB{letter}0-0" &&
+                p.tmaps == $"TMAPS{map}-0" && p.key_color_1 == (map == 1 ? 0 : 254) &&
+                p.key_color_2 == (map == 0 ? 0 : 255) && p.spec_commit == PinnedRemc2Commit,
+                "environment original source selectors");
+            var selection = NativeSim.CampaignSelection.Create((ushort)p.external_level, (ushort)p.internal_level, (byte)map);
+            var package = NativeCampaignSession.ReadPackageIdentity(packagePath, selection);
+            var packageManifest = JsonUtility.FromJson<NightPackageManifest>(File.ReadAllText(Path.Combine(package.PackagePath, "manifest.json")));
+            RequireLevel2(packageManifest?.package_sha256 == p.campaign_package_sha256,
+                "environment campaign package binding");
+            var authored = File.ReadAllBytes(Path.Combine(package.PackagePath, "authored-level.bin"));
+            RequireLevel2(authored.Length == 0x6604 && authored[4] == p.terrain_graphics_flags,
+                "environment actual package graphics flags");
+            var rows = ValidateLevel2OutputRows(root, manifest.outputs.OrderBy(row => row.path, StringComparer.Ordinal).ToArray(),
+                manifest.cache_content_sha256, "environment", true);
+            RequireLevel2(manifest.source_files != null && manifest.source_files.All(source => source != null &&
+                IsLowerSha256(source.content_address?.Replace("sha256:", ""))), "environment source identities");
+            var sources = manifest.source_files.ToDictionary(source => source.asset_id, StringComparer.Ordinal);
+            foreach (var row in rows.Values)
+                RequireLevel2(row.source_asset_ids?.Length > 0 && row.source_asset_ids.All(id =>
+                    sources.ContainsKey(id.Split('#')[0])), "environment product source references");
+            var raw = new Dictionary<string, string> {
+                ["palette/source.rgb6"] = p.palette, ["palette/tables.u8"] = p.tables,
+                ["palette/colors.u8"] = p.colors, ["terrain/blocks.atlas.u8"] = p.blocks,
+                ["terrain/source16.dat"] = p.dormant_blocks16
+            };
+            if (map != 2) raw.Add("sky/source.u8", p.sky);
+            if (map == 0) raw.Add("palette/day-exit-gtd2.dat", "GTD2");
+            foreach (var pair in raw)
+            {
+                var sourceId = $"owner_data:DATA/{pair.Value}.DAT";
+                RequireLevel2(rows.TryGetValue(pair.Key, out var row) && sources.TryGetValue(sourceId, out var source) &&
+                    row.source_asset_ids.SequenceEqual(new[] { sourceId }) &&
+                    source.content_address == "sha256:" + row.sha256 && source.size == row.bytes,
+                    "environment selected owner bank " + pair.Value);
+            }
+            var cache = new OwnerAssetCache(root, manifest.cache_content_sha256, rows.Count,
+                new HashSet<string>(rows.Keys, StringComparer.Ordinal));
+            var descriptor = JsonUtility.FromJson<EnvironmentDescriptor>(cache.ReadOutputText("materials/descriptor.json"));
+            RequireLevel2(descriptor?.schema == "mc2-environment-materials/v1" &&
+                JsonUtility.ToJson(descriptor.profile) == JsonUtility.ToJson(p), "environment descriptor/profile");
+            RequireLevel2(descriptor.palette?.path == "palette/source.rgb6" && descriptor.palette.rgb8_path == "palette/source.rgb8" &&
+                descriptor.tables?.path == "palette/tables.u8" && descriptor.colors?.path == "palette/colors.u8" &&
+                descriptor.blocks?.atlas_path == "terrain/blocks.atlas.u8" && descriptor.blocks.width == 256 &&
+                descriptor.blocks.height == 608 && descriptor.blocks.tile_count == 152 && descriptor.blocks.tile_size == 32 &&
+                descriptor.tables.key_color_1 == p.key_color_1 && descriptor.tables.key_color_2 == p.key_color_2,
+                "environment descriptor resources");
+            var rgb6 = cache.ReadOutput(descriptor.palette.path);
+            var rgb8 = cache.ReadOutput(descriptor.palette.rgb8_path);
+            RequireLevel2(rgb6.Length == 768 && rgb8.Length == 768 &&
+                rgb6.Select((value, index) => value <= 63 && rgb8[index] == value * 4).All(value => value) &&
+                cache.ReadOutput(descriptor.tables.path).Length == 83456 &&
+                cache.ReadOutput(descriptor.colors.path).Length == 4096 &&
+                cache.ReadOutput(descriptor.blocks.atlas_path).Length == 155648,
+                "environment resource extents and palette");
+            RequireLevel2(map == 2 ? descriptor.sky == null : descriptor.sky?.path == "sky/source.u8" &&
+                cache.ReadOutput(descriptor.sky.path).Length == 65536, "environment sky policy");
+            RequireLevel2(descriptor.tmaps?.bank == p.tmaps && descriptor.tmaps.textures?.Length == 504,
+                "environment complete TMAP bank");
+            for (var index = 0; index < descriptor.tmaps.textures.Length; index++)
+            {
+                var row = descriptor.tmaps.textures[index];
+                RequireLevel2(row.index == index, "environment TMAP order");
+                var decoded = cache.ReadOutput(row.decoded_payload_path);
+                if (row.source_empty)
+                    RequireLevel2(decoded.SequenceEqual(new byte[] { 48 }) && row.indices_path == null,
+                        "environment empty TMAP");
+                else
+                    RequireLevel2(row.width > 0 && row.height > 0 && decoded.Length >= 6 + checked(row.width * row.height) &&
+                        BitConverter.ToUInt16(decoded, 2) == row.width && BitConverter.ToUInt16(decoded, 4) == row.height &&
+                        decoded.Skip(6).Take(row.width * row.height).SequenceEqual(cache.ReadOutput(row.indices_path)),
+                        "environment TMAP pixels/bounds");
+            }
+            RequireLevel2(descriptor.bitmap_banks?.Length == 3 &&
+                new HashSet<string>(descriptor.bitmap_banks.Select(bank => bank.bank)).SetEquals(new[] { p.sprites, p.web, "FONT1" }),
+                "environment bitmap banks");
+            foreach (var bank in descriptor.bitmap_banks)
+                for (var index = 0; index < bank.bitmaps.Length; index++)
+                {
+                    var row = bank.bitmaps[index];
+                    RequireLevel2(row.selector == index, "environment bitmap order");
+                    if (row.source_empty) { RequireLevel2(row.width == 0 || row.height == 0, "environment empty bitmap"); continue; }
+                    var extent = checked(row.width * row.height);
+                    var mask = cache.ReadOutput(row.mask_path);
+                    RequireLevel2(extent > 0 && cache.ReadOutput(row.indices_path).Length == extent &&
+                        mask.Length == extent && mask.All(value => value <= 1), "environment bitmap extent/coverage");
+                }
+            cache.EnvironmentMaterials = descriptor;
+            cache.EnvironmentPackage = package;
+            return cache;
+        }
         private readonly HashSet<string> approvedPaths;
 
         private OwnerAssetCache(

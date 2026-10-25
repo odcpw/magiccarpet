@@ -11168,9 +11168,43 @@ def build_loading_cache(owner_root: Path, output: Path) -> dict[str, Any]:
     return manifest
 
 
+def environment_importer():
+    """Load the environment owner without relying on the caller's module name."""
+    spec = importlib.util.spec_from_file_location(
+        "environment_materials", Path(__file__).with_name("environment_materials.py")
+    )
+    if spec is None or spec.loader is None:
+        raise CacheError("cannot load environment material importer")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def build_environment_material_cache(owner_root, package, catalog, output):
+    environment = environment_importer()
+    spec = importlib.util.spec_from_file_location("environment_closure", PROVEN_CLOSURE)
+    if spec is None or spec.loader is None:
+        raise CacheError("cannot load environment asset closure")
+    closure = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(closure)
+    codecs = environment.ImportCodecs(
+        closure.build_environment_closure, write_output, compile_rnc_decoder,
+        decode_container_blob, bitmap_records, _level2_decode_indexed_catalog_entry,
+        load_proven_decoder, fsync_tree, validate_output_path,
+    )
+    return environment.build(owner_root, package, catalog, output, codecs)
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest="command", required=True)
+    environment = subparsers.add_parser("build-environment")
+    environment.add_argument("--owner-root", type=Path, default=DEFAULT_OWNER)
+    environment.add_argument("--campaign-package", type=Path, required=True)
+    environment.add_argument("--catalog", type=Path, default=DEFAULT_CATALOG)
+    environment.add_argument("--output", type=Path, required=True)
+    environment_check = subparsers.add_parser("validate-environment")
+    environment_check.add_argument("--cache", type=Path, required=True)
     loading = subparsers.add_parser("build-loading")
     loading.add_argument("--owner-root", type=Path, default=DEFAULT_OWNER)
     loading.add_argument("--output", type=Path, required=True)
@@ -11293,7 +11327,22 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
     args = parse_args()
     try:
-        if args.command == "build-loading":
+        if args.command in {"build-environment", "validate-environment"}:
+            import sys
+            try:
+                manifest = (
+                    build_environment_material_cache(args.owner_root, args.campaign_package, args.catalog, args.output)
+                    if args.command == "build-environment"
+                    else environment_importer().validate(args.cache)
+                )
+            except (ValueError, OSError, KeyError, subprocess.SubprocessError, CacheError) as error:
+                print(json.dumps({"schema": "mc2-environment-import-result/v1", "ok": False,
+                    "error": {"code": "ENVIRONMENT_IMPORT_FAILED", "message": str(error)}}), file=sys.stderr)
+                return 2
+            print(json.dumps({"schema": "mc2-environment-import-result/v1", "ok": True,
+                "cache_content_sha256": manifest["cache_content_sha256"],
+                "profile": manifest["profile"], "output_count": len(manifest["outputs"])}))
+        elif args.command == "build-loading":
             manifest = build_loading_cache(args.owner_root, args.output)
             print(json.dumps({"schema": "mc2-loading-import-result/v1", "ok": True,
                 "cache": str(args.output), "profiles": [row["profile"] for row in manifest["frames"]],

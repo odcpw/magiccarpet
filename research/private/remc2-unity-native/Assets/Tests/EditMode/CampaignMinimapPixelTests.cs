@@ -8,6 +8,130 @@ namespace MagicCarpet.Native.Tests
 {
     public sealed class CampaignMinimapPixelTests
     {
+        [Serializable]
+        private sealed class CacheIdentity { public string cache_content_sha256; }
+        [TestCase(false)]
+        [TestCase(true)]
+        public void ProductionRootUsesPackageEnvironmentWithQualifiedHudCompanion(bool restoreEarnedOpening)
+        {
+            var generated = Path.GetFullPath(Path.Combine(Application.dataPath, "../../generated"));
+            var root = new GameObject("package environment production root");
+            root.SetActive(false);
+            var runtime = root.AddComponent<MagicCarpetRuntime>();
+            var night = Path.Combine(generated, restoreEarnedOpening
+                ? "mc2-level1-night-cache-v2" : "level1-unity-asset-cache-plan29-final");
+            var environment = Path.Combine(generated, "mc-oi62-environment-level1-v2");
+            var arguments = new List<string> {
+                "-mc-game-runtime", "-mc-runtime-loading-cache", night,
+                "-mc-runtime-package", Path.Combine(generated, "mc-bhq8-level1-collision-v5-night"),
+                "-mc-runtime-owner-cache", Path.Combine(generated, "mc-oi62-environment-level1-v2"),
+                "-mc-runtime-presentation-cache", night,
+                "-mc-runtime-package", Path.Combine(generated, "level2-day-block32-campaign-v2"),
+                "-mc-runtime-owner-cache", Path.Combine(generated, "mc-oi62-environment-level2-v2"),
+                "-mc-runtime-presentation-cache", Path.Combine(generated, "level2-day-spell-owner-cache-v3"),
+                "-mc-runtime-package", Path.Combine(generated, "level3-day-block32-campaign-recipe-v2")
+            };
+            if (restoreEarnedOpening)
+                arguments[arguments.IndexOf("-mc-runtime-owner-cache") + 1] = night;
+            if (restoreEarnedOpening) arguments.AddRange(new[] { "-mc-runtime-replay-load",
+                Path.Combine(generated, "mc-a1-opening.Lcb3s1/earned-progress.json") });
+            else arguments.Add("-mc-runtime-menu");
+            try
+            {
+                runtime.QualificationInitializeGameRuntimeProductionFromArguments(arguments.ToArray());
+                if (!restoreEarnedOpening)
+                {
+                    Assert.That(runtime.ExecuteGameRuntimeMenuAction(CampaignMenuPresenter.Action.NewGame), Is.True);
+                    runtime.QualificationDriveGameRuntimeFrames(1);
+                    runtime.QualificationObserveGameRuntimeLoadingPresentationFrame();
+                    runtime.QualificationDriveGameRuntimeFrames(1);
+                }
+                Assert.That(runtime.GameRuntimeProductionIdentity.mode, Is.EqualTo(GameRuntimeTransport.PlayingMode));
+                var surface = (CampaignPresentationSurface)typeof(MagicCarpetRuntime).GetField("gameRuntimeNightSurface",
+                    System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic).GetValue(runtime);
+                Assert.That(surface.WorldReady && surface.LiveMinimapReady, Is.True);
+                var expected = OwnerAssetCache.OpenAndValidateEnvironment(environment,
+                    Path.Combine(generated, "mc-bhq8-level1-collision-v5-night"));
+                Assert.That(surface.CacheContentHash, Is.EqualTo(restoreEarnedOpening
+                        ? JsonUtility.FromJson<CacheIdentity>(File.ReadAllText(Path.Combine(night, "manifest.json"))).cache_content_sha256
+                        : expected.ContentHash),
+                    "the production surface consumes the package-selected products");
+                if (restoreEarnedOpening)
+                {
+                    Assert.That(surface.Tick, Is.EqualTo(2418ul));
+                    runtime.QualificationDriveGameRuntimeFrames(1);
+                    Assert.That(surface.Tick, Is.EqualTo(2419ul), "ordinary first turn after the real restore");
+                    var marker = Array.Find(surface.Root.GetComponentsInChildren<Level3EntitySurfaceMarker>(),
+                        row => row.EntityIndex == 151);
+                    Assert.That(marker, Is.Not.Null, "actual saved actor must reach the ordinary presentation consumer");
+                    Assert.That(marker.SpriteReady, Is.True);
+                    Assert.That(marker.AssetSelector, Is.EqualTo(57), "the actual saved actor's selector reaches its native marker");
+                }
+                Assert.That(runtime.Level2ProductionDayHudPresenterReady, Is.True,
+                    "qualified HUD companion remains live alongside the selected world materials");
+                var before = surface.FrameHash;
+                runtime.QualificationApplyGameRuntimeProductionMovement(true, false, true, false);
+                runtime.QualificationApplyGameRuntimeProductionSteering(24f, -8f);
+                runtime.QualificationDriveGameRuntimeFrames(3);
+                Assert.That(surface.FrameHash, Is.Not.EqualTo(before));
+                Assert.That(surface.Generation, Is.EqualTo(ulong.Parse(runtime.GameRuntimeProductionIdentity.session.generation)));
+            }
+            finally
+            {
+                runtime.QualificationDisposeGameRuntimeProduction();
+                UnityEngine.Object.DestroyImmediate(root);
+            }
+        }
+
+        [Test]
+        public void PackageEnvironmentMaterialsReachRealNightAndDaySurfaces()
+        {
+            var generated = Path.GetFullPath(Path.Combine(Application.dataPath, "../../generated"));
+            foreach (var level in new[] { 1, 2 })
+            {
+                var package = Path.Combine(generated, level == 1 ? "mc-bhq8-level1-collision-v5-night" : "level2-day-block32-campaign-v2");
+                var cachePath = Path.Combine(generated, $"mc-oi62-environment-level{level}-v2");
+                var cache = OwnerAssetCache.OpenAndValidateEnvironment(cachePath, package);
+                var selection = NativeSim.CampaignSelection.Create((ushort)level, (ushort)(level - 1), (byte)(level == 1 ? 1 : 0));
+                using (var session = NativeCampaignSession.Open(package, selection, cachePath))
+                using (var surface = new CampaignPresentationSurface())
+                {
+                    surface.PresentEnvironment(session, cache);
+                    Assert.That(surface.WorldReady && surface.LiveMinimapReady, Is.True);
+                    Assert.That(surface.CacheContentHash, Is.EqualTo(cache.ContentHash));
+                    Assert.That(surface.Generation, Is.EqualTo(session.Generation));
+                    Assert.That(surface.FrameHash, Is.Not.Zero);
+                    // A second poll observes the same authoritative revision.
+                    var first = surface.FrameHash;
+                    surface.PresentEnvironment(session, cache);
+                    Assert.That(surface.FrameHash, Is.EqualTo(first));
+                    var wrong = OwnerAssetCache.OpenAndValidateEnvironment(
+                        Path.Combine(generated, $"mc-oi62-environment-level{(level == 1 ? 2 : 1)}-v2"),
+                        Path.Combine(generated, level == 1 ? "level2-day-block32-campaign-v2" : "mc-bhq8-level1-collision-v5-night"));
+                    Assert.Throws<InvalidOperationException>(() => surface.PresentEnvironment(session, wrong));
+                    Assert.That(surface.FrameHash, Is.EqualTo(first));
+                    Assert.That(surface.WorldReady, Is.True, "wrong environment preserves current visible scene");
+                }
+            }
+        }
+
+        [Test]
+        public void RealCaveAndFireNightResourcesUsePackageSelectors()
+        {
+            var generated = Path.GetFullPath(Path.Combine(Application.dataPath, "../../generated"));
+            foreach (var level in new[] { 4, 25 })
+            {
+                var cache = OwnerAssetCache.OpenAndValidateEnvironment(
+                    Path.Combine(generated, $"mc-oi62-environment-level{level}-v2"),
+                    Path.Combine(generated, $"mc-bhq6-ordinary-20261025-zclu5fjj/level{level}"));
+                var materials = cache.EnvironmentMaterials;
+                Assert.That(materials.profile.external_level, Is.EqualTo(level));
+                Assert.That(materials.profile.palette, Is.EqualTo(level == 4 ? "PALC-0" : "PALF-0"));
+                Assert.That(materials.sky == null, Is.EqualTo(level == 4));
+                Assert.That(materials.tmaps.textures.Length, Is.EqualTo(504));
+            }
+        }
+
         [Test]
         public void DaySpriteProjectionUsesSourcePitchOffsetAndPixelSpaceRoll()
         {

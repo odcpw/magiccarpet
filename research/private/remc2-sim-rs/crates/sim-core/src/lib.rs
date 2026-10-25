@@ -65,6 +65,7 @@ pub mod mode5_raster {
 }
 pub mod music;
 pub mod native_world;
+pub mod presentation;
 pub mod presentation_frame;
 pub use sim_input::{PlayerCommand, recording};
 pub mod regression_state;

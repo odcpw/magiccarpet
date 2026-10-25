@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib.util
 import json
 import os
 import struct
@@ -1498,6 +1499,100 @@ def build_campaign_day_material_closure(
         ),
         constructor_parameters=constructors,
     )
+
+
+def build_environment_closure(
+    package_dir: Path, catalog_path: Path, owner_root: Path
+) -> dict[str, Any]:
+    """Retain the selected original banks, without asserting gameplay admission.
+
+    The complete selected TMAP bank retains every allocated animation payload.
+    Which sprite is drawn remains the runtime descriptor's decision. This
+    closure never treats an asset's presence as an implemented game callback.
+    """
+    verifier_path = TOOL_ROOT.parent / "remc2-level-exporter/tests/verify_package.py"
+    spec = importlib.util.spec_from_file_location("environment_package_verifier", verifier_path)
+    if spec is None or spec.loader is None:
+        raise ClosureError("cannot load the campaign package verifier")
+    verifier = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(verifier)
+    manifest = read_json(package_dir / "manifest.json")
+    verifier.verify_campaign_package(package_dir, manifest)
+    definition = read_json(package_dir / "campaign-definition.json")
+    recipe = definition["campaign_spec"]["presentation_recipe"]
+    identity = definition["identity"]
+    map_id = identity["map_type_id"]
+    flags = (package_dir / "authored-level.bin").read_bytes()[4]
+    resolution = recipe["vga_resolution_selector"]
+    if resolution not in (0, 1):
+        raise ClosureError("environment bitmap resolution selector is unsupported")
+    if recipe["texture_size"] != 32:
+        raise ClosureError("only the source's active 32 texture producer is admitted")
+    realm = REALMS[map_id]
+    letter = realm["letter"]
+    display_letter = "F" if map_id == 1 and flags & 2 else letter
+    block = "BLOCK32" if map_id == 0 else f"BL32{display_letter}0-0"
+    block16 = "BLOCK16" if map_id == 0 else f"BL16{display_letter}0-0"
+    sprite_prefix = "M" if resolution == 1 else "H"
+    paths = select_realm_assets(map_id, resolution, 32, flags)
+    paths.extend((f"DATA/{block16}.DAT", "DATA/FONT1.DAT", "DATA/FONT1.TAB"))
+    if map_id == 0:
+        paths.append("DATA/GTD2.DAT")
+    catalog_data = read_json(catalog_path)
+    catalog = Catalog(catalog_data)
+    roots = []
+    for path in sorted(set(paths)):
+        catalog.verify_owner_file(owner_root, path)
+        roots.append(catalog.file_asset(path))
+    tmap_bank = f"TMAPS{map_id}-0"
+    catalog.index_tmaps(f"DATA/{tmap_bank}.DAT")
+    owner_identity = bytearray()
+    for name, member in sorted(manifest["files"].items()):
+        if name in {"campaign-definition.json", "owner-manifest.json", "fireball-projectile-base.indexed-sprite.json", "fireball-projectile-fade.indexed-sprite.json", "source-record.bin", "source-record.json", "source-record.packed"}:
+            continue
+        if name == "building-parameters.bin" and identity["external_level"] <= 3 and recipe["block_bank"] != "BLOCK32":
+            continue
+        owner_identity.extend(f"{name}\0{member['sha256']}\0{member['bytes']}\n".encode("ascii"))
+    profile = {
+        "name": "package-environment",
+        "external_level": identity["external_level"],
+        "internal_level": identity["internal_level"],
+        "map_type": {"id": map_id, "name": realm["name"].capitalize()},
+        "vga_resolution_selector": resolution,
+        "texture_size": 32,
+        "terrain_graphics_flags": flags,
+        "palette": f"PAL{display_letter}-0",
+        "tables": realm["tables"],
+        "colors": f"CLR{letter}-0",
+        "blocks": block,
+        "dormant_blocks16": block16,
+        "sky": f"SKY{letter}0-0" if map_id != 2 else None,
+        "sprites": f"{sprite_prefix}SPR{letter}0-0",
+        "web": f"{sprite_prefix}WEB{letter}0-0",
+        "tmaps": tmap_bank,
+        "key_color_1": 0 if map_id == 1 else 254,
+        "key_color_2": 0 if map_id == 0 else 255,
+        "campaign_package_sha256": manifest["package_sha256"],
+        "owner_export_package_sha256": sha256_bytes(owner_identity),
+        "catalog_sha256": require_sha256(catalog_data.get("catalog_sha256"), "catalog identity"),
+        "catalog_file_sha256": sha256_file(catalog_path),
+        "spec_commit": REMC2_SPEC_COMMIT,
+    }
+    document = {
+        "schema": "mc2-environment-asset-closure/v1",
+        "profile": profile,
+        "source_recipe": recipe,
+        "source_binding_adaptations": [] if recipe["block_bank"] == block else [{
+            "field": "block_bank", "captured": recipe["block_bank"], "source_selected": block,
+            "evidence": "ReadAndDecompress.cpp::sub_54660 Day32 selects BLOCK32.DAT",
+        }],
+        "owner_files": roots,
+        "tmaps": [catalog.tmap_asset(catalog.tmaps[index]) for index in sorted(catalog.tmaps)],
+        "frame_use": "unqualified; retain selected source bank, draw admission belongs to runtime",
+        "variants": {"active_texture_size": 32, "source16": "retained dormant source bank", "enhanced128": "not selected"},
+    }
+    document["closure_sha256"] = sha256_bytes(canonical_json(document).encode("utf-8"))
+    return document
 
 
 def build_closure(

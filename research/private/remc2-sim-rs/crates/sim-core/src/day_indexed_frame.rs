@@ -21,6 +21,7 @@ use crate::{
     classic_hd_terrain::{ClassicHdSkyBank, ClassicHdTerrainResources, build_classic_hd_terrain},
     mission_content::REMC2_SPEC_COMMIT,
     native_world::{Level2ResetSession, MapType, NativeWorldInspection},
+    presentation::environment_materials::{CACHE_SCHEMA, EnvironmentResources},
     terrain_frame::Level1TerrainFrameCamera,
 };
 
@@ -128,10 +129,7 @@ pub struct DayIndexedFrameAssets {
     package_sha256: String,
     campaign_package_sha256: Option<String>,
     cache_content_sha256: String,
-    palette_rgb8: Box<[u8]>,
-    tablesd: Box<[u8]>,
-    sky: Box<[u8]>,
-    terrain_atlas: Box<[u8]>,
+    materials: EnvironmentResources,
 }
 
 impl DayIndexedFrameAssets {
@@ -139,6 +137,15 @@ impl DayIndexedFrameAssets {
     /// descriptor campaign. Geometry is supplied solely by the live session;
     /// the retained cache's package hash identifies its original export.
     pub fn load_night(cache_dir: impl AsRef<Path>) -> Result<Self, DayIndexedFrameError> {
+        if is_environment_cache(cache_dir.as_ref())? {
+            let assets = Self::load_environment(cache_dir)?;
+            if assets.profile.map_type_id != 1 {
+                return Err(DayIndexedFrameError::new(
+                    "Night cache has a different environment map type",
+                ));
+            }
+            return Ok(assets);
+        }
         let cache = crate::native_world::QualifiedOwnerCacheReader::open(cache_dir)
             .map_err(|error| DayIndexedFrameError::new(error.to_string()))?;
         let manifest = cache
@@ -172,10 +179,12 @@ impl DayIndexedFrameAssets {
             package_sha256,
             campaign_package_sha256: None,
             cache_content_sha256,
-            palette_rgb8: read("palette/paln.rgb8", PALETTE_RGB8_BYTES)?,
-            tablesd: read("palette/tablesn.u8", TABLESD_BYTES)?,
-            sky: read("sky/skyn.indices.u8", SKY_BYTES)?,
-            terrain_atlas: read("terrain/bl32n.atlas.indices.u8", TERRAIN_ATLAS_BYTES)?,
+            materials: EnvironmentResources::retained(
+                read("palette/paln.rgb8", PALETTE_RGB8_BYTES)?,
+                read("palette/tablesn.u8", TABLESD_BYTES)?,
+                read("sky/skyn.indices.u8", SKY_BYTES)?,
+                read("terrain/bl32n.atlas.indices.u8", TERRAIN_ATLAS_BYTES)?,
+            ),
         })
     }
 
@@ -187,6 +196,9 @@ impl DayIndexedFrameAssets {
     /// caches therefore fail closed instead of falling back to Level 1.
     pub fn load(cache_dir: impl AsRef<Path>) -> Result<Self, DayIndexedFrameError> {
         let cache_dir = cache_dir.as_ref();
+        if is_environment_cache(cache_dir)? {
+            return Self::load_environment(cache_dir);
+        }
         let manifest_path = cache_dir.join("manifest.json");
         let manifest_bytes = fs::read(&manifest_path).map_err(|error| {
             DayIndexedFrameError::new(format!(
@@ -492,11 +504,40 @@ impl DayIndexedFrameAssets {
             package_sha256,
             campaign_package_sha256,
             cache_content_sha256: claimed_content_hash.to_owned(),
-            palette_rgb8: palette_rgb8.into_boxed_slice(),
-            tablesd: tablesd.into_boxed_slice(),
-            sky: sky.into_boxed_slice(),
-            terrain_atlas: terrain_atlas.into_boxed_slice(),
+            materials: EnvironmentResources::retained(
+                palette_rgb8.into_boxed_slice(),
+                tablesd.into_boxed_slice(),
+                sky.into_boxed_slice(),
+                terrain_atlas.into_boxed_slice(),
+            ),
         })
+    }
+
+    fn load_environment(cache_dir: impl AsRef<Path>) -> Result<Self, DayIndexedFrameError> {
+        let materials = EnvironmentResources::load(cache_dir)
+            .map_err(|e| DayIndexedFrameError::new(e.to_string()))?;
+        let profile = materials
+            .profile
+            .as_ref()
+            .ok_or_else(|| DayIndexedFrameError::new("environment profile missing"))?;
+        Ok(Self {
+            source_minimap: true,
+            profile: DayIndexedProfile {
+                external_level: profile.external_level,
+                internal_level: profile.internal_level,
+                map_type_id: profile.map_type.id,
+                vga_resolution_selector: profile.vga_resolution_selector,
+                texture_size: profile.texture_size,
+            },
+            package_sha256: profile.owner_export_package_sha256.clone(),
+            campaign_package_sha256: Some(profile.campaign_package_sha256.clone()),
+            cache_content_sha256: materials.content_sha256.clone(),
+            materials,
+        })
+    }
+
+    pub fn environment_resources(&self) -> &EnvironmentResources {
+        &self.materials
     }
 
     #[must_use]
@@ -521,22 +562,22 @@ impl DayIndexedFrameAssets {
 
     #[must_use]
     pub fn palette_rgb8(&self) -> &[u8] {
-        &self.palette_rgb8
+        self.materials.palette_rgb8()
     }
 
     #[must_use]
     pub fn tablesd(&self) -> &[u8] {
-        &self.tablesd
+        self.materials.tables()
     }
 
     #[must_use]
     pub fn sky(&self) -> &[u8] {
-        &self.sky
+        self.materials.sky().unwrap_or_default()
     }
 
     #[must_use]
     pub fn terrain_atlas(&self) -> &[u8] {
-        &self.terrain_atlas
+        self.materials.blocks()
     }
 }
 
@@ -623,7 +664,13 @@ impl DayIndexedFrameState {
                 "Day indexed frame tick {tick} is out of order; expected {expected_tick}"
             )));
         }
-        let frame = render_level2_day_indexed_frame(inspection, session, assets, generation)?;
+        let frame = render_environment_indexed_frame(
+            inspection,
+            session,
+            assets,
+            generation,
+            self.current_frame.as_ref(),
+        )?;
         self.current_tick = Some(tick);
         self.current_frame = Some(frame.clone());
         Ok(frame)
@@ -654,7 +701,23 @@ impl DayIndexedFrameState {
                 "Day indexed frame tick {tick} predates the committed presentation revision"
             )));
         }
-        let frame = render_level2_day_indexed_frame(inspection, session, assets, generation)?;
+        if self.current_tick == Some(tick) {
+            if let Some(frame) = self.current_frame.as_ref() {
+                if frame.cache_content_sha256 != assets.cache_content_sha256() {
+                    return Err(DayIndexedFrameError::new(
+                        "environment cache changed within a live frame generation",
+                    ));
+                }
+                return Ok(frame.clone());
+            }
+        }
+        let frame = render_environment_indexed_frame(
+            inspection,
+            session,
+            assets,
+            generation,
+            self.current_frame.as_ref(),
+        )?;
         self.current_tick = Some(tick);
         self.current_frame = Some(frame.clone());
         Ok(frame)
@@ -668,7 +731,27 @@ pub fn render_level2_day_indexed_frame(
     assets: &DayIndexedFrameAssets,
     generation: u64,
 ) -> Result<DayIndexedFrame, DayIndexedFrameError> {
+    render_environment_indexed_frame(inspection, session, assets, generation, None)
+}
+
+fn render_environment_indexed_frame(
+    inspection: &NativeWorldInspection,
+    session: &Level2ResetSession,
+    assets: &DayIndexedFrameAssets,
+    generation: u64,
+    prior: Option<&DayIndexedFrame>,
+) -> Result<DayIndexedFrame, DayIndexedFrameError> {
     validate_day_route(inspection, session, assets)?;
+    if prior.is_some_and(|frame| {
+        frame.generation != generation
+            || frame.cache_content_sha256 != assets.cache_content_sha256()
+    }) {
+        return Err(DayIndexedFrameError::new(
+            "environment history belongs to a different package/generation",
+        ));
+    }
+    let exit = session.level_exit_sequence();
+    let tables = assets.materials.renderer_tables(exit);
     let tick = session.state.tick;
     let camera = camera_from_state(&session.state)?;
     let profile = ClassicHdRenderProfile::compatibility_320x200();
@@ -718,7 +801,7 @@ pub fn render_level2_day_indexed_frame(
             &mut writer,
             &terrain,
             assets.terrain_atlas(),
-            assets.tablesd(),
+            tables,
             DAY_TERRAIN_PROVENANCE,
         )
         .map_err(|error| {
@@ -731,6 +814,12 @@ pub fn render_level2_day_indexed_frame(
             "Day indexed frame hash does not match its output bytes",
         ));
     }
+    if let Some(prior) = prior {
+        assets
+            .materials
+            .composite_exit(&mut indices, &prior.indices, exit)
+            .map_err(|e| DayIndexedFrameError::new(e.to_string()))?;
+    }
     // The approved v2 presentation enables the source map layer. Retained v1
     // material captures keep their terrain-only contract.
     if assets.source_minimap {
@@ -740,7 +829,7 @@ pub fn render_level2_day_indexed_frame(
             camera,
             &planes.terrain_types,
             &planes.shading,
-            assets.tablesd(),
+            tables,
         );
     }
     let index_hash = byte_hash(&indices);
@@ -816,7 +905,8 @@ fn validate_day_route(
             "Day indexed frame metadata and material selection differ",
         ));
     }
-    if (material.map_type_id == 0 && assets.package_sha256() != inspection.package_sha256())
+    if ((material.map_type_id == 0 || assets.campaign_package_sha256().is_some())
+        && assets.package_sha256() != inspection.package_sha256())
         || session.package_sha256() != inspection.package_sha256()
     {
         return Err(DayIndexedFrameError::new(
@@ -829,6 +919,14 @@ fn validate_day_route(
         ));
     }
     Ok(())
+}
+
+fn is_environment_cache(root: &Path) -> Result<bool, DayIndexedFrameError> {
+    let bytes = fs::read(root.join("manifest.json"))
+        .map_err(|e| DayIndexedFrameError::new(e.to_string()))?;
+    let manifest: Value =
+        serde_json::from_slice(&bytes).map_err(|e| DayIndexedFrameError::new(e.to_string()))?;
+    Ok(manifest.get("schema").and_then(Value::as_str) == Some(CACHE_SCHEMA))
 }
 
 fn validate_terrain_planes(
@@ -1381,6 +1479,74 @@ mod tests {
         path::PathBuf,
         time::{SystemTime, UNIX_EPOCH},
     };
+
+    #[test]
+    fn package_environment_binds_real_night_and_day_frames() {
+        for (level, package, selection, retained) in [
+            (
+                1,
+                "mc-bhq8-level1-collision-v5-night",
+                crate::campaign::spec::CampaignSelection::LEVEL1,
+                "level1-unity-asset-cache-plan29-final",
+            ),
+            (
+                2,
+                "level2-day-block32-campaign-v2",
+                crate::campaign::spec::CampaignSelection::LEVEL2,
+                "level2-day-minimap-owner-cache-v3/components/material",
+            ),
+        ] {
+            let path = generated_path(&format!("mc-oi62-environment-level{level}-v2"));
+            let mut campaign = crate::campaign::CampaignSession::open_with_owner_cache(
+                generated_path(package),
+                &path,
+                selection,
+            )
+            .expect("actual package and environment open");
+            let assets = DayIndexedFrameAssets::load(&path).expect("package-selected materials");
+            let legacy = if level == 1 {
+                DayIndexedFrameAssets::load_night(generated_path(retained))
+            } else {
+                DayIndexedFrameAssets::load(generated_path(retained))
+            }
+            .expect("retained known default");
+            assert_eq!(assets.palette_rgb8(), legacy.palette_rgb8());
+            assert_eq!(assets.terrain_atlas(), legacy.terrain_atlas());
+            assert_eq!(assets.tablesd(), legacy.tablesd());
+            let mut state = DayIndexedFrameState::new(campaign.generation());
+            let first = state
+                .render_current(
+                    campaign.inspection(),
+                    campaign.level2_compatibility(),
+                    &assets,
+                    campaign.generation(),
+                )
+                .expect("actual runtime frame");
+            assert!(first.indices.iter().any(|&pixel| pixel != 0));
+            campaign.step(
+                crate::PlayerCommand {
+                    roll: 24,
+                    pitch: -8,
+                    ..crate::PlayerCommand::default()
+                },
+                0,
+            );
+            let moved = state
+                .render_current(
+                    campaign.inspection(),
+                    campaign.level2_compatibility(),
+                    &assets,
+                    campaign.generation(),
+                )
+                .expect("following runtime frame");
+            assert_eq!(moved.tick, first.tick + 1);
+            assert_ne!(moved.index_hash, first.index_hash);
+        }
+        assert!(
+            DayIndexedFrameAssets::load_night(generated_path("mc-oi62-environment-level2-v2"))
+                .is_err()
+        );
+    }
 
     struct TempDirectory(PathBuf);
 

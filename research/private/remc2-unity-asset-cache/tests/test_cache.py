@@ -38,6 +38,44 @@ def tree_identity(root: Path) -> str:
     return digest.hexdigest()
 
 
+class EnvironmentMaterialTests(unittest.TestCase):
+    def test_real_package_profiles_validate_selected_resources(self):
+        environment = cache.environment_importer()
+        for level, palette, blocks, sky in [
+            (1, "PALN-0", "BL32N0-0", "SKYN0-0"),
+            (2, "PALD-0", "BLOCK32", "SKYD0-0"),
+            (4, "PALC-0", "BL32C0-0", None),
+            (25, "PALF-0", "BL32F0-0", "SKYN0-0"),
+        ]:
+            with self.subTest(level=level):
+                root = cache.GENERATED / f"mc-oi62-environment-level{level}-v2"
+                manifest = environment.validate(root)
+                profile = manifest["profile"]
+                self.assertEqual((profile["palette"], profile["blocks"], profile["sky"]), (palette, blocks, sky))
+                self.assertEqual((root / "terrain/blocks.atlas.u8").read_bytes(), (cache.DEFAULT_OWNER / f"DATA/{blocks}.DAT").read_bytes())
+                self.assertEqual((root / "palette/tables.u8").read_bytes(), (cache.DEFAULT_OWNER / f"DATA/{profile['tables']}.DAT").read_bytes())
+                if level == 4:
+                    self.assertFalse((root / "sky").exists())
+
+    def test_rehashed_wrong_palette_keeps_source_bank_guard(self):
+        environment = cache.environment_importer()
+        source = cache.GENERATED / "mc-oi62-environment-level1-v2"
+        with tempfile.TemporaryDirectory(prefix="mc-environment-wrong-bank-") as temporary:
+            root = Path(temporary) / "cache"
+            shutil.copytree(source, root)
+            data = (cache.DEFAULT_OWNER / "DATA/PALD-0.DAT").read_bytes()
+            (root / "palette/source.rgb6").write_bytes(data)
+            manifest = json.loads((root / "manifest.json").read_bytes())
+            row = next(row for row in manifest["outputs"] if row["path"] == "palette/source.rgb6")
+            row["sha256"] = environment.digest(data)
+            manifest["cache_content_sha256"] = environment.content_identity(manifest["outputs"])
+            manifest.pop("manifest_payload_sha256")
+            manifest["manifest_payload_sha256"] = environment.digest(environment.canonical(manifest))
+            (root / "manifest.json").write_bytes(environment.canonical(manifest))
+            with self.assertRaisesRegex(environment.EnvironmentMaterialError, "selected owner bank identity differs: PALN-0"):
+                environment.validate(root)
+
+
 class SemanticIdentityTests(unittest.TestCase):
     """Discriminate semantic controls from incidental source/receipt pins."""
 

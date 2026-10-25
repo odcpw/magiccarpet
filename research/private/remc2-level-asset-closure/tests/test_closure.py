@@ -25,6 +25,28 @@ CATALOG = (
     / "research/private/remc2-atlas/semantics/generated/owner-asset-catalog.json"
 )
 OWNER = ROOT / "research/private/remc2-native-runtime/CD_Files"
+
+
+class PackageEnvironmentClosureTests(unittest.TestCase):
+    def test_actual_package_flags_select_all_source_environment_banks(self):
+        generated = ROOT / "research/private/generated"
+        for package, palette, block, sky in [
+            ("mc-bhq8-level1-collision-v5-night", "PALN-0", "BL32N0-0", "SKYN0-0"),
+            ("level2-day-block32-campaign-v2", "PALD-0", "BLOCK32", "SKYD0-0"),
+            ("mc-bhq6-ordinary-20261025-zclu5fjj/level4", "PALC-0", "BL32C0-0", None),
+            ("mc-bhq6-ordinary-20261025-zclu5fjj/level25", "PALF-0", "BL32F0-0", "SKYN0-0"),
+        ]:
+            with self.subTest(package=package):
+                document = closure.build_environment_closure(generated / package, CATALOG, OWNER)
+                profile = document["profile"]
+                self.assertEqual((profile["palette"], profile["blocks"], profile["sky"]), (palette, block, sky))
+                self.assertEqual(len(document["tmaps"]), 504)
+                files = {row["path"] for row in document["owner_files"]}
+                self.assertIn(f"DATA/{block}.DAT", files)
+                self.assertIn(f"DATA/{profile['dormant_blocks16']}.DAT", files)
+                if sky is None:
+                    self.assertNotIn("DATA/SKYC0-0.DAT", files)
+
 TRACE_A = ROOT / "research/private/generated/level1-frame-trace-final-v2-a"
 TRACE_B = ROOT / "research/private/generated/level1-frame-trace-final-v2-b"
 LEVEL2_EXPORT = ROOT / "research/private/generated/l2-debug3.fJ3PaM/level2"

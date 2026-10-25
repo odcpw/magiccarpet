@@ -114,6 +114,7 @@ namespace MagicCarpet.Native
         }
         private bool disposed;
         private bool night;
+        private OwnerAssetCache environmentCache;
         private Func<byte[], byte[]> paletteTransform;
         private byte[] worldPaletteSource;
         private byte[] entityPaletteSource;
@@ -191,6 +192,7 @@ namespace MagicCarpet.Native
 
         internal void PresentNight(NativeCampaignSession session, OwnerAssetCache cache, short cameraYaw)
         {
+            if (cache?.IsEnvironment == true) { PresentEnvironment(session, cache, cameraYaw); return; }
             if (disposed) throw new ObjectDisposedException(nameof(CampaignPresentationSurface));
             if (session == null || cache == null || cache.IsDayAggregate ||
                 session.Selection.externalLevel != 1 || session.Selection.internalLevel != 0 ||
@@ -251,6 +253,7 @@ namespace MagicCarpet.Native
 
         internal void Present(NativeCampaignSession session, OwnerAssetCache cache, short cameraYaw = 0)
         {
+            if (cache?.IsEnvironment == true) { PresentEnvironment(session, cache, cameraYaw); return; }
             if (disposed) throw new ObjectDisposedException(nameof(CampaignPresentationSurface));
             if (session == null) throw new ArgumentNullException(nameof(session));
             if (cache == null || !cache.IsDayAggregate)
@@ -304,6 +307,71 @@ namespace MagicCarpet.Native
             Tick = tick;
             FrameHash = frame.indexHash;
             TerrainHash = terrain.terrainHash;
+            CacheContentHash = cache.ContentHash;
+        }
+
+        /// Bind selected original materials to the live authority's indexed
+        /// frame. A surface belongs to one package/generation; replacement is
+        /// owned by its lifecycle caller and disposes these GPU resources.
+        internal void PresentEnvironment(NativeCampaignSession session, OwnerAssetCache cache, short cameraYaw = 0)
+        {
+            if (disposed) throw new ObjectDisposedException(nameof(CampaignPresentationSurface));
+            if (session == null || cache?.EnvironmentMaterials == null)
+                throw new InvalidOperationException("package environment materials are missing");
+            var descriptor = cache.EnvironmentMaterials;
+            var profile = descriptor.profile;
+            var package = session.PackageIdentity;
+            if (session.Selection.externalLevel != profile.external_level ||
+                session.Selection.internalLevel != profile.internal_level || session.Selection.mapType != profile.map_type.id ||
+                package.PackagePath != cache.EnvironmentPackage.PackagePath ||
+                package.ManifestSha256 != cache.EnvironmentPackage.ManifestSha256 ||
+                package.DefinitionSha256 != cache.EnvironmentPackage.DefinitionSha256 ||
+                environmentCache != null && (!ReferenceEquals(environmentCache, cache) || Generation != session.Generation))
+                throw new InvalidOperationException("environment package/generation differs from this presentation surface");
+            // The Cave renderer owns its floor/ceiling path. Loading Cave
+            // resources never substitutes a Day terrain pass or a fake sky.
+            if (profile.map_type.id == 2)
+                throw new InvalidOperationException("Cave environment is loaded but its floor/ceiling renderer is not admitted");
+            var generation = session.Generation;
+            var tick = session.Tick;
+            // Retrieve all authoritative inputs before changing the visible
+            // surface. Native resource validation already happened on open.
+            var frame = session.CopyPresentationFrame(tick);
+            var entities = session.Entities();
+            var presentations = session.EntityPresentations(cameraYaw);
+            var minimap = session.MinimapState(tick);
+            var minimapEntities = session.MinimapEntities(tick, minimap);
+            var minimapMarks = session.MinimapMarks(tick, minimap);
+            if (frame.generation != generation || frame.tick != tick)
+                throw new InvalidOperationException("environment native frame identity differs");
+            if (environmentCache == null)
+            {
+                environmentCache = cache;
+                minimapTables = cache.ReadOutput(descriptor.tables.path);
+                foreach (var row in descriptor.tmaps.textures)
+                    if (!row.source_empty) materialRows.Add(row.index, row);
+                var sprites = descriptor.bitmap_banks.Single(bank => bank.bank == profile.sprites);
+                foreach (var row in sprites.bitmaps)
+                    if (!row.source_empty) minimapSymbols.Add(row.selector, new MinimapSymbolPixels {
+                        Width = row.width, Height = row.height, Indices = cache.ReadOutput(row.indices_path),
+                        Mask = cache.ReadOutput(row.mask_path)
+                    });
+            }
+            foreach (var row in presentations)
+                if (!materialRows.ContainsKey(row.selectedTmap))
+                    throw new InvalidOperationException($"selected environment TMAP {row.selectedTmap} is empty or absent");
+            Buffer.BlockCopy(session.CampaignFrameIndices, 0, presentedIndices, 0, presentedIndices.Length);
+            MaterializeMinimapPixels(presentedIndices, minimapEntities, minimapTables, generation, tick, minimapSymbols);
+            MaterializeMinimapMarks(presentedIndices, minimapMarks, minimapTables, generation, tick);
+            var palette = cache.ReadOutput(descriptor.palette.rgb8_path);
+            EnsureWorld(presentedIndices, palette);
+            minimapOverlay ??= root.gameObject.AddComponent<CampaignMinimapOverlay>();
+            minimapOverlay.Present(presentedIndices, palette, minimapTables);
+            MaterializeEntities(entities, presentations, cache, generation, tick);
+            LiveMinimapReady = minimap.entityCount == (uint)minimapEntities.Length && minimap.markCount == (uint)minimapMarks.Length;
+            Generation = generation;
+            Tick = tick;
+            FrameHash = frame.indexHash;
             CacheContentHash = cache.ContentHash;
         }
 
@@ -670,10 +738,12 @@ namespace MagicCarpet.Native
             }
             foreach (var presentation in presentations)
             {
-                if (!entities.TryGetValue(presentation.entityIndex, out var marker) ||
-                    !materialRows.TryGetValue(presentation.selectedTmap, out var texture))
+                if (!entities.TryGetValue(presentation.entityIndex, out var marker))
                     throw new InvalidOperationException(
-                        $"Level 3 entity {presentation.entityIndex} selector {presentation.selectedTmap} is absent from the qualified cache");
+                        $"campaign presentation entity {presentation.entityIndex} selector {presentation.selectedTmap} has no active entity snapshot");
+                if (!materialRows.TryGetValue(presentation.selectedTmap, out var texture))
+                    throw new InvalidOperationException(
+                        $"campaign entity {presentation.entityIndex} selector {presentation.selectedTmap} is absent from the validated material bank");
                 marker.BindSprite(
                     presentation,
                     texture,
@@ -695,7 +765,7 @@ namespace MagicCarpet.Native
             OwnerAssetCache.Level3Texture row)
         {
             if (entityMaterials.TryGetValue(row.index, out var material)) return material;
-            var bytes = night ? cache.ReadOutput(row.indices_path) : cache.ReadLevel3MaterialOutput(row.indices_path);
+            var bytes = cache.IsEnvironment || night ? cache.ReadOutput(row.indices_path) : cache.ReadLevel3MaterialOutput(row.indices_path);
             if (bytes.Length != row.width * row.height)
                 throw new InvalidOperationException($"Level 3 TMAP {row.index} is incomplete");
             var texture = new Texture2D(row.width, row.height, TextureFormat.R8, false, true)
@@ -718,7 +788,8 @@ namespace MagicCarpet.Native
         private Texture2D EnsureEntityPalette(OwnerAssetCache cache)
         {
             if (hudPalette != null) return hudPalette;
-            var bytes = night ? cache.ReadOutput("palette/paln.rgb8") :
+            var bytes = cache.IsEnvironment ? cache.ReadOutput(cache.EnvironmentMaterials.palette.rgb8_path) :
+                night ? cache.ReadOutput("palette/paln.rgb8") :
                 cache.ReadLevel3MaterialOutput(cache.Level3Materials.palette.rgb8_path);
             if (bytes.Length != 256 * 3)
                 throw new InvalidOperationException("Level 3 material palette is incomplete");
