@@ -626,6 +626,7 @@ namespace MagicCarpet.Native
         private int level2IndexedFrameUploadCount;
         private PlaythroughRecorder playthroughRecorder;
         private OwnerAssetCache ownerAssetCache;
+        private OwnerAssetCache gameRuntimeEnvironmentCache;
         private OwnerAudioPresentation ownerAudio;
         private AudioQualificationCapture audioCapture;
         private LocalAudioQualification localAudioQualification;
@@ -9764,12 +9765,14 @@ namespace MagicCarpet.Native
         {
             var selection = NativeSim.CampaignSelection.Level2Day();
             var resource = ResolveGameRuntimePresentationResource(selection);
+            var environment = LoadGameRuntimeEnvironmentMaterials(resource);
 
             level2Mode = true;
             level2StartupReady = false;
             ownerAssetCache = OwnerAssetCache.OpenAndValidateLevel2(
                 resource.presentation_cache_path);
-            if (ownerAssetCache.IsDayAggregate)
+            gameRuntimeEnvironmentCache = environment;
+            if (ownerAssetCache.IsDayAggregate || environment != null)
                 level2DayPresentationSurface = new CampaignPresentationSurface(transform);
             level2DayPresentationSurface?.SetPaletteTransform(bytes => playerPreferences?.ApplyBrightnessToPalette(bytes, 0) ?? bytes);
             level2DayHudDescriptor = ownerAssetCache.DayHud;
@@ -9805,8 +9808,10 @@ namespace MagicCarpet.Native
             }))
                 return;
             var resource = ResolveGameRuntimePresentationResource(selection);
+            var environment = LoadGameRuntimeEnvironmentMaterials(resource);
             ownerAssetCache = OwnerAssetCache.OpenAndValidate(resource.presentation_cache_path,
                 ExpectedPackageHash, ExpectedOwnerAssetClosureHash, resource.package_dir);
+            gameRuntimeEnvironmentCache = environment;
             campaignSession = NativeCampaignSession.BorrowGameRuntime(session.Handle, identity,
                 resource.package_dir, selection);
             gameRuntimeNightSurface = new CampaignPresentationSurface(transform);
@@ -9823,7 +9828,7 @@ namespace MagicCarpet.Native
         {
             if (gameRuntimeNightSurface == null) return;
             campaignSession.SynchronizeGameRuntimeIdentity(identity);
-            gameRuntimeNightSurface.PresentNight(campaignSession, ownerAssetCache,
+            gameRuntimeNightSurface.PresentNight(campaignSession, gameRuntimeEnvironmentCache ?? ownerAssetCache,
                 observation.value.player_pose.yaw);
             gameRuntimeNightSurface.PresentView(observation.value.player_pose);
             var hud = campaignSession.DayHudState(campaignSession.Tick);
@@ -9841,11 +9846,13 @@ namespace MagicCarpet.Native
         {
             var selection = NativeSim.CampaignSelection.Create(3, 2, 0);
             var resource = ResolveGameRuntimePresentationResource(selection);
+            var environment = LoadGameRuntimeEnvironmentMaterials(resource);
 
             level3Mode = true;
             level3StartupReady = false;
             ownerAssetCache = OwnerAssetCache.OpenAndValidateLevel3(
                 resource.presentation_cache_path);
+            gameRuntimeEnvironmentCache = environment;
             level2DayHudDescriptor = ownerAssetCache.DayHud;
             MaterializeCampaignDayHud();
             campaignSession = NativeCampaignSession.BorrowGameRuntime(
@@ -9861,6 +9868,17 @@ namespace MagicCarpet.Native
             Debug.Log(
                 $"MC_GAME_RUNTIME_LEVEL3_PRESENTATION VERIFIED handle={session.Handle} " +
                 $"generation={identity.session.generation} tick={identity.session.tick}");
+        }
+
+        private static OwnerAssetCache LoadGameRuntimeEnvironmentMaterials(
+            GameRuntimeTransport.InstalledPackageResource resource)
+        {
+            // Native and Unity consume the same package-selected world bank.
+            // The qualified presentation companion still owns HUD and audio.
+            return !string.IsNullOrWhiteSpace(resource.owner_cache_path) &&
+                OwnerAssetCache.HasEnvironmentMaterials(resource.owner_cache_path)
+                ? OwnerAssetCache.OpenAndValidateEnvironment(resource.owner_cache_path, resource.package_dir)
+                : null;
         }
 
         private GameRuntimeTransport.InstalledPackageResource
@@ -9906,7 +9924,7 @@ namespace MagicCarpet.Native
                 observation.identity.generation == campaignSession.Generation.ToString() &&
                 observation.identity.tick == campaignSession.Tick.ToString(),
                 "Level 3 presentation is bound to the current game runtime frame");
-            level3PresentationSurface.Present(campaignSession, ownerAssetCache,
+            level3PresentationSurface.Present(campaignSession, gameRuntimeEnvironmentCache ?? ownerAssetCache,
                 observation.value.player_pose.yaw);
             level3PresentationSurface.PresentView(observation.value.player_pose);
             PresentLevel2DayHud(campaignSession.DayHudState(campaignSession.Tick));
@@ -9955,6 +9973,7 @@ namespace MagicCarpet.Native
 
         private void DisposeGameRuntimeCampaignPresentation()
         {
+            gameRuntimeEnvironmentCache = null;
             gameRuntimeObjectiveInstruction = null;
             if (gameRuntimeNightSurface != null)
             {
@@ -9999,7 +10018,7 @@ namespace MagicCarpet.Native
             gameRuntimeObjectiveInstruction = Mc2ObjectiveText.Resolve(observation.value.objective_progress);
             if (level2DayPresentationSurface != null)
             {
-                level2DayPresentationSurface.Present(campaignSession, ownerAssetCache,
+                level2DayPresentationSurface.Present(campaignSession, gameRuntimeEnvironmentCache ?? ownerAssetCache,
                     observation.value.player_pose.yaw);
                 level2DayPresentationSurface.PresentView(observation.value.player_pose);
                 level2MinimapProjectionReady = level2DayPresentationSurface.LiveMinimapReady;

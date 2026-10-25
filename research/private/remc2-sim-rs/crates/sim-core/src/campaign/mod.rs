@@ -82,7 +82,7 @@ impl CampaignSession {
         })
     }
 
-    /// Open with an explicit private gameplay or Day material component while
+    /// Open with an explicit private gameplay or environment material component while
     /// keeping owner bytes outside the package and distributable client tree.
     pub fn open_with_owner_cache(
         package_root: impl AsRef<Path>,
@@ -91,33 +91,37 @@ impl CampaignSession {
     ) -> Result<Self, CampaignOpenError> {
         let owner_cache = owner_cache.as_ref();
         Self::open_with_materializer(package_root.as_ref(), selection, |definition| {
-            let inspection = if selection == CampaignSelection::LEVEL1 {
-                // Sealed Night textures are reusable presentation assets. The
-                // campaign's v2 runtime component differs from the old export;
-                // never feed that cache into the legacy gameplay decoder.
-                crate::day_indexed_frame::DayIndexedFrameAssets::load_night(owner_cache)
-                    .map_err(|error| NativeWorldError::new(error.to_string()))?;
-                NativeWorld::inspect_campaign_definition(definition)?
-            } else if owner_cache.join("materials/descriptor.json").is_file() {
+            let inspection = if selection == CampaignSelection::LEVEL1
+                || owner_cache.join("materials/descriptor.json").is_file()
+            {
                 // Material components supply presentation, not legacy BUILD
                 // footprints. Validate their package binding without feeding
                 // them to the gameplay-component decoder or changing reset state.
-                let assets = crate::day_indexed_frame::DayIndexedFrameAssets::load(owner_cache)
-                    .map_err(|error| NativeWorldError::new(error.to_string()))?;
+                let assets = if selection == CampaignSelection::LEVEL1 {
+                    crate::day_indexed_frame::DayIndexedFrameAssets::load_night(owner_cache)
+                } else {
+                    crate::day_indexed_frame::DayIndexedFrameAssets::load(owner_cache)
+                }
+                .map_err(|error| NativeWorldError::new(error.to_string()))?;
                 let profile = assets.profile();
-                if profile.external_level != selection.external_level
-                    || profile.internal_level != selection.internal_level
-                    || profile.map_type_id != selection.map_type_id
-                    || assets.package_sha256()
-                        != definition
-                            .owner_export_package_sha256()
-                            .map_err(|error| NativeWorldError::new(error.to_string()))?
-                    || assets
-                        .campaign_package_sha256()
-                        .is_some_and(|hash| hash != definition.package_sha256)
+                // Only sealed Night textures predate campaign binding and
+                // deliberately reuse the older export's presentation bytes.
+                let legacy_night = selection == CampaignSelection::LEVEL1
+                    && assets.campaign_package_sha256().is_none();
+                if !legacy_night
+                    && (profile.external_level != selection.external_level
+                        || profile.internal_level != selection.internal_level
+                        || profile.map_type_id != selection.map_type_id
+                        || assets.package_sha256()
+                            != definition
+                                .owner_export_package_sha256()
+                                .map_err(|error| NativeWorldError::new(error.to_string()))?
+                        || assets
+                            .campaign_package_sha256()
+                            .is_some_and(|hash| hash != definition.package_sha256))
                 {
                     return Err(NativeWorldError::new(
-                        "Day material cache does not match the opened campaign package",
+                        "material cache does not match the opened campaign package",
                     ));
                 }
                 NativeWorld::inspect_campaign_definition(definition)?
@@ -681,6 +685,35 @@ mod tests {
             },
             PathBuf::from,
         )
+    }
+
+    #[test]
+    fn night_environment_rejects_other_package_before_materialization() {
+        let generated = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../generated");
+        let cache = generated.join("mc-oi62-environment-level1-v2");
+        CampaignSession::open_with_owner_cache(
+            level_one_descriptor_fixture_path(),
+            &cache,
+            CampaignSelection::LEVEL1,
+        )
+        .expect("matching real Night package opens");
+        let other_cache = generated.join("mc-oi62-environment-level25-v2");
+        crate::day_indexed_frame::DayIndexedFrameAssets::load_night(&other_cache)
+            .expect("other real Night cache is valid on its own");
+        let error = CampaignSession::open_with_owner_cache(
+            level_one_descriptor_fixture_path(),
+            other_cache,
+            CampaignSelection::LEVEL1,
+        )
+        .expect_err("Night cache from another package must not materialize");
+        assert!(matches!(error, CampaignOpenError::Materialization(_)));
+        assert!(error.to_string().contains("material cache does not match"));
+        CampaignSession::open_with_owner_cache(
+            level_one_descriptor_fixture_path(),
+            generated.join("level1-unity-asset-cache-plan29-final"),
+            CampaignSelection::LEVEL1,
+        )
+        .expect("sealed legacy Night resources retain their deliberate reuse contract");
     }
 
     #[test]

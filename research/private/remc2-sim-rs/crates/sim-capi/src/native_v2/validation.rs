@@ -2670,19 +2670,42 @@ pub(super) fn load_optional_day_frame_assets(
     let assets = loaded.map_err(|error| {
         AbiError::new(
             MC_STATUS_VALIDATION_FAILED,
-            format!("cannot load qualified Day indexed-frame cache: {error}"),
+            format!("cannot load indexed-frame material cache: {error}"),
         )
     })?;
-    let profile = assets.profile();
     let metadata = inspection.metadata();
-    if profile.external_level != metadata.external_level
-        || profile.internal_level != metadata.internal_level
-        || profile.map_type_id != metadata.map_type as u8
-        || (!night && assets.package_sha256() != inspection.package_sha256())
+    validate_frame_assets_binding(
+        &assets,
+        CampaignSelection {
+            external_level: metadata.external_level,
+            internal_level: metadata.internal_level,
+            map_type_id: metadata.map_type as u8,
+        },
+        inspection.package_sha256(),
+        campaign_package_sha256,
+    )?;
+    Ok(Some(assets))
+}
+
+fn validate_frame_assets_binding(
+    assets: &DayIndexedFrameAssets,
+    selection: CampaignSelection,
+    owner_package_sha256: &str,
+    campaign_package_sha256: Option<&str>,
+) -> AbiResult<()> {
+    let profile = assets.profile();
+    if profile.external_level != selection.external_level
+        || profile.internal_level != selection.internal_level
+        || profile.map_type_id != selection.map_type_id
+        // Only the sealed legacy Night cache predates campaign binding.
+        // Package-selected Night resources must match before publication,
+        // just as Day resources do.
+        || ((selection.map_type_id != 1 || assets.campaign_package_sha256().is_some())
+            && assets.package_sha256() != owner_package_sha256)
     {
         return Err(AbiError::new(
             MC_STATUS_VALIDATION_FAILED,
-            "Day material cache does not match the opened campaign package",
+            "material cache does not match the opened campaign package",
         ));
     }
     if let Some(bound_campaign) = assets.campaign_package_sha256()
@@ -2690,10 +2713,10 @@ pub(super) fn load_optional_day_frame_assets(
     {
         return Err(AbiError::new(
             MC_STATUS_VALIDATION_FAILED,
-            "Day material cache does not match the opened campaign envelope",
+            "material cache does not match the opened campaign envelope",
         ));
     }
-    Ok(Some(assets))
+    Ok(())
 }
 
 pub(super) fn load_optional_level2_day_music(
@@ -3300,4 +3323,44 @@ pub(super) fn write_output<T>(pointer: *mut T, value: T) {
     // SAFETY: all callers validated the output pointer before reaching this
     // helper. Unaligned writes support conservative P/Invoke marshaling.
     unsafe { pointer.write_unaligned(value) };
+}
+
+#[cfg(test)]
+mod material_binding_tests {
+    use super::*;
+
+    #[test]
+    fn night_frame_assets_reject_other_owner_export_before_publication() {
+        let generated = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../generated");
+        let cache = generated.join("mc-oi62-environment-level1-v2");
+        let matching = DescriptorCampaignSession::open(
+            generated.join("mc-bhq8-level1-collision-v5-night"),
+            CampaignSelection::LEVEL1,
+        )
+        .expect("current Night package opens");
+        let bound = Some(matching.definition().package_sha256.as_str());
+        load_optional_day_frame_assets(cache.to_str(), matching.inspection(), bound)
+            .expect("matching generic Night assets load")
+            .expect("explicit cache produces assets");
+        let assets = DayIndexedFrameAssets::load_night(&cache).expect("validated real Night cache");
+        let other_owner = "0".repeat(64);
+        assert_ne!(assets.package_sha256(), other_owner);
+        // Hold the envelope argument constant to discriminate owner-export
+        // validation from the existing campaign-envelope check.
+        let error =
+            validate_frame_assets_binding(&assets, CampaignSelection::LEVEL1, &other_owner, bound)
+                .expect_err("same-level Night owner export must match before assets are published");
+        assert_eq!(error.status, MC_STATUS_VALIDATION_FAILED);
+        assert!(
+            error
+                .message
+                .contains("does not match the opened campaign package")
+        );
+        let legacy = DayIndexedFrameAssets::load_night(
+            generated.join("level1-unity-asset-cache-plan29-final"),
+        )
+        .expect("sealed Night resources load");
+        validate_frame_assets_binding(&legacy, CampaignSelection::LEVEL1, &other_owner, None)
+            .expect("sealed legacy Night cache remains reusable");
+    }
 }
