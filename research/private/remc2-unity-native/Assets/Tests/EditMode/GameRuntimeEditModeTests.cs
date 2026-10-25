@@ -349,12 +349,14 @@ namespace MagicCarpet.Native.Tests
             var save = Path.Combine(Path.GetTempPath(), $"mc-menu-{Guid.NewGuid():N}.json");
             try
             {
-                var args = RuntimeArguments(LevelThreePackage, LevelOnePackage, LevelTwoPackage);
-                Array.Resize(ref args, args.Length + 4);
-                args[args.Length - 4] = "-mc-runtime-loading-cache";
-                args[args.Length - 3] = LevelOneOwnerCache;
-                args[args.Length - 2] = "-mc-runtime-replay-save";
-                args[args.Length - 1] = save;
+                var args = new[] {
+                    "-mc-game-runtime", "-mc-runtime-package", LevelThreePackage,
+                    "-mc-runtime-package", LevelOnePackage,
+                    "-mc-runtime-owner-cache", LevelOneOwnerCache,
+                    "-mc-runtime-presentation-cache", LevelOneOwnerCache,
+                    "-mc-runtime-package", LevelTwoPackage,
+                    "-mc-runtime-loading-cache", LevelOneOwnerCache,
+                    "-mc-runtime-replay-save", save };
                 runtime.QualificationInitializeGameRuntimeProductionFromArguments(args);
                 var runtimeId = runtime.GameRuntimeProductionIdentity.runtime_id;
                 Assert.That(runtime.ExecuteGameRuntimeMenuAction(CampaignMenuPresenter.Action.NewGame), Is.False);
@@ -375,6 +377,13 @@ namespace MagicCarpet.Native.Tests
                 Assert.That(runtime.GameRuntimeProductionIdentity.mode, Is.EqualTo(GameRuntimeTransport.PausedMode));
                 Assert.That(runtime.ExecuteGameRuntimeMenuAction(CampaignMenuPresenter.Action.Title), Is.True);
                 Assert.That(runtime.GameRuntimeProductionIdentity.mode, Is.EqualTo(GameRuntimeTransport.TitleMode));
+                Assert.That(runtime.StepGameRuntimeTitleMedia(0, false, false), Is.True,
+                    "direct-game return binds media and drains input once");
+                var directTitleMedia = runtime.GameRuntimeProductionIdentity.frontend_media;
+                Assert.That(directTitleMedia.active, Is.False, "return to Title skips cold welcome/intro");
+                Assert.That(Array.Exists(directTitleMedia.actions, action => action.op == "M" && action.value == 4),
+                    Is.True, "direct-game Title restores original menu music");
+                runtime.StepGameRuntimeTitleMedia(50_000, false, false);
                 Assert.That(runtime.ExecuteGameRuntimeMenuAction(CampaignMenuPresenter.Action.NewGame), Is.True);
                 Assert.That(runtime.GameRuntimeLoadingPresentationVisible, Is.True);
                 Assert.That(runtime.GameRuntimeProductionIdentity.mode, Is.EqualTo(GameRuntimeTransport.LoadingMode));
@@ -394,6 +403,22 @@ namespace MagicCarpet.Native.Tests
                 Assert.That(runtime.GameRuntimeProductionCampaignSnapshot.value.state_hash, Is.EqualTo(paused));
                 Assert.That(runtime.ExecuteGameRuntimeMenuAction(CampaignMenuPresenter.Action.Resume), Is.True);
                 Assert.That(runtime.GameRuntimeProductionIdentity.mode, Is.EqualTo(GameRuntimeTransport.PlayingMode));
+                Assert.That(runtime.GameRuntimeProductionIdentity.runtime_id, Is.Not.EqualTo(runtimeId),
+                    "Load replaced the Rust runtime that owned the original media catalog");
+                runtime.QualificationApplyGameRuntimeProductionInput(true, false);
+                Assert.That(runtime.ExecuteGameRuntimeMenuAction(CampaignMenuPresenter.Action.Title), Is.True);
+                runtime.StepGameRuntimeTitleMedia(0, false, false);
+                var loadedTitleMedia = runtime.GameRuntimeProductionIdentity.frontend_media;
+                Assert.That(loadedTitleMedia.error, Is.Null.Or.Empty);
+                Assert.That(loadedTitleMedia.active, Is.False);
+                Assert.That(Array.Exists(loadedTitleMedia.actions, action => action.op == "M" && action.value == 4),
+                    Is.True, "loaded runtime installs its own catalog and restores menu music");
+                runtime.StepGameRuntimeTitleMedia(50_000, false, false);
+                for (var frame = 0; frame < 13; frame++)
+                    runtime.StepGameRuntimeTitleMedia(5_000_000, false, false);
+                Assert.That(runtime.GameRuntimeProductionIdentity.frontend_media.active, Is.True);
+                Assert.That(runtime.GameRuntimeProductionIdentity.frontend_media.clip_id, Is.EqualTo("intro1"),
+                    "the loaded owner's first idle attract sequence starts normally");
             }
             finally
             {

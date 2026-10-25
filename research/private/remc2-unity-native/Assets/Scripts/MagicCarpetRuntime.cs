@@ -564,6 +564,7 @@ namespace MagicCarpet.Native
         private Camera gameRuntimeTransitionCamera;
         private CampaignMenuPresenter gameRuntimeMenu;
         private FrontendMediaPresenter frontendMedia;
+        private string gameRuntimeMediaCachePath;
         private AudioListener gameRuntimeAudioListener;
         private PlayerPreferencesPresenter playerPreferences;
         private bool preferenceRecenterRequested, preferenceFullStopRequested;
@@ -2366,13 +2367,7 @@ namespace MagicCarpet.Native
                     {
                         PreparePlayerPreferences(arguments);
                         EnsureGameRuntimeMenu();
-                        var mediaPath = ArgumentValue(arguments, "-mc-runtime-media-cache");
-                        frontendMedia = new FrontendMediaPresenter(transform,
-                            string.IsNullOrWhiteSpace(mediaPath)
-                                ? Path.Combine(Path.GetDirectoryName(gameRuntimeLoadingCachePath), "mc2-frontend-media-cache-decoded")
-                                : mediaPath);
-                        frontendMedia.ApplyPreferences(playerPreferences.Current.preferences);
-                        frontendMedia.Step(session.Handle, session.GameRuntimeIdentity(), 0, false, false);
+                        StepGameRuntimeTitleMedia(0, false, false, startup: true);
                     }
                     else
                     {
@@ -2382,6 +2377,11 @@ namespace MagicCarpet.Native
                     }
                     Application.targetFrameRate = 120;
                     Time.fixedDeltaTime = 1f / AuthoritativeSimulationHz;
+                    // Sample devices between expensive authoritative turns.
+                    // Catch-up must not queue ten Rust steps before Update can
+                    // observe a short press. Under load the game slows in wall
+                    // time; every executed Rust turn keeps its original order.
+                    Time.maximumDeltaTime = Time.fixedDeltaTime;
                     if (!Application.isBatchMode && session.GameRuntimeIdentity().mode == GameRuntimeTransport.PlayingMode)
                         CaptureMouse();
                     return;
@@ -3174,13 +3174,13 @@ namespace MagicCarpet.Native
                         CloseGameRuntimeSpellMenu();
                     return;
                 }
-                if (frontendMedia != null && session != null &&
+                if (session != null &&
                     session.GameRuntimeIdentity().mode == GameRuntimeTransport.TitleMode)
                 {
                     var input = Input.anyKey || Input.GetMouseButton(0) || Input.GetMouseButton(1);
-                    if (!frontendMedia.Visible)
+                    if (frontendMedia?.Visible != true)
                         input |= Input.GetAxisRaw("Mouse X") != 0 || Input.GetAxisRaw("Mouse Y") != 0;
-                    var blocked = frontendMedia.Step(session.Handle, session.GameRuntimeIdentity(),
+                    var blocked = StepGameRuntimeTitleMedia(
                         (uint)Math.Min(5_000_000d, Time.unscaledDeltaTime * 1_000_000d), input,
                         Input.GetKey(KeyCode.Escape));
                     if (frontendMedia.Error != null) gameRuntimeMenuStatus = frontendMedia.Error;
@@ -9591,6 +9591,23 @@ namespace MagicCarpet.Native
             level3PresentationSurface?.SetPaletteTransform(bytes => playerPreferences.ApplyBrightnessToPalette(bytes, 0));
         }
 
+        internal bool StepGameRuntimeTitleMedia(uint elapsedUs, bool input, bool escape,
+            bool startup = false)
+        {
+            if (session == null || session.GameRuntimeIdentity().mode != GameRuntimeTransport.TitleMode)
+                return false;
+            if (frontendMedia == null)
+            {
+                var mediaPath = string.IsNullOrWhiteSpace(gameRuntimeMediaCachePath)
+                    ? Path.Combine(Path.GetDirectoryName(gameRuntimeLoadingCachePath), "mc2-frontend-media-cache-decoded")
+                    : gameRuntimeMediaCachePath;
+                frontendMedia = new FrontendMediaPresenter(transform, mediaPath, startup);
+                if (playerPreferences != null)
+                    frontendMedia.ApplyPreferences(playerPreferences.Current.preferences);
+            }
+            return frontendMedia.Step(session.Handle, session.GameRuntimeIdentity(), elapsedUs, input, escape);
+        }
+
         private void BeginGameRuntimeMenuNewGame()
         {
             Require(session?.GameRuntimeIdentity().mode == GameRuntimeTransport.TitleMode,
@@ -9637,6 +9654,11 @@ namespace MagicCarpet.Native
                             PreparePlayerPreferences(Environment.GetCommandLineArgs());
                             gameRuntimeMenu?.AttachPreferences(playerPreferences);
                             titleOwner.Dispose();
+                            // The catalog/clock belonged to the replaced Rust
+                            // runtime. Bind the loaded owner's first Title entry
+                            // lazily, without replaying cold-start intros.
+                            frontendMedia?.Dispose();
+                            frontendMedia = null;
                         }
                         catch
                         {
@@ -13664,6 +13686,7 @@ namespace MagicCarpet.Native
         private void ConfigureStartupArguments(string[] arguments)
         {
             gameRuntimeMenuCachePath = ArgumentValue(arguments, "-mc-runtime-menu-cache");
+            gameRuntimeMediaCachePath = ArgumentValue(arguments, "-mc-runtime-media-cache");
             level2Mode = HasArgument(arguments, "-mc-level2");
             autoplay = HasArgument(arguments, "-mc-autoplay");
             autoplayQuit = HasArgument(arguments, "-mc-autoplay-quit");
