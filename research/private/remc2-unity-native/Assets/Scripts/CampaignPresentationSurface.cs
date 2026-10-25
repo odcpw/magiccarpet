@@ -336,7 +336,7 @@ namespace MagicCarpet.Native
             var tick = session.Tick;
             // Retrieve all authoritative inputs before changing the visible
             // surface. Native resource validation already happened on open.
-            var frame = session.CopyPresentationFrame(tick);
+            var frame = session.CopyDayIndexedFrame(tick);
             var entities = session.Entities();
             var presentations = session.EntityPresentations(cameraYaw);
             var minimap = session.MinimapState(tick);
@@ -363,8 +363,14 @@ namespace MagicCarpet.Native
             Buffer.BlockCopy(session.CampaignFrameIndices, 0, presentedIndices, 0, presentedIndices.Length);
             MaterializeMinimapPixels(presentedIndices, minimapEntities, minimapTables, generation, tick, minimapSymbols);
             MaterializeMinimapMarks(presentedIndices, minimapMarks, minimapTables, generation, tick);
-            var palette = cache.ReadOutput(descriptor.palette.rgb8_path);
+            var palette = session.DayIndexedFramePalette;
             EnsureWorld(presentedIndices, palette);
+            entityPaletteSource = palette;
+            if (hudPalette != null)
+            {
+                hudPalette.LoadRawTextureData(TransformPalette(palette));
+                hudPalette.Apply(false, false);
+            }
             minimapOverlay ??= root.gameObject.AddComponent<CampaignMinimapOverlay>();
             minimapOverlay.Present(presentedIndices, palette, minimapTables);
             MaterializeEntities(entities, presentations, cache, generation, tick);
@@ -788,7 +794,7 @@ namespace MagicCarpet.Native
         private Texture2D EnsureEntityPalette(OwnerAssetCache cache)
         {
             if (hudPalette != null) return hudPalette;
-            var bytes = cache.IsEnvironment ? cache.ReadOutput(cache.EnvironmentMaterials.palette.rgb8_path) :
+            var bytes = cache.IsEnvironment ? entityPaletteSource ?? cache.ReadOutput(cache.EnvironmentMaterials.palette.rgb8_path) :
                 night ? cache.ReadOutput("palette/paln.rgb8") :
                 cache.ReadLevel3MaterialOutput(cache.Level3Materials.palette.rgb8_path);
             if (bytes.Length != 256 * 3)
