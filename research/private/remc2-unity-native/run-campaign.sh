@@ -154,11 +154,14 @@ def main(arguments):
              'owner': GENERATED / 'mc2-level1-night-cache-v2',
              'presentation': GENERATED / 'mc2-level1-night-cache-v2'},
             {'package': GENERATED / 'level2-day-block32-campaign-v2',
-             'owner': GENERATED / 'level2-day-spell-owner-cache-v3/components/material',
-             'presentation': GENERATED / 'level2-day-spell-owner-cache-v3'},
+             'owner': GENERATED / 'level2-day-spell-owner-cache-audio-v4/components/material',
+             'presentation': GENERATED / 'level2-day-spell-owner-cache-audio-v4'},
             {'package': GENERATED / 'level3-day-block32-campaign-recipe-v2',
-             'owner': GENERATED / 'level3-day-spell-owner-cache-v3/components/material',
-             'presentation': GENERATED / 'level3-day-spell-owner-cache-v3'},
+             'owner': GENERATED / 'level3-day-spell-owner-cache-audio-v4/components/material',
+             'presentation': GENERATED / 'level3-day-spell-owner-cache-audio-v4'},
+            {'package': GENERATED / 'mc-bhq6-ordinary-20261025-zclu5fjj/level4',
+             'owner': GENERATED / 'mc-oi62-environment-level4-audio-v3',
+             'presentation': GENERATED / 'mc-oi62-environment-level4-audio-v3'},
         ]
     seen = set()
     native = ['-mc-game-runtime']

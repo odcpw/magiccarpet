@@ -4438,21 +4438,25 @@ def render_midi_wave(
         raise CacheError(f"{label} deterministic WAVE render failed: {detail.strip()}") from error
     payload = target.read_bytes()
     properties = wav_properties(payload, f"{label} rendered music")
+    frames, digest = {
+        "C2GAME1": (19_472_384, "03b3f951048504d8a6d30611d6c44a62ec1c463726b30c33c16e3cb69824605d"),
+        "C2GAME2": (16_695_296, "9030814e6160f3cd0b9cf5f3c5977715c10c012e9faaacfca3f745c69fa9f5e3"),
+        "C2GAME3": (10_584_064, "4861f36b367de541f3438522cc66520fa8d9a5455aef35639b1bb218388e27a7"),
+    }[label]
     if (
-        len(payload) != 77_889_580
-        or sha256_bytes(payload) !=
-            "03b3f951048504d8a6d30611d6c44a62ec1c463726b30c33c16e3cb69824605d"
+        len(payload) != frames * 4 + 44
+        or sha256_bytes(payload) != digest
         or properties != {
-            "riff_declared_bytes": 77_889_580,
+            "riff_declared_bytes": frames * 4 + 44,
             "channels": 2,
             "sample_width_bytes": 2,
             "sample_rate": 44_100,
-            "frame_count": 19_472_384,
-            "duration_numerator_frames": 19_472_384,
+            "frame_count": frames,
+            "duration_numerator_frames": frames,
             "duration_denominator_hz": 44_100,
         }
     ):
-        raise CacheError("qualified C2GAME1 deterministic WAVE render changed")
+        raise CacheError(f"qualified {label} deterministic WAVE render changed")
     return payload
 
 
@@ -6184,6 +6188,80 @@ def _level2_sound_selector(expression: str) -> dict[str, Any]:
     return {"expression": expression, "status": "source_expression_requires_runtime_resolution", "sound_ids": numbers}
 
 
+def campaign_music_census(track: int) -> dict[str, Any]:
+    """Controller events from the pinned owner's actual MUSIC record."""
+    division, loops = {
+        2: (167, [(0, 2, 116, 0)]),
+        3: (270, [(3, 9, 116, 0), (86400, 9, 117, 127)]),
+        4: (254, [(0, 2, 116, 0), (69117, 2, 117, 127)]),
+    }[track]
+    tagged = [7, 8] if track in (2, 3) else []
+    return dict(midi_format=0, track_count=1, division=division,
+                trigger_controller=119, tagged_channels=tagged,
+                trigger_events=[dict(tick=0, channel=c, controller=119, value=0) for c in tagged],
+                loop_controller_events=[dict(tick=t, channel=c, controller=k, value=v)
+                                        for t, c, k, v in loops])
+
+
+def campaign_music_control(track: int) -> dict[str, Any]:
+    return dict(update_mode_field="target_mode", timer_multiplier=3,
+                timer_hz_formula="30 * timer_multiplier", timer_hz=90,
+                envelope_min=0, envelope_max=127, envelope_step_per_callback=1,
+                playback_slot_census=campaign_music_census(track),
+                loop_scan_pointer_census=campaign_music_census(track + 1),
+                audible_channel_resolution="Source_playback_track_minus_one_loop_scan_track")
+
+
+def export_campaign_music(stage, outputs, work, music_data, records, track):
+    """Sound.cpp passes track-1 to playback but track to its loop scan."""
+    if track not in (2, 3):
+        raise CacheError("campaign export requires Day2 or Cave3 source music")
+    slot = track - 1
+    label = f"C2GAME{track}"
+    record = records[slot]
+    expected_hash = {
+        2: "8c98b86e74a6187a3a08ac34ef81aa3bd97cf493c34bee88b6d6969e79a6c856",
+        3: "566769008b9598bd03ad657575daa089f217385d7e7671dd948e6b2fea1e3251",
+    }[track]
+    offset = record["relative_data_offset"]
+    payload = music_data[offset:offset + record["bytes"]]
+    if record["filename"] != label + ".XMI" or sha256_bytes(payload) != expected_hash:
+        raise CacheError("selected source MUSIC record changed")
+    xmi = write_output(stage, outputs, f"audio/music/{label}.xmi", payload,
+                       kind="owner_XMIDI_FORM_XDIR_exact_record",
+                       source_asset_ids=["owner_data:SOUND/MUSIC.DAT"],
+                       extra=dict(logical_track=track, playback_slot=slot, channel=0, driver="f"))
+    converter, provenance = compile_xmi_converter(work)
+    midi = transcode_xmi(converter, payload, work, label)
+    scan = records[track]
+    scan_payload = music_data[scan["relative_data_offset"]:scan["relative_data_offset"] + scan["bytes"]]
+    scan_midi = transcode_xmi(converter, scan_payload, work, f"{label}-loop-scan")
+    if (midi_dynamic_control_census(midi, label) != campaign_music_census(track)
+            or midi_dynamic_control_census(scan_midi, label) != campaign_music_census(track + 1)):
+        raise CacheError("selected source music controller census changed")
+    midi_row = write_output(stage, outputs, f"audio/music/{label}.mid", midi,
+                            kind="standard_MIDI_deterministic_remc2_conversion",
+                            source_asset_ids=["owner_data:SOUND/MUSIC.DAT"])
+    renderer, renderer_identity = compile_adl_renderer()
+    wave = render_midi_wave(renderer, midi, work, label)
+    wave_row = write_output(stage, outputs, f"audio/music/{label}-adlmidi-bank59.wav", wave,
+                            kind="Unity_ready_PCM16_stereo_deterministic_libADLMIDI_render",
+                            source_asset_ids=["owner_data:SOUND/MUSIC.DAT"])
+    rows = [{"slot": r["slot"], "filename": r["filename"],
+             "relative_data_offset": r["relative_data_offset"], "record_bytes": r["bytes"],
+             "record_sha256": r["payload_sha256"], "metadata_word": r["word"],
+             "channel": 0, "driver": "f",
+             "asset_path": xmi["path"] if r["slot"] == slot else None,
+             "asset_sha256": xmi["sha256"] if r["slot"] == slot else None} for r in records]
+    return rows, dict(logical_track=track, playback_slot=slot, loop_scan_pointer_slot=track,
+                      midi_path=midi_row["path"], midi_sha256=midi_row["sha256"], xmi_converter=provenance,
+                      unity_wave_path=wave_row["path"], unity_wave_sha256=wave_row["sha256"],
+                      unity_wave=wav_properties(wave, label), unity_wave_renderer=renderer_identity,
+                      dynamic_control=campaign_music_control(track),
+                      initial_start_status="SourceOrderQualified_remc2_local_gameTurn1_after_second_DrawAndEvents",
+                      exact_DOS_hardware_timbre="Deferred", optional_random_OGG_path="Excluded")
+
+
 def build_day_audio_cache(
     owner_root: Path,
     package_dir: Path,
@@ -6196,6 +6274,7 @@ def build_day_audio_cache(
     """Materialize exact Day sound/music banks and a source occurrence ledger."""
     output = validate_output_path(output)
     campaign_day = owner_export_dir is not None
+    sound_bank = 0 if campaign_day else 1
     if campaign_day:
         profile, _campaign, closure, catalog_rows, _owner = _campaign_day_material_profile(
             owner_export_dir, package_dir, closure_path, catalog_path
@@ -6242,7 +6321,7 @@ def build_day_audio_cache(
             sound,
             kind="owner_sound_bank_exact_container",
             source_asset_ids=["owner_data:SOUND/SOUND.DAT"],
-            extra={"bank": 1, "reachable_occurrence_count": len(reachable)},
+            extra={"bank": sound_bank, "reachable_occurrence_count": len(reachable)},
         )
         music_output = write_output(
             stage,
@@ -6259,9 +6338,9 @@ def build_day_audio_cache(
         sound_counts, sound_descriptor_raw = container_descriptor(
             sound,
             count_rows=6,
-            selector=1,
+            selector=sound_bank,
             row=3,
-            label="level2-sound-bank-1-quality-822",
+            label=f"Day-sound-bank-{sound_bank}-quality-822",
         )
         if sound_counts != [0, 0, 0, 10, 10, 0]:
             raise CacheError("Level 2 sound quality rows changed")
@@ -6271,7 +6350,7 @@ def build_day_audio_cache(
         sound_data = decode_container_blob(
             decoder, sound, sound_descriptor_raw["data_offset"], sound_descriptor_raw["data_size"], rnc_work, "level2-sound-data"
         )
-        sound_records = packed_audio_records(sound_metadata, sound_data, expected_count=64, label="level2-sound-bank-1")
+        sound_records = packed_audio_records(sound_metadata, sound_data, expected_count=64, label=f"Day-sound-bank-{sound_bank}")
         resolved_ids = sorted({sound_id for row in reachable for sound_id in _level2_sound_selector(row["sound_expression"]).get("sound_ids", [])})
         sound_record_rows = []
         for sound_id in resolved_ids:
@@ -6287,7 +6366,7 @@ def build_day_audio_cache(
                 payload,
                 kind="owner_RIFF_WAVE_exact_level2_record",
                 source_asset_ids=["owner_data:SOUND/SOUND.DAT"],
-                extra={"bank": 1, "quality": 822, "quality_index": 3, "sound_id": sound_id, **wav},
+                extra={"bank": sound_bank, "quality": 822, "quality_index": 3, "sound_id": sound_id, **wav},
             )
             sound_record_rows.append({
                 "sound_id": sound_id,
@@ -6297,7 +6376,7 @@ def build_day_audio_cache(
                 "record_bytes": record["bytes"],
                 "record_sha256": record["payload_sha256"],
                 "metadata_word": record["word"],
-                "bank": 1,
+                "bank": sound_bank,
                 "quality": 822,
                 "asset_path": sound_file["path"],
                 "asset_sha256": sound_file["sha256"],
@@ -6319,118 +6398,43 @@ def build_day_audio_cache(
             decoder, music, music_descriptor_raw["data_offset"], music_descriptor_raw["data_size"], rnc_work, "level2-music-data"
         )
         music_records = packed_audio_records(music_metadata, music_data, expected_count=6, label="level2-music-channel-0")
-        music_payload = music_data[: music_records[0]["bytes"]]
-        if music_payload[:4] != b"FORM" or music_payload[8:12] != b"XDIR":
-            raise CacheError("Level 2 C2GAME1 track is not an XMIDI FORM/XDIR payload")
-        music_track_output = write_output(
-            stage,
-            outputs,
-            "audio/music/C2GAME1.xmi",
-            music_payload,
-            kind="owner_XMIDI_FORM_XDIR_exact_level2_record",
-            source_asset_ids=["owner_data:SOUND/MUSIC.DAT"],
-            extra={"logical_track": 1, "playback_slot": 0, "channel": 0, "driver": "f"},
-        )
-        music_record_rows = [
-            {"slot": row["slot"], "filename": row["filename"], "relative_data_offset": row["relative_data_offset"], "record_bytes": row["bytes"], "record_sha256": row["payload_sha256"], "metadata_word": row["word"], "channel": 0, "driver": "f", "asset_path": music_track_output["path"] if row["slot"] == 0 else None, "asset_sha256": music_track_output["sha256"] if row["slot"] == 0 else None}
-            for row in music_records
-        ]
         music_presentation: dict[str, Any] = {}
         if campaign_day:
-            xmi_converter, xmi_provenance = compile_xmi_converter(rnc_work)
-            music_midi = transcode_xmi(
-                xmi_converter, music_payload, rnc_work, "C2GAME1"
+            music_record_rows, music_presentation = export_campaign_music(
+                stage, outputs, rnc_work, music_data, music_records, 2
             )
-            playback_control_census = midi_dynamic_control_census(
-                music_midi, "C2GAME1 converted MIDI"
+            # The Night client also consumes its missing objective sound61
+            # from this shared cache. Keep that source bank1 clip distinct.
+            _, night = container_descriptor(sound, count_rows=6, selector=1, row=3, label="Night61")
+            night_metadata = decode_container_blob(decoder, sound, night["metadata_offset"],
+                night["metadata_size"], rnc_work, "night-metadata")
+            night_data = decode_container_blob(decoder, sound, night["data_offset"],
+                night["data_size"], rnc_work, "night-data")
+            record = packed_audio_records(night_metadata, night_data, expected_count=64, label="Night")[60]
+            start = record["relative_data_offset"]
+            payload = night_data[start:start + record["bytes"]]
+            if sha256_bytes(payload) != "04d167b6abc8e7624827213ed14cf3d3e60cfc18e8251ace32b7705774e60d9e":
+                raise CacheError("Night objective sound61 source payload changed")
+            write_output(stage, outputs, "audio/sfx-night/061.wav", payload,
+                kind="owner_RIFF_WAVE_exact_Night_objective_record",
+                source_asset_ids=["owner_data:SOUND/SOUND.DAT"], extra=dict(bank=1, sound_id=61))
+        else:
+            music_payload = music_data[: music_records[0]["bytes"]]
+            if music_payload[:4] != b"FORM" or music_payload[8:12] != b"XDIR":
+                raise CacheError("Level 2 C2GAME1 track is not an XMIDI FORM/XDIR payload")
+            music_track_output = write_output(
+                stage,
+                outputs,
+                "audio/music/C2GAME1.xmi",
+                music_payload,
+                kind="owner_XMIDI_FORM_XDIR_exact_level2_record",
+                source_asset_ids=["owner_data:SOUND/MUSIC.DAT"],
+                extra={"logical_track": 1, "playback_slot": 0, "channel": 0, "driver": "f"},
             )
-            if (
-                playback_control_census["trigger_events"] != []
-                or playback_control_census["tagged_channels"] != []
-                or playback_control_census["loop_controller_events"] != [
-                    {"tick": 0, "channel": 1, "controller": 116, "value": 0},
-                    {"tick": 158265, "channel": 1, "controller": 117, "value": 127},
-                ]
-            ):
-                raise CacheError("qualified C2GAME1 dynamic control census changed")
-            scan_record = music_records[1]
-            scan_offset = scan_record["relative_data_offset"]
-            scan_payload = music_data[
-                scan_offset:scan_offset + scan_record["bytes"]
+            music_record_rows = [
+                {"slot": row["slot"], "filename": row["filename"], "relative_data_offset": row["relative_data_offset"], "record_bytes": row["bytes"], "record_sha256": row["payload_sha256"], "metadata_word": row["word"], "channel": 0, "driver": "f", "asset_path": music_track_output["path"] if row["slot"] == 0 else None, "asset_sha256": music_track_output["sha256"] if row["slot"] == 0 else None}
+                for row in music_records
             ]
-            scan_midi = transcode_xmi(
-                xmi_converter, scan_payload, rnc_work, "C2GAME2-census"
-            )
-            scan_control_census = midi_dynamic_control_census(
-                scan_midi, "C2GAME2 loop-scan converted MIDI"
-            )
-            if (
-                scan_control_census["trigger_events"] != [
-                    {"tick": 0, "channel": 7, "controller": 119, "value": 0},
-                    {"tick": 0, "channel": 8, "controller": 119, "value": 0},
-                ]
-                or scan_control_census["tagged_channels"] != [7, 8]
-            ):
-                raise CacheError("qualified C2GAME2 dynamic control census changed")
-            music_midi_output = write_output(
-                stage,
-                outputs,
-                "audio/music/C2GAME1.mid",
-                music_midi,
-                kind="standard_MIDI_deterministic_remc2_conversion",
-                source_asset_ids=["owner_data:SOUND/MUSIC.DAT"],
-                extra={
-                    "logical_track": 1,
-                    "playback_slot": 0,
-                    "conversion_status": "deterministic_container_conversion_not_DOS_timbre",
-                },
-            )
-            adl_renderer, adl_provenance = compile_adl_renderer()
-            music_wave = render_midi_wave(
-                adl_renderer, music_midi, rnc_work, "C2GAME1"
-            )
-            music_wave_properties = wav_properties(
-                music_wave, "C2GAME1 rendered music"
-            )
-            music_wave_output = write_output(
-                stage,
-                outputs,
-                "audio/music/C2GAME1-adlmidi-bank59.wav",
-                music_wave,
-                kind="Unity_ready_PCM16_stereo_deterministic_libADLMIDI_render",
-                source_asset_ids=["owner_data:SOUND/MUSIC.DAT"],
-                extra={
-                    "logical_track": 1,
-                    "playback_slot": 0,
-                    "rendering": "libADLMIDI_bank59_two_chips",
-                    "presentation_status": "deterministic_owner_local_adaptation_not_exact_DOS_hardware_timbre",
-                    **music_wave_properties,
-                },
-            )
-            music_presentation = {
-                "midi_path": music_midi_output["path"],
-                "midi_sha256": music_midi_output["sha256"],
-                "xmi_converter": xmi_provenance,
-                "unity_wave_path": music_wave_output["path"],
-                "unity_wave_sha256": music_wave_output["sha256"],
-                "unity_wave": music_wave_properties,
-                "unity_wave_renderer": adl_provenance,
-                "dynamic_control": {
-                    "update_mode_field": "target_mode",
-                    "timer_multiplier": 3,
-                    "timer_hz_formula": "30 * timer_multiplier",
-                    "timer_hz": 90,
-                    "envelope_min": 0,
-                    "envelope_max": 127,
-                    "envelope_step_per_callback": 1,
-                    "playback_slot_census": playback_control_census,
-                    "loop_scan_pointer_census": scan_control_census,
-                    "audible_channel_resolution": "Unresolved_playback_slot0_has_no_CC119_but_loop_scan_slot1_tags_channels7_8",
-                },
-                "initial_start_status": "SourceOrderQualified_remc2_local_gameTurn1_after_second_DrawAndEvents",
-                "exact_DOS_hardware_timbre": "Deferred",
-                "optional_random_OGG_path": "Excluded",
-            }
         shutil.rmtree(rnc_work)
         occurrence_rows = []
         for row in reachable:
@@ -6451,7 +6455,7 @@ def build_day_audio_cache(
                 "dispatch_bindings": row.get("dispatch_bindings", []),
                 "source_asset_id": "owner_data:SOUND/SOUND.DAT",
                 "shared_voice_identity": [
-                    f"sound-bank-1-slot-{sound_id}" for sound_id in selector.get("sound_ids", [])
+                    f"sound-bank-{sound_bank}-slot-{sound_id}" for sound_id in selector.get("sound_ids", [])
                 ],
                 "playback_metadata": {
                     "pitch": "source_call_site_or_runtime_expression",
@@ -6473,7 +6477,7 @@ def build_day_audio_cache(
             "schema": descriptor_schema,
             "profile": profile,
             "sound": {
-                "bank": 1,
+                "bank": sound_bank,
                 "container_path": sound_output["path"],
                 "container_sha256": sound_output["sha256"],
                 "occurrences": occurrence_rows,
@@ -6776,6 +6780,8 @@ def validate_campaign_day_audio_cache(
     sound_records = descriptor.get("sound", {}).get("records", [])
     music_records = descriptor.get("music", {}).get("records", [])
     expected_sound_ids = sorted({sound_id for row in reachable for sound_id in _level2_sound_selector(row["sound_expression"])["sound_ids"]})
+    if descriptor.get("sound", {}).get("bank") != 0 or any(row.get("bank") != 0 for row in sound_records):
+        raise CacheError("campaign Day must use source sound bank zero")
     if [row.get("sound_id") for row in sound_records] != expected_sound_ids:
         raise CacheError("campaign Day sound record membership changed")
     if descriptor.get("sound", {}).get("record_census_sha256") != sha256_bytes(canonical_json(sound_records)):
@@ -6793,50 +6799,15 @@ def validate_campaign_day_audio_cache(
         raise CacheError("campaign Day music source lifecycle changed")
     music_descriptor = descriptor["music"]
     expected_wave = {
-        "riff_declared_bytes": 77_889_580,
+        "riff_declared_bytes": 66_781_228,
         "channels": 2,
         "sample_width_bytes": 2,
         "sample_rate": 44_100,
-        "frame_count": 19_472_384,
-        "duration_numerator_frames": 19_472_384,
+        "frame_count": 16_695_296,
+        "duration_numerator_frames": 16_695_296,
         "duration_denominator_hz": 44_100,
     }
-    expected_dynamic_control = {
-        "update_mode_field": "target_mode",
-        "timer_multiplier": 3,
-        "timer_hz_formula": "30 * timer_multiplier",
-        "timer_hz": 90,
-        "envelope_min": 0,
-        "envelope_max": 127,
-        "envelope_step_per_callback": 1,
-        "playback_slot_census": {
-            "midi_format": 0,
-            "track_count": 1,
-            "division": 201,
-            "trigger_controller": 119,
-            "trigger_events": [],
-            "tagged_channels": [],
-            "loop_controller_events": [
-                {"tick": 0, "channel": 1, "controller": 116, "value": 0},
-                {"tick": 158265, "channel": 1, "controller": 117, "value": 127},
-            ],
-        },
-        "loop_scan_pointer_census": {
-            "midi_format": 0,
-            "track_count": 1,
-            "division": 167,
-            "trigger_controller": 119,
-            "trigger_events": [
-                {"tick": 0, "channel": 7, "controller": 119, "value": 0},
-                {"tick": 0, "channel": 8, "controller": 119, "value": 0},
-            ],
-            "tagged_channels": [7, 8],
-            "loop_controller_events": [
-                {"tick": 0, "channel": 2, "controller": 116, "value": 0},
-            ],
-        },
-        "audible_channel_resolution": "Unresolved_playback_slot0_has_no_CC119_but_loop_scan_slot1_tags_channels7_8",
-    }
+    expected_dynamic_control = campaign_music_control(2)
     expected_renderer = {
         "id": "libADLMIDI-private-owner-cache-render-adapter",
         "source_revision": PINNED_REMC2_COMMIT,
@@ -6850,8 +6821,11 @@ def validate_campaign_day_audio_cache(
         "host_tool_and_library_embedded_in_Unity": False,
     }
     if (
-        music_descriptor.get("unity_wave_path") != "audio/music/C2GAME1-adlmidi-bank59.wav"
-        or music_descriptor.get("unity_wave_sha256") != "03b3f951048504d8a6d30611d6c44a62ec1c463726b30c33c16e3cb69824605d"
+        music_descriptor.get("logical_track") != 2
+        or music_descriptor.get("playback_slot") != 1
+        or music_descriptor.get("loop_scan_pointer_slot") != 2
+        or music_descriptor.get("unity_wave_path") != "audio/music/C2GAME2-adlmidi-bank59.wav"
+        or music_descriptor.get("unity_wave_sha256") != "9030814e6160f3cd0b9cf5f3c5977715c10c012e9faaacfca3f745c69fa9f5e3"
         or music_descriptor.get("unity_wave") != expected_wave
         or music_descriptor.get("unity_wave_renderer") != expected_renderer
         or music_descriptor.get("dynamic_control") != expected_dynamic_control
@@ -6869,21 +6843,27 @@ def validate_campaign_day_audio_cache(
         "host_compiler_metadata_identity_bearing": False,
     }
     if (
-        music_descriptor.get("midi_path") != "audio/music/C2GAME1.mid"
+        music_descriptor.get("midi_path") != "audio/music/C2GAME2.mid"
         or music_descriptor.get("xmi_converter") != expected_converter
     ):
         raise CacheError("campaign Day music conversion provenance changed")
     expected_paths = {
         "audio/SOUND.DAT", "audio/MUSIC.DAT", "audio/descriptor.json",
+        "audio/sfx-night/061.wav",
         *[row.get("asset_path") for row in sound_records],
-        music_records[0].get("asset_path") if music_records else None,
+        music_records[1].get("asset_path") if music_records else None,
         music_descriptor.get("midi_path"),
         music_descriptor.get("unity_wave_path"),
     }
     if None in expected_paths or paths != expected_paths:
         raise CacheError("campaign Day audio record output set changed")
     output_by_path = {row["path"]: row for row in outputs}
-    for record in [*sound_records, music_records[0]]:
+    night_objective = output_by_path["audio/sfx-night/061.wav"]
+    if (night_objective.get("bytes") != 34080
+            or night_objective.get("sha256") != "04d167b6abc8e7624827213ed14cf3d3e60cfc18e8251ace32b7705774e60d9e"
+            or night_objective.get("bank") != 1 or night_objective.get("sound_id") != 61):
+        raise CacheError("Night objective sound61 binding changed")
+    for record in [*sound_records, music_records[1]]:
         if output_by_path.get(record.get("asset_path"), {}).get("sha256") != record.get("asset_sha256"):
             raise CacheError("campaign Day audio record asset binding mismatch")
     if (
@@ -11203,6 +11183,74 @@ def environment_importer():
     return module
 
 
+def add_cave_audio(cache, owner_root, catalog_path):
+    """Compose Mission4's source bank2 and logical music3 into its new cache."""
+    environment = environment_importer()
+    manifest = environment.validate(cache)
+    profile = manifest["profile"]
+    if (profile["external_level"], profile["internal_level"], profile["map_type"]["id"]) != (4, 3, 2):
+        raise CacheError("Cave audio requires the ordinary Mission4 environment")
+    if (cache / "audio").exists():
+        raise CacheError("Cave audio already exists; never replace a live cache")
+    catalog = load_json(catalog_path)
+    if sha256_file(catalog_path) != profile["catalog_file_sha256"]:
+        raise CacheError("Cave audio owner catalog identity changed")
+    sources = {r["path"]: r for r in catalog["files"]}
+    containers = {}
+    outputs = manifest["outputs"]
+    for name in ("SOUND.DAT", "MUSIC.DAT"):
+        relative = "SOUND/" + name
+        payload = confined_source(owner_root, relative).read_bytes()
+        row = sources[relative]
+        if len(payload) != row["size"] or sha256_bytes(payload) != row["sha256"]:
+            raise CacheError("Cave audio container differs from owner catalog")
+        containers[name] = payload
+        write_output(cache, outputs, "audio/" + name, payload,
+                     kind="owner_audio_exact_container", source_asset_ids=[row["asset_id"]])
+        if not any(r["asset_id"] == row["asset_id"] for r in manifest["source_files"]):
+            manifest["source_files"].append({k: row[k] for k in
+                ("asset_id", "path", "size", "content_address", "category")})
+    with tempfile.TemporaryDirectory(prefix="mc-cave-audio-") as work_name:
+        work = Path(work_name)
+        decoder, decoder_identity = compile_rnc_decoder(work)
+        decoded = {}
+        for name, selector, count_rows, count in (("SOUND.DAT", 2, 6, 69), ("MUSIC.DAT", 0, 4, 6)):
+            container = containers[name]
+            _, row = container_descriptor(container, count_rows=count_rows, selector=selector,
+                                           row=3 if name == "SOUND.DAT" else 2, label=name)
+            metadata = decode_container_blob(decoder, container, row["metadata_offset"],
+                                             row["metadata_size"], work, name + "-metadata")
+            data = decode_container_blob(decoder, container, row["data_offset"],
+                                         row["data_size"], work, name + "-data")
+            decoded[name] = (data, packed_audio_records(metadata, data, expected_count=count, label=name))
+        music_data, music_records = decoded["MUSIC.DAT"]
+        music_rows, presentation = export_campaign_music(cache, outputs, work, music_data, music_records, 3)
+        sound_data, sound_records = decoded["SOUND.DAT"]
+        sounds = []
+        for record in sound_records:
+            sound_id = record["slot"] + 1
+            offset = record["relative_data_offset"]
+            payload = sound_data[offset:offset + record["bytes"]]
+            properties = wav_properties(payload, f"Cave sound {sound_id}")
+            row = write_output(cache, outputs, f"audio/sfx/{sound_id:03d}.wav", payload,
+                               kind="owner_RIFF_WAVE_exact_cave_record",
+                               source_asset_ids=["owner_data:SOUND/SOUND.DAT"])
+            sounds.append(dict(sound_id=sound_id, filename=record["filename"],
+                               asset_path=row["path"], asset_sha256=row["sha256"], wav=properties))
+    descriptor = dict(schema="mc2-cave-audio/v1", profile=profile,
+                      sound=dict(bank=2, records=sounds, decoder=decoder_identity),
+                      music=dict(bank=1, channel=0, driver="f", map_type="Cave", maptype_music=3,
+                                 records=music_rows, **presentation))
+    write_output(cache, outputs, "audio/descriptor.json", canonical_json(descriptor),
+                 kind="canonical_cave_audio_descriptor",
+                 source_asset_ids=["owner_data:SOUND/SOUND.DAT", "owner_data:SOUND/MUSIC.DAT"])
+    manifest["cache_content_sha256"] = environment.content_identity(outputs)
+    manifest.pop("manifest_payload_sha256")
+    manifest["manifest_payload_sha256"] = environment.digest(environment.canonical(manifest))
+    (cache / "manifest.json").write_bytes(environment.canonical(manifest))
+    return environment.validate(cache)
+
+
 def build_environment_material_cache(owner_root, package, catalog, output):
     environment = environment_importer()
     spec = importlib.util.spec_from_file_location("environment_closure", PROVEN_CLOSURE)
@@ -11215,7 +11263,10 @@ def build_environment_material_cache(owner_root, package, catalog, output):
         decode_container_blob, bitmap_records, _level2_decode_indexed_catalog_entry,
         load_proven_decoder, fsync_tree, validate_output_path,
     )
-    return environment.build(owner_root, package, catalog, output, codecs)
+    manifest = environment.build(owner_root, package, catalog, output, codecs)
+    if manifest["profile"]["external_level"] == 4 and manifest["profile"]["map_type"]["id"] == 2:
+        return add_cave_audio(output, owner_root, catalog)
+    return manifest
 
 
 def parse_args() -> argparse.Namespace:

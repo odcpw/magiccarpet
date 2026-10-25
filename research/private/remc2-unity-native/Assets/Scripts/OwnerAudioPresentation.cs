@@ -30,12 +30,12 @@ namespace MagicCarpet.Native
         };
         private static readonly string[] ExactCampaignDaySoundFiles =
         {
-            "OCEAN.WAV", "CRICKET2.WAV", "EXPLOD3.WAV", "FIRE.WAV",
-            "DRAGROAR.WAV", "FIREBAL1.WAV", "QUAKE4.WAV", "NULL.WAV",
+            "OCEAN.WAV", "WIND.WAV", "EXPLOD3.WAV", "FIRE.WAV",
+            "DRAGROAR.WAV", "FIREBAL1.WAV", "QUAKE4.WAV", "BEE1.WAV",
             "NULL.WAV", "SELECT.WAV", "FIREBAL2.WAV", "DIE.WAV",
             "GETSPELL.WAV", "SPEEDUP.WAV", "LITNING.WAV", "CANTUSE.WAV",
             "METEOREX.WAV", "MARKET.WAV", "MANASHOT.WAV", "SWITCH.WAV",
-            "FIREFLY1.WAV", "FIREFLY2.WAV", "DOORC2.WAV", "HIT1.WAV",
+            "NULL.WAV", "NULL.WAV", "DOORC2.WAV", "HIT1.WAV",
             "HIT2.WAV", "HIT3.WAV", "HIT4.WAV", "MORPH.WAV", "SUCCESS2.WAV"
         };
 
@@ -463,45 +463,48 @@ namespace MagicCarpet.Native
             }
         }
 
-        internal static OwnerAudioPresentation LoadCampaignDay(
+        internal static OwnerAudioPresentation LoadCampaignEnvironment(
             OwnerAssetCache cache,
             Transform parent,
             Action<ulong, ushort, ulong> voiceCompleted = null,
             int qualificationFailAfterSoundRows = -1)
         {
-            return LoadCampaignDay(cache, NativeSim.CampaignSelection.Create(3, 2, 0),
+            return LoadCampaignEnvironment(cache, NativeSim.CampaignSelection.Create(3, 2, 0),
                 parent, voiceCompleted, qualificationFailAfterSoundRows);
         }
 
-        internal static OwnerAudioPresentation LoadCampaignDay(
+        internal static OwnerAudioPresentation LoadCampaignEnvironment(
             OwnerAssetCache cache,
             NativeSim.CampaignSelection expected,
             Transform parent,
             Action<ulong, ushort, ulong> voiceCompleted = null,
             int qualificationFailAfterSoundRows = -1)
         {
+            var cave = expected.externalLevel == 4 && expected.internalLevel == 3 && expected.mapType == 2;
+            var track = cave ? 3 : 2;
             Require(
-                cache != null && cache.IsDayAggregate && expected.mapType == 0 &&
+                cache != null && ((cave && cache.IsEnvironment) ||
+                (cache.IsDayAggregate && expected.mapType == 0 &&
                 (expected.externalLevel == 2 || expected.externalLevel == 3) &&
-                expected.internalLevel == expected.externalLevel - 1,
-                "qualified campaign Day aggregate owner cache and destination");
-            const string component = "components/audio/";
+                expected.internalLevel == expected.externalLevel - 1)),
+                "qualified campaign Day/Cave owner cache and destination");
+            var component = cave ? "" : "components/audio/";
             var descriptor = JsonUtility.FromJson<CampaignDayAudioDescriptor>(
                 cache.ReadOutputText(component + "audio/descriptor.json"));
             Require(
-                descriptor != null && descriptor.schema == "mc2-day-audio/v1" &&
+                descriptor != null && descriptor.schema == (cave ? "mc2-cave-audio/v1" : "mc2-day-audio/v1") &&
                 descriptor.profile != null &&
                 descriptor.profile.external_level == expected.externalLevel &&
                 descriptor.profile.internal_level == expected.internalLevel &&
                 descriptor.profile.map_type != null &&
-                descriptor.profile.map_type.id == 0 &&
-                descriptor.profile.map_type.name == "Day" &&
-                descriptor.sound != null && descriptor.sound.bank == 1 &&
-                descriptor.sound.reachable_occurrence_count == 34 &&
+                descriptor.profile.map_type.id == expected.mapType &&
+                descriptor.profile.map_type.name == (cave ? "Cave" : "Day") &&
+                descriptor.sound != null && descriptor.sound.bank == (cave ? 2 : 0) &&
+                (cave || descriptor.sound.reachable_occurrence_count == 34) &&
                 descriptor.sound.records != null &&
-                descriptor.sound.records.Length == ExactCampaignDaySoundOrder.Length,
-                "qualified destination-bound campaign Day audio descriptor");
-            ValidateCampaignDayMusic(descriptor.music);
+                descriptor.sound.records.Length == (cave ? 69 : ExactCampaignDaySoundOrder.Length),
+                "qualified destination-bound campaign Day/Cave audio descriptor");
+            ValidateCampaignMusic(descriptor.music, track);
 
             GameObject root = null;
             AudioSource musicSource = null;
@@ -509,19 +512,19 @@ namespace MagicCarpet.Native
             OwnerAudioPresentation presentation = null;
             try
             {
-                root = new GameObject($"Owner-local Level {expected.externalLevel} Day audio");
+                root = new GameObject($"Owner-local Level {expected.externalLevel} audio");
                 root.transform.SetParent(parent, false);
                 musicSource = AddSource(
-                    root, "C2GAME1 Day owner-local presentation adaptation", true);
+                    root, $"C2GAME{track} owner-local presentation adaptation", true);
                 var musicWave = ParseWave(
                     cache.ReadOutput(component + descriptor.music.unity_wave_path));
                 Require(
                     musicWave.Channels == 2 && musicWave.SampleWidth == 2 &&
-                    musicWave.SampleRate == 44100 && musicWave.Frames == 19472384,
-                    "qualified deterministic campaign Day C2GAME1 PCM render");
+                    musicWave.SampleRate == 44100 && musicWave.Frames == (cave ? 10584064 : 16695296),
+                    "qualified deterministic campaign selected PCM render");
                 var stream = new StreamingPcm16(musicWave.Pcm, musicWave.Channels);
                 musicClip = AudioClip.Create(
-                    "C2GAME1 Day — deterministic ADLMIDI bank 59",
+                    $"C2GAME{track} — deterministic ADLMIDI bank 59",
                     musicWave.Frames,
                     musicWave.Channels,
                     musicWave.SampleRate,
@@ -539,18 +542,19 @@ namespace MagicCarpet.Native
                     voiceCompleted,
                     legacyAssetReferences: false,
                     soundTwelveIsExplicitNull: false,
-                    campaignMusicTrack: 2);
-                for (var index = 0; index < ExactCampaignDaySoundOrder.Length; index++)
+                    campaignMusicTrack: (byte)track);
+                for (var index = 0; index < descriptor.sound.records.Length; index++)
                 {
                     if (index == qualificationFailAfterSoundRows)
                         throw new InvalidDataException(
                             "qualification-forced owner-audio load failure");
                     var record = descriptor.sound.records[index];
-                    var soundId = ExactCampaignDaySoundOrder[index];
+                    var soundId = cave ? index + 1 : ExactCampaignDaySoundOrder[index];
                     var expectedPath = $"audio/sfx/{soundId:000}.wav";
                     Require(
                         record != null && record.sound_id == soundId &&
-                        record.filename == ExactCampaignDaySoundFiles[index] &&
+                        (cave ? !string.IsNullOrEmpty(record.filename) :
+                            record.filename == ExactCampaignDaySoundFiles[index]) &&
                         record.asset_path == expectedPath &&
                         IsSha256(record.asset_sha256) &&
                         CampaignDayWaveMatches(record.wav),
@@ -568,7 +572,7 @@ namespace MagicCarpet.Native
                         playback_scope = CampaignDayPlaybackScope(soundId),
                         loop_target_volume = CampaignDayLoopVolume(soundId),
                         asset_path = record.asset_path,
-                        mapping_status = "materialized_campaign_Day"
+                        mapping_status = cave ? "materialized_campaign_Cave" : "materialized_campaign_Day"
                     };
                     presentation.rows.Add(soundId, row);
                     presentation.waves.Add(soundId, wave);
@@ -1403,32 +1407,37 @@ namespace MagicCarpet.Native
                 : assetRefIndex != uint.MaxValue;
         }
 
-        private static void ValidateCampaignDayMusic(MusicDescriptor music)
+        private static void ValidateCampaignMusic(MusicDescriptor music, int track)
         {
+            Require(track == 2 || track == 3, "Day or Cave music selection");
+            var slot = track - 1;
+            var label = $"C2GAME{track}";
             Require(
                 music != null && music.bank == 1 && music.channel == 0 &&
-                music.driver == "f" && music.map_type == "Day" &&
-                music.maptype_music == 2 &&
+                music.driver == "f" && music.map_type == (track == 2 ? "Day" : "Cave") &&
+                music.maptype_music == track && music.logical_track == track &&
+                music.playback_slot == slot && music.loop_scan_pointer_slot == track &&
                 music.records != null && music.records.Length == 6 &&
-                music.records[0] != null && music.records[0].slot == 0 &&
-                music.records[0].filename == "C2GAME1.XMI" &&
-                music.records[0].asset_path == "audio/music/C2GAME1.xmi" &&
-                music.records[0].asset_sha256 ==
-                    "0f8081d8ef6ad609f406638862a573b9d1d014f940f0f3194e4d5687f724bd8d" &&
-                music.unity_wave_path ==
-                    "audio/music/C2GAME1-adlmidi-bank59.wav" &&
-                music.unity_wave_sha256 ==
-                    "03b3f951048504d8a6d30611d6c44a62ec1c463726b30c33c16e3cb69824605d" &&
+                music.records[slot] != null && music.records[slot].slot == slot &&
+                music.records[slot].filename == label + ".XMI" &&
+                music.records[slot].asset_path == $"audio/music/{label}.xmi" &&
+                music.records[slot].asset_sha256 == (track == 2
+                    ? "8c98b86e74a6187a3a08ac34ef81aa3bd97cf493c34bee88b6d6969e79a6c856"
+                    : "566769008b9598bd03ad657575daa089f217385d7e7671dd948e6b2fea1e3251") &&
+                music.unity_wave_path == $"audio/music/{label}-adlmidi-bank59.wav" &&
+                music.unity_wave_sha256 == (track == 2
+                    ? "9030814e6160f3cd0b9cf5f3c5977715c10c012e9faaacfca3f745c69fa9f5e3"
+                    : "4861f36b367de541f3438522cc66520fa8d9a5455aef35639b1bb218388e27a7") &&
                 music.unity_wave != null && music.unity_wave.channels == 2 &&
                 music.unity_wave.sample_width_bytes == 2 &&
                 music.unity_wave.sample_rate == 44100 &&
-                music.unity_wave.frame_count == 19472384 &&
+                music.unity_wave.frame_count == (track == 2 ? 16695296 : 10584064) &&
                 music.initial_start_status ==
                     "SourceOrderQualified_remc2_local_gameTurn1_after_second_DrawAndEvents" &&
                 music.optional_random_OGG_path == "Excluded" &&
                 music.exact_DOS_hardware_timbre == "Deferred",
-                "qualified campaign Day music descriptor");
-            ValidateMusicDynamicControl(music.dynamic_control);
+                "qualified campaign selected music descriptor");
+            ValidateMusicDynamicControl(music.dynamic_control, track);
         }
 
         private static bool CampaignDayWaveMatches(WaveDescriptor wave)
@@ -1477,12 +1486,13 @@ namespace MagicCarpet.Native
             };
         }
 
-        private static void ValidateMusicDynamicControl(MusicDynamicControl control)
+        private static void ValidateMusicDynamicControl(MusicDynamicControl control, int track = 1)
         {
             Require(
                 control != null &&
-                control.audible_channel_resolution ==
-                    "Unresolved_playback_slot0_has_no_CC119_but_loop_scan_slot1_tags_channels7_8" &&
+                control.audible_channel_resolution == (track == 1
+                    ? "Unresolved_playback_slot0_has_no_CC119_but_loop_scan_slot1_tags_channels7_8"
+                    : "Source_playback_track_minus_one_loop_scan_track") &&
                 control.envelope_min == 0 &&
                 control.envelope_max == 127 &&
                 control.envelope_step_per_callback == 1 &&
@@ -1491,6 +1501,13 @@ namespace MagicCarpet.Native
                 control.timer_multiplier == 3 &&
                 control.update_mode_field == "target_mode",
                 "qualified source dynamic-music control constants");
+
+            if (track != 1)
+            {
+                ValidateSelectedControllerCensus(control.playback_slot_census, track);
+                ValidateSelectedControllerCensus(control.loop_scan_pointer_census, track + 1);
+                return;
+            }
 
             var playback = control.playback_slot_census;
             Require(
@@ -1517,6 +1534,23 @@ namespace MagicCarpet.Native
                 ControllerEventMatches(
                     loopScan.loop_controller_events[0], 2, 116, 0, 0),
                 "qualified C2GAME2 loop-scan controller census");
+        }
+
+        private static void ValidateSelectedControllerCensus(MusicControllerCensus census, int track)
+        {
+            var tagged = track == 2 || track == 3;
+            Require(CensusHeaderMatches(census, track == 2 ? 167 : track == 3 ? 270 : 254) &&
+                census.tagged_channels.Length == (tagged ? 2 : 0) &&
+                census.trigger_events.Length == (tagged ? 2 : 0) &&
+                (!tagged || (census.tagged_channels[0] == 7 && census.tagged_channels[1] == 8 &&
+                    ControllerEventMatches(census.trigger_events[0], 7, 119, 0, 0) &&
+                    ControllerEventMatches(census.trigger_events[1], 8, 119, 0, 0))) &&
+                census.loop_controller_events.Length == (track == 2 ? 1 : 2) &&
+                ControllerEventMatches(census.loop_controller_events[0], track == 3 ? 9 : 2,
+                    116, track == 3 ? 3 : 0, 0) &&
+                (track == 2 || ControllerEventMatches(census.loop_controller_events[1],
+                    track == 3 ? 9 : 2, 117, track == 3 ? 86400 : 69117, 127)),
+                "qualified selected source music controller census");
         }
 
         private static bool CensusHeaderMatches(

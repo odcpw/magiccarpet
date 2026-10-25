@@ -2923,10 +2923,10 @@ namespace MagicCarpet.Native
                 var day = ResolveGameRuntimePresentationResource(NativeSim.CampaignSelection.Level2Day());
                 ownerAudio.LoadObjectiveSound61(
                     OwnerAssetCache.OpenAndValidateLevel2(day.presentation_cache_path),
-                    "components/audio/audio/sfx/061.wav");
+                    "components/audio/audio/sfx-night/061.wav");
             }
             else
-                ownerAudio = OwnerAudioPresentation.LoadCampaignDay(ownerAssetCache,
+                ownerAudio = OwnerAudioPresentation.LoadCampaignEnvironment(ownerAssetCache,
                     selection, transform, session.CompleteAudioVoice);
             if (playerPreferences != null)
                 ownerAudio.ApplyPreferences(playerPreferences.Current.preferences);

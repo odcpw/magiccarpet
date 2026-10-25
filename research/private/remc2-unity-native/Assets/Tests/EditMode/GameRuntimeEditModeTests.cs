@@ -103,11 +103,11 @@ namespace MagicCarpet.Native.Tests
                     "-mc-runtime-owner-cache", Path.Combine(generated, "level1-unity-asset-cache-plan29-final"),
                     "-mc-runtime-presentation-cache", Path.Combine(generated, "level1-unity-asset-cache-plan29-final"),
                     "-mc-runtime-package", Path.Combine(generated, "level2-day-block32-campaign-v2"),
-                    "-mc-runtime-owner-cache", Path.Combine(generated, "level2-day-spell-owner-cache-v3/components/material"),
-                    "-mc-runtime-presentation-cache", Path.Combine(generated, "level2-day-spell-owner-cache-v3"),
+                    "-mc-runtime-owner-cache", Path.Combine(generated, "level2-day-spell-owner-cache-audio-v4/components/material"),
+                    "-mc-runtime-presentation-cache", Path.Combine(generated, "level2-day-spell-owner-cache-audio-v4"),
                     "-mc-runtime-package", Path.Combine(generated, "level3-day-block32-campaign-recipe-v2"),
-                    "-mc-runtime-owner-cache", Path.Combine(generated, "level3-day-spell-owner-cache-v3/components/material"),
-                    "-mc-runtime-presentation-cache", Path.Combine(generated, "level3-day-spell-owner-cache-v3") });
+                    "-mc-runtime-owner-cache", Path.Combine(generated, "level3-day-spell-owner-cache-audio-v4/components/material"),
+                    "-mc-runtime-presentation-cache", Path.Combine(generated, "level3-day-spell-owner-cache-audio-v4") });
                 var opened = runtime.GameRuntimeProductionIdentity;
                 var before = runtime.GameRuntimeProductionCampaignSnapshot;
                 Assert.That(opened.mode, Is.EqualTo(GameRuntimeTransport.PlayingMode));
@@ -160,7 +160,7 @@ namespace MagicCarpet.Native.Tests
                     "-mc-runtime-package", LevelOnePackage,
                     "-mc-runtime-owner-cache", cache, "-mc-runtime-presentation-cache", cache,
                     "-mc-runtime-package", Path.Combine(generated, "level2-day-block32-campaign-v2"),
-                    "-mc-runtime-presentation-cache", Path.Combine(generated, "level2-day-spell-owner-cache-v3"),
+                    "-mc-runtime-presentation-cache", Path.Combine(generated, "level2-day-spell-owner-cache-audio-v4"),
                     "-mc-runtime-package", Path.Combine(generated, "level3-day-block32-campaign-recipe-v2") });
                 Assert.That(runtime.GameRuntimeProductionIdentity.mode, Is.EqualTo(GameRuntimeTransport.TitleMode));
                 Assert.That(runtime.GameRuntimeProductionIdentity.session?.session_id, Is.Null.Or.Empty,
@@ -2716,11 +2716,11 @@ namespace MagicCarpet.Native.Tests
                         "-mc-runtime-package", Path.Combine(generated, "mc-bhq8-level1-collision-v5-night"),
                         "-mc-runtime-owner-cache", night, "-mc-runtime-presentation-cache", night,
                         "-mc-runtime-package", Path.Combine(generated, "level2-day-block32-campaign-v2"),
-                        "-mc-runtime-owner-cache", Path.Combine(generated, "level2-day-spell-owner-cache-v3/components/material"),
-                        "-mc-runtime-presentation-cache", Path.Combine(generated, "level2-day-spell-owner-cache-v3"),
+                        "-mc-runtime-owner-cache", Path.Combine(generated, "level2-day-spell-owner-cache-audio-v4/components/material"),
+                        "-mc-runtime-presentation-cache", Path.Combine(generated, "level2-day-spell-owner-cache-audio-v4"),
                         "-mc-runtime-package", Path.Combine(generated, "level3-day-block32-campaign-recipe-v2"),
-                        "-mc-runtime-owner-cache", Path.Combine(generated, "level3-day-spell-owner-cache-v3/components/material"),
-                        "-mc-runtime-presentation-cache", Path.Combine(generated, "level3-day-spell-owner-cache-v3")
+                        "-mc-runtime-owner-cache", Path.Combine(generated, "level3-day-spell-owner-cache-audio-v4/components/material"),
+                        "-mc-runtime-presentation-cache", Path.Combine(generated, "level3-day-spell-owner-cache-audio-v4")
                     });
                 Assert.That(Level2SpellPresenter.FindSpell(
                     runtime.GameRuntimeProductionCampaignSnapshot.value, "spell.fireball").selected, Is.True);
@@ -2806,8 +2806,8 @@ namespace MagicCarpet.Native.Tests
                     "-mc-runtime-package", Path.Combine(generated, "mc-bhq8-level1-collision-v5-night"),
                     "-mc-runtime-owner-cache", night, "-mc-runtime-presentation-cache", night,
                     "-mc-runtime-package", Path.Combine(generated, "level2-day-block32-campaign-v2"),
-                    "-mc-runtime-owner-cache", Path.Combine(generated, "level2-day-spell-owner-cache-v3/components/material"),
-                    "-mc-runtime-presentation-cache", Path.Combine(generated, "level2-day-spell-owner-cache-v3"),
+                    "-mc-runtime-owner-cache", Path.Combine(generated, "level2-day-spell-owner-cache-audio-v4/components/material"),
+                    "-mc-runtime-presentation-cache", Path.Combine(generated, "level2-day-spell-owner-cache-audio-v4"),
                     "-mc-runtime-package", Path.Combine(generated, "level3-day-block32-campaign-recipe-v2")
                 });
                 var speech = (CampaignSpeechPresenter)typeof(MagicCarpetRuntime)
@@ -2913,8 +2913,8 @@ namespace MagicCarpet.Native.Tests
                     "-mc-runtime-package", LevelOnePackage,
                     "-mc-runtime-package", Path.Combine(generated, "level2-day-block32-campaign-v2"),
                     "-mc-runtime-package", Path.Combine(generated, "level3-day-block32-campaign-recipe-v2"),
-                    "-mc-runtime-owner-cache", Path.Combine(generated, "level3-day-spell-owner-cache-v3/components/material"),
-                    "-mc-runtime-presentation-cache", Path.Combine(generated, "level3-day-spell-owner-cache-v3"),
+                    "-mc-runtime-owner-cache", Path.Combine(generated, "level3-day-spell-owner-cache-audio-v4/components/material"),
+                    "-mc-runtime-presentation-cache", Path.Combine(generated, "level3-day-spell-owner-cache-audio-v4"),
                     "-mc-runtime-loading-cache", LevelOneOwnerCache,
                     "-mc-runtime-replay-load", Path.Combine(generated, "opened-l3-block32-castle-boot-c330992-20261005.json"),
                     "-mc-runtime-replay-save", replayPath,

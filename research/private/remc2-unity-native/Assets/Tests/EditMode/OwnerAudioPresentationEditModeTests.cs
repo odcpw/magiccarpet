@@ -18,7 +18,30 @@ namespace MagicCarpet.Native.Tests
 
         private static string Level3OwnerCache =>
             Environment.GetEnvironmentVariable("MC_CAMPAIGN_OWNER_CACHE_LEVEL3_V1") ??
-            Path.Combine(PrivateRoot, "generated/level3-day-owner-cache");
+            Path.Combine(PrivateRoot, "generated/level3-day-spell-owner-cache-audio-v4");
+
+        [Test]
+        public void CaveLoadsSourceBankTwoAndLogicalTrackThreeFromItsOwnEnvironment()
+        {
+            var cache = OwnerAssetCache.OpenAndValidateEnvironment(
+                Path.Combine(PrivateRoot, "generated/mc-oi62-environment-level4-audio-v3"),
+                Path.Combine(PrivateRoot, "generated/mc-bhq6-ordinary-20261025-zclu5fjj/level4"));
+            var root = new GameObject("Cave source audio consumer");
+            try
+            {
+                using var audio = OwnerAudioPresentation.LoadCampaignEnvironment(cache,
+                    NativeSim.CampaignSelection.Create(4, 3, 2), root.transform);
+                Assert.That(audio.QualificationSoundCount, Is.EqualTo(69));
+                Assert.That(audio.QualificationHasSound(32), Is.True, "authored Spider sound");
+                var sources = root.GetComponentsInChildren<AudioSource>();
+                var music = Array.Find(sources, source => source.clip != null && source.clip.channels == 2);
+                Assert.That(music, Is.Not.Null);
+                Assert.That(music.clip.name, Does.StartWith("C2GAME3"));
+                Assert.That(music.clip.samples, Is.EqualTo(10584064));
+                Assert.That(music.clip.frequency, Is.EqualTo(44100));
+            }
+            finally { UnityEngine.Object.DestroyImmediate(root); }
+        }
 
         [Test]
         public void Level1LoaderRetainsItsExactNightDescriptorAndExplicitNullSound()
@@ -68,8 +91,12 @@ namespace MagicCarpet.Native.Tests
             OwnerAudioPresentation audio = null;
             try
             {
-                audio = OwnerAudioPresentation.LoadCampaignDay(cache, root.transform);
+                audio = OwnerAudioPresentation.LoadCampaignEnvironment(cache, root.transform);
                 Assert.That(audio.QualificationSoundCount, Is.EqualTo(29));
+                var music = Array.Find(root.GetComponentsInChildren<AudioSource>(),
+                    source => source.clip != null && source.clip.channels == 2);
+                Assert.That(music.clip.name, Does.StartWith("C2GAME2"));
+                Assert.That(music.clip.samples, Is.EqualTo(16695296));
                 Assert.That(audio.QualificationHasSound(12), Is.True);
                 Assert.That(audio.QualificationHasSound(13), Is.True);
                 Assert.That(audio.QualificationHasSound(60), Is.True);
@@ -147,10 +174,10 @@ namespace MagicCarpet.Native.Tests
             try
             {
                 var wrongLevel = Assert.Throws<InvalidDataException>(
-                    () => OwnerAudioPresentation.LoadCampaignDay(
+                    () => OwnerAudioPresentation.LoadCampaignEnvironment(
                         wrongCache,
                         root.transform));
-                StringAssert.Contains("Level 3 aggregate", wrongLevel.Message);
+                StringAssert.Contains("Day/Cave", wrongLevel.Message);
 
                 var tamperedRoot = Path.Combine(
                     Path.GetTempPath(),
@@ -167,10 +194,10 @@ namespace MagicCarpet.Native.Tests
                         descriptorPath,
                         descriptor.Replace("mc2-day-audio/v1", "mc2-day-audio/x1"));
                     var tampered = Assert.Throws<InvalidDataException>(
-                        () => OwnerAudioPresentation.LoadCampaignDay(
+                        () => OwnerAudioPresentation.LoadCampaignEnvironment(
                             tamperedCache,
                             root.transform));
-                    StringAssert.Contains("Level 3 Day audio descriptor", tampered.Message);
+                    StringAssert.Contains("Day/Cave audio descriptor", tampered.Message);
                 }
                 finally
                 {

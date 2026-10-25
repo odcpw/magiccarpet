@@ -1127,7 +1127,11 @@ namespace MagicCarpet.Native
                 ? "698567ad73184b44db05c85ce72238b951f294590b591168d179c2758da7c91b"
                 : "0d19967b7964f0f97705ae4b69fd160de7586605f0d15e795197bc30ea1b4be6";
             var actualHash = Sha256File(path);
-            var spellComplete = actualHash == spellCompleteHash;
+            // Same gameplay/material assets, corrected source Day bank0/music2.
+            var sourceAudioHash = externalLevel == 2
+                ? "30bfc6254eeb540f90f64ef68a75efe5c48d3c76694efac288fa36d26330e979"
+                : "fcada666ffca239996e78a6589188bfca8ec15491540fc701dd56b4b36f5711e";
+            var spellComplete = actualHash == spellCompleteHash || actualHash == sourceAudioHash;
             RequireLevel2(actualHash == expectedHash || spellComplete, "exact Day v3 aggregate identity");
             var manifest = JsonUtility.FromJson<Level2AggregateManifest>(File.ReadAllText(path));
             RequireLevel2(manifest.schema == "mc2-day-owner-cache/v3" &&
