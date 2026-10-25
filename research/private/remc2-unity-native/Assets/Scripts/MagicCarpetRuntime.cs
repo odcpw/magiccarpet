@@ -9844,6 +9844,14 @@ namespace MagicCarpet.Native
 
         private void EnsureGameRuntimeMenu()
         {
+            // OnGUI may precede the first briefing Update on direct NewGame
+            // or map restore. Bind audio before the first portal draw, while
+            // leaving cold Title's startup=true media initialization intact.
+            if (session?.GameRuntimeIdentity().mode == GameRuntimeTransport.CampaignMode)
+            {
+                EnsureGameRuntimeFrontendMedia(false);
+                frontendMedia.StartMapMusic();
+            }
             if (gameRuntimeMenu != null) return;
             Require(!string.IsNullOrWhiteSpace(gameRuntimeLoadingCachePath),
                 "campaign menus require the qualified original loading cache");
