@@ -851,6 +851,161 @@ mod tests {
     };
 
     #[test]
+    fn owner_cavein_semantic_command_collapses_the_ordinary_cave_world() {
+        use crate::{
+            campaign::backend::{
+                Mc2CampaignAdapter, Mc2CampaignBackend, Mc2CampaignInputs,
+                Mc2RuntimePackageResolver, load_mc2_campaign,
+            },
+            game_definition::{DefinitionErrorCode, SemanticId, default_catalog},
+            game_session::{GameCommand, GameSession, SessionGuard},
+            level_definition::SpellKind,
+        };
+
+        let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../generated/mc-bhq6-ordinary-20261025-zclu5fjj/level12");
+        let definition = load_mc2_campaign(&root, &default_catalog().unwrap())
+            .expect("the real Cave12 package must pass ordinary semantic admission");
+        assert!(definition.runtime_flow().is_none());
+        let Err(error) = Mc2RuntimePackageResolver::load([Mc2CampaignInputs::new(&root)]) else {
+            panic!("an isolated Cave mission cannot substitute for a complete campaign flow");
+        };
+        assert_eq!(error.code, DefinitionErrorCode::InvalidSchema);
+        assert_eq!(error.path_or_id, "runtime_package_resolver.flow");
+        let mut game = GameSession::open(
+            &Mc2CampaignAdapter,
+            std::sync::Arc::new(definition),
+            25,
+            Mc2CampaignInputs::new(root),
+        )
+        .unwrap();
+        // Use the ordinary cross-mission spell carrier. Do not transplant a
+        // Cave heightmap or change the selected package's environment.
+        game.backend_mut()
+            .install_semantic_spell_carry_for_test(
+                vec![SpellKind::Castle, SpellKind::CaveIn],
+                Some(SpellKind::CaveIn),
+            )
+            .unwrap();
+        let compatibility = game.backend_mut().compatibility_campaign_mut_for_test();
+        let session = compatibility.level2_compatibility_mut();
+        assert_eq!(session.canonical_terrain().map_type, MapType::Cave);
+        // Stage resources and casting clearance only; keep the source mana,
+        // castle admission, constructor, command and lifetime paths intact.
+        let position = (0..256_u16)
+            .flat_map(|y| {
+                (0..256_u16).map(move |x| Position {
+                    x: (x << 8) + 128,
+                    y: (y << 8) + 128,
+                    z: 0,
+                })
+            })
+            .max_by_key(|position| {
+                i32::from(
+                    session
+                        .canonical_terrain()
+                        .ceiling_height(*position)
+                        .unwrap(),
+                ) - i32::from(session.canonical_terrain().ground_height(*position))
+            })
+            .unwrap();
+        let floor = session.canonical_terrain().ground_height(position);
+        let ceiling = session
+            .canonical_terrain()
+            .ceiling_height(position)
+            .unwrap();
+        assert!(ceiling - floor > 4096, "real Cave12 has casting clearance");
+        let position = Position {
+            z: floor + (ceiling - floor) / 2,
+            ..position
+        };
+        let owner = session.session.state.live.core.state.entity_index;
+        session.set_level2_entity_position(owner, position).unwrap();
+        {
+            let live = &mut session.session.state.live;
+            live.core.state.target_speed = 0;
+            live.core.state.actual_speed = 0;
+            let mut player = live.shared_spells.player_entity.clone();
+            player.set_mana(500_000);
+            player.max_mana = 500_000;
+            player.record[144..148].copy_from_slice(&500_000_i32.to_le_bytes());
+            live.shared_spells
+                .sync_player_entity_from_authority(&player);
+            live.shared_spells.player_mana = player.mana;
+            live.shared_spells.caster.mana = player.mana;
+            live.economy.entities[usize::from(owner)] = player;
+        }
+        let castle = session.economy_mut().build_castle(position, owner).unwrap();
+        assert!(
+            session
+                .economy_mut()
+                .set_castle_mana_prerequisite_for_test(castle, 300_000)
+        );
+        let before = session
+            .canonical_terrain()
+            .planes()
+            .secondary_heights
+            .clone();
+        let mana = session.shared_spells().player_entity().mana;
+        let guard = |game: &GameSession<Mc2CampaignBackend>| {
+            let id = game.identity();
+            SessionGuard {
+                session_id: id.session_id,
+                generation: id.generation,
+                expected_tick: id.tick,
+            }
+        };
+        let spell = SemanticId::parse("spell.cave_in").unwrap();
+        assert!(
+            game.snapshot()
+                .value
+                .player_spells
+                .iter()
+                .any(|row| row.id == spell && row.acquired)
+        );
+        game.step(
+            guard(&game),
+            GameCommand {
+                select_spell: Some(spell),
+                cast_selected: true,
+                ..GameCommand::default()
+            },
+        )
+        .unwrap();
+        let mut effect = None;
+        let mut hidden = false;
+        for _ in 0..96 {
+            let session = game
+                .backend()
+                .compatibility_campaign()
+                .level2_compatibility();
+            for row in session
+                .entities()
+                .iter()
+                .filter(|row| row.active && row.class == 10 && row.model == 89)
+            {
+                effect = Some(row.index);
+                hidden |= row.drawing_disabled();
+            }
+            if hidden && effect.is_some_and(|slot| !session.entities()[usize::from(slot)].active) {
+                break;
+            }
+            game.step(guard(&game), GameCommand::default()).unwrap();
+        }
+        let session = game
+            .backend()
+            .compatibility_campaign()
+            .level2_compatibility();
+        let slot = effect.expect("semantic CaveIn cast delivers the source collapse");
+        assert!(hidden && !session.entities()[usize::from(slot)].active);
+        assert_ne!(
+            session.canonical_terrain().planes().secondary_heights,
+            before
+        );
+        assert!(session.shared_spells().player_entity().mana < mana);
+    }
+
+    #[test]
     fn owner_cavein_pickup_cast_collapses_live_planes_and_uses_following_pass_reclaim() {
         let private = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../..");
         let package = private.join("generated/mc-bhq6-ordinary-20261024-b/level24");

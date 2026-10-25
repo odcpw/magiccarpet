@@ -576,12 +576,6 @@ impl Level2SharedSpellResetSession {
         families: &[(u8, u8)],
     ) -> Result<()> {
         let economy_before = economy.clone();
-        let template = self
-            .holders
-            .first()
-            .or_else(|| self.pickups.first())
-            .cloned()
-            .ok_or_else(|| NativeWorldError::new("shared class-15 spell template is absent"))?;
         let player_entity_index = self.player_entity.index;
         let local_player_index = self
             .players
@@ -612,7 +606,15 @@ impl Level2SharedSpellResetSession {
                         "Level 2 direct starting family {family} could not allocate a holder"
                     ))
                 })?;
-            let mut holder = template.clone();
+            // AddSpellXX_XX_51120 starts from NewEvent, even when the
+            // destination world has no authored spell pickups or holders.
+            // Reuse the allocated slot's RNG rather than cloning unrelated
+            // live cooldown, damage or constructor state.
+            let mut holder = cave_features::new_event(
+                source.source_entity_index,
+                source.entity_rng,
+                source.position,
+            );
             holder.index = source.source_entity_index;
             holder.source_id = source.source_entity_index;
             holder.authority = EntityAuthority::SpellActivationLive;
@@ -3873,10 +3875,14 @@ impl Level2OrdinaryResetSession {
     pub(crate) fn step_villager_source(
         &mut self,
         arena: &mut crate::campaign::source_arena::SourceArena,
-        terrain: &SessionTerrain,
+        terrain: &mut SessionTerrain,
         source_slot: u16,
         frozen_building_slots: &[u16],
-    ) -> std::result::Result<Vec<VillagerStepEffect>, String> {
+        runtime: &mut RuntimeSnapshot,
+        models: &[Vec<u16>; 29],
+        players: &[u16],
+        particles: &[ParticleParameter],
+    ) -> std::result::Result<creatures::settlements::SettlementVillagerStep, String> {
         let mut views = arena.settlement_source_views(
             &self.houses,
             self.villagers.villagers(),
@@ -3888,9 +3894,22 @@ impl Level2OrdinaryResetSession {
             view.villager_entry_eligible &=
                 frozen_building_slots.contains(&view.source_entity_index);
         }
-        let effects =
-            self.villagers
-                .step_source_slot(source_slot, terrain, &views, &mut self.houses);
+        let targets =
+            creatures::settlements::stage::targets(arena, &views, self.villagers.villagers());
+        let mut stage = creatures::settlements::stage::StageContext {
+            runtime: Some(runtime),
+            targets: &targets,
+            models,
+            players,
+            effects: Vec::new(),
+        };
+        let effects = self.villagers.step_source_slot_with_entry(
+            source_slot,
+            terrain,
+            &views,
+            Some(&mut stage),
+            |target| arena.try_enter_settlement_house(&mut self.houses, target),
+        );
         if let Some(villager) = self
             .villagers
             .villagers()
@@ -3913,8 +3932,27 @@ impl Level2OrdinaryResetSession {
                     y: villager.position.y,
                 })
                 .map_err(|error| format!("Villager {source_slot} map publication: {error}"))?;
+            if let Some(target) = villager.target_entity_index
+                && let Some(house) = self
+                    .houses
+                    .houses()
+                    .iter()
+                    .find(|house| house.entity_index == target)
+            {
+                house.publish_source(&mut arena.entities[usize::from(target)]);
+            }
         }
-        Ok(effects)
+        let spell_awards = creatures::settlements::runtime::apply_effects(
+            arena,
+            &mut self.villagers,
+            terrain,
+            particles,
+            stage.effects,
+        )?;
+        Ok(creatures::settlements::SettlementVillagerStep {
+            effects,
+            spell_awards,
+        })
     }
 
     pub(crate) fn step_settlement_source(
@@ -3923,15 +3961,23 @@ impl Level2OrdinaryResetSession {
         terrain: &mut SessionTerrain,
         source_slot: u16,
         frozen_building_slots: &[u16],
+        runtime: &mut RuntimeSnapshot,
+        models: &[Vec<u16>; 29],
+        players: &[u16],
+        particles: &[ParticleParameter],
     ) -> std::result::Result<Option<creatures::settlements::SettlementPopulationStep>, String> {
         arena.step_settlement_resident_slot(
             source_slot,
             terrain,
             &mut self.houses,
-            self.villagers.villagers(),
+            &mut self.villagers,
             frozen_building_slots,
             &self.house_parameters,
             &self.house_build_footprints,
+            runtime,
+            models,
+            players,
+            particles,
         )
     }
 
