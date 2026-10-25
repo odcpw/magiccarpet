@@ -76,6 +76,7 @@ pub struct IndexedOverlayAssets {
     spell_tier_vectors: BTreeMap<IndexedOverlayStage, SpellTierVector>,
     spell_menu_profiles: [SpellMenuProfile; 26],
     source_semantic_vectors: Value,
+    locale_binding: Option<crate::game_runtime::preferences::installed_locale::LocaleSnapshot>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -609,7 +610,70 @@ impl IndexedOverlayAssets {
             spell_tier_vectors,
             spell_menu_profiles,
             source_semantic_vectors,
+            locale_binding: None,
         })
+    }
+
+    /// Called on an instance-owned candidate, after the canonical default cache
+    /// has passed its independent source vectors. All selected products replace
+    /// the prior text/font/objective set together; no default validation changes.
+    pub fn bind_locale(
+        &mut self,
+        locale: &crate::game_runtime::preferences::installed_locale::InstalledLocaleBinding,
+    ) -> Result<(), IndexedOverlayError> {
+        let font = locale
+            .fonts
+            .get("font1")
+            .ok_or_else(|| IndexedOverlayError("selected FONT1 is missing".into()))?;
+        let glyphs = font
+            .glyphs
+            .iter()
+            .map(|glyph| {
+                Ok(IndexedGlyph {
+                    offset: u32::try_from(glyph.offset).map_err(|_| {
+                        IndexedOverlayError("selected glyph offset exceeds u32".into())
+                    })?,
+                    width: glyph.width,
+                    height: glyph.height,
+                    length: u16::try_from(glyph.length).map_err(|_| {
+                        IndexedOverlayError("selected glyph mask exceeds u16".into())
+                    })?,
+                })
+            })
+            .collect::<Result<Vec<_>, IndexedOverlayError>>()?;
+        let mut objectives = BTreeMap::new();
+        for row in &locale.objectives {
+            let pixels = usize::from(row.width) * usize::from(row.height);
+            if row.indices_then_mask.len() != pixels * 2 {
+                return Err(IndexedOverlayError(
+                    "selected objective resource extent mismatch".into(),
+                ));
+            }
+            objectives.insert(
+                row.selector,
+                IndexedObjective {
+                    reference_x: row.reference_x,
+                    reference_y: row.reference_y,
+                    width: row.width,
+                    height: row.height,
+                    indices: row.indices_then_mask[..pixels].into(),
+                    mask: row.indices_then_mask[pixels..].into(),
+                },
+            );
+        }
+        self.font_masks = font.masks.clone();
+        self.glyphs = glyphs.into_boxed_slice();
+        self.localization = locale.records.clone();
+        self.objectives = objectives;
+        self.locale_binding = Some(locale.identity.clone());
+        Ok(())
+    }
+
+    #[must_use]
+    pub fn locale_binding(
+        &self,
+    ) -> Option<&crate::game_runtime::preferences::installed_locale::LocaleSnapshot> {
+        self.locale_binding.as_ref()
     }
 
     #[must_use]
@@ -3041,6 +3105,58 @@ mod tests {
         )
         .expect("manifest/hash-qualified interim presentation cache");
         root
+    }
+
+    #[test]
+    fn installed_locale_rebind_draws_real_source_text_and_all_six_objectives() {
+        let cache = std::env::var("MC_LANGUAGE_CACHE")
+            .expect("set MC_LANGUAGE_CACHE to an actual built installed-language cache");
+        let language =
+            crate::game_runtime::preferences::installed_locale::InstalledLanguages::load(cache)
+                .unwrap();
+        let locale = language.binding(None).unwrap();
+        let source = IndexedOverlayAssets::load(cache_root()).unwrap();
+        let mut selected = source.clone();
+        selected.bind_locale(&locale).unwrap();
+        assert_eq!(selected.locale_binding(), Some(&locale.identity));
+        // Owner L1/D2 are identical. Compare actual rendered pixels against
+        // the independently qualified default; do not invent another language.
+        for selector in 48..=53 {
+            let mut expected = vec![0; LEVEL1_VIEW_PIXELS];
+            let mut actual = expected.clone();
+            let mut expected_mask = expected.clone();
+            let mut actual_mask = expected.clone();
+            assert!(
+                source
+                    .draw_objective(selector, &mut expected, &mut expected_mask)
+                    .unwrap()
+                    > 0
+            );
+            assert!(
+                selected
+                    .draw_objective(selector, &mut actual, &mut actual_mask)
+                    .unwrap()
+                    > 0
+            );
+            assert_eq!(actual, expected, "selected objective {selector} pixels");
+            assert_eq!(actual_mask, expected_mask);
+        }
+        let mut pixels = vec![0; LEVEL1_VIEW_PIXELS];
+        let mut provenance = pixels.clone();
+        assert!(
+            selected
+                .draw_text(
+                    &mut pixels,
+                    &mut provenance,
+                    3,
+                    4,
+                    selected.localization(23).unwrap(),
+                    19
+                )
+                .unwrap()
+                > 0
+        );
+        assert!(provenance.iter().any(|&value| value != 0));
     }
 
     #[test]

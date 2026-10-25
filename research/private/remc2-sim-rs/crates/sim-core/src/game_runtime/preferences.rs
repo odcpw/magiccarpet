@@ -4,10 +4,14 @@
 //! sub_1A7A0_fly_asistant (49 unchanged observations, opcode 39 argument zero).
 
 use serde::{Deserialize, Serialize};
+#[path = "installed_locale.rs"]
+pub mod installed_locale;
+use installed_locale::{InstalledLanguages, InstalledLocaleBinding, LocaleSnapshot, LocaleSummary};
 use std::{
     fs::{self, File, OpenOptions},
     io::{Read, Write},
     path::PathBuf,
+    sync::Arc,
 };
 
 pub const PREFERENCES_SCHEMA: &str = "mc2-player-preferences/v1";
@@ -191,6 +195,9 @@ pub enum PreferencesCommand {
     Install {
         profile_dir: String,
     },
+    InstallLanguages {
+        cache_dir: String,
+    },
     Apply {
         preferences: PlayerPreferences,
     },
@@ -219,6 +226,9 @@ pub struct PreferencesSnapshot {
     pub installed: bool,
     pub load_status: String,
     pub assistance_sequence: u64,
+    pub installed_locales: Vec<LocaleSummary>,
+    pub locale_binding: Option<LocaleSnapshot>,
+    pub language_status: String,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -230,6 +240,9 @@ pub struct PreferenceStore {
     assistance_sequence: u64,
     input_generation: Option<(u64, u64)>,
     audio_preview: Option<AudioPreview>,
+    languages: Option<Arc<InstalledLanguages>>,
+    locale: Option<Arc<InstalledLocaleBinding>>,
+    language_status: String,
 }
 
 impl PreferenceStore {
@@ -248,6 +261,12 @@ impl PreferenceStore {
             installed: self.path.is_some(),
             load_status: self.load_status.clone(),
             assistance_sequence: self.assistance_sequence,
+            installed_locales: self
+                .languages
+                .as_ref()
+                .map_or_else(Vec::new, |languages| languages.summaries.clone()),
+            locale_binding: self.locale.as_ref().map(|locale| locale.identity.clone()),
+            language_status: self.language_status.clone(),
         }
     }
 
@@ -286,6 +305,24 @@ impl PreferenceStore {
                 // publish preferences; neither missing nor corrupt data touches saves.
                 self.path = Some(path);
             }
+            PreferencesCommand::InstallLanguages { cache_dir } => {
+                let candidate = InstalledLanguages::load(&cache_dir)?;
+                let (locale, recovered) =
+                    match candidate.binding(self.current.selected_locale.as_deref()) {
+                        Ok(locale) => (locale, false),
+                        Err(_) => (candidate.binding(None)?, true),
+                    };
+                if recovered {
+                    self.current.selected_locale = None;
+                }
+                self.language_status = if recovered {
+                    "selected locale unavailable; using validated installed default".into()
+                } else {
+                    "installed source text and fonts bound".into()
+                };
+                self.languages = Some(Arc::new(candidate));
+                self.locale = Some(locale);
+            }
             PreferencesCommand::Apply { mut preferences } => {
                 preferences.player_name.make_ascii_uppercase();
                 preferences.validate()?;
@@ -293,8 +330,21 @@ impl PreferenceStore {
                     .path
                     .as_ref()
                     .ok_or("preferences profile is not installed")?;
-                // Locale selection must go through the installed text/font owner.
-                if preferences.selected_locale != self.current.selected_locale {
+                // Revalidate the complete candidate before either preferences
+                // publication or resource replacement. Failed reads retain the
+                // old in-memory text/fonts and leave the profile untouched.
+                let language_candidate = self
+                    .languages
+                    .as_ref()
+                    .map(|languages| InstalledLanguages::load(&languages.root))
+                    .transpose()?;
+                let locale = language_candidate
+                    .as_ref()
+                    .map(|languages| languages.binding(preferences.selected_locale.as_deref()))
+                    .transpose()?;
+                if language_candidate.is_none()
+                    && preferences.selected_locale != self.current.selected_locale
+                {
                     return Err(
                         "locale selection requires the installed language resource owner".into(),
                     );
@@ -324,6 +374,11 @@ impl PreferenceStore {
                     .map_err(|e| e.to_string())?;
                 fs::rename(&temp, path).map_err(|e| e.to_string())?;
                 self.current = preferences;
+                if let Some(candidate) = language_candidate {
+                    self.languages = Some(Arc::new(candidate));
+                    self.locale = locale;
+                    self.language_status = "selected source text and fonts bound".into();
+                }
                 self.audio_preview = None;
                 self.load_status = "saved".into();
                 self.assistance.reset();
@@ -372,6 +427,12 @@ impl PreferenceStore {
 }
 
 impl<B: super::GameSessionBackend> super::GameRuntime<B> {
+    /// Retained resource identity and bytes for presentation consumers on this
+    /// runtime only. No process-global current language or mutable font bank.
+    #[must_use]
+    pub fn selected_locale_binding(&self) -> Option<Arc<InstalledLocaleBinding>> {
+        self.player_preferences.locale.as_ref().map(Arc::clone)
+    }
     /// Preferences remain editable only at a frontend boundary. Apply does
     /// not mutate a gameplay generation, its definition or any replay/save.
     pub fn preferences_command(
@@ -530,6 +591,116 @@ impl FlightAssistance {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn installed_locale_binds_actual_text_fonts_and_objective_after_cold_profile_reopen() {
+        let cache = std::env::var("MC_LANGUAGE_CACHE")
+            .expect("set MC_LANGUAGE_CACHE to an actual built installed-language cache");
+        let languages =
+            InstalledLanguages::load(&cache).expect("complete owner language resources");
+        let binding = languages.binding(None).unwrap();
+        assert_eq!(languages.summaries.len(), 1);
+        assert_eq!(
+            languages.summaries[0].aliases,
+            ["LANGUAGE/D2.TXT", "LANGUAGE/L1.TXT"]
+        );
+        assert_eq!(binding.records[48].as_ref(), b"\"Fly towards my beacon.\"");
+        let private = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../..");
+        let cache_root = crate::native_world::resolve_level1_presentation_cache_root(&private);
+        let mut overlay = crate::indexed_overlay::IndexedOverlayAssets::load(cache_root).unwrap();
+        overlay.bind_locale(&binding).unwrap();
+        assert_eq!(overlay.localization(48), Some(binding.records[48].as_ref()));
+        assert_eq!(overlay.locale_binding(), Some(&binding.identity));
+        let time_tag = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let profile = std::env::temp_dir().join(format!(
+            "mc-locale-profile-{}-{time_tag}",
+            std::process::id()
+        ));
+        fs::create_dir(&profile).unwrap();
+        let install = || PreferencesCommand::Install {
+            profile_dir: profile.to_string_lossy().into_owned(),
+        };
+        let isolated = profile.join("languages");
+        fs::create_dir(&isolated).unwrap();
+        let manifest_bytes = fs::read(std::path::Path::new(&cache).join("manifest.json")).unwrap();
+        let manifest: serde_json::Value = serde_json::from_slice(&manifest_bytes).unwrap();
+        for row in manifest["outputs"].as_array().unwrap() {
+            let relative = row["path"].as_str().unwrap();
+            let destination = isolated.join(relative);
+            fs::create_dir_all(destination.parent().unwrap()).unwrap();
+            fs::copy(std::path::Path::new(&cache).join(relative), destination).unwrap();
+        }
+        fs::write(isolated.join("manifest.json"), manifest_bytes).unwrap();
+        let resources = || PreferencesCommand::InstallLanguages {
+            cache_dir: isolated.to_string_lossy().into_owned(),
+        };
+        let binding = InstalledLanguages::load(&isolated)
+            .unwrap()
+            .binding(None)
+            .unwrap();
+        let mut store = PreferenceStore::default();
+        store.command(install()).unwrap();
+        store.command(resources()).unwrap();
+        let mut preferences = store.snapshot().preferences;
+        preferences.selected_locale = Some(binding.identity.id.clone());
+        store
+            .command(PreferencesCommand::Apply { preferences })
+            .unwrap();
+        let saved = fs::read(profile.join("player-preferences.json")).unwrap();
+        let before = store.snapshot();
+        let mut invalid = before.preferences.clone();
+        invalid.selected_locale = Some("uninstalled-source-locale".into());
+        assert!(
+            store
+                .command(PreferencesCommand::Apply {
+                    preferences: invalid
+                })
+                .is_err()
+        );
+        assert_eq!(store.snapshot(), before);
+        assert_eq!(
+            fs::read(profile.join("player-preferences.json")).unwrap(),
+            saved
+        );
+        let mut cold = PreferenceStore::default();
+        cold.command(install()).unwrap();
+        let reloaded = cold.command(resources()).unwrap();
+        assert_eq!(reloaded.locale_binding, Some(binding.identity.clone()));
+        let mut cold_overlay = crate::indexed_overlay::IndexedOverlayAssets::load(
+            crate::native_world::resolve_level1_presentation_cache_root(&private),
+        )
+        .unwrap();
+        cold_overlay
+            .bind_locale(cold.locale.as_ref().unwrap())
+            .unwrap();
+        assert_eq!(
+            cold_overlay.localization(23),
+            Some(binding.records[23].as_ref())
+        );
+        fs::remove_file(isolated.join("fonts/font1.masks.u8")).unwrap();
+        let retained = cold.snapshot();
+        assert!(cold.command(resources()).is_err());
+        assert!(
+            cold.command(PreferencesCommand::Apply {
+                preferences: retained.preferences.clone()
+            })
+            .is_err()
+        );
+        assert_eq!(cold.snapshot(), retained);
+        assert_eq!(
+            fs::read(profile.join("player-preferences.json")).unwrap(),
+            saved
+        );
+        assert_eq!(
+            cold_overlay.localization(48),
+            Some(binding.records[48].as_ref())
+        );
+        // This is retained-resource/consumer coverage, not process/player proof.
+        fs::remove_dir_all(profile).unwrap();
+    }
 
     #[test]
     fn idle_assistance_cadence_activity_toggle_and_exclusions() {
