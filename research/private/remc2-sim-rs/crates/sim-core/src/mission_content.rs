@@ -38,6 +38,7 @@ pub enum CampaignLevel {
 pub enum MissionMap {
     Night,
     Day,
+    Cave,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -501,6 +502,7 @@ impl MissionContentProfile {
         {
             "Day" => MissionMap::Day,
             "Night" => MissionMap::Night,
+            "Cave" => MissionMap::Cave,
             other => {
                 return Err(MissionContentError::InvalidProfile(format!(
                     "campaign definition has unsupported map type {other}"

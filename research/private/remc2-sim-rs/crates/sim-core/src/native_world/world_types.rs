@@ -4198,6 +4198,31 @@ impl NativeWorldInspection {
             standing_building_chains: definition.standing_building_chains().clone(),
             rival_wizard_by_id: definition.rival_wizard_bindings().clone(),
         });
+        let mut bound_mushroom = false;
+        for entity in definition.level_definition().entities() {
+            let Some(properties) = entity.mushroom() else {
+                continue;
+            };
+            let Some(crate::campaign::spec::Mc2EntityRuntimeBinding::InitialSource {
+                initial_source_slot,
+                ..
+            }) = definition.movable_entity_binding(entity.id())
+            else {
+                // Later authored groups bind their properties at construction.
+                continue;
+            };
+            let source = session
+                .source_arena_mut()
+                .entities
+                .get_mut(usize::from(*initial_source_slot))
+                .ok_or_else(|| NativeWorldError::new("initial mushroom source slot is absent"))?;
+            crate::world::scenery::mushrooms::bind_initial(source, properties)
+                .map_err(NativeWorldError::new)?;
+            bound_mushroom = true;
+        }
+        if bound_mushroom {
+            session.session.rebase();
+        }
         Ok(session)
     }
 

@@ -111,9 +111,10 @@ impl CollisionMaskBank {
             return Err(CollisionMaskError::ReservedNonZero);
         }
         let mask_count = read_u32(bytes, &mut cursor, CollisionMaskError::HeaderTooShort)?;
-        if mask_count == 0 {
-            return Err(CollisionMaskError::InvalidMaskCount);
-        }
+        // Descriptor packages retain exactly their authored selectors. A Cave
+        // without model-45 buildings has a valid empty bank; package preflight
+        // binds that census, while parse_source_exact still requires the full
+        // pinned Level 2 bank. Header and trailing-byte checks apply either way.
         let record_header_bytes = read_u32(bytes, &mut cursor, CollisionMaskError::HeaderTooShort)?;
         if usize::try_from(record_header_bytes).ok() != Some(RECORD_HEADER_BYTES) {
             return Err(CollisionMaskError::RecordHeaderExtentMismatch);
@@ -314,6 +315,33 @@ mod tests {
             bytes.extend_from_slice(&pixel.to_le_bytes());
         }
         bytes
+    }
+
+    #[test]
+    fn empty_descriptor_bank_is_structural_but_not_source_exact() {
+        let mut bytes = sample_bank()[..20].to_vec();
+        bytes[12..16].copy_from_slice(&0_u32.to_le_bytes());
+        let bank = CollisionMaskBank::parse(&bytes).unwrap();
+        assert!(bank.masks().is_empty());
+        assert_eq!(bank.mask(0), None);
+        assert_eq!(
+            CollisionMaskBank::parse_source_exact(&bytes),
+            Err(CollisionMaskSourceIdentityError::ByteLengthMismatch {
+                expected: LEVEL2_COLLISION_MASK_BANK_BYTES,
+                actual: 20,
+            })
+        );
+        bytes[16] = 11;
+        assert_eq!(
+            CollisionMaskBank::parse(&bytes),
+            Err(CollisionMaskError::RecordHeaderExtentMismatch)
+        );
+        bytes[16] = 12;
+        bytes.push(0);
+        assert_eq!(
+            CollisionMaskBank::parse(&bytes),
+            Err(CollisionMaskError::TrailingBytes)
+        );
     }
 
     #[test]
