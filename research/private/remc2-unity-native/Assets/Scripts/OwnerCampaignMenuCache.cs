@@ -19,6 +19,30 @@ namespace MagicCarpet.Native
         }
         [Serializable] private sealed class Output { public string path, sha256; public int bytes; }
         [Serializable] private sealed class Portal { public string kind, path; public int width, height; }
+        [Serializable] internal sealed class BitmapBinding { public int selector, width, height; public string path; }
+        [Serializable] internal sealed class PositionedBitmap { public int selector, x, y; }
+        [Serializable] internal sealed class StartupAnimation
+        { public int x, y, initial_selector, first_selector, last_selector, step_ticks; }
+        [Serializable] internal sealed class StartupButton
+        { public int source_action, x, y, width, height, text_selector, normal_selector, hover_selector; }
+        [Serializable] internal sealed class StartupBinding
+        {
+            public int width, height, clock_hz;
+            public string background_path, palette_path;
+            public PositionedBitmap logo;
+            public StartupAnimation[] animations;
+            public StartupButton[] buttons;
+            public BitmapBinding[] bitmaps;
+        }
+        [Serializable] internal sealed class PortalSound
+        { public int bank, id, volume, pan, rate; public string path; public bool if_not_playing; }
+        [Serializable] internal sealed class PortalAnimationBinding
+        {
+            public int clock_hz, step_ticks, opening_first, opening_last, loop_first, loop_last,
+                completed_first, completed_last;
+            public BitmapBinding[] frames;
+            public PortalSound sound;
+        }
         [Serializable] private sealed class LanguageBinding { public string path, binding_sha256, default_locale_id; }
         [Serializable] private sealed class LanguageRecord { public string id, sha256; public int selector, offset, bytes; }
         [Serializable] private sealed class LanguageLocale
@@ -41,11 +65,19 @@ namespace MagicCarpet.Native
             public Mission[] missions;
             public Portal[] portals;
             public Output[] outputs;
+            public StartupBinding startup;
+            public PortalAnimationBinding portal_animation;
         }
 
         private readonly Dictionary<string, Mission> missions;
         private readonly Dictionary<string, Texture2D> portals = new();
+        private readonly Dictionary<int, Texture2D> startupBitmaps = new();
+        private readonly Dictionary<int, Texture2D> portalFrames = new();
+        private byte[] portalSound;
         internal Texture2D World { get; private set; }
+        internal Texture2D StartupBackground { get; private set; }
+        internal StartupBinding Startup { get; private set; }
+        internal PortalAnimationBinding PortalAnimation { get; private set; }
 
         internal OwnerCampaignMenuCache(string path)
         {
@@ -59,7 +91,9 @@ namespace MagicCarpet.Native
                 (manifest.schema != "mc2-owner-campaign-menu-cache/v1" && manifest.schema != "mc2-owner-campaign-menu-cache/v2") ||
                 manifest.source_commit != "6806c7204d17220ecc0430759f784aea8ee2ddb2" ||
                 manifest.width != 1280 || manifest.height != 960 || manifest.view_width != 640 || manifest.view_height != 480 ||
-                manifest.missions?.Length != 4 || manifest.portals?.Length != 2 || manifest.outputs?.Length != 4)
+                manifest.missions?.Length != 4 || manifest.portals?.Length != 2 || manifest.outputs == null ||
+                manifest.outputs.Length < 4 ||
+                (manifest.schema == "mc2-owner-campaign-menu-cache/v1" && manifest.outputs.Length != 4))
                 throw new InvalidDataException("campaign menu cache has an unsupported source binding");
             if (manifest.schema == "mc2-owner-campaign-menu-cache/v2") BindLanguage(root, manifest);
             missions = manifest.missions.ToDictionary(mission => mission.level_id, StringComparer.Ordinal);
@@ -69,6 +103,9 @@ namespace MagicCarpet.Native
                     mission.viewport_x < 0 || mission.viewport_x > 640 || mission.viewport_y < 0 || mission.viewport_y > 480 ||
                     mission.portal_x < 0 || mission.portal_y < 0 || mission.portal_width <= 0 || mission.portal_height <= 0)
                     throw new InvalidDataException("campaign mission presentation is incomplete");
+            var consumedOutputs = new HashSet<string>(StringComparer.Ordinal);
+            if (manifest.outputs.Select(row => row.path).Distinct(StringComparer.Ordinal).Count() != manifest.outputs.Length)
+                throw new InvalidDataException("duplicate campaign output identity");
             byte[] Read(string relative, int expected)
             {
                 var row = manifest.outputs.Single(output => output.path == relative);
@@ -80,6 +117,7 @@ namespace MagicCarpet.Native
                 var digest = BitConverter.ToString(sha.ComputeHash(bytes)).Replace("-", "").ToLowerInvariant();
                 if (bytes.Length != expected || bytes.Length != row.bytes || digest != row.sha256)
                     throw new InvalidDataException("campaign cache output receipt mismatch: " + relative);
+                consumedOutputs.Add(relative);
                 return bytes;
             }
             try
@@ -105,12 +143,93 @@ namespace MagicCarpet.Native
                     portals.Add(portal.kind, Texture(Read(portal.path, checked(portal.width * portal.height * 4)),
                         portal.width, portal.height, "MC2 owner " + portal.kind + " portal"));
                 }
+                Startup = manifest.startup;
+                if (Startup != null)
+                {
+                    if (Startup.width != 640 || Startup.height != 480 || Startup.clock_hz != 100 ||
+                        Startup.logo == null || Startup.animations == null || Startup.bitmaps == null || Startup.buttons == null)
+                        throw new InvalidDataException("unsupported source title artwork binding");
+                    var title = Read(Startup.background_path, 640 * 480);
+                    var titlePalette = Read(Startup.palette_path, 768);
+                    if (titlePalette.Any(channel => channel > 63))
+                        throw new InvalidDataException("title palette is not RGB6");
+                    var titleRgba = new byte[title.Length * 4];
+                    for (var i = 0; i < title.Length; i++)
+                    {
+                        titleRgba[i * 4] = (byte)(titlePalette[title[i] * 3] * 4);
+                        titleRgba[i * 4 + 1] = (byte)(titlePalette[title[i] * 3 + 1] * 4);
+                        titleRgba[i * 4 + 2] = (byte)(titlePalette[title[i] * 3 + 2] * 4);
+                        titleRgba[i * 4 + 3] = 255;
+                    }
+                    StartupBackground = Texture(titleRgba, 640, 480, "MC2 source main menu bank4");
+                    LoadBitmaps(Startup.bitmaps, startupBitmaps, Read);
+                    if (!startupBitmaps.ContainsKey(Startup.logo.selector))
+                        throw new InvalidDataException("source title logo is unbound");
+                    foreach (var button in Startup.buttons)
+                        if (button.x < 0 || button.y < 0 || button.width <= 0 || button.height <= 0 ||
+                            button.x + button.width > 640 || button.y + button.height > 480 ||
+                            !startupBitmaps.ContainsKey(button.normal_selector) || !startupBitmaps.ContainsKey(button.hover_selector))
+                            throw new InvalidDataException("source title button is unbound");
+                    foreach (var animation in Startup.animations)
+                    {
+                        if (animation.step_ticks != 4 || animation.first_selector > animation.last_selector ||
+                            !startupBitmaps.ContainsKey(animation.initial_selector))
+                            throw new InvalidDataException("source title animation is incomplete");
+                        for (var selector = animation.first_selector; selector <= animation.last_selector; selector++)
+                            if (!startupBitmaps.ContainsKey(selector))
+                                throw new InvalidDataException("source title animation frame is unbound");
+                    }
+                }
+                PortalAnimation = manifest.portal_animation;
+                if (PortalAnimation != null)
+                {
+                    if (PortalAnimation.clock_hz != 100 || PortalAnimation.step_ticks != 8 ||
+                        PortalAnimation.opening_first != 70 || PortalAnimation.opening_last != 83 ||
+                        PortalAnimation.loop_first != 33 || PortalAnimation.loop_last != 35 ||
+                        PortalAnimation.completed_first != 37 || PortalAnimation.completed_last != 43 ||
+                        PortalAnimation.frames == null || PortalAnimation.sound == null)
+                        throw new InvalidDataException("source portal animation binding is invalid");
+                    LoadBitmaps(PortalAnimation.frames, portalFrames, Read);
+                    // DrawFrameAnim increments before drawing and wraps only
+                    // on the following call, so each last+1 sprite is visible.
+                    foreach (var range in new[] { (70, 84), (33, 36), (37, 44) })
+                        for (var selector = range.Item1; selector <= range.Item2; selector++)
+                            if (!portalFrames.ContainsKey(selector))
+                                throw new InvalidDataException("source portal animation frame is unbound");
+                    var sound = PortalAnimation.sound;
+                    if (sound.bank != 0 || sound.id != 41 || sound.volume != 127 || sound.pan != 64 ||
+                        sound.rate != 100 || !sound.if_not_playing)
+                        throw new InvalidDataException("source portal opening sound is unbound");
+                    portalSound = Read(sound.path, manifest.outputs.Single(row => row.path == sound.path).bytes);
+                }
+                if (consumedOutputs.Count != manifest.outputs.Length)
+                    throw new InvalidDataException("campaign cache contains unbound output receipts");
             }
             catch { Dispose(); throw; }
         }
 
         internal Mission ForMission(string level) => missions.TryGetValue(level, out var mission) ? mission :
             throw new InvalidDataException("campaign menu has no owner presentation for " + level);
+
+        private static void LoadBitmaps(BitmapBinding[] bindings, Dictionary<int, Texture2D> destination,
+            Func<string, int, byte[]> read)
+        {
+            foreach (var bitmap in bindings)
+            {
+                if (bitmap.selector < 0 || bitmap.width <= 0 || bitmap.height <= 0 ||
+                    bitmap.width > 640 || bitmap.height > 480 || destination.ContainsKey(bitmap.selector))
+                    throw new InvalidDataException("invalid source menu bitmap extent/selector");
+                destination.Add(bitmap.selector, Texture(read(bitmap.path, checked(bitmap.width * bitmap.height * 4)),
+                    bitmap.width, bitmap.height, "MC2 menu sprite " + bitmap.selector));
+            }
+        }
+
+        internal Texture2D StartupBitmap(int selector) => startupBitmaps.TryGetValue(selector, out var bitmap) ? bitmap :
+            throw new InvalidDataException("unbound source title sprite " + selector);
+        internal Texture2D PortalBitmap(int selector) => portalFrames.TryGetValue(selector, out var bitmap) ? bitmap :
+            throw new InvalidDataException("unbound source portal sprite " + selector);
+        internal byte[] ReadPortalOpeningSound() => portalSound ??
+            throw new InvalidDataException("unbound source portal opening sound");
 
         private static string Digest(byte[] bytes)
         {
@@ -188,18 +307,48 @@ namespace MagicCarpet.Native
             }
         }
 
-        internal void DrawMap(GameRuntimeTransport.CampaignMenuSnapshot menu)
-        {
-            var focus = ForMission(menu.phase == "results" ? menu.completed_level_id :
+        private Mission MapFocus(GameRuntimeTransport.CampaignMenuSnapshot menu) =>
+            ForMission(menu.phase == "results" ? menu.completed_level_id :
                 menu.selected_level_id ?? menu.briefing_level_id ?? menu.completed_level_id);
+
+        internal Rect SourceView(GameRuntimeTransport.CampaignMenuSnapshot menu)
+        {
             var scale = Mathf.Min(Screen.width / 640f, Screen.height / 480f);
-            var view = new Rect((Screen.width - 640 * scale) / 2, (Screen.height - 480 * scale) / 2, 640 * scale, 480 * scale);
+            return new Rect((Screen.width - 640 * scale) / 2, (Screen.height - 480 * scale) / 2, 640 * scale, 480 * scale);
+        }
+
+        internal string HitTestPortal(GameRuntimeTransport.CampaignMenuSnapshot menu, Vector2 screen)
+        {
+            if (menu.phase == "results") return null;
+            var focus = MapFocus(menu);
+            var view = SourceView(menu);
+            if (!view.Contains(screen)) return null;
+            var source = (screen - view.position) * (640f / view.width);
+            foreach (var level in menu.available_levels)
+            {
+                var mission = ForMission(level);
+                if (new Rect(mission.portal_x - focus.viewport_x, mission.portal_y - focus.viewport_y,
+                    mission.portal_width, mission.portal_height).Contains(source)) return level;
+            }
+            return null;
+        }
+
+        internal void DrawMap(GameRuntimeTransport.CampaignMenuSnapshot menu) => DrawMap(menu, null);
+
+        internal void DrawMap(GameRuntimeTransport.CampaignMenuSnapshot menu, Func<string, bool, int> selector)
+        {
+            var focus = MapFocus(menu);
+            var view = SourceView(menu);
+            var scale = view.width / 640f;
             GUI.DrawTextureWithTexCoords(view, World,
                 new Rect(focus.viewport_x / 1280f, (960 - focus.viewport_y - 480) / 960f, .5f, .5f));
             foreach (var level in menu.available_levels)
             {
                 var mission = ForMission(level);
-                var texture = portals[menu.completed_levels.Contains(level) ? "completed" : "available"];
+                var completed = menu.completed_levels.Contains(level);
+                var selected = selector != null && PortalAnimation != null ? selector(level, completed) : -2;
+                if (selected == -1) continue; // Source first pass opens sound before drawing.
+                var texture = selected >= 0 ? PortalBitmap(selected) : portals[completed ? "completed" : "available"];
                 var x = mission.portal_x - focus.viewport_x;
                 var y = mission.portal_y - focus.viewport_y;
                 if (x < 0 || y < 0 || x + texture.width > 640 || y + texture.height > 480) continue;
@@ -221,6 +370,13 @@ namespace MagicCarpet.Native
         {
             foreach (var texture in portals.Values) Destroy(texture);
             portals.Clear();
+            foreach (var texture in startupBitmaps.Values) Destroy(texture);
+            startupBitmaps.Clear();
+            foreach (var texture in portalFrames.Values) Destroy(texture);
+            portalFrames.Clear();
+            if (StartupBackground != null) Destroy(StartupBackground);
+            StartupBackground = null;
+            portalSound = null;
             if (World != null) Destroy(World);
             World = null;
         }
