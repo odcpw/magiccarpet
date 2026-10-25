@@ -3027,6 +3027,39 @@ pub extern "C" fn mc_native_campaign_entities_copy(
                             reserved: [0; 4],
                         };
                     }
+                    // Authored pickup constructors can reuse an imported
+                    // slot. The shared-spell record then owns its live pose
+                    // and lifetime, just as in campaign_entity_presentations.
+                    let arena_slots = reset
+                        .economy()
+                        .live_arena_slots()
+                        .into_iter()
+                        .map(|(slot, _)| slot)
+                        .collect::<BTreeSet<_>>();
+                    for source in reset
+                        .shared_spells()
+                        .dynamic_pickups()
+                        .iter()
+                        .filter(|row| {
+                            row.active && row.class == 15 && arena_slots.contains(&row.index)
+                        })
+                    {
+                        let slot = usize::from(source.index);
+                        if slot >= rows.len() || !occupied.insert(source.index) {
+                            return Err(AbiError::new(
+                                MC_STATUS_VALIDATION_FAILED,
+                                format!(
+                                    "campaign live pickup source slot {} is invalid or duplicated",
+                                    source.index
+                                ),
+                            ));
+                        }
+                        rows[slot] = campaign_entity_snapshot(source);
+                        rows[slot].authority = MC_AUTHORITY_CAMPAIGN_LIVE;
+                        rows[slot].active = u8::from(
+                            !source.drawing_disabled() && source.control_flags & 0x21 == 0,
+                        );
+                    }
                     let live_rows =
                         reset
                             .economy()
