@@ -297,10 +297,14 @@ mod tests {
     #[test]
     fn installed_cave_cache_resolves_source_track_three_and_rejects_wrong_package() {
         use super::super::campaign_abi::{
-            mc_native_campaign_session_destroy, mc_native_campaign_session_reset,
-            open_campaign_session, with_campaign_session,
+            CampaignSessionKind, mc_native_campaign_day_hud_state,
+            mc_native_campaign_minimap_state, mc_native_campaign_session_destroy,
+            mc_native_campaign_session_reset, open_campaign_session, with_campaign_session,
         };
-        use super::super::{MC_NATIVE_ABI_VERSION, MC_STATUS_OK, McCampaignSelectionV2};
+        use super::super::{
+            MC_NATIVE_ABI_VERSION, MC_STATUS_OK, McCampaignDayHudSnapshotV2,
+            McCampaignMinimapStateV2, McCampaignSelectionV2,
+        };
         let root = generated().join("mc-oi62-environment-level4-audio-v3");
         let descriptor: Value =
             serde_json::from_slice(&fs::read(root.join("audio/descriptor.json")).unwrap()).unwrap();
@@ -359,9 +363,81 @@ mod tests {
             })
             .unwrap()
         };
+        let presentation = |generation| {
+            let mut minimap = McCampaignMinimapStateV2::default();
+            assert_eq!(
+                mc_native_campaign_minimap_state(
+                    handle,
+                    generation,
+                    0,
+                    &mut minimap,
+                    std::mem::size_of_val(&minimap) as u32
+                ),
+                MC_STATUS_OK,
+                "Cave direct-entry minimap consumer"
+            );
+            assert!(minimap.entity_count > 0);
+            let mut hud = McCampaignDayHudSnapshotV2::default();
+            assert_eq!(
+                mc_native_campaign_day_hud_state(
+                    handle,
+                    generation,
+                    0,
+                    &mut hud,
+                    std::mem::size_of_val(&hud) as u32
+                ),
+                MC_STATUS_OK,
+                "Cave direct-entry HUD consumer"
+            );
+            assert_eq!(hud.local_player_color_index, 0);
+            assert_eq!(
+                (
+                    hud.mana_palette_index,
+                    hud.mana_max_palette_index,
+                    hud.life_palette_index
+                ),
+                (0xE0, 0x58, 0x7B)
+            );
+            with_campaign_session(handle, |record| {
+                let CampaignSessionKind::Level2 { reset, .. } = &record.kind else {
+                    panic!("Cave must retain descriptor-backed authority");
+                };
+                for wrong in [
+                    CampaignSelection::LEVEL1,
+                    CampaignSelection::LEVEL2,
+                    CampaignSelection::LEVEL3,
+                    CampaignSelection {
+                        internal_level: 2,
+                        ..selection
+                    },
+                ] {
+                    assert!(reset.campaign_presentation_opponent(wrong).is_err());
+                    assert!(reset.day_hud_for(wrong).is_err());
+                }
+                let plan =
+                    crate::presentation_bridge::campaign_minimap_plan(reset, selection).unwrap();
+                let colors = fs::read(root.join("palette/colors.u8")).unwrap();
+                let mut creatures = 0;
+                for row in &plan.entities {
+                    let entity = &reset.entities()[usize::from(row.subject_entity_index)];
+                    if entity.class == 5
+                        && entity.source_id == entity.index
+                        && !(12..=14).contains(&entity.model)
+                    {
+                        assert_eq!(row.palette_index, colors[4095]);
+                        creatures += 1;
+                    }
+                }
+                assert!(creatures > 0, "real Cave creatures must reach the minimap");
+                Ok(())
+            })
+            .unwrap();
+        };
         assert_eq!(music_state(), (0, 3, 1, true));
+        presentation(0);
         assert_eq!(mc_native_campaign_session_reset(handle), MC_STATUS_OK);
         assert_eq!(music_state(), (1, 3, 1, true));
+        presentation(1);
         assert_eq!(mc_native_campaign_session_destroy(handle), MC_STATUS_OK);
     }
 }

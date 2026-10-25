@@ -7147,7 +7147,22 @@ impl Level2ResetSession {
         )
     }
 
-    /// Resolve the package-authored AI participant used by common Day
+    fn validate_campaign_presentation_selection(&self, selection: CampaignSelection) -> Result<()> {
+        let profile = self.session.state.live.mission.profile();
+        if !(1..=4).contains(&selection.external_level)
+            || CampaignSelection::ordinary(selection.external_level) != Some(selection)
+            || profile.external_level != selection.external_level
+            || profile.internal_level != selection.internal_level
+            || profile.map_type_id != selection.map_type_id
+        {
+            return Err(NativeWorldError::new(
+                "campaign presentation opponent profile is unknown or mismatched",
+            ));
+        }
+        Ok(())
+    }
+
+    /// Resolve the package-authored AI participant used by common campaign
     /// presentation. Bind its current holder chain after runtime transitions;
     /// the reset-only Nyphur census remains available through
     /// `nyphur_participant`, but cannot validate dying/banished live rows.
@@ -7155,14 +7170,7 @@ impl Level2ResetSession {
         &self,
         selection: CampaignSelection,
     ) -> Result<Level2NyphurParticipant> {
-        if !matches!(
-            selection,
-            CampaignSelection::LEVEL1 | CampaignSelection::LEVEL2 | CampaignSelection::LEVEL3
-        ) {
-            return Err(NativeWorldError::new(
-                "campaign presentation opponent profile is unknown or mismatched",
-            ));
-        }
+        self.validate_campaign_presentation_selection(selection)?;
         if self.session.state.live.core.runtime.player_count <= 1 {
             return Ok(Level2NyphurParticipant {
                 player_slot: u8::MAX,
@@ -7337,14 +7345,7 @@ impl Level2ResetSession {
     }
 
     pub fn day_hud_for(&self, selection: CampaignSelection) -> Result<Level2DayHudSnapshot> {
-        if !matches!(
-            selection,
-            CampaignSelection::LEVEL1 | CampaignSelection::LEVEL2 | CampaignSelection::LEVEL3
-        ) {
-            return Err(NativeWorldError::new(
-                "campaign Day HUD profile is unknown or mismatched",
-            ));
-        }
+        self.validate_campaign_presentation_selection(selection)?;
         let local_player_slot = self.session.state.live.core.runtime.local_player_slot;
         let local_player = &self.session.state.live.shared_spells.local_player;
         let local_entity = &self.session.state.live.shared_spells.player_entity;
@@ -7371,11 +7372,7 @@ impl Level2ResetSession {
             life_palette_index,
         ] = campaign_hud_palette_indices(
             local_player_color_index,
-            if selection.map_type_id == MapType::Night as u8 {
-                MapType::Night
-            } else {
-                MapType::Day
-            },
+            self.canonical_terrain().map_type(),
         )?;
         let spell_slot = |raw_spell_selector: i16| -> Result<Level2DayHudSpellSlot> {
             if raw_spell_selector < 0 {

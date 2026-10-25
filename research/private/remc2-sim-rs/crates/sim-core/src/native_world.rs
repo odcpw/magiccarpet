@@ -628,9 +628,9 @@ const LEVEL2_DAY_HUD_PALETTE_TABLE: [[u8; 3]; 8] = [
     [0x3D, 0x3A, 0x7B],
 ];
 
-fn campaign_hud_palette_indices(color_index: u8, map_type: MapType) -> Result<[u8; 3]> {
-    // Pinned EventsFunctions.cpp::sub_48120; the Night palette shares the
-    // status geometry with Day but has different player mana colours.
+pub fn campaign_hud_palette_indices(color_index: u8, map_type: MapType) -> Result<[u8; 3]> {
+    // Pinned EventsFunctions.cpp::sub_48120. HUD and minimap share these
+    // player colours; Cave differs from Night in the first player's row.
     const NIGHT: [[u8; 3]; 8] = [
         [0xA4, 0xAA, 0x7B],
         [0x77, 0x7D, 0x7B],
@@ -641,9 +641,15 @@ fn campaign_hud_palette_indices(color_index: u8, map_type: MapType) -> Result<[u
         [0x69, 0x62, 0x7B],
         [0xC9, 0xCF, 0x7B],
     ];
+    const CAVE: [[u8; 3]; 8] = {
+        let mut table = NIGHT;
+        table[0] = [0xE0, 0x58, 0x7B];
+        table
+    };
     let table = match map_type {
         MapType::Day => &LEVEL2_DAY_HUD_PALETTE_TABLE,
         MapType::Night => &NIGHT,
+        MapType::Cave => &CAVE,
         _ => {
             return Err(NativeWorldError::new(
                 "campaign HUD palette profile is unsupported",
