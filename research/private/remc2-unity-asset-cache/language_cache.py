@@ -30,6 +30,7 @@ class ImportCodecs(NamedTuple):
     decode_container_blob: Callable[..., bytes]
     bitmap_records: Callable[..., Any]
     materialize_indexed_rle: Callable[..., Any]
+    build_objective_rasters: Callable[..., Any]
     decoder_identity: dict
 
 
@@ -126,22 +127,24 @@ def build(owner: Path, output: Path, codecs: ImportCodecs, *, rnc_decoder: Path,
     payloads: dict[str, bytes] = {}
     sources = []
     fonts = []
+    def source(relative: str) -> bytes:
+        raw = cache.confined_source(owner, relative).read_bytes()
+        sources.append(dict(path=relative, bytes=len(raw), sha256=digest(raw)))
+        if not raw.startswith(b"RNC"):
+            return raw
+        if len(raw) < 18 or raw[:4] != b"RNC\x01":
+            raise LanguageCacheError(f"unsupported packed source resource: {relative}")
+        expected = int.from_bytes(raw[4:8], "big")
+        if expected > 4_194_304:
+            raise LanguageCacheError("source language resource exceeds its bounded size")
+        return cache.decode_container_blob(rnc_decoder, raw, 0, expected, work,
+            "language-" + Path(relative).name.lower().replace(".", "-"))
+
     for name in FONT_NAMES:
         decoded = {}
         for extension in ("DAT", "TAB"):
             relative = f"DATA/{name}.{extension}"
-            raw = cache.confined_source(owner, relative).read_bytes()
-            sources.append(dict(path=relative, bytes=len(raw), sha256=digest(raw)))
-            value = raw
-            if raw.startswith(b"RNC"):
-                if len(raw) < 18 or raw[:4] != b"RNC\x01":
-                    raise LanguageCacheError(f"unsupported packed source font: {relative}")
-                expected = int.from_bytes(raw[4:8], "big")
-                if expected > 1_048_576:
-                    raise LanguageCacheError("source font exceeds the bounded font resource size")
-                value = cache.decode_container_blob(rnc_decoder, raw, 0, expected, work,
-                    f"language-{name.lower()}-{extension.lower()}")
-            decoded[extension] = value
+            decoded[extension] = source(relative)
         glyphs = []
         masks = bytearray()
         for index, (offset, width, height) in enumerate(cache.bitmap_records(decoded["TAB"])):
@@ -156,6 +159,14 @@ def build(owner: Path, output: Path, codecs: ImportCodecs, *, rnc_decoder: Path,
         fonts.append(dict(id=name.lower(), masks_path=relative, glyphs=glyphs,
             decoded_dat_sha256=digest(decoded["DAT"]), decoded_tab_sha256=digest(decoded["TAB"])))
 
+    sprite_data = source("DATA/HSPRN0-0.DAT")
+    sprite_table = cache.bitmap_records(source("DATA/HSPRN0-0.TAB"))
+    sprites = {index: (*cache.materialize_indexed_rle(sprite_data, *sprite_table[index])[:2],
+                       *sprite_table[index][1:]) for index in (171, 172, 173)}
+    clrn, palette = source("DATA/CLRN-0.DAT"), source("DATA/PALN-0.DAT")
+    if len(clrn) != 4096 or len(palette) != 768 or max(palette) > 63:
+        raise LanguageCacheError("source objective palette binding is malformed")
+    hfont = next(font for font in fonts if font["id"] == "hfont3")
     locales = []
     for pack in packs:
         blob = bytearray()
@@ -171,9 +182,20 @@ def build(owner: Path, output: Path, codecs: ImportCodecs, *, rnc_decoder: Path,
         payloads[path] = bytes(blob)
         prefix_path = f"text/{identity}.prefix.u8"
         payloads[prefix_path] = pack["payload"][:PREFIX_BYTES]
+        objectives = []
+        for selector in range(48, 54):
+            foreground, _, geometry = cache.build_objective_rasters(pack["records"][selector],
+                hfont["glyphs"], payloads[hfont["masks_path"]], sprites,
+                bytes(component * 4 for component in palette), clrn[3840], 1)
+            raster_path = f"text/{identity}.objective-{selector}.indexed-mask.u8"
+            payloads[raster_path] = foreground
+            objectives.append(dict(selector=selector, text_id=f"text.mc2.record.{selector}",
+                text_sha256=digest(pack["records"][selector]), raster_path=raster_path,
+                reference_x=geometry["objective_x"], reference_y=geometry["objective_y"],
+                width=geometry["objective_width"], height=geometry["objective_height"]))
         locales.append(dict(id=locale_id, label="Installed source language", aliases=pack["aliases"],
             pack_sha256=pack["pack_sha256"], records_path=path, prefix_path=prefix_path,
-            text_sha256=digest(bytes(blob)), records=rows,
+            text_sha256=digest(bytes(blob)), records=rows, objectives=objectives,
             font_ids=[font["id"] for font in fonts],
             non_ascii_record_count=sum(any(value >= 128 for value in row) for row in pack["records"])))
     # The installed source default is L1 when present; aliases have no invented
@@ -263,4 +285,18 @@ def _validate(root: Path) -> dict:
         for font_id in locale["font_ids"]:
             font = fonts[font_id]
             validate_glyphs(records, font["glyphs"], payloads[font["masks_path"]])
+        if [row["selector"] for row in locale["objectives"]] != list(range(48, 54)):
+            raise LanguageCacheError("current objective resource set is incomplete")
+        for objective in locale["objectives"]:
+            selector = objective["selector"]
+            width, height = objective["width"], objective["height"]
+            raster = payloads[objective["raster_path"]]
+            if objective["text_id"] != f"text.mc2.record.{selector}" or \
+                    objective["text_sha256"] != digest(records[selector]) or \
+                    min(width, height) <= 0 or width > 640 or height > 480 or \
+                    any(value < 0 or value % 2 for value in (width, height,
+                        objective["reference_x"], objective["reference_y"])) or \
+                    len(raster) != width * height * 2 or \
+                    any(value not in (0, 1) for value in raster[width * height:]):
+                raise LanguageCacheError("objective text/font raster binding is malformed")
     return manifest

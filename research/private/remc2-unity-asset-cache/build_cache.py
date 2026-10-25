@@ -3031,7 +3031,7 @@ def build_objective_rasters(
         "objective_foreground_opaque_pixels": sum(foreground_mask),
         "objective_glyph_indices": glyph_sequence,
         "objective_text_advances": line_advances,
-        "objective_lines_ascii": [line.decode("ascii") for line in lines],
+        "objective_lines_ascii": [line.decode("ascii") if line.isascii() else None for line in lines],
         "badge_text_ascii": badge_text.decode("ascii"),
         "badge_width": badge_width,
         "badge_height": badge_height,
@@ -11180,7 +11180,7 @@ def build_language_cache(owner_root, output, *, rnc_decoder=None, work=None):
     output = Path(output)
     output.parent.mkdir(parents=True, exist_ok=True)
     codecs = language.ImportCodecs(confined_source, decode_container_blob,
-        bitmap_records, materialize_indexed_rle, rnc_logical_identity())
+        bitmap_records, materialize_indexed_rle, build_objective_rasters, rnc_logical_identity())
     if work is not None:
         if rnc_decoder is None:
             raise CacheError("a shared language decoder work directory requires its decoder")
