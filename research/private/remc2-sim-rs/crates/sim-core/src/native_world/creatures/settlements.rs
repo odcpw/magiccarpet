@@ -4,6 +4,7 @@
 //! Arena allocation and footprint application are immediate effects applied by the caller;
 //! the family cannot reach unrelated mission, spell, player or scheduler state.
 
+pub(crate) mod runtime;
 pub(crate) mod stage;
 pub use stage::SettlementStageLinks;
 
@@ -124,7 +125,7 @@ pub(crate) struct BuilderHouseRequest {
     pub spec: BuilderBuildingSpec,
 }
 
-pub(crate) struct SettlementContext<'a> {
+pub(crate) struct SettlementContext<'a, 'stage> {
     pub source_control_flags: &'a mut u32,
     pub dynamic_residents: &'a mut [Option<DynamicResidentState>],
     pub class_5_census: &'a mut u32,
@@ -135,10 +136,10 @@ pub(crate) struct SettlementContext<'a> {
     pub death_bursts: Vec<(u16, Position)>,
     pub linked_kills: Vec<u16>,
     pub selection_rng_draw: Option<(u32, u32)>,
-    pub stage: Option<stage::StageContext<'a>>,
+    pub stage: Option<stage::StageContext<'stage>>,
 }
 
-impl SettlementContext<'_> {
+impl SettlementContext<'_, '_> {
     fn advance_global_rng(&mut self, _source_slot: u16, site: GlobalRngSite) {
         debug_assert_eq!(site, GlobalRngSite::BuilderSelection);
         let before = *self.global_rng;
@@ -999,7 +1000,8 @@ impl SettlementContext<'_> {
             )
         };
 
-        resident.active = villager.active;
+        // The population carrier owns an allocated source slot. A callback
+        // hide retires drawing now; 57F20 retires the allocation next pass.
         resident.visible &= villager.active;
         resident.reset_counter = villager.reset_counter;
         resident.max_life = villager.max_life;
@@ -1781,6 +1783,29 @@ impl Level2HouseResidentSource {
 }
 
 /// Constructor counters and residents are one reset/save/hash-owned population.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct AuthoredTraderBehavior {
+    pub source_id: u16,
+    pub control_flags: u32,
+    pub owner: u16,
+    pub index: i8,
+    pub mode: i8,
+    pub links: SettlementStageLinks,
+}
+
+impl AuthoredTraderBehavior {
+    pub(crate) fn new(slot: u16) -> Self {
+        Self {
+            source_id: slot,
+            control_flags: 8,
+            owner: 0,
+            index: 0,
+            mode: 0,
+            links: SettlementStageLinks::default(),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct SettlementPopulation {
     residents: Vec<Level2HouseResidentSource>,
@@ -1789,6 +1814,7 @@ pub(crate) struct SettlementPopulation {
     /// Dynamic settlement rows admitted by the current sub_60F00 boundary.
     /// Generic economy mutations must retain these same generation-bound rows.
     mana_sources: Vec<(u16, u32)>,
+    pub(crate) traders: std::collections::BTreeMap<u16, AuthoredTraderBehavior>,
 }
 impl SettlementPopulation {
     pub(crate) fn new(builder_phase: u8, villager_phase: u8) -> Self {
@@ -1797,6 +1823,7 @@ impl SettlementPopulation {
             builder_phase,
             villager_phase,
             mana_sources: Vec::new(),
+            traders: std::collections::BTreeMap::new(),
         }
     }
     pub(crate) fn take_constructor_phase(&mut self, kind: DynamicResidentKind) -> u8 {
@@ -1812,6 +1839,20 @@ impl SettlementPopulation {
     pub(crate) fn digest_counters(&self, hasher: &mut sha2::Sha256) {
         use sha2::Digest;
         hasher.update([self.builder_phase, self.villager_phase]);
+        if !self.traders.is_empty() {
+            hasher.update(b"settlement-authored-trader-v1\0");
+            for (slot, state) in &self.traders {
+                hasher.update(slot.to_le_bytes());
+                hasher.update(state.source_id.to_le_bytes());
+                hasher.update(state.control_flags.to_le_bytes());
+                hasher.update(state.owner.to_le_bytes());
+                hasher.update([state.index as u8, state.mode as u8]);
+                hasher.update(state.links.parent.to_le_bytes());
+                hasher.update(state.links.relation.to_le_bytes());
+                hasher.update(state.links.remaining.to_le_bytes());
+                hasher.update(state.links.duration.to_le_bytes());
+            }
+        }
         if !self.mana_sources.is_empty() {
             hasher.update(b"settlement-mana-sources-v1\0");
             for (slot, generation) in &self.mana_sources {
@@ -1840,9 +1881,15 @@ impl<'a> IntoIterator for &'a SettlementPopulation {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct SettlementPopulationStep {
     pub feedback_entity: Option<u16>,
+    pub spell_awards: Vec<(u16, u8)>,
+}
+
+pub(crate) struct SettlementVillagerStep {
+    pub effects: Vec<VillagerStepEffect>,
+    pub spell_awards: Vec<(u16, u8)>,
 }
 impl crate::native_world::Level2EconomyState {
     pub(crate) fn settlement_mana_source_slots(&self) -> impl Iterator<Item = u16> + '_ {
@@ -2056,6 +2103,43 @@ impl crate::native_world::Level2EconomyState {
 }
 
 impl crate::campaign::source_arena::SourceArena {
+    /// sub_23340/sub_237B0 mutate the live household regardless of whether
+    /// it came from reset data, a Builder, or an authored group constructor.
+    pub(crate) fn try_enter_settlement_house(
+        &mut self,
+        houses: &mut crate::house::HouseFamily,
+        slot: u16,
+    ) -> crate::house::HouseResidentEntry {
+        use crate::house::HouseResidentEntry;
+        let result = houses.try_enter_resident(slot);
+        if result != HouseResidentEntry::NotLive {
+            if result == HouseResidentEntry::Entered
+                && let Some(house) = houses
+                    .houses()
+                    .iter()
+                    .find(|house| house.entity_index == slot)
+            {
+                house.publish_source(&mut self.entities[usize::from(slot)]);
+            }
+            return result;
+        }
+        let Some(house) = self.economy.authored_model45.iter_mut().find(|house| {
+            house.active
+                && house.source_entity_index == slot
+                && house.source_class == 10
+                && house.model == 45
+        }) else {
+            return HouseResidentEntry::NotLive;
+        };
+        if house.dword_0x10 >= i32::from(house.minimum_speed) {
+            return HouseResidentEntry::Full;
+        }
+        house.dword_0x10 = house.dword_0x10.wrapping_add(1);
+        let occupants = house.dword_0x10;
+        self.entities[usize::from(slot)].set_source_dword_10(occupants);
+        HouseResidentEntry::Entered
+    }
+
     pub(crate) fn initialize_demolition_resident_mailbox(&mut self, slot: u16, attacker: u16) {
         self.economy
             .initialize_demolition_resident_mailbox(slot, attacker);
@@ -2291,10 +2375,14 @@ impl crate::campaign::source_arena::SourceArena {
         slot: u16,
         terrain: &mut crate::native_world::SessionTerrain,
         houses: &mut crate::house::HouseFamily,
-        villagers: &[crate::villager::VillagerState],
+        villagers: &mut crate::villager::VillagerFamily,
         building_source_order: &[u16],
         parameters: &std::collections::BTreeMap<u8, crate::house::HouseParameter>,
         footprints: &std::collections::BTreeMap<u8, crate::level1_mission::CastleBuildFootprint>,
+        runtime: &mut crate::native_world::RuntimeSnapshot,
+        models: &[Vec<u16>; 29],
+        players: &[u16],
+        particles: &[crate::native_world::ParticleParameter],
     ) -> Result<Option<SettlementPopulationStep>, String> {
         let Some(index) = self
             .house_residents
@@ -2303,13 +2391,14 @@ impl crate::campaign::source_arena::SourceArena {
         else {
             return Ok(None);
         };
-        let mut views = self.settlement_source_views(houses, villagers, parameters);
+        let mut views = self.settlement_source_views(houses, villagers.villagers(), parameters);
         for view in &mut views {
             view.villager_entry_eligible &=
                 building_source_order.contains(&view.source_entity_index);
         }
         let mut source = self.house_residents[index];
         let mut resident = source.population_state();
+        let targets = stage::targets(self, &views, villagers.villagers());
         let mut linked_residents = Vec::new();
         if resident.linked_entity_index != 0 {
             linked_residents.resize(1000, None);
@@ -2321,7 +2410,13 @@ impl crate::campaign::source_arena::SourceArena {
         let economy = &mut self.economy;
         let mut feedback = 0;
         let mut context = SettlementContext {
-            stage: None,
+            stage: Some(stage::StageContext {
+                runtime: Some(runtime),
+                targets: &targets,
+                models,
+                players,
+                effects: Vec::new(),
+            }),
             source_control_flags: &mut source.control_flags,
             dynamic_residents: &mut linked_residents,
             class_5_census: &mut economy.source_creature_population,
@@ -2348,6 +2443,11 @@ impl crate::campaign::source_arena::SourceArena {
         let request = context.house_request;
         let bursts = std::mem::take(&mut context.death_bursts);
         let linked_kills = std::mem::take(&mut context.linked_kills);
+        let stage_effects = context
+            .stage
+            .as_mut()
+            .map(|stage| std::mem::take(&mut stage.effects))
+            .unwrap_or_default();
         drop(context);
         for effect in effects {
             match effect {
@@ -2355,7 +2455,7 @@ impl crate::campaign::source_arena::SourceArena {
                     house_source_entity_index,
                     ..
                 } => {
-                    if houses.try_enter_resident(house_source_entity_index)
+                    if self.try_enter_settlement_house(houses, house_source_entity_index)
                         != crate::house::HouseResidentEntry::Entered
                     {
                         resident.reset_counter = 0;
@@ -2447,12 +2547,15 @@ impl crate::campaign::source_arena::SourceArena {
             source.active,
             false,
         )?;
+        let spell_awards =
+            self::runtime::apply_effects(self, villagers, terrain, particles, stage_effects)?;
         Ok(Some(SettlementPopulationStep {
             feedback_entity: (feedback != 0).then_some(if matches!(source.action, 101 | 117) {
                 source.kill_credit_entity
             } else {
                 source.current_attacker
             }),
+            spell_awards,
         }))
     }
 }
@@ -2584,6 +2687,413 @@ mod production_tests {
             .expect("actual Level2 package with its retained owner BUILD bank")
             .level2_compatibility()
             .clone()
+    }
+
+    fn village_placement_through_authoring() -> crate::native_world::Level2ResetSession {
+        use crate::campaign::backend::load_mc2_campaign;
+        use crate::game_definition::{
+            ChangeSetBuilder, PublicationFault, RequestedTiming, WorkspaceStore, default_catalog,
+        };
+        use crate::level_definition::TilePosition;
+        let private = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../..");
+        let package = std::env::var_os("MC_CAMPAIGN_PACKAGE")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| private.join("generated/mc-1pb-16-level2-full-build-v2"));
+        let catalog = default_catalog().unwrap();
+        let base = load_mc2_campaign(&package, &catalog).unwrap();
+        let id = sim_definition::adapter::stable_entity_id("creature.villager.at_121_180").unwrap();
+        let workspace = std::env::temp_dir().join(format!(
+            "mc-1pb-16-settlement-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let store =
+            WorkspaceStore::create(&workspace, "settlement-placement", base.clone()).unwrap();
+        let change = ChangeSetBuilder::new(
+            "settlement-placement",
+            &base,
+            "villager-near-real-house",
+            RequestedTiming::SessionReset,
+        )
+        .move_entity_from(
+            id,
+            TilePosition { x: 121, y: 180 },
+            TilePosition { x: 75, y: 81 },
+        )
+        .build()
+        .unwrap();
+        let validation = store.validate(&catalog, change.clone()).unwrap();
+        assert!(validation.accepted, "{:?}", validation.diagnostics);
+        store
+            .apply(
+                &catalog,
+                change,
+                &validation.receipt_hash,
+                PublicationFault::None,
+            )
+            .unwrap();
+        let mut session = CampaignSession::open(&package, CampaignSelection::LEVEL2).unwrap();
+        let published = store.active_definition().unwrap();
+        session
+            .apply_semantic_level_variant(published.level_definition().unwrap())
+            .unwrap();
+        eprintln!(
+            "actual Level2 typed placement workspace {}",
+            workspace.display()
+        );
+        session.level2_compatibility().clone()
+    }
+
+    fn ordinary_group_three_through_controls(
+        session: &mut crate::native_world::Level2ResetSession,
+    ) {
+        session.select_level2_campaign_entry_stage();
+        let features = session.mission().authored_features().to_vec();
+        let point = |index| {
+            features
+                .iter()
+                .find(|row| row.index == index)
+                .unwrap()
+                .world_position(0)
+        };
+        let player = session.state.entity_index;
+        let step_at = |session: &mut crate::native_world::Level2ResetSession, position, turns| {
+            for _ in 0..turns {
+                session
+                    .set_level2_entity_position(player, position)
+                    .unwrap();
+                session.step_outer_turn(crate::PlayerCommand::default(), 0);
+            }
+        };
+        step_at(session, point(11), 1);
+        if !session
+            .economy()
+            .authored_switch_producers()
+            .iter()
+            .any(|row| row.authored_index == 42)
+        {
+            let row = session
+                .economy()
+                .authored_switch_producers()
+                .iter()
+                .find(|row| row.authored_index == 41)
+                .copied()
+                .expect("ordinary row11 produced area-exit41");
+            let mut outside = row.position;
+            outside.x = outside.x.wrapping_add(0x8000);
+            step_at(session, outside, 16);
+        }
+        step_at(session, point(42), 16);
+        assert_eq!(
+            session
+                .economy()
+                .authored_class5()
+                .iter()
+                .filter(|row| row.model == 14 && (125..=151).contains(&row.authored_index))
+                .count(),
+            27
+        );
+    }
+
+    fn household_counts(session: &crate::native_world::Level2ResetSession) -> BTreeMap<u16, i32> {
+        let live = &session.session.state.live;
+        live.economy
+            .settlement_source_views(
+                &live.ordinary.houses,
+                live.ordinary.villagers.villagers(),
+                &live.ordinary.house_parameters,
+            )
+            .iter()
+            .filter(|row| (row.class, row.model) == (10, 45))
+            .filter_map(|row| {
+                crate::native_world::level2_class5::trader::target_in_arena(
+                    &live.economy,
+                    &live.ordinary.houses,
+                    row.source_entity_index,
+                )
+                .map(|target| (target.entity_index, target.dword_0x10))
+            })
+            .collect()
+    }
+
+    #[test]
+    fn authored_villager_placement_joins_the_authoritative_household() {
+        let mut session = village_placement_through_authoring();
+        for pass in 0..1024_u16 {
+            let before = household_counts(&session);
+            session.step_level2_source_pass((pass % 3) as u8);
+            if let Some(villager) = session
+                .ordinary()
+                .villagers()
+                .iter()
+                .find(|row| row.active && row.action == 108 && row.reset_counter == 1)
+            {
+                let target = villager
+                    .target_entity_index
+                    .expect("accepted household remains the target");
+                let occupants = household_counts(&session)[&target];
+                assert!(occupants > before[&target]);
+                assert_eq!(
+                    session.entities()[usize::from(target)].source_dword_10(),
+                    occupants
+                );
+                eprintln!(
+                    "actual Level2 Villager {} -> House {} occupants {} at source pass {}",
+                    villager.entity_index, target, occupants, pass
+                );
+                return;
+            }
+        }
+        panic!(
+            "ordinary imported villagers never joined a household; live rows {:?}; eligible houses {:?}",
+            session.ordinary().villagers(),
+            session
+                .ordinary()
+                .houses()
+                .iter()
+                .filter(|house| house.parameter.produces_villagers())
+                .map(|house| (
+                    house.entity_index,
+                    house.position,
+                    house.occupants,
+                    house.capacity
+                ))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn ordinary_authored_trader_joins_the_authoritative_household() {
+        let mut session = ordinary_level_two();
+        ordinary_group_three_through_controls(&mut session);
+        for pass in 0..4096_u16 {
+            let before = household_counts(&session);
+            session.step_level2_source_pass((pass % 3) as u8);
+            if let Some(row) = session.economy().authored_class5().iter().find(|row| {
+                row.model == TRADER_MODEL
+                    && (125..=151).contains(&row.authored_index)
+                    && row.action == 116
+                    && row.dword_0x10 == 1
+            }) {
+                let slot = row.source_entity_index;
+                let target = row.word_0x96_150;
+                let occupants = household_counts(&session)[&target];
+                assert!(occupants > before[&target]);
+                assert_eq!(
+                    session.entities()[usize::from(target)].source_dword_10(),
+                    occupants
+                );
+                eprintln!(
+                    "actual Level2 ordinary group3 record {} -> Trader {} -> House {} occupants {} at source pass {}",
+                    row.authored_index, slot, target, occupants, pass
+                );
+                session.step_level2_source_pass(0);
+                assert!(session.entities()[usize::from(slot)].drawing_disabled());
+                session.step_level2_source_pass(1);
+                assert!(
+                    !session
+                        .economy()
+                        .authored_class5()
+                        .iter()
+                        .any(|row| row.source_entity_index == slot)
+                );
+                return;
+            }
+        }
+        panic!(
+            "ordinary authored Traders never joined a household; final rows {:?}",
+            session
+                .economy()
+                .authored_class5()
+                .iter()
+                .filter(|row| row.model == TRADER_MODEL)
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn authored_trader_household_write_survives_the_next_house_callback() {
+        let mut session = ordinary_level_two();
+        let house = *session
+            .ordinary()
+            .houses()
+            .iter()
+            .find(|house| house.active && house.parameter.produces_villagers())
+            .unwrap();
+        let live = &mut session.session.state.live;
+        let source = live
+            .economy
+            .economy
+            .allocate_authored_trader(
+                125,
+                house.position,
+                TRADER_CLASS_PROPERTIES.max_life,
+                &live.terrain,
+            )
+            .unwrap();
+        let slot = source.source_entity_index;
+        let source = live
+            .economy
+            .economy
+            .authored_class5
+            .iter_mut()
+            .find(|source| source.source_entity_index == slot)
+            .unwrap();
+        source.word_0x96_150 = house.entity_index;
+        source.source_byte_3e = 0;
+        // The source control input is a selected near household. No house
+        // capacity or population is changed to arrange a successful result.
+        session.step_level2_source_pass(0);
+        let owned = *session
+            .ordinary()
+            .houses()
+            .iter()
+            .find(|candidate| candidate.entity_index == house.entity_index)
+            .unwrap();
+        assert_eq!(owned.occupants, house.occupants + 1);
+        assert_eq!(
+            session.entities()[usize::from(house.entity_index)].source_dword_10(),
+            owned.occupants
+        );
+        let trader = session
+            .economy()
+            .authored_class5()
+            .iter()
+            .find(|source| source.source_entity_index == slot)
+            .unwrap();
+        assert_eq!((trader.action, trader.dword_0x10), (116, 1));
+        session.step_level2_source_pass(1);
+        assert!(session.entities()[usize::from(slot)].drawing_disabled());
+        assert!(
+            session
+                .ordinary()
+                .houses()
+                .iter()
+                .find(|candidate| candidate.entity_index == house.entity_index)
+                .unwrap()
+                .occupants
+                >= owned.occupants
+        );
+        session.step_level2_source_pass(2);
+        assert!(
+            !session
+                .economy()
+                .authored_class5()
+                .iter()
+                .any(|source| source.source_entity_index == slot)
+        );
+        assert!(
+            !session
+                .session
+                .state
+                .live
+                .economy
+                .economy
+                .house_residents
+                .traders
+                .contains_key(&slot)
+        );
+    }
+
+    #[test]
+    fn staged_settlement_expiry_reaches_effect_and_following_pass_reclaim() {
+        let mut session = ordinary_level_two();
+        let slot = session.ordinary().villagers()[0].entity_index;
+        let parent = session.state.entity_index;
+        let live = &mut session.session.state.live;
+        let actor = live
+            .ordinary
+            .villagers
+            .villagers_mut()
+            .iter_mut()
+            .find(|row| row.entity_index == slot)
+            .unwrap();
+        // Controlled regression input to the real scheduled callback, distinct
+        // from the ordinary owner-data household proof above.
+        actor.stage_var_2 = 16;
+        actor.stage.parent = parent;
+        actor.stage.remaining = 0;
+        actor.action = 105;
+        actor.publish_source(&mut live.economy.entities[usize::from(slot)]);
+        let effect_position = actor.position;
+        let effects_before = live
+            .economy
+            .entities
+            .iter()
+            .filter(|row| row.active && (row.class, row.model) == (10, 0))
+            .map(|row| row.index)
+            .collect::<std::collections::BTreeSet<_>>();
+        session.step_level2_source_pass(0);
+        assert!(session.entities()[usize::from(slot)].drawing_disabled());
+        assert_eq!(session.entities()[usize::from(slot)].class, 5);
+        assert!(session.entities().iter().any(|row| row.active
+            && (row.class, row.model) == (10, 0)
+            && !effects_before.contains(&row.index)
+            && row.position.x == effect_position.x
+            && row.position.y == effect_position.y
+            && row.subspell_index == 400
+            && row.array_pitch() == 128
+            && row.array_fov() == 128));
+        session.step_level2_source_pass(1);
+        assert_eq!(session.entities()[usize::from(slot)].class, 0);
+        assert!(
+            !session
+                .ordinary()
+                .villagers()
+                .iter()
+                .any(|row| row.entity_index == slot)
+        );
+    }
+
+    #[test]
+    fn settlement_contact_preserves_selected_target_and_source_mailbox_rules() {
+        let mut session = ordinary_level_two();
+        let live = &mut session.session.state.live;
+        let house = live.ordinary.houses.houses()[0];
+        let slot = house.entity_index;
+        assert!(
+            !live
+                .ordinary
+                .houses
+                .submit_source_damage(slot, 12, house.source_id)
+        );
+        assert!(
+            live.ordinary
+                .houses
+                .submit_source_contact(slot, 12, house.source_id)
+        );
+        assert!(live.ordinary.houses.submit_source_contact(slot, 7, 0));
+        assert_eq!(live.ordinary.houses.houses()[0].pending_damage, 7);
+        assert!(
+            live.ordinary
+                .houses
+                .submit_source_contact(slot, 5, house.source_id)
+        );
+        assert_eq!(live.ordinary.houses.houses()[0].pending_damage, 12);
+        let villager = live.ordinary.villagers.villagers()[0].clone();
+        let slot = villager.entity_index;
+        assert!(
+            !live
+                .ordinary
+                .villagers
+                .submit_source_damage(slot, 12, villager.source_id)
+        );
+        assert!(
+            live.ordinary
+                .villagers
+                .submit_source_contact(slot, 12, villager.source_id)
+        );
+        assert!(live.ordinary.villagers.submit_source_contact(slot, 7, 0));
+        assert_eq!(live.ordinary.villagers.villagers()[0].pending_damage, 7);
+        assert!(
+            live.ordinary
+                .villagers
+                .submit_source_contact(slot, 5, villager.source_id)
+        );
+        assert_eq!(live.ordinary.villagers.villagers()[0].pending_damage, 12);
     }
 
     #[test]

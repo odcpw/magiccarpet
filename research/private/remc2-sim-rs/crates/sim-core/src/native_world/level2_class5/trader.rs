@@ -7,6 +7,7 @@
 //! creature callbacks used by models 3 and 9.
 
 use crate::level_definition::TRADER_CLASS_PROPERTIES as PROPERTIES;
+use crate::native_world::creatures::settlements::{AuthoredTraderBehavior, runtime, stage};
 use crate::native_world::{
     Level2AuthoredClass5RuntimeState, Level2AuthoredClass5Source, Level2EconomyState,
     SessionTerrain, level2_next_rng16,
@@ -204,6 +205,7 @@ impl Level2EconomyState {
                 .any(|(slot, _)| *slot == row.source_entity_index)
         });
         for (slot, rng) in hidden {
+            self.house_residents.traders.remove(&slot);
             let _ = self.map_chains.sync_entity(RenderableMapSeed {
                 entity_index: slot,
                 active: false,
@@ -282,6 +284,10 @@ impl Level2EconomyState {
             return None;
         }
         let source = payload.into_class5_source();
+        self.house_residents.traders.insert(
+            source_entity_index,
+            AuthoredTraderBehavior::new(source_entity_index),
+        );
         self.source_rng
             .insert(source_entity_index, source.entity_rng);
         self.authored_class5.push(source);
@@ -311,15 +317,22 @@ impl crate::campaign::source_arena::SourceArena {
         linked_head: u16,
         linked: &[TraderLinkedState],
         buildings: &[TraderBuildingCandidate],
-        terrain: &SessionTerrain,
-    ) -> Option<TraderAction113Step> {
-        let source_index = self.authored_class5.iter().position(|source| {
+        terrain: &mut SessionTerrain,
+        runtime: &mut crate::native_world::RuntimeSnapshot,
+        models: &[Vec<u16>; 29],
+        players: &[u16],
+        particles: &[crate::native_world::ParticleParameter],
+        villagers: &mut crate::villager::VillagerFamily,
+    ) -> Result<Option<TraderAction113Step>, String> {
+        let Some(source_index) = self.authored_class5.iter().position(|source| {
             source.active
                 && source.source_entity_index == source_slot
                 && source.model == TRADER_MODEL
                 && source.drawing_enabled
                 && matches!(source.action, 112..=119)
-        })?;
+        }) else {
+            return Ok(None);
+        };
         let mut source = self.authored_class5[source_index];
         let mut context = TraderAction113Context {
             pending_damage,
@@ -362,8 +375,28 @@ impl crate::campaign::source_arena::SourceArena {
                 view
             })
             .collect::<Vec<_>>();
-        let effects =
-            step_trader_lifecycle(&mut source, &mut context, terrain, &views, &linked_killers);
+        let targets = stage::targets(self, &views, villagers.villagers());
+        let mut behavior = self
+            .house_residents
+            .traders
+            .get(&source_slot)
+            .copied()
+            .unwrap_or_else(|| AuthoredTraderBehavior::new(source_slot));
+        let mut effects = step_trader_lifecycle(
+            &mut source,
+            &mut context,
+            terrain,
+            &views,
+            &linked_killers,
+            &mut behavior,
+            Some(stage::StageContext {
+                runtime: Some(runtime),
+                targets: &targets,
+                models,
+                players,
+                effects: Vec::new(),
+            }),
+        );
         if effects.prekill_linked {
             for child in linked {
                 if let Some(row) = self.entities.get_mut(usize::from(child.entity_index)) {
@@ -392,6 +425,16 @@ impl crate::campaign::source_arena::SourceArena {
         source.phase = source.phase.wrapping_add(1);
         self.source_rng.insert(source_slot, source.entity_rng);
         self.authored_class5[source_index] = source;
+        self.house_residents.traders.insert(source_slot, behavior);
+        publish_source(
+            &source,
+            behavior,
+            &mut self.entities[usize::from(source_slot)],
+        );
+        self.entities[usize::from(source_slot)].record[98..102]
+            .copy_from_slice(&pending_damage.to_le_bytes());
+        self.entities[usize::from(source_slot)].record[56..58]
+            .copy_from_slice(&linked_head.to_le_bytes());
         let map_synced = self
             .map_chains
             .sync_entity(RenderableMapSeed {
@@ -401,15 +444,209 @@ impl crate::campaign::source_arena::SourceArena {
                 y: source.position.y,
             })
             .is_ok();
-        Some(TraderAction113Step {
+        let stage_effects = std::mem::take(&mut effects.stage_effects);
+        effects.spell_awards =
+            self::runtime::apply_effects(self, villagers, terrain, particles, stage_effects)?;
+        Ok(Some(TraderAction113Step {
             effects,
             target: context.target,
             map_synced,
-        })
+        }))
     }
 }
 
+/// Publish the current family carrier, including the stage words absent from
+/// the common class-5 row, for collision, targeting and presentation consumers.
+pub(crate) fn publish_source(
+    source: &Level2AuthoredClass5Source,
+    state: AuthoredTraderBehavior,
+    raw: &mut crate::native_world::EntitySnapshot,
+) {
+    if (raw.class, raw.model) != (5, source.model) {
+        *raw = crate::native_world::cave_features::new_event(
+            source.source_entity_index,
+            source.entity_rng,
+            source.position,
+        );
+    }
+    raw.active = source.active;
+    raw.record[2] = u8::from(source.active);
+    raw.class = 5;
+    raw.model = source.model;
+    raw.record[67] = 5;
+    raw.record[68] = source.model;
+    raw.source_id = state.source_id;
+    raw.record[30..32].copy_from_slice(&state.source_id.to_le_bytes());
+    raw.set_control_flags(state.control_flags | if source.drawing_enabled { 0 } else { 0x400 });
+    raw.set_position(source.position);
+    raw.set_yaw(source.yaw);
+    raw.pitch = source.pitch;
+    raw.record[34..36].copy_from_slice(&source.pitch.to_le_bytes());
+    raw.record[36..38].copy_from_slice(&source.roll.to_le_bytes());
+    raw.set_max_life(source.max_life);
+    raw.set_life(source.life);
+    raw.set_entity_rng(source.entity_rng);
+    raw.set_source_action(source.action);
+    raw.phase = source.source_byte_3e;
+    raw.record[66] = source.source_byte_3e;
+    raw.set_source_dword_10(source.dword_0x10);
+    raw.record[40..42].copy_from_slice(&source.word_0x24.to_le_bytes());
+    raw.record[42..44].copy_from_slice(&source.word_0x26.to_le_bytes());
+    raw.record[44..46].copy_from_slice(&state.links.parent.to_le_bytes());
+    raw.record[50..52].copy_from_slice(&state.links.remaining.to_le_bytes());
+    raw.record[52..54].copy_from_slice(&state.links.duration.to_le_bytes());
+    raw.record[60] = TRADER_BYTE_0X38;
+    raw.record[61] = source.source_byte_39;
+    raw.record[69] = TRADER_XTYPE;
+    raw.record[76] = state.index as u8;
+    raw.record[77] = state.mode as u8;
+    raw.record[78..80].copy_from_slice(&state.links.relation.to_le_bytes());
+    raw.record[88..90].copy_from_slice(&source.shift_rot_x.to_le_bytes());
+    raw.record[90..92].copy_from_slice(&source.shift_rot_x.to_le_bytes());
+    raw.record[92..94].copy_from_slice(&source.shift_rot_y.to_le_bytes());
+    raw.record[94..96].copy_from_slice(&source.particle_index.to_le_bytes());
+    raw.particle_parameter_index = Some(source.particle_index);
+    raw.record[97] = 1;
+    raw.record[102..104].copy_from_slice(&source.pending_word_0x62.to_le_bytes());
+    raw.set_subspell_index(source.subspell_index);
+    raw.parameter_relation = Some(TRADER_DESCRIPTOR_INDEX);
+    raw.record[164..168].copy_from_slice(&(u32::from(TRADER_DESCRIPTOR_INDEX) + 1).to_le_bytes());
+    raw.set_actual_speed(source.actual_speed);
+    raw.record[136..138].copy_from_slice(&source.minimum_speed.to_le_bytes());
+    raw.record[138..140].copy_from_slice(&source.maximum_speed.to_le_bytes());
+    raw.mana = source.mana;
+    raw.record[148..152].copy_from_slice(&source.mana.to_le_bytes());
+    raw.record[152..154].copy_from_slice(&state.owner.to_le_bytes());
+    raw.record[154..156].copy_from_slice(&source.word_0x96_150.to_le_bytes());
+}
+
+/// The ordinary authored constructor's sub_12100 route assignment.
+pub(crate) fn bind_authored_route(
+    arena: &mut crate::campaign::source_arena::SourceArena,
+    runtime: &mut crate::native_world::RuntimeSnapshot,
+    slot: u16,
+    index: u8,
+) {
+    let economy = &mut arena.economy;
+    let Some(source) = economy
+        .authored_class5
+        .iter_mut()
+        .find(|source| source.source_entity_index == slot && source.model == TRADER_MODEL)
+    else {
+        return;
+    };
+    let state = economy
+        .house_residents
+        .traders
+        .entry(slot)
+        .or_insert_with(|| AuthoredTraderBehavior::new(slot));
+    runtime::Route {
+        model: TRADER_MODEL,
+        position: source.position,
+        action: &mut source.action,
+        index: &mut state.index,
+        mode: &mut state.mode,
+        links: &mut state.links,
+    }
+    .bind(runtime, index);
+    publish_source(source, *state, &mut arena.entities[usize::from(slot)]);
+}
+
 /// A linked class-5 child as observed by `sub_237B0`'s `word_0x34` walk.
+pub(crate) fn target_in_arena(
+    arena: &crate::campaign::source_arena::SourceArena,
+    houses: &crate::house::HouseFamily,
+    slot: u16,
+) -> Option<TraderTarget> {
+    if slot == 0 {
+        return None;
+    }
+    if let Some(house) = houses
+        .houses()
+        .iter()
+        .find(|house| house.entity_index == slot && house.source_retained())
+    {
+        return Some(TraderTarget {
+            entity_index: slot,
+            class: 10,
+            model: 45,
+            active: house.source_retained(),
+            minimum_speed: house.capacity,
+            dword_0x10: house.occupants,
+            position: house.position,
+        });
+    }
+    if let Some(source) = arena
+        .authored_model45()
+        .iter()
+        .find(|source| source.source_entity_index == slot && source.active)
+    {
+        return Some(TraderTarget {
+            entity_index: slot,
+            class: source.source_class,
+            model: source.model,
+            active: source.active,
+            minimum_speed: source.minimum_speed,
+            dword_0x10: source.dword_0x10,
+            position: source.position,
+        });
+    }
+    if let Some(source) = arena
+        .authored_class5()
+        .iter()
+        .find(|source| source.source_entity_index == slot && source.active)
+    {
+        return Some(TraderTarget {
+            entity_index: slot,
+            class: 5,
+            model: source.model,
+            active: source.active,
+            minimum_speed: source.minimum_speed,
+            dword_0x10: source.dword_0x10,
+            position: source.position,
+        });
+    }
+    let raw = arena
+        .entities
+        .get(usize::from(slot))
+        .filter(|raw| raw.active)?;
+    Some(TraderTarget {
+        entity_index: slot,
+        class: raw.class,
+        model: raw.model,
+        active: raw.active,
+        minimum_speed: raw.minimum_speed(),
+        dword_0x10: raw.source_dword_10(),
+        position: raw.position,
+    })
+}
+
+pub(crate) fn apply_target_in_arena(
+    arena: &mut crate::campaign::source_arena::SourceArena,
+    houses: &mut crate::house::HouseFamily,
+    target: TraderTarget,
+) {
+    if let Some(house) = houses.commit_resident_count(target.entity_index, target.dword_0x10) {
+        house.publish_source(&mut arena.entities[usize::from(target.entity_index)]);
+    } else {
+        if let Some(source) = arena
+            .economy
+            .authored_model45
+            .iter_mut()
+            .find(|source| source.source_entity_index == target.entity_index && source.active)
+        {
+            source.dword_0x10 = target.dword_0x10;
+        }
+        if let Some(raw) = arena
+            .entities
+            .get_mut(usize::from(target.entity_index))
+            .filter(|raw| raw.active)
+        {
+            raw.set_source_dword_10(target.dword_0x10);
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct TraderLinkedState {
     pub(crate) entity_index: u16,
@@ -449,7 +686,7 @@ pub(crate) struct TraderAction113Context<'a> {
     pub(crate) buildings: &'a [TraderBuildingCandidate],
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct TraderAction113Effects {
     pub(crate) player_feedback_entity: Option<u16>,
     pub(crate) selected_target: Option<u16>,
@@ -459,9 +696,11 @@ pub(crate) struct TraderAction113Effects {
     pub(crate) death_burst: bool,
     pub(crate) prekill_linked: bool,
     pub(crate) population_decrement: u32,
+    pub(crate) stage_effects: Vec<stage::StageEffect>,
+    pub(crate) spell_awards: Vec<(u16, u8)>,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct TraderAction113Step {
     pub(crate) effects: TraderAction113Effects,
     pub(crate) target: Option<TraderTarget>,
@@ -477,6 +716,8 @@ fn step_trader_lifecycle<W: crate::FlightWorld>(
     world: &W,
     extra_views: &[crate::level1_mission::Level1SourceEntityView],
     linked_killers: &[(u16, u16)],
+    behavior: &mut AuthoredTraderBehavior,
+    stage: Option<stage::StageContext<'_>>,
 ) -> TraderAction113Effects {
     use crate::level1_mission::{
         Level1ResetSourceSlot, Level1SourceEffect, Level1SourceEntityView,
@@ -515,6 +756,14 @@ fn step_trader_lifecycle<W: crate::FlightWorld>(
     resident.linked_entity_index = context.linked_head;
     resident.mana = source.mana;
     resident.visible = source.drawing_enabled;
+    resident.source_id = behavior.source_id;
+    resident.stage = behavior.links;
+    resident.stage_var_1 = behavior.index;
+    resident.stage_var_2 = behavior.mode;
+    resident.owner_entity_index = behavior.owner;
+    resident.source_byte_39 = source.source_byte_39;
+    resident.movement_blocked = behavior.control_flags & 0x40000 != 0;
+    resident.suppress_death_burst = behavior.control_flags & 0x100000 != 0;
 
     let view = |index, class, model, active, position| {
         let mut view = Level1SourceEntityView::imported_record(Level1ResetSourceSlot {
@@ -587,15 +836,14 @@ fn step_trader_lifecycle<W: crate::FlightWorld>(
     let mut census = 1;
     let mut feedback = 0;
     let mut unused_global_rng = 0;
-    let mut source_control_flags = 8;
     let building_source_order = context
         .buildings
         .iter()
         .map(|row| row.entity_index)
         .collect::<Vec<_>>();
     let mut step = SettlementContext {
-        stage: None,
-        source_control_flags: &mut source_control_flags,
+        stage,
+        source_control_flags: &mut behavior.control_flags,
         dynamic_residents: &mut linked_residents,
         class_5_census: &mut census,
         player_archer_target_ticks: &mut feedback,
@@ -609,6 +857,12 @@ fn step_trader_lifecycle<W: crate::FlightWorld>(
     let outputs = step.step_dynamic_trader(world, &views, &mut resident);
     let death_burst = !step.death_bursts.is_empty();
     let prekill_linked = !step.linked_kills.is_empty();
+    let stage_effects = step
+        .stage
+        .as_mut()
+        .map(|stage| std::mem::take(&mut stage.effects))
+        .unwrap_or_default();
+    drop(step);
     let population_decrement = u32::from(census == 0);
     let mut hidden = false;
     for effect in outputs {
@@ -644,6 +898,23 @@ fn step_trader_lifecycle<W: crate::FlightWorld>(
     source.yaw = resident.yaw;
     source.roll = resident.desired_heading;
     source.actual_speed = resident.actual_speed;
+    source.source_byte_39 = resident.source_byte_39;
+    source.mana = resident.mana;
+    behavior.index = resident.stage_var_1;
+    behavior.mode = resident.stage_var_2;
+    behavior.links = resident.stage;
+    behavior.owner = resident.owner_entity_index;
+    behavior.control_flags = (behavior.control_flags & !0x0014_0000)
+        | if resident.movement_blocked {
+            0x0004_0000
+        } else {
+            0
+        }
+        | if resident.suppress_death_burst {
+            0x0010_0000
+        } else {
+            0
+        };
     if hidden {
         source.drawing_enabled = false;
     }
@@ -661,6 +932,8 @@ fn step_trader_lifecycle<W: crate::FlightWorld>(
         death_burst,
         prekill_linked,
         population_decrement,
+        stage_effects,
+        spell_awards: Vec::new(),
     }
 }
 
@@ -684,7 +957,16 @@ pub(crate) fn step_trader_action113(
             0
         }
     }
-    step_trader_lifecycle(source, context, &Ground(source.position.z), &[], &[])
+    let mut behavior = AuthoredTraderBehavior::new(source.source_entity_index);
+    step_trader_lifecycle(
+        source,
+        context,
+        &Ground(source.position.z),
+        &[],
+        &[],
+        &mut behavior,
+        None,
+    )
 }
 
 #[cfg(test)]

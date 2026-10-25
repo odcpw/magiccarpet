@@ -393,6 +393,10 @@ impl VillagerFamily {
         &self.villagers
     }
 
+    pub(crate) fn villagers_mut(&mut self) -> &mut [VillagerState] {
+        &mut self.villagers
+    }
+
     pub(crate) fn reclaim_inactive(&mut self) {
         self.villagers = std::mem::take(&mut self.villagers)
             .into_vec()
@@ -500,6 +504,19 @@ impl VillagerFamily {
         houses: &mut HouseFamily,
         stage: Option<&mut crate::native_world::creatures::settlements::stage::StageContext<'_>>,
     ) -> Vec<VillagerStepEffect> {
+        self.step_source_slot_with_entry(source_slot, world, source_views, stage, |target| {
+            houses.try_enter_resident(target)
+        })
+    }
+
+    pub(crate) fn step_source_slot_with_entry<W: FlightWorld>(
+        &mut self,
+        source_slot: u16,
+        world: &W,
+        source_views: &[Level1SourceEntityView],
+        stage: Option<&mut crate::native_world::creatures::settlements::stage::StageContext<'_>>,
+        mut enter: impl FnMut(u16) -> HouseResidentEntry,
+    ) -> Vec<VillagerStepEffect> {
         let Some(index) = self
             .villagers
             .iter()
@@ -522,7 +539,7 @@ impl VillagerFamily {
             else {
                 continue;
             };
-            if houses.try_enter_resident(house_source_entity_index) != HouseResidentEntry::Entered {
+            if enter(house_source_entity_index) != HouseResidentEntry::Entered {
                 reject_building_entry(&mut self.villagers[index]);
             }
         }
@@ -534,10 +551,40 @@ impl VillagerFamily {
     /// Ordinary source writers admit zero payload and an ownerless mailbox.
     /// The source identity exclusion belongs here, before mailbox mutation.
     pub fn submit_source_damage(&mut self, entity_index: u16, payload: u16, owner: u16) -> bool {
+        self.submit_source_mailbox(
+            entity_index,
+            payload,
+            owner,
+            crate::combat::actors::DamageWriter::Ordinary,
+        )
+    }
+
+    pub(crate) fn submit_source_contact(
+        &mut self,
+        entity_index: u16,
+        payload: u16,
+        owner: u16,
+    ) -> bool {
+        self.submit_source_mailbox(
+            entity_index,
+            payload,
+            owner,
+            crate::combat::actors::DamageWriter::Contact,
+        )
+    }
+
+    fn submit_source_mailbox(
+        &mut self,
+        entity_index: u16,
+        payload: u16,
+        owner: u16,
+        writer: crate::combat::actors::DamageWriter,
+    ) -> bool {
         let Some(villager) = self.villagers.iter_mut().find(|villager| {
             villager.source_retained()
                 && villager.entity_index == entity_index
-                && villager.source_id != owner
+                && (writer == crate::combat::actors::DamageWriter::Contact
+                    || villager.source_id != owner)
         }) else {
             return false;
         };
@@ -546,13 +593,62 @@ impl VillagerFamily {
             &mut villager.pending_damage,
             &mut attacker,
         )
-        .submit(
-            i32::from(payload),
-            owner,
-            crate::combat::actors::DamageWriter::Ordinary,
-        );
+        .submit(i32::from(payload), owner, writer);
         villager.pending_attacker = attacker.cast_signed();
         written
+    }
+
+    pub(crate) fn wind_actor(&self, slot: u16) -> Option<crate::world::fields::wind::Actor> {
+        let actor = self
+            .villagers
+            .iter()
+            .find(|actor| actor.entity_index == slot && actor.active)?;
+        Some(crate::world::fields::wind::Actor {
+            position: actor.position,
+            class: VILLAGER_CLASS,
+            model: actor.model,
+            yaw: actor.yaw,
+            move_heading: actor.yaw,
+            rng: actor.rng,
+            flags: actor.control_flags,
+            ground_clearance: self.config.ground_clearance,
+            descent: self.config.vertical_relaxation,
+            half_height: actor.collision_half_height,
+        })
+    }
+
+    pub(crate) fn apply_wind_motion(
+        &mut self,
+        slot: u16,
+        motion: crate::world::fields::wind::Motion,
+    ) -> bool {
+        let Some(actor) = self
+            .villagers
+            .iter_mut()
+            .find(|actor| actor.entity_index == slot && actor.active)
+        else {
+            return false;
+        };
+        actor.position = motion.actor.position;
+        actor.yaw = motion.actor.yaw;
+        actor.rng = motion.actor.rng;
+        actor.control_flags = motion.actor.flags;
+        if let Some(speed) = motion.actual_speed {
+            actor.actual_speed = speed;
+        }
+        true
+    }
+
+    pub(crate) fn clear_wind_flags(&mut self, slot: u16) -> bool {
+        let Some(actor) = self
+            .villagers
+            .iter_mut()
+            .find(|actor| actor.entity_index == slot && actor.active)
+        else {
+            return false;
+        };
+        actor.control_flags = crate::world::fields::wind::clear_flags(actor.control_flags);
+        true
     }
 
     pub fn inject_damage(

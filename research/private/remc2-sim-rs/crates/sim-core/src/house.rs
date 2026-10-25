@@ -1098,21 +1098,47 @@ impl HouseFamily {
         payload: u16,
         owner: u16,
     ) -> bool {
+        self.submit_source_mailbox(
+            entity_index,
+            payload,
+            owner,
+            crate::combat::actors::DamageWriter::Ordinary,
+        )
+    }
+
+    pub(crate) fn submit_source_contact(
+        &mut self,
+        entity_index: u16,
+        payload: u16,
+        owner: u16,
+    ) -> bool {
+        self.submit_source_mailbox(
+            entity_index,
+            payload,
+            owner,
+            crate::combat::actors::DamageWriter::Contact,
+        )
+    }
+
+    fn submit_source_mailbox(
+        &mut self,
+        entity_index: u16,
+        payload: u16,
+        owner: u16,
+        writer: crate::combat::actors::DamageWriter,
+    ) -> bool {
         let Some(house) = self.houses.iter_mut().find(|house| {
             house.entity_index == entity_index
                 && house.source_retained()
-                && house.source_id != owner
+                && (writer == crate::combat::actors::DamageWriter::Contact
+                    || house.source_id != owner)
         }) else {
             return false;
         };
         let mut attacker = house.pending_attacker as u16;
         let accepted =
             crate::combat::actors::DamageMailboxMut::new(&mut house.pending_damage, &mut attacker)
-                .submit(
-                    i32::from(payload),
-                    owner,
-                    crate::combat::actors::DamageWriter::Ordinary,
-                );
+                .submit(i32::from(payload), owner, writer);
         house.pending_attacker = attacker as i16;
         accepted
     }
@@ -1160,6 +1186,21 @@ impl HouseFamily {
         }
         house.occupants = house.occupants.wrapping_add(1);
         HouseResidentEntry::Entered
+    }
+
+    /// Commit sub_237B0's already capacity-checked target write to the same
+    /// household carrier used by future population and destruction callbacks.
+    pub(crate) fn commit_resident_count(
+        &mut self,
+        slot: u16,
+        occupants: i32,
+    ) -> Option<HouseState> {
+        let house = self
+            .houses
+            .iter_mut()
+            .find(|house| house.entity_index == slot && house.source_retained())?;
+        house.occupants = occupants;
+        Some(*house)
     }
 
     pub fn commit_removal_state(

@@ -28,7 +28,7 @@ pub(crate) struct StageTarget {
     pub links: SettlementStageLinks,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum StageEffect {
     Expire {
         slot: u16,
@@ -125,6 +125,16 @@ pub(crate) fn targets(
                 target.stage_index = row.stage_var_1;
                 target.stage_mode = row.stage_var_2;
                 target.links = row.stage;
+            }
+            if let Some(state) = arena
+                .economy
+                .house_residents
+                .traders
+                .get(&view.source_entity_index)
+            {
+                target.stage_index = state.index;
+                target.stage_mode = state.mode;
+                target.links = state.links;
             }
             target
         })
