@@ -577,6 +577,22 @@ fn full_arena_death_replaces_its_own_address_and_hides_the_newborn_until_reclaim
     arena.economy.exhaust_new_event_capacity_for_test();
     arena.rebuild_source_free_arena();
     assert_eq!(arena.economy.free_slot_count(), 0);
+    assert_eq!(
+        arena.entities[usize::from(slot)].control_flags
+            & crate::level1_mission::SOURCE_REPLACEABLE_FLAG,
+        0,
+        "ordinary constructor bit8 does not grant source byte2 bit2 replacement"
+    );
+    assert_eq!(
+        arena.allocate_source_slot_with_terrain(&mut terrain),
+        None,
+        "the source must refuse replacement without the actual eligibility bit"
+    );
+    // Explicitly admit the selected address into the source49F90 fallback
+    // list. Ordinary construction above must continue to omit this flag.
+    let row = &mut arena.entities[usize::from(slot)];
+    row.set_control_flags(row.control_flags | crate::level1_mission::SOURCE_REPLACEABLE_FLAG);
+    arena.rebuild_source_free_arena();
     let old = arena.handle(slot).unwrap();
     let seed = arena.new_event_rng(slot);
     let row = &mut arena.entities[usize::from(slot)];
@@ -633,5 +649,10 @@ fn full_arena_death_replaces_its_own_address_and_hides_the_newborn_until_reclaim
             .spheres()
             .iter()
             .any(|sphere| sphere.source_entity_index == slot)
+    );
+    assert_eq!(
+        terrain.planes().entity_indices[0] as u16,
+        arena.economy.map_chains.tile_head(0),
+        "following-pass sphere reclaim must publish the same tile head to terrain consumers"
     );
 }

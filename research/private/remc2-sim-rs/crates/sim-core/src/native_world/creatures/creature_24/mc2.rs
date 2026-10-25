@@ -533,57 +533,23 @@ pub(crate) fn spawn_mana(
     } else {
         position
     };
-    let seed = arena.new_event_rng(slot);
-    // 50080/500C0 and SetManaSphereColorAndRot do not advance the stream.
-    let yaw_rng = super::level2_next_rng16(seed);
-    let source_yaw = if self_replaced { 0 } else { yaw };
-    let yaw = (i32::from(yaw_rng % 113) + i32::from(source_yaw) - 56) as i16 & 2047;
-    let speed_rng = super::level2_next_rng16(yaw_rng);
-    let speed = (speed_rng % 48 + 16) as i16;
-    let mut velocity = Position::default();
-    crate::move_entity(&mut velocity, yaw, 0, speed);
-    let ground = terrain.ground_height(position);
-    let difference = 1024 - (i32::from(position.z) - i32::from(ground));
-    let vertical_velocity = (difference / 8) as i16;
-    let sphere = crate::level1_mission::ManaSphere {
-        id: u32::from(slot),
-        source_entity_index: slot,
-        entity_rng: speed_rng,
+    arena.economy.initialize_death_mana_sphere_at_slot(
+        slot,
+        parent,
         position,
-        velocity_x: velocity.x as i16,
-        velocity_y: velocity.y as i16,
-        vertical_velocity,
-        yaw,
-        max_life: 300,
-        life: 300,
-        mana: if self_replaced { 512 } else { mana },
-        owner_entity_index: if self_replaced { 0 } else { owner },
-        player_entity_index: if self_replaced { 0 } else { owner },
-        incoming_owner_entity_index: 0,
-        incoming_possession_payload: 0,
-        ordinary_damage_payload: 0,
-        ordinary_damage_owner: 0,
-        attraction_source_entity_index: 0,
-        attraction_step: 0,
-        attraction_distance_high: 0,
-        assigned_carrier_id: 0,
-        assigned_defender_slot: 0,
-        control_flags: 12,
-        phase: slot as u8,
-        active: true,
-        pending_delete: false,
-    };
-    arena.economy.spheres.push(sphere);
-    arena.economy.source_rng.insert(slot, speed_rng);
-    arena.economy.refresh_owner_mana_rows();
-    arena
+        if self_replaced { 0 } else { yaw },
+        if self_replaced { 512 } else { mana },
+        if self_replaced { 0 } else { owner },
+        terrain,
+    );
+    let child_rng = arena
         .economy
-        .events
-        .push(crate::native_world::Level2EconomyEvent::ManaSphereSpawned {
-            sphere_id: u32::from(slot),
-            source_entity_index: parent,
-            mana: sphere.mana,
-        });
+        .spheres
+        .last()
+        .filter(|sphere| sphere.source_entity_index == slot)
+        .map(|sphere| sphere.entity_rng)
+        .ok_or_else(|| format!("mana sphere constructor lost allocated slot{slot}"))?;
+    arena.economy.source_rng.insert(slot, child_rng);
     crate::world::effects::sync_position(arena, terrain, slot, position, true, false)
 }
 
