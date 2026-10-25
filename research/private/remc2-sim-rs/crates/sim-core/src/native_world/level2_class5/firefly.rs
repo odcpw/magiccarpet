@@ -368,57 +368,120 @@ impl Level2EconomyState {
         })
     }
 
-    pub(crate) fn advance_authored_firefly_stage_rows(&mut self) {
-        let reached = self
+    /// The kind-1 patrol branch of `sub_12500 -> sub_12410 -> sub_12330`.
+    /// Follow one link per pre-dispatch pass, including the destination's
+    /// binding counter and thinning rule, rather than ending every patrol.
+    pub(crate) fn advance_authored_firefly_stage_rows(
+        &mut self,
+        runtime: &mut RuntimeSnapshot,
+    ) -> Result<(), String> {
+        let mut slots = self
             .authored_fireflies
             .iter()
-            .filter_map(|state| {
-                let source = self.authored_class5.iter().find(|source| {
-                    source.active
-                        && source.source_entity_index == state.source_entity_index
-                        && source.model == FIREFLY_MODEL
-                        && source.action == FIREFLY_STAGE_ACTION
-                })?;
-                let dx = i32::from(
-                    state
-                        .stage_target
-                        .x
-                        .wrapping_sub(source.position.x)
-                        .cast_signed(),
-                )
-                .abs();
-                let dy = i32::from(
-                    state
-                        .stage_target
-                        .y
-                        .wrapping_sub(source.position.y)
-                        .cast_signed(),
-                )
-                .abs();
-                (state.stage_var1 != 0
-                    && state.stage_var2 == 1
-                    && dx <= FIREFLY_STAGE_REACH
-                    && dy <= FIREFLY_STAGE_REACH)
-                    .then_some(source.source_entity_index)
-            })
+            .map(|state| state.source_entity_index)
             .collect::<Vec<_>>();
-        for source_slot in reached {
-            if let Some(source) = self
-                .authored_class5
-                .iter_mut()
-                .find(|source| source.source_entity_index == source_slot)
-            {
-                source.action = FIREFLY_ROAM_ACTION;
-            }
-            if let Some(state) = self
+        // The source class/model list is rebuilt in numeric entity order.
+        // This matters when several arrivals bind a thinned destination.
+        slots.sort_unstable();
+        for source_slot in slots {
+            let Some(source_index) = self.authored_class5.iter().position(|source| {
+                source.active
+                    && source.drawing_enabled
+                    && source.life >= 0
+                    && source.source_entity_index == source_slot
+                    && source.model == FIREFLY_MODEL
+                    && !matches!(source.action & 7, 4 | 5)
+            }) else {
+                continue;
+            };
+            let state_index = self
                 .authored_fireflies
-                .iter_mut()
-                .find(|state| state.source_entity_index == source_slot)
-            {
+                .iter()
+                .position(|state| state.source_entity_index == source_slot)
+                .expect("Firefly source slot came from its runtime row");
+            let state = self.authored_fireflies[state_index];
+            if state.stage_var1 == 0 || state.stage_var2 != 1 {
+                continue;
+            }
+            let stage = runtime
+                .stage_variables
+                .get(usize::from(state.stage_var1))
+                .copied()
+                .ok_or_else(|| format!("Firefly StageVar {} is absent", state.stage_var1))?;
+            let RuntimeRelation::AxisScalar(point) = stage.relation else {
+                return Err(format!(
+                    "Firefly StageVar {} has no patrol point",
+                    state.stage_var1
+                ));
+            };
+            if stage.kind != 1 {
+                return Err(format!(
+                    "Firefly patrol StageVar {} has kind {}",
+                    state.stage_var1, stage.kind
+                ));
+            }
+            let position = self.authored_class5[source_index].position;
+            let dx = i32::from((point as u16).wrapping_sub(position.x).cast_signed()).abs();
+            let dy = i32::from(
+                ((point >> 16) as u16)
+                    .wrapping_sub(position.y)
+                    .cast_signed(),
+            )
+            .abs();
+            if dx > FIREFLY_STAGE_REACH || dy > FIREFLY_STAGE_REACH {
+                continue;
+            }
+
+            let next = stage.word_2 as u8;
+            let mut route = None;
+            if next != 0 {
+                let destination = runtime
+                    .stage_variables
+                    .get(usize::from(next))
+                    .copied()
+                    .ok_or_else(|| format!("Firefly next StageVar {next} is absent"))?;
+                let phase = (destination.word_2 >> 8) as u8 & 3;
+                if !runtime.advance_level2_stage_variable_counter(next) {
+                    return Err(format!(
+                        "Firefly StageVar {next} has no lossless binding counter carrier"
+                    ));
+                }
+                let rejected = match destination.flags as u8 & 0x60 {
+                    0x20 => phase == 3,
+                    0x40 => phase & 1 != 0,
+                    0x60 => phase != 0,
+                    _ => false,
+                };
+                if !rejected {
+                    let RuntimeRelation::AxisScalar(point) = destination.relation else {
+                        return Err(format!("Firefly next StageVar {next} has no patrol point"));
+                    };
+                    if destination.kind != 1 {
+                        return Err(format!(
+                            "Firefly next patrol StageVar {next} has kind {}",
+                            destination.kind
+                        ));
+                    }
+                    route = Some(Position {
+                        x: point as u16,
+                        y: (point >> 16) as u16,
+                        z: 0,
+                    });
+                }
+            }
+            let state = &mut self.authored_fireflies[state_index];
+            if let Some(target) = route {
+                state.stage_var1 = next;
+                state.stage_var2 = 1;
+                state.stage_target = target;
+                self.authored_class5[source_index].action = FIREFLY_STAGE_ACTION;
+            } else {
                 state.stage_var1 = 0;
                 state.stage_var2 = 0;
+                self.authored_class5[source_index].action = FIREFLY_ROAM_ACTION;
             }
         }
+        Ok(())
     }
 
     pub(crate) fn step_authored_firefly_stage_slot(
@@ -1329,5 +1392,212 @@ fn apply_firefly_separation(
     }) {
         source.roll = i16::try_from(crate::heading_for_positions(peer.position, source.position))
             .expect("Firefly separation heading fits i16");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::campaign::{CampaignSession, spec::CampaignSelection};
+    use std::path::PathBuf;
+
+    fn patrol_point(runtime: &RuntimeSnapshot, index: u8) -> Position {
+        let row = runtime.stage_variables[usize::from(index)];
+        assert_eq!(row.kind, 1);
+        let RuntimeRelation::AxisScalar(point) = row.relation else {
+            panic!("owner patrol row has no axis point");
+        };
+        Position {
+            x: point as u16,
+            y: (point >> 16) as u16,
+            z: 0,
+        }
+    }
+
+    fn level_one_patrol() -> (Level2EconomyState, RuntimeSnapshot, u16) {
+        let package = std::env::var_os("MC_CAMPAIGN_LEVEL1_PACKAGE").map_or_else(
+            || {
+                PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../../generated/mc-bhq8-level1-collision-v5-night")
+            },
+            PathBuf::from,
+        );
+        let campaign = CampaignSession::open(package, CampaignSelection::LEVEL1)
+            .expect("real Level-1 patrol owner data");
+        let session = campaign.level2_compatibility();
+        let mut economy = session.economy().clone();
+        let mut runtime = session.runtime().clone();
+        let target = patrol_point(&runtime, 8);
+        let source = economy
+            .allocate_authored_firefly(
+                156,
+                target,
+                FireflyStageRoute {
+                    stage_var1: 8,
+                    stage_var2: 1,
+                    target,
+                },
+                FIREFLY_LIFE as u32,
+                session.canonical_terrain(),
+            )
+            .expect("production Firefly constructor");
+        // Match the constructor's existing sub_12330 initial binding. The
+        // regression below concerns later pre-dispatch arrivals only.
+        assert!(runtime.advance_level2_stage_variable_counter(8));
+        (economy, runtime, source.source_entity_index)
+    }
+
+    #[test]
+    fn level_one_firefly_patrol_follows_owner_cycle_and_updates_raw_binding_counters() {
+        let (mut economy, mut runtime, slot) = level_one_patrol();
+        let source_index = economy
+            .authored_class5
+            .iter()
+            .position(|source| source.source_entity_index == slot)
+            .unwrap();
+        let state_index = economy
+            .authored_fireflies
+            .iter()
+            .position(|state| state.source_entity_index == slot)
+            .unwrap();
+
+        let first = patrol_point(&runtime, 8);
+        economy.authored_class5[source_index].position.x = first.x.wrapping_add(2_049);
+        let before = runtime.clone();
+        economy
+            .advance_authored_firefly_stage_rows(&mut runtime)
+            .unwrap();
+        assert_eq!(runtime, before, "outside the inclusive arrival box");
+        assert_eq!(economy.authored_fireflies[state_index].stage_var1, 8);
+
+        for (current, next) in [(8, 9), (9, 10), (10, 8), (8, 9)] {
+            assert_eq!(
+                runtime.stage_variables[usize::from(current)].word_2 as u8,
+                next
+            );
+            let point = patrol_point(&runtime, current);
+            economy.authored_class5[source_index].position = Position {
+                x: point.x.wrapping_add(2_048),
+                y: point.y.wrapping_sub(2_048),
+                z: 0,
+            };
+            let rng = economy.authored_class5[source_index].entity_rng;
+            let old_word = runtime.stage_variables[usize::from(next)].word_2;
+            let mut expected = runtime.stage_variables.clone();
+            expected[usize::from(next)].word_2 =
+                (old_word & 0xff) | (u16::from(((old_word >> 8) as u8).wrapping_add(1)) << 8);
+            economy
+                .advance_authored_firefly_stage_rows(&mut runtime)
+                .unwrap();
+
+            let state = economy.authored_fireflies[state_index];
+            assert_eq!((state.stage_var1, state.stage_var2), (next, 1));
+            assert_eq!(state.stage_target, patrol_point(&runtime, next));
+            assert_eq!(
+                economy.authored_class5[source_index].action,
+                FIREFLY_STAGE_ACTION
+            );
+            assert_eq!(economy.authored_class5[source_index].entity_rng, rng);
+            assert_eq!(runtime.stage_variables, expected);
+            let offset = 392 + usize::from(next) * 12 + 2;
+            assert_eq!(
+                runtime.bytes()[offset..offset + 2],
+                expected[usize::from(next)].word_2.to_le_bytes()
+            );
+        }
+
+        // sub_12500 skips death actions even when their stage bytes survive.
+        for action in [FIREFLY_PRE_KILL_ACTION, FIREFLY_KILL_ACTION] {
+            economy.authored_class5[source_index].action = action;
+            economy.authored_class5[source_index].position = patrol_point(&runtime, 9);
+            let state = economy.authored_fireflies[state_index];
+            let before = runtime.clone();
+            economy
+                .advance_authored_firefly_stage_rows(&mut runtime)
+                .unwrap();
+            assert_eq!(economy.authored_fireflies[state_index], state);
+            assert_eq!(runtime, before);
+            assert_eq!(economy.authored_class5[source_index].action, action);
+        }
+    }
+
+    #[test]
+    fn firefly_patrol_binding_thins_after_counter_increment_and_zero_link_roams() {
+        let (economy, runtime, slot) = level_one_patrol();
+        let source_index = economy
+            .authored_class5
+            .iter()
+            .position(|source| source.source_entity_index == slot)
+            .unwrap();
+        let state_index = economy
+            .authored_fireflies
+            .iter()
+            .position(|state| state.source_entity_index == slot)
+            .unwrap();
+        for flags in [0, 0x20, 0x40, 0x60] {
+            for counter in [0_u8, 1, 2, 3, 255] {
+                let mut economy = economy.clone();
+                let mut runtime = runtime.clone();
+                economy.authored_class5[source_index].position = patrol_point(&runtime, 8);
+                // Source sub_12500 also processes a retained patrol binding
+                // during ordinary attack actions, before action dispatch.
+                economy.authored_class5[source_index].action = FIREFLY_ATTACK_ACTION;
+                runtime.stage_variables[9].flags = flags as i8;
+                runtime.stage_variables[9].word_2 =
+                    (runtime.stage_variables[9].word_2 & 0xff) | (u16::from(counter) << 8);
+                let offset = 392 + 9 * 12;
+                runtime.bytes[offset + 1] = flags;
+                let word = runtime.stage_variables[9].word_2;
+                runtime.bytes[offset + 2..offset + 4].copy_from_slice(&word.to_le_bytes());
+                economy
+                    .advance_authored_firefly_stage_rows(&mut runtime)
+                    .unwrap();
+
+                let rejected = match flags {
+                    0x20 => counter & 3 == 3,
+                    0x40 => counter & 1 != 0,
+                    0x60 => counter & 3 != 0,
+                    _ => false,
+                };
+                let state = economy.authored_fireflies[state_index];
+                assert_eq!(
+                    (
+                        state.stage_var1,
+                        state.stage_var2,
+                        economy.authored_class5[source_index].action
+                    ),
+                    if rejected {
+                        (0, 0, FIREFLY_ROAM_ACTION)
+                    } else {
+                        (9, 1, FIREFLY_STAGE_ACTION)
+                    },
+                    "flags={flags:#x}, counter={counter}"
+                );
+                assert_eq!(
+                    (runtime.stage_variables[9].word_2 >> 8) as u8,
+                    counter.wrapping_add(1)
+                );
+                assert_eq!(runtime.bytes[offset + 3], counter.wrapping_add(1));
+                assert_eq!(runtime.stage_variables[9].word_2 as u8, 10);
+            }
+        }
+
+        let mut economy = economy;
+        let mut runtime = runtime;
+        economy.authored_class5[source_index].position = patrol_point(&runtime, 8);
+        runtime.stage_variables[8].word_2 &= 0xff00;
+        let word = runtime.stage_variables[8].word_2;
+        runtime.bytes[392 + 8 * 12 + 2..392 + 8 * 12 + 4].copy_from_slice(&word.to_le_bytes());
+        let before = runtime.clone();
+        economy
+            .advance_authored_firefly_stage_rows(&mut runtime)
+            .unwrap();
+        assert_eq!(runtime, before, "zero next link binds no destination");
+        let state = economy.authored_fireflies[state_index];
+        assert_eq!((state.stage_var1, state.stage_var2), (0, 0));
+        assert_eq!(
+            economy.authored_class5[source_index].action,
+            FIREFLY_ROAM_ACTION
+        );
     }
 }
