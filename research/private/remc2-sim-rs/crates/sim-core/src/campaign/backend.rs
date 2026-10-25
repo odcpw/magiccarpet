@@ -24,7 +24,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use sim_definition::adapter::{
     artifact_node, definition_error, game_package_with_payloads, owner_provenance,
-    with_level_and_runtime_flow,
+    with_level_and_runtime_flow, with_level_definition,
 };
 use sim_definition::runtime_flow::{
     RuntimeFlowDefinition, RuntimeFlowDestination, RuntimeFlowEntry, RuntimeFlowNodeId,
@@ -136,6 +136,10 @@ impl Error for CampaignBackendError {}
 /// Validate the campaign descriptor package and adapt it into one neutral
 /// immutable definition. Descriptor selectors terminate here; the resulting
 /// definition exposes only semantic IDs and content identities.
+///
+/// Admitted ordinary missions beyond the opening sequence can be opened as
+/// direct `GameSession`s. Their definitions carry no campaign flow until that
+/// flow is implemented; the outer campaign resolver still requires one.
 ///
 /// # Errors
 ///
@@ -457,14 +461,28 @@ fn load_mc2_campaign_internal(
         owner_provenance(&descriptor.package_sha256)?,
         artifact_payloads,
     )?;
-    let runtime_flow = mc2_runtime_flow(selection, descriptor.level_definition())?;
     let definition = GameDefinition::from_package(package, &engine_capabilities()?, catalog)?;
+    let definition = match selection {
+        CampaignSelection::LEVEL1 | CampaignSelection::LEVEL2 | CampaignSelection::LEVEL3 => {
+            with_level_and_runtime_flow(
+                definition,
+                descriptor.level_definition().clone(),
+                mc2_runtime_flow(selection, descriptor.level_definition())?,
+            )
+        }
+        _ if CampaignSelection::ordinary(selection.external_level) == Some(selection) => {
+            with_level_definition(definition, descriptor.level_definition().clone())
+        }
+        _ => {
+            return Err(definition_error(
+                DefinitionErrorCode::InvalidSchema,
+                "mc2_campaign.runtime_flow",
+                "campaign selection has no qualified direct-mission binding",
+            ));
+        }
+    };
     Ok((
-        with_level_and_runtime_flow(
-            definition,
-            descriptor.level_definition().clone(),
-            runtime_flow,
-        ),
+        definition,
         descriptor.identity,
         descriptor.package_sha256,
         descriptor.campaign_spec.reset_sources.runtime.sha256,
