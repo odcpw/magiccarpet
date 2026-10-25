@@ -1,6 +1,56 @@
 use super::*;
 
 impl Level2SharedSpellResetSession {
+    fn acquisition_from_source(
+        source: &EntitySnapshot,
+        player: &PlayerSnapshot,
+    ) -> SpellHolderAcquisitionState {
+        let family_index = usize::from(source.model);
+        let mut state = SpellHolderAcquisitionState::new(
+            source.model,
+            source.index,
+            player.entity_index,
+            source.action,
+            player.family_selected_tiers[family_index],
+        );
+        state.holder_relation = player.enabled_spell_holders[family_index];
+        state.eligibility = player.spell_hand_eligibility[family_index];
+        state.learned = player.acquired_spell_flags[family_index];
+        state.left_spell_slot = player.left_spell_slot_raw;
+        state.right_spell_slot = player.right_spell_slot_raw;
+        state.left_subspell_index = player.left_subspell_index;
+        state.right_subspell_index = player.right_subspell_index;
+        state.subspell_index = source.subspell_index;
+        state.word_0x30 = source.source_spell_word_30();
+        state.byte_0x3b = source.byte_3b;
+        state.byte_0x3c = source.byte_3c;
+        state.font_type_index = source.font_type_index;
+        state.mana_regen = source.mana_regen;
+        state.max_mana = source.max_mana;
+        state.mana = source.mana;
+        state.source_life = source.life;
+        state.source_draw_enabled = source.control_flags & ENTITY_DRAW_DISABLED_BIT == 0;
+        state.return_side = source.source_word_4a();
+        state
+    }
+
+    fn register_starting_acquisition(&mut self, source: &EntitySnapshot, player: &PlayerSnapshot) {
+        if source.model != SPEED_SPELL_FAMILY
+            || self
+                .acquisitions
+                .iter()
+                .any(|state| state.family == source.model)
+        {
+            return;
+        }
+        // A carried or direct-start Speed holder can become an ordinary pickup on
+        // death even when this mission has no authored pickup for its family.
+        // Preserve an existing reset source (notably Speed slot 75).
+        let mut acquisitions = std::mem::take(&mut self.acquisitions).into_vec();
+        acquisitions.push(Self::acquisition_from_source(source, player));
+        self.acquisitions = acquisitions.into_boxed_slice();
+    }
+
     #[cfg(test)]
     pub(crate) fn player_life_regen_for_test(&self) -> i32 {
         self.player_life_regen
@@ -50,7 +100,7 @@ impl Level2SharedSpellResetSession {
             .filter(|row| {
                 matches!(
                     row.action,
-                    16 | 17 | 19 | 25 | 26 | 31 | 32 | 34 | 37 | 76 | 77
+                    10 | 11 | 16 | 17 | 19 | 25 | 26 | 31 | 32 | 34 | 37 | 76 | 77
                 )
             })
             .cloned()
@@ -61,7 +111,7 @@ impl Level2SharedSpellResetSession {
             .filter(|row| {
                 !matches!(
                     row.action,
-                    16 | 17 | 19 | 25 | 26 | 31 | 32 | 34 | 37 | 76 | 77
+                    10 | 11 | 16 | 17 | 19 | 25 | 26 | 31 | 32 | 34 | 37 | 76 | 77
                 )
             })
             .cloned()
@@ -93,6 +143,11 @@ impl Level2SharedSpellResetSession {
         };
         let acquisitions = pickups
             .iter()
+            .chain(
+                holders
+                    .iter()
+                    .filter(|source| source.model == SPEED_SPELL_FAMILY),
+            )
             .map(|source| {
                 let family = source.model;
                 let family_index = usize::from(family);
@@ -307,6 +362,7 @@ impl Level2SharedSpellResetSession {
         };
         let acquisitions = LEVEL2_GENERIC_SPELL_PICKUPS
             .into_iter()
+            .chain(std::iter::once((SPEED_SPELL_FAMILY, 75, 10)))
             .map(|(family, source_slot, source_action)| {
                 let family_index = usize::from(family);
                 let mut state = SpellHolderAcquisitionState::new(
@@ -559,6 +615,9 @@ impl Level2SharedSpellResetSession {
         player.record[558] = player.left_subspell_index.cast_unsigned();
         player.record[559] = player.right_subspell_index.cast_unsigned();
 
+        for (_, _, holder) in &rows {
+            self.register_starting_acquisition(holder, &player);
+        }
         self.dynamic_pickups
             .extend(rows.into_iter().map(|(_, _, holder)| holder));
         self.players[local_player_index] = player.clone();
@@ -729,6 +788,9 @@ impl Level2SharedSpellResetSession {
         player.record[558] = player.left_subspell_index.cast_unsigned();
         player.record[559] = player.right_subspell_index.cast_unsigned();
 
+        for (_, _, holder) in &rows {
+            self.register_starting_acquisition(holder, &player);
+        }
         self.dynamic_pickups
             .extend(rows.into_iter().map(|(_, _, holder)| holder));
         self.players[local_player_index] = player.clone();
@@ -3135,7 +3197,7 @@ impl Level2SharedSpellResetSession {
         let mut source_state = self
             .persistent_acquisitions
             .remove(&source_slot)
-            .unwrap_or(base_state);
+            .unwrap_or_else(|| Self::acquisition_from_source(&pickup, &self.local_player));
         source_state.source_slot = source_slot;
         source_state.authored_source_index = 0;
         source_state.source_action = pickup.action;

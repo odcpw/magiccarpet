@@ -257,7 +257,7 @@ fn level_two_generic_spell_acquisition_is_reset_hashed_and_source_reachable() {
             .iter()
             .map(|state| (state.family, state.source_slot, state.source_action))
             .collect::<Vec<_>>(),
-        vec![(6, 155, 19), (11, 156, 34), (12, 38, 37)]
+        vec![(6, 155, 19), (11, 156, 34), (12, 38, 37), (3, 75, 10)]
     );
 
     // Row 38 is the live frame-zero family-12 pickup.  Its generic
