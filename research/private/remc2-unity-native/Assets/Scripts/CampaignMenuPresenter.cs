@@ -1,11 +1,12 @@
 using System;
+using System.Collections.Generic;
 using UnityEngine;
 
 namespace MagicCarpet.Native
 {
     // UI only: every action is dispatched to the existing Rust runtime owner.
-    // The original indexed loading artwork is shared; buttons are Unity UI,
-    // not a claim that the original menu layout/animation has been ported.
+    // Source artwork, animation clocks and hit regions are presentation only;
+    // every campaign choice still passes through the existing Rust command.
     internal sealed class CampaignMenuPresenter : IDisposable
     {
         internal enum Action { None, NewGame, Resume, Save, Load, Restart, Continue, Title, Quit, DismissResults, SelectMission, StartMission }
@@ -17,6 +18,11 @@ namespace MagicCarpet.Native
         private GUIStyle button;
         private GUIStyle message;
         private PlayerPreferencesPresenter preferences;
+        private FrontendMediaPresenter media;
+        private MainAnimation[] mainAnimations;
+        private readonly Dictionary<string, PortalState> portalStates = new(StringComparer.Ordinal);
+        private string lastMode, lastCampaignPhase, portalTarget;
+        private int lastAnimationFrame = -1;
         private bool briefingVisible;
         private float briefingElapsed;
 
@@ -45,6 +51,40 @@ namespace MagicCarpet.Native
         }
 
         internal void AttachPreferences(PlayerPreferencesPresenter owner) { preferences = owner; }
+        internal void AttachMedia(FrontendMediaPresenter owner) { media = owner; }
+        internal string TakePortalMission()
+        {
+            var target = portalTarget;
+            portalTarget = null;
+            return target;
+        }
+
+        private sealed class MainAnimation
+        {
+            internal int X, Y, Selector, First, Last, Step;
+            internal uint LastTime;
+        }
+
+        internal sealed class PortalState
+        {
+            internal int Selector;
+            internal int DrawSelector;
+            internal uint LastTime;
+            internal byte Phase;
+
+            // DrawFrameAnim advances before drawing, including end+1 until
+            // the following gated pass. Long frames advance once, no catchup.
+            internal bool Advance(uint now, int first, int last, int step)
+            {
+                DrawSelector = Selector;
+                if (unchecked(now - LastTime) < step) return false;
+                var wrapped = Selector > last;
+                Selector = wrapped ? first : Selector + 1;
+                DrawSelector = Selector;
+                LastTime = now;
+                return wrapped;
+            }
+        }
 
         internal CampaignMenuPresenter(OwnerAssetCache cache, string campaignCachePath = null)
         {
@@ -92,10 +132,27 @@ namespace MagicCarpet.Native
             var mode = identity.mode;
             if (mode != GameRuntimeTransport.TitleMode && mode != GameRuntimeTransport.PausedMode && mode != GameRuntimeTransport.CampaignMode)
                 return Action.None;
+            if (campaignCache == null && (campaignCachePath != null || mode == GameRuntimeTransport.CampaignMode))
+                campaignCache = new OwnerCampaignMenuCache(campaignCachePath ??
+                    throw new InvalidOperationException("campaign map requires its decoded owner cache"));
+            if (mode != lastMode || mode == GameRuntimeTransport.CampaignMode && identity.campaign_menu.phase != lastCampaignPhase)
+            {
+                if (mode == GameRuntimeTransport.CampaignMode) portalStates.Clear();
+                lastMode = mode;
+                lastCampaignPhase = identity.campaign_menu?.phase;
+            }
+            var repaint = Event.current.type == EventType.Repaint && lastAnimationFrame != Time.frameCount;
+            var now = unchecked((uint)(Time.realtimeSinceStartupAsDouble * 100));
             if (preferences?.IsOpen == true)
             {
                 preferences.Draw();
                 return Action.None;
+            }
+            if (mode == GameRuntimeTransport.TitleMode && campaignCache?.Startup != null)
+            {
+                var result = DrawStartup(now, repaint, canLoad, status);
+                if (repaint) lastAnimationFrame = Time.frameCount;
+                return result;
             }
             heading ??= new GUIStyle(GUI.skin.label) { alignment = TextAnchor.MiddleCenter, fontSize = 28 };
             button ??= new GUIStyle(GUI.skin.button) { fontSize = 19 };
@@ -107,8 +164,22 @@ namespace MagicCarpet.Native
                 GUI.color = Color.white;
                 if (mode == GameRuntimeTransport.CampaignMode)
                 {
-                    campaignCache ??= new OwnerCampaignMenuCache(campaignCachePath ?? throw new InvalidOperationException("campaign map requires its decoded owner cache"));
-                    campaignCache.DrawMap(identity.campaign_menu);
+                    UpdatePortals(identity.campaign_menu, now, repaint);
+                    campaignCache.DrawMap(identity.campaign_menu, PortalSelector);
+                    if (repaint) lastAnimationFrame = Time.frameCount;
+                    if (identity.campaign_menu.phase != "results" && Event.current.type == EventType.MouseDown && Event.current.button == 0)
+                    {
+                        var target = campaignCache.HitTestPortal(identity.campaign_menu, Event.current.mousePosition);
+                        if (target != null)
+                        {
+                            portalTarget = target;
+                            SelectedMission = target;
+                            Event.current.Use();
+                            return Action.StartMission;
+                        }
+                    }
+                    if (identity.campaign_menu.phase != "results")
+                        return DrawMapCommands(identity.campaign_menu, status);
                 }
                 else GUI.DrawTexture(new Rect(0, 0, Screen.width, Screen.height), background, ScaleMode.ScaleToFit);
                 var width = Mathf.Min(360, Screen.width - 32);
@@ -123,32 +194,10 @@ namespace MagicCarpet.Native
                 if (mode == GameRuntimeTransport.CampaignMode)
                 {
                     var menu = identity.campaign_menu;
-                    if (menu.phase == "results")
-                    {
-                        GUI.Label(new Rect(x, y, width, 70), "Mission completed\n" + campaignCache.ForMission(menu.completed_level_id).name, message);
-                        y += 80;
-                        if (GUI.Button(new Rect(x, y, width, 42), "Return to campaign map", button)) return Action.DismissResults;
-                        y += 50;
-                    }
-                    else
-                    {
-                        foreach (var level in menu.available_levels)
-                        {
-                            var label = (level == menu.selected_level_id ? "> " : "") + campaignCache.ForMission(level).name;
-                            if (GUI.Button(new Rect(x, y, width, 42), label, button))
-                            { SelectedMission = level; return Action.SelectMission; }
-                            y += 50;
-                        }
-                        GUI.enabled = !string.IsNullOrEmpty(menu.selected_level_id);
-                        if (GUI.Button(new Rect(x, y, width, 42), "Enter selected mission", button)) return Action.StartMission;
-                        GUI.enabled = true;
-                        y += 50;
-                        if (briefingVisible && !string.IsNullOrEmpty(menu.briefing_level_id))
-                        {
-                            GUI.Label(new Rect(x, y, width, 110), campaignCache.ForMission(menu.briefing_level_id).briefing, message);
-                            y += 120;
-                        }
-                    }
+                    GUI.Label(new Rect(x, y, width, 70), "Mission completed\n" + campaignCache.ForMission(menu.completed_level_id).name, message);
+                    y += 80;
+                    if (GUI.Button(new Rect(x, y, width, 42), "Return to campaign map", button)) return Action.DismissResults;
+                    y += 50;
                     if (GUI.Button(new Rect(x, y, width, 42), "Main menu", button)) return Action.Title;
                     if (preferences != null && GUI.Button(new Rect(x, y + 50, width, 42), "Player preferences", button)) preferences.Open();
                     return Action.None;
@@ -178,6 +227,142 @@ namespace MagicCarpet.Native
                 return Action.None;
             }
             finally { GUI.color = oldColor; GUI.enabled = oldEnabled; }
+        }
+
+        private Action DrawStartup(uint now, bool advance, bool canLoad, string status)
+        {
+            var startup = campaignCache.Startup;
+            if (mainAnimations == null)
+            {
+                mainAnimations = new MainAnimation[startup.animations.Length];
+                for (var i = 0; i < mainAnimations.Length; i++)
+                {
+                    var row = startup.animations[i];
+                    mainAnimations[i] = new MainAnimation { X = row.x, Y = row.y, Selector = row.initial_selector,
+                        First = row.first_selector, Last = row.last_selector, Step = row.step_ticks };
+                }
+            }
+            var scale = Mathf.Min(Screen.width / 640f, Screen.height / 480f);
+            var view = new Rect((Screen.width - 640 * scale) / 2, (Screen.height - 480 * scale) / 2,
+                640 * scale, 480 * scale);
+            var oldColor = GUI.color;
+            var oldEnabled = GUI.enabled;
+            try
+            {
+                GUI.color = Color.white;
+                GUI.DrawTexture(new Rect(0, 0, Screen.width, Screen.height), Texture2D.blackTexture);
+                GUI.DrawTexture(view, campaignCache.StartupBackground);
+                void DrawBitmap(int selector, int x, int y)
+                {
+                    var texture = campaignCache.StartupBitmap(selector);
+                    GUI.DrawTexture(new Rect(view.x + x * scale, view.y + y * scale,
+                        texture.width * scale, texture.height * scale), texture);
+                }
+                DrawBitmap(startup.logo.selector, startup.logo.x, startup.logo.y);
+                foreach (var animation in mainAnimations)
+                {
+                    DrawBitmap(animation.Selector, animation.X, animation.Y);
+                    if (advance && unchecked(now - animation.LastTime) >= animation.Step)
+                    {
+                        animation.Selector = animation.Selector >= animation.Last ? animation.First : animation.Selector + 1;
+                        animation.LastTime = now;
+                    }
+                }
+                foreach (var entry in startup.buttons)
+                {
+                    var action = entry.source_action switch {
+                        0x258350 => Action.NewGame,
+                        0x2590f0 => Action.Load,
+                        0x258980 => Action.Quit,
+                        _ => Action.None,
+                    };
+                    var settings = entry.source_action == 0x259e00 || entry.source_action == 0x25a610;
+                    GUI.enabled = action != Action.None || settings && preferences != null;
+                    if (action == Action.Load) GUI.enabled = canLoad;
+                    var hit = new Rect(view.x + entry.x * scale, view.y + entry.y * scale,
+                        entry.width * scale, entry.height * scale);
+                    if (GUI.enabled && hit.Contains(Event.current.mousePosition))
+                        DrawBitmap(entry.hover_selector, entry.x, entry.y);
+                    if (GUI.Button(hit, GUIContent.none, GUIStyle.none))
+                    {
+                        if (settings) { preferences.Open(); return Action.None; }
+                        return action;
+                    }
+                }
+                GUI.enabled = true;
+                if (status != null) GUI.Label(new Rect(view.x + 10 * scale, view.y + 440 * scale,
+                    620 * scale, 38 * scale), status);
+                return Action.None;
+            }
+            finally { GUI.color = oldColor; GUI.enabled = oldEnabled; }
+        }
+
+        private void UpdatePortals(GameRuntimeTransport.CampaignMenuSnapshot menu, uint now, bool advance)
+        {
+            var animation = campaignCache.PortalAnimation;
+            if (animation == null) return;
+            foreach (var level in menu.available_levels)
+            {
+                var completed = Array.IndexOf(menu.completed_levels, level) >= 0;
+                if (!portalStates.TryGetValue(level, out var state))
+                {
+                    var initial = completed ? animation.completed_first : animation.opening_first;
+                    state = new PortalState { Selector = initial, DrawSelector = initial };
+                    portalStates.Add(level, state);
+                }
+                if (!advance) continue;
+                if (completed)
+                    state.Advance(now, animation.completed_first, animation.completed_last, animation.step_ticks);
+                else if (menu.phase != "results")
+                {
+                    if (state.Phase == 0)
+                    {
+                        var sound = animation.sound;
+                        if (media == null) throw new InvalidOperationException("portal animation requires the retained frontend audio owner");
+                        media.PlayMenuSample(sound.id, campaignCache.ReadPortalOpeningSound(), sound.volume,
+                            sound.pan, sound.rate, sound.if_not_playing);
+                        // The byte19==0 source branch plays once and draws no
+                        // portal until the next ordinary presentation pass.
+                        state.DrawSelector = -1;
+                        state.Phase = 1;
+                    }
+                    else if (state.Phase == 1)
+                    {
+                        if (state.Advance(now, animation.opening_first, animation.opening_last, animation.step_ticks))
+                        {
+                            state.Selector = animation.loop_first;
+                            state.Phase = 2;
+                        }
+                    }
+                    else state.Advance(now, animation.loop_first, animation.loop_last, animation.step_ticks);
+                }
+            }
+        }
+
+        private int PortalSelector(string level, bool completed)
+        {
+            if (portalStates.TryGetValue(level, out var state)) return state.DrawSelector;
+            return completed ? 37 : 70;
+        }
+
+        private Action DrawMapCommands(GameRuntimeTransport.CampaignMenuSnapshot menu, string status)
+        {
+            var view = campaignCache.SourceView(menu);
+            var scale = view.width / 640f;
+            Rect At(float x, float y, float width, float height) =>
+                new(view.x + x * scale, view.y + y * scale, width * scale, height * scale);
+            if (GUI.Button(At(8, 438, 130, 34), "Main menu", button)) return Action.Title;
+            if (preferences != null && GUI.Button(At(148, 438, 170, 34), "Player preferences", button)) preferences.Open();
+            if (!string.IsNullOrEmpty(menu.selected_level_id) &&
+                GUI.Button(At(328, 438, 300, 34), "Enter " + campaignCache.ForMission(menu.selected_level_id).name, button))
+                return Action.StartMission;
+            if (briefingVisible && !string.IsNullOrEmpty(menu.briefing_level_id))
+            {
+                var mission = campaignCache.ForMission(menu.briefing_level_id);
+                GUI.Label(At(130, mission.viewport_y < 478 ? 280 : 60, 380, 110), mission.briefing, message);
+            }
+            if (!string.IsNullOrEmpty(status)) GUI.Label(At(130, 10, 380, 45), status, message);
+            return Action.None;
         }
 
         public void Dispose()

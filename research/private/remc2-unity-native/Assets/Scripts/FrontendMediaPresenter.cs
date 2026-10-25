@@ -15,7 +15,10 @@ namespace MagicCarpet.Native
             public string schema;
             public Output[] outputs;
             public Glyph[] glyphs;
+            public AudioBinding[] audio;
         }
+        [Serializable] private sealed class AudioBinding
+        { public string kind, path; public int bank, id; }
         [Serializable] private sealed class Output
         {
             public string path;
@@ -37,6 +40,7 @@ namespace MagicCarpet.Native
         private float soundGain = 1, musicGain = 1, musicUnits = 127;
         private bool speechEnabled = true;
         private Catalog catalog;
+        private string catalogJson;
         private GameObject audioRoot;
         private AudioSource music;
         private FileStream frames;
@@ -67,28 +71,8 @@ namespace MagicCarpet.Native
                 if (!installed)
                 {
                     installed = true;
-                    var json = File.ReadAllText(PathFor("media.json"));
-                    catalog = JsonUtility.FromJson<Catalog>(json);
-                    if (catalog?.schema != "mc2-frontend-media/v1" || catalog.outputs == null || catalog.glyphs == null)
-                        throw new InvalidDataException("invalid frontend media manifest: " + PathFor("media.json"));
-                    // Validate the bytes actually consumed, including the frame streams.
-                    foreach (var output in catalog.outputs)
-                    {
-                        using var stream = File.OpenRead(PathFor(output.path));
-                        using var sha = SHA256.Create();
-                        var hash = BitConverter.ToString(sha.ComputeHash(stream)).Replace("-", "").ToLowerInvariant();
-                        if (stream.Length != output.bytes || hash != output.sha256)
-                            throw new InvalidDataException("frontend media extent/hash mismatch: " + PathFor(output.path));
-                    }
-                    foreach (var glyph in catalog.glyphs)
-                    {
-                        glyph.mask = File.ReadAllBytes(PathFor(glyph.path));
-                        if (glyph.mask.Length != checked(glyph.width * glyph.height))
-                            throw new InvalidDataException("frontend subtitle glyph extent: " + glyph.path);
-                    }
-                    if (!catalog.glyphs.Any(g => g.index == 65 && g.width > 0 && g.height > 0))
-                        throw new InvalidDataException("frontend subtitle font is missing glyph 65: " + PathFor("media.json"));
-                    Send(handle, identity, "{\"operation\":\"install\",\"catalog\":" + json +
+                    LoadCatalog();
+                    Send(handle, identity, "{\"operation\":\"install\",\"catalog\":" + catalogJson +
                         ",\"startup\":" + (startup ? "true" : "false") + "}");
                     return true;
                 }
@@ -115,6 +99,47 @@ namespace MagicCarpet.Native
         {
             public string operation = "failed";
             public string message;
+        }
+
+        private void LoadCatalog()
+        {
+            if (catalogJson != null) return;
+            var json = File.ReadAllText(PathFor("media.json"));
+            var candidate = JsonUtility.FromJson<Catalog>(json);
+            if (candidate?.schema != "mc2-frontend-media/v1" || candidate.outputs == null || candidate.glyphs == null)
+                throw new InvalidDataException("invalid frontend media manifest: " + PathFor("media.json"));
+            // The same receipt gate is used by cold Title and restored map.
+            foreach (var output in candidate.outputs)
+            {
+                using var stream = File.OpenRead(PathFor(output.path));
+                using var sha = SHA256.Create();
+                var hash = BitConverter.ToString(sha.ComputeHash(stream)).Replace("-", "").ToLowerInvariant();
+                if (stream.Length != output.bytes || hash != output.sha256)
+                    throw new InvalidDataException("frontend media extent/hash mismatch: " + PathFor(output.path));
+            }
+            foreach (var glyph in candidate.glyphs)
+            {
+                glyph.mask = File.ReadAllBytes(PathFor(glyph.path));
+                if (glyph.mask.Length != checked(glyph.width * glyph.height))
+                    throw new InvalidDataException("frontend subtitle glyph extent: " + glyph.path);
+            }
+            if (!candidate.glyphs.Any(g => g.index == 65 && g.width > 0 && g.height > 0))
+                throw new InvalidDataException("frontend subtitle font is missing glyph 65: " + PathFor("media.json"));
+            catalog = candidate;
+            catalogJson = json;
+        }
+
+        /// MainMenu starts track 4 before NewGameDialog, including a restored
+        /// map with no preceding Title/media clock in this process.
+        internal void StartMapMusic()
+        {
+            LoadCatalog();
+            var binding = catalog.audio?.SingleOrDefault(row => row.kind == "music" && row.bank == 0 && row.id == 4)
+                ?? throw new InvalidDataException("source menu music bank0/track4 is missing");
+            if (!catalog.outputs.Any(row => row.path == binding.path))
+                throw new InvalidDataException("source menu music has no validated output receipt");
+            if (music != null && music.isPlaying && clips.TryGetValue(binding.path, out var clip) && music.clip == clip) return;
+            ApplyAudio(new GameRuntimeTransport.MediaAction { op = "M", value = 4, asset_path = binding.path });
         }
         private void Send(ulong handle, GameRuntimeTransport.Identity identity, string json)
         {
@@ -241,11 +266,7 @@ namespace MagicCarpet.Native
         }
         private void ApplyAudio(GameRuntimeTransport.MediaAction action)
         {
-            audioRoot ??= new GameObject("MC2 frontend media audio");
-            audioRoot.transform.SetParent(parent, false);
-            music ??= audioRoot.AddComponent<AudioSource>();
-            music.playOnAwake = false;
-            music.spatialBlend = 0;
+            EnsureAudioRoot();
             var op = action.op?.ToUpperInvariant();
             if (op == "X" || op == "B") { music.Stop(); music.clip = null; return; }
             if (op == "E" || op == "T" && action.value == 0)
@@ -301,6 +322,49 @@ namespace MagicCarpet.Native
                 source.Play();
             }
             Debug.Log($"MC_FRONTEND_MEDIA_AUDIO op={op} id={action.value} asset={action.asset_path}");
+        }
+
+        private void EnsureAudioRoot()
+        {
+            if (audioRoot != null) return;
+            audioRoot = new GameObject("MC2 frontend media audio");
+            audioRoot.transform.SetParent(parent, false);
+            music = audioRoot.AddComponent<AudioSource>();
+            music.playOnAwake = false;
+            music.spatialBlend = 0;
+        }
+
+        /// Menu samples share the media device/lifetime, so entering the map
+        /// keeps track 4 playing and the real loading boundary stops both.
+        internal void PlayMenuSample(int id, byte[] wave, int volume, int pan, int rate, bool ifNotPlaying)
+        {
+            if (id <= 0 || volume < 0 || volume > 127 || pan < 0 || pan > 127 || rate <= 0 || rate > 400)
+                throw new ArgumentOutOfRangeException(nameof(id), "invalid source menu sample command");
+            if (ifNotPlaying && samples.TryGetValue(id, out var active) && active.isPlaying) return;
+            EnsureAudioRoot();
+            using var sha = SHA256.Create();
+            var key = "menu/" + id + "/" + BitConverter.ToString(sha.ComputeHash(wave));
+            if (!clips.TryGetValue(key, out var clip))
+            {
+                clip = OwnerAudioPresentation.CreateMediaClip("MC2 menu sample " + id, wave);
+                clips.Add(key, clip);
+            }
+            if (!samples.TryGetValue(id, out var source))
+            {
+                source = audioRoot.AddComponent<AudioSource>();
+                source.playOnAwake = false;
+                source.spatialBlend = 0;
+                samples.Add(id, source);
+            }
+            source.Stop();
+            source.clip = clip;
+            source.loop = false;
+            source.panStereo = (pan - 64) / 64f;
+            source.pitch = rate / 100f;
+            sampleUnits[id] = volume;
+            source.volume = SampleGain(id);
+            source.Play();
+            Debug.Log($"MC_FRONTEND_MENU_SAMPLE id={id} volume={volume} pan={pan} rate={rate}");
         }
         private float SampleGain(int id)
         {
