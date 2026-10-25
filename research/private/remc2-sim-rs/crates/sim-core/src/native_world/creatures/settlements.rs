@@ -2701,7 +2701,7 @@ mod production_tests {
             .unwrap_or_else(|| private.join("generated/mc-1pb-16-level2-full-build-v2"));
         let catalog = default_catalog().unwrap();
         let base = load_mc2_campaign(&package, &catalog).unwrap();
-        let id = sim_definition::adapter::stable_entity_id("creature.villager.at_121_180").unwrap();
+        let id = sim_definition::adapter::stable_entity_id("creature.villager.at_123_179").unwrap();
         let workspace = std::env::temp_dir().join(format!(
             "mc-1pb-16-settlement-{}-{}",
             std::process::id(),
@@ -2720,8 +2720,11 @@ mod production_tests {
         )
         .move_entity_from(
             id,
-            TilePosition { x: 121, y: 180 },
-            TilePosition { x: 75, y: 81 },
+            TilePosition { x: 123, y: 179 },
+            // Retained terrain tile 72/84 is clear ground (type 2), outside
+            // House 12's BUILD footprint and within its entry range. Slot 78
+            // has no reset target; slot 77 already targets distant House 21.
+            TilePosition { x: 72, y: 84 },
         )
         .build()
         .unwrap();
@@ -2822,20 +2825,41 @@ mod production_tests {
     #[test]
     fn authored_villager_placement_joins_the_authoritative_household() {
         let mut session = village_placement_through_authoring();
-        for pass in 0..1024_u16 {
+        let slot = 78;
+        let placed = session
+            .ordinary()
+            .villagers()
+            .iter()
+            .find(|row| row.entity_index == slot)
+            .unwrap();
+        assert_eq!((placed.position.x >> 8, placed.position.y >> 8), (72, 84));
+        assert_eq!(placed.target_entity_index, None);
+        assert_eq!((placed.stage_var_1, placed.stage_var_2), (0, 0));
+        // Two ordinary 40-phase decisions select and enter the nearby home.
+        for pass in 0..128_u16 {
             let before = household_counts(&session);
             session.step_level2_source_pass((pass % 3) as u8);
-            if let Some(villager) = session
+            let villager = session
                 .ordinary()
                 .villagers()
                 .iter()
-                .find(|row| row.active && row.action == 108 && row.reset_counter == 1)
-            {
+                .find(|row| row.entity_index == slot)
+                .unwrap_or_else(|| {
+                    panic!(
+                        "authored Villager {slot} reclaimed before household entry at pass {pass}"
+                    )
+                });
+            assert!(
+                villager.life >= 0,
+                "authored Villager died at pass {pass}: {villager:?}"
+            );
+            if villager.action == 108 && villager.reset_counter == 1 {
                 let target = villager
                     .target_entity_index
                     .expect("accepted household remains the target");
+                assert_eq!(target, 12);
                 let occupants = household_counts(&session)[&target];
-                assert!(occupants > before[&target]);
+                assert_eq!(occupants, before[&target] + 1);
                 assert_eq!(
                     session.entities()[usize::from(target)].source_dword_10(),
                     occupants
@@ -2844,6 +2868,10 @@ mod production_tests {
                     "actual Level2 Villager {} -> House {} occupants {} at source pass {}",
                     villager.entity_index, target, occupants, pass
                 );
+                session.step_level2_source_pass(0);
+                assert!(session.entities()[usize::from(slot)].drawing_disabled());
+                session.step_level2_source_pass(1);
+                assert_eq!(session.entities()[usize::from(slot)].class, 0);
                 return;
             }
         }
@@ -2872,6 +2900,21 @@ mod production_tests {
         for pass in 0..4096_u16 {
             let before = household_counts(&session);
             session.step_level2_source_pass((pass % 3) as u8);
+            if pass % 64 == 0 && std::env::var_os("MC_SETTLEMENT_TRACE").is_some() {
+                let trader = session
+                    .economy()
+                    .authored_class5()
+                    .iter()
+                    .find(|row| row.model == TRADER_MODEL && row.authored_index == 125);
+                let target = trader.and_then(|row| {
+                    crate::native_world::level2_class5::trader::target_in_arena(
+                        &session.session.state.live.economy,
+                        &session.session.state.live.ordinary.houses,
+                        row.word_0x96_150,
+                    )
+                });
+                eprintln!("ordinary Trader pass {pass}: {trader:?}; target {target:?}");
+            }
             if let Some(row) = session.economy().authored_class5().iter().find(|row| {
                 row.model == TRADER_MODEL
                     && (125..=151).contains(&row.authored_index)
