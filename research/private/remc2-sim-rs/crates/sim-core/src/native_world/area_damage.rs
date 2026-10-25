@@ -313,6 +313,22 @@ impl EffectLists {
     pub(crate) fn is_current(&self, arena: &SourceArena) -> bool {
         self.epoch == arena.economy.replacement_list_epoch
     }
+
+    pub(crate) fn class3_slots(&self, arena: &SourceArena) -> &[u16] {
+        if self.is_current(arena) {
+            &self.class3
+        } else {
+            &[]
+        }
+    }
+
+    pub(crate) fn model45_slots(&self, arena: &SourceArena) -> &[u16] {
+        if self.is_current(arena) {
+            &self.model45
+        } else {
+            &[]
+        }
+    }
 }
 
 pub(crate) fn capture_effect_lists(
@@ -381,11 +397,7 @@ struct EffectTargets<'arena, 'actors, 'assets> {
 
 impl AreaWorld for EffectTargets<'_, '_, '_> {
     fn class3_slots(&self) -> Vec<u16> {
-        if self.lists.is_current(self.targets.arena) {
-            self.lists.class3.clone()
-        } else {
-            Vec::new()
-        }
+        self.lists.class3_slots(self.targets.arena).to_vec()
     }
 
     fn cell_slots(&self, x: u8, y: u8) -> Vec<u16> {
@@ -404,11 +416,7 @@ impl AreaWorld for EffectTargets<'_, '_, '_> {
 
 impl crate::world::effects::DamageWorld for EffectTargets<'_, '_, '_> {
     fn model45_slots(&self) -> Vec<u16> {
-        if self.lists.is_current(self.targets.arena) {
-            self.lists.model45.clone()
-        } else {
-            Vec::new()
-        }
+        self.lists.model45_slots(self.targets.arena).to_vec()
     }
 
     fn model45_contact(
