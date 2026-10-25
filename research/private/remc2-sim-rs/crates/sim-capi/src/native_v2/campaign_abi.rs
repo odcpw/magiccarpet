@@ -3244,6 +3244,32 @@ pub extern "C" fn mc_native_campaign_entities_copy(
                                     )
                                 },
                             ))
+                            .chain(
+                                reset
+                                    .economy()
+                                    .model59_smoke_children()
+                                    .iter()
+                                    // Reclaimed smoke records can outlive their
+                                    // slot. Only the active carrier may shadow
+                                    // the imported row, as in effects::sprite_sources.
+                                    .filter(|source| source.active)
+                                    .map(|source| {
+                                        (
+                                            source.source_entity_index,
+                                            source.source_entity_index,
+                                            source.control_flags & 0x421 == 0,
+                                            source.source_class,
+                                            source.model,
+                                            source.action,
+                                            source.phase,
+                                            source.position,
+                                            source.yaw,
+                                            0,
+                                            0,
+                                            source.actual_speed,
+                                        )
+                                    }),
+                            )
                             .chain(reset.economy().castle().into_iter().map(|source| {
                                 (
                                     source.source_entity_index,
