@@ -1756,57 +1756,82 @@ impl Level2EconomyState {
             let Some(sphere_slot) = self.allocate_slot() else {
                 break;
             };
-            let sphere_seed = self.new_event_rng(sphere_slot);
-            let sphere_rng = level2_next_rng16(sphere_seed);
-            let yaw =
-                i16::try_from((i32::from(sphere_rng % 0x71) + i32::from(source_yaw) - 56) & 0x07ff)
-                    .expect("Level 2 mana sphere yaw fits 11 bits");
-            let speed_rng = level2_next_rng16(sphere_rng);
-            let speed = i16::try_from(speed_rng % 0x30 + 16).expect("mana sphere speed fits i16");
-            let mut velocity = Position::default();
-            crate::move_entity(&mut velocity, yaw, 0, speed);
-            let ground = terrain.ground_height(position);
-            let height_above_ground = i32::from(position.z) - i32::from(ground);
-            let vertical_velocity = level2_mana_sphere_vertical_velocity(height_above_ground);
-            let sphere_mana = mana;
-            let sphere = ManaSphere {
-                id: u32::from(sphere_slot),
-                source_entity_index: sphere_slot,
-                entity_rng: speed_rng,
-                position,
-                velocity_x: velocity.x.cast_signed(),
-                velocity_y: velocity.y.cast_signed(),
-                vertical_velocity,
-                yaw,
-                max_life: 300,
-                life: 300,
-                mana: sphere_mana,
-                owner_entity_index,
-                player_entity_index: owner_entity_index,
-                incoming_owner_entity_index: 0,
-                incoming_possession_payload: 0,
-                ordinary_damage_payload: 0,
-                ordinary_damage_owner: 0,
-                attraction_source_entity_index: 0,
-                attraction_step: 0,
-                attraction_distance_high: 0,
-                assigned_carrier_id: 0,
-                assigned_defender_slot: 0,
-                control_flags: 8,
-                phase: sphere_slot as u8,
-                active: true,
-                pending_delete: false,
-            };
-            sphere_ids.push(sphere.id);
-            self.spheres.push(sphere);
-            self.refresh_owner_mana_rows();
-            self.events.push(Level2EconomyEvent::ManaSphereSpawned {
-                sphere_id: sphere.id,
+            sphere_ids.push(self.initialize_death_mana_sphere_at_slot(
+                sphere_slot,
                 source_entity_index,
-                mana: sphere_mana,
-            });
+                position,
+                source_yaw,
+                mana,
+                owner_entity_index,
+                terrain,
+            ));
         }
         sphere_ids
+    }
+
+    /// Initialize the model-39 death packet in a slot already allocated by the
+    /// canonical source arena. Allocation and parent alias resolution belong
+    /// to the caller; this constructor consumes only the child's RNG stream.
+    pub(crate) fn initialize_death_mana_sphere_at_slot(
+        &mut self,
+        sphere_slot: u16,
+        source_entity_index: u16,
+        position: Position,
+        source_yaw: i16,
+        mana: i32,
+        owner_entity_index: u16,
+        terrain: &SessionTerrain,
+    ) -> u32 {
+        let sphere_seed = self.new_event_rng(sphere_slot);
+        let sphere_rng = level2_next_rng16(sphere_seed);
+        let yaw =
+            i16::try_from((i32::from(sphere_rng % 0x71) + i32::from(source_yaw) - 56) & 0x07ff)
+                .expect("Level 2 mana sphere yaw fits 11 bits");
+        let speed_rng = level2_next_rng16(sphere_rng);
+        let speed = i16::try_from(speed_rng % 0x30 + 16).expect("mana sphere speed fits i16");
+        let mut velocity = Position::default();
+        crate::move_entity(&mut velocity, yaw, 0, speed);
+        let ground = terrain.ground_height(position);
+        let height_above_ground = i32::from(position.z) - i32::from(ground);
+        let vertical_velocity = level2_mana_sphere_vertical_velocity(height_above_ground);
+        let sphere_mana = mana;
+        let sphere = ManaSphere {
+            id: u32::from(sphere_slot),
+            source_entity_index: sphere_slot,
+            entity_rng: speed_rng,
+            position,
+            velocity_x: velocity.x.cast_signed(),
+            velocity_y: velocity.y.cast_signed(),
+            vertical_velocity,
+            yaw,
+            max_life: 300,
+            life: 300,
+            mana: sphere_mana,
+            owner_entity_index,
+            player_entity_index: owner_entity_index,
+            incoming_owner_entity_index: 0,
+            incoming_possession_payload: 0,
+            ordinary_damage_payload: 0,
+            ordinary_damage_owner: 0,
+            attraction_source_entity_index: 0,
+            attraction_step: 0,
+            attraction_distance_high: 0,
+            assigned_carrier_id: 0,
+            assigned_defender_slot: 0,
+            // NewEvent's damageable bit8 survives AddEventToMap's bit4.
+            control_flags: 12,
+            phase: sphere_slot as u8,
+            active: true,
+            pending_delete: false,
+        };
+        self.spheres.push(sphere);
+        self.refresh_owner_mana_rows();
+        self.events.push(Level2EconomyEvent::ManaSphereSpawned {
+            sphere_id: sphere.id,
+            source_entity_index,
+            mana: sphere_mana,
+        });
+        sphere.id
     }
 
     /// Source `KillEntity_1C930` allocates a class-10/model-1/action-1
@@ -1843,7 +1868,9 @@ impl Level2EconomyState {
             max_life: PLAYER_DEATH_BURST_MAX_LIFE,
             life_ticks: 1,
             subspell_index: PLAYER_DEATH_BURST_SUBSPELL_INDEX,
-            control_flags: SOURCE_REPLACEABLE_FLAG,
+            // NewAdd0A01 clears damageability, sets replacement eligibility,
+            // and AddEventToMap publishes map membership before dispatch.
+            control_flags: SOURCE_REPLACEABLE_FLAG | 4,
             source_byte_3e: source_entity_index as u8,
             active: true,
         };
