@@ -19,7 +19,7 @@ struct MusicBinding {
     xmi_sha256: &'static str,
 }
 
-fn binding(selection: CampaignSelection) -> AbiResult<MusicBinding> {
+fn binding(selection: CampaignSelection, campaign_package_sha256: &str) -> AbiResult<MusicBinding> {
     let (descriptor, bytes, sha256, track) = match (
         selection.external_level,
         selection.internal_level,
@@ -31,6 +31,17 @@ fn binding(selection: CampaignSelection) -> AbiResult<MusicBinding> {
             "bbf5670314f89876b3ae2bdd42cfae717b5a36c36fc0cb1e498ce5778744b965",
             1,
         ),
+        (2, 1, 0)
+            if campaign_package_sha256
+                == "2f1a83646e27dfcdf80c15f679e09923538d847a31ba340eb4c491f52d29df61" =>
+        {
+            (
+                "audio/descriptor.json",
+                106_324,
+                "0b75a6d95efcb7e61ec14142c4e4929812e2139a21205c3ed3909aeebb710bfc",
+                2,
+            )
+        }
         (2, 1, 0) => (
             "audio/descriptor.json",
             106_324,
@@ -187,7 +198,7 @@ pub(super) fn load_campaign_music(
     let Some(root) = owner_cache.and_then(audio_root) else {
         return Ok(None);
     };
-    let spec = binding(selection)?;
+    let spec = binding(selection, campaign_package_sha256)?;
     let descriptor = read_qualified_cache_file(&root, spec.descriptor, spec.bytes, spec.sha256)?;
     let manifest = verify_manifest(&root, &spec)?;
     let descriptor: Value = serde_json::from_slice(&descriptor)
@@ -264,6 +275,22 @@ mod tests {
                 assert!(music.loaded && music.playing);
             }
         }
+    }
+
+    #[test]
+    fn source_closed_level2_cache_keeps_music_and_rejects_old_package_binding() {
+        let root =
+            generated().join("level2-vault-successor-owner-cache-20261025/components/material");
+        let campaign = "2f1a83646e27dfcdf80c15f679e09923538d847a31ba340eb4c491f52d29df61";
+        let owner = "98c6445536b419d4627ec72ddbd8d839eff1b88ff8b533cf9557cf850037b819";
+        let selection = CampaignSelection::ordinary(2).unwrap();
+        let music = load_campaign_music(Some(&root), selection, owner, campaign)
+            .unwrap()
+            .unwrap();
+        assert_eq!(music.track, 2);
+        assert!(music.loaded && music.playing);
+        assert!(load_campaign_music(Some(&root), selection, owner, "old-campaign").is_err());
+        assert!(load_campaign_music(Some(&root), selection, "old-owner", campaign).is_err());
     }
 
     #[test]

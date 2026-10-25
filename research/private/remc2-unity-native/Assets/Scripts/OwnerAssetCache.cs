@@ -1131,7 +1131,12 @@ namespace MagicCarpet.Native
             var sourceAudioHash = externalLevel == 2
                 ? "30bfc6254eeb540f90f64ef68a75efe5c48d3c76694efac288fa36d26330e979"
                 : "fcada666ffca239996e78a6589188bfca8ec15491540fc701dd56b4b36f5711e";
-            var spellComplete = actualHash == spellCompleteHash || actualHash == sourceAudioHash;
+            // The source-closed Level2 export adds house successors and their
+            // collision records. Its fresh aggregate retains the same source
+            // audio and TMAP census, with exact new owner/package receipts.
+            var successorClosure = externalLevel == 2 && actualHash ==
+                "5ce86a1a3fef270aab20e51a6de3e2cc805d8efbdf9c96c3a2a2e6e29a4fc5db";
+            var spellComplete = actualHash == spellCompleteHash || actualHash == sourceAudioHash || successorClosure;
             RequireLevel2(actualHash == expectedHash || spellComplete, "exact Day v3 aggregate identity");
             var manifest = JsonUtility.FromJson<Level2AggregateManifest>(File.ReadAllText(path));
             RequireLevel2(manifest.schema == "mc2-day-owner-cache/v3" &&

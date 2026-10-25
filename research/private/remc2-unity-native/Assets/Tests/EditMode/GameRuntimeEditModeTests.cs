@@ -190,6 +190,30 @@ namespace MagicCarpet.Native.Tests
         }
 
         [Test]
+        public void SourceClosedLevelTwoCacheBindsActualNativeAndClientConsumers()
+        {
+            var generated = Path.Combine(PrivateRoot, "generated");
+            var package = Path.Combine(generated, "mc-level2-vault-successor-closure-20261025");
+            var aggregate = Path.Combine(generated, "level2-vault-successor-owner-cache-20261025");
+            var cache = OwnerAssetCache.OpenAndValidateLevel2(aggregate);
+            using var session = NativeCampaignSession.Open(package, NativeSim.CampaignSelection.Level2Day(),
+                Path.Combine(aggregate, "components/material"));
+            using var surface = new CampaignPresentationSurface();
+            surface.Present(session, cache);
+            Assert.That(surface.WorldReady && surface.LiveMinimapReady, Is.True);
+            Assert.That(surface.Tick, Is.Zero, "package/cache admission diagnostic performs no gameplay");
+            Assert.That(surface.FrameHash, Is.Not.Zero);
+            var audioRoot = new GameObject("source-closed Level2 audio consumer");
+            try
+            {
+                using var audio = OwnerAudioPresentation.LoadCampaignEnvironment(cache,
+                    NativeSim.CampaignSelection.Level2Day(), audioRoot.transform);
+                Assert.That(audio, Is.Not.Null);
+            }
+            finally { UnityEngine.Object.DestroyImmediate(audioRoot); }
+        }
+
+        [Test]
         public void CaveSpriteShaderClipsLaterTerrainPerPixelAndKeepsEqualRank()
         {
             Assert.That(SystemInfo.graphicsDeviceType, Is.Not.EqualTo(UnityEngine.Rendering.GraphicsDeviceType.Null),

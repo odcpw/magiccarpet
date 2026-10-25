@@ -153,9 +153,9 @@ def main(arguments):
             {'package': GENERATED / 'mc-bhq8-level1-collision-v5-night',
              'owner': GENERATED / 'mc2-level1-night-cache-v2',
              'presentation': GENERATED / 'mc2-level1-night-cache-v2'},
-            {'package': GENERATED / 'level2-day-block32-campaign-v2',
-             'owner': GENERATED / 'level2-day-spell-owner-cache-audio-v4/components/material',
-             'presentation': GENERATED / 'level2-day-spell-owner-cache-audio-v4'},
+            {'package': GENERATED / 'mc-level2-vault-successor-closure-20261025',
+             'owner': GENERATED / 'level2-vault-successor-owner-cache-20261025/components/material',
+             'presentation': GENERATED / 'level2-vault-successor-owner-cache-20261025'},
             {'package': GENERATED / 'level3-day-block32-campaign-recipe-v2',
              'owner': GENERATED / 'level3-day-spell-owner-cache-audio-v4/components/material',
              'presentation': GENERATED / 'level3-day-spell-owner-cache-audio-v4'},
@@ -193,6 +193,8 @@ def main(arguments):
     if loading_assets is not None:
         # The runtime owns missing-artwork recovery and retry for this selection.
         native.extend(('-mc-runtime-loading-assets', str(loading_assets)))
+    if menu_cache is None and not explicit_resources:
+        menu_cache = GENERATED / 'mc-a3-startup-review-cache-v2'
     if menu_cache is not None:
         directory(menu_cache, 'menu cache')
         native.extend(('-mc-runtime-menu-cache', str(menu_cache)))
