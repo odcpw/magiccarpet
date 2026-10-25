@@ -265,7 +265,7 @@ mod tests {
     fn results_require_map_selection_before_loading_and_terminal_results_remain_on_map() {
         let generated = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../generated");
         let paths = [
-            "mc-cf15-level1-package-v3-current",
+            "mc-bhq8-level1-collision-v5-night",
             "level2-day-block32-campaign-v2",
             "level3-day-block32-campaign-recipe-v2",
         ]

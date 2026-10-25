@@ -677,7 +677,7 @@ mod tests {
         std::env::var_os("MC_CAMPAIGN_LEVEL1_PACKAGE").map_or_else(
             || {
                 PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                    .join("../../../generated/mc-cf15-level1-package-v3-current")
+                    .join("../../../generated/mc-bhq8-level1-collision-v5-night")
             },
             PathBuf::from,
         )

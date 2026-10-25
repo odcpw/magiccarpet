@@ -1464,7 +1464,7 @@ mod tests {
     #[test]
     fn qualified_night_campaign_renders_live_terrain_and_rejects_day_substitution() {
         let mut campaign = crate::campaign::CampaignSession::open(
-            generated_path("mc-cf15-level1-package-v3-current"),
+            generated_path("mc-bhq8-level1-collision-v5-night"),
             crate::campaign::spec::CampaignSelection::LEVEL1,
         )
         .expect("real Night campaign opens");

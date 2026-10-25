@@ -1519,6 +1519,17 @@ impl CampaignDefinition {
     ) -> Result<Self> {
         let package_root = package_root.as_ref();
         let decoded = DecodedCampaignPackage::decode(package_root, caller)?;
+        // Historical v3 remains a valid, exact catalog format. It cannot
+        // execute the current source lifecycle: the first ordinary pass can
+        // construct model-45 contact effects whose consumer requires the
+        // map-specific collision bank added by v5. Reject before publishing a
+        // live session instead of accepting it and rolling every turn back.
+        if !decoded.members.contains_key("collision-masks.bin") {
+            return fail(
+                ValidationStage::BehaviorClosure,
+                "campaign runtime requires the map-specific collision-mask bank; re-export Level 1 with the current exporter (mc2-owner-campaign-package/v5); historical v3 remains supported for catalog decoding",
+            );
+        }
         let DecodedCampaignPackage {
             identity: descriptor_selection,
             package_sha256,
@@ -4659,6 +4670,16 @@ mod tests {
         )
     }
 
+    fn level1_runtime_fixture() -> PathBuf {
+        std::env::var_os("MC_CAMPAIGN_LEVEL1_PACKAGE").map_or_else(
+            || {
+                PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../../generated/mc-bhq8-level1-collision-v5-night")
+            },
+            PathBuf::from,
+        )
+    }
+
     fn level3_fixture() -> PathBuf {
         std::env::var_os("MC_CAMPAIGN_PACKAGE_LEVEL3_V1").map_or_else(
             || {
@@ -4755,12 +4776,23 @@ mod tests {
                 );
                 assert!(decoded.source_record.is_some());
             } else {
-                let mut live = CampaignSession::open(&package, selection)
+                let runtime_package =
+                    if external == 1 && decoded.member("collision-masks.bin").is_none() {
+                        let error = CampaignSession::open(&package, selection)
+                            .expect_err("historical v3 is catalog-only without a collision bank");
+                        assert!(error.to_string().contains("collision-mask bank"));
+                        assert!(error.to_string().contains("v5"));
+                        level1_runtime_fixture()
+                    } else {
+                        package.clone()
+                    };
+                let mut live = CampaignSession::open(&runtime_package, selection)
                     .unwrap_or_else(|error| panic!("supported mission {external}: {error}"));
                 live.step(crate::PlayerCommand::default(), 0);
                 assert!(
                     live.tick() > 0,
-                    "mission {external} advances the ordinary source scheduler"
+                    "mission {external} advances the ordinary source scheduler: {:?}",
+                    live.events()
                 );
             }
         }
@@ -4785,7 +4817,7 @@ mod tests {
         let accept = |_: &super::BehaviorKey| true;
         let cases = [
             (
-                level1_fixture(),
+                level1_runtime_fixture(),
                 CampaignSelection::LEVEL1,
                 vec![(CreatureKind::Goat, 33), (CreatureKind::Villager, 28)],
             ),
@@ -4931,13 +4963,26 @@ mod tests {
 
     #[test]
     #[ignore = "requires a real owner-data Level 1 campaign envelope"]
-    fn cf15_level1_definition_preflights_and_inspects_without_collision() {
+    fn cf15_level1_catalog_preserves_legacy_without_admitting_missing_collision() {
         let accept = |_: &super::BehaviorKey| true;
-        let definition =
+        let decoded =
+            super::DecodedCampaignPackage::decode(level1_fixture(), CampaignSelection::LEVEL1)
+                .expect("historical Level 1 descriptor remains decodable");
+        assert!(decoded.member("collision-masks.bin").is_none());
+        let error =
             CampaignDefinition::preflight(level1_fixture(), CampaignSelection::LEVEL1, &accept)
-                .expect("real Level 1 descriptor preflights");
+                .expect_err("historical descriptor cannot publish an unusable runtime");
+        assert_eq!(error.stage, ValidationStage::BehaviorClosure);
+        assert!(error.message.contains("collision-mask bank"));
+        assert!(error.message.contains("v5"));
+        let definition = CampaignDefinition::preflight(
+            level1_runtime_fixture(),
+            CampaignSelection::LEVEL1,
+            &accept,
+        )
+        .expect("current Level 1 descriptor preflights");
         assert_eq!(definition.completed_stage, ValidationStage::ResetState);
-        assert_eq!(definition.source_facts.len(), 2);
+        assert_eq!(decoded.source_facts.len(), 2);
         assert_eq!(
             definition
                 .campaign_spec
@@ -4951,13 +4996,6 @@ mod tests {
             definition.campaign_spec.reset_sources.players.record_bytes,
             Some(573)
         );
-        let inspection = crate::native_world::NativeWorld::inspect_campaign_definition(&definition)
-            .expect("Level 1 descriptor-backed inspection opens");
-        assert_eq!(inspection.players().len(), 8);
-        assert!(inspection.collision_mask_bank().is_none());
-        assert_eq!(inspection.metadata().external_level, 1);
-        assert_eq!(inspection.metadata().internal_level, 0);
-
         let manifest: serde_json::Value = serde_json::from_slice(
             &fs::read(level1_fixture().join("manifest.json")).expect("campaign manifest exists"),
         )
@@ -4966,12 +5004,10 @@ mod tests {
             .as_object()
             .expect("campaign manifest is an object");
         assert_eq!(
-            definition
-                .owner_export_package_sha256()
-                .expect("wrapped owner identity reconstructs"),
-            outer["owner_export_package_sha256"]
+            decoded.package_sha256,
+            outer["package_sha256"]
                 .as_str()
-                .expect("owner export identity is a string")
+                .expect("historical catalog package identity is a string")
         );
 
         let mut file_map = std::collections::BTreeMap::new();

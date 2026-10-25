@@ -1774,7 +1774,11 @@ json make_owner_sources(
         candidates.push_back("CD_Files/DATA/BLDGPRM.DAT");
     }
     json result = json::array();
+    std::set<std::string> retained;
     for (const std::string& logical_name : candidates) {
+        // Map presentation and collision can select the same sprite bank.
+        // Retain one exact owner identity rather than duplicating its row.
+        if (!retained.insert(logical_name).second) continue;
         const fs::path path = owner_root / logical_name;
         if (!fs::is_regular_file(path)) continue;
         result.push_back({

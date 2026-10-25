@@ -19,6 +19,7 @@ from verify_package import (
     _campaign_decode_collision,
     _campaign_required_behaviors,
     _campaign_validate_presentation,
+    verify_feature_generation_input,
     verify,
 )
 
@@ -454,6 +455,8 @@ def test_campaign_package_accepts_ordinary_domain_and_preserves_source_spans(tmp
         assert result.returncode == 0, result.stderr
         verify(output)
         record = json.loads((output / "source-record.json").read_text())
+        owner_paths = [artifact["logical_path"] for artifact in record["owner_artifacts"]]
+        assert len(owner_paths) == len(set(owner_paths))
         assert record["internal_level"] == int(level) - 1
         assert record["encoding"] == "rnc1"
         assert (output / "source-record.bin").read_bytes() == (output / "authored-level.bin").read_bytes()
@@ -524,7 +527,7 @@ def level1_campaign_exports() -> tuple[Path, Path, Path]:
         shutil.rmtree(scratch)
 
 
-def test_cf15_level1_campaign_preserves_owner_export_except_versioned_runtime_counters(
+def test_cf15_level1_campaign_preserves_owner_export_with_collision_and_constructor_inputs(
     level1_campaign_exports: tuple[Path, Path, Path],
 ) -> None:
     ordinary, first, second = level1_campaign_exports
@@ -537,8 +540,9 @@ def test_cf15_level1_campaign_preserves_owner_export_except_versioned_runtime_co
     owner = json.loads(owner_manifest_bytes)
     definition = json.loads((first / "campaign-definition.json").read_text(encoding="utf-8"))
 
-    # GOLDEN-CHANGE: only runtime v2 and its bound layout/hash metadata differ.
-    # All other captured bytes and manifest fields remain exactly identical.
+    # The current campaign envelope adds the Night collision carrier. Its
+    # feature inputs and runtime counters are already shared with this
+    # exporter version's ordinary capture; neither reset is substituted.
     ordinary_manifest = json.loads((ordinary / "manifest.json").read_bytes())
     expected_owner = json.loads(json.dumps(ordinary_manifest))
     runtime = (first / "runtime.bin").read_bytes()
@@ -554,6 +558,8 @@ def test_cf15_level1_campaign_preserves_owner_export_except_versioned_runtime_co
     expected_owner["record_layouts"]["runtime"]["constructor_counters"] = {
         "offset": 2754, "count": 29, "record_bytes": 1,
     }
+    expected_owner["files"]["collision-masks.bin"] = outer["files"]["collision-masks.bin"]
+    expected_owner["collision_masks"] = owner["collision_masks"]
     expected_owner["package_sha256"] = package_identity(expected_owner["files"])
     assert owner == expected_owner
     assert owner["schema"] == "mc2-owner-level-export/v3"
@@ -565,11 +571,14 @@ def test_cf15_level1_campaign_preserves_owner_export_except_versioned_runtime_co
     assert owner["counts"]["active_entities"] == 177
     assert owner["record_sizes"]["player"] == 573
     assert owner["record_layouts"]["player"]["record_bytes"] == 573
-    assert "collision-masks.bin" not in owner["files"]
-    assert "collision_masks" not in owner
+    assert owner["files"]["collision-masks.bin"] == {
+        "bytes": 4496,
+        "sha256": "2915a6e48c696809eb003f7ef4c2d1b09015ce5eadba2fa3f9104a35a1d2e118",
+    }
+    assert owner["collision_masks"]["bank"] == "MSPRN0-0"
 
     for name in owner["files"]:
-        if name != "runtime.bin":
+        if name not in {"runtime.bin", "collision-masks.bin"}:
             assert (first / name).read_bytes() == (ordinary / name).read_bytes()
     assert owner["package_sha256"] == package_identity(owner["files"])
 
@@ -581,7 +590,7 @@ def test_cf15_level1_campaign_preserves_owner_export_except_versioned_runtime_co
         "files",
         "package_sha256",
     }
-    assert outer["schema"] == "mc2-owner-campaign-package/v3"
+    assert outer["schema"] == "mc2-owner-campaign-package/v5"
     assert outer["level"] == owner["level"]
     assert outer["owner_export_package_sha256"] == owner["package_sha256"]
     assert outer["package_sha256"] == package_identity(outer["files"])
@@ -595,9 +604,8 @@ def test_cf15_level1_campaign_preserves_owner_export_except_versioned_runtime_co
         "bytes": len(owner_manifest_bytes),
         "sha256": hashlib.sha256(owner_manifest_bytes).hexdigest(),
     }
-    assert "collision-masks.bin" not in outer["files"]
-    assert not (first / "collision-masks.bin").exists()
-    assert definition["schema"] == "mc2-campaign-definition/v3"
+    assert (first / "collision-masks.bin").is_file()
+    assert definition["schema"] == "mc2-campaign-definition/v5"
 
     assets = definition["presentation_assets"]
     assert [asset["artifact_id"] for asset in assets] == [
@@ -649,11 +657,55 @@ def test_cf15_level1_campaign_preserves_owner_export_except_versioned_runtime_co
     assert {row["operands"]["stage_index"] for row in objectives} == {0, 5, 7}
     assert {
         row["fact_id"] for row in definition["source_facts"]
-    } == {"feature-construction-inputs", "level-records"}
+    } == {"collision-mask-bank", "feature-construction-inputs", "level-records"}
     assert sum(
         row["initial_source_slot"] is not None
         for row in definition["campaign_spec"]["authored_behavior_rows"]
     ) == 177
+
+
+def test_level1_collision_profile_validates_real_owner_data_and_rejects_substitutions(tmp_path: Path) -> None:
+    generated = ROOT / "research/private/generated"
+    package = Path(os.environ.get("MC2_LEVEL1_COLLISION_PACKAGE", str(generated / "mc-bhq8-level1-collision-v5-night")))
+    legacy = generated / "mc-cf15-level1-package-v3-current"
+    assert verify(package)["schema"] == "mc2-owner-campaign-package/v5"
+    assert verify(legacy)["schema"] == "mc2-owner-campaign-package/v3"
+
+    wrong_bank = tmp_path / "wrong-bank"
+    shutil.copytree(package, wrong_bank)
+    day_artifacts = [
+        {"logical_path": "CD_Files/DATA/MSPRD0-0.DAT", "bytes": 49202, "sha256": "a81783458f1b81da262d60bc1f4bc28012137437f2fcedb75af441a4fc777656"},
+        {"logical_path": "CD_Files/DATA/MSPRD0-0.TAB", "bytes": 1572, "sha256": "47fe03bbd99e1975755a8e47401977965b5ef63fe427a755a2f481ed393117ea"},
+    ]
+    rewrite_definition(wrong_bank, lambda definition: definition["source_facts"][0].update(source_artifacts=day_artifacts))
+    with pytest.raises(AssertionError, match="source artifacts are not exact"):
+        verify(wrong_bank)
+
+    old_provenance = tmp_path / "old-provenance"
+    shutil.copytree(package, old_provenance)
+    rewrite_definition(old_provenance, lambda definition: definition["source_facts"][0].update(version=1))
+    with pytest.raises(AssertionError, match="requires map-specific collision provenance v2"):
+        verify(old_provenance)
+
+    missing_bank = tmp_path / "missing-bank"
+    shutil.copytree(package, missing_bank)
+    (missing_bank / "collision-masks.bin").unlink()
+    with pytest.raises(AssertionError, match="directory member set differs"):
+        verify(missing_bank)
+
+    wrong_parameter = tmp_path / "wrong-constructor-parameter"
+    shutil.copytree(package, wrong_parameter)
+    member = wrong_parameter / "feature-construction-inputs.bin"
+    content = bytearray(member.read_bytes())
+    assert struct.unpack_from("<H", content, 4)[0] == 2
+    cursor = 16
+    while struct.unpack_from("<H", content, cursor)[0] != 19:
+        cursor += 12 + struct.unpack_from("<I", content, cursor + 8)[0]
+    struct.pack_into("<H", content, cursor + 2, 10)
+    member.write_bytes(content)
+    owner = json.loads((wrong_parameter / "owner-manifest.json").read_bytes())
+    with pytest.raises(AssertionError):
+        verify_feature_generation_input(wrong_parameter, owner)
 
 
 @pytest.fixture(scope="module")

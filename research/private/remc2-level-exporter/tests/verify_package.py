@@ -19,9 +19,11 @@ SCHEMA_V5 = "mc2-owner-level-export/v5"
 CAMPAIGN_PACKAGE_SCHEMA = "mc2-owner-campaign-package/v1"
 LEVEL2_CAMPAIGN_PACKAGE_SCHEMA = "mc2-owner-campaign-package/v2"
 LEVEL1_ASSET_CAMPAIGN_PACKAGE_SCHEMA = "mc2-owner-campaign-package/v3"
+LEVEL1_COLLISION_CAMPAIGN_PACKAGE_SCHEMA = "mc2-owner-campaign-package/v5"
 CAMPAIGN_DEFINITION_SCHEMA = "mc2-campaign-definition/v1"
 LEVEL2_CAMPAIGN_DEFINITION_SCHEMA = "mc2-campaign-definition/v2"
 LEVEL1_ASSET_CAMPAIGN_DEFINITION_SCHEMA = "mc2-campaign-definition/v3"
+LEVEL1_COLLISION_CAMPAIGN_DEFINITION_SCHEMA = "mc2-campaign-definition/v5"
 SCHEMAS = {SCHEMA_V1, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5}
 STATE_SEQUENCE = (
     "remc2-regression-test/memimages/regressions/level1/"
@@ -69,6 +71,7 @@ LEVEL1_ASSET_FILES = V3_FILES | CAMPAIGN_ENVELOPE_FILES | {
     "fireball-projectile-base.indexed-sprite.json",
     "fireball-projectile-fade.indexed-sprite.json",
 }
+LEVEL1_COLLISION_FILES = LEVEL1_ASSET_FILES | {"collision-masks.bin"}
 REM_C2_COMMIT = "6806c7204d17220ecc0430759f784aea8ee2ddb2"
 # Census-proven per-level campaign profile facts keyed by the outer selection
 # (external, internal, map_type_id).  Level 2 values are the qualified Day
@@ -155,6 +158,10 @@ CAMPAIGN_SOURCE_ARTIFACTS = {
     "CD_Files/DATA/BUILD0-0.TAB": (462, "e064a1520e96f65c13fde9a05918d240ee4f708ab6aefc793ec8b391f220c05e"),
     "CD_Files/DATA/MSPRD0-0.DAT": (49202, "a81783458f1b81da262d60bc1f4bc28012137437f2fcedb75af441a4fc777656"),
     "CD_Files/DATA/MSPRD0-0.TAB": (1572, "47fe03bbd99e1975755a8e47401977965b5ef63fe427a755a2f481ed393117ea"),
+    "CD_Files/DATA/MSPRN0-0.DAT": (49353, "2a890388fba9f094604e9f082a1d2dcbd0995a089b39f5442b4841056ed25abc"),
+    "CD_Files/DATA/MSPRN0-0.TAB": (1572, "12f79e74ec7c18c7c42bd3430d80831639f86650efceb2c97ccf8786c035f939"),
+    "CD_Files/DATA/MSPRC0-0.DAT": (49357, "7e8aa789f585bf3cc64d12f44b9268b609d87e5ca6fe5f22f8be90986f42b627"),
+    "CD_Files/DATA/MSPRC0-0.TAB": (1572, "cac2f8c5a7977cfe7303d115e83b7d6b8f44656e33ed8a6cca052c3d32b59c31"),
     "CD_Files/DATA/SPELLS.DAT": (2080, "7b426f0104f282d91bf7da904ed978e809135e12e0dfebd845e4a582d52b51cc"),
     "CD_Files/DATA/TABLESN.DAT": (83456, "f88974baf68f728fb534a4dab35397b9cb3ca2f424019bbde36858eebbf97495"),
     "CD_Files/LEVELS/LEVELS.DAT": (3063856, "3b7fae5d7c350486a4f62ad4b2e9fa2e4e52023a216b8a7f043ce02439b50222"),
@@ -647,6 +654,11 @@ def verify_ambient_sequence(upstream_root: Path, manifest: dict) -> None:
 
 def verify_feature_generation_input(package: Path, manifest: dict) -> None:
     descriptor = manifest["feature_generation_oracle"]
+    construction = (package / "feature-construction-inputs.bin").read_bytes()
+    construction_version = u16(construction, 4)
+    expected_selectors = _campaign_construction_selectors(
+        (package / "authored-level.bin").read_bytes(), construction_version
+    )
     assert descriptor == {
         "provenance": (
             "pristine authored Level 1 rerun after live frame-zero outputs were copied"
@@ -714,9 +726,9 @@ def verify_feature_generation_input(package: Path, manifest: dict) -> None:
         "construction_inputs": {
             "file": "feature-construction-inputs.bin",
             "magic": "MCI3",
-            "version": 1,
-            "record_count": 12,
-            "selectors": [17, 26, 29, 30, 31, 34, 42, 47, 50, 51, 52, 53],
+            "version": construction_version,
+            "record_count": len(expected_selectors),
+            "selectors": expected_selectors,
             "source": "live pinned BLDGPRM rows plus BUILD footprint bytes",
         },
     }
@@ -757,16 +769,15 @@ def verify_feature_generation_input(package: Path, manifest: dict) -> None:
     feature_entities = verify_record_file(
         package / "entities-post-features.bin", b"MCE3", 1, 1000, 176
     )
-    construction = (package / "feature-construction-inputs.bin").read_bytes()
     assert construction[:4] == b"MCI3"
-    assert u16(construction, 4) == 1
+    assert construction_version in {1, 2}
     assert u16(construction, 6) == 16
-    assert u16(construction, 8) == 12
+    assert u16(construction, 8) == len(expected_selectors)
     assert u16(construction, 10) == 1
     assert u32(construction, 12) == 0
     parameters = {}
     offset = 16
-    for _ in range(12):
+    for _ in expected_selectors:
         selector = u16(construction, offset)
         scalar = u16(construction, offset + 2)
         flags = construction[offset + 4]
@@ -778,20 +789,33 @@ def verify_feature_generation_input(package: Path, manifest: dict) -> None:
         parameters[selector] = (scalar, flags, successor)
         offset += 12 + extent
     assert offset == len(construction)
-    assert parameters == {
+    # Exact BLDGPRM rows from the pinned owner artifact, including the
+    # Builder's finite constructor choices retained by MCI3 v2.
+    expected_parameters = {
         17: (500, 0x18, 0),
+        19: (9, 3, 0),
+        22: (15, 3, 0),
         26: (20, 0x03, 0),
         29: (28, 0x03, 0),
         30: (25, 0x03, 0),
         31: (29, 0x03, 0),
+        32: (51, 3, 0),
+        33: (87, 3, 0),
         34: (118, 0x03, 0),
+        35: (28, 3, 0),
+        37: (20, 8, 37),
+        39: (30, 3, 0),
+        40: (100, 3, 0),
         42: (52, 0x03, 0),
         47: (34, 0x03, 0),
         50: (24, 0x03, 0),
         51: (30, 0x08, 0),
         52: (30, 0x08, 0),
         53: (30, 0x08, 0),
+        62: (215, 3, 0),
+        74: (245, 3, 0),
     }
+    assert parameters == {selector: expected_parameters[selector] for selector in expected_selectors}
 
     active = []
     for index in range(1000):
@@ -1078,6 +1102,9 @@ def validate_collision_mask_contract(
 
 def verify_collision_masks(package: Path, manifest: dict) -> None:
     external_level = manifest["level"]["external"]
+    # Historical carrier metadata names Day. The explicit Level-1 v5
+    # envelope binds the Night bank that Level.cpp actually loads.
+    bank = "MSPRN0-0" if external_level == 1 else "MSPRD0-0"
     metadata = manifest.get("collision_masks")
     require(
         isinstance(metadata, dict),
@@ -1089,14 +1116,14 @@ def verify_collision_masks(package: Path, manifest: dict) -> None:
         "version": 1,
         "header_bytes": 20,
         "record_header_bytes": 12,
-        "bank": "MSPRD0-0",
+        "bank": bank,
         "vga_resolution_selector": 1,
         "selector_source": "authored class-10/model-45 par1 selectors",
         "pixel_encoding": "signed i16 little-endian",
         "pixel_order": "row-major (y then x)",
         "transparent_value": -1,
     }
-    if external_level == 2:
+    if external_level <= 2:
         assert metadata == {
             **base_metadata,
             "source_files": metadata["source_files"],
@@ -1111,10 +1138,9 @@ def verify_collision_masks(package: Path, manifest: dict) -> None:
             require(metadata.get(key) == expected, f"external Level {external_level} collision-mask metadata field {key} changed")
     source_files = metadata["source_files"]
     require(set(source_files) == {"tab", "dat"}, "collision-mask source file set differs")
-    for key, logical_path, expected_bytes, expected_hash in (
-        ("tab", "CD_Files/DATA/MSPRD0-0.TAB", 1572, MSPRD0_0_TAB_SHA256),
-        ("dat", "CD_Files/DATA/MSPRD0-0.DAT", 49202, MSPRD0_0_DAT_SHA256),
-    ):
+    for key, suffix in (("tab", "TAB"), ("dat", "DAT")):
+        logical_path = f"CD_Files/DATA/{bank}.{suffix}"
+        expected_bytes, expected_hash = CAMPAIGN_SOURCE_ARTIFACTS[logical_path]
         entry = source_files[key]
         assert entry == {
             "logical_path": logical_path,
@@ -1873,11 +1899,13 @@ def _campaign_validate_reset_members(package: Path, spec: dict, files: dict, pro
         require(domain == (1 if runtime[offset] else 0), f"runtime event {index} relation domain differs")
         require((domain == 1 and 1 <= relation <= 1000) or (domain == 0 and relation == 0), f"runtime event {index} relation is out of bounds")
 
+    construction_version = u16((package / "feature-construction-inputs.bin").read_bytes(), 4)
+    require(construction_version in {1, 2}, "feature construction input version changed")
     expected_boundary = [
         ("feature-start.bin", "mc2-feature-boundary/v1"),
         ("terrain-pre-features.bin", "mc2-feature-terrain/v1"),
         ("feature-allocator.bin", "mc2-feature-allocator/v1"),
-        ("feature-construction-inputs.bin", "mc2-feature-construction-inputs/v1"),
+        ("feature-construction-inputs.bin", f"mc2-feature-construction-inputs/v{construction_version}"),
         ("entities-post-features.bin", "mc2-feature-entity-arena/v1"),
         ("terrain-post-features.bin", "mc2-feature-terrain/v1"),
         ("feature-end.bin", "mc2-feature-boundary/v1"),
@@ -1919,7 +1947,7 @@ def _campaign_validate_reset_members(package: Path, spec: dict, files: dict, pro
 
 def _campaign_decode_feature_inputs(content: bytes) -> list[int]:
     require(len(content) >= 16 and content[:4] == b"MCI3", "feature construction input header is truncated")
-    require((u16(content, 4), u16(content, 6), u16(content, 10), u32(content, 12)) == (1, 16, 1, 0), "feature construction input header changed")
+    require(u16(content, 4) in {1, 2} and (u16(content, 6), u16(content, 10), u32(content, 12)) == (16, 1, 0), "feature construction input header changed")
     count = u16(content, 8)
     selectors: list[int] = []
     cursor = 16
@@ -1933,6 +1961,28 @@ def _campaign_decode_feature_inputs(content: bytes) -> list[int]:
         selectors.append(selector)
     require(cursor == len(content), "feature construction input member has trailing bytes")
     return selectors
+
+
+def _campaign_construction_selectors(authored: bytes, version: int) -> list[int]:
+    """Keep authored collision roots separate from dynamic BUILD inputs."""
+    require(version in {1, 2}, "feature construction input version changed")
+    if version == 1:
+        return sorted({selector for _row, selector in authored_model_45_rows(authored)})
+    require(len(authored) == 0x6604, "authored construction rows have invalid extent")
+    selectors = set()
+    has_settlement = False
+    for index in range(1, 1200):
+        offset = 1091 + index * 20
+        kind, subtype = struct.unpack_from("<Hh", authored, offset)
+        if (kind, subtype) == (10, 45):
+            selectors.add(u16(authored, offset + 14))
+            has_settlement = True
+        has_settlement |= (kind, subtype) == (5, 12)
+    if has_settlement:
+        # sub_232C0's constructor choices, as retained by the exporter and
+        # consumed by the settlement owner; this is not an actor allowlist.
+        selectors.update((17, 19, 22, 26, 29, 30, 31, 32, 33, 34, 35, 39, 40, 42, 47, 50, 62, 74))
+    return sorted(selectors)
 
 
 def _campaign_decode_collision(content: bytes, authored_selectors: list[int]) -> list[int]:
@@ -2057,7 +2107,13 @@ def _campaign_validate_source_facts(package: Path, facts_value: object, files: d
         kind, member_name, provenance, artifact_paths = expected[fact_id]
         fact_kind = _bounded_integer(fact["kind"], 0xFFFF, f"SourceFact {fact_id} kind")
         fact_version = _bounded_integer(fact["version"], 0xFFFF, f"SourceFact {fact_id} version")
-        require(_strict_equal((fact_kind, fact_version, fact["lifetime"], fact["member"]), (kind, 1, "immutable-through-session", member_name)), f"SourceFact {fact_id} kind/version/lifetime/member differs")
+        require(fact_version == 1 or (kind == 3 and fact_version == 2), f"SourceFact {fact_id} version differs")
+        if kind == 3 and fact_version == 2:
+            bank = ("MSPRD0-0", "MSPRN0-0", "MSPRC0-0")[profile["map_type_id"]]
+            artifact_paths = {f"CD_Files/DATA/{bank}.DAT", f"CD_Files/DATA/{bank}.TAB"}
+        if kind == 3 and profile.get("collision_fact_version") is not None:
+            require(fact_version == profile["collision_fact_version"], "Level 1 v5 requires map-specific collision provenance v2")
+        require(_strict_equal((fact_kind, fact["lifetime"], fact["member"]), (kind, "immutable-through-session", member_name)), f"SourceFact {fact_id} kind/lifetime/member differs")
         digest = _lower_hex(fact["member_sha256"], 64, f"SourceFact {fact_id} member hash")
         require(digest == files[member_name]["sha256"], f"SourceFact {fact_id} member hash differs from outer map")
         require(member_claims.setdefault(member_name, digest) == digest, f"SourceFact {fact_id} conflicts with another member claim")
@@ -2076,9 +2132,10 @@ def _campaign_validate_source_facts(package: Path, facts_value: object, files: d
             require(_strict_equal((artifact_bytes, artifact_hash), (expected_bytes, expected_hash)), f"SourceFact {fact_id} artifact identity changed")
         require(normalized_artifact_paths == sorted(artifact_paths), f"SourceFact {fact_id} source artifacts are not exact/sorted")
 
-    feature_selectors = _campaign_decode_feature_inputs((package / "feature-construction-inputs.bin").read_bytes())
+    feature_inputs = (package / "feature-construction-inputs.bin").read_bytes()
+    feature_selectors = _campaign_decode_feature_inputs(feature_inputs)
     authored_selectors = [row["model"] for row in behavior_rows if row["initial_source_slot"] is None and row["class"] == 10 and row["subtype"] == 45 and row["action"] == 255]
-    require(feature_selectors == sorted(set(authored_selectors)), "feature construction selectors differ from authored provenance")
+    require(feature_selectors == _campaign_construction_selectors(authored, u16(feature_inputs, 4)), "feature construction selectors differ from versioned source closure")
     if "collision-mask-bank" in source_fact_ids:
         collision = (package / "collision-masks.bin").read_bytes()
         _campaign_decode_collision(collision, authored_selectors)
@@ -2238,9 +2295,10 @@ def _campaign_validate_owner_manifest(
         _strict_equal(owner_manifest.get("level"), outer_manifest["level"]),
         "owner manifest selection differs from the campaign envelope",
     )
+    owner_file_set = profile.get("owner_files", V3_FILES)
     owner_files = _exact_object(
         owner_manifest.get("files"),
-        V3_FILES,
+        owner_file_set,
         "owner manifest.files",
     )
     require(
@@ -2248,7 +2306,7 @@ def _campaign_validate_owner_manifest(
         "owner export identity includes campaign envelope members",
     )
     require(
-        _strict_equal(owner_files, {name: files[name] for name in V3_FILES}),
+        _strict_equal(owner_files, {name: files[name] for name in owner_file_set}),
         "owner manifest files differ from the outer campaign member map",
     )
     owner_identity = _campaign_package_identity(owner_files)
@@ -2272,7 +2330,10 @@ def _campaign_validate_owner_manifest(
     require(owner_manifest["counts"]["active_entities"] == profile["active_entities"], "owner manifest active entity census differs")
     require(owner_manifest["record_sizes"]["player"] == profile["player_record_bytes"], "owner manifest player record width differs")
     require(owner_manifest["record_layouts"]["player"]["record_bytes"] == profile["player_record_bytes"], "owner manifest player layout width differs")
-    require("collision_masks" not in owner_manifest, "Level 1 owner manifest carries a collision bank")
+    if profile.get("collision_fact_version") == 2:
+        verify_collision_masks(package, owner_manifest)
+    else:
+        require("collision_masks" not in owner_manifest, "legacy Level 1 owner manifest carries a collision bank")
     require(
         owner_manifest["source"]["upstream_commit"] == REM_C2_COMMIT,
         "Level 1 owner source commit differs from pinned remc2",
@@ -2444,6 +2505,14 @@ def verify_campaign_package(
         _bounded_integer(map_type["id"], 0xFF, "map type id"),
     )
     profile = CAMPAIGN_PROFILES.get(outer_selection)
+    if outer_selection == (1, 0, 1) and manifest["schema"] == LEVEL1_COLLISION_CAMPAIGN_PACKAGE_SCHEMA:
+        profile = dict(profile,
+            package_schema=LEVEL1_COLLISION_CAMPAIGN_PACKAGE_SCHEMA,
+            definition_schema=LEVEL1_COLLISION_CAMPAIGN_DEFINITION_SCHEMA,
+            files=LEVEL1_COLLISION_FILES, owner_files=V3_FILES | {"collision-masks.bin"},
+            source_fact_ids=profile["source_fact_ids"] | {"collision-mask-bank"},
+            collision_fact_version=2, collision_bank_bytes=4496,
+            collision_bank_sha256="2915a6e48c696809eb003f7ef4c2d1b09015ce5eadba2fa3f9104a35a1d2e118")
     if profile is None and 4 <= outer_selection[0] <= 25:
         external, internal, map_id = outer_selection
         require(internal == external - 1 and map_id == ORDINARY_MAPS[internal], "ordinary source identity differs")
@@ -2588,6 +2657,7 @@ def verify(
         CAMPAIGN_PACKAGE_SCHEMA,
         LEVEL2_CAMPAIGN_PACKAGE_SCHEMA,
         LEVEL1_ASSET_CAMPAIGN_PACKAGE_SCHEMA,
+        LEVEL1_COLLISION_CAMPAIGN_PACKAGE_SCHEMA,
         ORDINARY_CAMPAIGN_PACKAGE_SCHEMA,
     }:
         return verify_campaign_package(
