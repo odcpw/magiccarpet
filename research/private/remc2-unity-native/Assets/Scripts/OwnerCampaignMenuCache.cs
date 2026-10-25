@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Security.Cryptography;
+using System.Text;
 using UnityEngine;
 
 namespace MagicCarpet.Native
@@ -13,14 +14,29 @@ namespace MagicCarpet.Native
     {
         [Serializable] internal sealed class Mission
         {
-            public string level_id, name, briefing;
+            public string level_id, name, briefing, briefing_text_id, name_source_bytes;
             public int viewport_x, viewport_y, portal_x, portal_y, portal_width, portal_height;
         }
         [Serializable] private sealed class Output { public string path, sha256; public int bytes; }
         [Serializable] private sealed class Portal { public string kind, path; public int width, height; }
+        [Serializable] private sealed class LanguageBinding { public string path, binding_sha256, default_locale_id; }
+        [Serializable] private sealed class LanguageRecord { public string id, sha256; public int selector, offset, bytes; }
+        [Serializable] private sealed class LanguageLocale
+        {
+            public string id, pack_sha256, records_path, text_sha256;
+            public LanguageRecord[] records;
+        }
+        [Serializable] private sealed class LanguageManifest
+        {
+            public string schema, source_commit, binding_sha256, default_locale_id, glyph_mapping;
+            public int language_prefix_bytes, language_record_count;
+            public LanguageLocale[] locales;
+            public Output[] outputs;
+        }
         [Serializable] private sealed class Manifest
         {
-            public string schema, source_commit;
+            public string schema, source_commit, source_language_sha256;
+            public LanguageBinding language_cache;
             public int width, height, view_width, view_height;
             public Mission[] missions;
             public Portal[] portals;
@@ -39,11 +55,13 @@ namespace MagicCarpet.Native
                 (File.GetAttributes(manifestPath) & FileAttributes.ReparsePoint) != 0)
                 throw new InvalidDataException("campaign menu cache must use regular owner files");
             var manifest = JsonUtility.FromJson<Manifest>(File.ReadAllText(manifestPath));
-            if (manifest?.schema != "mc2-owner-campaign-menu-cache/v1" ||
+            if (manifest == null ||
+                (manifest.schema != "mc2-owner-campaign-menu-cache/v1" && manifest.schema != "mc2-owner-campaign-menu-cache/v2") ||
                 manifest.source_commit != "6806c7204d17220ecc0430759f784aea8ee2ddb2" ||
                 manifest.width != 1280 || manifest.height != 960 || manifest.view_width != 640 || manifest.view_height != 480 ||
                 manifest.missions?.Length != 4 || manifest.portals?.Length != 2 || manifest.outputs?.Length != 4)
                 throw new InvalidDataException("campaign menu cache has an unsupported source binding");
+            if (manifest.schema == "mc2-owner-campaign-menu-cache/v2") BindLanguage(root, manifest);
             missions = manifest.missions.ToDictionary(mission => mission.level_id, StringComparer.Ordinal);
             foreach (var mission in missions.Values)
                 if (string.IsNullOrWhiteSpace(mission.name) || string.IsNullOrWhiteSpace(mission.briefing) ||
@@ -93,6 +111,82 @@ namespace MagicCarpet.Native
 
         internal Mission ForMission(string level) => missions.TryGetValue(level, out var mission) ? mission :
             throw new InvalidDataException("campaign menu has no owner presentation for " + level);
+
+        private static string Digest(byte[] bytes)
+        {
+            using var sha = SHA256.Create();
+            return BitConverter.ToString(sha.ComputeHash(bytes)).Replace("-", "").ToLowerInvariant();
+        }
+
+        private static byte[] ReadLanguageFile(string root, string relative)
+        {
+            if (string.IsNullOrEmpty(relative) || Path.IsPathRooted(relative) || relative.Contains('\\'))
+                throw new InvalidDataException("language output path is not confined");
+            var path = root;
+            foreach (var part in relative.Split('/'))
+            {
+                if (part is "" or "." or "..") throw new InvalidDataException("language output path is not confined");
+                path = Path.Combine(path, part);
+                if ((File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0)
+                    throw new InvalidDataException("language output must use regular owner files");
+            }
+            return File.ReadAllBytes(path);
+        }
+
+        private static void BindLanguage(string root, Manifest menu)
+        {
+            var binding = menu.language_cache;
+            if (binding == null || binding.path != "language" || binding.binding_sha256?.Length != 64)
+                throw new InvalidDataException("campaign language binding is missing");
+            var raw = Encoding.UTF8.GetString(ReadLanguageFile(root, "language/manifest.json")).TrimEnd('\n');
+            var language = JsonUtility.FromJson<LanguageManifest>(raw);
+            // The importer writes sorted, compact canonical JSON. Its binding
+            // is the same exact byte stream before adding this first property.
+            var prefix = "{\"binding_sha256\":\"" + binding.binding_sha256 + "\",";
+            if (language?.schema != "mc2-installed-language-cache/v1" ||
+                language.source_commit != menu.source_commit || language.binding_sha256 != binding.binding_sha256 ||
+                language.default_locale_id != binding.default_locale_id ||
+                language.glyph_mapping != "mc2-byte-plus-one-controls/v1" ||
+                language.language_prefix_bytes != 4785 || language.language_record_count != 471 ||
+                !raw.StartsWith(prefix, StringComparison.Ordinal) ||
+                Digest(Encoding.UTF8.GetBytes("{" + raw.Substring(prefix.Length))) != binding.binding_sha256 ||
+                language.outputs == null || language.locales == null)
+                throw new InvalidDataException("campaign language binding identity mismatch");
+            var payloads = new Dictionary<string, byte[]>(StringComparer.Ordinal);
+            foreach (var output in language.outputs)
+            {
+                var bytes = ReadLanguageFile(root, "language/" + output.path);
+                if (bytes.Length != output.bytes || Digest(bytes) != output.sha256 || !payloads.TryAdd(output.path, bytes))
+                    throw new InvalidDataException("campaign language output identity mismatch");
+            }
+            var locale = language.locales.SingleOrDefault(row => row.id == binding.default_locale_id);
+            if (locale?.records?.Length != 471 || locale.pack_sha256 != menu.source_language_sha256 ||
+                !payloads.TryGetValue(locale.records_path, out var text) || Digest(text) != locale.text_sha256)
+                throw new InvalidDataException("campaign default language is unbound");
+            var cursor = 0;
+            for (var selector = 0; selector < locale.records.Length; selector++)
+            {
+                var record = locale.records[selector];
+                if (record.selector != selector || record.id != "text.mc2.record." + selector ||
+                    record.offset != cursor || record.bytes < 0 || (long)cursor + record.bytes >= text.Length ||
+                    text[cursor + record.bytes] != 0)
+                    throw new InvalidDataException("campaign language record extent is invalid");
+                var bytes = new byte[record.bytes];
+                Buffer.BlockCopy(text, cursor, bytes, 0, bytes.Length);
+                if (Array.IndexOf(bytes, (byte)0) >= 0 || Digest(bytes) != record.sha256)
+                    throw new InvalidDataException("campaign language record identity mismatch");
+                cursor += bytes.Length + 1;
+            }
+            if (cursor != text.Length) throw new InvalidDataException("campaign language contains unbound bytes");
+            for (var index = 0; index < menu.missions.Length; index++)
+            {
+                var mission = menu.missions[index];
+                var record = locale.records[23 + index];
+                if (record.selector != 23 + index || mission.briefing_text_id != record.id)
+                    throw new InvalidDataException("campaign briefing is bound to the wrong source record");
+                mission.briefing = Encoding.GetEncoding(28591).GetString(text, record.offset, record.bytes);
+            }
+        }
 
         internal void DrawMap(GameRuntimeTransport.CampaignMenuSnapshot menu)
         {
