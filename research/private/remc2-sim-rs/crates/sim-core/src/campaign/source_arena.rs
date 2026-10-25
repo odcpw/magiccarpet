@@ -117,6 +117,8 @@ pub struct SourceArena {
     pub(crate) economy: Level2EconomyState,
     pub(crate) effects: crate::world::effects::State,
     replacement_slots: Vec<u16>,
+    // Producer provenance only; all mutable creature fields remain in entities.
+    raw_creature_origins: BTreeMap<u16, (u32, CreatureKind, CreatureRootOrigin)>,
 }
 
 impl SourceArena {
@@ -127,6 +129,7 @@ impl SourceArena {
             economy,
             effects: crate::world::effects::State::default(),
             replacement_slots: Vec::new(),
+            raw_creature_origins: BTreeMap::new(),
         }
     }
 
@@ -139,6 +142,7 @@ impl SourceArena {
         let arena = self.economy.reset_hash_with_terrain(terrain);
         if self.effects == crate::world::effects::State::default()
             && self.replacement_slots.is_empty()
+            && self.raw_creature_origins.is_empty()
         {
             return arena;
         }
@@ -151,12 +155,172 @@ impl SourceArena {
         for slot in &self.replacement_slots {
             hash.update(slot.to_le_bytes());
         }
+        if !self.raw_creature_origins.is_empty() {
+            hash.update(b"raw-creature-origins-v1");
+            for (slot, (generation, kind, origin)) in &self.raw_creature_origins {
+                hash.update(slot.to_le_bytes());
+                hash.update(generation.to_le_bytes());
+                hash.update(kind.as_str().as_bytes());
+                let (tag, producer) = match origin {
+                    CreatureRootOrigin::InitialPackage => (0u8, 0),
+                    CreatureRootOrigin::AuthoredRecord { authored_record } => (1, *authored_record),
+                    CreatureRootOrigin::MorphSpell { holder_slot } => (2, *holder_slot),
+                    CreatureRootOrigin::HouseSpawn { house_slot } => (3, *house_slot),
+                    CreatureRootOrigin::CastleSpawn { castle_slot } => (4, *castle_slot),
+                    CreatureRootOrigin::CreatureConversion { producer_slot } => (5, *producer_slot),
+                };
+                hash.update([tag]);
+                hash.update(producer.to_le_bytes());
+            }
+        }
         format!("{:x}", hash.finalize())
+    }
+
+    pub(crate) fn bind_raw_creature_origin(
+        &mut self,
+        handle: SourceEntityHandle,
+        kind: CreatureKind,
+        origin: CreatureRootOrigin,
+    ) -> bool {
+        let expected_model = match kind {
+            CreatureKind::Creature22 => 22,
+            CreatureKind::Creature24 => 24,
+            _ => return false,
+        };
+        if !matches!(self.resolve(handle), Some(SourceEntityView::Imported(row))
+            if row.class == 5 && row.model == expected_model && row.action != 180)
+        {
+            return false;
+        }
+        self.raw_creature_origins
+            .insert(handle.source_slot, (handle.generation, kind, origin));
+        true
+    }
+
+    pub(crate) fn clear_raw_creature_origin(&mut self, source_slot: u16) {
+        self.raw_creature_origins.remove(&source_slot);
+    }
+
+    fn raw_creature_identity(
+        &self,
+        source: &EntitySnapshot,
+        initial: &BTreeMap<u16, CreatureKind>,
+    ) -> Option<CreatureRuntimeIdentity> {
+        if !source.active || source.class != 5 || !matches!(source.model, 22 | 24) {
+            return None;
+        }
+        let part = source.model == 22 && source.action == 180;
+        let root_slot = if part {
+            u16::from_le_bytes([source.record[154], source.record[155]])
+        } else {
+            source.index
+        };
+        let root = self.entities.get(usize::from(root_slot))?;
+        if !root.active || root.class != 5 || root.model != source.model || root.action == 180 {
+            return None;
+        }
+        if !matches!(
+            self.resolve(SourceEntityHandle {
+                source_slot: root_slot,
+                generation: self.slot_generation(root_slot)
+            }),
+            Some(SourceEntityView::Imported(_))
+        ) {
+            return None;
+        }
+        let expected = if source.model == 22 {
+            CreatureKind::Creature22
+        } else {
+            CreatureKind::Creature24
+        };
+        let origin = match self.raw_creature_origins.get(&root_slot) {
+            Some((generation, kind, origin))
+                if *generation == self.slot_generation(root_slot) && *kind == expected =>
+            {
+                *origin
+            }
+            Some(_) => return None,
+            None if initial.get(&root_slot) == Some(&expected)
+                && self.slot_generation(root_slot) == 0 =>
+            {
+                CreatureRootOrigin::InitialPackage
+            }
+            None => return None,
+        };
+        Some(CreatureRuntimeIdentity {
+            handle: SourceEntityHandle {
+                source_slot: source.index,
+                generation: self.slot_generation(source.index),
+            },
+            kind: expected,
+            root_slot,
+            role: if part {
+                CreatureRuntimeRole::MultipartPart
+            } else {
+                CreatureRuntimeRole::Root
+            },
+            origin,
+            raw_model: (!part).then_some(source.model),
+            living: !part && !source.drawing_disabled() && source.life >= 0,
+        })
     }
 
     #[must_use]
     pub(crate) fn entities(&self) -> &[EntitySnapshot] {
         &self.entities
+    }
+
+    /// Source 68BF0/68C70 over raw family roots. The caller supplies the
+    /// source-frozen order after StageVar preparation; numeric child links
+    /// deliberately address the current occupant, just as the source does.
+    pub(crate) fn step_raw_creature_proximity(&mut self, frozen: &[u16], player: Position) {
+        for &slot in frozen {
+            let Some(row) = self
+                .entities
+                .get_mut(usize::from(slot))
+                .filter(|row| row.active && row.class == 5)
+            else {
+                continue;
+            };
+            let mut child = u16::from_le_bytes([row.record[56], row.record[57]]);
+            let inherited = if row.life < 0 {
+                row.record[61] = 250;
+                row.record[62] = 0;
+                None
+            } else if row.record[61] != 0 {
+                let prior = row.record[61];
+                row.record[61] = prior.wrapping_sub(1);
+                Some(prior)
+            } else if row.control_flags & 1 != 0 {
+                None
+            } else if row.record[62] != 0 {
+                row.record[62] -= 1;
+                None
+            } else {
+                let dx = i32::from(row.position.x.wrapping_sub(player.x) as i16);
+                let dy = i32::from(row.position.y.wrapping_sub(player.y) as i16);
+                let distance = dx.wrapping_mul(dx).wrapping_add(dy.wrapping_mul(dy)) as u32;
+                if distance < 0x0240_0000 {
+                    row.record[61] = 16;
+                    Some(18)
+                } else {
+                    None
+                }
+            };
+            if let Some(value) = inherited {
+                for _ in 0..self.entities.len() {
+                    let Some(row) = self
+                        .entities
+                        .get_mut(usize::from(child))
+                        .filter(|_| child != 0)
+                    else {
+                        break;
+                    };
+                    row.record[61] = value;
+                    child = u16::from_le_bytes([row.record[56], row.record[57]]);
+                }
+            }
+        }
     }
 
     /// NewEvent over both canonical carrier domains. Raw controller records
@@ -223,6 +387,7 @@ impl SourceArena {
             crate::world::effects::sync_position(self, terrain, slot, position, false, false)?;
             self.entities[usize::from(slot)].reclaim_source_row();
             self.economy.release_slot(slot, Some(rng));
+            self.raw_creature_origins.remove(&slot);
         }
         for (slot, position) in crate::native_world::hidden_effect_slots(self) {
             crate::world::effects::sync_position(self, terrain, slot, position, false, false)?;
@@ -254,7 +419,9 @@ impl SourceArena {
 
     fn allocate_source_slot_notifying(&mut self, mut publish: impl FnMut(u16, u16)) -> Option<u16> {
         if self.economy.free_slot_count() != 0 {
-            return self.economy.allocate_slot();
+            let slot = self.economy.allocate_slot()?;
+            self.raw_creature_origins.remove(&slot);
+            return Some(slot);
         }
         let dynamic = self
             .economy
@@ -291,6 +458,7 @@ impl SourceArena {
             self.entities[usize::from(neighbor)].set_map_links(links.0, links.1);
         }
         publish(tile, self.economy.map_chains.tile_head(tile));
+        self.raw_creature_origins.remove(&slot);
         Some(slot)
     }
 
@@ -458,7 +626,9 @@ impl SourceArena {
             self.entities
                 .iter()
                 .filter(|source| {
-                    source.active && source.class == 5 && matches!(source.action, 29 | 232)
+                    source.active
+                        && source.class == 5
+                        && (matches!(source.action, 29 | 232) || matches!(source.model, 22 | 24))
                 })
                 .map(|source| source.index),
         );
@@ -516,6 +686,9 @@ impl SourceArena {
         let source = self.entities.get(usize::from(source_slot))?;
         if !source.active || source.class != 5 {
             return None;
+        }
+        if matches!(source.model, 22 | 24) {
+            return self.raw_creature_identity(source, initial_bindings);
         }
         let handle = SourceEntityHandle {
             source_slot,
@@ -619,6 +792,7 @@ impl SourceArena {
             (include_retained || source.active) && source.source_entity_index == source_slot
         }) {
             let origin = match source.origin {
+                BeeCreatureOrigin::InitialPackage => CreatureRootOrigin::InitialPackage,
                 BeeCreatureOrigin::AuthoredRecord { authored_index } => {
                     if authored_bindings.get(&authored_index) != Some(&CreatureKind::Bee) {
                         return None;
@@ -710,6 +884,9 @@ impl SourceArena {
             || !matches!(self.resolve(handle), Some(SourceEntityView::Imported(_)))
         {
             return None;
+        }
+        if matches!(source.model, 22 | 24) {
+            return self.raw_creature_identity(source, initial_bindings);
         }
         if source.class == 5
             && source.model == 9
@@ -1065,6 +1242,81 @@ mod tests {
             .expect("qualified Level 2 semantic source arena package")
             .level2_compatibility()
             .clone()
+    }
+
+    #[test]
+    fn authored_raw_creature_identity_counts_roots_not_parts_and_rejects_reuse() {
+        let session = level_two_session();
+        let mut arena = session.source_arena().clone();
+        let terrain = session.session.state.live.terrain.clone();
+        let root = arena.allocate_source_slot().unwrap();
+        let part = arena.allocate_source_slot().unwrap();
+        for (slot, action) in [(root, 176), (part, 180)] {
+            let mut row = crate::world::terrain::cave_features::new_event(
+                slot,
+                arena.new_event_rng(slot),
+                Position::default(),
+            );
+            row.class = 5;
+            row.model = 22;
+            row.record[67] = 5;
+            row.record[68] = 22;
+            row.set_source_action(action);
+            row.set_life(3000);
+            row.record[154..156].copy_from_slice(&root.to_le_bytes());
+            arena.entities[usize::from(slot)] = row;
+        }
+        let handle = arena.handle(root).unwrap();
+        let unbound_hash = arena.reset_hash_with_terrain(&terrain);
+        let origin = CreatureRootOrigin::AuthoredRecord {
+            authored_record: 494,
+        };
+        assert!(arena.bind_raw_creature_origin(handle, CreatureKind::Creature22, origin));
+        let empty = BTreeMap::new();
+        let census = arena.creature_runtime_census(&empty, &empty);
+        assert_eq!(census.roots_of_kind(CreatureKind::Creature22).count(), 1);
+        let identity = arena
+            .creature_runtime_identity(part, &empty, &empty)
+            .unwrap();
+        assert_eq!(identity.root_slot, root);
+        assert_eq!(identity.origin, origin);
+        assert_eq!(identity.role, CreatureRuntimeRole::MultipartPart);
+        assert!(!identity.living);
+        let bound_hash = arena.reset_hash_with_terrain(&terrain);
+        assert_ne!(bound_hash, unbound_hash);
+        assert_eq!(arena.clone().reset_hash_with_terrain(&terrain), bound_hash);
+        arena.entities[usize::from(root)].reclaim_source_row();
+        arena.economy.release_slot(root, None);
+        let reused = arena.allocate_source_slot().unwrap();
+        assert_eq!(reused, root);
+        assert!(!arena.bind_raw_creature_origin(handle, CreatureKind::Creature22, origin));
+        assert!(
+            arena
+                .creature_runtime_identity(part, &empty, &empty)
+                .is_none()
+        );
+        let mut replacement =
+            crate::world::terrain::cave_features::new_event(root, 1, Position::default());
+        replacement.class = 5;
+        replacement.model = 24;
+        replacement.set_source_action(192);
+        arena.entities[usize::from(root)] = replacement;
+        // A stale immutable initial selector cannot manufacture a new origin.
+        let stale = BTreeMap::from([(root, CreatureKind::Creature24)]);
+        assert!(
+            arena
+                .imported_creature_runtime_identity(root, &stale)
+                .is_none()
+        );
+        let fresh = arena.handle(root).unwrap();
+        assert!(arena.bind_raw_creature_origin(fresh, CreatureKind::Creature24, origin));
+        assert_eq!(
+            arena
+                .imported_creature_runtime_identity(root, &stale)
+                .unwrap()
+                .kind,
+            CreatureKind::Creature24
+        );
     }
 
     #[test]

@@ -29,6 +29,15 @@ fn expiring_defender(mode: u8) -> (crate::native_world::Level2ResetSession, u16)
     actor.stage.remaining = 99;
     actor.source_byte_3e = 3;
     actor.control_flags |= crate::native_world::SOURCE_REPLACEABLE_FLAG;
+    // UpdateEntities/49F90 freezes replacement addresses before callbacks.
+    // The pressure helper above only exhausts the ordinary economy free stack.
+    for source in &mut session.economy.entities {
+        source.set_control_flags(
+            source.control_flags & !crate::native_world::SOURCE_REPLACEABLE_FLAG,
+        );
+    }
+    session.economy.rebuild_source_free_arena();
+    assert_eq!(session.economy.free_slot_count(), 0);
     (session, slot)
 }
 
@@ -41,7 +50,7 @@ fn expire(session: &mut crate::native_world::Level2ResetSession, slot: u16) {
     let result = mc2::step_source_runtime(
         &mut live.economy,
         &mut live.core.runtime,
-        &live.terrain,
+        &mut live.terrain,
         &particles,
         slot,
         &membership,

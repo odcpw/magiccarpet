@@ -769,7 +769,7 @@ pub(crate) struct DefenderStepResult {
 pub(crate) fn step_source_runtime(
     arena: &mut SourceArena,
     runtime: &mut RuntimeSnapshot,
-    terrain: &SessionTerrain,
+    terrain: &mut SessionTerrain,
     particles: &[crate::native_world::ParticleParameter],
     slot: u16,
     membership: &crate::native_world::level2_dynamic_economy::Level2CastleAuxiliaryMembership,
