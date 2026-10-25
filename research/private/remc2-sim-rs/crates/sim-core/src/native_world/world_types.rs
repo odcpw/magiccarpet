@@ -4183,6 +4183,16 @@ impl NativeWorldInspection {
             .mission_content_template_from_definition(definition)?
             .session();
         let mut session = self.build_campaign_reset_session(definition, mission)?;
+        // Both reset builders expose the definition's exact BUILD parameter
+        // bank. The qualified Day bundle also needs retained authored houses
+        // and their destruction successors for later activation groups.
+        let construction_inputs = definition
+            .read_member("feature-construction-inputs.bin")
+            .map_err(|error| NativeWorldError::new(error.to_string()))?;
+        session.ordinary_mut().house_parameters =
+            decode_campaign_house_parameters(&construction_inputs)
+                .map_err(NativeWorldError::new)?;
+        session.session.rebase();
         // Every campaign boot path needs the same Castle construction data.
         // The qualified Day capability bundle takes a different reset builder
         // from descriptor-only worlds, so bind missing footprints here before
