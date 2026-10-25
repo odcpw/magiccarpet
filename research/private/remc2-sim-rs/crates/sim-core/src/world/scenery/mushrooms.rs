@@ -217,6 +217,18 @@ mod tests {
             assert_eq!(&rebound, row, "source default binding changes no row bytes");
         }
         game.step(crate::PlayerCommand::default(), 0);
+        let errors = game
+            .events()
+            .iter()
+            .filter_map(|event| match event {
+                crate::native_world::Level2DispatchEvent::Error { message, .. } => {
+                    Some(message.as_str())
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert!(errors.is_empty(), "ordinary Cave step rejected: {errors:?}");
+        assert!(game.level2_compatibility().campaign_tick() > 0);
         let live = mushrooms(game.level2_compatibility().entities());
         assert!(!live.is_empty(), "ordinary Cave step retains dry mushrooms");
         assert!(live.iter().all(|row| matches!(row.action, 18 | 19)));
