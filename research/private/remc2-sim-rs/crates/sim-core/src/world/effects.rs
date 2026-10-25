@@ -1474,16 +1474,12 @@ fn step_possession_contact(arena: &mut SourceArena, source: &mut EntitySnapshot)
             && (selector.0 == u8::MAX
                 || (selector.0 == 10 && (selector.1 == u8::MAX || selector.1 == 39)))
         {
-            let dimension = crate::native_world::level2_mana_sphere_dimension(sphere.mana);
-            if crate::level1_mission::source_entities_overlap(
+            if sphere.overlaps_source_axes(
                 source.position,
                 source.array_pitch(),
+                source.array_roll(),
                 source.array_yaw(),
                 source.array_fov(),
-                sphere.position,
-                dimension,
-                dimension,
-                dimension,
             ) {
                 sphere.incoming_owner_entity_index = source.source_id;
                 sphere.incoming_possession_payload = 1;

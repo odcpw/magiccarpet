@@ -564,13 +564,17 @@ impl AreaWorld for ArenaTargets<'_, '_> {
             .iter()
             .find(|row| row.active && row.source_entity_index == slot)
         {
-            let extent = super::level2_mana_sphere_dimension(row.mana);
             return Some(Actor {
                 source_id: row.source_entity_index,
                 class: 10,
                 model: 39,
                 position: row.position,
-                shape: shape(extent, extent, extent, extent),
+                shape: shape(
+                    row.collision_pitch,
+                    row.collision_roll,
+                    row.collision_yaw,
+                    row.collision_fov,
+                ),
                 damage_mask: 3,
                 control_flags: row.control_flags,
             });
@@ -1322,6 +1326,54 @@ mod tests {
     }
 
     #[test]
+    fn death_sphere_contact_geometry_changes_only_at_its_color_callback() {
+        let session = super::super::tests::level_two_campaign_session();
+        let terrain = session.canonical_terrain();
+        let mut arena = session.source_arena().clone();
+        let id = arena
+            .economy
+            .spawn_mana_sphere_from_death(
+                session.state.entity_index,
+                session.state.position,
+                0,
+                0x1234,
+                8000,
+                0,
+                terrain,
+            )
+            .expect("ordinary death-to-sphere producer");
+        let slot = u16::try_from(id).unwrap();
+        let newborn = source_actor(&mut arena, None, slot).unwrap();
+        assert_eq!(
+            newborn.shape,
+            shape(28, 28, 28, 28),
+            "copied death mana must not resize constructor geometry before its visit"
+        );
+        assert!(arena.economy.step_mana_sphere_slot(slot, terrain, |_| 52));
+        let current = arena
+            .economy
+            .spheres()
+            .iter()
+            .find(|row| row.source_entity_index == slot)
+            .copied()
+            .unwrap();
+        assert!(current.active);
+        assert_ne!(current.particle_index, 53);
+        assert_ne!(current.collision_pitch, 28);
+        let visited = source_actor(&mut arena, None, slot).unwrap();
+        assert_eq!(
+            visited.shape,
+            shape(
+                current.collision_pitch,
+                current.collision_roll,
+                current.collision_yaw,
+                current.collision_fov,
+            ),
+            "contact admission follows the callback's retained geometry"
+        );
+    }
+
+    #[test]
     fn ordinary_sphere_birth_retains_area_mailbox_and_hit_count_without_mana_loss() {
         let session = super::super::tests::level_two_campaign_session();
         let terrain = session.canonical_terrain();
@@ -1339,10 +1391,9 @@ mod tests {
             (sphere.ordinary_damage_payload, sphere.ordinary_damage_owner),
             (0, 0)
         );
-        let extent = super::super::level2_mana_sphere_dimension(sphere.mana);
         let mut request = AreaDamage {
             position: sphere.position,
-            shape: shape(1, 1, extent, 1),
+            shape: shape(1, 1, sphere.collision_yaw, 1),
             owner: sphere.source_entity_index,
             payload: 200,
             selector: (10, 39),
@@ -1376,7 +1427,7 @@ mod tests {
         assert!(
             arena
                 .economy
-                .step_mana_sphere_slot(sphere.source_entity_index, terrain)
+                .step_mana_sphere_slot(sphere.source_entity_index, terrain, |_| 52)
         );
         let current = arena
             .economy
