@@ -24,6 +24,7 @@ pub struct BeeClassProperties {
     pub maximum_slope: i32,
     pub collision_half_width: i16,
     pub collision_half_height: i16,
+    pub collision_vertical_offset: i16,
     pub behavior_flags: u8,
 }
 
@@ -45,6 +46,8 @@ pub const BEE_CLASS_PROPERTIES: BeeClassProperties = BeeClassProperties {
     maximum_slope: 20,
     collision_half_width: 128,
     collision_half_height: 128,
+    // Particle 3 keeps rotSpeed_8 / 2 after SetEntityShiftRot replaces the other axes.
+    collision_vertical_offset: 75,
     behavior_flags: 1,
 };
 
