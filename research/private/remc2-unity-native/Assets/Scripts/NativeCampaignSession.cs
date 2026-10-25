@@ -555,7 +555,7 @@ namespace MagicCarpet.Native
                 out var info,
                 128);
             NativeSession.Check(status, "copy generic campaign presentation frame");
-            ValidateCampaignFrameInfo(info, generation, expectedTick);
+            ValidateCampaignFrameInfo(info, generation, expectedTick, Selection.mapType);
             Buffer.BlockCopy(
                 campaignFrameScratchIndices,
                 0,
@@ -569,13 +569,15 @@ namespace MagicCarpet.Native
         internal static void ValidateCampaignFrameInfo(
             NativeSim.PresentationFrameInfo info,
             ulong expectedGeneration,
-            ulong expectedTick)
+            ulong expectedTick,
+            byte mapType = 0)
         {
             var expectedFlags =
                 NativeSim.TerrainFrameIsolatedSkyTerrain |
-                NativeSim.TerrainFrameSkySeeded |
                 NativeSim.TerrainFrameNonTerrainOmitted;
+            if (mapType != 2) expectedFlags |= NativeSim.TerrainFrameSkySeeded;
             if (info.abiVersion != NativeSim.AbiVersion ||
+                mapType > 2 ||
                 info.structSize != 128 ||
                 info.generation != expectedGeneration ||
                 info.tick != expectedTick ||

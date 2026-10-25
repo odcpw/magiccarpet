@@ -328,10 +328,6 @@ namespace MagicCarpet.Native
                 package.DefinitionSha256 != cache.EnvironmentPackage.DefinitionSha256 ||
                 environmentCache != null && (!ReferenceEquals(environmentCache, cache) || Generation != session.Generation))
                 throw new InvalidOperationException("environment package/generation differs from this presentation surface");
-            // The Cave renderer owns its floor/ceiling path. Loading Cave
-            // resources never substitutes a Day terrain pass or a fake sky.
-            if (profile.map_type.id == 2)
-                throw new InvalidOperationException("Cave environment is loaded but its floor/ceiling renderer is not admitted");
             var generation = session.Generation;
             var tick = session.Tick;
             // Retrieve all authoritative inputs before changing the visible

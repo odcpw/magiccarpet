@@ -832,14 +832,14 @@ fn cell_corner(owner: usize, vertex: usize, columns: usize) -> Result<usize, Cla
     }
 }
 
-fn source_uv_row(row: u8) -> Result<[[i32; 2]; 4], ClassicHdRasterError> {
+pub(crate) fn source_uv_row(row: u8) -> Result<[[i32; 2]; 4], ClassicHdRasterError> {
     let base = *UV_ROW_ORDER
         .get(usize::from(row))
         .ok_or_else(|| ClassicHdRasterError(format!("Classic HD UV row {row} is out of bounds")))?;
     Ok(BASE_UV_ROWS[base])
 }
 
-fn terrain_texture_base(selector: u8) -> Result<usize, ClassicHdRasterError> {
+pub(crate) fn terrain_texture_base(selector: u8) -> Result<usize, ClassicHdRasterError> {
     let selector = usize::from(selector);
     if selector >= CLASSIC_HD_TERRAIN_TILE_COUNT {
         return Err(ClassicHdRasterError(format!(

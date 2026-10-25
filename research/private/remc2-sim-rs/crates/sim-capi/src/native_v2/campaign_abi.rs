@@ -2153,7 +2153,11 @@ pub extern "C" fn mc_native_campaign_presentation_frame_copy(
                 index_bytes: required,
                 provenance_bytes: 0,
                 flags: MC_TERRAIN_FRAME_ISOLATED_SKY_TERRAIN
-                    | MC_TERRAIN_FRAME_SKY_SEEDED
+                    | if frame.profile.map_type_id == 2 {
+                        0
+                    } else {
+                        MC_TERRAIN_FRAME_SKY_SEEDED
+                    }
                     | MC_TERRAIN_FRAME_NON_TERRAIN_OMITTED,
                 effective_postprocess_mode: 0,
                 history_state: 1,

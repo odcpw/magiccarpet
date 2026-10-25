@@ -18,10 +18,16 @@ use crate::{
     FlightState,
     classic_hd::{ClassicHdFrameWriter, ClassicHdRenderProfile, byte_hash},
     classic_hd_raster::rasterize_classic_hd_terrain,
-    classic_hd_terrain::{ClassicHdSkyBank, ClassicHdTerrainResources, build_classic_hd_terrain},
+    classic_hd_terrain::{
+        ClassicHdSkyBank, ClassicHdTerrainRender, ClassicHdTerrainResources,
+        build_classic_hd_terrain,
+    },
     mission_content::REMC2_SPEC_COMMIT,
     native_world::{Level2ResetSession, MapType, NativeWorldInspection},
-    presentation::environment_materials::{CACHE_SCHEMA, EnvironmentResources},
+    presentation::{
+        cave_terrain::{CaveTerrainPlan, CaveTerrainResources, build_cave_terrain},
+        environment_materials::{CACHE_SCHEMA, EnvironmentResources},
+    },
     terrain_frame::Level1TerrainFrameCamera,
 };
 
@@ -762,21 +768,62 @@ fn render_environment_indexed_frame(
         planes.shading.as_ref(),
         planes.angles.as_ref(),
     )?;
-    let terrain = build_classic_hd_terrain(
-        &profile,
-        camera,
-        ClassicHdTerrainResources {
-            terrain_types: &planes.terrain_types,
-            ground_heights: &planes.ground_heights,
-            shading: &planes.shading,
-            angles: &planes.angles,
-            sky: assets.sky(),
-        },
-        ClassicHdSkyBank::Base256,
-    )
-    .map_err(|error| DayIndexedFrameError::new(format!("Day terrain build failed: {error}")))?;
+    enum Terrain {
+        Outdoor(ClassicHdTerrainRender),
+        Cave(CaveTerrainPlan),
+    }
+    let terrain = if inspection.metadata().map_type == MapType::Cave {
+        let clear_index = assets
+            .materials
+            .profile
+            .as_ref()
+            .ok_or_else(|| DayIndexedFrameError::new("Cave requires package-selected materials"))?
+            .key_color_1;
+        Terrain::Cave(
+            build_cave_terrain(
+                &profile,
+                camera,
+                CaveTerrainResources {
+                    terrain_types: &planes.terrain_types,
+                    ground_heights: &planes.ground_heights,
+                    ceiling_heights: &planes.secondary_heights,
+                    shading: &planes.shading,
+                    angles: &planes.angles,
+                    clear_index,
+                },
+            )
+            .map_err(|error| {
+                DayIndexedFrameError::new(format!("Cave terrain build failed: {error}"))
+            })?,
+        )
+    } else {
+        Terrain::Outdoor(
+            build_classic_hd_terrain(
+                &profile,
+                camera,
+                ClassicHdTerrainResources {
+                    terrain_types: &planes.terrain_types,
+                    ground_heights: &planes.ground_heights,
+                    shading: &planes.shading,
+                    angles: &planes.angles,
+                    sky: assets.sky(),
+                },
+                ClassicHdSkyBank::Base256,
+            )
+            .map_err(|error| {
+                DayIndexedFrameError::new(format!("Day terrain build failed: {error}"))
+            })?,
+        )
+    };
     let extent = profile.extent();
-    let mut indices = terrain.sky.clone();
+    let (mut indices, terrain_input_hash, terrain_command_hash) = match &terrain {
+        Terrain::Outdoor(plan) => (plan.sky.clone(), plan.input_hash, plan.command_hash),
+        Terrain::Cave(plan) => (
+            plan.initial_indices(&profile),
+            plan.input_hash,
+            plan.command_hash,
+        ),
+    };
     if indices.len() != extent {
         return Err(DayIndexedFrameError::new(format!(
             "Day sky extent {} does not match profile extent {extent}",
@@ -791,19 +838,28 @@ fn render_environment_indexed_frame(
             &mut provenance,
             generation,
             tick,
-            terrain.input_hash,
+            terrain_input_hash,
             0,
         )
         .map_err(|error| {
             DayIndexedFrameError::new(format!("Day frame allocation failed: {error}"))
         })?;
-        rasterize_classic_hd_terrain(
-            &mut writer,
-            &terrain,
-            assets.terrain_atlas(),
-            tables,
-            DAY_TERRAIN_PROVENANCE,
-        )
+        match &terrain {
+            Terrain::Outdoor(plan) => rasterize_classic_hd_terrain(
+                &mut writer,
+                plan,
+                assets.terrain_atlas(),
+                tables,
+                DAY_TERRAIN_PROVENANCE,
+            )
+            .map(|_| ()),
+            Terrain::Cave(plan) => plan.rasterize(
+                &mut writer,
+                assets.terrain_atlas(),
+                tables,
+                DAY_TERRAIN_PROVENANCE,
+            ),
+        }
         .map_err(|error| {
             DayIndexedFrameError::new(format!("Day terrain raster failed: {error}"))
         })?;
@@ -844,8 +900,8 @@ fn render_environment_indexed_frame(
         indices,
         palette_rgb8,
         index_hash,
-        terrain_input_hash: terrain.input_hash,
-        terrain_command_hash: terrain.command_hash,
+        terrain_input_hash,
+        terrain_command_hash,
         cache_content_sha256: assets.cache_content_sha256.clone(),
         package_sha256: assets.package_sha256.clone(),
     })
@@ -901,7 +957,10 @@ fn validate_day_route(
     if metadata.external_level != material.external_level
         || metadata.internal_level != material.internal_level
         || metadata.map_type as u8 != material.map_type_id
-        || !matches!(metadata.map_type, MapType::Day | MapType::Night)
+        || !matches!(
+            metadata.map_type,
+            MapType::Day | MapType::Night | MapType::Cave
+        )
     {
         return Err(DayIndexedFrameError::new(
             "Day indexed frame metadata and material selection differ",
@@ -915,9 +974,14 @@ fn validate_day_route(
             "Day indexed frame inspection, session, and material cache owner identities differ",
         ));
     }
-    if session.profile().cave_mode {
+    if session.profile().cave_mode != (metadata.map_type == MapType::Cave) {
         return Err(DayIndexedFrameError::new(
-            "Day indexed frame cannot consume a cave flight profile",
+            "environment frame and flight Cave profiles differ",
+        ));
+    }
+    if (metadata.map_type == MapType::Cave) != assets.materials.sky().is_none() {
+        return Err(DayIndexedFrameError::new(
+            "environment sky presence differs from the actual map type",
         ));
     }
     Ok(())
@@ -1548,6 +1612,87 @@ mod tests {
             DayIndexedFrameAssets::load_night(generated_path("mc-oi62-environment-level2-v2"))
                 .is_err()
         );
+    }
+
+    #[test]
+    fn real_cave12_reset_consumes_floor_ceiling_and_no_sky_materials() {
+        let cache = generated_path("mc-oi62-environment-level12-v1");
+        let campaign = crate::campaign::CampaignSession::open_with_owner_cache(
+            generated_path("mc-bhq6-ordinary-20261025-zclu5fjj/level12"),
+            &cache,
+            crate::campaign::spec::CampaignSelection {
+                external_level: 12,
+                internal_level: 11,
+                map_type_id: 2,
+            },
+        )
+        .expect("genuine ordinary Cave12 opens at reset");
+        let reset = campaign.level2_compatibility();
+        assert!(reset.profile().cave_mode);
+        assert_eq!(reset.state.tick, 0);
+        let assets = DayIndexedFrameAssets::load(&cache).expect("actual Cave12 materials");
+        assert!(assets.environment_resources().sky().is_none());
+        let mut carrier = DayIndexedFrameState::new(campaign.generation());
+        let frame = carrier
+            .render_current(campaign.inspection(), reset, &assets, campaign.generation())
+            .expect("genuine Cave reset renders without taking an unsupported gameplay turn");
+        assert_eq!(frame.profile.map_type_id, 2);
+        assert_eq!(frame.palette_rgb8, assets.palette_rgb8());
+        let profile = ClassicHdRenderProfile::compatibility_320x200();
+        let planes = reset.canonical_terrain().planes();
+        let plan = build_cave_terrain(
+            &profile,
+            camera_from_state(&reset.state).unwrap(),
+            CaveTerrainResources {
+                terrain_types: &planes.terrain_types,
+                ground_heights: &planes.ground_heights,
+                ceiling_heights: &planes.secondary_heights,
+                shading: &planes.shading,
+                angles: &planes.angles,
+                clear_index: 254,
+            },
+        )
+        .unwrap();
+        let mut pixels = plan.initial_indices(&profile);
+        let mut provenance = vec![0; profile.extent()];
+        let mut writer = ClassicHdFrameWriter::from_planes(
+            &profile,
+            &mut pixels,
+            &mut provenance,
+            campaign.generation(),
+            0,
+            plan.input_hash,
+            0,
+        )
+        .unwrap();
+        plan.rasterize(
+            &mut writer,
+            assets.terrain_atlas(),
+            assets.tablesd(),
+            DAY_TERRAIN_PROVENANCE,
+        )
+        .unwrap();
+        writer.finish();
+        let floor = provenance.iter().filter(|&&value| value == 3).count();
+        let ceiling = provenance.iter().filter(|&&value| value == 5).count();
+        assert!(floor > 0, "actual reset must write floor pixels");
+        assert!(ceiling > 0, "actual reset must write ceiling pixels");
+        eprintln!(
+            "genuine Cave12 reset: floor_pixels={floor}, ceiling_pixels={ceiling}, frame_hash={:016x}",
+            frame.index_hash
+        );
+        let repeated = carrier
+            .render_current(campaign.inspection(), reset, &assets, campaign.generation())
+            .unwrap();
+        assert_eq!(repeated, frame);
+        let wrong =
+            DayIndexedFrameAssets::load(generated_path("mc-oi62-environment-level2-v2")).unwrap();
+        assert!(
+            carrier
+                .render_current(campaign.inspection(), reset, &wrong, campaign.generation())
+                .is_err()
+        );
+        assert_eq!(carrier.current_frame(), Some(&frame));
     }
 
     struct TempDirectory(PathBuf);
