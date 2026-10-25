@@ -68,6 +68,10 @@ namespace MagicCarpet.Native
             new byte[NativeSim.DayIndexedFrameIndexBytes];
         private readonly byte[] dayIndexedFramePalette =
             new byte[NativeSim.DayIndexedFramePaletteBytes];
+        internal byte[] SceneFrameIndices { get; } = new byte[NativeSim.DayIndexedFrameIndexBytes];
+        internal ulong SceneFrameRevision { get; private set; }
+        internal byte SceneBlurMode { get; private set; }
+        internal bool SceneUseExitTables { get; private set; }
 
         private NativeCampaignSession(
             ulong handle,
@@ -692,6 +696,15 @@ namespace MagicCarpet.Native
                 dayIndexedFrameIndices,
                 0,
                 dayIndexedFrameIndices.Length);
+            NativeSession.Check(NativeSim.mc_native_campaign_scene_frame_copy(
+                Handle, generation, expectedTick, SceneFrameIndices, (uint)SceneFrameIndices.Length,
+                out var sceneWritten, out var sceneRevision, out var blurMode, out var useExitTables),
+                "copy composed-world source inputs");
+            if (sceneWritten != SceneFrameIndices.Length || blurMode > 2 || useExitTables > 1)
+                throw new InvalidOperationException("Scene frame returned incomplete bytes or invalid source state");
+            SceneFrameRevision = sceneRevision;
+            SceneBlurMode = blurMode;
+            SceneUseExitTables = useExitTables != 0;
             if (Selection.mapType == 2)
             {
                 CaveTerrainOrders ??= new ushort[320 * 200];

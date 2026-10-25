@@ -113,7 +113,6 @@ namespace MagicCarpet.Native
         {
             public string package_dir;
             public string owner_cache_path;
-            [NonSerialized]
             public string presentation_cache_path;
         }
 
@@ -1663,7 +1662,9 @@ namespace MagicCarpet.Native
             {
                 if (resource == null || string.IsNullOrWhiteSpace(resource.package_dir) ||
                     (resource.owner_cache_path != null &&
-                     string.IsNullOrWhiteSpace(resource.owner_cache_path)))
+                     string.IsNullOrWhiteSpace(resource.owner_cache_path)) ||
+                    (resource.presentation_cache_path != null &&
+                     string.IsNullOrWhiteSpace(resource.presentation_cache_path)))
                 {
                     throw new ArgumentException(
                         "each installed package resource needs a package path and optional nonblank cache path",

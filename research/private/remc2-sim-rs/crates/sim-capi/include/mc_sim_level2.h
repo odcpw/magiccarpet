@@ -748,6 +748,12 @@ int32_t mc_native_campaign_day_indexed_frame_copy(
 /* Source painter-order ranks for the committed Cave frame: 320*200 pixels
  * and 256*256 world tiles, indexed y*256+x. Capacities/counts are u16 elements.
  * Zero means no terrain/no submitted cell; equal ranks keep the sprite. */
+/* Retained raw scene, before sprites, temporal blend and HUD. Copy never renders.
+ * Output metadata/counts are zero on failure; buffers must not overlap. */
+int32_t mc_native_campaign_scene_frame_copy(
+    uint64_t handle, uint64_t generation, uint64_t expected_tick,
+    uint8_t *indices, uint32_t capacity, uint32_t *out_written,
+    uint64_t *out_revision, uint8_t *out_blur_mode, uint8_t *out_use_exit_tables);
 int32_t mc_native_campaign_cave_occlusion_copy(
     uint64_t handle, uint64_t generation, uint64_t expected_tick,
     uint16_t *terrain_orders, uint32_t terrain_capacity,

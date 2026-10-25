@@ -151,13 +151,13 @@ def main(arguments):
         # Local installed owner content. A supplied set replaces this entire list.
         resources = [
             {'package': GENERATED / 'mc-bhq8-level1-collision-v5-night',
-             'owner': GENERATED / 'mc2-level1-night-cache-v2',
+             'owner': GENERATED / 'mc-oi62-environment-level1-v2',
              'presentation': GENERATED / 'mc2-level1-night-cache-v2'},
             {'package': GENERATED / 'mc-level2-vault-successor-closure-20261025',
-             'owner': GENERATED / 'level2-vault-successor-owner-cache-20261025/components/material',
+             'owner': GENERATED / 'mc-level2-vault-successor-environment-20261025',
              'presentation': GENERATED / 'level2-vault-successor-owner-cache-20261025'},
             {'package': GENERATED / 'level3-day-block32-campaign-recipe-v2',
-             'owner': GENERATED / 'level3-day-spell-owner-cache-audio-v4/components/material',
+             'owner': GENERATED / 'mc-level3-environment-exit-20261025',
              'presentation': GENERATED / 'level3-day-spell-owner-cache-audio-v4'},
             {'package': GENERATED / 'mc-bhq6-ordinary-20261025-zclu5fjj/level4',
              'owner': GENERATED / 'mc-oi62-environment-level4-audio-v3',

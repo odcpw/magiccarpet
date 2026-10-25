@@ -2543,6 +2543,110 @@ fn cf12_world_info(handle: u64) -> McCampaignWorldInfoV2 {
 }
 
 #[test]
+fn same_tick_camera_refresh_keeps_generic_and_retained_frames_identical() {
+    let generated = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../generated");
+    let package = generated.join("level3-day-block32-campaign-recipe-v2");
+    let cache = generated.join("level3-day-spell-owner-cache-audio-v4/components/material");
+    let package = package.to_string_lossy();
+    let cache = cache.to_string_lossy();
+    let selection = McCampaignSelectionV2 {
+        abi_version: MC_NATIVE_ABI_VERSION,
+        struct_size: struct_size::<McCampaignSelectionV2>(),
+        external_level: 3,
+        internal_level: 2,
+        map_type: 0,
+        ..McCampaignSelectionV2::default()
+    };
+    let mut handle = 0;
+    assert_eq!(
+        mc_native_campaign_session_open_with_asset_cache(
+            package.as_ptr(),
+            package.len() as u32,
+            std::ptr::null(),
+            0,
+            cache.as_ptr(),
+            cache.len() as u32,
+            &raw const selection,
+            &raw mut handle,
+        ),
+        MC_STATUS_OK
+    );
+    let query = cf12_frame_query(0, 0);
+    let copy = || {
+        let mut pixels = vec![0; 320 * 200];
+        let mut info = McPresentationFrameInfoV2::default();
+        assert_eq!(
+            mc_native_campaign_presentation_frame_copy(
+                handle,
+                &raw const query,
+                pixels.as_mut_ptr(),
+                pixels.len() as u32,
+                std::ptr::null_mut(),
+                0,
+                &raw mut info,
+                struct_size::<McPresentationFrameInfoV2>()
+            ),
+            MC_STATUS_OK
+        );
+        (pixels, info)
+    };
+    let (initial, _) = copy();
+    let mut scene = vec![0xa5; 320 * 200];
+    let mut written = 99;
+    let mut revision = 99;
+    let mut blur = 99;
+    let mut exit_tables = 99;
+    assert_eq!(mc_native_campaign_scene_frame_copy(handle, 0, 0,
+        scene.as_mut_ptr(), 1, &raw mut written, &raw mut revision,
+        &raw mut blur, &raw mut exit_tables), MC_STATUS_BUFFER_TOO_SMALL);
+    assert_eq!((written, revision, blur, exit_tables), (0, 0, 0, 0));
+    assert!(scene.iter().all(|&index| index == 0xa5));
+    assert_eq!(mc_native_campaign_scene_frame_copy(handle, 0, 0,
+        scene.as_mut_ptr(), scene.len() as u32, &raw mut written, &raw mut revision,
+        &raw mut blur, &raw mut exit_tables), MC_STATUS_OK);
+    assert_eq!(written, 64000);
+    let initial_scene_revision = revision;
+    // Isolate the same-tick camera-cache boundary. The sim-core exit test
+    // exercises the real action12 producer; this fixture earns no transition.
+    with_campaign_session_mut(handle, |record| {
+        let CampaignSessionKind::Level2 { reset, .. } = &mut record.kind else {
+            unreachable!()
+        };
+        reset.state.position.x = reset.state.position.x.wrapping_add(1024);
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(mc_native_campaign_scene_frame_copy(handle, 0, 0,
+        scene.as_mut_ptr(), scene.len() as u32, &raw mut written, &raw mut revision,
+        &raw mut blur, &raw mut exit_tables), MC_STATUS_GENERATION_MISMATCH);
+    assert_eq!((written, revision, blur, exit_tables), (0, 0, 0, 0));
+    let (refreshed, generic) = copy();
+    assert_ne!(initial, refreshed);
+    assert_eq!(generic.newly_committed, 1);
+    let mut retained = McCampaignDayIndexedFrameInfoV2::default();
+    assert_eq!(
+        mc_native_campaign_day_indexed_frame_render(
+            handle,
+            0,
+            0,
+            &raw mut retained,
+            struct_size::<McCampaignDayIndexedFrameInfoV2>()
+        ),
+        MC_STATUS_OK
+    );
+    assert_eq!(generic.index_hash, retained.index_hash);
+    let (repeated, repeated_info) = copy();
+    assert_eq!(repeated, refreshed);
+    assert_eq!(repeated_info.newly_committed, 0);
+    assert_eq!(mc_native_campaign_scene_frame_copy(handle, 0, 0,
+        scene.as_mut_ptr(), scene.len() as u32, &raw mut written, &raw mut revision,
+        &raw mut blur, &raw mut exit_tables), MC_STATUS_OK);
+    assert_eq!(revision, initial_scene_revision + 1);
+    assert_eq!((blur, exit_tables), (0, 0));
+    assert_eq!(mc_native_campaign_session_destroy(handle), MC_STATUS_OK);
+}
+
+#[test]
 fn cf12_generic_campaign_lifecycle_journal_and_frame_route() {
     const INDEX_BYTES: usize = 320 * 200;
     const EFFECT_CAPACITY: usize = 16_384;

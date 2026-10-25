@@ -10144,6 +10144,8 @@ namespace MagicCarpet.Native
             gameRuntimeNightSurface.PresentNight(campaignSession, gameRuntimeEnvironmentCache ?? ownerAssetCache,
                 observation.value.player_pose.yaw);
             gameRuntimeNightSurface.PresentView(observation.value.player_pose, observation.value.source_camera_fov);
+            gameRuntimeNightSurface.PresentImmobilization(observation.value.player_immobilized_ticks,
+                observation.value.player_vitals.life >= 0);
             var hud = campaignSession.DayHudState(campaignSession.Tick);
             PresentLevel2DayHud(hud);
             gameRuntimeObjectiveInstruction = ResolveGameRuntimeObjectiveText();

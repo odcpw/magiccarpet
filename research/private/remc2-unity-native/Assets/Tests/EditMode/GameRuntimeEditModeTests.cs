@@ -196,10 +196,12 @@ namespace MagicCarpet.Native.Tests
             var package = Path.Combine(generated, "mc-level2-vault-successor-closure-20261025");
             var aggregate = Path.Combine(generated, "level2-vault-successor-owner-cache-20261025");
             var cache = OwnerAssetCache.OpenAndValidateLevel2(aggregate);
+            var environmentPath = Path.Combine(generated, "mc-level2-vault-successor-environment-20261025");
+            var environment = OwnerAssetCache.OpenAndValidateEnvironment(environmentPath, package);
             using var session = NativeCampaignSession.Open(package, NativeSim.CampaignSelection.Level2Day(),
-                Path.Combine(aggregate, "components/material"));
+                environmentPath);
             using var surface = new CampaignPresentationSurface();
-            surface.Present(session, cache);
+            surface.Present(session, environment);
             Assert.That(surface.WorldReady && surface.LiveMinimapReady, Is.True);
             Assert.That(surface.Tick, Is.Zero, "package/cache admission diagnostic performs no gameplay");
             Assert.That(surface.FrameHash, Is.Not.Zero);
@@ -211,6 +213,33 @@ namespace MagicCarpet.Native.Tests
                 Assert.That(audio, Is.Not.Null);
             }
             finally { UnityEngine.Object.DestroyImmediate(audioRoot); }
+        }
+
+        [Test]
+        public void NightWebUsesPackageBankAndAuthoritativeImmobilization()
+        {
+            var generated = Path.Combine(PrivateRoot, "generated");
+            var package = Path.Combine(generated, "mc-bhq8-level1-collision-v5-night");
+            var environmentPath = Path.Combine(generated, "mc-oi62-environment-level1-v2");
+            var environment = OwnerAssetCache.OpenAndValidateEnvironment(environmentPath, package);
+            Assert.That(environment.EnvironmentMaterials.profile.web, Is.EqualTo("MWEBN0-0"));
+            using var session = NativeCampaignSession.Open(package,
+                NativeSim.CampaignSelection.Create(1, 0, 1), environmentPath);
+            using var surface = new CampaignPresentationSurface();
+            surface.PresentNight(session, environment, 0);
+            const System.Reflection.BindingFlags flags = System.Reflection.BindingFlags.Instance |
+                System.Reflection.BindingFlags.NonPublic;
+            var texture = (Texture2D)typeof(CampaignPresentationSurface).GetField("webTexture", flags).GetValue(surface);
+            var visible = typeof(CampaignPresentationSurface).GetField("webVisible", flags);
+            Assert.That(texture, Is.Not.Null);
+            Assert.That(Array.Exists(texture.GetPixels32(), pixel => pixel.a != 0), Is.True);
+            surface.PresentImmobilization(2, true);
+            Assert.That(visible.GetValue(surface), Is.True);
+            surface.PresentImmobilization(0, true);
+            Assert.That(visible.GetValue(surface), Is.False);
+            surface.PresentImmobilization(2, false);
+            Assert.That(visible.GetValue(surface), Is.False);
+            Assert.That(session.Tick, Is.Zero, "WEB consumer diagnostic performs no gameplay");
         }
 
         [Test]

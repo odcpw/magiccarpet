@@ -2132,22 +2132,20 @@ pub extern "C" fn mc_native_campaign_presentation_frame_copy(
                     "campaign presentation requires a qualified owner cache",
                 )
             })?;
-            let newly_committed = match day_frame_state.current_frame() {
-                Some(frame) if frame.generation == query.generation && frame.tick == query.tick => {
-                    false
-                }
-                Some(_) | None => {
-                    day_frame_state
-                        .render_current(inspection, reset, assets, query.generation)
-                        .map_err(|error| {
-                            AbiError::new(
-                                MC_STATUS_VALIDATION_FAILED,
-                                format!("campaign presentation render failed: {error}"),
-                            )
-                        })?;
-                    true
-                }
-            };
+            // Exit camera/phase and paused palette can change at the same
+            // flight tick. Both presentation endpoints must consult the same
+            // canonical cache key before copying, including on repeated reads.
+            let newly_committed = !day_frame_state
+                .is_current_view(reset)
+                .map_err(|error| AbiError::new(MC_STATUS_VALIDATION_FAILED, error.to_string()))?;
+            day_frame_state
+                .render_current(inspection, reset, assets, query.generation)
+                .map_err(|error| {
+                    AbiError::new(
+                        MC_STATUS_VALIDATION_FAILED,
+                        format!("campaign presentation render failed: {error}"),
+                    )
+                })?;
             let frame = day_frame_state
                 .current_frame()
                 .expect("successful Day render commits a current frame");
@@ -2482,6 +2480,15 @@ pub(super) fn with_level2_campaign_day_frame<T>(
             "campaign Day indexed frame is not bound to the requested generation/tick",
         ));
     }
+    if !day_frame_state
+        .is_current_view(reset)
+        .map_err(|error| AbiError::new(MC_STATUS_VALIDATION_FAILED, error.to_string()))?
+    {
+        return Err(AbiError::new(
+            MC_STATUS_GENERATION_MISMATCH,
+            "committed scene no longer matches the current camera/exit view",
+        ));
+    }
     operation(frame)
 }
 
@@ -2607,6 +2614,59 @@ pub extern "C" fn mc_native_campaign_day_indexed_frame_copy(
                 }
                 write_output(out_index_written, index_required);
                 write_output(out_palette_written, palette_required);
+                Ok(())
+            })
+        })
+    })
+}
+
+/// Copy the committed world scene before temporal blending and HUD/minimap.
+/// The caller composes source sprites before applying the indexed history LUT.
+#[unsafe(no_mangle)]
+pub extern "C" fn mc_native_campaign_scene_frame_copy(
+    handle: u64,
+    generation: u64,
+    expected_tick: u64,
+    indices: *mut u8,
+    capacity: u32,
+    out_written: *mut u32,
+    out_revision: *mut u64,
+    out_blur_mode: *mut u8,
+    out_use_exit_tables: *mut u8,
+) -> i32 {
+    boundary(|| {
+        require_output(out_written, "scene index count")?;
+        require_output(out_revision, "scene revision")?;
+        require_output(out_blur_mode, "scene blur mode")?;
+        require_output(out_use_exit_tables, "scene exit table selection")?;
+        write_output(out_written, 0);
+        write_output(out_revision, 0);
+        write_output(out_blur_mode, 0);
+        write_output(out_use_exit_tables, 0);
+        with_campaign_presentation_session_mut(handle, |session, _borrowed_runtime| {
+            with_level2_campaign_day_frame(session, generation, expected_tick, |frame| {
+                if frame.scene_indices.len() != 320 * 200 || frame.scene_blur_mode > 2 {
+                    return Err(AbiError::new(
+                        MC_STATUS_VALIDATION_FAILED,
+                        "committed scene extent or source blur mode is invalid",
+                    ));
+                }
+                if capacity < 320 * 200 {
+                    return Err(AbiError::new(
+                        MC_STATUS_BUFFER_TOO_SMALL,
+                        "scene copy requires 64000 index bytes",
+                    ));
+                }
+                require_output(indices, "scene index buffer")?;
+                // SAFETY: the caller supplies a writable nonoverlapping byte
+                // array; null and the complete byte capacity are checked first.
+                unsafe {
+                    indices.copy_from_nonoverlapping(frame.scene_indices.as_ptr(), 320 * 200);
+                }
+                write_output(out_written, 320 * 200);
+                write_output(out_revision, frame.scene_revision);
+                write_output(out_blur_mode, frame.scene_blur_mode);
+                write_output(out_use_exit_tables, u8::from(frame.scene_use_exit_tables));
                 Ok(())
             })
         })
