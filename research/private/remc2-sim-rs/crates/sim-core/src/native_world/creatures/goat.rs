@@ -531,7 +531,7 @@ impl GoatFamily {
     /// assume a fixed slot census.
     pub fn from_campaign_entities(
         entities: &[EntitySnapshot],
-        stage_point: Position,
+        variables: &[crate::native_world::RuntimeStageVariable],
         config: GoatBehaviorConfig,
     ) -> Result<Self, String> {
         let mut goats = Vec::new();
@@ -542,11 +542,23 @@ impl GoatFamily {
             goats.push(GoatState::from_snapshot(snapshot)?);
             child_links.push(snapshot_child_relation(snapshot));
         }
+        // Campaign callbacks resolve each Goat's own route. The retained
+        // standalone-family entry only needs a fallback for a point route;
+        // an unrelated mission's slot 3 must never constrain construction.
+        let mut stage_point = None;
+        for goat in goats
+            .iter()
+            .filter(|goat| matches!(goat.stage_var_2, 1 | 2))
+        {
+            let point =
+                stage::point_for_route(goat.entity_index, goat.stage_var_1 as u8, variables)?;
+            stage_point.get_or_insert(point);
+        }
         Ok(Self {
             goats: goats.into_boxed_slice(),
             child_links: child_links.into_boxed_slice(),
             source_entities: source_entity_states(entities),
-            stage_point,
+            stage_point: stage_point.unwrap_or_default(),
             config,
             outer_tick: 0,
             frozen_model_slots: None,
@@ -1127,7 +1139,8 @@ impl GoatFamily {
                     &[],
                     &mut Vec::new(),
                     &mut events,
-                );
+                )
+                .expect("standalone Goat steps use the retained point, without runtime routes");
                 self.advance_action_15_tail(family_index, &mut events);
             }
             14 => self.step_retaliation(family_index, world, players, &mut events),

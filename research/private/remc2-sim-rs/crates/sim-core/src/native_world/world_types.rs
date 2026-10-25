@@ -4295,9 +4295,15 @@ impl NativeWorldInspection {
                     })?,
                 )
                 .map_err(NativeWorldError::new)?;
-                let stage_point = super::decode_level_one_goat_stage_point(&self.runtime)?;
-                GoatFamily::from_campaign_entities(&self.entities, stage_point, config)
-                    .map_err(NativeWorldError::new)?
+                // Ordinary missions bind each Goat through its own StageVar.
+                // The sealed Level 1 slot-3 waypoint is not a generic reset
+                // requirement: later missions also use entity-follow routes.
+                GoatFamily::from_campaign_entities(
+                    &self.entities,
+                    &self.runtime.stage_variables,
+                    config,
+                )
+                .map_err(NativeWorldError::new)?
             } else {
                 GoatFamily::empty(
                     &self.entities,

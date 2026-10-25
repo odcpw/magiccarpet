@@ -6,6 +6,210 @@ use crate::{
 };
 use std::path::PathBuf;
 
+fn ordinary_goat_package(level: u16) -> crate::campaign::spec::DecodedCampaignPackage {
+    let root = std::env::var_os("MC_ORDINARY_CAMPAIGN_PACKAGES").map_or_else(
+        || {
+            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../../generated/mc-bhq6-ordinary-20261024-b")
+        },
+        PathBuf::from,
+    );
+    crate::campaign::spec::DecodedCampaignPackage::decode(
+        root.join(format!("level{level}")),
+        CampaignSelection::ordinary(level).unwrap(),
+    )
+    .unwrap()
+}
+
+#[test]
+fn ordinary_goat_resets_use_their_own_routes_instead_of_the_level_one_point() {
+    use crate::native_world::{parse_entities, parse_presentation, parse_runtime};
+    // These missions remain subject to independent family/objective admission
+    // gates. Decode their actual owner records and use the production family
+    // constructor without claiming that a whole mission is runnable.
+    for (level, count) in [(5, 9), (13, 19), (22, 67)] {
+        let package = ordinary_goat_package(level);
+        let entities = parse_entities(package.member("entities.bin").unwrap()).unwrap();
+        let runtime = parse_runtime(package.member("runtime.bin").unwrap()).unwrap();
+        let presentation = parse_presentation(package.member("presentation.bin").unwrap()).unwrap();
+        let config =
+            super::GoatBehaviorConfig::from_parameter_record(&presentation.entity_parameters[98])
+                .unwrap();
+        assert!(crate::native_world::decode_level_one_goat_stage_point(&runtime).is_err());
+        let family =
+            super::GoatFamily::from_campaign_entities(&entities, &runtime.stage_variables, config)
+                .unwrap_or_else(|error| panic!("Goat mission {level}: {error}"));
+        assert_eq!(family.goats().len(), count);
+        for goat in family.goats() {
+            assert_eq!(
+                goat,
+                &super::GoatState::from_snapshot(&entities[usize::from(goat.entity_index)])
+                    .unwrap()
+            );
+            if level == 22 {
+                assert_eq!(
+                    (goat.action, goat.stage_var_1, goat.stage_var_2),
+                    (15, 5, 5)
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn real_point_routes_reject_missing_axes_before_binding_or_counter_mutation() {
+    use crate::native_world::{RuntimeRelation, parse_entities, parse_runtime};
+    let package = ordinary_goat_package(1);
+    let entities = parse_entities(package.member("entities.bin").unwrap()).unwrap();
+    let mut runtime = parse_runtime(package.member("runtime.bin").unwrap()).unwrap();
+    let mut family = super::GoatFamily::from_campaign_entities(
+        &entities,
+        &runtime.stage_variables,
+        super::GoatBehaviorConfig::LEVEL_ONE,
+    )
+    .unwrap();
+    runtime.stage_variables[3].relation = RuntimeRelation::LiveEntity(152);
+    let before = family.clone();
+    let runtime_before = runtime.clone();
+    assert!(
+        super::GoatFamily::from_campaign_entities(
+            &entities,
+            &runtime.stage_variables,
+            super::GoatBehaviorConfig::LEVEL_ONE,
+        )
+        .unwrap_err()
+        .contains("not an axis payload")
+    );
+    assert!(
+        family
+            .bind_authored_route(50, 3, &mut runtime)
+            .unwrap_err()
+            .contains("not an axis payload")
+    );
+    assert_eq!(family, before);
+    assert_eq!(runtime, runtime_before);
+}
+
+#[test]
+fn level_twenty_two_follow_route_runs_through_the_live_arena_adapter() {
+    use crate::{
+        campaign::source_arena::SourceArena,
+        native_world::{
+            Level2EconomyState, MapType, OwnerPackageProfile, OwnerPackageSchema, RuntimeRelation,
+            SessionTerrain, parse_entities, parse_players, parse_presentation, parse_runtime,
+            parse_terrain,
+        },
+    };
+    let package = ordinary_goat_package(22);
+    let entities = parse_entities(package.member("entities.bin").unwrap()).unwrap();
+    let mut runtime = parse_runtime(package.member("runtime.bin").unwrap()).unwrap();
+    let presentation = parse_presentation(package.member("presentation.bin").unwrap()).unwrap();
+    let players = parse_players(
+        package.member("players.bin").unwrap(),
+        OwnerPackageProfile::Campaign,
+        OwnerPackageSchema::V5,
+    )
+    .unwrap();
+    let player = &players[usize::from(runtime.local_player_slot)];
+    let actor = &entities[usize::from(player.entity_index)];
+    let targets = [super::GoatPlayerTarget {
+        entity_index: actor.index,
+        position: actor.position,
+        control_flags: actor.control_flags,
+    }];
+    let end = package.member("feature-end.bin").unwrap();
+    let terrain = SessionTerrain::from_planes(
+        MapType::Day,
+        parse_terrain(package.member("terrain.bin").unwrap()).unwrap(),
+        u16::from_le_bytes([end[8], end[9]]),
+    );
+    let economy = Level2EconomyState::from_parts_with_castle_stage_footprints(
+        terrain.clone(),
+        &entities,
+        actor.mana,
+        actor.model,
+        0,
+        player.enabled_spell_holders[2],
+        runtime.random_state,
+        Default::default(),
+        runtime.constructor_counters(),
+    )
+    .unwrap();
+    let mut family = super::GoatFamily::from_campaign_entities(
+        &entities,
+        &runtime.stage_variables,
+        super::GoatBehaviorConfig::from_parameter_record(&presentation.entity_parameters[98])
+            .unwrap(),
+    )
+    .unwrap();
+    let before = family.goats().to_vec();
+    assert_eq!(before.len(), 67);
+    assert_eq!(
+        runtime.stage_variables[5].relation,
+        RuntimeRelation::LiveEntity(147)
+    );
+    let mut arena = SourceArena::new(entities.into_boxed_slice(), economy);
+    for _ in 0..16 {
+        let frozen = arena.rebuilt_class5_model_slots();
+        family
+            .prepare_runtime_pass(&mut arena, &mut runtime, &frozen)
+            .unwrap();
+        family.begin_source_turn(&targets);
+        for slot in &frozen[1] {
+            family
+                .step_runtime_slot(
+                    *slot,
+                    &terrain,
+                    &targets,
+                    &mut arena,
+                    &runtime,
+                    &presentation.particles,
+                )
+                .unwrap();
+        }
+        family.finish_source_turn();
+    }
+    let moved = family
+        .goats()
+        .iter()
+        .zip(&before)
+        .filter(|(after, before)| after.position != before.position)
+        .count();
+    assert!(
+        moved > 0,
+        "real follow-route callbacks must move their source actors"
+    );
+    let target = arena.entities[147].position;
+    let steering = family
+        .goats()
+        .iter()
+        .filter(|goat| {
+            let visited_phase = goat.phase.wrapping_sub(1);
+            visited_phase & 7 == 0
+                && visited_phase & 63 != 0
+                && i32::from(goat.roll) == crate::heading_for_positions(goat.position, target)
+        })
+        .map(|goat| goat.entity_index)
+        .collect::<Vec<_>>();
+    assert!(
+        !steering.is_empty(),
+        "the actual follow route must steer toward its source target on cadence"
+    );
+    for goat in family.goats() {
+        assert!(goat.active && goat.life == 600);
+        assert_eq!(
+            (goat.action, goat.stage_var_1, goat.stage_var_2),
+            (15, 5, 5)
+        );
+        let source = &arena.entities[usize::from(goat.entity_index)];
+        assert_eq!(source.position, goat.position);
+        assert_eq!(source.record_bytes()[77], 5);
+    }
+    eprintln!(
+        "Level22: {moved} real Goat roots moved across 16 arena-adapter passes; StageVar5 steers source slots {steering:?} toward source slot147"
+    );
+}
+
 #[test]
 fn source_area_mailbox_preserves_zero_words_and_inject_validation() {
     let mut family = super::tests::level_two_family();
@@ -47,7 +251,7 @@ fn source_area_mailbox_preserves_zero_words_and_inject_validation() {
 #[test]
 fn parent_clone_reads_preceding_player_visit_yaw_in_source_slot_order() {
     let package = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../../generated/mc-cf15-level1-package-v3-current");
+        .join("../../../generated/mc-bhq8-level1-collision-v5-night");
     let mut campaign = CampaignSession::open(package, CampaignSelection::LEVEL1).unwrap();
     let live = &mut campaign.level2_compatibility_mut().session.state.live;
     let player_slot = live.core.state.entity_index;

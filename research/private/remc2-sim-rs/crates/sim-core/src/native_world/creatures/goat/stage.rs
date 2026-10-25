@@ -13,19 +13,41 @@ pub(super) enum ExternalEffect {
     OwnerFeedback { owner: u16, selector: u8 },
 }
 
+pub(super) fn point_for_route(
+    slot: u16,
+    stage: u8,
+    variables: &[RuntimeStageVariable],
+) -> Result<Position, String> {
+    let route = variables
+        .get(usize::from(stage))
+        .filter(|_| stage != 0)
+        .ok_or_else(|| format!("Goat slot {slot} has invalid point StageVar {stage}"))?;
+    let RuntimeRelation::AxisScalar(point) = route.relation else {
+        return Err(format!(
+            "Goat slot {slot} point StageVar {stage} is not an axis payload"
+        ));
+    };
+    Ok(Position {
+        x: point as u16,
+        y: (point >> 16) as u16,
+        z: 0,
+    })
+}
+
 impl GoatFamily {
-    fn stage_point_for(&self, index: usize, variables: &[RuntimeStageVariable]) -> Position {
-        variables
-            .get(usize::from(self.goats[index].stage_var_1 as u8))
-            .and_then(|stage| match stage.relation {
-                RuntimeRelation::AxisScalar(point) => Some(Position {
-                    x: point as u16,
-                    y: (point >> 16) as u16,
-                    z: 0,
-                }),
-                _ => None,
-            })
-            .unwrap_or(self.stage_point)
+    fn stage_point_for(
+        &self,
+        index: usize,
+        variables: &[RuntimeStageVariable],
+    ) -> Result<Position, String> {
+        if variables.is_empty() {
+            return Ok(self.stage_point);
+        }
+        point_for_route(
+            self.goats[index].entity_index,
+            self.goats[index].stage_var_1 as u8,
+            variables,
+        )
     }
 
     fn stage_entity_for(
@@ -191,14 +213,14 @@ impl GoatFamily {
         variables: &[RuntimeStageVariable],
         effects: &mut Vec<ExternalEffect>,
         events: &mut Vec<GoatStepEvent>,
-    ) {
+    ) -> Result<(), String> {
         match self.goats[index].stage_var_2 {
             1 => {
-                let point = self.stage_point_for(index, variables);
+                let point = self.stage_point_for(index, variables)?;
                 self.stage_movement(index, world, variables, Some(point), false);
             }
             2 => {
-                let point = self.stage_point_for(index, variables);
+                let point = self.stage_point_for(index, variables)?;
                 let position = self.goats[index].position;
                 // Source promotes the signed coordinate values before subtracting.
                 let far = (i32::from(point.x as i16) - i32::from(position.x as i16)).abs() > 3072
@@ -253,7 +275,7 @@ impl GoatFamily {
                 self.move_action11_source(index, world);
                 if self.goats[index].life < 0 {
                     self.goats[index].control_flags |= 0x400;
-                    return;
+                    return Ok(());
                 }
                 let target = self.goats[index]
                     .target_entity_index
@@ -266,7 +288,7 @@ impl GoatFamily {
                         heading_for_positions(self.goats[index].position, target.position) as i16;
                     self.goats[index].actual_speed = self.goats[index].actual_speed.wrapping_sub(8);
                     if self.goats[index].actual_speed > 16 {
-                        return;
+                        return Ok(());
                     }
                 }
                 self.goats[index].stage_var_2 = 16;
@@ -274,6 +296,7 @@ impl GoatFamily {
             // sub_1D5D0 explicitly does nothing for 0, 11, 15 and unknown modes.
             _ => {}
         }
+        Ok(())
     }
 
     fn target_movement<W: FlightWorld>(

@@ -96,6 +96,13 @@ impl GoatFamily {
             self.clear_stage(index);
             return Ok(());
         };
+        if matches!(route.kind, 1 | 2) {
+            super::stage::point_for_route(
+                self.goats[index].entity_index,
+                stage,
+                &runtime.stage_variables,
+            )?;
+        }
         let counter = (route.word_2 >> 8) as u8 & 3;
         if !runtime.advance_level2_stage_variable_counter(stage) {
             return Err(format!(
@@ -346,7 +353,7 @@ impl GoatFamily {
                 &runtime.stage_variables,
                 &mut effects,
                 &mut events,
-            );
+            )?;
             if self.goats[index].control_flags & 0x400 != 0 {
                 events.push(GoatStepEvent::RemovalQueued { entity_index: slot });
             }
