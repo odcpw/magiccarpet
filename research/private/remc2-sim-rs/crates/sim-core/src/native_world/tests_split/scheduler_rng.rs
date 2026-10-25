@@ -1236,7 +1236,8 @@ fn level_two_outer_turn_dispatches_each_source_pass_in_order() {
         for pass in 0..expected_passes {
             assert!(
                 passes.contains(&pass),
-                "speed {speed_index} omitted source pass {pass}"
+                "speed {speed_index} omitted source pass {pass}; dispatch={:#?}",
+                session.dispatch_events(),
             );
         }
         assert_eq!(passes.iter().max().copied(), Some(expected_passes - 1));

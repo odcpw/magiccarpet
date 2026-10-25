@@ -278,6 +278,7 @@ fn constructor_rejects_non_day_and_preserves_full_life_width() {
     .unwrap();
     assert_eq!(source.life, 100_000);
     assert_eq!(source.mana, 50_000);
+    assert_eq!(source.control_flags, 12, "NewEvent8 plus AddEventToMap4");
 }
 
 #[test]
@@ -303,6 +304,38 @@ fn hidden_before_numeric_visit_still_executes_and_advances_once() {
     assert_eq!(source.source_byte_3e, 1);
     assert!(source.active);
     assert!(!source.drawing_enabled);
+}
+
+#[test]
+fn alliance_expiry_returns_linked_blink_clear_without_death_conversion() {
+    let world = terrain();
+    let mut source = bee();
+    source.action = 23;
+    source.stage_var2 = 14;
+    source.stage_remaining = 1;
+    source.stage_relation = 9;
+    source.control_flags |= 0x0600_0000;
+    source.linked_child_entity_index = 40;
+    let effects = step(
+        &mut source,
+        &BeeActionContext {
+            terrain: &world,
+            actors: &[],
+            stage: None,
+        },
+    );
+    assert_eq!(effects.linked_blink_flags, Some(0));
+    assert_eq!(source.control_flags & 0x0600_0000, 0);
+    assert_eq!(
+        (
+            source.stage_var1,
+            source.stage_var2,
+            source.parent_entity_index
+        ),
+        (9, 10, 0)
+    );
+    assert!(source.active && source.drawing_enabled);
+    assert!(!effects.death_conversion && !effects.expire_effect);
 }
 
 #[test]
@@ -420,4 +453,115 @@ fn owner_data_constructor_reuses_frozen_raw_replacement_and_publishes_map_heads(
         old.index as i16
     );
     assert_eq!(arena.map_chains.tile_head(new_tile), old.index);
+}
+
+#[test]
+fn owner_data_death_outputs_use_frozen_raw_replacements_in_source_order() {
+    let session = crate::native_world::tests::level_two_campaign_session();
+    let mut arena = session.source_arena().clone();
+    let mut world = session.session.state.live.terrain.clone();
+    let position = session.state.position;
+    let source = mc2::allocate_authored(&mut arena, &mut world, 229, position, 3000).unwrap();
+    let particles = &session.session.definition.presentation.particles;
+    for _ in 0..2 {
+        crate::world::effects::allocate(
+            &mut arena,
+            &mut world,
+            sim_definition::adapter::mc2_effect_definition(
+                crate::level_definition::EffectKind::Impact,
+            ),
+            position,
+            particles,
+        )
+        .unwrap()
+        .expect("ordinary Impact creates a replaceable raw source carrier");
+    }
+    assert!(arena.economy.typed_replacement_candidate().is_none());
+    let mut replacements = arena
+        .entities
+        .iter()
+        .filter(|row| row.active && row.index != 0 && row.control_flags & 0x20000 != 0)
+        .map(|row| {
+            (
+                row.index,
+                arena.map_chains.tile_of(row.index),
+                arena.slot_generation(row.index),
+            )
+        })
+        .collect::<Vec<_>>();
+    replacements.sort_unstable_by_key(|row| row.0);
+    assert!(replacements.len() >= 2);
+    arena.rebuild_source_free_arena();
+    for _ in 0..arena.free_slot_count() {
+        mc2::allocate_authored(&mut arena, &mut world, 230, position, 3000).unwrap();
+    }
+    let player = session.state.entity_index;
+    arena
+        .economy
+        .source_owner
+        .insert(source.source_entity_index, player);
+    let dying = arena
+        .economy
+        .bee_creatures
+        .iter_mut()
+        .find(|row| row.source_entity_index == source.source_entity_index)
+        .unwrap();
+    dying.action = 21;
+    dying.life = -1;
+    dying.source_byte_3e = 8;
+    let models = std::array::from_fn(|_| Vec::new());
+    let effects = mc2::step_in_arena(
+        &mut arena,
+        &session.session.state.live.core.runtime,
+        &mut world,
+        particles,
+        source.source_entity_index,
+        &models,
+        &[],
+        None,
+        None,
+    )
+    .unwrap();
+    assert!(effects.death_conversion);
+    let sphere = arena
+        .economy
+        .spheres
+        .iter()
+        .find(|row| row.source_entity_index == replacements[0].0)
+        .unwrap();
+    assert_eq!((sphere.mana, sphere.owner_entity_index), (1500, player));
+    let burst = &arena.entities[usize::from(replacements[1].0)];
+    assert!(burst.active);
+    assert_eq!(
+        (burst.class, burst.model, burst.action, burst.source_id),
+        (10, 1, 1, source.entity_id),
+    );
+    assert_eq!(
+        (burst.max_life, burst.life, burst.subspell_index),
+        (1, 1, 400)
+    );
+    assert_eq!(burst.particle_parameter_index, Some(41));
+    assert_eq!(burst.control_flags, 0x20004);
+    assert!(!arena.entities[usize::from(replacements[0].0)].active);
+    for &(slot, old_tile, generation) in &replacements[..2] {
+        assert_eq!(arena.slot_generation(slot), generation.wrapping_add(1));
+        assert_eq!(
+            world.planes.entity_indices[usize::from(old_tile)],
+            arena.map_chains.tile_head(old_tile) as i16
+        );
+        assert!(arena.map_chains.is_linked(slot));
+    }
+    let dying = arena
+        .bee_creatures()
+        .iter()
+        .find(|row| row.source_entity_index == source.source_entity_index)
+        .unwrap();
+    assert!(dying.active && !dying.drawing_enabled);
+    assert_eq!(dying.life, -1);
+    assert_eq!(dying.entity_rng, level2_next_rng16(source.entity_rng));
+    assert_eq!(arena.economy.source_owner(source.source_entity_index), 0);
+    assert_eq!(
+        arena.economy.source_rng[&source.source_entity_index],
+        dying.entity_rng
+    );
 }

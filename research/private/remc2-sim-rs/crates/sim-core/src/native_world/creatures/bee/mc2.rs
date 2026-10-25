@@ -369,8 +369,21 @@ pub(crate) fn step_in_arena(
     frozen_models: &[Vec<u16>; 29],
     frozen_players: &[u16],
     local: Option<(u16, Position, i16, i16)>,
+    mut actors: Option<crate::native_world::area_damage::ActorDomains<'_>>,
 ) -> Result<BeeEffects, String> {
-    let rows = actor_rows(arena, frozen_models, frozen_players, local);
+    let mut rows = actor_rows(arena, frozen_models, frozen_players, local);
+    // The target's vertical shape belongs to its current carrier. A newly
+    // allocated Goat/Archer must not inherit a previous raw row's array.yaw.
+    for row in &mut rows {
+        if let Some(current) = crate::native_world::area_damage::source_actor(
+            arena,
+            actors.as_mut().map(|domains| domains.reborrow()),
+            row.slot,
+        ) {
+            row.half_width = current.shape.half_width;
+            row.height_offset = current.shape.vertical_offset;
+        }
+    }
     let index = arena
         .economy
         .bee_creatures
@@ -429,6 +442,21 @@ pub(crate) fn step_in_arena(
             child = row.linked_child_entity_index;
         }
     }
+    if let Some(flags) = effects.linked_blink_flags {
+        let mut child = before.linked_child_entity_index;
+        for _ in 0..arena.economy.bee_creatures.len() {
+            let Some(row) = arena
+                .economy
+                .bee_creatures
+                .iter_mut()
+                .find(|source| source.active && source.source_entity_index == child)
+            else {
+                break;
+            };
+            row.control_flags = (row.control_flags & !0x0600_0000) | flags;
+            child = row.linked_child_entity_index;
+        }
+    }
     if let Some(killer) = effects.kill_credit
         && rows.iter().any(|row| {
             row.slot == killer
@@ -443,21 +471,53 @@ pub(crate) fn step_in_arena(
         arena.economy.decrement_source_creature_population();
     }
     if effects.death_conversion {
-        let _ = arena.economy.spawn_mana_sphere_from_death(
-            slot,
-            after.position,
-            after.yaw,
-            after.entity_rng,
-            after.mana,
-            arena.economy.source_owner(slot),
-            terrain,
-        );
-        if after.control_flags & 0x0010_0000 == 0 {
-            let _ = arena.economy.spawn_death_burst_from_death_with_id(
-                slot,
-                after.entity_id,
+        if after.mana > 0 {
+            let owner = arena.economy.source_owner(slot);
+            if let Some(sphere_slot) = arena.allocate_source_slot_with_terrain(terrain) {
+                arena.economy.initialize_death_mana_sphere_at_slot(
+                    sphere_slot,
+                    slot,
+                    after.position,
+                    after.yaw,
+                    after.mana,
+                    owner,
+                    terrain,
+                );
+                let rng = arena
+                    .economy
+                    .spheres
+                    .last()
+                    .filter(|row| row.source_entity_index == sphere_slot)
+                    .ok_or_else(|| format!("Bee death lost allocated sphere {sphere_slot}"))?
+                    .entity_rng;
+                arena.economy.source_rng.insert(sphere_slot, rng);
+                crate::world::effects::sync_position(
+                    arena,
+                    terrain,
+                    sphere_slot,
+                    after.position,
+                    true,
+                    false,
+                )?;
+            }
+            // 36BA0 clears this relation after the attempt, even if NewEvent
+            // fails. It is distinct from the source id copied to the burst.
+            arena.economy.source_owner.insert(slot, 0);
+        }
+        if after.control_flags & 0x0010_0000 == 0
+            && let Some(burst_slot) = crate::world::effects::allocate(
+                arena,
+                terrain,
+                sim_definition::adapter::mc2_effect_definition(
+                    crate::level_definition::EffectKind::RadialExplosion,
+                ),
                 after.position,
-            );
+                particles,
+            )?
+        {
+            let burst = &mut arena.entities[usize::from(burst_slot)];
+            burst.source_id = after.entity_id;
+            burst.record[30..32].copy_from_slice(&after.entity_id.to_le_bytes());
         }
     }
     if effects.expire_effect {
@@ -469,33 +529,15 @@ pub(crate) fn step_in_arena(
                 particles,
             )?;
         }
-        if let Some(effect_slot) = arena.allocate_source_slot_with_terrain(terrain)
-            && arena
-                .economy
-                .initialize_class10_model0_effect_at_slot(
-                    effect_slot,
-                    0,
-                    effect_slot,
-                    0,
-                    0,
-                    after.position,
-                    400,
-                    0,
-                    0x20000,
-                    128,
-                    128,
-                )
-                .is_some()
-        {
-            crate::world::effects::sync_position(
-                arena,
-                terrain,
-                effect_slot,
-                after.position,
-                true,
-                false,
-            )?;
-        }
+        crate::world::effects::allocate(
+            arena,
+            terrain,
+            sim_definition::adapter::mc2_effect_definition(
+                crate::level_definition::EffectKind::Impact,
+            ),
+            after.position,
+            particles,
+        )?;
     }
     // CopyEntityPosition still publishes a moved row hidden earlier in this
     // pass. Drawing disable defers unlink; it does not suppress movement.

@@ -3429,38 +3429,6 @@ impl Level2EconomyState {
         shift_rot_y: i16,
     ) -> Option<u16> {
         let source_entity_index = self.allocate_slot()?;
-        self.initialize_class10_model0_effect_at_slot(
-            source_entity_index,
-            parent_entity_index,
-            parent_entity_id,
-            parent_yaw,
-            parent_pitch,
-            position,
-            subspell_index,
-            target_source_entity_index,
-            control_flags,
-            shift_rot_x,
-            shift_rot_y,
-        )
-    }
-
-    /// Initialize the shared impact carrier after the canonical arena has
-    /// selected a free slot or a frozen replacement.
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn initialize_class10_model0_effect_at_slot(
-        &mut self,
-        source_entity_index: u16,
-        parent_entity_index: u16,
-        parent_entity_id: u16,
-        parent_yaw: i16,
-        parent_pitch: i16,
-        position: Position,
-        subspell_index: u16,
-        target_source_entity_index: u16,
-        control_flags: u32,
-        shift_rot_x: i16,
-        shift_rot_y: i16,
-    ) -> Option<u16> {
         let entity_rng = self.new_event_rng(source_entity_index);
         if self
             .map_chains

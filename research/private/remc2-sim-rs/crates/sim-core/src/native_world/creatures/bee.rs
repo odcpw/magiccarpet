@@ -122,6 +122,7 @@ pub(crate) struct BeeEffects {
     pub population_decrement: bool,
     pub experience_award: Option<(u16, u8)>,
     pub kill_linked_children: bool,
+    pub linked_blink_flags: Option<u32>,
 }
 
 /// `sub_4B590`, after the shared arena has allocated a source slot/RNG word.
@@ -152,7 +153,7 @@ pub(crate) fn construct(
         minimum_speed: properties.minimum_speed,
         maximum_speed: properties.maximum_speed,
         actual_speed: properties.initial_speed,
-        control_flags: 8,
+        control_flags: 12,
         // SetEvent144's source default is one half of authored maximum life.
         // Keep that ratio in the typed class's default mana/life values.
         mana: (i64::from(max_life) * i64::from(properties.initial_mana)
@@ -759,8 +760,8 @@ fn action17(
     }
 }
 
-fn blink(source: &mut BeeCreatureRuntime) {
-    let phase = if source.stage_remaining <= source.stage_duration.wrapping_sub(16)
+fn blink(source: &mut BeeCreatureRuntime, effects: &mut BeeEffects) {
+    let phase = if i32::from(source.stage_remaining) <= i32::from(source.stage_duration) - 16
         && source.stage_remaining >= 16
     {
         if source.source_byte_3e & 0x1c == 16 {
@@ -779,17 +780,19 @@ fn blink(source: &mut BeeCreatureRuntime) {
         2 => 0x0400_0000,
         _ => 0,
     };
+    effects.linked_blink_flags = Some(source.control_flags & 0x0600_0000);
 }
 
 fn alliance_target(
     source: &mut BeeCreatureRuntime,
     context: &BeeActionContext<'_>,
     target: Option<BeeActor>,
+    effects: &mut BeeEffects,
 ) -> Option<BeeActor> {
     if source.stage_var2 != 14 {
         return target;
     }
-    blink(source);
+    blink(source, effects);
     source.stage_remaining = source.stage_remaining.wrapping_sub(1);
     if source.stage_remaining <= 0 {
         return None;
@@ -846,7 +849,7 @@ fn action18(
                 move_source(source, context, effects);
                 let selected = actor(context, slot);
                 if let Some(target) =
-                    alliance_target(source, context, selected).filter(|row| row.live())
+                    alliance_target(source, context, selected, effects).filter(|row| row.live())
                 {
                     if source.source_byte_3e & 3 == 0 {
                         source.roll =
@@ -1122,9 +1125,10 @@ fn summoned_stage(
             source.parent_entity_index = 0;
             source.stage_var1 = source.stage_relation as u8;
             source.control_flags &= !0x0600_0000;
+            effects.linked_blink_flags = Some(0);
             return;
         }
-        blink(source);
+        blink(source, effects);
         let parent = parent.unwrap();
         let previous = source.target_entity_index;
         source.target_entity_index = Some(source.parent_entity_index);
