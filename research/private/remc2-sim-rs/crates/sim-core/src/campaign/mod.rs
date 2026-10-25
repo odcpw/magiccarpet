@@ -63,6 +63,7 @@ pub struct CampaignSession {
     inspection: Arc<NativeWorldInspection>,
     level2: Level2ResetSession,
     speech_enabled: bool,
+    show_foreign_objective_text: bool,
 }
 
 impl CampaignSession {
@@ -155,6 +156,7 @@ impl CampaignSession {
             inspection: Arc::new(inspection),
             level2,
             speech_enabled: true,
+            show_foreign_objective_text: false,
         })
     }
 
@@ -174,6 +176,14 @@ impl CampaignSession {
 
     pub(crate) fn set_speech_enabled(&mut self, enabled: bool) {
         self.speech_enabled = enabled;
+    }
+
+    pub(crate) fn show_foreign_objective_text(&self) -> bool {
+        self.show_foreign_objective_text
+    }
+
+    pub(crate) fn set_show_foreign_objective_text(&mut self, enabled: bool) {
+        self.show_foreign_objective_text = enabled;
     }
 
     /// Step the one authoritative Rust state through the source scheduler.
@@ -200,6 +210,7 @@ impl CampaignSession {
             self.level2.service_campaign_objective_presentation(
                 self.definition.identity.internal_level,
                 self.speech_enabled,
+                self.show_foreign_objective_text,
             );
         }
         evidence
@@ -212,6 +223,7 @@ impl CampaignSession {
         self.level2.service_campaign_objective_presentation(
             self.definition.identity.internal_level,
             self.speech_enabled,
+            self.show_foreign_objective_text,
         );
     }
 
@@ -784,6 +796,51 @@ mod tests {
                 [0, 0, 0, 184, 188, 192],
                 "paused outer frames advance the same sixteen-step fade"
             );
+        }
+    }
+
+    #[test]
+    fn foreign_objective_auto_display_reaches_ordinary_and_paused_presentation() {
+        use crate::campaign::journal::CampaignEffect;
+        let baseline = CampaignSession::open(
+            level_one_descriptor_fixture_path(),
+            CampaignSelection::LEVEL1,
+        )
+        .unwrap();
+        assert!(!baseline.show_foreign_objective_text());
+        for show_foreign_text in [false, true] {
+            for paused in [false, true] {
+                let mut session = baseline.clone();
+                session.set_show_foreign_objective_text(show_foreign_text);
+                let start_tick = session.level2.state.tick;
+                for _ in 0..10 {
+                    if paused {
+                        session.paused_frame();
+                    } else {
+                        session.step(PlayerCommand::default(), 0);
+                    }
+                }
+                let speech_textboxes = session
+                    .level2
+                    .effect_journal()
+                    .records()
+                    .iter()
+                    .filter_map(|record| match record.effect {
+                        CampaignEffect::ObjectivePresentation(actions)
+                            if actions.speech.is_some() =>
+                        {
+                            Some(actions.textbox_ticks)
+                        }
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>();
+                assert_eq!(speech_textboxes, [show_foreign_text.then_some(200)]);
+                if paused {
+                    assert_eq!(session.level2.state.tick, start_tick);
+                }
+                session.reset();
+                assert_eq!(session.show_foreign_objective_text(), show_foreign_text);
+            }
         }
     }
 

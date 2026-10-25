@@ -86,6 +86,10 @@ pub struct PlayerPreferences {
     pub sound_enabled: bool,
     pub music_enabled: bool,
     pub speech_enabled: bool,
+    /// Source portability option, independent of the ordinary help toggle.
+    /// Older profiles omit it; port_sdl_sound.cpp initializes it to false.
+    #[serde(default)]
+    pub auto_show_objectives_for_foreign_languages: bool,
     pub sound_volume: u8,
     pub music_volume: u8,
     pub show_help: bool,
@@ -120,6 +124,7 @@ impl Default for PlayerPreferences {
             sound_enabled: true,
             music_enabled: true,
             speech_enabled: true,
+            auto_show_objectives_for_foreign_languages: false,
             sound_volume: 127,
             music_volume: 127,
             show_help: true,
@@ -246,6 +251,25 @@ pub struct PreferenceStore {
 }
 
 impl PreferenceStore {
+    fn show_foreign_objective_text(&self) -> bool {
+        if !self.current.auto_show_objectives_for_foreign_languages {
+            return false;
+        }
+        let Some(binding) = &self.locale else {
+            return false;
+        };
+        self.languages
+            .as_ref()
+            .and_then(|languages| {
+                languages
+                    .summaries
+                    .iter()
+                    .find(|summary| summary.id == binding.identity.id)
+            })
+            .and_then(|summary| installed_source_language_index(&summary.aliases))
+            .is_some_and(|index| index != 2)
+    }
+
     #[must_use]
     pub fn snapshot(&self) -> PreferencesSnapshot {
         let mut preferences = self.current.clone();
@@ -426,7 +450,48 @@ impl PreferenceStore {
     }
 }
 
+/// `LoadLanguageFile` returns the numeric owner filename suffix, not a locale
+/// label. Its ordinary default selects D*.TXT before L*.TXT. Identical owner
+/// files share one installed binding, so retain that source precedence within
+/// its aliases; an ambiguous binding cannot establish SelectedLangIndex.
+fn installed_source_language_index(aliases: &[String]) -> Option<u8> {
+    for prefix in ['D', 'L'] {
+        let mut selected = None;
+        for alias in aliases {
+            let upper = alias.to_ascii_uppercase();
+            let Some(number) = upper
+                .strip_prefix("LANGUAGE/")
+                .and_then(|name| name.strip_prefix(prefix))
+                .and_then(|name| name.strip_suffix(".TXT"))
+                .filter(|number| {
+                    !number.is_empty() && number.bytes().all(|byte| byte.is_ascii_digit())
+                })
+            else {
+                continue;
+            };
+            // SelectedLangIndex is a source byte; valid owner numeric names
+            // have the same truncation as LoadLanguageFile's return value.
+            let index = number.parse::<u32>().ok()? as u8;
+            if selected.is_some_and(|old| old != index) {
+                return None;
+            }
+            selected = Some(index);
+        }
+        if selected.is_some() {
+            return selected;
+        }
+    }
+    None
+}
+
 impl<B: super::GameSessionBackend> super::GameRuntime<B> {
+    /// Resolved source `autoShowObjectivesForForeignLanguages &&
+    /// SelectedLangIndex != 2`, using this runtime's validated locale binding.
+    #[must_use]
+    pub fn show_foreign_objective_text(&self) -> bool {
+        self.player_preferences.show_foreign_objective_text()
+    }
+
     /// Retained resource identity and bytes for presentation consumers on this
     /// runtime only. No process-global current language or mutable font bank.
     #[must_use]
@@ -593,6 +658,36 @@ mod tests {
     use super::*;
 
     #[test]
+    fn foreign_objective_option_defaults_false_and_uses_bound_source_aliases() {
+        let mut legacy = serde_json::to_value(PlayerPreferences::default()).unwrap();
+        legacy
+            .as_object_mut()
+            .unwrap()
+            .remove("auto_show_objectives_for_foreign_languages");
+        let preferences: PlayerPreferences = serde_json::from_value(legacy).unwrap();
+        assert!(!preferences.auto_show_objectives_for_foreign_languages);
+        let mut store = PreferenceStore::default();
+        store.current.auto_show_objectives_for_foreign_languages = true;
+        assert!(
+            !store.show_foreign_objective_text(),
+            "no locale is not a foreign binding"
+        );
+
+        for (aliases, expected) in [
+            (vec!["LANGUAGE/D2.TXT", "LANGUAGE/L1.TXT"], Some(2)),
+            (vec!["LANGUAGE/L3.TXT"], Some(3)),
+            (vec!["language/d4.txt", "LANGUAGE/L1.TXT"], Some(4)),
+            (vec!["LANGUAGE/L258.TXT"], Some(2)),
+            (vec!["LANGUAGE/D2.TXT", "LANGUAGE/D3.TXT"], None),
+            (vec!["LANGUAGE/L1.TXT", "LANGUAGE/L3.TXT"], None),
+            (vec!["opaque-locale-id", "LANGUAGE/L.TXT"], None),
+        ] {
+            let aliases = aliases.into_iter().map(String::from).collect::<Vec<_>>();
+            assert_eq!(installed_source_language_index(&aliases), expected);
+        }
+    }
+
+    #[test]
     fn installed_locale_binds_actual_text_fonts_and_objective_after_cold_profile_reopen() {
         let cache = std::env::var("MC_LANGUAGE_CACHE")
             .expect("set MC_LANGUAGE_CACHE to an actual built installed-language cache");
@@ -646,10 +741,15 @@ mod tests {
         store.command(resources()).unwrap();
         let mut preferences = store.snapshot().preferences;
         preferences.selected_locale = Some(binding.identity.id.clone());
+        preferences.auto_show_objectives_for_foreign_languages = true;
         store
             .command(PreferencesCommand::Apply { preferences })
             .unwrap();
         let saved = fs::read(profile.join("player-preferences.json")).unwrap();
+        assert!(
+            !store.show_foreign_objective_text(),
+            "validated D2 source binding is index 2"
+        );
         let before = store.snapshot();
         let mut invalid = before.preferences.clone();
         invalid.selected_locale = Some("uninstalled-source-locale".into());
@@ -669,6 +769,12 @@ mod tests {
         cold.command(install()).unwrap();
         let reloaded = cold.command(resources()).unwrap();
         assert_eq!(reloaded.locale_binding, Some(binding.identity.clone()));
+        assert!(
+            reloaded
+                .preferences
+                .auto_show_objectives_for_foreign_languages
+        );
+        assert!(!cold.show_foreign_objective_text());
         let mut cold_overlay = crate::indexed_overlay::IndexedOverlayAssets::load(
             crate::native_world::resolve_level1_presentation_cache_root(&private),
         )
@@ -797,6 +903,7 @@ mod tests {
         prefs.keys[0] = InputKey::W;
         prefs.sound_volume = 63;
         prefs.show_help = false;
+        prefs.auto_show_objectives_for_foreign_languages = true;
         store
             .command(PreferencesCommand::Apply { preferences: prefs })
             .unwrap();
