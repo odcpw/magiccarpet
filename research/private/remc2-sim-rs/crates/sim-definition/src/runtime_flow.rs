@@ -281,6 +281,43 @@ impl RuntimeFlowDefinition {
         &self.presentation
     }
 
+    /// Whether this catalog retains the active campaign, optionally appending
+    /// missions before the same terminal destination. Existing levels, edges
+    /// and presentation cues stay identical; only the old terminal edge may
+    /// lead into the appended suffix. Bound levels are checked by the caller.
+    #[must_use]
+    pub fn continues_catalog(&self, previous: &Self) -> bool {
+        if self.game_id != previous.game_id
+            || self.entry_level_id != previous.entry_level_id
+            || self.presentation.title_cue != previous.presentation.title_cue
+        {
+            return false;
+        }
+        if self.entries == previous.entries {
+            return self.presentation == previous.presentation;
+        }
+        let count = previous.entries.len();
+        if count == 0 || self.entries.len() <= count {
+            return false;
+        }
+        self.entries[..count - 1] == previous.entries[..count - 1]
+            && self.entries[count - 1].level_id == previous.entries[count - 1].level_id
+            && matches!(
+                &previous.entries[count - 1].completion_destination,
+                RuntimeFlowDestination::Title { .. }
+            )
+            && self
+                .entries
+                .last()
+                .map(|entry| &entry.completion_destination)
+                == Some(&previous.entries[count - 1].completion_destination)
+            && previous
+                .presentation
+                .entries
+                .iter()
+                .all(|entry| self.presentation.entry(entry.level_id()) == Some(entry))
+    }
+
     pub(crate) fn verify(&self) -> Result<()> {
         if self.entries.is_empty() {
             return Err(flow_error(
@@ -483,6 +520,57 @@ mod tests {
             ]),
         )
         .unwrap()
+    }
+
+    #[test]
+    fn catalog_extension_preserves_prior_edges_cues_and_terminal() {
+        let previous = valid_flow();
+        let mut extended = previous.clone();
+        let cave = level("level.magic_carpet_2.spider_cave");
+        let terminal = extended
+            .entries
+            .last()
+            .unwrap()
+            .completion_destination
+            .clone();
+        extended.entries.last_mut().unwrap().completion_destination =
+            RuntimeFlowDestination::Level {
+                level_id: cave.clone(),
+            };
+        extended
+            .entries
+            .push(RuntimeFlowEntry::new(cave.clone(), terminal));
+        extended.presentation.entries.push(
+            presentation(&["level.magic_carpet_2.spider_cave"])
+                .entries
+                .remove(0),
+        );
+        extended.bound_level_id = cave;
+        extended.verify().unwrap();
+        assert!(extended.continues_catalog(&previous));
+        assert!(!previous.continues_catalog(&extended));
+
+        let mut changed_cue = extended.clone();
+        changed_cue.presentation.entries[0].entry_cue =
+            SemanticPresentationCueId::parse("presentation.changed.entry").unwrap();
+        changed_cue.verify().unwrap();
+        assert!(!changed_cue.continues_catalog(&previous));
+
+        let mut changed_terminal = extended.clone();
+        changed_terminal
+            .entries
+            .last_mut()
+            .unwrap()
+            .completion_destination = RuntimeFlowDestination::Title {
+            node_id: RuntimeFlowNodeId::parse("flow.changed.title").unwrap(),
+        };
+        changed_terminal.verify().unwrap();
+        assert!(!changed_terminal.continues_catalog(&previous));
+
+        let mut changed_game = extended;
+        changed_game.game_id = SemanticGameId::parse("game.another_campaign").unwrap();
+        changed_game.verify().unwrap();
+        assert!(!changed_game.continues_catalog(&previous));
     }
 
     #[test]

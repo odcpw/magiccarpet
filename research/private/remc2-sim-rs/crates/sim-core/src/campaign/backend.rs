@@ -467,7 +467,14 @@ fn load_mc2_campaign_internal(
             with_level_and_runtime_flow(
                 definition,
                 descriptor.level_definition().clone(),
-                mc2_runtime_flow(selection, descriptor.level_definition())?,
+                mc2_runtime_flow(selection, descriptor.level_definition(), false)?,
+            )
+        }
+        _ if selection == CampaignSelection::ordinary(4).expect("ordinary Cave mission") => {
+            with_level_and_runtime_flow(
+                definition,
+                descriptor.level_definition().clone(),
+                mc2_runtime_flow(selection, descriptor.level_definition(), true)?,
             )
         }
         _ if CampaignSelection::ordinary(selection.external_level) == Some(selection) => {
@@ -530,6 +537,7 @@ fn validate_campaign_environment_cache(
 fn mc2_runtime_flow(
     selection: CampaignSelection,
     level: &sim_definition::level_definition::LevelDefinition,
+    include_cave: bool,
 ) -> crate::game_definition::Result<RuntimeFlowDefinition> {
     let (bound_level, witnesses): (&str, &[&str]) = match selection {
         CampaignSelection::LEVEL1 => (
@@ -553,6 +561,10 @@ fn mc2_runtime_flow(
                 "objective.charge.reveal_entrance",
             ],
         ),
+        _ if include_cave && selection == CampaignSelection::ordinary(4).unwrap() => (
+            "level.magic_carpet_2.spider_cave",
+            &["objective.campaign.task_1", "objective.campaign.task_2"],
+        ),
         _ => {
             return Err(definition_error(
                 DefinitionErrorCode::InvalidSchema,
@@ -575,54 +587,70 @@ fn mc2_runtime_flow(
     let spire = SemanticLevelId::parse("level.magic_carpet_2.night_spire")?;
     let payahandra = SemanticLevelId::parse("level.magic_carpet_2.payahandra_ruins")?;
     let entrance = SemanticLevelId::parse("level.magic_carpet_2.revealed_way")?;
+    let cave = SemanticLevelId::parse("level.magic_carpet_2.spider_cave")?;
+    let mut presentation_levels = vec![
+        (&spire, "night_spire"),
+        (&payahandra, "payahandra_ruins"),
+        (&entrance, "revealed_way"),
+    ];
+    if include_cave {
+        presentation_levels.push((&cave, "spider_cave"));
+    }
     let presentation = RuntimeFlowPresentationDefinition::new(
         SemanticPresentationCueId::parse(TITLE_PRESENTATION_CUE_ID)?,
-        [
-            (&spire, "night_spire"),
-            (&payahandra, "payahandra_ruins"),
-            (&entrance, "revealed_way"),
-        ]
-        .into_iter()
-        .map(|(level_id, name)| {
-            Ok(RuntimeFlowPresentationEntry::new(
-                level_id.clone(),
-                SemanticPresentationCueId::parse(&format!(
-                    "presentation.magic_carpet_2.{name}.loading"
-                ))?,
-                SemanticPresentationCueId::parse(&format!(
-                    "presentation.magic_carpet_2.{name}.entry"
-                ))?,
-                SemanticPresentationCueId::parse(&format!(
-                    "presentation.magic_carpet_2.{name}.completion"
-                ))?,
-            ))
-        })
-        .collect::<crate::game_definition::Result<Vec<_>>>()?,
+        presentation_levels
+            .into_iter()
+            .map(|(level_id, name)| {
+                Ok(RuntimeFlowPresentationEntry::new(
+                    level_id.clone(),
+                    SemanticPresentationCueId::parse(&format!(
+                        "presentation.magic_carpet_2.{name}.loading"
+                    ))?,
+                    SemanticPresentationCueId::parse(&format!(
+                        "presentation.magic_carpet_2.{name}.entry"
+                    ))?,
+                    SemanticPresentationCueId::parse(&format!(
+                        "presentation.magic_carpet_2.{name}.completion"
+                    ))?,
+                ))
+            })
+            .collect::<crate::game_definition::Result<Vec<_>>>()?,
     );
+    let title = RuntimeFlowDestination::Title {
+        node_id: RuntimeFlowNodeId::parse("flow.magic_carpet_2.return_to_title")?,
+    };
+    let mut entries = vec![
+        RuntimeFlowEntry::new(
+            spire.clone(),
+            RuntimeFlowDestination::Level {
+                level_id: payahandra.clone(),
+            },
+        ),
+        RuntimeFlowEntry::new(
+            payahandra,
+            RuntimeFlowDestination::Level {
+                level_id: entrance.clone(),
+            },
+        ),
+        RuntimeFlowEntry::new(
+            entrance,
+            if include_cave {
+                RuntimeFlowDestination::Level {
+                    level_id: cave.clone(),
+                }
+            } else {
+                title.clone()
+            },
+        ),
+    ];
+    if include_cave {
+        entries.push(RuntimeFlowEntry::new(cave, title));
+    }
     RuntimeFlowDefinition::new(
         SemanticGameId::parse("game.magic_carpet_2")?,
         SemanticLevelId::parse(bound_level)?,
-        spire.clone(),
-        vec![
-            RuntimeFlowEntry::new(
-                spire,
-                RuntimeFlowDestination::Level {
-                    level_id: payahandra.clone(),
-                },
-            ),
-            RuntimeFlowEntry::new(
-                payahandra,
-                RuntimeFlowDestination::Level {
-                    level_id: entrance.clone(),
-                },
-            ),
-            RuntimeFlowEntry::new(
-                entrance,
-                RuntimeFlowDestination::Title {
-                    node_id: RuntimeFlowNodeId::parse("flow.magic_carpet_2.return_to_title")?,
-                },
-            ),
-        ],
+        spire,
+        entries,
         presentation,
     )
 }
@@ -923,6 +951,34 @@ struct Mc2PendingSpellCarry {
 }
 
 impl Mc2RuntimePackageResolver {
+    // The opening release's three-mission definitions are immutable save
+    // identities. Reconstruct that exact base for verification, never rewrite
+    // a saved definition or its replay receipts to adopt an installed suffix.
+    fn retained_opening_definition(
+        &self,
+        package: &ResolvedMc2RuntimePackage,
+    ) -> crate::game_definition::Result<Option<GameDefinition>> {
+        if self.flow.entries().len() != 4
+            || !matches!(
+                package.selection,
+                CampaignSelection::LEVEL1 | CampaignSelection::LEVEL2 | CampaignSelection::LEVEL3
+            )
+        {
+            return Ok(None);
+        }
+        let level = package
+            .definition
+            .level_definition()
+            .expect("campaign has a level")
+            .clone();
+        let flow = mc2_runtime_flow(package.selection, &level, false)?;
+        Ok(Some(with_level_and_runtime_flow(
+            (*package.definition).clone(),
+            level,
+            flow,
+        )))
+    }
+
     fn exact_package_for_definition(
         &self,
         definition: &GameDefinition,
@@ -947,6 +1003,18 @@ impl Mc2RuntimePackageResolver {
             || definition.definition_hash() != package.definition.definition_hash()
             || definition.revision() != package.definition.revision()
         {
+            let retained = self.retained_opening_definition(package).map_err(|error| {
+                crate::game_runtime::RuntimeTransitionError::InvalidRuntimeFlow {
+                    message: error.to_string(),
+                }
+            })?;
+            if retained.as_ref().is_some_and(|base| {
+                definition.package_graph_hash() == base.package_graph_hash()
+                    && definition.definition_hash() == base.definition_hash()
+                    && definition.revision() == base.revision()
+            }) {
+                return Ok(package);
+            }
             return Err(
                 crate::game_runtime::RuntimeTransitionError::InvalidRuntimeFlow {
                     message: format!(
@@ -999,6 +1067,7 @@ impl Mc2RuntimePackageResolver {
         let catalog = default_catalog()?;
         let mut flow: Option<RuntimeFlowDefinition> = None;
         let mut by_level = BTreeMap::new();
+        let mut loaded = Vec::new();
         for input in inputs {
             let (definition, selection, source_package_sha256, runtime_capture_sha256) =
                 load_mc2_campaign_internal(
@@ -1006,6 +1075,35 @@ impl Mc2RuntimePackageResolver {
                     input.owner_cache.as_deref(),
                     &catalog,
                 )?;
+            loaded.push((
+                input,
+                definition,
+                selection,
+                source_package_sha256,
+                runtime_capture_sha256,
+            ));
+        }
+        let include_cave = loaded
+            .iter()
+            .any(|(_, _, selection, _, _)| Some(*selection) == CampaignSelection::ordinary(4));
+        for (input, mut definition, selection, source_package_sha256, runtime_capture_sha256) in
+            loaded
+        {
+            if include_cave
+                && matches!(
+                    selection,
+                    CampaignSelection::LEVEL1
+                        | CampaignSelection::LEVEL2
+                        | CampaignSelection::LEVEL3
+                )
+            {
+                let level = definition
+                    .level_definition()
+                    .expect("campaign has a level")
+                    .clone();
+                let installed_flow = mc2_runtime_flow(selection, &level, true)?;
+                definition = with_level_and_runtime_flow(definition, level, installed_flow);
+            }
             let definition = Arc::new(definition);
             definition.verify_identity()?;
             let candidate = definition.runtime_flow().cloned().ok_or_else(|| {
@@ -1309,9 +1407,15 @@ impl Mc2RuntimePackageResolver {
             }
         })?;
         let catalog = default_catalog().map_err(Mc2CampaignReplaySaveError::Definition)?;
+        let retained = if session.definition().runtime_flow() != package.definition.runtime_flow() {
+            self.retained_opening_definition(package)
+                .map_err(Mc2CampaignReplaySaveError::Definition)?
+        } else {
+            None
+        };
         session
             .definition()
-            .verify_semantic_variant_of(&package.definition, &catalog)
+            .verify_semantic_variant_of(retained.as_ref().unwrap_or(&package.definition), &catalog)
             .map_err(Mc2CampaignReplaySaveError::Definition)?;
         let snapshot = session.backend().snapshot();
         if session.backend().replay_operations.len() > MAX_MC2_CAMPAIGN_REPLAY_OPERATIONS {
@@ -1416,8 +1520,14 @@ impl Mc2RuntimePackageResolver {
             }
         })?;
         let catalog = default_catalog().map_err(Mc2CampaignReplaySaveError::Definition)?;
+        let retained = if save.definition.runtime_flow() != package.definition.runtime_flow() {
+            self.retained_opening_definition(package)
+                .map_err(Mc2CampaignReplaySaveError::Definition)?
+        } else {
+            None
+        };
         save.definition
-            .verify_semantic_variant_of(&package.definition, &catalog)
+            .verify_semantic_variant_of(retained.as_ref().unwrap_or(&package.definition), &catalog)
             .map_err(Mc2CampaignReplaySaveError::Definition)?;
         let definition = Arc::new(save.definition);
         let semantic_spell_carry = save.semantic_spell_carry;
@@ -1752,13 +1862,29 @@ impl GameAdapter for Mc2CampaignAdapter {
         let goat_policy_binding = DefinitionGoatPolicyBinding::from_definition(definition)
             .map_err(CampaignBackendError::Definition)?;
         let fireball_projectile_asset = fireball_projectile_asset_reference(definition)?;
-        let package_base =
+        let mut package_base =
             load_mc2_campaign_inputs(&input, &catalog).map_err(CampaignBackendError::Definition)?;
+        let selection = CampaignDescriptor::declared_selection(&input.package_root)
+            .map_err(|error| CampaignBackendError::Open(CampaignOpenError::Preflight(error)))?;
+        if definition
+            .runtime_flow()
+            .is_some_and(|flow| flow.entries().len() == 4)
+            && matches!(
+                selection,
+                CampaignSelection::LEVEL1 | CampaignSelection::LEVEL2 | CampaignSelection::LEVEL3
+            )
+        {
+            let level = package_base
+                .level_definition()
+                .expect("campaign has a level")
+                .clone();
+            let flow = mc2_runtime_flow(selection, &level, true)
+                .map_err(CampaignBackendError::Definition)?;
+            package_base = with_level_and_runtime_flow(package_base, level, flow);
+        }
         definition
             .verify_semantic_variant_of(&package_base, &catalog)
             .map_err(CampaignBackendError::Definition)?;
-        let selection = CampaignDescriptor::declared_selection(&input.package_root)
-            .map_err(|error| CampaignBackendError::Open(CampaignOpenError::Preflight(error)))?;
         let mut package_campaign = match &input.owner_cache {
             Some(owner_cache) => {
                 CampaignSession::open_with_owner_cache(&input.package_root, owner_cache, selection)
@@ -4349,6 +4475,119 @@ pub(crate) mod tests {
             }
         }
         assert_eq!(writable, 13);
+    }
+
+    #[test]
+    fn installed_four_level_flow_preserves_opening_replay_and_admits_cave() {
+        use crate::game_runtime::{GameRuntime, RuntimeMode};
+        let generated = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../generated");
+        let opening_inputs = vec![
+            Mc2CampaignInputs::with_owner_cache(
+                generated.join("mc-bhq8-level1-collision-v5-night"),
+                generated.join("mc2-level1-night-cache-v2"),
+            ),
+            Mc2CampaignInputs::with_owner_cache(
+                generated.join("level2-day-block32-campaign-v2"),
+                generated.join("level2-day-spell-owner-cache-audio-v4/components/material"),
+            ),
+            Mc2CampaignInputs::with_owner_cache(
+                generated.join("level3-day-block32-campaign-recipe-v2"),
+                generated.join("level3-day-spell-owner-cache-audio-v4/components/material"),
+            ),
+        ];
+        let opening = Mc2RuntimePackageResolver::load(opening_inputs.clone()).unwrap();
+        let mut original = GameRuntime::<Mc2CampaignBackend>::title(7101).unwrap();
+        let guard = original.identity().guard();
+        let loading = opening.new_game(&mut original, guard).unwrap();
+        opening
+            .open_pending(&mut original, loading.guard(), 7101)
+            .unwrap();
+        let guard = original.session().unwrap().identity().guard();
+        original
+            .session_mut()
+            .unwrap()
+            .step(guard, Default::default())
+            .unwrap();
+        let guard = original.identity().guard();
+        original.pause(guard).unwrap();
+        let saved = opening.save_replay(&original).unwrap();
+        let prior = original.session().unwrap().snapshot().value;
+        let prior_hash = original
+            .session()
+            .unwrap()
+            .definition()
+            .definition_hash()
+            .to_owned();
+
+        let cave_input = Mc2CampaignInputs::with_owner_cache(
+            generated.join("mc-bhq6-ordinary-20261025-zclu5fjj/level4"),
+            generated.join("mc-oi62-environment-level4-audio-v3"),
+        );
+        let mut inputs = opening_inputs;
+        inputs.push(cave_input.clone());
+        inputs.reverse(); // The package list cannot select the campaign order.
+        let installed = Mc2RuntimePackageResolver::load(inputs).unwrap();
+        assert_eq!(installed.flow().entries().len(), 4);
+        let cave_id = SemanticLevelId::parse("level.magic_carpet_2.spider_cave").unwrap();
+        assert_eq!(
+            installed.flow().entries()[2].completion_destination(),
+            &RuntimeFlowDestination::Level {
+                level_id: cave_id.clone()
+            }
+        );
+        assert!(installed.flow().continues_catalog(opening.flow()));
+
+        let mut restored = GameRuntime::<Mc2CampaignBackend>::title(7102).unwrap();
+        let guard = restored.identity().guard();
+        installed
+            .load_replay(&mut restored, guard, 7102, &saved)
+            .unwrap();
+        assert_eq!(restored.identity().mode, RuntimeMode::Paused);
+        assert_eq!(restored.session().unwrap().snapshot().value, prior);
+        assert_eq!(
+            restored.session().unwrap().definition().definition_hash(),
+            prior_hash
+        );
+        assert_eq!(installed.save_replay(&restored).unwrap(), saved);
+        installed
+            .exact_package_for_definition(restored.session().unwrap().definition())
+            .unwrap();
+
+        let mut fresh = GameRuntime::<Mc2CampaignBackend>::title(7103).unwrap();
+        let guard = fresh.identity().guard();
+        let loading = installed.new_game(&mut fresh, guard).unwrap();
+        installed
+            .open_pending(&mut fresh, loading.guard(), 7103)
+            .unwrap();
+        assert_eq!(
+            fresh
+                .session()
+                .unwrap()
+                .definition()
+                .runtime_flow()
+                .unwrap()
+                .entries()
+                .len(),
+            4
+        );
+        let cave = installed.package(&cave_id).unwrap();
+        assert_eq!(cave.selection, CampaignSelection::ordinary(4).unwrap());
+        let session = GameSession::open(
+            &Mc2CampaignAdapter,
+            Arc::clone(&cave.definition),
+            7104,
+            cave_input,
+        )
+        .unwrap();
+        assert_eq!(
+            session
+                .definition()
+                .runtime_flow()
+                .unwrap()
+                .bound_level_id(),
+            &cave_id
+        );
+        assert_eq!(session.identity().tick, 0);
     }
 
     #[test]

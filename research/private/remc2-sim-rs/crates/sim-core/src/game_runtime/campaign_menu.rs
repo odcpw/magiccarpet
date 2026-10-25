@@ -244,12 +244,7 @@ fn validate_selected(
             .ok_or_else(|| RuntimeTransitionError::InvalidRuntimeFlow {
                 message: "selected mission has no runtime flow".to_owned(),
             })?;
-    if candidate.game_id() != flow.game_id()
-        || candidate.entry_level_id() != flow.entry_level_id()
-        || candidate.entries() != flow.entries()
-        || candidate.presentation() != flow.presentation()
-        || candidate.bound_level_id() != level_id
-    {
+    if !candidate.continues_catalog(flow) || candidate.bound_level_id() != level_id {
         return Err(RuntimeTransitionError::InvalidRuntimeFlow {
             message: "selected mission does not belong to the active campaign".to_owned(),
         });
@@ -470,5 +465,63 @@ mod tests {
             .unwrap();
         assert_eq!(title.mode, RuntimeMode::Title);
         assert!(title.session.is_none());
+
+        // The retained three-mission save adopts the installed fourth mission
+        // at its ordinary interlevel selection. This stages the menu boundary,
+        // not a claim that preceding gameplay objectives were earned here.
+        let expanded = Mc2RuntimePackageResolver::load(
+            paths
+                .iter()
+                .cloned()
+                .chain(std::iter::once(
+                    generated.join("mc-bhq6-ordinary-20261025-zclu5fjj/level4"),
+                ))
+                .map(Mc2CampaignInputs::new),
+        )
+        .unwrap();
+        let first = definitions[0]
+            .runtime_flow()
+            .unwrap()
+            .bound_level_id()
+            .clone();
+        let mut retained = GameRuntime::<Mc2CampaignBackend> {
+            frontend_media: super::media::FrontendMedia::default(),
+            player_preferences: super::preferences::PreferenceStore::default(),
+            runtime_id: 773,
+            generation: 4,
+            completed_levels: vec![first.clone()],
+            state: RuntimeState::Campaign {
+                definition: Arc::clone(&definitions[0]),
+                selected_definition: None,
+                session_generation: NonZeroU64::new(2).unwrap(),
+                phase: CampaignMenuPhase::Results,
+                completed_level: Some(first),
+            },
+        };
+        let guard = retained.identity().guard();
+        let map = expanded
+            .campaign_menu_command(&mut retained, guard, CampaignMenuCommand::DismissResults)
+            .unwrap();
+        let loading = expanded
+            .campaign_menu_command(
+                &mut retained,
+                map.guard(),
+                CampaignMenuCommand::StartMission,
+            )
+            .unwrap();
+        expanded
+            .open_pending(&mut retained, loading.guard(), 773)
+            .unwrap();
+        let active = retained
+            .session()
+            .unwrap()
+            .definition()
+            .runtime_flow()
+            .unwrap();
+        assert_eq!(
+            active.bound_level_id().as_str(),
+            "level.magic_carpet_2.payahandra_ruins"
+        );
+        assert_eq!(active.entries().len(), 4);
     }
 }

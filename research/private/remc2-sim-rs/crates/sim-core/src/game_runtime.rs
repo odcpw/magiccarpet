@@ -962,11 +962,7 @@ impl<B: GameSessionBackend> GameRuntime<B> {
                         message: error.to_string(),
                     }
                 })?;
-                if candidate_flow.game_id() != current_flow.game_id()
-                    || candidate_flow.entry_level_id() != current_flow.entry_level_id()
-                    || candidate_flow.entries() != current_flow.entries()
-                    || candidate_flow.presentation() != current_flow.presentation()
-                {
+                if !candidate_flow.continues_catalog(current_flow) {
                     return Err(RuntimeTransitionError::InvalidRuntimeFlow {
                         message: "next definition does not retain the active semantic game and ordered flow"
                             .to_owned(),
