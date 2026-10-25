@@ -9,15 +9,14 @@ use sim_core::campaign::spec::CampaignSelection;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-const XMI_PATH: &str = "audio/music/C2GAME1.xmi";
-const XMI_BYTES: usize = 10_352;
-const XMI_SHA256: &str = "0f8081d8ef6ad609f406638862a573b9d1d014f940f0f3194e4d5687f724bd8d";
-
 struct MusicBinding {
     descriptor: &'static str,
     bytes: usize,
     sha256: &'static str,
     track: u8,
+    xmi_path: &'static str,
+    xmi_bytes: usize,
+    xmi_sha256: &'static str,
 }
 
 fn binding(selection: CampaignSelection) -> AbiResult<MusicBinding> {
@@ -34,15 +33,21 @@ fn binding(selection: CampaignSelection) -> AbiResult<MusicBinding> {
         ),
         (2, 1, 0) => (
             "audio/descriptor.json",
-            105_998,
-            "62c6f9d2468a8e4099c07543ae7e228e7646df62f4943adfcaa02291edad04ca",
+            106_324,
+            "73e7d78ea28996c8515dbbc791fce86e90ddcc7a01000bbd4bab82c7036e437e",
             2,
         ),
         (3, 2, 0) => (
             "audio/descriptor.json",
-            105_998,
-            "c08fa3682c2332d675f31e65679235349d2ca59b1db83691f5cf3490333f6115",
+            106_324,
+            "5854171168c8a474483b9fab430821031a4380c22e68c851b3f1baa124d89ee3",
             2,
+        ),
+        (4, 3, 2) => (
+            "audio/descriptor.json",
+            41_480,
+            "a3c7e8467c9ba0d5973310745ec938d64436069d0b9b67622256268776599336",
+            3,
         ),
         _ => {
             return Err(invalid(
@@ -50,11 +55,34 @@ fn binding(selection: CampaignSelection) -> AbiResult<MusicBinding> {
             ));
         }
     };
+    // Sound.cpp passes logical track - 1 to SOUND_init_MIDI_sequence.
+    // Each map type therefore consumes its own owner MUSIC.DAT record.
+    let (xmi_path, xmi_bytes, xmi_sha256) = match track {
+        1 => (
+            "audio/music/C2GAME1.xmi",
+            10_352,
+            "0f8081d8ef6ad609f406638862a573b9d1d014f940f0f3194e4d5687f724bd8d",
+        ),
+        2 => (
+            "audio/music/C2GAME2.xmi",
+            43_616,
+            "8c98b86e74a6187a3a08ac34ef81aa3bd97cf493c34bee88b6d6969e79a6c856",
+        ),
+        3 => (
+            "audio/music/C2GAME3.xmi",
+            14_928,
+            "566769008b9598bd03ad657575daa089f217385d7e7671dd948e6b2fea1e3251",
+        ),
+        _ => return Err(invalid("campaign music track is not source-bound")),
+    };
     Ok(MusicBinding {
         descriptor,
         bytes,
         sha256,
         track,
+        xmi_path,
+        xmi_bytes,
+        xmi_sha256,
     })
 }
 
@@ -62,8 +90,8 @@ fn invalid(message: impl Into<String>) -> AbiError {
     AbiError::new(MC_STATUS_VALIDATION_FAILED, message)
 }
 
-/// The native owner path is a material component for Day, while the client
-/// receives the aggregate. Both must resolve the same existing audio component.
+/// Day's native material component and client aggregate share one audio sibling.
+/// Night and Cave retain their audio alongside the other owner-cache outputs.
 fn audio_root(root: &Path) -> Option<PathBuf> {
     if root.join("audio/music-channel-0-f.json").is_file()
         || root.join("audio/descriptor.json").is_file()
@@ -121,10 +149,10 @@ fn verify_manifest(root: &Path, spec: &MusicBinding) -> AbiResult<CacheManifest>
     })?;
     let manifest: CacheManifest = serde_json::from_slice(&bytes)
         .map_err(|error| invalid(format!("invalid campaign audio manifest: {error}")))?;
-    let expected_schema = if spec.track == 1 {
-        "mc2-owner-unity-asset-cache/v2"
-    } else {
-        "mc2-day-audio-cache/v1"
+    let expected_schema = match spec.track {
+        1 => "mc2-owner-unity-asset-cache/v2",
+        3 => "mc2-environment-material-cache/v1",
+        _ => "mc2-day-audio-cache/v1",
     };
     if manifest.schema != expected_schema {
         return Err(invalid(
@@ -133,7 +161,7 @@ fn verify_manifest(root: &Path, spec: &MusicBinding) -> AbiResult<CacheManifest>
     }
     for (path, len, sha) in [
         (spec.descriptor, spec.bytes, spec.sha256),
-        (XMI_PATH, XMI_BYTES, XMI_SHA256),
+        (spec.xmi_path, spec.xmi_bytes, spec.xmi_sha256),
     ] {
         let mut rows = manifest.outputs.iter().filter(|row| row.path == path);
         let row = rows
@@ -148,8 +176,8 @@ fn verify_manifest(root: &Path, spec: &MusicBinding) -> AbiResult<CacheManifest>
     Ok(manifest)
 }
 
-/// Existing sealed Night assets retain their exact content pins. Day cache
-/// envelopes additionally carry the owner and campaign package identities.
+/// Existing sealed Night assets retain their exact content pins. Day and Cave
+/// envelopes also carry the owner and campaign package identities.
 pub(super) fn load_campaign_music(
     owner_cache: Option<&Path>,
     selection: CampaignSelection,
@@ -171,21 +199,26 @@ pub(super) fn load_campaign_music(
         }
     } else {
         let profile = &descriptor["profile"];
-        if descriptor["schema"] != "mc2-day-audio/v1"
+        let (schema, owner_key) = if spec.track == 3 {
+            ("mc2-cave-audio/v1", "owner_export_package_sha256")
+        } else {
+            ("mc2-day-audio/v1", "package_sha256")
+        };
+        if descriptor["schema"] != schema
             || manifest.profile.as_ref() != Some(profile)
             || profile["external_level"].as_u64() != Some(u64::from(selection.external_level))
             || profile["internal_level"].as_u64() != Some(u64::from(selection.internal_level))
             || profile["map_type"]["id"].as_u64() != Some(u64::from(selection.map_type_id))
-            || profile["package_sha256"].as_str() != Some(owner_package_sha256)
+            || profile[owner_key].as_str() != Some(owner_package_sha256)
             || profile["campaign_package_sha256"].as_str() != Some(campaign_package_sha256)
-            || descriptor["music"]["maptype_music"] != 2
+            || descriptor["music"]["maptype_music"] != spec.track
         {
             return Err(invalid(
-                "Day music descriptor does not match the active campaign package",
+                "music descriptor does not match the active campaign package",
             ));
         }
     }
-    let _ = read_qualified_cache_file(&root, XMI_PATH, XMI_BYTES, XMI_SHA256)?;
+    let _ = read_qualified_cache_file(&root, spec.xmi_path, spec.xmi_bytes, spec.xmi_sha256)?;
     let mut music = CampaignDayMusicLifecycle::start_day();
     music.track = spec.track;
     Ok(Some(music))
@@ -212,7 +245,7 @@ mod tests {
         .unwrap();
         assert_eq!(night.track, 1);
         for level in [2, 3] {
-            let aggregate = root.join(format!("level{level}-day-spell-owner-cache-v3"));
+            let aggregate = root.join(format!("level{level}-day-spell-owner-cache-audio-v4"));
             let descriptor: Value = serde_json::from_slice(
                 &fs::read(aggregate.join("components/audio/audio/descriptor.json")).unwrap(),
             )
@@ -235,7 +268,7 @@ mod tests {
 
     #[test]
     fn wrong_campaign_or_cross_level_audio_is_rejected() {
-        let root = generated().join("level2-day-spell-owner-cache-v3/components/material");
+        let root = generated().join("level2-day-spell-owner-cache-audio-v4/components/material");
         assert!(
             load_campaign_music(
                 Some(&root),
@@ -258,6 +291,33 @@ mod tests {
             load_campaign_music(None, CampaignSelection::ordinary(2).unwrap(), "", "")
                 .unwrap()
                 .is_none()
+        );
+    }
+
+    #[test]
+    fn installed_cave_cache_resolves_source_track_three_and_rejects_wrong_package() {
+        let root = generated().join("mc-oi62-environment-level4-audio-v3");
+        let descriptor: Value =
+            serde_json::from_slice(&fs::read(root.join("audio/descriptor.json")).unwrap()).unwrap();
+        let profile = &descriptor["profile"];
+        let owner = profile["owner_export_package_sha256"].as_str().unwrap();
+        let campaign = profile["campaign_package_sha256"].as_str().unwrap();
+        let selection = CampaignSelection::ordinary(4).unwrap();
+        let music = load_campaign_music(Some(&root), selection, owner, campaign)
+            .unwrap()
+            .unwrap();
+        assert_eq!(music.track, 3);
+        assert!(music.loaded && music.playing);
+        assert!(load_campaign_music(Some(&root), selection, "wrong-owner", campaign).is_err());
+        assert!(load_campaign_music(Some(&root), selection, owner, "wrong-campaign").is_err());
+        assert!(
+            load_campaign_music(
+                Some(&root),
+                CampaignSelection::ordinary(3).unwrap(),
+                owner,
+                campaign
+            )
+            .is_err()
         );
     }
 }
