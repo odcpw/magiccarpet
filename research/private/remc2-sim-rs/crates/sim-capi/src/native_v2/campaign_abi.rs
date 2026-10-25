@@ -2377,7 +2377,7 @@ pub extern "C" fn mc_native_campaign_world_info(
                 external_level: metadata.external_level,
                 internal_level: metadata.internal_level,
                 map_type: metadata.map_type.id(),
-                profile: MC_PROFILE_OUTDOOR,
+                profile: profile_code(metadata.map_type == sim_core::native_world::MapType::Cave),
                 reserved_0: 0,
                 entity_count: u32::try_from(entity_count).expect("entity count fits u32"),
                 active_entity_count: u32::try_from(active_count).expect("active count fits u32"),

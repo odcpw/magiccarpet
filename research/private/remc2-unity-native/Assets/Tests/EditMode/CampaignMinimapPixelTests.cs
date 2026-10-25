@@ -186,6 +186,52 @@ namespace MagicCarpet.Native.Tests
         }
 
         [Test]
+        public void RealCave12ResetMaterialsReachNativeAndUnityConsumers()
+        {
+            var generated = Path.GetFullPath(Path.Combine(Application.dataPath, "../../generated"));
+            var package = Path.Combine(generated, "mc-bhq6-ordinary-20261025-zclu5fjj/level12");
+            var cachePath = Path.Combine(generated, "mc-oi62-environment-level12-v1");
+            var cache = OwnerAssetCache.OpenAndValidateEnvironment(cachePath, package);
+            Assert.That(cache.EnvironmentMaterials.profile.palette, Is.EqualTo("PALC-0"));
+            Assert.That(cache.EnvironmentMaterials.sky, Is.Null);
+            using (var session = NativeCampaignSession.Open(package,
+                NativeSim.CampaignSelection.Create(12, 11, 2), cachePath))
+            using (var surface = new CampaignPresentationSurface())
+            {
+                Assert.That(session.Tick, Is.Zero);
+                var players = session.Players();
+                var player = Array.Find(players, row => row.slot == 0 && row.isAi == 0 && row.active == 1);
+                Assert.That(player.active, Is.EqualTo(1));
+                var entities = session.Entities();
+                var camera = Array.Find(entities, row => row.entityIndex == player.entityIndex);
+                Assert.That(camera.active, Is.EqualTo(1));
+                Assert.That(camera.x, Is.EqualTo(29056));
+                Assert.That(camera.y, Is.EqualTo(14208));
+                Assert.That(camera.z, Is.EqualTo(1168));
+                surface.PresentEnvironment(session, cache, camera.yaw);
+                Assert.That(surface.WorldReady && surface.LiveMinimapReady, Is.True);
+                Assert.That(surface.CacheContentHash, Is.EqualTo(cache.ContentHash));
+                Assert.That(surface.Generation, Is.EqualTo(session.Generation));
+                Assert.That(surface.Tick, Is.Zero);
+                Assert.That(surface.FrameHash, Is.Not.Zero);
+                Assert.That(session.CampaignFrameInfo.flags & NativeSim.TerrainFrameSkySeeded, Is.Zero);
+                Assert.That(session.CampaignFrameInfo.flags & NativeSim.TerrainFrameNonTerrainOmitted, Is.Not.Zero);
+                var first = surface.FrameHash;
+                surface.PresentEnvironment(session, cache, camera.yaw);
+                Assert.That(surface.FrameHash, Is.EqualTo(first));
+                Assert.That(session.Tick, Is.Zero, "material presentation does not dispatch the unsupported first gameplay turn");
+                var wrong = OwnerAssetCache.OpenAndValidateEnvironment(
+                    Path.Combine(generated, "mc-oi62-environment-level2-v2"),
+                    Path.Combine(generated, "level2-day-block32-campaign-v2"));
+                Assert.Throws<InvalidOperationException>(() => surface.PresentEnvironment(session, wrong));
+                Assert.That(surface.FrameHash, Is.EqualTo(first));
+                Assert.That(surface.WorldReady, Is.True);
+                Assert.That(session.WorldInfo().profile, Is.EqualTo(1),
+                    "MC_PROFILE_CAVE must describe the actual Cave reset, after the real frame/surface checks");
+            }
+        }
+
+        [Test]
         public void DaySpriteProjectionUsesSourcePitchOffsetAndPixelSpaceRoll()
         {
             // Source projected point: x=164*256/1024=41;
