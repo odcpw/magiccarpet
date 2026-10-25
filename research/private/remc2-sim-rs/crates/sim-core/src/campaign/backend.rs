@@ -150,8 +150,8 @@ pub fn load_mc2_campaign(
         .map(|(definition, ..)| definition)
 }
 
-/// Load a campaign definition with exact owner-cache audio artifacts retained
-/// for semantic authoring. The cache remains an explicit private input.
+/// Load a campaign definition with a package-bound material cache or exact
+/// owner-cache audio artifacts. Only retained audio enables semantic authoring.
 pub fn load_mc2_campaign_with_owner_cache(
     package_root: impl AsRef<Path>,
     owner_cache: impl AsRef<Path>,
@@ -222,7 +222,13 @@ fn load_mc2_campaign_internal(
         package_dependencies.push(asset.artifact_id.clone());
         artifact_payloads.insert(asset.artifact_id.clone(), payload);
     }
-    if selection == CampaignSelection::LEVEL1
+    let environment_cache = owner_cache
+        .map(|root| validate_campaign_environment_cache(root, &descriptor, &export_sha256))
+        .transpose()?
+        .unwrap_or(false);
+    let mut has_owner_audio = false;
+    if !environment_cache
+        && selection == CampaignSelection::LEVEL1
         && let Some(owner_cache) = owner_cache
     {
         crate::native_world::qualified_campaign_owner_cache(
@@ -261,6 +267,7 @@ fn load_mc2_campaign_internal(
         let base_audio = audio_artifacts
             .first()
             .expect("qualified Fireball audio set is non-empty");
+        has_owner_audio = true;
         bindings.push((
             SemanticId::parse(sim_definition::FIREBALL_LAUNCH_SOUND_ASSET_SLOT_ID)?,
             sim_definition::SemanticValue::Reference(format!("sha256:{}", base_audio.content_hash)),
@@ -429,7 +436,7 @@ fn load_mc2_campaign_internal(
     if !descriptor.presentation_assets().is_empty() {
         requirement_ids.push("engine.presentation.indexed_asset");
     }
-    if selection == CampaignSelection::LEVEL1 && owner_cache.is_some() {
+    if has_owner_audio {
         requirement_ids.push("engine.audio.semantic_asset");
     }
     let requirements = requirement_ids
@@ -462,6 +469,44 @@ fn load_mc2_campaign_internal(
         descriptor.package_sha256,
         descriptor.campaign_spec.reset_sources.runtime.sha256,
     ))
+}
+
+fn validate_campaign_environment_cache(
+    root: &Path,
+    descriptor: &CampaignDescriptor,
+    export_sha256: &str,
+) -> crate::game_definition::Result<bool> {
+    use crate::presentation::environment_materials::{CACHE_SCHEMA, EnvironmentResources};
+    let invalid = |message: String| {
+        definition_error(
+            DefinitionErrorCode::HashMismatch,
+            "mc2_campaign.owner_cache.bindings",
+            message,
+        )
+    };
+    let manifest: serde_json::Value = serde_json::from_slice(
+        &fs::read(root.join("manifest.json")).map_err(|error| invalid(error.to_string()))?,
+    )
+    .map_err(|error| invalid(error.to_string()))?;
+    if manifest.get("schema").and_then(serde_json::Value::as_str) != Some(CACHE_SCHEMA) {
+        return Ok(false);
+    }
+    let resources = EnvironmentResources::load(root).map_err(|error| invalid(error.to_string()))?;
+    let profile = resources
+        .profile
+        .ok_or_else(|| invalid("environment profile missing".to_owned()))?;
+    let selection = descriptor.identity;
+    if profile.external_level != selection.external_level
+        || profile.internal_level != selection.internal_level
+        || profile.map_type.id != selection.map_type_id
+        || profile.campaign_package_sha256 != descriptor.package_sha256
+        || profile.owner_export_package_sha256 != export_sha256
+    {
+        return Err(invalid(
+            "environment cache does not match the opened campaign package".to_owned(),
+        ));
+    }
+    Ok(true)
 }
 
 fn mc2_runtime_flow(
@@ -2543,6 +2588,58 @@ pub(crate) mod tests {
     fn level_one_owner_cache_path() -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../../../generated/level1-unity-asset-cache-plan29-final")
+    }
+
+    #[test]
+    fn generic_night_materials_open_semantic_session_without_claiming_audio() {
+        let generated = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../generated");
+        let root = generated.join("mc-bhq8-level1-collision-v5-night");
+        let cache = generated.join("mc-oi62-environment-level1-v2");
+        let catalog = default_catalog().unwrap();
+        let definition = load_mc2_campaign_with_owner_cache(&root, &cache, &catalog).unwrap();
+        assert!(
+            !definition
+                .required_capabilities()
+                .iter()
+                .any(|requirement| { requirement.id.as_str() == "engine.audio.semantic_asset" })
+        );
+        let mut session = GameSession::open(
+            &Mc2CampaignAdapter,
+            Arc::new(definition),
+            11,
+            Mc2CampaignInputs::with_owner_cache(&root, &cache),
+        )
+        .unwrap();
+        let initial = session.snapshot();
+        let next = session
+            .step(guard(&session), GameCommand::default())
+            .unwrap();
+        assert_eq!(next.identity.tick, initial.identity.tick + 1);
+
+        let error = load_mc2_campaign_with_owner_cache(
+            &root,
+            generated.join("mc-oi62-environment-level25-v2"),
+            &catalog,
+        )
+        .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("environment cache does not match")
+        );
+
+        let legacy = load_mc2_campaign_with_owner_cache(
+            &root,
+            generated.join("mc2-level1-night-cache-v2"),
+            &catalog,
+        )
+        .unwrap();
+        assert!(
+            legacy
+                .required_capabilities()
+                .iter()
+                .any(|requirement| { requirement.id.as_str() == "engine.audio.semantic_asset" })
+        );
     }
 
     fn temporary_workspace_path(label: &str) -> PathBuf {
@@ -8088,8 +8185,8 @@ pub(crate) mod tests {
         pub(super) authored_index: u16,
         pub(super) source_slot: u16,
         pub(super) generation: u32,
-        pub(super) life_before: i16,
-        pub(super) life_after: i16,
+        pub(super) life_before: i32,
+        pub(super) life_after: i32,
     }
 
     fn real_level_two_new_event_replaceable_slots_for_test(
@@ -10837,7 +10934,7 @@ pub(crate) mod tests {
     struct LevelTwoBeeOccurrenceForTest {
         born: crate::native_world::BeeCreatureRuntime,
         generation: u32,
-        life: i16,
+        life: i32,
         player_hits: usize,
         lethal: bool,
         mana_sequence: Option<u64>,
