@@ -2241,6 +2241,25 @@ impl Level2ResetSession {
             }
         }
         for holder in &holders {
+            // Imported callbacks refresh from the numeric arena. Publish the
+            // activation there before that refresh can restore the old timer.
+            if let Some(authoritative) = self
+                .session
+                .state
+                .live
+                .economy
+                .entities
+                .get_mut(usize::from(holder.entity_index))
+                .filter(|row| row.active && row.class == 15 && row.model == holder.model)
+            {
+                authoritative.active_value = holder.active_value;
+                authoritative.activation_value = holder.activation_value;
+                authoritative.action_marker = holder.action_marker;
+                authoritative.record[50..52].copy_from_slice(&holder.active_value.to_le_bytes());
+                authoritative.record[52..54]
+                    .copy_from_slice(&holder.activation_value.to_le_bytes());
+                authoritative.record[64] = holder.action_marker.cast_unsigned();
+            }
             for authoritative in self
                 .session
                 .state
@@ -4074,8 +4093,21 @@ impl Level2ResetSession {
                     }
                 }
             }
+            let first_new_holder = live.shared_spells.dynamic_pickups.len();
             live.shared_spells
                 .materialize_carried_spell_families(&mut live.economy.economy, &missing)?;
+            for holder in &live.shared_spells.dynamic_pickups[first_new_holder..] {
+                live.economy.entities[usize::from(holder.index)].clone_from(holder);
+                crate::world::effects::sync_position(
+                    &mut live.economy,
+                    &mut live.terrain,
+                    holder.index,
+                    holder.position,
+                    holder.active,
+                    holder.drawing_disabled(),
+                )
+                .map_err(NativeWorldError::new)?;
+            }
         }
 
         let shared_players = self.session.state.live.shared_spells.players().to_vec();
@@ -4506,6 +4538,22 @@ impl Level2ResetSession {
         let definition =
             CampaignDefinition::new(profile, package_sha256, collision_masks, presentation);
         let mut economy = SourceArena::new(entities, economy);
+        let mut terrain = terrain;
+        // Direct-start constructors allocate these holders before the live
+        // arena is assembled. Publish their complete records and cell heads
+        // before exposing the session or sealing its reset baseline.
+        for holder in &shared_spells.dynamic_pickups {
+            economy.entities[usize::from(holder.index)].clone_from(holder);
+            crate::world::effects::sync_position(
+                &mut economy,
+                &mut terrain,
+                holder.index,
+                holder.position,
+                holder.active,
+                holder.drawing_disabled(),
+            )
+            .expect("source-allocated starting holder retains a valid map slot");
+        }
         economy.effects = crate::native_world::effects::reset_state(&runtime);
         let source_model45_building_selectors = economy.rebuilt_model45_building_selectors();
         let live = Level2LiveState {
@@ -11959,7 +12007,7 @@ impl Level2ResetSession {
                     && row.class == 15
                     && matches!(
                         row.model,
-                        5 | 8 | 10 | 25 | SHIELD_FAMILY | INVISIBLE_FAMILY | BEYOND_SIGHT_FAMILY
+                        3 | 5 | 8 | 10 | 25 | SHIELD_FAMILY | INVISIBLE_FAMILY | BEYOND_SIGHT_FAMILY
                     )
                     && (physical_spell_action(row.model, PhysicalSpellActionRole::Active)
                         == Some(row.action)
@@ -13836,13 +13884,29 @@ impl Level2ResetSession {
                         effects.palette_submode = palette.mode;
                     }
                 }
-                for contact in outcome.contacts {
-                    live.economy.entities[usize::from(contact.target)]
-                        .apply_wind_model45_mailbox(contact.owner, contact.payload);
-                }
                 for (entity_index, sound_id) in outcome.sounds {
                     live.economy
                         .prepare_sound(entity_index, entity_index, -1, sound_id);
+                }
+                for contact in outcome.contacts {
+                    if contact.target == player_entity_index {
+                        self.queue_level2_player_contact_damage(
+                            i32::from(contact.payload),
+                            contact.owner,
+                        );
+                    } else {
+                        let live = &mut self.session.state.live;
+                        area_damage::contact(
+                            &mut live.economy,
+                            Some(area_damage::ActorDomains::new(
+                                &mut live.goats,
+                                &mut live.ordinary,
+                            )),
+                            contact.target,
+                            contact.payload,
+                            contact.owner,
+                        )?;
+                    }
                 }
                 self.append_new_economy_events(pass, source_slot);
             }
@@ -14262,6 +14326,33 @@ impl Level2ResetSession {
             (ExistingHandler::SpellHolderAndPickup, Level2SourceRoute::ImportedSpellSource) => {
                 self.refresh_imported_spell_source_projection(source_slot)
                     .map_err(|error| error.to_string())?;
+                if self
+                    .session
+                    .state
+                    .live
+                    .shared_spells
+                    .pickup(source_slot)
+                    .is_some_and(|holder| holder.model == 3 && holder.action == 9)
+                {
+                    if !self.step_speed_holder_source_slot(source_slot) {
+                        return Err(format!(
+                            "imported Speed holder {source_slot} lost its carrier"
+                        ));
+                    }
+                    if let Some(holder) = self
+                        .session
+                        .state
+                        .live
+                        .shared_spells
+                        .pickup_mut(source_slot)
+                    {
+                        holder.phase = holder.phase.wrapping_add(1);
+                        holder.record[66] = holder.phase;
+                    }
+                    self.commit_imported_spell_source_projection(source_slot)
+                        .map_err(|error| error.to_string())?;
+                    return Ok(());
+                }
                 if self
                     .session
                     .state
@@ -19667,6 +19758,10 @@ impl Level2ResetSession {
                     models,
                     players,
                     local,
+                    Some(area_damage::ActorDomains::new(
+                        &mut live.goats,
+                        &mut live.ordinary,
+                    )),
                 );
                 let effects = match result {
                     Ok(effects) => effects,
@@ -21860,6 +21955,35 @@ impl Level2ResetSession {
         let core = self.campaign_state_mut().core_mut();
         let latched_command =
             crate::latch_command_with_context(&mut core.state, command, &mut core.context);
+        if command.opcode == 0x27 && command.argument_1 != 0 {
+            // Full stop mutates Speed during PlayerEvents, before any holder
+            // visit. Preserve that mutation when source projections refresh.
+            let live = &mut self.session.state.live;
+            if let Some((slot, active_value)) = live
+                .core
+                .context
+                .speed_spell_holder
+                .as_ref()
+                .map(|holder| (holder.entity_index, holder.active_value))
+            {
+                if let Some(holder) = live.shared_spells.pickup_mut(slot) {
+                    holder.active_value = active_value;
+                    holder.record[50..52].copy_from_slice(&active_value.to_le_bytes());
+                }
+                if live.shared_spells.speed.entity_index == slot {
+                    live.shared_spells.speed.active_value = active_value;
+                }
+                if let Some(holder) = live
+                    .economy
+                    .entities
+                    .get_mut(usize::from(slot))
+                    .filter(|row| row.active && row.class == 15 && row.model == 3)
+                {
+                    holder.active_value = active_value;
+                    holder.record[50..52].copy_from_slice(&active_value.to_le_bytes());
+                }
+            }
+        }
         let context_events =
             self.session.state.live.core.context.events[context_event_start..].to_vec();
         self.append_context_effects(context_events);

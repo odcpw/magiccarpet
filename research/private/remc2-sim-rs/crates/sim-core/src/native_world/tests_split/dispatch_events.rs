@@ -1,4 +1,84 @@
 #[test]
+fn carried_speed_holder_runs_its_imported_callback_after_public_cast() {
+    use crate::{
+        campaign::backend::{Mc2CampaignAdapter, Mc2CampaignInputs, load_mc2_campaign},
+        game_definition::{SemanticId, default_catalog},
+        game_session::{GameCommand, GameSession, SessionGuard},
+        level_definition::SpellKind,
+    };
+    let root = level_two_campaign_fixture_path();
+    let definition = load_mc2_campaign(&root, &default_catalog().unwrap()).unwrap();
+    let mut game = GameSession::open(&Mc2CampaignAdapter, std::sync::Arc::new(definition),
+        37, Mc2CampaignInputs::new(root)).unwrap();
+    // Exercise the existing cross-mission carry producer with the unchanged
+    // Level 2 package and its real mana/holder defaults.
+    game.backend_mut().install_semantic_spell_carry_for_test(
+        vec![SpellKind::Speed], Some(SpellKind::Speed),
+    ).unwrap();
+    let constructed = game.backend().compatibility_campaign().level2_compatibility();
+    let slot = constructed.shared_spells().local_player().enabled_spell_holders[3];
+    let row = &constructed.economy.entities[usize::from(slot)];
+    assert!(row.active, "carry publishes its holder before the first callback");
+    assert_eq!((row.class, row.model, row.action), (15, 3, 9));
+    assert!(constructed.economy.map_chains.is_linked(slot));
+    let id = game.identity();
+    game.step(SessionGuard { session_id: id.session_id, generation: id.generation, expected_tick: id.tick },
+        GameCommand { select_spell: Some(SemanticId::parse("spell.speed").unwrap()),
+            cast_selected: true, ..GameCommand::default() }).unwrap();
+    let session = game.backend().compatibility_campaign().level2_compatibility();
+    let holder_slot = session.shared_spells().local_player().enabled_spell_holders[3];
+    if holder_slot < session.session.state.live.core.state.entity_index {
+        // A lower numeric holder has already visited before PlayerEvents
+        // activates it. Its first active callback belongs to the next pass.
+        assert!(session.shared_spells().pickup(holder_slot).unwrap().active_value > 0);
+        let id = game.identity();
+        game.step(SessionGuard { session_id: id.session_id, generation: id.generation, expected_tick: id.tick },
+            GameCommand::default()).unwrap();
+    }
+    let session = game.backend().compatibility_campaign().level2_compatibility();
+    let state = session.session.state.live.core.state;
+    let holder_slot = session.shared_spells().local_player().enabled_spell_holders[3];
+    let holder = session.shared_spells().pickup(holder_slot).unwrap();
+    assert_eq!(state.target_speed, 240,
+        "imported Speed pulse: slot={holder_slot}, action={}, phase={}, active={}, duration={}, mana_cost={}, parent={}, mana={}, raw_active={}, raw_action={}",
+        holder.action, holder.phase, holder.active_value, holder.activation_value, holder.max_mana,
+        u16::from_le_bytes([holder.record[44], holder.record[45]]),
+        session.shared_spells().player_entity().mana,
+        session.economy.entities[usize::from(holder_slot)].active,
+        session.economy.entities[usize::from(holder_slot)].action);
+    assert_eq!(state.actual_speed, 240);
+    // GetScroll_69DB0 -> sub_68DE0 queues the cost in manaRegen after
+    // this player's visit. Its following upkeep applies the debit.
+    let player = session.shared_spells().player_entity();
+    let before_upkeep = player.mana;
+    let cost = holder.max_mana;
+    assert_eq!(cost, 1_000, "the source tier-zero Speed cost is nonzero");
+    assert_eq!(player.mana_regen, -cost);
+    assert_eq!(session.economy.entities[usize::from(player.index)].mana_regen, -cost);
+    assert!(holder.active_value > 0);
+    assert_eq!(session.economy.entities[usize::from(holder_slot)].phase, holder.phase);
+    let id = game.identity();
+    game.step(SessionGuard { session_id: id.session_id, generation: id.generation, expected_tick: id.tick },
+        GameCommand { recenter: true, ..GameCommand::default() }).unwrap();
+    assert_eq!(game.backend().compatibility_campaign().level2_compatibility()
+        .shared_spells().player_entity().mana, before_upkeep - cost,
+        "the following real player upkeep consumes the queued Speed cost");
+    assert!(game.backend().compatibility_campaign().level2_compatibility()
+        .shared_spells().pickup(holder_slot).unwrap().active_value > 0,
+        "ordinary recenter preserves the active Speed holder");
+    for full_stop in [true, false, false] {
+        let id = game.identity();
+        game.step(SessionGuard { session_id: id.session_id, generation: id.generation, expected_tick: id.tick },
+            GameCommand { full_stop, ..GameCommand::default() }).unwrap();
+        let session = game.backend().compatibility_campaign().level2_compatibility();
+        let state = session.session.state.live.core.state;
+        assert_eq!((state.target_speed, state.actual_speed), (0, 0));
+        assert_eq!(session.shared_spells().pickup(holder_slot).unwrap().active_value, 0);
+        assert_eq!(session.economy.entities[usize::from(holder_slot)].active_value, 0);
+    }
+}
+
+#[test]
 fn level_two_wind_latch_is_consumed_by_the_actual_player_visit() {
     let mut session = level_two_campaign_session();
     let slot = session.session.state.live.core.state.entity_index;
@@ -1425,6 +1505,7 @@ fn level_two_authored_bee_actions20_to23_preserve_death_and_no_call_semantics() 
         .expect("third objective-linked Bee");
     let (expected_rng, expected_roll) = {
         let mut economy_view = session.economy_mut();
+        let peers = economy_view.bee_creatures.clone();
         let bee = economy_view
             .bee_creatures
             .iter_mut()
@@ -1433,12 +1514,30 @@ fn level_two_authored_bee_actions20_to23_preserve_death_and_no_call_semantics() 
         bee.action = 23;
         bee.stage_var2 = 1;
         bee.source_byte_3e = 0;
+        // Isolate source1DDA0's point-follow and1F8A0's wrapper from terrain
+        // motion using the real one-shot source movement-skip flag.
+        bee.control_flags = (bee.control_flags & !0x40000) | 0x800;
+        let point = bee.stage_target.expect("authored row231 retains its real point route");
         let first = level2_next_rng16(bee.entity_rng);
-        let direction = 2 * (u32::from(first % 0x9d) / 79);
         let second = level2_next_rng16(first);
-        let delta = i32::from(second % 0x55)
-            * (i32::try_from(direction).expect("Bee roll direction fits") - 1);
-        (second, ((i32::from(bee.roll) + delta) as i16) & 0x07ff)
+        let base_direction = 2 * (i32::from(first % 157) / 79) - 1;
+        let mut roll = (heading_for_positions(bee.position, point)
+            + (i32::from(second & 255) + 85) * base_direction) & 2047;
+        // The source peer loop follows the base jitter but consumes no RNG.
+        if let Some(peer) = peers.iter().find(|peer| {
+            peer.active && peer.life >= 0 && peer.entity_id != bee.entity_id
+                && (i32::from(bee.position.x as i16) - i32::from(peer.position.x as i16)).abs()
+                    < i32::from(bee.shift_rot_x)
+                && (i32::from(bee.position.y as i16) - i32::from(peer.position.y as i16)).abs()
+                    < i32::from(bee.shift_rot_x)
+        }) {
+            roll = heading_for_positions(peer.position, bee.position);
+        }
+        let third = level2_next_rng16(second);
+        let fourth = level2_next_rng16(third);
+        let tail_direction = 2 * (i32::from(third % 157) / 79) - 1;
+        let tail_delta = i32::from(fourth % 85) * tail_direction;
+        (fourth, ((roll + tail_delta) as i16) & 2047)
     };
     assert!(
         session
