@@ -3365,7 +3365,8 @@ namespace MagicCarpet.Native
                         }
                         return;
                     }
-                    if (runtimeIdentity.mode == GameRuntimeTransport.LoadingMode)
+                    if (runtimeIdentity.mode == GameRuntimeTransport.LoadingMode ||
+                        runtimeIdentity.mode == GameRuntimeTransport.CampaignMode)
                     {
                         FreezeGameRuntimeInput();
                         return;
@@ -10428,6 +10429,16 @@ namespace MagicCarpet.Native
                 {
                     File.Move(temporaryPath, fullPath);
                 }
+                var observed = session.GameRuntimeCampaignSnapshot();
+                var pose = observed.value.player_pose;
+                var motion = observed.value.player_motion;
+                var vitals = observed.value.player_vitals;
+                var objective = observed.value.objective_progress;
+                Debug.Log($"MC_GAME_RUNTIME_SAVE_STATE path={fullPath} tick={observed.identity.tick} " +
+                    $"position={pose.x},{pose.y},{pose.z} yaw={pose.yaw} pitch={pose.effective_pitch} " +
+                    $"speed={motion.actual_speed}/{motion.target_speed} life={vitals.life}/{vitals.max_life} " +
+                    $"mana={vitals.mana}/{vitals.max_mana} objectives={objective.completed_count}/{objective.total_count} " +
+                    $"objective={objective.current_objective}");
             }
             finally
             {
