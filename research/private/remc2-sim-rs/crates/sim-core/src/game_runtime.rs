@@ -746,8 +746,7 @@ impl<B: GameSessionBackend> GameRuntime<B> {
         })?;
         let mut seen = std::collections::BTreeSet::new();
         if completed_levels.iter().any(|level| {
-            !flow.entries().iter().any(|entry| entry.level_id() == level)
-                || !seen.insert(level)
+            !flow.entries().iter().any(|entry| entry.level_id() == level) || !seen.insert(level)
         }) {
             return Err(RestorePlayingError::Transition(
                 RuntimeTransitionError::InvalidReplay {
@@ -1356,7 +1355,7 @@ mod tests {
         std::env::var_os("MC_CAMPAIGN_LEVEL1_PACKAGE").map_or_else(
             || {
                 PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                    .join("../../../generated/mc-cf15-level1-package-v3-current")
+                    .join("../../../generated/mc-bhq8-level1-collision-v5-night")
             },
             PathBuf::from,
         )
@@ -1603,7 +1602,7 @@ mod tests {
         std::env::var_os("MC_CAMPAIGN_PACKAGE").map_or_else(
             || {
                 PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                    .join("../../../generated/mc-cf02-campaign-package-v2-b/qualified-level2")
+                    .join("../../../generated/level2-day-block32-campaign-v2")
             },
             PathBuf::from,
         )
@@ -1613,7 +1612,7 @@ mod tests {
         std::env::var_os("MC_CAMPAIGN_PACKAGE_LEVEL3_V1").map_or_else(
             || {
                 PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                    .join("../../../generated/mc-cf14-campaign-package-v1-a/qualified-level3")
+                    .join("../../../generated/level3-day-block32-campaign-recipe-v2")
             },
             PathBuf::from,
         )
