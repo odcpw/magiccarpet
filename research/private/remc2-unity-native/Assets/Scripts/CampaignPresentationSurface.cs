@@ -10,7 +10,7 @@ namespace MagicCarpet.Native
     internal sealed class CampaignIndexedSceneCapture : MonoBehaviour
     {
         internal Action Captured;
-        private void OnPostRender() => Captured?.Invoke();
+        private void OnPreRender() => Captured?.Invoke();
     }
 
     internal sealed class Level3EntitySurfaceMarker : MonoBehaviour
@@ -211,7 +211,11 @@ namespace MagicCarpet.Native
                 composedCamera.enabled = !Application.isBatchMode;
                 frameCamera.targetTexture = sceneTarget;
                 entityCamera.targetTexture = sceneTarget;
-                entityCamera.gameObject.AddComponent<CampaignIndexedSceneCapture>().Captured = CompleteComposedScene;
+                // Finalize at the following camera's render boundary: both
+                // the terrain and sprite cameras have finished this target.
+                // Capturing inside the sprite callback can consume the
+                // native revision before its pixels reach the shared target.
+                composedCamera.gameObject.AddComponent<CampaignIndexedSceneCapture>().Captured = CompleteComposedScene;
             }
             if (session.SceneUseExitTables && exitBlendTable == null)
                 throw new InvalidOperationException("native GTD2 selection has no retained exit table");
