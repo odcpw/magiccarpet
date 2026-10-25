@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Text;
 using UnityEngine;
 
 namespace MagicCarpet.Native
@@ -12,6 +13,8 @@ namespace MagicCarpet.Native
         internal enum Action { None, NewGame, Resume, Save, Load, Restart, Continue, Title, Quit, DismissResults, SelectMission, StartMission }
         internal string SelectedMission { get; private set; }
         private readonly Texture2D background;
+        private readonly OwnerAssetCache ownerCache;
+        private byte[] fallbackLanguage;
         private readonly string campaignCachePath;
         private OwnerCampaignMenuCache campaignCache;
         private GUIStyle heading;
@@ -21,7 +24,7 @@ namespace MagicCarpet.Native
         private FrontendMediaPresenter media;
         private MainAnimation[] mainAnimations;
         private readonly Dictionary<string, PortalState> portalStates = new(StringComparer.Ordinal);
-        private string lastMode, lastCampaignPhase, portalTarget;
+        private string lastMode, lastCampaignPhase, portalTarget, statisticsLevel;
         private int lastAnimationFrame = -1;
         private bool briefingVisible;
         private float briefingElapsed;
@@ -88,6 +91,7 @@ namespace MagicCarpet.Native
 
         internal CampaignMenuPresenter(OwnerAssetCache cache, string campaignCachePath = null)
         {
+            ownerCache = cache;
             this.campaignCachePath = campaignCachePath;
             var indices = cache.ReadOutput(CampaignTransitionPresenter.IndicesPath);
             var palette = cache.ReadOutput(CampaignTransitionPresenter.PalettePath);
@@ -116,7 +120,7 @@ namespace MagicCarpet.Native
             {
                 Action.NewGame => mode == GameRuntimeTransport.TitleMode,
                 Action.Resume => mode == GameRuntimeTransport.PausedMode,
-                Action.Save => mode == GameRuntimeTransport.PausedMode && canSave,
+                Action.Save => (mode == GameRuntimeTransport.PausedMode || mode == GameRuntimeTransport.CampaignMode) && canSave,
                 Action.Load => mode == GameRuntimeTransport.TitleMode && canLoad,
                 Action.Restart => mode == GameRuntimeTransport.PausedMode,
                 Action.Title => mode == GameRuntimeTransport.PausedMode || mode == GameRuntimeTransport.CampaignMode,
@@ -138,6 +142,7 @@ namespace MagicCarpet.Native
             if (mode != lastMode || mode == GameRuntimeTransport.CampaignMode && identity.campaign_menu.phase != lastCampaignPhase)
             {
                 if (mode == GameRuntimeTransport.CampaignMode) portalStates.Clear();
+                statisticsLevel = null;
                 lastMode = mode;
                 lastCampaignPhase = identity.campaign_menu?.phase;
             }
@@ -167,19 +172,31 @@ namespace MagicCarpet.Native
                     UpdatePortals(identity.campaign_menu, now, repaint);
                     campaignCache.DrawMap(identity.campaign_menu, PortalSelector);
                     if (repaint) lastAnimationFrame = Time.frameCount;
-                    if (identity.campaign_menu.phase != "results" && Event.current.type == EventType.MouseDown && Event.current.button == 0)
+                    if (statisticsLevel != null && Event.current.type == EventType.MouseDown)
+                    {
+                        statisticsLevel = null;
+                        Event.current.Use();
+                        return Action.None;
+                    }
+                    if (identity.campaign_menu.phase != "results" && Event.current.type == EventType.MouseDown)
                     {
                         var target = campaignCache.HitTestPortal(identity.campaign_menu, Event.current.mousePosition);
-                        if (target != null)
+                        if (target != null && Event.current.button == 0)
                         {
                             portalTarget = target;
                             SelectedMission = target;
                             Event.current.Use();
                             return Action.StartMission;
                         }
+                        if (target != null && Event.current.button == 1 &&
+                            Array.IndexOf(identity.campaign_menu.completed_levels, target) >= 0)
+                        {
+                            statisticsLevel = target;
+                            Event.current.Use();
+                        }
                     }
                     if (identity.campaign_menu.phase != "results")
-                        return DrawMapCommands(identity.campaign_menu, status);
+                        return DrawMapCommands(identity.campaign_menu, status, canSave);
                 }
                 else GUI.DrawTexture(new Rect(0, 0, Screen.width, Screen.height), background, ScaleMode.ScaleToFit);
                 var width = Mathf.Min(360, Screen.width - 32);
@@ -196,6 +213,8 @@ namespace MagicCarpet.Native
                     var menu = identity.campaign_menu;
                     GUI.Label(new Rect(x, y, width, 70), "Mission completed\n" + campaignCache.ForMission(menu.completed_level_id).name, message);
                     y += 80;
+                    GUI.Label(new Rect(x, y, width, 145), StatisticsText(menu, menu.completed_level_id), message);
+                    y += 150;
                     if (GUI.Button(new Rect(x, y, width, 42), "Return to campaign map", button)) return Action.DismissResults;
                     y += 50;
                     if (GUI.Button(new Rect(x, y, width, 42), "Main menu", button)) return Action.Title;
@@ -345,17 +364,60 @@ namespace MagicCarpet.Native
             return completed ? 37 : 70;
         }
 
-        private Action DrawMapCommands(GameRuntimeTransport.CampaignMenuSnapshot menu, string status)
+        internal string StatisticsText(GameRuntimeTransport.CampaignMenuSnapshot menu, string level)
+        {
+            var stats = menu.completed_level_id == level ? menu.completion_statistics : null;
+            if (stats == null && menu.level_statistics != null)
+                stats = Array.Find(menu.level_statistics, row => row.level_id == level)?.statistics;
+            if (stats == null) return "Statistics are not available for this mission.";
+            var seconds = stats.time_taken_seconds;
+            return SourceText(386) + ": " + stats.spells_found_percent + "%\n" +
+                SourceText(385) + ": " + stats.hit_accuracy_percent + "%\n" +
+                SourceText(384) + ": " + stats.creatures_killed_percent + "%\n" +
+                SourceText(377) + ": " + stats.mana_collected_percent + "%\n" +
+                SourceText(394) + $": {seconds / 3600:D2}:{seconds % 3600 / 60:D2}:{seconds % 60:D2}";
+        }
+
+        private string SourceText(int selector)
+        {
+            if (campaignCache == null && campaignCachePath != null)
+                campaignCache = new OwnerCampaignMenuCache(campaignCachePath);
+            if (campaignCache?.HasLanguage == true) return campaignCache.LanguageText(selector);
+            // Legacy v1 menus use the existing hash-qualified default records,
+            // while v2 consumers use their retained language binding above.
+            fallbackLanguage ??= ownerCache.ReadOutput("font/language-l1.records-nul.bin");
+            var cursor = 0;
+            for (var index = 0; index <= selector; index++)
+            {
+                var end = Array.IndexOf(fallbackLanguage, (byte)0, cursor);
+                if (end < 0) throw new InvalidOperationException("source statistics label is missing");
+                if (index == selector) return Encoding.GetEncoding(28591).GetString(fallbackLanguage, cursor, end - cursor);
+                cursor = end + 1;
+            }
+            throw new ArgumentOutOfRangeException(nameof(selector));
+        }
+
+        private Action DrawMapCommands(GameRuntimeTransport.CampaignMenuSnapshot menu, string status, bool canSave)
         {
             var view = campaignCache.SourceView(menu);
             var scale = view.width / 640f;
             Rect At(float x, float y, float width, float height) =>
                 new(view.x + x * scale, view.y + y * scale, width * scale, height * scale);
-            if (GUI.Button(At(8, 438, 130, 34), "Main menu", button)) return Action.Title;
-            if (preferences != null && GUI.Button(At(148, 438, 170, 34), "Player preferences", button)) preferences.Open();
+            if (GUI.Button(At(8, 438, 100, 34), "Main menu", button)) return Action.Title;
+            if (preferences != null && GUI.Button(At(118, 438, 150, 34), "Preferences", button)) preferences.Open();
+            GUI.enabled = canSave;
+            if (GUI.Button(At(278, 438, 100, 34), "Save game", button)) return Action.Save;
+            GUI.enabled = true;
             if (!string.IsNullOrEmpty(menu.selected_level_id) &&
-                GUI.Button(At(328, 438, 300, 34), "Enter " + campaignCache.ForMission(menu.selected_level_id).name, button))
+                GUI.Button(At(388, 438, 240, 34), "Enter " + campaignCache.ForMission(menu.selected_level_id).name, button))
                 return Action.StartMission;
+            if (statisticsLevel != null)
+            {
+                GUI.Box(At(120, 70, 400, 250), campaignCache.ForMission(statisticsLevel).name);
+                GUI.Label(At(135, 110, 370, 175), StatisticsText(menu, statisticsLevel), message);
+                GUI.Label(At(135, 282, 370, 26), "Click to return to the map", message);
+                return Action.None;
+            }
             if (briefingVisible && !string.IsNullOrEmpty(menu.briefing_level_id))
             {
                 var mission = campaignCache.ForMission(menu.briefing_level_id);
