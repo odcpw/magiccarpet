@@ -128,6 +128,9 @@ impl State {
             row.pitch = source.pitch;
             row.record[34..36].copy_from_slice(&source.pitch.to_le_bytes());
             row.record[36..38].copy_from_slice(&source.roll.to_le_bytes());
+            // AddWind clones the parent's speed50 before stamping model75.
+            // Linked rows have no independent speed-changing callback.
+            row.set_actual_speed(50);
             row.set_max_life(i32::from(source.max_life));
             row.set_life(i32::from(source.life));
             row.particle_parameter_index = Some(source.particle_index);

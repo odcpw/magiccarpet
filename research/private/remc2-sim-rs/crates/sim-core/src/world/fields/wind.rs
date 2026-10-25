@@ -270,7 +270,7 @@ impl State {
         let (slot, rng) = arena.allocate()?;
         let rng = rng.wrapping_mul(9_377).wrapping_add(9_439);
         position.z = terrain.ground_height(position);
-        let yaw = (rng as i16).wrapping_sub(1) & 2047;
+        let yaw = (rng & 2047) as i16 - 1;
         let parent = Wind {
             source_entity_index: slot,
             entity_id: slot,

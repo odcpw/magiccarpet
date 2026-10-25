@@ -61,6 +61,122 @@ fn definition(kind: FieldKind) -> FieldDefinition {
     sim_definition::adapter::mc2_field_definition(kind, TilePosition { x: 0, y: 0 })
 }
 
+fn campaign() -> crate::native_world::Level2ResetSession {
+    let package = std::env::var_os("MC_CAMPAIGN_PACKAGE").map_or_else(
+        || {
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../../generated/mc-cf02-campaign-package-v2-b/qualified-level2")
+        },
+        std::path::PathBuf::from,
+    );
+    crate::campaign::CampaignSession::open(
+        package,
+        crate::campaign::spec::CampaignSelection::LEVEL2,
+    )
+    .unwrap()
+    .level2_compatibility()
+    .clone()
+}
+
+fn scheduled_impact(session: &mut crate::native_world::Level2ResetSession, kind: FieldKind) -> u16 {
+    let live = &mut session.session.state.live;
+    let player = live.core.state.entity_index;
+    let slot = status::construct(
+        &mut live.economy,
+        &mut live.terrain,
+        live.core.state.position,
+        definition(kind),
+    )
+    .unwrap()
+    .unwrap();
+    // This is the projectile producer's real target relation, not a callback
+    // invocation or a replacement player carrier.
+    live.economy.entities[usize::from(slot)].record[154..156]
+        .copy_from_slice(&player.to_le_bytes());
+    assert!(slot > player, "pin impact after the local player visit");
+    slot
+}
+
+fn campaign_step(session: &mut crate::native_world::Level2ResetSession) {
+    assert!(
+        !session
+            .step_outer_turn(PlayerCommand::default(), 0)
+            .is_empty()
+    );
+}
+
+#[test]
+fn scheduled_slowing_reaches_player_upkeep_palette_and_reclaim() {
+    let mut session = campaign();
+    let slot = scheduled_impact(&mut session, FieldKind::Slowing);
+    campaign_step(&mut session);
+    assert_eq!(session.session.state.live.core.state.speed_modifier, 1);
+    assert_eq!(
+        session.session.state.live.core.state.speed_modifier_counter,
+        8
+    );
+    assert!(session.session.state.live.economy.entities[usize::from(slot)].drawing_disabled());
+    campaign_step(&mut session);
+    assert!(!session.session.state.live.economy.entities[usize::from(slot)].active);
+    assert_eq!(
+        session.session.state.live.core.state.speed_modifier_counter,
+        7
+    );
+    let original = [96, 128, 160].repeat(256);
+    let mut tinted = original.clone();
+    session.field_palette().apply_rgb8(&mut tinted);
+    assert_ne!(tinted, original, "actual frame palette consumes slowing");
+    for _ in 0..12 {
+        campaign_step(&mut session);
+    }
+    let state = &session.session.state.live.core.state;
+    assert_eq!((state.speed_modifier, state.speed_modifier_counter), (0, 0));
+    let mut recovered = original.clone();
+    session.field_palette().apply_rgb8(&mut recovered);
+    assert_eq!(
+        recovered, original,
+        "frame service finishes the recovery fade"
+    );
+}
+
+#[test]
+fn scheduled_web_damages_actual_player_once_and_refresh_only_recovers() {
+    let mut session = campaign();
+    let life = session.session.state.live.player_life;
+    let first = scheduled_impact(&mut session, FieldKind::Web);
+    campaign_step(&mut session);
+    assert_eq!(session.session.state.live.player_life, life);
+    assert_eq!(session.session.state.live.player_pending_damage, 200);
+    assert_eq!(session.session.state.live.player_pending_attacker, first);
+    assert_eq!(
+        session.session.state.live.core.state.immobilize_subcounter,
+        10
+    );
+    let second = scheduled_impact(&mut session, FieldKind::Web);
+    let rng = session.session.state.live.economy.entities[usize::from(second)].entity_rng;
+    campaign_step(&mut session);
+    assert_eq!(session.session.state.live.player_life, life - 200);
+    assert_eq!(session.session.state.live.player_pending_attacker, 0);
+    assert_eq!(
+        session.session.state.live.core.state.immobilize_subcounter,
+        10
+    );
+    assert_eq!(
+        session.session.state.live.economy.entities[usize::from(second)].entity_rng,
+        rng
+    );
+    for _ in 0..10 {
+        campaign_step(&mut session);
+    }
+    let state = &session.session.state.live.core.state;
+    assert_eq!(
+        (state.immobilize_counter, state.immobilize_subcounter),
+        (0, 0)
+    );
+    assert_eq!(session.session.state.live.player_life, life - 200);
+    assert!(!session.session.state.live.economy.entities[usize::from(second)].active);
+}
+
 #[test]
 fn slowing_impacts_stack_once_then_real_flight_recovers_all_stages() {
     let (body, mut state) = player();
@@ -197,6 +313,24 @@ fn transport_uses_facing_and_destination_and_life_one_hides_before_contact() {
     source.record[92..94].copy_from_slice(&256_i16.to_le_bytes());
     source.record[158..160].copy_from_slice(&30_000_u16.to_le_bytes());
     source.record[160..162].copy_from_slice(&40_000_u16.to_le_bytes());
+    let mut rejected_source = source.clone();
+    let mut rejected_body = body.clone();
+    let mut rejected_player = state.clone();
+    rejected_player.yaw = 170;
+    let rejected = transport::step(
+        &mut rejected_source,
+        &mut rejected_body,
+        &mut rejected_player,
+        &Ground,
+        384,
+        0,
+    );
+    assert!(
+        !rejected.transported,
+        "facing170 is outside the strict gate"
+    );
+    assert_eq!(rejected_player.position, state.position);
+    state.yaw = 169;
     let phase = source.phase;
     let outcome = transport::step(&mut source, &mut body, &mut state, &Ground, 384, 0);
     assert!(outcome.transported);
