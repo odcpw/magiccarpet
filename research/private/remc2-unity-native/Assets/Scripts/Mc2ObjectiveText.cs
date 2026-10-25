@@ -1,27 +1,52 @@
+using System;
+using System.IO;
+using System.Text;
+
 namespace MagicCarpet.Native
 {
-    // Presentation copy for MC2-owned semantic objectives. Rust selects the
-    // current objective and owns every completion and exit condition.
-    internal static class Mc2ObjectiveText
+    // DrawCurrentObjectiveTextbox (GameUI.cpp:568-577) selects an owner
+    // language record using the authoritative stage carrier, not a semantic
+    // task name. These are IndexLevelText_DB4EE / LevelEndText_DB507 rows 0..3.
+    internal sealed class Mc2ObjectiveText
     {
-        internal static string Resolve(EngineSessionTransport.ObjectiveProgress progress)
+        private static readonly int[] FirstRecord = { 0x30, 0x36, 0x3c, 0x42 };
+        private static readonly int[] EndRecord = { 0x35, 0x3b, 0x41, 0x44 };
+        private readonly string[] records;
+
+        internal Mc2ObjectiveText(OwnerAssetCache commonLanguageCache)
         {
-            if (progress == null) return null;
-            if (progress.all_objectives_satisfied) return "Enter the level exit.";
-            return progress.current_objective switch
-            {
-                "objective.reach.sight_beacon" => "Fly to the beacon.",
-                "objective.defeat.nyphur" => "Defeat Nyphur.",
-                "objective.clear.plague_bees" => "Destroy the plague Bees.",
-                "objective.reach.payahandra_ruins" => "Fly to Payahandra's ruins.",
-                "objective.clear.payahandra_vaults" => "Destroy Payahandra's vaults.",
-                "objective.clear.undead_horde" => "Destroy the undead horde.",
-                "objective.clear.guardian_dragons" => "Defeat the guardian Dragons.",
-                "objective.charge.reveal_entrance" => "Charge your Castle with mana to reveal the entrance.",
-                "objective.reach.revealed_way" => "Fly to the revealed entrance.",
-                "objective.clear.final_bees" => "Destroy the remaining Bees.",
-                _ => null,
-            };
+            if (commonLanguageCache == null)
+                throw new ArgumentNullException(nameof(commonLanguageCache));
+            var bytes = commonLanguageCache.ReadOutput("font/language-l1.records-nul.bin");
+            if (bytes.Length == 0 || bytes[bytes.Length - 1] != 0)
+                throw new InvalidDataException("Incomplete owner language record table");
+            // Preserve each original byte, including punctuation and line
+            // breaks, rather than replacing source text with client copy.
+            records = Encoding.GetEncoding(28591).GetString(bytes).Split('\0');
+            for (var level = 0; level < FirstRecord.Length; level++)
+                for (var index = FirstRecord[level]; index <= EndRecord[level]; index++)
+                    RequireRecord(index);
+        }
+
+        internal static int SourceRecordIndex(ushort internalLevel, byte textSelector, bool isLevelEnd)
+        {
+            if (internalLevel >= FirstRecord.Length)
+                throw new ArgumentOutOfRangeException(nameof(internalLevel),
+                    "Only ordinary source levels 0 through 3 are bound");
+            return isLevelEnd ? EndRecord[internalLevel] : FirstRecord[internalLevel] + textSelector;
+        }
+
+        internal string Resolve(ushort internalLevel, NativeSim.CampaignObjectiveStageSnapshot objective)
+        {
+            var index = SourceRecordIndex(internalLevel, objective.textSelector, objective.isLevelEnd != 0);
+            RequireRecord(index);
+            return records[index];
+        }
+
+        private void RequireRecord(int index)
+        {
+            if (index < 0 || index >= records.Length || string.IsNullOrEmpty(records[index]))
+                throw new InvalidDataException($"Missing owner objective language record {index}");
         }
     }
 }
