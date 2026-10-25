@@ -6,6 +6,12 @@ using UnityEngine.Rendering;
 
 namespace MagicCarpet.Native
 {
+    internal sealed class CampaignIndexedSceneCapture : MonoBehaviour
+    {
+        internal Action Captured;
+        private void OnPostRender() => Captured?.Invoke();
+    }
+
     internal sealed class Level3EntitySurfaceMarker : MonoBehaviour
     {
         internal ushort EntityIndex { get; private set; }
@@ -110,6 +116,7 @@ namespace MagicCarpet.Native
         private Camera entityCamera;
         private const int FrameLayer = 31;
         private const int EntityLayer = 30;
+        private const int ComposedFrameLayer = 29;
         private Material worldMaterial;
         private Texture2D worldIndices;
         private Texture2D worldPalette;
@@ -139,6 +146,136 @@ namespace MagicCarpet.Native
         private Texture2D caveOrdersTexture;
         private readonly Color32[] caveOrderPixels = new Color32[320 * 200];
         private ushort[] caveCellOrders;
+        private RenderTexture sceneTarget, composedHistory, nextHistory;
+        private Camera composedCamera;
+        private Material composedMaterial, historyMaterial;
+        private Mesh composedMesh;
+        private Texture2D sceneBlendTable, exitBlendTable;
+        private ulong pendingSceneGeneration, pendingSceneRevision;
+        private ulong historyGeneration, historyRevision;
+        private byte pendingSceneBlur;
+        private bool pendingExitTable, hasSceneHistory;
+
+        internal RenderTexture ComposedSceneIndices => hasSceneHistory ? composedHistory : null;
+        internal ulong SceneHistoryRevision => hasSceneHistory ? historyRevision : 0;
+
+        private void PrepareComposedScene(NativeCampaignSession session, OwnerAssetCache cache)
+        {
+            if (session.SceneFrameIndices == null || session.SceneFrameIndices.Length != 320 * 200 ||
+                session.SceneFrameRevision == 0 || (session.SceneBlurMode != 0 && session.SceneBlurMode != 2))
+                throw new InvalidOperationException("native composed-scene inputs are invalid");
+            if (sceneTarget == null)
+            {
+                var descriptor = cache.EnvironmentMaterials;
+                var tables = cache.ReadOutput(descriptor.tables.path);
+                if (tables.Length != 83456)
+                    throw new InvalidOperationException("source scene blend tables are incomplete");
+                var blend = new byte[65536];
+                Buffer.BlockCopy(tables, 0x4000, blend, 0, blend.Length);
+                sceneBlendTable = CreateBlendTable(blend);
+                if (descriptor.day_exit_tables != null)
+                    exitBlendTable = CreateBlendTable(cache.ReadOutput(descriptor.day_exit_tables.path));
+                sceneTarget = CreateSceneTarget("MC2 current world indices", 24);
+                composedHistory = CreateSceneTarget("MC2 composed scene history", 0);
+                nextHistory = CreateSceneTarget("MC2 next composed scene history", 0);
+                var shader = Resources.Load<Shader>("TerrainIndexedFrame");
+                if (shader == null) throw new InvalidOperationException("indexed compositor shader is missing");
+                var historyShader = Resources.Load<Shader>("CampaignIndexedHistory");
+                if (historyShader == null) throw new InvalidOperationException("indexed history shader is missing");
+                historyMaterial = new Material(historyShader);
+                composedMaterial = new Material(shader);
+                composedMaterial.SetTexture("_Palette", worldPalette);
+                var display = new GameObject("MC2 composed indexed world");
+                display.layer = ComposedFrameLayer;
+                display.transform.SetParent(root, false);
+                display.transform.localScale = new Vector3(3.2f, 2f, 1f);
+                composedMesh = CreateQuad(); // GPU render targets already use bottom-up UVs.
+                display.AddComponent<MeshFilter>().sharedMesh = composedMesh;
+                var renderer = display.AddComponent<MeshRenderer>();
+                renderer.sharedMaterial = composedMaterial;
+                renderer.shadowCastingMode = ShadowCastingMode.Off;
+                renderer.receiveShadows = false;
+                composedCamera = new GameObject("MC2 composed scene camera").AddComponent<Camera>();
+                composedCamera.transform.SetParent(root, false);
+                composedCamera.transform.localPosition = new Vector3(0f, 0f, -1f);
+                composedCamera.orthographic = true;
+                composedCamera.orthographicSize = 1f;
+                composedCamera.aspect = 1.6f;
+                composedCamera.nearClipPlane = 0.01f;
+                composedCamera.farClipPlane = 10f;
+                composedCamera.clearFlags = CameraClearFlags.Depth;
+                composedCamera.cullingMask = 1 << ComposedFrameLayer;
+                composedCamera.depth = -98f;
+                composedCamera.enabled = !Application.isBatchMode;
+                frameCamera.targetTexture = sceneTarget;
+                entityCamera.targetTexture = sceneTarget;
+                entityCamera.gameObject.AddComponent<CampaignIndexedSceneCapture>().Captured = CompleteComposedScene;
+            }
+            if (session.SceneUseExitTables && exitBlendTable == null)
+                throw new InvalidOperationException("native GTD2 selection has no retained exit table");
+            pendingSceneGeneration = session.Generation;
+            pendingSceneRevision = session.SceneFrameRevision;
+            pendingSceneBlur = session.SceneBlurMode;
+            pendingExitTable = session.SceneUseExitTables;
+            worldMaterial.SetFloat("_OutputIndices", 1f);
+            foreach (var material in entityMaterials.Values) material.SetFloat("_OutputIndices", 1f);
+        }
+
+        private void CompleteComposedScene()
+        {
+            if (disposed || sceneTarget == null || pendingSceneRevision == 0 ||
+                hasSceneHistory && historyGeneration == pendingSceneGeneration && historyRevision == pendingSceneRevision)
+                return;
+            historyMaterial.SetTexture("_SceneHistory", composedHistory);
+            historyMaterial.SetTexture("_BlendLut", pendingExitTable ? exitBlendTable : sceneBlendTable);
+            historyMaterial.SetFloat("_BlendHistory", hasSceneHistory && pendingSceneBlur == 2 ? 1f : 0f);
+            var previousTarget = RenderTexture.active;
+            var previousSrgb = GL.sRGBWrite;
+            try
+            {
+                GL.sRGBWrite = false; // Indices are bytes, never display RGB.
+                Graphics.Blit(sceneTarget, nextHistory, historyMaterial, 0);
+            }
+            finally
+            {
+                GL.sRGBWrite = previousSrgb;
+                RenderTexture.active = previousTarget;
+            }
+            var previous = composedHistory;
+            composedHistory = nextHistory;
+            nextHistory = previous;
+            composedMaterial.SetTexture("_Indices", composedHistory);
+            historyGeneration = pendingSceneGeneration;
+            historyRevision = pendingSceneRevision;
+            hasSceneHistory = true;
+        }
+
+        private static RenderTexture CreateSceneTarget(string name, int depth)
+        {
+            var texture = new RenderTexture(320, 200, depth, RenderTextureFormat.ARGB32, RenderTextureReadWrite.Linear) {
+                name = name, filterMode = FilterMode.Point, wrapMode = TextureWrapMode.Clamp,
+                antiAliasing = 1, useMipMap = false, autoGenerateMips = false
+            };
+            if (!texture.Create())
+            {
+                DestroyObject(texture);
+                throw new InvalidOperationException("indexed scene render target could not be created");
+            }
+            return texture;
+        }
+
+        private static Texture2D CreateBlendTable(byte[] indices)
+        {
+            if (indices == null || indices.Length != 65536)
+                throw new InvalidOperationException("source indexed blend table is incomplete");
+            var texture = new Texture2D(256, 256, TextureFormat.R8, false, true) {
+                name = "MC2 source indexed blend lookup", filterMode = FilterMode.Point,
+                wrapMode = TextureWrapMode.Clamp
+            };
+            texture.LoadRawTextureData(indices);
+            texture.Apply(false, true);
+            return texture;
+        }
 
         private void MaterializeCaveOcclusion(NativeCampaignSession session)
         {
@@ -295,7 +432,7 @@ namespace MagicCarpet.Native
         internal bool WorldReady => worldObject != null &&
                                     worldObject.GetComponent<MeshRenderer>()?.enabled == true &&
                                     frameCamera != null;
-        internal Camera FrameCamera => frameCamera;
+        internal Camera FrameCamera => composedCamera != null ? composedCamera : frameCamera;
         internal bool HudReady { get; private set; }
         internal bool MinimapPanelReady { get; private set; }
         internal bool LiveMinimapReady { get; private set; }
@@ -481,7 +618,8 @@ namespace MagicCarpet.Native
             MaterializeMinimapPixels(presentedIndices, minimapEntities, minimapTables, generation, tick, minimapSymbols);
             MaterializeMinimapMarks(presentedIndices, minimapMarks, minimapTables, generation, tick);
             var palette = session.DayIndexedFramePalette;
-            EnsureWorld(presentedIndices, palette);
+            EnsureWorld(session.SceneFrameIndices, palette);
+            PrepareComposedScene(session, cache);
             MaterializeCaveOcclusion(session);
             entityPaletteSource = palette;
             if (hudPalette != null)
@@ -713,8 +851,17 @@ namespace MagicCarpet.Native
             if (pose == null || entityCamera == null)
                 throw new InvalidOperationException("campaign view requires a current Rust player pose");
             var rect = Level1ExitPresentationMath.SourceDisplayRect(Screen.width, Screen.height);
-            frameCamera.rect = rect;
-            entityCamera.rect = rect;
+            if (composedCamera != null)
+            {
+                composedCamera.rect = rect;
+                frameCamera.rect = new Rect(0f, 0f, 1f, 1f);
+                entityCamera.rect = new Rect(0f, 0f, 1f, 1f);
+            }
+            else
+            {
+                frameCamera.rect = rect;
+                entityCamera.rect = rect;
+            }
             // Source yaw zero looks toward decreasing map Y, with increasing
             // map X to the right (classic_hd_terrain::terrain_tile_for).
             // Pitch is a screen offset, not a rotation of the world camera.
@@ -911,6 +1058,7 @@ namespace MagicCarpet.Native
             var shader = Resources.Load<Shader>("EntitySprite");
             if (shader == null) throw new InvalidOperationException("entity sprite shader is missing");
             material = new Material(shader);
+            material.SetFloat("_OutputIndices", sceneTarget == null ? 0f : 1f);
             material.SetTexture("_Indices", texture);
             material.SetTexture("_Palette", EnsureEntityPalette(cache));
             entityTextures.Add(row.index, texture);
@@ -941,6 +1089,15 @@ namespace MagicCarpet.Native
         {
             if (disposed) return;
             disposed = true;
+            if (frameCamera != null) frameCamera.targetTexture = null;
+            if (entityCamera != null) entityCamera.targetTexture = null;
+            foreach (var target in new[] { sceneTarget, composedHistory, nextHistory })
+                if (target != null) { target.Release(); DestroyObject(target); }
+            DestroyObject(composedMaterial);
+            DestroyObject(historyMaterial);
+            DestroyObject(composedMesh);
+            DestroyObject(sceneBlendTable);
+            DestroyObject(exitBlendTable);
             DestroyObject(worldMaterial);
             DestroyObject(worldIndices);
             DestroyObject(worldPalette);

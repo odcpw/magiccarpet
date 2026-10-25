@@ -9,6 +9,7 @@ Shader "MagicCarpet/EntitySprite"
         _CaveOrders ("Cave terrain source-cell order", 2D) = "black" {}
         _CaveCellOrder ("Sprite source-cell order", Float) = 0
         _CaveOcclusionEnabled ("Use Cave source-cell occlusion", Float) = 0
+        _OutputIndices ("Output palette indices", Float) = 0
     }
     SubShader
     {
@@ -30,6 +31,7 @@ Shader "MagicCarpet/EntitySprite"
             sampler2D _CaveOrders;
             float _CaveCellOrder;
             float _CaveOcclusionEnabled;
+            float _OutputIndices;
 
             struct appdata
             {
@@ -72,6 +74,7 @@ Shader "MagicCarpet/EntitySprite"
                         + floor(orderBytes.g * 255.0 + 0.5) * 256.0;
                     clip(_CaveCellOrder - terrainOrder);
                 }
+                if (_OutputIndices > 0.5) return fixed4(index / 255.0, 0.0, 0.0, 1.0);
                 fixed4 color = tex2D(
                     _Palette, float2((index + 0.5) / 256.0, 0.5));
                 color.a = 1.0;

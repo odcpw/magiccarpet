@@ -8,6 +8,7 @@ Shader "MagicCarpet/TerrainIndexedFrame"
         _Indices ("Exact 320x200 indexed sky and terrain", 2D) = "black" {}
         _Coverage ("Exact terrain write coverage diagnostic", 2D) = "black" {}
         _Palette ("Ordered PALN lookup", 2D) = "white" {}
+        _OutputIndices ("Output palette indices", Float) = 0
     }
     SubShader
     {
@@ -26,11 +27,13 @@ Shader "MagicCarpet/TerrainIndexedFrame"
             sampler2D _Indices;
             sampler2D _Coverage;
             sampler2D _Palette;
+            float _OutputIndices;
 
             fixed4 frag(v2f_img input) : SV_Target
             {
                 fixed indexSample = tex2D(_Indices, input.uv).r;
                 float index = floor(indexSample * 255.0 + 0.5);
+                if (_OutputIndices > 0.5) return fixed4(index / 255.0, 0.0, 0.0, 1.0);
                 fixed4 color = tex2D(
                     _Palette, float2((index + 0.5) / 256.0, 0.5));
                 // Coverage deliberately does not control alpha. The exact
@@ -41,6 +44,7 @@ Shader "MagicCarpet/TerrainIndexedFrame"
             }
             ENDCG
         }
+
     }
     FallBack Off
 }

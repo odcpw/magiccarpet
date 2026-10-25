@@ -596,6 +596,12 @@ pub struct DayIndexedFrame {
     pub width: u16,
     pub height: u16,
     pub indices: Vec<u8>,
+    /// World materials before exit history and map/HUD composition. Clients
+    /// add their source-selected sprites before applying indexed GTD2 history.
+    pub scene_indices: Vec<u8>,
+    pub scene_revision: u64,
+    pub scene_blur_mode: u8,
+    pub scene_use_exit_tables: bool,
     pub palette_rgb8: Vec<u8>,
     /// Last source cell to paint each Cave terrain pixel; zero is unpainted.
     pub cave_terrain_orders: Option<Vec<u16>>,
@@ -665,6 +671,15 @@ impl DayIndexedFrameState {
     #[must_use]
     pub fn current_frame(&self) -> Option<&DayIndexedFrame> {
         self.current_frame.as_ref()
+    }
+
+    pub fn is_current_view(
+        &self,
+        session: &Level2ResetSession,
+    ) -> Result<bool, DayIndexedFrameError> {
+        Ok(self.current_frame.is_some()
+            && self.current_tick == Some(session.state.tick)
+            && self.current_view == Some(FrameView::current(session)?))
     }
 
     pub fn reset(&mut self, generation: u64) {
@@ -741,7 +756,7 @@ impl DayIndexedFrameState {
                 "Day indexed frame tick {tick} predates the committed presentation revision"
             )));
         }
-        if self.current_tick == Some(tick) && self.current_view == Some(view) {
+        if self.is_current_view(session)? {
             if let Some(frame) = self.current_frame.as_ref() {
                 if frame.cache_content_sha256 != assets.cache_content_sha256() {
                     return Err(DayIndexedFrameError::new(
@@ -932,6 +947,9 @@ fn render_environment_indexed_frame(
             "Day indexed frame hash does not match its output bytes",
         ));
     }
+    let scene_indices = indices.clone();
+    let scene_revision = prior.map_or(Some(1), |frame| frame.scene_revision.checked_add(1))
+        .ok_or_else(|| DayIndexedFrameError::new("composed scene revision overflow"))?;
     if let Some(prior) = prior {
         assets
             .materials
@@ -962,6 +980,11 @@ fn render_environment_indexed_frame(
         width: DAY_FRAME_WIDTH,
         height: DAY_FRAME_HEIGHT,
         indices,
+        scene_indices,
+        scene_revision,
+        scene_blur_mode: exit.blur_mode,
+        scene_use_exit_tables: exit.end_sequence && exit.phase >= 6
+            && assets.materials.day_exit_tables().is_some(),
         palette_rgb8,
         cave_terrain_orders,
         cave_cell_orders,
