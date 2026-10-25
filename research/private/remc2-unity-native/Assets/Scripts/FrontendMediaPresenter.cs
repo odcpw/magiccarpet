@@ -273,7 +273,8 @@ namespace MagicCarpet.Native
             { foreach (var source in samples.Values) source.Stop(); return; }
             if (op == "G")
             {
-                sampleUnits[action.value] = action.volume_units;
+                sampleUnits[action.value] = action.volume_units ??
+                    throw new InvalidDataException("source gain action has no volume");
                 if (samples.TryGetValue(action.value, out var gainSource))
                     gainSource.volume = SampleGain(action.value);
                 return;

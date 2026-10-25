@@ -4,6 +4,8 @@ using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices;
+using System.Runtime.Serialization;
+using System.Runtime.Serialization.Json;
 using System.Text;
 using System.Threading;
 using UnityEngine;
@@ -148,7 +150,7 @@ namespace MagicCarpet.Native
             public string package_graph_hash;
             public string definition_hash;
             public string definition_revision;
-            public RuntimeFlowDefinition runtime_flow;
+            [OptionalField] public RuntimeFlowDefinition runtime_flow;
         }
 
         [Serializable]
@@ -243,8 +245,8 @@ namespace MagicCarpet.Native
         internal sealed class RuntimeFlowDestination
         {
             public string kind;
-            public string level_id;
-            public string node_id;
+            [OptionalField] public string level_id;
+            [OptionalField] public string node_id;
         }
 
         [Serializable]
@@ -270,13 +272,13 @@ namespace MagicCarpet.Native
             public string runtime_id;
             public string generation;
             public string mode;
-            public MediaSnapshot frontend_media;
+            [OptionalField] public MediaSnapshot frontend_media;
             public PlayerPreferencesSnapshot player_preferences;
             public RuntimePresentationCue presentation;
-            public CampaignMenuSnapshot campaign_menu;
-            public DefinitionIdentity pending_definition;
-            public RuntimeFlowDefinition active_runtime_flow;
-            public EngineSessionTransport.Identity session;
+            [OptionalField] public CampaignMenuSnapshot campaign_menu;
+            [OptionalField] public DefinitionIdentity pending_definition;
+            [OptionalField] public RuntimeFlowDefinition active_runtime_flow;
+            [OptionalField] public EngineSessionTransport.Identity session;
         }
 
         [Serializable]
@@ -307,7 +309,7 @@ namespace MagicCarpet.Native
             public string op;
             public int value;
             public string asset_path;
-            public int volume_units;
+            public int? volume_units;
         }
 
         [DllImport("sim_capi", CallingConvention = CallingConvention.Cdecl)]
@@ -361,14 +363,14 @@ namespace MagicCarpet.Native
         internal sealed class CampaignMenuSnapshot
         {
             public string phase;
-            public string completed_level_id;
+            [OptionalField] public string completed_level_id;
             public string[] completed_levels;
             public string[] available_levels;
-            public string selected_level_id;
-            public string briefing_level_id;
-            public CampaignSpeechSegment briefing_speech;
-            public CompletionStatistics completion_statistics;
-            public CompletedLevelStatistics[] level_statistics;
+            [OptionalField] public string selected_level_id;
+            [OptionalField] public string briefing_level_id;
+            [OptionalField] public CampaignSpeechSegment briefing_speech;
+            [OptionalField] public CompletionStatistics completion_statistics;
+            [OptionalField] public CompletedLevelStatistics[] level_statistics;
         }
 
         [Serializable]
@@ -389,8 +391,8 @@ namespace MagicCarpet.Native
         {
             public string cue_id;
             public string phase;
-            public string level_id;
-            public RuntimeFlowDestination completion_destination;
+            [OptionalField] public string level_id;
+            [OptionalField] public RuntimeFlowDestination completion_destination;
         }
 
         [Serializable]
@@ -481,11 +483,17 @@ namespace MagicCarpet.Native
 
         internal static Identity ReadIdentity(ulong handle)
         {
-            var identity = ReadJson<Identity>(
+            var bytes = ReadBytes(
                 (IntPtr buffer, uint capacity, out uint length) =>
                     NativeSim.mc_game_runtime_identity_json_v1(
                         handle, buffer, capacity, out length),
+                16 * 1024 * 1024,
                 "read game runtime identity");
+            // Unity JsonUtility materializes empty nested DTOs for JSON null.
+            // Identity nulls are authoritative: no session on a map, no stats
+            // before completion, and no speech on a results screen. Preserve
+            // those tokens rather than treating fabricated zero stats as real.
+            var identity = DecodeRuntimeJson<Identity>(bytes);
             ValidateIdentity(identity, handle);
             return identity;
         }
@@ -1714,13 +1722,23 @@ namespace MagicCarpet.Native
                 }
                 var bytes = new byte[checked((int)written)];
                 Marshal.Copy(buffer, bytes, 0, checked((int)written));
-                var value = JsonUtility.FromJson<T>(Encoding.UTF8.GetString(bytes));
+                // Loading observations and completion receipts also embed an
+                // identity; preserve absent session/statistics there as well.
+                var value = typeof(T) == typeof(Contract)
+                    ? JsonUtility.FromJson<T>(Encoding.UTF8.GetString(bytes))
+                    : DecodeRuntimeJson<T>(bytes);
                 return value ?? throw new InvalidOperationException(operation + " returned null JSON");
             }
             finally
             {
                 Marshal.FreeHGlobal(buffer);
             }
+        }
+
+        private static T DecodeRuntimeJson<T>(byte[] bytes) where T : class
+        {
+            using var stream = new MemoryStream(bytes, false);
+            return new DataContractJsonSerializer(typeof(T)).ReadObject(stream) as T;
         }
 
         private static byte[] ReadBytes(

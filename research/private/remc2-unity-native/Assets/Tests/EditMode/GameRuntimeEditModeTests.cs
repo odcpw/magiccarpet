@@ -407,6 +407,16 @@ namespace MagicCarpet.Native.Tests
                 Package(Path.Combine(generated, "level3-day-block32-campaign-recipe-v2")),
                 Package(Path.Combine(generated, "mc-bhq6-ordinary-20261025-zclu5fjj/level4"))
             };
+            using (var startup = NativeSession.OpenGameRuntimeFrontend(packages))
+            {
+                var title = startup.GameRuntimeIdentity();
+                GameRuntimeTransport.MediaCommand(ulong.Parse(title.runtime_id), title,
+                    "{\"operation\":\"install\",\"startup\":true,\"catalog\":" +
+                    File.ReadAllText(Path.Combine(generated, "mc2-frontend-media-cache-decoded/media.json")) + "}");
+                var media = startup.GameRuntimeIdentity().frontend_media;
+                Assert.That(media, Is.Not.Null);
+                Assert.That(media.active, Is.True, "actual startup producer remains decodable");
+            }
             using var frontend = NativeSession.OpenGameRuntimeFrontend(packages);
             var map = frontend.GameRuntimeBeginNewGame();
             Assert.That(map.mode, Is.EqualTo(GameRuntimeTransport.CampaignMode));
