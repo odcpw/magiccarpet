@@ -32,7 +32,16 @@ namespace MagicCarpet.Native.Tests
                 "-mc-runtime-package", Path.Combine(generated, "level3-day-block32-campaign-recipe-v2")
             };
             if (restoreEarnedOpening)
+            {
                 arguments[arguments.IndexOf("-mc-runtime-owner-cache") + 1] = night;
+                var dayOwner = arguments.IndexOf("-mc-runtime-owner-cache",
+                    arguments.IndexOf("-mc-runtime-owner-cache") + 1);
+                arguments[dayOwner + 1] = Path.Combine(generated, "level2-day-spell-owner-cache-v3/components/material");
+                arguments.AddRange(new[] {
+                    "-mc-runtime-owner-cache", Path.Combine(generated, "level3-day-spell-owner-cache-v3/components/material"),
+                    "-mc-runtime-presentation-cache", Path.Combine(generated, "level3-day-spell-owner-cache-v3")
+                });
+            }
             if (restoreEarnedOpening) arguments.AddRange(new[] { "-mc-runtime-replay-load",
                 Path.Combine(generated, "mc-a1-opening.Lcb3s1/earned-progress.json") });
             else arguments.Add("-mc-runtime-menu");
