@@ -1,7 +1,7 @@
 //! Source-order cave startup. Imported post-feature planes are comparison
 //! oracles only: all writes start at the package's pre-feature boundary.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use super::{
     bind_definition, new_event, prepare_authored, reclaim, startup_position, synchronize_links,
@@ -44,8 +44,9 @@ impl CaveStartupWorld {
     pub(crate) fn write_geometry_into(
         &self,
         planes: &mut crate::native_world::TerrainPlanes,
+        reset_sources: &[EntitySnapshot],
     ) -> Result<u16, String> {
-        let terrain = self.reset_terrain()?;
+        let terrain = self.reset_terrain(reset_sources)?;
         let generated = terrain.planes();
         planes.terrain_types.clone_from(&generated.terrain_types);
         planes.ground_heights.clone_from(&generated.ground_heights);
@@ -62,7 +63,13 @@ impl CaveStartupWorld {
     /// post-feature geometry participates in these writes. The temporary
     /// arena is deliberately not published as a complete actor startup:
     /// unrelated actors have their own ordinary construction/reset owners.
-    pub fn reset_terrain(&self) -> Result<SessionTerrain, String> {
+    /// The ordinary runtime's imported actor identities supply dispatch order.
+    /// No imported actor state or geometry is copied into this construction;
+    /// omitted actor families must not shift terrain callbacks to earlier slots.
+    pub fn reset_terrain(
+        &self,
+        reset_sources: &[EntitySnapshot],
+    ) -> Result<SessionTerrain, String> {
         let mut terrain = self.terrain.clone();
         let mut arena = self.arena.clone();
         let mut lighting = DynamicLightingState::reset();
@@ -71,30 +78,32 @@ impl CaveStartupWorld {
         // previous generation pass leaves a LIFO reclaim stack; rebuilding
         // descending slots restores the actual numeric callback order.
         arena.rebuild_source_arena_with_terrain(&mut terrain, &[])?;
+        let mut source_order = arena
+            .entities
+            .iter()
+            .filter(|source| source.active)
+            .map(|source| (source.index, source.index))
+            .collect::<BTreeMap<_, _>>();
+        let retained = source_order.keys().copied().collect::<BTreeSet<_>>();
         for &row in self.authored.iter().skip(1) {
             if row.activation_group != 0 {
                 continue;
             }
-            if (row.kind, row.subtype) == (14, 1) {
-                construct_strip(&mut arena, &mut terrain, row)?;
-                continue;
-            }
-            if row.kind != 10 {
-                continue;
-            }
-            match row.subtype {
-                0 => {
+            let newborn = match (row.kind, row.subtype) {
+                (14, 1) => construct_strip(&mut arena, &mut terrain, row)?,
+                (10, 0) => {
                     let definition = *self.effects.get(&row.index).ok_or_else(|| {
                         format!("missing ordinary impact content at row{}", row.index)
                     })?;
                     let position = row.world_position(terrain.ground_height(row.world_position(0)));
-                    if let Some(slot) = crate::world::effects::allocate(
+                    let newborn = crate::world::effects::allocate(
                         &mut arena,
                         &mut terrain,
                         definition,
                         position,
                         &self.particles,
-                    )? {
+                    )?;
+                    if let Some(slot) = newborn {
                         // NewAdd0A00 -> AddEvent2_847D0. The light service owns
                         // its RNG and footprint; the actual effect row owns life.
                         if lighting
@@ -105,15 +114,16 @@ impl CaveStartupWorld {
                             source.set_control_flags(source.control_flags | 0x0008_0000);
                         }
                     }
+                    newborn
                 }
-                45 => {
+                (10, 45) => {
                     let building = self
                         .buildings
                         .get(&(row.parameter_1 as u8))
                         .ok_or_else(|| format!("missing ordinary BUILD {}", row.parameter_1))?;
-                    construct_house(&mut arena, &mut terrain, row, building)?;
+                    construct_house(&mut arena, &mut terrain, row, building)?
                 }
-                63 | 64 => {
+                (10, 63 | 64) => {
                     let position = Position {
                         x: row.tile_x.wrapping_shl(8).wrapping_add(128),
                         y: row.tile_y.wrapping_shl(8).wrapping_add(128),
@@ -128,17 +138,27 @@ impl CaveStartupWorld {
                         &mut terrain,
                         position,
                         row.subtype as u8,
-                    )?;
+                    )?
                 }
-                _ => {}
+                _ => None,
+            };
+            if let Some(slot) = newborn {
+                let key =
+                    reset_source_key(&arena.entities[usize::from(slot)], reset_sources, &retained)?;
+                if source_order.insert(key, slot).is_some() {
+                    return Err(format!(
+                        "ordinary terrain source identity {key} is already bound"
+                    ));
+                }
             }
         }
         arena.finish_source_group();
         let effect_lists = crate::native_world::area_damage::capture_effect_lists(&mut arena, None);
-        // The same numeric source order used by UpdateEntities: group-zero
-        // rows reuse free slots below the retained cave controllers. A close
-        // trigger therefore selects life1 before the controller's callback.
-        for slot in 1..arena.entities.len() {
+        // UpdateEntities scans the actual ordinary source identities. Other
+        // actor births can put a close trigger AFTER a retained controller;
+        // its first terrain change then belongs to the following pass.
+        for &slot in source_order.values() {
+            let slot = usize::from(slot);
             let source = &arena.entities[slot];
             if !source.active {
                 continue;
@@ -166,7 +186,10 @@ impl CaveStartupWorld {
                 (10, 45, 51) => {
                     step_house(&mut arena.entities[slot], &mut terrain, &self.buildings)?
                 }
-                (10, 63 | 64, _) => rings::runtime::step_trigger(&mut arena, slot as u16)?,
+                (10, 63 | 64, _) => {
+                    unique_trigger_target(&arena, source.position)?;
+                    rings::runtime::step_trigger(&mut arena, slot as u16)?;
+                }
                 (14, 1, 6) => {
                     terrain_strip::visit_source(&mut arena.entities[slot], &mut terrain);
                 }
@@ -522,6 +545,58 @@ fn apply_damage(arena: &mut SourceArena, damage: rings::AreaDamage) -> Result<u1
     crate::native_world::area_damage::apply(arena, None, None, request)
 }
 
+fn reset_source_key(
+    source: &EntitySnapshot,
+    reset_sources: &[EntitySnapshot],
+    retained: &BTreeSet<u16>,
+) -> Result<u16, String> {
+    let mut matches = reset_sources.iter().filter(|candidate| {
+        candidate.active
+            && candidate.index != 0
+            && !retained.contains(&candidate.index)
+            && candidate.class == source.class
+            && candidate.model == source.model
+            && candidate.position.x == source.position.x
+            && candidate.position.y == source.position.y
+    });
+    let Some(first) = matches.next() else {
+        return Err(format!(
+            "ordinary terrain {}/{} at {},{} has no reset source identity",
+            source.class, source.model, source.position.x, source.position.y
+        ));
+    };
+    if matches.next().is_some() {
+        return Err(format!(
+            "ordinary terrain {}/{} at {},{} has ambiguous reset source identities",
+            source.class, source.model, source.position.x, source.position.y
+        ));
+    }
+    Ok(first.index)
+}
+
+fn unique_trigger_target(arena: &SourceArena, position: Position) -> Result<(), String> {
+    let x = (position.x.wrapping_sub(128) >> 8) as u8;
+    let y = (position.y.wrapping_sub(128) >> 8) as u8;
+    let count = arena
+        .economy
+        .map_chains
+        .entity_chain(x, y)
+        .into_iter()
+        .filter(|slot| {
+            let row = &arena.entities[usize::from(*slot)];
+            row.active && row.class == 14 && matches!(row.model, 1 | 2)
+        })
+        .count();
+    // A unique spatial target makes this lookup independent of temporary
+    // map-chain slot order. Zero retains the source trigger's no-op behavior.
+    if count > 1 {
+        return Err(format!(
+            "ordinary terrain trigger at {x},{y} has ambiguous controllers"
+        ));
+    }
+    Ok(())
+}
+
 fn construct_strip(
     arena: &mut SourceArena,
     terrain: &mut SessionTerrain,
@@ -648,6 +723,42 @@ mod tests {
     use crate::campaign::spec::{CampaignSelection, DecodedCampaignPackage};
 
     #[test]
+    fn reset_identity_join_rejects_missing_ambiguous_and_retained_rows() {
+        let position = Position {
+            x: 128,
+            y: 384,
+            z: 0,
+        };
+        let mut source = new_event(1, 0, position);
+        terrain_strip::bind_startup_construction(&mut source, 1, 14);
+        let mut actual = new_event(9, 0, position);
+        terrain_strip::bind_startup_construction(&mut actual, 1, 14);
+        actual.set_life(3); // The imported callback state is not consumed.
+        let retained = BTreeSet::new();
+        assert_eq!(
+            reset_source_key(&source, &[actual.clone()], &retained).unwrap(),
+            9
+        );
+        assert!(
+            reset_source_key(&source, &[], &retained)
+                .unwrap_err()
+                .contains("no reset")
+        );
+        let mut duplicate = actual.clone();
+        duplicate.index = 10;
+        assert!(
+            reset_source_key(&source, &[actual.clone(), duplicate], &retained)
+                .unwrap_err()
+                .contains("ambiguous")
+        );
+        assert!(
+            reset_source_key(&source, &[actual], &BTreeSet::from([9]))
+                .unwrap_err()
+                .contains("no reset")
+        );
+    }
+
+    #[test]
     fn ordinary_cave_reset_constructs_geometry_before_flight_consumption() {
         for mission in [4, 6, 8, 12, 15, 16, 21, 24] {
             let relative = if mission == 8 {
@@ -767,8 +878,11 @@ mod tests {
                     );
                 }
             }
+            let reset_sources =
+                crate::native_world::parse_entities(package.member("entities.bin").unwrap())
+                    .unwrap();
             let reset = generated
-                .reset_terrain()
+                .reset_terrain(&reset_sources)
                 .expect("ordinary terrain callbacks");
             if mission == 8 {
                 // Pinned remc2, unchanged exporter after its first ordinary
