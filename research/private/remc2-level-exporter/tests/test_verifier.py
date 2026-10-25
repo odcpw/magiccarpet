@@ -9,9 +9,11 @@ import json
 from pathlib import Path
 import shutil
 import stat
+import struct
 import tempfile
 
 from verify_package import (
+    BUILDING_DESTRUCTION_SUCCESSORS,
     CAMPAIGN_PACKAGE_SCHEMA,
     LEVEL2_CAMPAIGN_PACKAGE_SCHEMA,
     LEVEL2_PLAYER_RECORD_BYTES,
@@ -21,9 +23,44 @@ from verify_package import (
     SCHEMA_V4,
     SCHEMA_V5,
     _campaign_package_identity,
+    _campaign_construction_selectors,
+    _campaign_decode_feature_inputs,
     _canonical_json_bytes,
     verify,
 )
+
+
+def test_construction_inputs_follow_transitive_successors_and_stop_cycles() -> None:
+    authored = bytearray(0x6604)
+    roots = (18, 23, 37, 43)
+    for index, selector in enumerate(roots, 1):
+        offset = 1091 + index * 20
+        struct.pack_into("<Hh", authored, offset, 10, 45)
+        struct.pack_into("<h", authored, offset + 8, -1)
+        struct.pack_into("<H", authored, offset + 14, selector)
+    builder_rows = {17, 19, 22, 26, 29, 30, 31, 32, 33, 34, 35, 39, 40, 42, 47, 50, 62, 74}
+    # Independent exact roots: 18->21->54, 23->24->28, 43->44->45,
+    # plus the self-successor 37. Zero terminates rather than adding BUILD 0.
+    expected = builder_rows | {18, 21, 54, 23, 24, 28, 37, 43, 44, 45}
+    assert _campaign_construction_selectors(bytes(authored), 2) == sorted(expected)
+    assert _campaign_construction_selectors(bytes(authored), 1) == sorted(roots)
+
+
+def test_construction_input_successor_claim_cannot_shrink_source_closure() -> None:
+    content = bytearray(struct.pack("<4sHHHHI", b"MCI3", 2, 16, 2, 1, 0))
+    for selector, scalar in ((21, 6), (54, 8)):
+        content.extend(struct.pack(
+            "<HHBBBBIh", selector, scalar, 8,
+            BUILDING_DESTRUCTION_SUCCESSORS.get(selector, 0), 1, 1, 2, -1,
+        ))
+    assert _campaign_decode_feature_inputs(bytes(content)) == [21, 54]
+    content[16 + 5] = 0
+    try:
+        _campaign_decode_feature_inputs(bytes(content))
+    except AssertionError as error:
+        assert "successor differs from pinned BLDGPRM" in str(error)
+    else:
+        raise AssertionError("forged terminal successor was accepted")
 
 
 def expect_rejected(

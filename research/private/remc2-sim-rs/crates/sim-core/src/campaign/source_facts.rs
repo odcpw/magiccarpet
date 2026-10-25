@@ -348,8 +348,47 @@ fn decode_feature_construction_inputs(bytes: &[u8]) -> Result<Vec<u16>, String> 
 
 /// MCI3 v2 retains the finite constructor closure as well as every authored
 /// House, including ordinary activation groups. The v1 collision census is
-/// kept as its original distinct contract.
-fn construction_selectors_from_authored(authored: &[u8]) -> Result<Vec<u16>, String> {
+/// kept as its original distinct contract. Feature SourceFact v2 additionally
+/// requires every source destruction successor; collision SourceFact v3 binds
+/// Level 2's exact masks for that same construction closure.
+fn source_building_successor(selector: u16) -> Result<u16, String> {
+    // Nonzero byte_3 rows from the unchanged BLDGPRM.DAT whose complete
+    // 304-byte owner identity is pinned in SOURCE_ARTIFACTS.
+    Ok(match selector {
+        15 => 14,
+        18 => 21,
+        20 => 16,
+        21 => 54,
+        23 => 24,
+        24 => 28,
+        27 => 41,
+        41 => 49,
+        43 => 44,
+        44 => 45,
+        68 => 69,
+        69 => 72,
+        72 => 73,
+        16 | 25 | 36 | 37 | 38 | 55 | 56 | 57 | 59 | 60 | 63 | 64 | 65 | 66 | 70 | 71 => selector,
+        0..76 => 0,
+        _ => return Err("house successor BUILD selector is outside the source table".to_owned()),
+    })
+}
+
+fn close_construction_successors(selectors: &mut BTreeSet<u16>) -> Result<(), String> {
+    let mut pending = selectors.iter().copied().collect::<Vec<_>>();
+    while let Some(selector) = pending.pop() {
+        let successor = source_building_successor(selector)?;
+        if successor != 0 && selectors.insert(successor) {
+            pending.push(successor);
+        }
+    }
+    Ok(())
+}
+
+fn construction_selectors_from_authored(
+    authored: &[u8],
+    successor_closure: bool,
+) -> Result<Vec<u16>, String> {
     let features = crate::level1_mission::parse_authored_features(authored)?;
     let mut selectors = features
         .iter()
@@ -372,6 +411,9 @@ fn construction_selectors_from_authored(authored: &[u8]) -> Result<Vec<u16>, Str
                 .map(u16::from),
         );
     }
+    if successor_closure {
+        close_construction_successors(&mut selectors)?;
+    }
     Ok(selectors.into_iter().collect())
 }
 
@@ -379,17 +421,30 @@ fn validate_construction_selectors(
     bytes: &[u8],
     authored: &[u8],
     legacy_selectors: &[u16],
+    successor_closure: bool,
 ) -> Result<(), String> {
     let actual = decode_feature_construction_inputs(bytes)?;
+    if successor_closure && read_u16(bytes, 4, "feature-input version")? != 2 {
+        return Err("source-closed construction profile requires MCI3 v2".to_owned());
+    }
     let expected = if read_u16(bytes, 4, "feature-input version")? == 1 {
         legacy_selectors.to_vec()
     } else {
-        construction_selectors_from_authored(authored)?
+        construction_selectors_from_authored(authored, successor_closure)?
     };
     if actual != expected {
         return Err(
             "feature construction selectors differ from versioned source closure".to_owned(),
         );
+    }
+    if successor_closure {
+        for (selector, parameter) in crate::house::decode_campaign_house_parameters(bytes)? {
+            if u16::from(parameter.destruction_successor)
+                != source_building_successor(u16::from(selector))?
+            {
+                return Err("feature construction successor differs from pinned BLDGPRM".to_owned());
+            }
+        }
     }
     Ok(())
 }
@@ -587,7 +642,9 @@ pub(crate) fn validate_source_facts(
             &format!("{label}.version"),
         )?;
         if kind != expected.1
-            || !(version == 1 || (kind == SourceFactKind::CollisionMask && version == 2))
+            || !(version == 1
+                || (kind == SourceFactKind::FeatureConstructionInputs && version == 2)
+                || (kind == SourceFactKind::CollisionMask && matches!(version, 2 | 3)))
             || string(&object["lifetime"], &format!("{label}.lifetime"))?
                 != "immutable-through-session"
         {
@@ -651,7 +708,15 @@ pub(crate) fn validate_source_facts(
             .collect::<Vec<_>>();
         // v1 retains the legacy Day provenance contract. v2 names the bank
         // Level.cpp actually loads for this map, while retaining MCM1 pixels.
-        let expected_paths = if kind == SourceFactKind::CollisionMask && version == 2 {
+        let expected_paths = if kind == SourceFactKind::FeatureConstructionInputs && version == 2 {
+            &[
+                "CD_Files/DATA/BLDGPRM.DAT",
+                "CD_Files/DATA/BUILD0-0.DAT",
+                "CD_Files/DATA/BUILD0-0.TAB",
+                "CD_Files/DATA/SPELLS.DAT",
+                "CD_Files/DATA/TABLESN.DAT",
+            ][..]
+        } else if kind == SourceFactKind::CollisionMask && matches!(version, 2 | 3) {
             match context.map_type_id {
                 0 => &["CD_Files/DATA/MSPRD0-0.DAT", "CD_Files/DATA/MSPRD0-0.TAB"][..],
                 1 => &["CD_Files/DATA/MSPRN0-0.DAT", "CD_Files/DATA/MSPRN0-0.TAB"][..],
@@ -690,13 +755,40 @@ pub(crate) fn validate_source_facts(
         .members
         .get("authored-level.bin")
         .ok_or_else(|| "authored construction input member is absent".to_owned())?;
-    validate_construction_selectors(feature_inputs, authored_inputs, &expected_selectors)?;
+    let successor_closure = result
+        .iter()
+        .any(|fact| fact.kind == SourceFactKind::FeatureConstructionInputs && fact.version == 2);
+    let closed_collision = result
+        .iter()
+        .any(|fact| fact.kind == SourceFactKind::CollisionMask && fact.version == 3);
+    validate_construction_selectors(
+        feature_inputs,
+        authored_inputs,
+        &expected_selectors,
+        successor_closure,
+    )?;
     if let Some((collision_bank_bytes, collision_bank_sha256)) = context.collision_bank {
         let collision = context
             .members
             .get("collision-masks.bin")
             .ok_or_else(|| "collision-mask member is absent".to_owned())?;
-        decode_collision_masks(collision, &expected_selectors)?;
+        let collision_selectors = if closed_collision {
+            if !successor_closure
+                || context.map_type_id != 0
+                || collision.len() != 12_836
+                || super::spec::sha256_hex(collision)
+                    != "afb42f4c6d64cdd394c71eab88d3dea5f344853a1576e6314736d270de3010dd"
+            {
+                return Err(
+                    "closed collision profile differs from qualified Level 2 source closure"
+                        .to_owned(),
+                );
+            }
+            decode_feature_construction_inputs(feature_inputs)?
+        } else {
+            expected_selectors.clone()
+        };
+        decode_collision_masks(collision, &collision_selectors)?;
         if collision.len() != collision_bank_bytes
             || super::spec::sha256_hex(collision) != collision_bank_sha256
         {
@@ -728,6 +820,17 @@ pub(crate) fn validate_source_facts(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn source_successor_closure_is_transitive_and_stops_cycles() {
+        let mut selectors = [18, 23, 37, 43].into_iter().collect();
+        super::close_construction_successors(&mut selectors).unwrap();
+        assert_eq!(
+            selectors.into_iter().collect::<Vec<_>>(),
+            [18, 21, 23, 24, 28, 37, 43, 44, 45, 54]
+        );
+        let mut invalid = [76].into_iter().collect();
+        assert!(super::close_construction_successors(&mut invalid).is_err());
+    }
     use super::{building_parameter_chain, decode_building_parameters, decode_collision_masks};
 
     #[test]
@@ -756,8 +859,9 @@ mod tests {
             "actual all-group House selectors union the finite Builder closure"
         );
         assert!(selectors.contains(&19) && selectors.contains(&74));
-        super::validate_construction_selectors(&bytes, &authored, &legacy_selectors).unwrap();
-        super::validate_construction_selectors(&old, &authored, &legacy_selectors).unwrap();
+        super::validate_construction_selectors(&bytes, &authored, &legacy_selectors, false)
+            .unwrap();
+        super::validate_construction_selectors(&old, &authored, &legacy_selectors, false).unwrap();
 
         let mut missing = bytes.clone();
         let extent = u32::from_le_bytes(missing[24..28].try_into().unwrap()) as usize;
@@ -765,20 +869,27 @@ mod tests {
         let count = (selectors.len() as u16 - 1).to_le_bytes();
         missing[8..10].copy_from_slice(&count);
         assert!(
-            super::validate_construction_selectors(&missing, &authored, &legacy_selectors).is_err()
+            super::validate_construction_selectors(&missing, &authored, &legacy_selectors, false)
+                .is_err()
         );
 
         let mut extra = bytes.clone();
         extra[16..18].copy_from_slice(&0_u16.to_le_bytes());
         assert!(
-            super::validate_construction_selectors(&extra, &authored, &legacy_selectors).is_err()
+            super::validate_construction_selectors(&extra, &authored, &legacy_selectors, false)
+                .is_err()
         );
 
         let mut mislabeled = bytes;
         mislabeled[4..6].copy_from_slice(&1_u16.to_le_bytes());
         assert!(
-            super::validate_construction_selectors(&mislabeled, &authored, &legacy_selectors)
-                .is_err(),
+            super::validate_construction_selectors(
+                &mislabeled,
+                &authored,
+                &legacy_selectors,
+                false
+            )
+            .is_err(),
             "v1 retains its original exact bank contract"
         );
     }

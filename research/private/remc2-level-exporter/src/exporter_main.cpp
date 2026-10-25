@@ -655,7 +655,9 @@ CollisionMaskCapture capture_collision_masks(
         {"record_header_bytes", kCollisionMaskRecordHeaderBytes},
         {"bank", bank},
         {"vga_resolution_selector", x_WORD_180660_VGA_type_resolution},
-        {"selector_source", "authored class-10/model-45 par1 selectors"},
+        {"selector_source", external_level == 2
+            ? "source-closed house construction selectors"
+            : "authored class-10/model-45 par1 selectors"},
         {"pixel_encoding", "signed i16 little-endian"},
         {"pixel_order", "row-major (y then x)"},
         {"transparent_value", -1},
@@ -683,7 +685,8 @@ Bytes capture_feature_construction_inputs(
     const Type_Level_2FECE& authored,
     std::vector<std::uint16_t>& selectors,
     std::size_t& authored_model_45_row_count,
-    bool level_one) {
+    bool level_one,
+    bool successor_closure) {
     if (level_one && x_WORD_180660_VGA_type_resolution != 1) {
         throw std::runtime_error("isolated Level 1 feature seam requires VGA selector 1");
     }
@@ -696,7 +699,7 @@ Bytes capture_feature_construction_inputs(
         const auto& feature = authored.entity_0x30311[index];
         // Ordinary group-zero and later activated houses use the same BUILD
         // constructor as prepared features. Retain their real inputs too;
-        // the collision-mask census deliberately remains feature-only.
+        // collision provenance still records its original authored roots.
         if (feature.type_0x30311 == 10 && feature.subtype_0x30311 == 45) {
             if (feature.par1_14 >= str_D93C0_bldgprmbuffer.size()) {
                 throw std::runtime_error("authored house BUILD selector is outside the source table");
@@ -711,9 +714,23 @@ Bytes capture_feature_construction_inputs(
             17, 19, 22, 26, 29, 30, 31, 32, 33, 34, 35, 39, 40, 42, 47, 50, 62, 74
         };
         selectors.insert(selectors.end(), std::begin(builder_rows), std::end(builder_rows));
-        std::sort(selectors.begin(), selectors.end());
-        selectors.erase(std::unique(selectors.begin(), selectors.end()), selectors.end());
     }
+    // SetHouse copies byte_3 into the destruction successor selector. Later
+    // destruction can construct that BUILD footprint, including successors of
+    // successors. Level 2 also needs collision masks for this complete set.
+    for (std::size_t index = 0; successor_closure && index < selectors.size(); ++index) {
+        const std::uint16_t selector = selectors[index];
+        if (selector >= str_D93C0_bldgprmbuffer.size()) {
+            throw std::runtime_error("house successor BUILD selector is outside the source table");
+        }
+        const std::uint16_t successor = str_D93C0_bldgprmbuffer[selector].byte_3;
+        if (successor != 0 &&
+            std::find(selectors.begin(), selectors.end(), successor) == selectors.end()) {
+            selectors.push_back(successor);
+        }
+    }
+    std::sort(selectors.begin(), selectors.end());
+    selectors.erase(std::unique(selectors.begin(), selectors.end()), selectors.end());
     if (level_one && selectors.empty()) {
         throw std::runtime_error("Level 1 has no source house construction selectors");
     }
@@ -2116,7 +2133,8 @@ canonical_json campaign_source_facts(
     const canonical_json& objective_operations,
     std::uint8_t map_type_id,
     bool include_collision_masks,
-    bool include_building_parameters) {
+    bool include_building_parameters,
+    bool construction_collision_closure) {
     canonical_json selector_provenance = canonical_json::array();
     for (const auto& row : behavior_rows) {
         if (row.has_initial_source_slot || row.class_id != 10 || row.subtype != 45 ||
@@ -2188,7 +2206,7 @@ canonical_json campaign_source_facts(
             {"source_artifacts", campaign_source_artifacts(
                 owner_sources,
                 {dat_logical.c_str(), tab_logical.c_str()})},
-            {"version", 2}
+            {"version", construction_collision_closure ? 3 : 2}
         });
     }
     facts.push_back({
@@ -2200,9 +2218,10 @@ canonical_json campaign_source_facts(
         {"selector_provenance", selector_provenance},
         {"source_artifacts", campaign_source_artifacts(
             owner_sources,
-            {"CD_Files/DATA/BUILD0-0.DAT", "CD_Files/DATA/BUILD0-0.TAB",
-             "CD_Files/DATA/SPELLS.DAT", "CD_Files/DATA/TABLESN.DAT"})},
-        {"version", 1}
+            construction_collision_closure
+                ? std::initializer_list<const char*>{"CD_Files/DATA/BLDGPRM.DAT", "CD_Files/DATA/BUILD0-0.DAT", "CD_Files/DATA/BUILD0-0.TAB", "CD_Files/DATA/SPELLS.DAT", "CD_Files/DATA/TABLESN.DAT"}
+                : std::initializer_list<const char*>{"CD_Files/DATA/BUILD0-0.DAT", "CD_Files/DATA/BUILD0-0.TAB", "CD_Files/DATA/SPELLS.DAT", "CD_Files/DATA/TABLESN.DAT"})},
+        {"version", construction_collision_closure ? 2 : 1}
     });
     facts.push_back({
         {"fact_id", "level-records"},
@@ -2318,7 +2337,8 @@ canonical_json build_campaign_definition(
             objective_operations,
             profile.map_type_id,
             profile.includes_collision_masks,
-            profile.external == 2 || profile.external > 3)}
+            profile.external == 2 || profile.external > 3,
+            profile.external == 2)}
     };
     if (profile.external == 1) {
         const auto presentation_asset = [&](
@@ -2782,7 +2802,8 @@ int run(const Arguments& arguments) {
             authored,
             feature_building_selectors,
             authored_model_45_row_count,
-            level_one);
+            level_one,
+            arguments.level.external == 2);
     Bytes building_parameters;
     if (arguments.level.external == 2 || arguments.level.external > 3) {
         building_parameters = capture_building_parameters(owner_root);
@@ -2790,7 +2811,10 @@ int run(const Arguments& arguments) {
     CollisionMaskCapture collision_masks;
     if (include_collision_masks) {
         std::size_t collision_authored_count = 0;
-        const auto collision_selectors = building_selectors(authored, collision_authored_count);
+        auto collision_selectors = building_selectors(authored, collision_authored_count);
+        if (arguments.level.external == 2) {
+            collision_selectors = feature_building_selectors;
+        }
         collision_masks = capture_collision_masks(
             owner_root,
             collision_selectors,
@@ -2975,6 +2999,7 @@ int run(const Arguments& arguments) {
                 {"file", "feature-construction-inputs.bin"},
                 {"magic", "MCI3"},
                 {"version", 2},
+                {"successor_closure", arguments.level.external == 2},
                 {"record_count", feature_building_selectors.size()},
                 {"selectors", feature_building_selectors},
                 {"source", "live pinned BLDGPRM rows plus BUILD footprint bytes"}

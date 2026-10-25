@@ -1400,6 +1400,16 @@ impl CampaignDefinition {
             stage: ValidationStage::SourceFacts,
             message,
         })?;
+        if caller.external_level != 2
+            && source_facts.iter().any(|fact| {
+                fact.kind == super::source_facts::SourceFactKind::CollisionMask && fact.version == 3
+            })
+        {
+            return fail(
+                ValidationStage::SourceFacts,
+                "closed house collision profile is only qualified for Level 2",
+            );
+        }
         if profile.package_schema == LEVEL1_COLLISION_CAMPAIGN_PACKAGE_SCHEMA
             && !source_facts.iter().any(|fact| {
                 fact.kind == super::source_facts::SourceFactKind::CollisionMask && fact.version == 2

@@ -152,6 +152,15 @@ CAMPAIGN_PROFILES = {
         },
     },
 }
+# Nonzero byte_3 rows of the unchanged, hash-pinned BLDGPRM.DAT below.
+# Closure must not trust a candidate construction member's successor claims.
+BUILDING_DESTRUCTION_SUCCESSORS = {
+    15: 14, 16: 16, 18: 21, 20: 16, 21: 54, 23: 24, 24: 28,
+    25: 25, 27: 41, 36: 36, 37: 37, 38: 38, 41: 49, 43: 44,
+    44: 45, 55: 55, 56: 56, 57: 57, 59: 59, 60: 60, 63: 63,
+    64: 64, 65: 65, 66: 66, 68: 69, 69: 72, 70: 70, 71: 71,
+    72: 73,
+}
 CAMPAIGN_SOURCE_ARTIFACTS = {
     "CD_Files/DATA/BLDGPRM.DAT": (304, "1c4a7fdef5d4b811f871441f0380faaacd6e5e689e73fc4628bf8c5b51ea6f00"),
     "CD_Files/DATA/BUILD0-0.DAT": (80064, "3db5d9a763dedafbe3077eeeef47431da0b5d397e311f6ee46719a0fc51e8e5d"),
@@ -190,6 +199,10 @@ MSPRD0_0_DAT_SHA256 = "a81783458f1b81da262d60bc1f4bc28012137437f2fcedb75af441a4f
 LEVEL2_COLLISION_MASK_BANK_BYTES = 4638
 LEVEL2_COLLISION_MASK_BANK_SHA256 = (
     "cd438a156fc7738c8221ac403be2c5efc1a4ffd96dbad5d9a53b2a75036ca432"
+)
+LEVEL2_CLOSED_COLLISION_MASK_BANK_BYTES = 12836
+LEVEL2_CLOSED_COLLISION_MASK_BANK_SHA256 = (
+    "afb42f4c6d64cdd394c71eab88d3dea5f344853a1576e6314736d270de3010dd"
 )
 LEVEL2_V4_PLAYER_COMPONENT_VERSION = 3
 LEVEL2_V4_PLAYER_RECORD_BYTES = 662
@@ -656,8 +669,11 @@ def verify_feature_generation_input(package: Path, manifest: dict) -> None:
     descriptor = manifest["feature_generation_oracle"]
     construction = (package / "feature-construction-inputs.bin").read_bytes()
     construction_version = u16(construction, 4)
+    successor_closure = descriptor["construction_inputs"].get("successor_closure", False)
+    require(type(successor_closure) is bool, "construction closure marker is not boolean")
     expected_selectors = _campaign_construction_selectors(
-        (package / "authored-level.bin").read_bytes(), construction_version
+        (package / "authored-level.bin").read_bytes(), construction_version,
+        successor_closure=successor_closure,
     )
     assert descriptor == {
         "provenance": (
@@ -727,6 +743,7 @@ def verify_feature_generation_input(package: Path, manifest: dict) -> None:
             "file": "feature-construction-inputs.bin",
             "magic": "MCI3",
             "version": construction_version,
+            **({"successor_closure": successor_closure} if "successor_closure" in descriptor["construction_inputs"] else {}),
             "record_count": len(expected_selectors),
             "selectors": expected_selectors,
             "source": "live pinned BLDGPRM rows plus BUILD footprint bytes",
@@ -1032,6 +1049,7 @@ def validate_collision_mask_contract(
     metadata: dict,
     *,
     external_level: int,
+    construction_closure: bool = False,
 ) -> list[dict]:
     authored_rows = authored_model_45_rows(authored)
     declared_rows = metadata.get("selectors")
@@ -1080,6 +1098,9 @@ def validate_collision_mask_contract(
     require(parsed_rows == declared_rows, "collision-mask metadata differs from decoded records")
 
     expected_selectors = sorted({selector for _index, selector in authored_rows})
+    if construction_closure:
+        require(external_level == 2, "closed collision profile is not Level 2")
+        expected_selectors = _campaign_construction_selectors(authored, 2)
     actual_selectors = [row["selector"] for row in parsed_rows]
     require(
         actual_selectors == expected_selectors,
@@ -1110,6 +1131,8 @@ def verify_collision_masks(package: Path, manifest: dict) -> None:
         isinstance(metadata, dict),
         f"external Level {external_level} collision-mask metadata is missing",
     )
+    construction_closure = metadata.get("selector_source") == "source-closed house construction selectors"
+    require(not construction_closure or external_level == 2, "closed collision profile is not Level 2")
     base_metadata = {
         "file": "collision-masks.bin",
         "magic": "MCM1",
@@ -1118,7 +1141,7 @@ def verify_collision_masks(package: Path, manifest: dict) -> None:
         "record_header_bytes": 12,
         "bank": bank,
         "vga_resolution_selector": 1,
-        "selector_source": "authored class-10/model-45 par1 selectors",
+        "selector_source": "source-closed house construction selectors" if construction_closure else "authored class-10/model-45 par1 selectors",
         "pixel_encoding": "signed i16 little-endian",
         "pixel_order": "row-major (y then x)",
         "transparent_value": -1,
@@ -1156,11 +1179,11 @@ def verify_collision_masks(package: Path, manifest: dict) -> None:
     content = content_path.read_bytes()
     if external_level == 2:
         require(
-            len(content) == LEVEL2_COLLISION_MASK_BANK_BYTES,
+            len(content) == (LEVEL2_CLOSED_COLLISION_MASK_BANK_BYTES if construction_closure else LEVEL2_COLLISION_MASK_BANK_BYTES),
             "Level 2 collision-mask bank byte identity differs from the qualified source bank",
         )
         require(
-            hashlib.sha256(content).hexdigest() == LEVEL2_COLLISION_MASK_BANK_SHA256,
+            hashlib.sha256(content).hexdigest() == (LEVEL2_CLOSED_COLLISION_MASK_BANK_SHA256 if construction_closure else LEVEL2_COLLISION_MASK_BANK_SHA256),
             "Level 2 collision-mask bank SHA-256 differs from the qualified source bank",
         )
     validate_collision_mask_contract(
@@ -1168,6 +1191,7 @@ def verify_collision_masks(package: Path, manifest: dict) -> None:
         content,
         metadata,
         external_level=external_level,
+        construction_closure=construction_closure,
     )
 
 
@@ -1955,6 +1979,8 @@ def _campaign_decode_feature_inputs(content: bytes) -> list[int]:
         require(cursor + 12 <= len(content), "feature construction input record is truncated")
         selector, width, height, extent = u16(content, cursor), content[cursor + 6], content[cursor + 7], u32(content, cursor + 8)
         require(not selectors or selector > selectors[-1], "feature construction selectors are not strictly ordered")
+        if u16(content, 4) == 2:
+            require(content[cursor + 5] == BUILDING_DESTRUCTION_SUCCESSORS.get(selector, 0), "feature construction successor differs from pinned BLDGPRM")
         require(width > 0 and height > 0 and extent == width * height * 2, "feature construction footprint extent changed")
         cursor += 12 + extent
         require(cursor <= len(content), "feature construction footprint is truncated")
@@ -1963,7 +1989,7 @@ def _campaign_decode_feature_inputs(content: bytes) -> list[int]:
     return selectors
 
 
-def _campaign_construction_selectors(authored: bytes, version: int) -> list[int]:
+def _campaign_construction_selectors(authored: bytes, version: int, *, successor_closure: bool = True) -> list[int]:
     """Keep authored collision roots separate from dynamic BUILD inputs."""
     require(version in {1, 2}, "feature construction input version changed")
     if version == 1:
@@ -1982,6 +2008,14 @@ def _campaign_construction_selectors(authored: bytes, version: int) -> list[int]
         # sub_232C0's constructor choices, as retained by the exporter and
         # consumed by the settlement owner; this is not an actor allowlist.
         selectors.update((17, 19, 22, 26, 29, 30, 31, 32, 33, 34, 35, 39, 40, 42, 47, 50, 62, 74))
+    pending = list(selectors) if successor_closure else []
+    while pending:
+        selector = pending.pop()
+        require(0 <= selector < 76, "house successor BUILD selector is outside the source table")
+        successor = BUILDING_DESTRUCTION_SUCCESSORS.get(selector, 0)
+        if successor and successor not in selectors:
+            selectors.add(successor)
+            pending.append(successor)
     return sorted(selectors)
 
 
@@ -2011,6 +2045,11 @@ def _campaign_decode_building_parameters(content: bytes) -> list[tuple[int, int,
         (u16(content, offset), content[offset + 2], content[offset + 3])
         for offset in range(0, len(content), 4)
     ]
+    require(
+        {index: row[2] for index, row in enumerate(rows) if row[2]}
+        == BUILDING_DESTRUCTION_SUCCESSORS,
+        "building destruction successors differ from pinned source closure",
+    )
     require(rows[21] == (6, 8, 54) and rows[54] == (8, 8, 0), "qualified building objective chain changed")
     selector, chain, seen = 21, [], set()
     while selector:
@@ -2107,8 +2146,10 @@ def _campaign_validate_source_facts(package: Path, facts_value: object, files: d
         kind, member_name, provenance, artifact_paths = expected[fact_id]
         fact_kind = _bounded_integer(fact["kind"], 0xFFFF, f"SourceFact {fact_id} kind")
         fact_version = _bounded_integer(fact["version"], 0xFFFF, f"SourceFact {fact_id} version")
-        require(fact_version == 1 or (kind == 3 and fact_version == 2), f"SourceFact {fact_id} version differs")
-        if kind == 3 and fact_version == 2:
+        require(fact_version == 1 or (kind == 2 and fact_version == 2) or (kind == 3 and fact_version in {2, 3}), f"SourceFact {fact_id} version differs")
+        if kind == 2 and fact_version == 2:
+            artifact_paths = artifact_paths | {"CD_Files/DATA/BLDGPRM.DAT"}
+        if kind == 3 and fact_version in {2, 3}:
             bank = ("MSPRD0-0", "MSPRN0-0", "MSPRC0-0")[profile["map_type_id"]]
             artifact_paths = {f"CD_Files/DATA/{bank}.DAT", f"CD_Files/DATA/{bank}.TAB"}
         if kind == 3 and profile.get("collision_fact_version") is not None:
@@ -2134,15 +2175,22 @@ def _campaign_validate_source_facts(package: Path, facts_value: object, files: d
 
     feature_inputs = (package / "feature-construction-inputs.bin").read_bytes()
     feature_selectors = _campaign_decode_feature_inputs(feature_inputs)
+    closed_construction = any(fact["kind"] == 2 and fact["version"] == 2 for fact in facts)
+    closed_collision = any(fact["kind"] == 3 and fact["version"] == 3 for fact in facts)
+    require(not closed_construction or u16(feature_inputs, 4) == 2, "source-closed construction profile requires MCI3 v2")
     authored_selectors = [row["model"] for row in behavior_rows if row["initial_source_slot"] is None and row["class"] == 10 and row["subtype"] == 45 and row["action"] == 255]
-    require(feature_selectors == _campaign_construction_selectors(authored, u16(feature_inputs, 4)), "feature construction selectors differ from versioned source closure")
+    require(feature_selectors == _campaign_construction_selectors(authored, u16(feature_inputs, 4), successor_closure=closed_construction), "feature construction selectors differ from versioned source closure")
     if "collision-mask-bank" in source_fact_ids:
         collision = (package / "collision-masks.bin").read_bytes()
-        _campaign_decode_collision(collision, authored_selectors)
+        _campaign_decode_collision(collision, feature_selectors if closed_collision else authored_selectors)
+        if closed_collision:
+            require(closed_construction and profile["package_schema"] == LEVEL2_CAMPAIGN_PACKAGE_SCHEMA, "closed collision profile is not source-closed Level 2")
+        expected_bytes = LEVEL2_CLOSED_COLLISION_MASK_BANK_BYTES if closed_collision else profile["collision_bank_bytes"]
+        expected_sha256 = LEVEL2_CLOSED_COLLISION_MASK_BANK_SHA256 if closed_collision else profile["collision_bank_sha256"]
         require(
-            len(collision) == profile["collision_bank_bytes"]
+            len(collision) == expected_bytes
             and hashlib.sha256(collision).hexdigest()
-            == profile["collision_bank_sha256"],
+            == expected_sha256,
             "collision SourceFact differs from the census-qualified bytes",
         )
     if "building-parameters" in source_fact_ids:
