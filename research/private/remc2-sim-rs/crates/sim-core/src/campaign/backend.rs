@@ -4928,7 +4928,13 @@ pub(crate) mod tests {
                 let authored_goats = authored_campaign.level2_compatibility().goats();
                 let mut changed = 0;
                 for (old_goat, authored_goat) in old_goats.iter().zip(authored_goats) {
-                    if old_goat == authored_goat {
+                    assert_eq!(
+                        authored_goat.behavior_flags,
+                        expected_vigilant.behavior_flags
+                    );
+                    let mut normalized = authored_goat.clone();
+                    normalized.behavior_flags = old_goat.behavior_flags;
+                    if &normalized == old_goat {
                         continue;
                     }
                     changed += 1;
@@ -4936,7 +4942,6 @@ pub(crate) mod tests {
                     assert_eq!(authored_goat.stage_var_2, 10);
                     assert_eq!(authored_goat.target_entity_index, Some(player_entity_index));
                     assert_eq!(authored_goat.rng, old_goat.rng);
-                    let mut normalized = authored_goat.clone();
                     normalized.action = old_goat.action;
                     normalized.stage_var_2 = old_goat.stage_var_2;
                     normalized.target_entity_index = old_goat.target_entity_index;
