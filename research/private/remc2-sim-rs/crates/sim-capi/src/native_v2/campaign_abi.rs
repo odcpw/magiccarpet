@@ -772,7 +772,16 @@ pub(super) fn open_campaign_session(
             Some(&campaign_package_sha256),
         )?
         .map(Arc::new);
-        let day_music = load_optional_level2_day_music(asset_cache_path.as_deref())?;
+        let music_root = asset_cache_path
+            .as_deref()
+            .map(PathBuf::from)
+            .or_else(|| std::env::var_os("MC_ASSET_CACHE_PATH").map(PathBuf::from));
+        let day_music = super::campaign_audio::load_campaign_music(
+            music_root.as_deref(),
+            campaign_selection,
+            inspection.package_sha256(),
+            &campaign_package_sha256,
+        )?;
         CampaignSessionRecord {
             kind: CampaignSessionKind::Level2 {
                 inspection,
@@ -883,8 +892,10 @@ pub extern "C" fn mc_native_campaign_session_reset(handle: u64) -> i32 {
                 }
                 day_frame_state.reset(session.generation);
                 session.effect_state_hashes.clear();
-                if session.day_music.is_some() {
-                    session.day_music = Some(CampaignDayMusicLifecycle::start_day());
+                if let Some(music) = session.day_music.as_mut() {
+                    let track = music.track;
+                    *music = CampaignDayMusicLifecycle::start_day();
+                    music.track = track;
                 }
             }
             Ok(())

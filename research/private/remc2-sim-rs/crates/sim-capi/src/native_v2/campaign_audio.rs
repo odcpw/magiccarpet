@@ -296,6 +296,11 @@ mod tests {
 
     #[test]
     fn installed_cave_cache_resolves_source_track_three_and_rejects_wrong_package() {
+        use super::super::campaign_abi::{
+            mc_native_campaign_session_destroy, mc_native_campaign_session_reset,
+            open_campaign_session, with_campaign_session,
+        };
+        use super::super::{MC_NATIVE_ABI_VERSION, MC_STATUS_OK, McCampaignSelectionV2};
         let root = generated().join("mc-oi62-environment-level4-audio-v3");
         let descriptor: Value =
             serde_json::from_slice(&fs::read(root.join("audio/descriptor.json")).unwrap()).unwrap();
@@ -319,5 +324,44 @@ mod tests {
             )
             .is_err()
         );
+        // Exercise the same direct descriptor entry used by Unity, including
+        // its reset lifecycle; the standalone loader alone missed this seam.
+        let package = generated().join("mc-bhq6-ordinary-20261025-zclu5fjj/level4");
+        let package = package.to_str().unwrap();
+        let native_selection = McCampaignSelectionV2 {
+            abi_version: MC_NATIVE_ABI_VERSION,
+            struct_size: std::mem::size_of::<McCampaignSelectionV2>() as u32,
+            external_level: 4,
+            internal_level: 3,
+            map_type: 2,
+            ..Default::default()
+        };
+        let mut handle = 0;
+        open_campaign_session(
+            package.as_ptr(),
+            package.len() as u32,
+            std::ptr::null(),
+            0,
+            Some(root.to_str().unwrap().to_owned()),
+            &native_selection,
+            &mut handle,
+        )
+        .unwrap();
+        let music_state = || {
+            with_campaign_session(handle, |record| {
+                let music = record.day_music.expect("bound Cave music");
+                Ok((
+                    record.generation,
+                    music.track,
+                    music.start_count,
+                    music.playing,
+                ))
+            })
+            .unwrap()
+        };
+        assert_eq!(music_state(), (0, 3, 1, true));
+        assert_eq!(mc_native_campaign_session_reset(handle), MC_STATUS_OK);
+        assert_eq!(music_state(), (1, 3, 1, true));
+        assert_eq!(mc_native_campaign_session_destroy(handle), MC_STATUS_OK);
     }
 }
