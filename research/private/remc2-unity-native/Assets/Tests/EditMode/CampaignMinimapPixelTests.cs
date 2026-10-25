@@ -44,8 +44,7 @@ namespace MagicCarpet.Native.Tests
             var root = new GameObject("package environment production root");
             root.SetActive(false);
             var runtime = root.AddComponent<MagicCarpetRuntime>();
-            var night = Path.Combine(generated, restoreEarnedOpening
-                ? "mc2-level1-night-cache-v2" : "level1-unity-asset-cache-plan29-final");
+            var night = Path.Combine(generated, "mc2-level1-night-cache-v2");
             var environment = Path.Combine(generated, "mc-oi62-environment-level1-v2");
             var arguments = new List<string> {
                 "-mc-game-runtime", "-mc-runtime-loading-cache", night,
