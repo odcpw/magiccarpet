@@ -2327,7 +2327,38 @@ mod tests {
         assert_eq!(command.play_type, 1);
         assert_eq!(command.action, MC_AUDIO_ACTION_START);
         assert_ne!(command.voice_index, MC_AUDIO_VOICE_NONE);
+        let check_effect_page = |generation| {
+            let query = McEventQueryV2 {
+                abi_version: MC_NATIVE_ABI_VERSION,
+                struct_size: struct_size::<McEventQueryV2>(),
+                generation,
+                cursor: command.event_sequence - 1,
+                reserved: [0; 4],
+            };
+            let mut rows = [McEventV2::default(); 1];
+            let mut batch = McEventBatchV2::default();
+            let status = super::super::campaign_abi::mc_native_campaign_events_copy_since(
+                handle,
+                &raw const query,
+                rows.as_mut_ptr(),
+                1,
+                struct_size::<McEventV2>(),
+                &raw mut batch,
+                struct_size::<McEventBatchV2>(),
+            );
+            if status == MC_STATUS_OK {
+                assert_eq!(batch.generation, generation);
+                assert_eq!(batch.written, 1);
+                assert_eq!(rows[0].generation, generation);
+                assert_eq!(rows[0].sequence, command.event_sequence);
+                assert_eq!(rows[0].state_hash, command.state_hash);
+            }
+            status
+        };
+        assert_eq!(check_effect_page(1), MC_STATUS_OK);
         assert_eq!(mc_game_runtime_pause_v1(handle, 3), MC_STATUS_OK);
+        assert_eq!(check_effect_page(1), MC_STATUS_GENERATION_MISMATCH);
+        assert_eq!(check_effect_page(2), MC_STATUS_OK);
         let mut paused = McAudioCommandV2::default();
         assert_eq!(
             mc_game_runtime_audio_command_for_event_v1(

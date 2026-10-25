@@ -1928,20 +1928,21 @@ pub extern "C" fn mc_native_campaign_events_copy_since(
                 ));
             };
             let campaign = reset.descriptor()?;
-            if query.generation != session.generation || query.generation != campaign.generation() {
+            if query.generation != session.generation {
                 return Err(AbiError::new(
                     MC_STATUS_GENERATION_MISMATCH,
                     format!(
                         "campaign effect generation {} does not match {}",
-                        query.generation,
-                        campaign.generation()
+                        query.generation, session.generation
                     ),
                 ));
             }
             let page = campaign
                 .effects_after(
                     EffectCursor {
-                        generation: query.generation,
+                        // Runtime pause/resume advances the public session
+                        // generation without resetting the campaign journal.
+                        generation: campaign.generation(),
                         next_sequence: query.cursor,
                     },
                     usize::try_from(capacity).map_err(|_| {
