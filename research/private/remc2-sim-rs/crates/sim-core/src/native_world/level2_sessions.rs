@@ -1,5 +1,224 @@
 use super::*;
 
+#[cfg(test)]
+mod castle_revival_tests {
+    use super::*;
+
+    fn fixture() -> (Level2SharedSpellResetSession, Level2EconomyState) {
+        let inspection = NativeWorld::inspect_level2(super::super::tests::level_two_fixture_path())
+            .expect("qualified source player/arena package");
+        let shared = Level2SharedSpellResetSession::from_campaign_parts(
+            inspection.entities(),
+            inspection.players(),
+            inspection.runtime(),
+        )
+        .unwrap();
+        let economy = Level2EconomyState::from_parts(
+            SessionTerrain::from_inspection(&inspection),
+            inspection.entities(),
+            shared.player_entity.mana,
+            shared.player_entity.model,
+            0,
+            shared.local_player.enabled_spell_holders[2],
+            inspection.runtime().random_state,
+        )
+        .unwrap();
+        (shared, economy)
+    }
+
+    fn dead_actor(shared: &mut Level2SharedSpellResetSession) {
+        let mut actor = shared.player_entity.clone();
+        actor.set_player_death_state();
+        actor.set_life(-1);
+        actor.set_mana(-200);
+        shared.sync_player_entity_from_authority(&actor);
+    }
+
+    #[test]
+    fn castle_revival_restores_same_actor_and_rebuilds_holders_without_resetting_progress() {
+        let (mut shared, mut economy) = fixture();
+        let old_holder = shared
+            .pickup(shared.local_player.enabled_spell_holders[0])
+            .unwrap();
+        let mut dropped = old_holder.clone();
+        dropped.set_source_action(1);
+        dropped.set_control_flags(dropped.control_flags & !1);
+        dropped.set_life(217);
+        shared.sync_released_holder(&dropped);
+        for family in 0..PLAYER_SPELL_COUNT {
+            shared.set_enabled_spell_holder_index(family, 0);
+        }
+        shared.set_enabled_spell_holder_index(0, 1);
+        shared.set_enabled_spell_holder_index(3, 1);
+        shared.local_player.persistent_spell_experience[0] = 12_000;
+        shared.local_player.runtime_spell_experience[0] = 123;
+        shared.local_player.family_selected_tiers[0] = 1;
+        shared.local_player.runtime_spell_experience[3] = 400;
+        shared.local_player.family_selected_tiers[3] = 2;
+        shared.local_player.runtime_spell_experience[2] = 99;
+        shared.local_player.left_spell_slot_raw = 0;
+        shared.local_player.right_spell_slot_raw = 3;
+        shared.local_player.left_subspell_index = 2;
+        shared.local_player.right_subspell_index = 2;
+        shared.local_player.record[345..347].copy_from_slice(&0x5a73_u16.to_le_bytes());
+        let before = shared.local_player.clone();
+        dead_actor(&mut shared);
+        let dead = shared.player_entity.clone();
+        let position = Position {
+            x: 4352,
+            y: 6272,
+            z: -123,
+        };
+        let holders = shared
+            .revive_local_player_at_castle(&mut economy, position, false)
+            .unwrap();
+
+        let actor = &shared.player_entity;
+        assert_eq!(actor.index, dead.index);
+        assert_eq!(actor.source_id, dead.source_id);
+        assert_eq!(
+            actor.position, position,
+            "source uses Castle z without an offset"
+        );
+        assert_eq!(
+            (actor.max_life, actor.life, actor.max_mana, actor.mana),
+            (10_000, 10_000, 1_000, 1_000)
+        );
+        assert_eq!(actor.action, 0);
+        assert_eq!(actor.control_flags, (dead.control_flags & !0x20) | 1);
+        assert_eq!(actor.actual_speed, dead.actual_speed);
+        assert_eq!(actor.entity_rng, dead.entity_rng);
+        assert_eq!(actor.mana_regen, dead.mana_regen);
+        assert_eq!(shared.player_mana, 1_000);
+        assert_eq!(
+            shared.pickup(dropped.index),
+            Some(&dropped),
+            "released holder stays in the world"
+        );
+        assert_eq!(
+            holders.iter().map(|row| row.model).collect::<Vec<_>>(),
+            [0, 3]
+        );
+        assert!(holders.iter().all(|row| row.index != dropped.index));
+        for holder in &holders {
+            assert_eq!(holder.position, position);
+            assert_eq!(holder.source_spell_parent_entity_index(), dead.index);
+            assert_eq!(holder.action, holder.model * 3);
+            assert_eq!(holder.control_flags, 5);
+            assert_eq!(holder.level_gate, 1);
+            assert_eq!(
+                shared.local_player.enabled_spell_holders[usize::from(holder.model)],
+                holder.index
+            );
+        }
+        let player = &shared.local_player;
+        assert_eq!(
+            player.persistent_spell_experience,
+            before.persistent_spell_experience
+        );
+        assert_eq!(
+            player.runtime_spell_experience,
+            before.runtime_spell_experience
+        );
+        assert_eq!(
+            (
+                player.family_selected_tiers[0],
+                player.family_selected_tiers[3]
+            ),
+            (1, 1)
+        );
+        assert_eq!(
+            (
+                player.spell_unlocked_levels[0],
+                player.spell_unlocked_levels[3]
+            ),
+            (2, 1)
+        );
+        assert_eq!(
+            (player.left_spell_slot_raw, player.right_spell_slot_raw),
+            (0, 3)
+        );
+        assert_eq!(
+            (player.left_subspell_index, player.right_subspell_index),
+            (1, 1)
+        );
+        assert_eq!(player.spell_hand_eligibility, before.spell_hand_eligibility);
+        assert_eq!(player.acquired_spell_flags, before.acquired_spell_flags);
+        assert_eq!(player.spell_enabled_flags, before.spell_enabled_flags);
+        assert_eq!(player.learned_spell_flags, before.learned_spell_flags);
+        assert_eq!(player.banishment_state_0x006, before.banishment_state_0x006);
+        assert_eq!(
+            &player.record[345..347],
+            &before.record[345..347],
+            "word159 is not a compact record offset"
+        );
+        assert_eq!(&player.record[20..24], &[0; 4]);
+        assert_eq!(&player.record[32..38], &[0; 6]);
+        assert_eq!(
+            player.type_str_164_auxiliary.unwrap().dword_0x16D_365,
+            2_000
+        );
+        assert!(
+            shared.pending_effects.is_empty(),
+            "sub_6DB50(0,0) does not announce improvements"
+        );
+    }
+
+    #[test]
+    fn castle_revival_exhaustion_keeps_earlier_holders_and_caps_only_ordinary_castle_xp() {
+        let (mut shared, mut economy) = fixture();
+        for family in 0..PLAYER_SPELL_COUNT {
+            shared.set_enabled_spell_holder_index(family, 0);
+        }
+        for family in [0, 3, 25] {
+            shared.set_enabled_spell_holder_index(family, 1);
+        }
+        shared.local_player.runtime_spell_experience[2] = 101;
+        shared.local_player.persistent_spell_experience[2] = 42;
+        let only_slot = *economy.free_slots.last().unwrap();
+        economy.free_slots = vec![only_slot];
+        dead_actor(&mut shared);
+        let holders = shared
+            .revive_local_player_at_castle(
+                &mut economy,
+                Position {
+                    x: 1024,
+                    y: 2048,
+                    z: 1024,
+                },
+                true,
+            )
+            .unwrap();
+        assert_eq!(holders.len(), 1);
+        assert_eq!((holders[0].model, holders[0].index), (0, only_slot));
+        assert_eq!(shared.local_player.enabled_spell_holders[0], only_slot);
+        assert_eq!(shared.local_player.enabled_spell_holders[3], 0);
+        assert_eq!(shared.local_player.enabled_spell_holders[25], 0);
+        assert_eq!(economy.free_slot_count(), 0);
+        assert_eq!(shared.local_player.runtime_spell_experience[2], 7);
+        assert_eq!(shared.local_player.persistent_spell_experience[2], 42);
+        assert_eq!(shared.local_player.spell_unlocked_levels[2], 1);
+    }
+
+    #[test]
+    fn castle_revival_rejects_a_living_actor_before_mutating_inventory_or_arena() {
+        let (mut shared, mut economy) = fixture();
+        let actor = shared.player_entity.clone();
+        let player = shared.local_player.clone();
+        let rng = economy.global_rng;
+        let slots = economy.free_slots.clone();
+        assert!(
+            shared
+                .revive_local_player_at_castle(&mut economy, actor.position, true)
+                .is_err()
+        );
+        assert_eq!(shared.player_entity, actor);
+        assert_eq!(shared.local_player, player);
+        assert_eq!(economy.global_rng, rng);
+        assert_eq!(economy.free_slots, slots);
+    }
+}
+
 impl Level2SharedSpellResetSession {
     fn acquisition_from_source(
         source: &EntitySnapshot,
@@ -753,86 +972,7 @@ impl Level2SharedSpellResetSession {
                         "Level 2 direct starting family {family} could not allocate a holder"
                     ))
                 })?;
-            // AddSpellXX_XX_51120 starts from NewEvent, even when the
-            // destination world has no authored spell pickups or holders.
-            // Reuse the allocated slot's RNG rather than cloning unrelated
-            // live cooldown, damage or constructor state.
-            let mut holder = cave_features::new_event(
-                source.source_entity_index,
-                source.entity_rng,
-                source.position,
-            );
-            holder.index = source.source_entity_index;
-            holder.source_id = source.source_entity_index;
-            holder.authority = EntityAuthority::SpellActivationLive;
-            holder.active = source.active;
-            holder.max_life = 0;
-            holder.life = 0;
-            holder.class = 15;
-            holder.model = source.family;
-            holder.control_flags = 5;
-            holder.entity_rng = source.entity_rng;
-            holder.action = source.action;
-            holder.action_marker = 0;
-            holder.level_gate = tier.cast_signed();
-            holder.position = source.position;
-            holder.yaw = 75;
-            holder.pitch = 768;
-            holder.fov = 1280;
-            holder.phase = source.phase;
-            holder.subspell_index = profile.subspell_index;
-            holder.byte_3b = profile.byte_0x3b;
-            holder.byte_3c = 0;
-            holder.font_type_index = 0;
-            holder.active_value = 0;
-            holder.activation_value = profile.word_0x30;
-            holder.mana_regen = profile.mana_regen;
-            holder.max_mana = profile.max_mana;
-            holder.mana_cost = profile.max_mana;
-            holder.mana = profile.mana;
-            holder.particle_parameter_index = Some(77);
-            holder.parameter_relation = Some(59);
-            holder.next_relation = None;
-            holder.special_relation = EntitySpecialRelation::None;
-            holder.record[0..2].copy_from_slice(&source.source_entity_index.to_le_bytes());
-            holder.record[2] = u8::from(source.active);
-            holder.record[4..8].fill(0);
-            holder.record[8..16].fill(0);
-            holder.record[16..20].copy_from_slice(&holder.control_flags.to_le_bytes());
-            holder.record[24..26].copy_from_slice(&source.entity_rng.to_le_bytes());
-            holder.record[26..30].fill(0);
-            holder.record[30..32].copy_from_slice(&source.source_entity_index.to_le_bytes());
-            holder.record[32..34].copy_from_slice(&75_i16.to_le_bytes());
-            holder.record[34..36].copy_from_slice(&768_i16.to_le_bytes());
-            holder.record[36..38].copy_from_slice(&768_i16.to_le_bytes());
-            holder.record[38..40].copy_from_slice(&1280_i16.to_le_bytes());
-            holder.record[44..46].copy_from_slice(&player_entity_index.to_le_bytes());
-            holder.record[46..48].copy_from_slice(&profile.subspell_index.to_le_bytes());
-            holder.record[48..50].fill(0);
-            holder.record[50..52].fill(0);
-            holder.record[52..54].copy_from_slice(&profile.word_0x30.to_le_bytes());
-            holder.record[58..60].fill(0);
-            holder.record[164..168].copy_from_slice(&60_u32.to_le_bytes());
-            holder.record[63] = profile.byte_0x3b;
-            holder.record[64] = 0;
-            holder.record[65] = 0;
-            holder.record[66] = source.phase;
-            holder.record[67] = 15;
-            holder.record[68] = family;
-            holder.record[73] = source.action;
-            holder.record[74] = tier;
-            holder.record[78..80].fill(0);
-            holder.record[86..88].copy_from_slice(&75_i16.to_le_bytes());
-            holder.record[88..90].copy_from_slice(&768_i16.to_le_bytes());
-            holder.record[90..92].copy_from_slice(&768_i16.to_le_bytes());
-            holder.record[92..94].copy_from_slice(&1280_i16.to_le_bytes());
-            holder.record[94..96].copy_from_slice(&77_i16.to_le_bytes());
-            holder.record[80..82].copy_from_slice(&source.position.x.to_le_bytes());
-            holder.record[82..84].copy_from_slice(&source.position.y.to_le_bytes());
-            holder.record[84..86].copy_from_slice(&source.position.z.to_le_bytes());
-            holder.record[140..144].copy_from_slice(&profile.mana_regen.to_le_bytes());
-            holder.record[144..148].copy_from_slice(&profile.max_mana.to_le_bytes());
-            holder.record[148..152].copy_from_slice(&profile.mana.to_le_bytes());
+            let holder = Self::starting_spell_holder(source, player_entity_index, tier, profile);
             rows.push((family, tier, holder));
         }
 
@@ -888,6 +1028,229 @@ impl Level2SharedSpellResetSession {
                 self.spell_levels[family].max(self.local_player.family_selected_tiers[family]);
         }
         Ok(())
+    }
+
+    /// The shared AddSpell constructor used by campaign carry and sub_5CF40.
+    /// Start from NewEvent and the allocated slot's RNG, never a dropped
+    /// holder's live cooldown, damage or lifecycle state.
+    fn starting_spell_holder(
+        source: Level2StartingSpellHolderSource,
+        player_entity_index: u16,
+        tier: u8,
+        profile: Level2SetSpellProfile,
+    ) -> EntitySnapshot {
+        let mut holder = cave_features::new_event(
+            source.source_entity_index,
+            source.entity_rng,
+            source.position,
+        );
+        holder.index = source.source_entity_index;
+        holder.source_id = source.source_entity_index;
+        holder.authority = EntityAuthority::SpellActivationLive;
+        holder.active = source.active;
+        holder.max_life = 0;
+        holder.life = 0;
+        holder.class = 15;
+        holder.model = source.family;
+        holder.control_flags = 5;
+        holder.entity_rng = source.entity_rng;
+        holder.action = source.action;
+        holder.action_marker = 0;
+        holder.level_gate = tier.cast_signed();
+        holder.position = source.position;
+        holder.yaw = 75;
+        holder.pitch = 768;
+        holder.fov = 1280;
+        holder.phase = source.phase;
+        holder.subspell_index = profile.subspell_index;
+        holder.byte_3b = profile.byte_0x3b;
+        holder.byte_3c = 0;
+        holder.font_type_index = 0;
+        holder.active_value = 0;
+        holder.activation_value = profile.word_0x30;
+        holder.mana_regen = profile.mana_regen;
+        holder.max_mana = profile.max_mana;
+        holder.mana_cost = profile.max_mana;
+        holder.mana = profile.mana;
+        holder.particle_parameter_index = Some(77);
+        holder.parameter_relation = Some(59);
+        holder.next_relation = None;
+        holder.special_relation = EntitySpecialRelation::None;
+        holder.record[0..2].copy_from_slice(&source.source_entity_index.to_le_bytes());
+        holder.record[2] = u8::from(source.active);
+        holder.record[4..8].fill(0);
+        holder.record[8..16].fill(0);
+        holder.record[16..20].copy_from_slice(&holder.control_flags.to_le_bytes());
+        holder.record[24..26].copy_from_slice(&source.entity_rng.to_le_bytes());
+        holder.record[26..30].fill(0);
+        holder.record[30..32].copy_from_slice(&source.source_entity_index.to_le_bytes());
+        holder.record[32..34].copy_from_slice(&75_i16.to_le_bytes());
+        holder.record[34..36].copy_from_slice(&768_i16.to_le_bytes());
+        holder.record[36..38].copy_from_slice(&768_i16.to_le_bytes());
+        holder.record[38..40].copy_from_slice(&1280_i16.to_le_bytes());
+        holder.record[44..46].copy_from_slice(&player_entity_index.to_le_bytes());
+        holder.record[46..48].copy_from_slice(&profile.subspell_index.to_le_bytes());
+        holder.record[48..50].fill(0);
+        holder.record[50..52].fill(0);
+        holder.record[52..54].copy_from_slice(&profile.word_0x30.to_le_bytes());
+        holder.record[58..60].fill(0);
+        holder.record[164..168].copy_from_slice(&60_u32.to_le_bytes());
+        holder.record[63] = profile.byte_0x3b;
+        holder.record[64] = 0;
+        holder.record[65] = 0;
+        holder.record[66] = source.phase;
+        holder.record[67] = 15;
+        holder.record[68] = source.family;
+        holder.record[73] = source.action;
+        holder.record[74] = tier;
+        holder.record[78..80].fill(0);
+        holder.record[86..88].copy_from_slice(&75_i16.to_le_bytes());
+        holder.record[88..90].copy_from_slice(&768_i16.to_le_bytes());
+        holder.record[90..92].copy_from_slice(&768_i16.to_le_bytes());
+        holder.record[92..94].copy_from_slice(&1280_i16.to_le_bytes());
+        holder.record[94..96].copy_from_slice(&77_i16.to_le_bytes());
+        holder.record[80..82].copy_from_slice(&source.position.x.to_le_bytes());
+        holder.record[82..84].copy_from_slice(&source.position.y.to_le_bytes());
+        holder.record[84..86].copy_from_slice(&source.position.z.to_le_bytes());
+        holder.record[140..144].copy_from_slice(&profile.mana_regen.to_le_bytes());
+        holder.record[144..148].copy_from_slice(&profile.max_mana.to_le_bytes());
+        holder.record[148..152].copy_from_slice(&profile.mana.to_le_bytes());
+        holder
+    }
+
+    /// Existing-human-actor branch of sub_5C950/sub_5CF40 (Space action 15).
+    /// The caller validates the linked Castle, runs sub_49F90 and relocates
+    /// the actor's map-chain entry BEFORE these holder births, then publishes
+    /// the new holders and actor into the source arena. No
+    /// mission reset, Castle resource write or dropped-holder reclaim occurs.
+    pub(crate) fn revive_local_player_at_castle(
+        &mut self,
+        economy: &mut Level2EconomyState,
+        castle_position: Position,
+        cap_castle_experience: bool,
+    ) -> Result<Vec<EntitySnapshot>> {
+        if !self.player_entity.active
+            || self.player_entity.life >= 0
+            || self.local_player.is_ai
+            || self.local_player.entity_index != self.player_entity.index
+        {
+            return Err(NativeWorldError::new(
+                "Castle revival requires the existing dead local human actor",
+            ));
+        }
+        let owner_index = self
+            .players
+            .iter()
+            .position(|player| player.entity_index == self.player_entity.index)
+            .ok_or_else(|| NativeWorldError::new("Castle revival local player row is absent"))?;
+
+        let mut actor = self.player_entity.clone();
+        actor.set_source_action(0);
+        actor.set_control_flags((actor.control_flags & !0x20) | 1);
+        actor.set_position(castle_position);
+        actor.set_max_life(10_000);
+        actor.max_mana = 1_000;
+        actor.record[144..148].copy_from_slice(&1_000_i32.to_le_bytes());
+        // Source fills current life/mana after sub_5CF40. No spell constructor
+        // consumes them before this point; cold lifecycle caches need the
+        // restored parent values rather than the death projection.
+        actor.set_life(10_000);
+        actor.set_mana(1_000);
+        self.sync_player_entity_from_authority(&actor);
+        self.player_mana = actor.mana;
+        self.caster.mana = actor.mana;
+        self.caster.control_flags = actor.control_flags;
+
+        // These are compact exporter offsets, NOT Type_str_164 raw offsets.
+        self.local_player.record[20..24].fill(0); // speed, strafeSpeed
+        self.local_player.record[32..38].fill(0); // moveBoost, yaw, fov
+        self.local_player.record[565..569].copy_from_slice(&2_048_i32.to_le_bytes());
+        self.local_player.record[569..573].copy_from_slice(&2_048_i32.to_le_bytes());
+        if let Some(auxiliary) = self.local_player.type_str_164_auxiliary.as_mut() {
+            auxiliary.dword_0x16D_365 = 2_000;
+            let offset = PLAYER_LEGACY_RECORD_BYTES + 17;
+            self.local_player.record[offset..offset + 4].copy_from_slice(&2_000_i32.to_le_bytes());
+        }
+        self.players[owner_index] = self.local_player.clone();
+
+        // Death leaves a nonzero released sentinel for every surviving
+        // family. Allocate ascending families, including sentinel 1. Source
+        // allocation failure clears only that relation and continues.
+        let mut holders = Vec::new();
+        for family in 0..PLAYER_SPELL_COUNT {
+            if self.local_player.enabled_spell_holders[family] == 0 {
+                continue;
+            }
+            let family_id = family as u8;
+            let Some(source) = economy.allocate_starting_spell_holder(family_id, castle_position)
+            else {
+                self.set_enabled_spell_holder_index(family, 0);
+                continue;
+            };
+            let profile = level2_set_spell_profile(family_id, 0)
+                .expect("the source holder allocator validated its base profile");
+            let holder = Self::starting_spell_holder(source, actor.index, 0, profile);
+            self.set_enabled_spell_holder_index(family, holder.index);
+            holders.push(holder);
+        }
+
+        // sub_6DB50(0,0): preserve XP except the ordinary Castle cap, refresh
+        // unlocked levels and clamp selected tiers without announcing gains.
+        if cap_castle_experience && self.local_player.runtime_spell_experience[2] > 7 {
+            self.local_player.runtime_spell_experience[2] = 7;
+            self.local_player.record[172..176].copy_from_slice(&7_i32.to_le_bytes());
+            self.players[owner_index] = self.local_player.clone();
+        }
+        for family in 0..PLAYER_SPELL_COUNT {
+            self.update_spell_experience(actor.index, family as u8, 0, false);
+        }
+        for (hand, offset) in [
+            (self.local_player.left_spell_slot_raw, 558),
+            (self.local_player.right_spell_slot_raw, 559),
+        ] {
+            if let Ok(family) = usize::try_from(hand) {
+                if let Some(&tier) = self.local_player.family_selected_tiers.get(family) {
+                    self.local_player.record[offset] = tier.cast_unsigned();
+                    if offset == 558 {
+                        self.local_player.left_subspell_index = tier;
+                    } else {
+                        self.local_player.right_subspell_index = tier;
+                    }
+                }
+            }
+        }
+        self.players[owner_index] = self.local_player.clone();
+        let player = self.local_player.clone();
+        for holder in &mut holders {
+            let tier = player.family_selected_tiers[usize::from(holder.model)].cast_unsigned();
+            let profile = level2_set_spell_profile(holder.model, tier)
+                .expect("recomputed selected tier has a source SetSpell profile");
+            holder.apply_nyphur_spell_profile(profile, tier);
+            holder.set_map_links(
+                economy.map_chains.old_map_entity(holder.index),
+                economy.map_chains.next_entity(holder.index),
+            );
+            self.register_starting_acquisition(holder, &player);
+            if let Some(existing) = self.pickup_mut(holder.index) {
+                *existing = holder.clone();
+            } else {
+                self.dynamic_pickups.push(holder.clone());
+            }
+        }
+        // sub_5C950 invalidates every other wizard's remembered relationship
+        // for this player. It does not change objective banishment flags.
+        let relation = 4 + 4 * usize::from(player.player_color_index());
+        for other in &mut self.players {
+            if self.player_entities.iter().any(|entity| {
+                entity.index == other.entity_index
+                    && entity.source_id != actor.source_id
+                    && matches!(entity.model, 0 | 1)
+            }) {
+                other.set_type_str_164_array_word(relation, (-24_609_i16).cast_unsigned());
+            }
+        }
+        self.sync_typed_spell_parent_caches_from_player_entity();
+        Ok(holders)
     }
 
     #[must_use]
@@ -2450,6 +2813,16 @@ impl Level2SharedSpellResetSession {
         family: u8,
         amount: i32,
     ) {
+        self.update_spell_experience(parent_entity_index, family, amount, true);
+    }
+
+    fn update_spell_experience(
+        &mut self,
+        parent_entity_index: u16,
+        family: u8,
+        amount: i32,
+        announce_improvement: bool,
+    ) {
         let family = usize::from(family);
         assert!(family < PLAYER_SPELL_COUNT, "spell family is in range");
         let owner_index = self
@@ -2484,7 +2857,7 @@ impl Level2SharedSpellResetSession {
             self.spell_levels[family] = unlocked;
             self.local_player = owner;
         }
-        if unlocked != previous_unlocked && family_enabled {
+        if announce_improvement && unlocked != previous_unlocked && family_enabled {
             mark_source_audio_call(SourceAudioCallTag::AbilityImprovedTier);
             self.emit_shared_spell_effect(Level2SharedSpellEvent::AbilityImproved {
                 source_family: family as u8,
