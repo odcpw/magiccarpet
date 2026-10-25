@@ -42,7 +42,7 @@ namespace MagicCarpet.Native
             if (manifest?.schema != "mc2-owner-campaign-menu-cache/v1" ||
                 manifest.source_commit != "6806c7204d17220ecc0430759f784aea8ee2ddb2" ||
                 manifest.width != 1280 || manifest.height != 960 || manifest.view_width != 640 || manifest.view_height != 480 ||
-                manifest.missions?.Length != 3 || manifest.portals?.Length != 2 || manifest.outputs?.Length != 4)
+                manifest.missions?.Length != 4 || manifest.portals?.Length != 2 || manifest.outputs?.Length != 4)
                 throw new InvalidDataException("campaign menu cache has an unsupported source binding");
             missions = manifest.missions.ToDictionary(mission => mission.level_id, StringComparer.Ordinal);
             foreach (var mission in missions.Values)

@@ -20,6 +20,12 @@ namespace MagicCarpet.Native.Tests
                 Assert.That(cache.ForMission("level.magic_carpet_2.night_spire").name, Is.EqualTo("1. Jahwl"));
                 Assert.That(cache.ForMission("level.magic_carpet_2.payahandra_ruins").name, Is.EqualTo("2. Kopahk"));
                 Assert.That(cache.ForMission("level.magic_carpet_2.revealed_way").name, Is.EqualTo("3. Myrnan Gor"));
+                var cave = cache.ForMission("level.magic_carpet_2.spider_cave");
+                Assert.That(cave.name, Is.EqualTo("4. Arachnium"));
+                Assert.That(cave.briefing, Is.EqualTo(
+                    "\"A gift from the gods! Alas, it falls towards the netherworld of the spiders...\""));
+                Assert.That(cave.portal_x, Is.EqualTo(549));
+                Assert.That(cave.portal_y, Is.EqualTo(626));
                 Assert.That(cache.ForMission("level.magic_carpet_2.payahandra_ruins").briefing, Is.Not.Empty);
             }
             var fixture = Path.Combine(Path.GetTempPath(), "mc-campaign-menu-negative-" + Guid.NewGuid().ToString("N"));

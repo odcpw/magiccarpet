@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Decode the owner campaign map and bind its first three semantic missions.
+"""Decode the owner campaign map and bind its opening semantic missions.
 
 This extends the existing owner asset pipeline with the previously absent
 campaign-menu responsibility. It does not alter qualified gameplay caches.
@@ -22,6 +22,7 @@ LEVEL_IDS = (
     "level.magic_carpet_2.night_spire",
     "level.magic_carpet_2.payahandra_ruins",
     "level.magic_carpet_2.revealed_way",
+    "level.magic_carpet_2.spider_cave",
 )
 
 
@@ -107,14 +108,48 @@ def build(owner: Path, output: Path, *, rnc_decoder: Path | None = None) -> dict
     return manifest
 
 
+def extend_missions(owner: Path, base: Path, output: Path) -> dict:
+    """Retain validated map pixels while extending their source mission bindings."""
+    manifest = json.loads((base / "manifest.json").read_text())
+    if (manifest.get("schema") != "mc2-owner-campaign-menu-cache/v1"
+            or manifest.get("source_commit") != cache.PINNED_REMC2_COMMIT):
+        raise cache.CacheError("mission extension requires the existing owner map cache")
+    language = cache.confined_source(owner.resolve(strict=True), "LANGUAGE/L1.TXT").read_bytes()
+    if hashlib.sha256(language).hexdigest() != manifest.get("source_language_sha256"):
+        raise cache.CacheError("campaign briefing source changed")
+    fields = tuple(manifest["missions"][0])
+    missions = [{key: row[key] for key in fields} for row in source_missions(language)]
+    if manifest["missions"] != missions[:len(manifest["missions"])]:
+        raise cache.CacheError("existing campaign mission bindings differ from source")
+    payloads = []
+    for row in manifest["outputs"]:
+        relative = Path(row["path"])
+        if relative.is_absolute() or ".." in relative.parts:
+            raise cache.CacheError("invalid campaign output path")
+        payload = (base / relative).read_bytes()
+        if len(payload) != row["bytes"] or hashlib.sha256(payload).hexdigest() != row["sha256"]:
+            raise cache.CacheError("existing campaign map output changed")
+        payloads.append((relative, payload))
+    output.mkdir(parents=True, exist_ok=False)
+    for relative, payload in payloads:
+        (output / relative).parent.mkdir(parents=True, exist_ok=True)
+        (output / relative).write_bytes(payload)
+    manifest["missions"] = missions
+    (output / "manifest.json").write_text(json.dumps(manifest, indent=2, ensure_ascii=False) + "\n")
+    return manifest
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--owner-root", type=Path, default=cache.DEFAULT_OWNER)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--rnc-decoder", type=Path)
+    parser.add_argument("--base-cache", type=Path,
+                        help="extend source missions without rebuilding existing map/language assets")
     args = parser.parse_args()
     try:
-        result = build(args.owner_root, args.output, rnc_decoder=args.rnc_decoder)
+        result = (extend_missions(args.owner_root, args.base_cache, args.output)
+                  if args.base_cache else build(args.owner_root, args.output, rnc_decoder=args.rnc_decoder))
     except (cache.CacheError, ValueError, OSError, subprocess.SubprocessError) as error:
         print(json.dumps(dict(schema="mc2-campaign-menu-import-result/v1", ok=False,
             error=dict(code="CAMPAIGN_MENU_IMPORT_FAILED", message=str(error)))), file=sys.stderr)
