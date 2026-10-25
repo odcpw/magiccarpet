@@ -29,6 +29,7 @@ const FIREFLY_GROUND_CLEARANCE: i16 = 51;
 const FIREFLY_DESCENT: i16 = -8;
 const FIREFLY_MAX_TILE_SLOPE: i32 = 20;
 const FIREFLY_STAGE_REACH: i32 = 2_048;
+const FIREFLY_GUARD_REACH: i32 = 3_072;
 const FIREFLY_SEPARATION: i32 = 85;
 const FIREFLY_LINKED_SEPARATION: i32 = 256;
 const FIREFLY_RANGE: u16 = 5_120;
@@ -229,6 +230,7 @@ impl Level2EconomyState {
     pub(crate) fn step_authored_firefly_lifecycle_slot(
         &mut self,
         source_slot: u16,
+        players: &[GoatPlayerTarget],
         terrain: &SessionTerrain,
     ) -> std::result::Result<FireflyLifecycleStep, String> {
         let Some(source_index) = self.authored_class5.iter().position(|source| {
@@ -252,7 +254,14 @@ impl Level2EconomyState {
 
         if source.pending_word_0x62 != 0 {
             let prior_action = source.action;
+            let guard_hit = prior_action == FIREFLY_STAGE_ACTION && firefly.stage_var2 == 2;
             let attacker = source.pending_word_0x62;
+            let same_family = guard_hit
+                && self.authored_class5.iter().any(|peer| {
+                    peer.active
+                        && peer.source_entity_index == attacker
+                        && peer.model == FIREFLY_MODEL
+                });
             let damage = runtime.pending_damage;
             source.life = source.life.wrapping_sub(damage);
             source.word_0x26 = attacker;
@@ -263,7 +272,7 @@ impl Level2EconomyState {
                 source.word_0x24 = attacker;
                 firefly.linked_entity_index = 0;
                 source.action = FIREFLY_PRE_KILL_ACTION;
-            } else {
+            } else if !same_family {
                 if prior_action == FIREFLY_LINKED_ACTION
                     && firefly.linked_entity_index != 0
                     && let Some(peer_index) = self.authored_class5.iter().position(|peer| {
@@ -287,6 +296,9 @@ impl Level2EconomyState {
                     }
                 }
                 source.word_0x96_150 = attacker;
+                if guard_hit {
+                    firefly.stage_var2 = 10;
+                }
                 firefly.linked_entity_index = 0;
                 source.action = FIREFLY_ATTACK_ACTION;
                 source.byte_0x46_70 = if prior_action == FIREFLY_ATTACK_ACTION {
@@ -294,6 +306,10 @@ impl Level2EconomyState {
                 } else {
                     0
                 };
+            } else {
+                // sub_1DBF0 still scans after a same-family hit, but its
+                // sub_1DDA0/sub_1E1C0 mailbox branch does not move first.
+                acquire_firefly_guard_target(&mut source, &mut firefly, players);
             }
             self.events.push(Level2EconomyEvent::DamageApplied {
                 target_entity_index: source_slot,
@@ -368,7 +384,8 @@ impl Level2EconomyState {
         })
     }
 
-    /// The kind-1 patrol branch of `sub_12500 -> sub_12410 -> sub_12330`.
+    /// The point-patrol and attack-rebind branches of
+    /// `sub_12500 -> sub_12410 -> sub_12330`.
     /// Follow one link per pre-dispatch pass, including the destination's
     /// binding counter and thinning rule, rather than ending every patrol.
     pub(crate) fn advance_authored_firefly_stage_rows(
@@ -400,7 +417,11 @@ impl Level2EconomyState {
                 .position(|state| state.source_entity_index == source_slot)
                 .expect("Firefly source slot came from its runtime row");
             let state = self.authored_fireflies[state_index];
-            if state.stage_var1 == 0 || state.stage_var2 != 1 {
+            let rebind = state.stage_var2 == 10;
+            if state.stage_var1 == 0
+                || !matches!(state.stage_var2, 1 | 10)
+                || (rebind && matches!(self.authored_class5[source_index].action & 7, 2 | 6))
+            {
                 continue;
             }
             let stage = runtime
@@ -414,7 +435,7 @@ impl Level2EconomyState {
                     state.stage_var1
                 ));
             };
-            if stage.kind != 1 {
+            if !matches!(stage.kind, 1 | 2) || (!rebind && stage.kind != 1) {
                 return Err(format!(
                     "Firefly patrol StageVar {} has kind {}",
                     state.stage_var1, stage.kind
@@ -428,11 +449,15 @@ impl Level2EconomyState {
                     .cast_signed(),
             )
             .abs();
-            if dx > FIREFLY_STAGE_REACH || dy > FIREFLY_STAGE_REACH {
+            if !rebind && (dx > FIREFLY_STAGE_REACH || dy > FIREFLY_STAGE_REACH) {
                 continue;
             }
 
-            let next = stage.word_2 as u8;
+            let next = if rebind {
+                state.stage_var1
+            } else {
+                stage.word_2 as u8
+            };
             let mut route = None;
             if next != 0 {
                 let destination = runtime
@@ -456,23 +481,26 @@ impl Level2EconomyState {
                     let RuntimeRelation::AxisScalar(point) = destination.relation else {
                         return Err(format!("Firefly next StageVar {next} has no patrol point"));
                     };
-                    if destination.kind != 1 {
+                    if !matches!(destination.kind, 1 | 2) {
                         return Err(format!(
                             "Firefly next patrol StageVar {next} has kind {}",
                             destination.kind
                         ));
                     }
-                    route = Some(Position {
-                        x: point as u16,
-                        y: (point >> 16) as u16,
-                        z: 0,
-                    });
+                    route = Some((
+                        destination.kind as u8,
+                        Position {
+                            x: point as u16,
+                            y: (point >> 16) as u16,
+                            z: 0,
+                        },
+                    ));
                 }
             }
             let state = &mut self.authored_fireflies[state_index];
-            if let Some(target) = route {
+            if let Some((kind, target)) = route {
                 state.stage_var1 = next;
-                state.stage_var2 = 1;
+                state.stage_var2 = kind;
                 state.stage_target = target;
                 self.authored_class5[source_index].action = FIREFLY_STAGE_ACTION;
             } else {
@@ -487,6 +515,7 @@ impl Level2EconomyState {
     pub(crate) fn step_authored_firefly_stage_slot(
         &mut self,
         source_slot: u16,
+        players: &[GoatPlayerTarget],
         frozen_model19_slots: &[u16],
         terrain: &SessionTerrain,
     ) -> bool {
@@ -507,9 +536,31 @@ impl Level2EconomyState {
         };
         let mut source = self.authored_class5[source_index];
         let mut state = self.authored_fireflies[state_index];
+        // sub_1DBF0 tests the signed axis words before choosing its movement
+        // body. Kind 2 guards this point; it does not finish on arrival.
+        let guarding = state.stage_var2 == 2;
+        let at_guard_point = guarding
+            && (i32::from(state.stage_target.x.cast_signed())
+                - i32::from(source.position.x.cast_signed()))
+            .abs()
+                <= FIREFLY_GUARD_REACH
+            && (i32::from(state.stage_target.y.cast_signed())
+                - i32::from(source.position.y.cast_signed()))
+            .abs()
+                <= FIREFLY_GUARD_REACH;
         step_firefly_motion(&mut source, &mut state, terrain);
 
-        if source.source_byte_3e & 7 == 0 {
+        if at_guard_point {
+            // Firefly descriptor88 has source byte32=1: sub_1E1C0 admits
+            // motion, then draws once every sixteen visits when unblocked.
+            if source.source_byte_3e & 15 == 0 && !state.movement_blocked {
+                source.entity_rng = level2_next_rng16(source.entity_rng);
+                source.roll = source.roll.wrapping_add(
+                    i16::try_from(source.entity_rng % 113 + 142)
+                        .expect("Firefly guard turn fits i16"),
+                ) & 0x07ff;
+            }
+        } else if source.source_byte_3e & 7 == 0 {
             if !state.movement_blocked {
                 source.roll = i16::try_from(crate::heading_for_positions(
                     source.position,
@@ -555,6 +606,10 @@ impl Level2EconomyState {
                     i16::try_from(crate::heading_for_positions(peer.position, source.position))
                         .expect("Firefly separation heading fits i16");
             }
+        }
+
+        if guarding {
+            acquire_firefly_guard_target(&mut source, &mut state, players);
         }
 
         self.source_rng.insert(source_slot, source.entity_rng);
@@ -1268,6 +1323,53 @@ impl Level2EconomyState {
     }
 }
 
+fn acquire_firefly_guard_target(
+    source: &mut Level2AuthoredClass5Source,
+    state: &mut AuthoredFireflyRuntime,
+    players: &[GoatPlayerTarget],
+) {
+    if source.action != FIREFLY_STAGE_ACTION
+        || state.stage_var2 != 2
+        || source.source_byte_39 == 0
+        || source.source_byte_3e % FIREFLY_DESCRIPTOR_CADENCE != 0
+    {
+        return;
+    }
+    let range_squared = u32::from(FIREFLY_RANGE).pow(2);
+    if let Some(target) = players
+        .iter()
+        .filter(|target| target.control_flags & 0x20 == 0)
+        .filter_map(|target| {
+            // sub_1DBF0 promotes x before subtraction, but retains the y
+            // difference in an i16 local before its squared-distance test.
+            let dx = i32::from(target.position.x) - i32::from(source.position.x);
+            let dy = i32::from(
+                target
+                    .position
+                    .y
+                    .wrapping_sub(source.position.y)
+                    .cast_signed(),
+            );
+            let distance = dx
+                .wrapping_mul(dx)
+                .wrapping_add(dy.wrapping_mul(dy))
+                .cast_unsigned();
+            let heading = crate::heading_for_positions(source.position, target.position);
+            (distance <= range_squared
+                && crate::angle_distance(i32::from(source.yaw), heading) < FIREFLY_VIEW_HALF_ANGLE)
+                .then_some((distance, target))
+        })
+        .min_by_key(|(distance, _)| *distance)
+        .map(|(_, target)| target)
+    {
+        source.word_0x96_150 = target.entity_index;
+        state.stage_var2 = 10;
+        source.action = FIREFLY_ATTACK_ACTION;
+        // AddFirebug05_13_25D50's same-call epilogue.
+        source.byte_0x46_70 = 0;
+    }
+}
+
 fn leave_firefly_link(source: &mut Level2AuthoredClass5Source, state: &mut AuthoredFireflyRuntime) {
     source.action = FIREFLY_ROAM_ACTION;
     state.linked_entity_index = 0;
@@ -1445,6 +1547,214 @@ mod tests {
         // regression below concerns later pre-dispatch arrivals only.
         assert!(runtime.advance_level2_stage_variable_counter(8));
         (economy, runtime, source.source_entity_index)
+    }
+
+    #[test]
+    fn cave_authored_kind_two_firefly_constructs_guards_attacks_and_rebinds() {
+        let package = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../generated/mc-bhq6-ordinary-20261025-zclu5fjj/level4");
+        let campaign = CampaignSession::open(package, CampaignSelection::ordinary(4).unwrap())
+            .expect("actual Cave campaign package");
+        let session = campaign.level2_compatibility();
+        let live = &session.session.state.live;
+        let feature = *live
+            .mission
+            .authored_features()
+            .iter()
+            .find(|feature| feature.index == 683)
+            .expect("authored group0 Firefly row683");
+        let binding = live
+            .mission
+            .level2_authored_stage_variable_for(feature)
+            .unwrap();
+        assert_eq!(
+            (binding.index, binding.kind),
+            (1, 2),
+            "first subtype match wins"
+        );
+        assert_eq!(
+            campaign.inspection().presentation().entity_parameters[88][32],
+            1
+        );
+        let mut economy = session.economy().clone();
+        let mut runtime = session.runtime().clone();
+        let source_index = economy
+            .authored_class5
+            .iter()
+            .position(|source| source.active && source.authored_index == 683)
+            .expect("kind2 row must be constructed, not silently skipped");
+        let slot = economy.authored_class5[source_index].source_entity_index;
+        let state_index = economy
+            .authored_fireflies
+            .iter()
+            .position(|state| state.source_entity_index == slot)
+            .unwrap();
+        let point = economy.authored_fireflies[state_index].stage_target;
+        assert_eq!((point.x, point.y), (25088, 47872));
+        assert_eq!(economy.authored_fireflies[state_index].stage_var2, 2);
+        let initial_word = runtime.stage_variables[1].word_2;
+        economy
+            .advance_authored_firefly_stage_rows(&mut runtime)
+            .unwrap();
+        assert_eq!(runtime.stage_variables[1].word_2, initial_word);
+        assert_eq!(
+            economy.authored_class5[source_index].action,
+            FIREFLY_STAGE_ACTION
+        );
+
+        // Inside the guard box: sub_1E1C0's one-draw, sixteen-phase wander,
+        // with no kind-1 arrival transition. This is a leaf diagnostic, not
+        // an earned Cave entry or a mission-playthrough receipt.
+        let terrain = session.canonical_terrain();
+        let source = &mut economy.authored_class5[source_index];
+        source.position = Position {
+            z: terrain.ground_height(point),
+            ..point
+        };
+        source.actual_speed = 0;
+        source.roll = 77;
+        source.yaw = 77;
+        source.source_byte_3e = 16;
+        source.entity_rng = 1234;
+        assert!(economy.step_authored_firefly_stage_slot(slot, &[], &[], terrain));
+        assert!(!economy.authored_fireflies[state_index].movement_blocked);
+        let rng = level2_next_rng16(1234);
+        assert_eq!(economy.authored_class5[source_index].entity_rng, rng);
+        assert_eq!(
+            economy.authored_class5[source_index].roll,
+            (77 + i16::try_from(rng % 113 + 142).unwrap()) & 0x7ff
+        );
+        assert_eq!(economy.authored_fireflies[state_index].stage_var2, 2);
+
+        // Outside the guard box, retain sub_1DDA0's point steering instead.
+        let source = &mut economy.authored_class5[source_index];
+        source.position.x = point.x + 4096;
+        source.position.z = terrain.ground_height(source.position);
+        source.source_byte_3e = 8;
+        source.entity_rng = 1234;
+        source.roll = 77;
+        assert!(economy.step_authored_firefly_stage_slot(slot, &[], &[], terrain));
+        let source = economy.authored_class5[source_index];
+        assert_eq!(source.entity_rng, 1234);
+        if !economy.authored_fireflies[state_index].movement_blocked {
+            assert_eq!(
+                source.roll,
+                i16::try_from(crate::heading_for_positions(source.position, point)).unwrap()
+            );
+        }
+
+        let target = GoatPlayerTarget {
+            entity_index: session.state.entity_index,
+            position: Position {
+                x: point.x + 1000,
+                ..point
+            },
+            control_flags: 0,
+        };
+        let source = &mut economy.authored_class5[source_index];
+        source.position = Position {
+            z: terrain.ground_height(point),
+            ..point
+        };
+        source.source_byte_3e = 35;
+        source.source_byte_39 = 1;
+        source.byte_0x46_70 = 9;
+        source.roll = i16::try_from(crate::heading_for_positions(
+            source.position,
+            target.position,
+        ))
+        .unwrap();
+        source.yaw = source.roll;
+        let hidden = GoatPlayerTarget {
+            entity_index: slot,
+            control_flags: 0x20,
+            ..target
+        };
+        assert!(economy.step_authored_firefly_stage_slot(slot, &[hidden, target], &[], terrain));
+        let source = economy.authored_class5[source_index];
+        assert_eq!(
+            (source.action, source.word_0x96_150, source.byte_0x46_70),
+            (FIREFLY_ATTACK_ACTION, target.entity_index, 0)
+        );
+        assert_eq!(economy.authored_fireflies[state_index].stage_var2, 10);
+        economy
+            .advance_authored_firefly_stage_rows(&mut runtime)
+            .unwrap();
+        assert_eq!(
+            runtime.stage_variables[1].word_2, initial_word,
+            "active attack is not rebound"
+        );
+
+        // The ordinary attack's return to roam admits sub_12500's same-stage
+        // rebind, even though this guard row has a zero next link.
+        economy.authored_class5[source_index].action = FIREFLY_ROAM_ACTION;
+        economy
+            .advance_authored_firefly_stage_rows(&mut runtime)
+            .unwrap();
+        assert_eq!(
+            economy.authored_class5[source_index].action,
+            FIREFLY_STAGE_ACTION
+        );
+        let state = economy.authored_fireflies[state_index];
+        assert_eq!(
+            (state.stage_var1, state.stage_var2, state.stage_target),
+            (1, 2, point)
+        );
+        assert_eq!(runtime.stage_variables[1].word_2 as u8, 0);
+        assert_eq!(
+            (runtime.stage_variables[1].word_2 >> 8) as u8,
+            ((initial_word >> 8) as u8).wrapping_add(1)
+        );
+        let offset = 392 + 12 + 2;
+        assert_eq!(
+            runtime.bytes()[offset..offset + 2],
+            runtime.stage_variables[1].word_2.to_le_bytes()
+        );
+
+        let peer = economy
+            .authored_class5
+            .iter()
+            .find(|peer| {
+                peer.active && peer.model == FIREFLY_MODEL && peer.source_entity_index != slot
+            })
+            .expect("other source-authored Cave Firefly")
+            .source_entity_index;
+        let position = economy.authored_class5[source_index].position;
+        assert!(economy.submit_authored_firefly_damage(slot, 1, peer));
+        assert!(
+            economy
+                .step_authored_firefly_lifecycle_slot(slot, &[], terrain)
+                .unwrap()
+                .handled
+        );
+        assert_eq!(
+            economy.authored_class5[source_index].action,
+            FIREFLY_STAGE_ACTION
+        );
+        assert_eq!(economy.authored_fireflies[state_index].stage_var2, 2);
+        assert_eq!(
+            economy.authored_class5[source_index].position, position,
+            "mailbox visit does not move"
+        );
+        // A same-family hit still admits the cadence-gated source player
+        // scan. It selects the player, rather than retaliating at its peer.
+        assert!(economy.submit_authored_firefly_damage(slot, 1, peer));
+        assert!(
+            economy
+                .step_authored_firefly_lifecycle_slot(slot, &[target], terrain)
+                .unwrap()
+                .handled
+        );
+        assert_eq!(
+            economy.authored_class5[source_index].word_0x96_150,
+            target.entity_index
+        );
+        assert_eq!(
+            economy.authored_class5[source_index].action,
+            FIREFLY_ATTACK_ACTION
+        );
+        assert_eq!(economy.authored_fireflies[state_index].stage_var2, 10);
+        assert_eq!(economy.authored_class5[source_index].position, position);
     }
 
     #[test]
