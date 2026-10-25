@@ -37,9 +37,15 @@ mod castle_revival_tests {
     #[test]
     fn castle_revival_restores_same_actor_and_rebuilds_holders_without_resetting_progress() {
         let (mut shared, mut economy) = fixture();
+        // This raw reset package has no bound starting Fireball. Produce its
+        // holder through the ordinary carry constructor before dropping it;
+        // from_campaign_parts only imports existing source relations.
+        shared
+            .materialize_carried_spell_families(&mut economy, &[(0, 0)])
+            .expect("ordinary starting Fireball holder is materialized");
         let old_holder = shared
             .pickup(shared.local_player.enabled_spell_holders[0])
-            .unwrap();
+            .expect("starting Fireball relation resolves to its constructed holder");
         let mut dropped = old_holder.clone();
         dropped.set_source_action(1);
         dropped.set_control_flags(dropped.control_flags & !1);
