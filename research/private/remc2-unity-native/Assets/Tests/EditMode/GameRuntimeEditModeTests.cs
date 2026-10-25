@@ -285,6 +285,7 @@ namespace MagicCarpet.Native.Tests
             var output = new RenderTexture(256, 256, 0, RenderTextureFormat.ARGB32, RenderTextureReadWrite.Linear);
             var pixels = new Texture2D(256, 256, TextureFormat.RGBA32, false, true);
             var previous = RenderTexture.active;
+            var previousSrgb = GL.sRGBWrite;
             try
             {
                 var now = new byte[65536]; var old = new byte[65536];
@@ -293,6 +294,7 @@ namespace MagicCarpet.Native.Tests
                 foreach (var texture in new[] { current, prior, lut }) { texture.filterMode = FilterMode.Point; texture.Apply(); }
                 material.SetTexture("_SceneHistory", prior); material.SetTexture("_BlendLut", lut);
                 material.SetFloat("_BlendHistory", 1);
+                GL.sRGBWrite = false;
                 Graphics.Blit(current, output, material);
                 RenderTexture.active = output;
                 pixels.ReadPixels(new Rect(0, 0, 256, 256), 0, 0); pixels.Apply();
@@ -302,6 +304,7 @@ namespace MagicCarpet.Native.Tests
             }
             finally
             {
+                GL.sRGBWrite = previousSrgb;
                 RenderTexture.active = previous; output.Release();
                 foreach (var resource in new UnityEngine.Object[] { material, current, prior, lut, output, pixels })
                     UnityEngine.Object.DestroyImmediate(resource);
@@ -397,9 +400,12 @@ namespace MagicCarpet.Native.Tests
         [Test]
         public void ProductionCampaignMapSaveRestoresWithoutGameplayOwner()
         {
+            var generated = Path.Combine(PrivateRoot, "generated");
             var packages = new[] {
-                Package(LevelOnePackage), Package(LevelTwoPackage), Package(LevelThreePackage),
-                Package(Path.Combine(PrivateRoot, "generated/mc-bhq6-ordinary-20261025-zclu5fjj/level4"))
+                Package(Path.Combine(generated, "mc-bhq8-level1-collision-v5-night")),
+                Package(Path.Combine(generated, "mc-level2-vault-successor-closure-20261025")),
+                Package(Path.Combine(generated, "level3-day-block32-campaign-recipe-v2")),
+                Package(Path.Combine(generated, "mc-bhq6-ordinary-20261025-zclu5fjj/level4"))
             };
             using var frontend = NativeSession.OpenGameRuntimeFrontend(packages);
             var map = frontend.GameRuntimeBeginNewGame();
