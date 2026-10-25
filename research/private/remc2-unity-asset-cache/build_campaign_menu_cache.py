@@ -11,12 +11,13 @@ import hashlib
 import json
 import re
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 
 import build_cache as cache
 
-SCHEMA = "mc2-owner-campaign-menu-cache/v1"
+SCHEMA = "mc2-owner-campaign-menu-cache/v2"
 LEVEL_IDS = (
     "level.magic_carpet_2.night_spire",
     "level.magic_carpet_2.payahandra_ruins",
@@ -42,19 +43,20 @@ def source_missions(language: bytes) -> list[dict]:
     if len(names) != 61 or len(portals) != 26 or any(len(row) != 11 for row in portals):
         raise cache.CacheError("pinned campaign name/portal tables changed")
     # PresentLevelDescription_80C30 selects 23 + zero-based level index.
-    return [dict(level_id=level_id, name=names[index], briefing=records[23 + index].decode("cp1252"),
+    return [dict(level_id=level_id, name=names[index], name_source_bytes=names[index].encode("ascii").hex(),
+                 briefing=records[23 + index].decode("ascii") if records[23 + index].isascii() else None,
+                 briefing_text_id=f"text.mc2.record.{23 + index}",
                  viewport_x=portals[index][1], viewport_y=portals[index][2],
                  portal_x=portals[index][5], portal_y=portals[index][6],
                  portal_width=portals[index][3], portal_height=portals[index][4])
             for index, level_id in enumerate(LEVEL_IDS)]
 
 
-def build(owner: Path, output: Path) -> dict:
+def build(owner: Path, output: Path, *, rnc_decoder: Path | None = None) -> dict:
     owner = owner.resolve(strict=True)
     # Never replace a cache or any work. A fresh output is reviewable/reusable.
     output.mkdir(parents=True, exist_ok=False)
     source = cache.confined_source(owner, "DATA/SCREENS/HSCREEN0.DAT").read_bytes()
-    language = cache.confined_source(owner, "LANGUAGE/L1.TXT").read_bytes()
     outputs = []
 
     def write(name: str, payload: bytes) -> None:
@@ -63,7 +65,16 @@ def build(owner: Path, output: Path) -> dict:
 
     with tempfile.TemporaryDirectory(prefix="mc-campaign-rnc-") as work:
         work = Path(work)
-        decoder, provenance = cache.compile_rnc_decoder(work)
+        if rnc_decoder is None:
+            decoder, provenance = cache.compile_rnc_decoder(work)
+        else:
+            decoder, provenance = rnc_decoder.resolve(strict=True), cache.rnc_logical_identity()
+        language_binding = cache.build_language_cache(owner, output / "language", rnc_decoder=decoder, work=work)
+        default_locale = next(row for row in language_binding["locales"]
+            if row["id"] == language_binding["default_locale_id"])
+        source_language = next((alias for alias in default_locale["aliases"]
+            if alias.upper() == "LANGUAGE/L1.TXT"), default_locale["aliases"][0])
+        language = cache.confined_source(owner, source_language).read_bytes()
         # sub_7A110_load_hscreen(8, 6). Packed lengths are source reads;
         # decoded extents are the next heap offsets and the RNC headers.
         world = cache.decode_container_blob(decoder, source, 0xB2C47, 1280 * 960, work, "campaign-world")
@@ -86,6 +97,8 @@ def build(owner: Path, output: Path) -> dict:
     manifest = dict(schema=SCHEMA, source_commit=cache.PINNED_REMC2_COMMIT,
                     source_hscreen_sha256=hashlib.sha256(source).hexdigest(),
                     source_language_sha256=hashlib.sha256(language).hexdigest(),
+                    language_cache=dict(path="language", binding_sha256=language_binding["binding_sha256"],
+                        default_locale_id=language_binding["default_locale_id"]),
                     source_calls=["sub_7A110_load_hscreen(8,6)", "DrawNetGameMapBackground_85C8B", "PresentLevelDescription_80C30"],
                     width=1280, height=960, view_width=640, view_height=480,
                     missions=source_missions(language), portals=bindings, outputs=outputs,
@@ -98,7 +111,13 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--owner-root", type=Path, default=cache.DEFAULT_OWNER)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--rnc-decoder", type=Path)
     args = parser.parse_args()
-    result = build(args.owner_root, args.output)
+    try:
+        result = build(args.owner_root, args.output, rnc_decoder=args.rnc_decoder)
+    except (cache.CacheError, ValueError, OSError, subprocess.SubprocessError) as error:
+        print(json.dumps(dict(schema="mc2-campaign-menu-import-result/v1", ok=False,
+            error=dict(code="CAMPAIGN_MENU_IMPORT_FAILED", message=str(error)))), file=sys.stderr)
+        raise SystemExit(2)
     print(json.dumps(dict(schema=result["schema"], output=str(args.output.resolve()),
                           missions=len(result["missions"]), outputs=len(result["outputs"]))))

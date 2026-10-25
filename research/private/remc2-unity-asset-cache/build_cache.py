@@ -1067,15 +1067,11 @@ def bitmap_records(tab: bytes) -> list[tuple[int, int, int]]:
 
 
 def language_records(payload: bytes) -> list[bytes]:
-    if len(payload) <= LANGUAGE_PAYLOAD_OFFSET:
-        raise CacheError("owner localization payload is shorter than the proven prefix")
-    records = payload[LANGUAGE_PAYLOAD_OFFSET:].split(b"\0")
-    if len(records) < LANGUAGE_RECORD_COUNT:
-        raise CacheError("owner localization payload has fewer than 471 records")
-    result = records[:LANGUAGE_RECORD_COUNT]
-    if any(b"\0" in value for value in result):
-        raise CacheError("owner localization record retained a NUL byte")
-    return result
+    language = language_importer()
+    try:
+        return language.language_records(payload)
+    except language.LanguageCacheError as error:
+        raise CacheError(str(error)) from error
 
 
 def qualified_runtime_profile(
@@ -11168,6 +11164,33 @@ def build_loading_cache(owner_root: Path, output: Path) -> dict[str, Any]:
     return manifest
 
 
+def language_importer():
+    spec = importlib.util.spec_from_file_location(
+        "owner_language_cache", Path(__file__).with_name("language_cache.py")
+    )
+    if spec is None or spec.loader is None:
+        raise CacheError("cannot load source language importer")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def build_language_cache(owner_root, output, *, rnc_decoder=None, work=None):
+    language = language_importer()
+    output = Path(output)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    codecs = language.ImportCodecs(confined_source, decode_container_blob,
+        bitmap_records, materialize_indexed_rle, rnc_logical_identity())
+    if work is not None:
+        if rnc_decoder is None:
+            raise CacheError("a shared language decoder work directory requires its decoder")
+        return language.build(owner_root, output, codecs, rnc_decoder=Path(rnc_decoder), work=Path(work))
+    with tempfile.TemporaryDirectory(prefix="mc2-language-codec-", dir=output.parent) as temporary:
+        directory = Path(temporary)
+        decoder = Path(rnc_decoder) if rnc_decoder is not None else compile_rnc_decoder(directory)[0]
+        return language.build(owner_root, output, codecs, rnc_decoder=decoder, work=directory)
+
+
 def environment_importer():
     """Load the environment owner without relying on the caller's module name."""
     spec = importlib.util.spec_from_file_location(
@@ -11198,6 +11221,12 @@ def build_environment_material_cache(owner_root, package, catalog, output):
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest="command", required=True)
+    language = subparsers.add_parser("build-language")
+    language.add_argument("--owner-root", type=Path, default=DEFAULT_OWNER)
+    language.add_argument("--output", type=Path, required=True)
+    language.add_argument("--rnc-decoder", type=Path)
+    language_check = subparsers.add_parser("validate-language")
+    language_check.add_argument("--cache", type=Path, required=True)
     environment = subparsers.add_parser("build-environment")
     environment.add_argument("--owner-root", type=Path, default=DEFAULT_OWNER)
     environment.add_argument("--campaign-package", type=Path, required=True)
@@ -11327,7 +11356,19 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
     args = parse_args()
     try:
-        if args.command in {"build-environment", "validate-environment"}:
+        if args.command in {"build-language", "validate-language"}:
+            import sys
+            try:
+                manifest = (build_language_cache(args.owner_root, args.output, rnc_decoder=args.rnc_decoder)
+                    if args.command == "build-language" else language_importer().validate(args.cache))
+            except (ValueError, OSError, KeyError, subprocess.SubprocessError, CacheError) as error:
+                print(json.dumps({"schema": "mc2-language-import-result/v1", "ok": False,
+                    "error": {"code": "LANGUAGE_IMPORT_FAILED", "message": str(error)}}), file=sys.stderr)
+                return 2
+            print(json.dumps({"schema": "mc2-language-import-result/v1", "ok": True,
+                "binding_sha256": manifest["binding_sha256"], "default_locale_id": manifest["default_locale_id"],
+                "locale_count": len(manifest["locales"]), "output_count": len(manifest["outputs"])}))
+        elif args.command in {"build-environment", "validate-environment"}:
             import sys
             try:
                 manifest = (

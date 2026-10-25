@@ -38,6 +38,61 @@ def tree_identity(root: Path) -> str:
     return digest.hexdigest()
 
 
+class InstalledLanguageTests(unittest.TestCase):
+    def test_identical_installed_packs_are_one_content_not_two_languages(self):
+        language = cache.language_importer()
+        packs = language.installed_packs(cache.DEFAULT_OWNER)
+        l1 = next(row for row in packs if "LANGUAGE/L1.TXT" in row["aliases"])
+        d2 = next(row for row in packs if "LANGUAGE/D2.TXT" in row["aliases"])
+        self.assertIs(l1, d2)
+        self.assertEqual(len(l1["records"]), 471)
+        self.assertEqual(l1["payload"], (cache.DEFAULT_OWNER / "LANGUAGE/L1.TXT").read_bytes())
+        self.assertEqual(l1["records"], cache.language_records(l1["payload"]))
+
+    def test_language_records_require_prefix_and_each_nul_terminator(self):
+        language = cache.language_importer()
+        payload = (cache.DEFAULT_OWNER / "LANGUAGE/L1.TXT").read_bytes()
+        records = language.language_records(payload)
+        truncated = payload[:4785] + b"\0".join(records[:470]) + b"\0"
+        with self.assertRaisesRegex(language.LanguageCacheError, "record 470.*NUL"):
+            language.language_records(truncated)
+        # Tutorial 0xff sentinel streams are not language records or Unicode.
+        with self.assertRaisesRegex(language.LanguageCacheError, "prefix"):
+            language.language_records(b"First tutorial line\xffNext line\xff\x00")
+
+    def test_real_source_glyph_mapping_and_missing_glyph_are_discriminated(self):
+        language = cache.language_importer()
+        data = (cache.DEFAULT_OWNER / "DATA/FONT1.DAT").read_bytes()
+        table = cache.bitmap_records((cache.DEFAULT_OWNER / "DATA/FONT1.TAB").read_bytes())
+        masks = bytearray()
+        glyphs = []
+        for index, (offset, width, height) in enumerate(table):
+            _, mask, _ = cache.materialize_indexed_rle(data, offset, width, height)
+            glyphs.append(dict(index=index, offset=len(masks), length=len(mask), width=width,
+                height=height, sha256=language.digest(mask)))
+            masks.extend(mask)
+        records = language.language_records((cache.DEFAULT_OWNER / "LANGUAGE/L1.TXT").read_bytes())
+        language.validate_glyphs(records, glyphs, bytes(masks))
+        self.assertEqual([language.glyph_index(value) for value in (9, 10, 13, 32, 65, 233)],
+            [33, 34, None, 33, 66, 234])
+        with self.assertRaisesRegex(language.LanguageCacheError, "requires missing glyph"):
+            language.validate_glyphs(records, glyphs[:64], bytes(masks))
+
+    def test_real_complete_cache_rejects_missing_font_before_binding(self):
+        language = cache.language_importer()
+        with tempfile.TemporaryDirectory(prefix="mc-language-cache-") as temporary:
+            output = Path(temporary) / "locale"
+            manifest = cache.build_language_cache(cache.DEFAULT_OWNER, output,
+                rnc_decoder=os.environ.get("MC_RNC_DECODER"))
+            observed = language.validate(output)
+            self.assertEqual(observed["binding_sha256"], manifest["binding_sha256"])
+            self.assertEqual(len(observed["locales"]), 1)
+            self.assertEqual(observed["locales"][0]["aliases"], ["LANGUAGE/D2.TXT", "LANGUAGE/L1.TXT"])
+            (output / "fonts/font1.masks.u8").unlink()
+            with self.assertRaises(FileNotFoundError):
+                language.validate(output)
+
+
 class EnvironmentMaterialTests(unittest.TestCase):
     def test_real_package_profiles_validate_selected_resources(self):
         environment = cache.environment_importer()
