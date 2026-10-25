@@ -1564,7 +1564,7 @@ mod tests {
     fn neutral_campaign_contract_opens_steps_and_resets_real_levels_one_two_and_three() {
         let generated = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../generated");
         let packages = [
-            generated.join("mc-cf15-level1-package-v3-current"),
+            generated.join("mc-bhq8-level1-collision-v5-night"),
             generated.join("mc-cf02-campaign-package-v2-b/qualified-level2"),
             generated.join("mc-cf14-campaign-package-v1-a/qualified-level3"),
         ];
@@ -1603,7 +1603,7 @@ mod tests {
     #[test]
     fn neutral_level_one_campaign_presentation_asset_query_is_identity_bound_and_observational() {
         let package = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../../generated/mc-cf15-level1-package-v3-current");
+            .join("../../../generated/mc-bhq8-level1-collision-v5-night");
         let handle = open_campaign_path(&package);
         let before = campaign_snapshot(handle);
         let slot = b"presentation.spell.fireball.projectile_asset";
@@ -1642,7 +1642,7 @@ mod tests {
     #[test]
     fn neutral_level_one_campaign_snapshot_projects_the_live_semantic_fireball() {
         let package = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../../generated/mc-cf15-level1-package-v3-current");
+            .join("../../../generated/mc-bhq8-level1-collision-v5-night");
         let handle = open_campaign_path(&package);
         let initial = campaign_snapshot(handle);
 
@@ -1757,7 +1757,7 @@ mod tests {
     #[test]
     fn native_json_semantic_spell_selection_is_closed_and_atomic() {
         let package = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../../generated/mc-cf15-level1-package-v3-current");
+            .join("../../../generated/mc-bhq8-level1-collision-v5-night");
         let handle = open_campaign_path(&package);
         let initial = campaign_snapshot(handle);
         let spell = semantic_spell;
@@ -1829,7 +1829,7 @@ mod tests {
     fn level_one_descriptor_and_sealed_backends_match_the_public_autoplay_observation() {
         let sealed = open_fixture();
         let descriptor_package = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../../generated/mc-cf15-level1-package-v3-current");
+            .join("../../../generated/mc-bhq8-level1-collision-v5-night");
         let descriptor = open_campaign_path(&descriptor_package);
         let sealed_initial = campaign_snapshot(sealed);
         let descriptor_initial = campaign_snapshot(descriptor);

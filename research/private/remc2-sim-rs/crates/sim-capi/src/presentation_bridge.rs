@@ -671,7 +671,7 @@ fn append_objective_arrow(
 #[test]
 fn night_campaign_minimap_uses_live_source_commands_and_night_objective_colors() {
     let package = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../../generated/mc-cf15-level1-package-v3-current");
+        .join("../../../generated/mc-bhq8-level1-collision-v5-night");
     let mut campaign =
         sim_core::campaign::CampaignSession::open(package, CampaignSelection::LEVEL1)
             .expect("real Night package opens");
