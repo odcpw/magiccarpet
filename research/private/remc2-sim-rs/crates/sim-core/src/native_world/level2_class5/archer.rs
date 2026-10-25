@@ -676,16 +676,41 @@ pub(crate) fn step_source_runtime(
         result.effects.target_feedback_entity = None;
     }
     if let Some(death) = result.death {
-        let _ = arena.economy.spawn_mana_sphere_from_death(
-            death.slot,
-            death.position,
-            death.yaw,
-            death.rng,
-            death.mana,
-            death.owner,
-            terrain,
-        );
-        if death.burst
+        if death.mana > 0 {
+            if let Some(child) = arena.allocate_source_slot_with_terrain(terrain) {
+                // AddArchers and its enabled callbacks never set the
+                // 0x20000 replacement flag. Its source address survives both
+                // death constructors, including the full-arena fallback.
+                arena.economy.initialize_death_mana_sphere_at_slot(
+                    child,
+                    slot,
+                    death.position,
+                    death.yaw,
+                    death.mana,
+                    death.owner,
+                    terrain,
+                );
+                let child_rng = arena
+                    .economy
+                    .spheres
+                    .last()
+                    .filter(|sphere| sphere.source_entity_index == child)
+                    .map(|sphere| sphere.entity_rng)
+                    .ok_or_else(|| format!("Archer death lost allocated mana sphere {child}"))?;
+                arena.economy.source_rng.insert(child, child_rng);
+                crate::world::effects::sync_position(
+                    arena,
+                    terrain,
+                    child,
+                    death.position,
+                    true,
+                    false,
+                )?;
+            }
+            // The source clears the address's owner even if NewEvent fails.
+            arena.economy.source_owner.insert(slot, 0);
+        }
+        if state.control_flags & 0x10_0000 == 0
             && let Some(burst) = crate::world::effects::allocate(
                 arena,
                 terrain,
@@ -696,11 +721,7 @@ pub(crate) fn step_source_runtime(
                 particles,
             )?
         {
-            let source_id = if arena.slot_generation(slot) == state.slot_generation {
-                death.source_id
-            } else {
-                slot
-            };
+            let source_id = state.entity_id;
             let row = &mut arena.entities[usize::from(burst)];
             row.source_id = source_id;
             row.record[30..32].copy_from_slice(&source_id.to_le_bytes());
@@ -1213,7 +1234,8 @@ impl Level2EconomyState {
                 xtype: payload.xtype,
                 pending_damage: 0,
                 last_child_root_phase: 0,
-                control_flags: 4,
+                // NewEvent starts damageable (8); AddEventToMap adds 4.
+                control_flags: 12,
                 xsubtype: u8::MAX,
                 stage: ArcherStageState::default(),
                 proximity_delay: 0,
@@ -1306,14 +1328,10 @@ pub(crate) struct ArcherStepResult {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct ArcherDeathRequest {
-    slot: u16,
-    source_id: u16,
     position: Position,
     yaw: i16,
-    rng: u16,
     mana: i32,
     owner: u16,
-    burst: bool,
 }
 
 impl Level2EconomyState {
@@ -1422,14 +1440,10 @@ impl Level2EconomyState {
                     }
                     if arena_allocation {
                         death = Some(ArcherDeathRequest {
-                            slot: source.source_entity_index,
-                            source_id: archer_state.entity_id,
                             position: source.position,
                             yaw: source.yaw,
-                            rng: source.entity_rng,
                             mana: source.mana,
                             owner: owner_entity_index,
-                            burst: context.control_flags & 0x10_0000 == 0,
                         });
                     } else {
                         let _ = self.spawn_mana_sphere_from_death(
@@ -1810,7 +1824,9 @@ mod tests {
             let mut arena = session.source_arena().clone();
             let mut terrain = session.canonical_terrain().clone();
             for row in &mut arena.entities {
-                row.set_control_flags(row.control_flags & !8);
+                row.set_control_flags(
+                    row.control_flags & !crate::level1_mission::SOURCE_REPLACEABLE_FLAG,
+                );
             }
             let parent = construct_campaign_archer(
                 &mut arena,
@@ -1828,16 +1844,22 @@ mod tests {
                 y: (old_tile & 0xff00) + 128,
                 z: 128,
             };
-            let replaced = arena
-                .allocate_smoke13_with_terrain(old_position, &mut terrain)
-                .unwrap();
+            let replaced = crate::world::effects::allocate(
+                &mut arena,
+                &mut terrain,
+                sim_definition::adapter::mc2_effect_definition(
+                    crate::level_definition::EffectKind::Impact,
+                ),
+                old_position,
+                &inspection.presentation().particles,
+            )
+            .unwrap()
+            .unwrap();
             let generation = arena.slot_generation(replaced);
+            arena.economy.exhaust_new_event_capacity_for_test();
             arena.rebuild_source_free_arena();
-            // Reserve actual free addresses; retain exactly the frozen Smoke
-            // replacement. This is an allocator regression, not a live capture.
-            while arena.economy.free_slot_count() != 0 {
-                arena.allocate_source_slot().unwrap();
-            }
+            // Retain exactly the eligible raw effect captured by 49F90.
+            // This is an allocator regression, not a live gameplay capture.
             let request = ArcherChildRequest {
                 parent_entity_index: parent.source_entity_index,
                 parent_entity_id: parent.source_entity_index,
@@ -1888,6 +1910,125 @@ mod tests {
                 ),
                 before
             );
+        }
+        for capacity in 0..=2 {
+            let inspection = NativeWorld::inspect_level2(level_two_fixture_path()).unwrap();
+            let session = inspection.level2_reset_session().unwrap();
+            let mut arena = session.source_arena().clone();
+            let mut terrain = session.canonical_terrain().clone();
+            let mut runtime = session.runtime.clone();
+            for row in &mut arena.entities {
+                row.set_control_flags(
+                    row.control_flags & !crate::level1_mission::SOURCE_REPLACEABLE_FLAG,
+                );
+            }
+            let parent = construct_campaign_archer(
+                &mut arena,
+                &mut terrain,
+                232,
+                archer_position(),
+                ARCHER_MAX_LIFE,
+            )
+            .unwrap();
+            let slot = parent.source_entity_index;
+            let old = arena.handle(slot).unwrap();
+            let root = arena
+                .economy
+                .authored_class5
+                .iter_mut()
+                .find(|row| row.source_entity_index == slot)
+                .unwrap();
+            root.action = ARCHER_ACTION_KILL;
+            root.source_byte_3e = 0;
+            root.phase = 0;
+            root.mana = 321;
+            let initial_rng = root.entity_rng;
+            arena
+                .economy
+                .source_owner
+                .insert(slot, session.state.entity_index);
+            let old_tile = (0..=u16::MAX)
+                .find(|tile| arena.economy.map_chains.tile_head(*tile) == 0)
+                .unwrap();
+            let old_position = Position {
+                x: ((old_tile & 255) << 8) + 128,
+                y: (old_tile & 0xff00) + 128,
+                z: 128,
+            };
+            let mut replaced = Vec::new();
+            for _ in 0..capacity {
+                let victim = crate::world::effects::allocate(
+                    &mut arena,
+                    &mut terrain,
+                    sim_definition::adapter::mc2_effect_definition(
+                        crate::level_definition::EffectKind::Impact,
+                    ),
+                    old_position,
+                    &inspection.presentation().particles,
+                )
+                .unwrap()
+                .unwrap();
+                replaced.push((victim, arena.slot_generation(victim)));
+            }
+            arena.economy.exhaust_new_event_capacity_for_test();
+            arena.rebuild_source_free_arena();
+            assert_eq!(arena.economy.free_slot_count(), 0);
+            let families = arena.rebuilt_class5_model_slots();
+            step_source_runtime(
+                &mut arena,
+                &mut runtime,
+                &mut terrain,
+                &inspection.presentation().particles,
+                slot,
+                &families,
+                &[],
+                &[],
+            )
+            .unwrap();
+            assert!(arena.resolve(old).is_some());
+            let root = arena
+                .authored_class5()
+                .iter()
+                .find(|row| row.source_entity_index == slot)
+                .unwrap();
+            assert!(!root.drawing_enabled);
+            assert_eq!(root.source_byte_3e, 1);
+            assert_eq!(root.entity_rng, level2_next_rng16(initial_rng));
+            assert_eq!(arena.economy.source_owner(slot), 0);
+            if capacity > 0 {
+                let (child, generation) = replaced[0];
+                let sphere = arena
+                    .spheres()
+                    .iter()
+                    .find(|row| row.source_entity_index == child)
+                    .unwrap();
+                assert_eq!(sphere.position, parent.position);
+                assert_eq!(sphere.mana, 321);
+                assert_eq!(sphere.player_entity_index, session.state.entity_index);
+                assert!(sphere.active && !sphere.pending_delete);
+                assert_eq!(arena.slot_generation(child), generation.wrapping_add(1));
+            }
+            if capacity == 2 {
+                let (child, generation) = replaced[1];
+                let burst = &arena.entities[usize::from(child)];
+                assert_eq!((burst.class, burst.model, burst.action), (10, 1, 1));
+                assert_eq!(burst.position, parent.position);
+                assert_eq!(burst.source_id, slot);
+                assert!(!burst.drawing_disabled());
+                assert_eq!(arena.slot_generation(child), generation.wrapping_add(1));
+            }
+            assert_eq!(arena.economy.map_chains.tile_head(old_tile), 0);
+            assert_eq!(terrain.planes().entity_indices[usize::from(old_tile)], 0);
+            assert!(
+                arena
+                    .allocate_source_slot_with_terrain(&mut terrain)
+                    .is_none()
+            );
+            arena.reclaim_hidden_archer_rows_at_source_boundary();
+            arena
+                .rebuild_source_arena_with_terrain(&mut terrain, &[])
+                .unwrap();
+            assert!(arena.resolve(old).is_none());
         }
     }
 
@@ -2716,6 +2857,13 @@ mod tests {
                 && source.drawing_enabled
         }));
         assert_eq!(session.economy().authored_class5_archer().len(), 4);
+        assert!(
+            session
+                .economy()
+                .authored_class5_archer()
+                .iter()
+                .all(|state| state.control_flags == 12)
+        );
         let collision_targets = session.economy().fireball_collision_targets(&[]);
         let collision = collision_targets
             .iter()

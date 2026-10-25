@@ -619,10 +619,12 @@ fn archer_action37_cadence_advances_rng_copies_owner_and_preserves_life() {
         .map(|sphere| sphere.source_entity_index)
         .collect::<BTreeSet<_>>();
     let initial_burst_slots = session
-        .economy()
-        .death_bursts()
+        .entities()
         .iter()
-        .map(|burst| burst.source_entity_index)
+        .filter(|burst| {
+            burst.active && burst.class == 10 && burst.model == 1 && burst.source_id == root_slot
+        })
+        .map(|burst| burst.index)
         .collect::<BTreeSet<_>>();
     {
         let mut economy = session.economy_mut();
@@ -664,10 +666,13 @@ fn archer_action37_cadence_advances_rng_copies_owner_and_preserves_life() {
         );
         assert_eq!(
             session
-                .economy()
-                .death_bursts()
+                .entities()
                 .iter()
-                .map(|burst| burst.source_entity_index)
+                .filter(|burst| burst.active
+                    && burst.class == 10
+                    && burst.model == 1
+                    && burst.source_id == root_slot)
+                .map(|burst| burst.index)
                 .collect::<BTreeSet<_>>(),
             initial_burst_slots
         );
@@ -714,13 +719,38 @@ fn archer_action37_cadence_advances_rng_copies_owner_and_preserves_life() {
     assert_eq!(sphere.owner_entity_index, owner_entity_index);
     assert_eq!(sphere.player_entity_index, owner_entity_index);
     let burst = session
-        .economy()
-        .death_bursts()
+        .entities()
         .iter()
-        .find(|burst| burst.parent_entity_index == root_slot)
+        .find(|burst| {
+            burst.active
+                && burst.class == 10
+                && burst.model == 1
+                && burst.source_id == root_slot
+                && !initial_burst_slots.contains(&burst.index)
+        })
         .expect("phase-zero Archer produces the ordered death burst");
-    assert!(!initial_burst_slots.contains(&burst.source_entity_index));
-    assert_eq!(burst.parent_entity_index, root_slot);
+    let burst_slot = burst.index;
+    assert_eq!((burst.class, burst.model, burst.action), (10, 1, 1));
+    assert_eq!(burst.source_id, root_slot);
+    assert_eq!(burst.max_life, 1);
+    assert!(
+        (0..=1).contains(&burst.life),
+        "a higher newborn slot may execute in its birth pass"
+    );
+    assert_eq!(burst.subspell_index, 400);
+    assert_eq!(burst.particle_parameter_index, Some(41));
+    let generation = session.source_arena().slot_generation(burst_slot);
+    for _ in 0..4 {
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        if session.source_arena().slot_generation(burst_slot) != generation
+            || !session.entities()[usize::from(burst_slot)].active
+        {
+            return;
+        }
+    }
+    panic!(
+        "the actual source10/1 death product did not finish its callback and following-pass reclaim"
+    );
 }
 
 #[test]

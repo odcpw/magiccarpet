@@ -1692,7 +1692,8 @@ pub(crate) fn archer_child_packet(
         subspell_index: ARCHER_CHILD_SUBSPELL_INDEX,
         particle_index: ARCHER_CHILD_PARTICLE_INDEX,
         dword_0x10: 0,
-        control_flags: 0,
+        // AddEvent09_0D clears NewEvent's damageable bit before map linking.
+        control_flags: 4,
         word_0x96: request.parent_word_0x96,
         xtype: request.target_class,
         xsubtype: request.target_model,
