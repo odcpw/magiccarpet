@@ -108,6 +108,7 @@ pub struct FrontendMedia {
     pacing: u32,
     next_frame: u32,
     prepared: Option<u32>,
+    stop_after_frame: bool,
     event_cursor: usize,
     startup: bool,
     next_attract: bool,
@@ -221,6 +222,7 @@ impl FrontendMedia {
                 self.fading = false;
                 self.startup = false;
                 self.prepared = None;
+                self.stop_after_frame = false;
                 self.title_entry_pending = false;
                 self.finish();
                 // Failure returns immediately to usable Title. The normal
@@ -246,6 +248,7 @@ impl FrontendMedia {
                     self.fading = false;
                     self.startup = false;
                     self.prepared = None;
+                    self.stop_after_frame = false;
                     self.finish();
                     return Ok(());
                 }
@@ -358,6 +361,7 @@ impl FrontendMedia {
         self.pacing = 3;
         self.next_frame = 0;
         self.prepared = None;
+        self.stop_after_frame = false;
         self.event_cursor = 0;
         self.subtitles_on = false;
         self.retained_subtitle = None;
@@ -419,6 +423,11 @@ impl FrontendMedia {
     fn step(&mut self, elapsed: u64, input: bool, escape: bool) -> Result<(), String> {
         self.clock = self.clock.saturating_add(elapsed);
         self.tick_samples(elapsed);
+        if self.stop_after_frame {
+            self.stop_after_frame = false;
+            self.segment_done();
+            return Ok(());
+        }
         if self.fading {
             self.fade_elapsed += elapsed;
             if self.fade_elapsed >= 160_000 {
@@ -459,30 +468,45 @@ impl FrontendMedia {
             }
             return Ok(());
         }
-        if input || escape {
-            self.segment_done();
-            return Ok(());
-        }
         if self.view.clip_id == "welcome" {
             self.view.fade_in_level = (self.clock / 10_000).min(31) as u32;
             // (hundredths_since_start / 100) <= 20 in ShowWelcomeScreen.
-            if self.clock >= 21_000_000 {
+            if input || escape || self.clock >= 21_000_000 {
                 self.segment_done();
             }
             return Ok(());
         }
-        if let Some(frame) = self.prepared {
+        if input || escape {
+            // PlayInfoFmv runs events and decodes the current frame before
+            // sub_75CB0 observes skip. Skip bypasses the wait, but DrawFrame
+            // still installs its palette/subtitles and blits. Escape is also
+            // checked only after that frame. Keep the observation visible for
+            // one client presentation before starting segment cleanup.
+            if self.prepared.is_some() || self.prepare_frame() {
+                self.present_prepared_frame();
+                self.stop_after_frame = true;
+            }
+            return Ok(());
+        }
+        if self.prepared.is_some() {
             if self.clock >= self.deadline {
-                self.view.frame_index = frame as i32;
-                self.view.retain_previous_frame = false;
-                self.view.subtitle = self.retained_subtitle.clone();
-                self.view.subtitle_viewport_offset = if self.subtitles_on { 0x26C0 } else { 0 };
-                self.prepared = None;
-                self.next_frame += 1;
+                self.present_prepared_frame();
             } else {
                 return Ok(());
             }
         }
+        self.prepare_frame();
+        Ok(())
+    }
+    fn present_prepared_frame(&mut self) {
+        let frame = self.prepared.take().expect("prepared media frame");
+        self.view.frame_index = frame as i32;
+        self.view.retain_previous_frame = false;
+        self.view.subtitle = self.retained_subtitle.clone();
+        self.view.subtitle_viewport_offset = if self.subtitles_on { 0x26C0 } else { 0 };
+        self.next_frame += 1;
+    }
+    fn prepare_frame(&mut self) -> bool {
         let clip = self
             .catalog
             .as_ref()
@@ -493,7 +517,7 @@ impl FrontendMedia {
             .unwrap();
         if self.next_frame >= clip.frame_count {
             self.segment_done();
-            return Ok(());
+            return false;
         }
         let events: Vec<_> = clip.events[self.event_cursor..]
             .iter()
@@ -533,7 +557,7 @@ impl FrontendMedia {
         self.ticks += u64::from(self.pacing);
         self.deadline = source_deadline_us(self.ticks);
         self.prepared = Some(self.next_frame);
-        Ok(())
+        true
     }
 }
 
@@ -601,6 +625,7 @@ mod tests {
     }
     fn skip(owner: &mut FrontendMedia) {
         frame(owner, 0, true);
+        frame(owner, 0, false);
         if owner.fading {
             frame(owner, 160_000, false);
         }
@@ -633,6 +658,47 @@ mod tests {
         frame(&mut owner, 84_000, false);
         assert_eq!(owner.view.frame_index, 1);
         assert_eq!(owner.view.subtitle.as_deref(), Some("owner localized line"));
+    }
+    #[test]
+    fn skip_prepares_events_and_presents_frame_before_segment_cleanup() {
+        let mut owner = media();
+        skip(&mut owner);
+        frame(&mut owner, 0, true);
+        assert_eq!(owner.view.clip_id, "intro1");
+        assert_eq!(owner.view.frame_index, 0);
+        assert_eq!(owner.view.subtitle.as_deref(), Some("owner localized line"));
+        assert_eq!(owner.view.subtitle_viewport_offset, 0x26C0);
+        assert_eq!(owner.view.actions[0].op, 'S');
+        assert!(owner.stop_after_frame);
+        frame(&mut owner, 0, false);
+        assert_eq!(owner.view.clip_id, "intro1");
+        assert!(owner.awaiting_release);
+        assert!(owner.view.actions.is_empty());
+        frame(&mut owner, 50_000, false);
+        assert_eq!(owner.view.clip_id, "intro2");
+        assert_eq!(owner.view.frame_index, -1);
+        assert!(owner.view.retain_previous_frame);
+    }
+    #[test]
+    fn escape_interrupts_wait_and_presents_prepared_frame_once() {
+        let mut owner = media();
+        skip(&mut owner);
+        frame(&mut owner, 0, false);
+        assert_eq!(owner.view.frame_index, -1);
+        owner
+            .command(MediaCommand::Frame {
+                elapsed_us: 1,
+                input: false,
+                escape: true,
+            })
+            .unwrap();
+        assert_eq!(owner.view.frame_index, 0);
+        assert_eq!(owner.next_frame, 1);
+        assert!(owner.view.actions.is_empty());
+        assert!(owner.stop_after_frame);
+        frame(&mut owner, 1, true);
+        assert_eq!(owner.next_frame, 1);
+        assert!(owner.awaiting_release);
     }
     #[test]
     fn held_skip_cannot_skip_following_segment_and_idle_alternates() {
