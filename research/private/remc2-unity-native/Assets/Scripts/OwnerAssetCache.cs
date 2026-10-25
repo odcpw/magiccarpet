@@ -620,7 +620,7 @@ namespace MagicCarpet.Native
                 p.colors == $"CLR{letter}-0" &&
                 p.blocks == (map == 0 ? "BLOCK32" : $"BL32{display}0-0") &&
                 p.dormant_blocks16 == (map == 0 ? "BLOCK16" : $"BL16{display}0-0") &&
-                p.sky == (map == 2 ? null : $"SKY{letter}0-0") &&
+                (map == 2 ? string.IsNullOrEmpty(p.sky) : p.sky == $"SKY{letter}0-0") &&
                 p.sprites == $"{prefix}SPR{letter}0-0" && p.web == $"{prefix}WEB{letter}0-0" &&
                 p.tmaps == $"TMAPS{map}-0" && p.key_color_1 == (map == 1 ? 0 : 254) &&
                 p.key_color_2 == (map == 0 ? 0 : 255) && p.spec_commit == PinnedRemc2Commit,
@@ -675,8 +675,27 @@ namespace MagicCarpet.Native
                 cache.ReadOutput(descriptor.colors.path).Length == 4096 &&
                 cache.ReadOutput(descriptor.blocks.atlas_path).Length == 155648,
                 "environment resource extents and palette");
-            RequireLevel2(map == 2 ? descriptor.sky == null : descriptor.sky?.path == "sky/source.u8" &&
-                cache.ReadOutput(descriptor.sky.path).Length == 65536, "environment sky policy");
+            if (map == 2)
+            {
+                // Unity's inline serializer materializes null classes as
+                // empty objects and null strings as empty strings. Validate
+                // resource absence before normalizing to the domain's no-sky.
+                RequireLevel2((descriptor.sky == null ||
+                    string.IsNullOrEmpty(descriptor.sky.path) &&
+                    string.IsNullOrEmpty(descriptor.sky.rgb8_path) &&
+                    string.IsNullOrEmpty(descriptor.sky.atlas_path) &&
+                    descriptor.sky.width == 0 && descriptor.sky.height == 0 &&
+                    descriptor.sky.tile_size == 0 && descriptor.sky.tile_count == 0 &&
+                    descriptor.sky.key_color_1 == 0 && descriptor.sky.key_color_2 == 0) &&
+                    !rows.Keys.Any(relative => relative.StartsWith("sky/", StringComparison.Ordinal)),
+                    "Cave environment has no sky resource");
+                descriptor.sky = null;
+                descriptor.profile.sky = null;
+            }
+            else
+                RequireLevel2(descriptor.sky?.path == "sky/source.u8" && descriptor.sky.width == 256 &&
+                    descriptor.sky.height == 256 && cache.ReadOutput(descriptor.sky.path).Length == 65536,
+                    "environment sky policy");
             RequireLevel2(descriptor.tmaps?.bank == p.tmaps && descriptor.tmaps.textures?.Length == 504,
                 "environment complete TMAP bank");
             for (var index = 0; index < descriptor.tmaps.textures.Length; index++)
