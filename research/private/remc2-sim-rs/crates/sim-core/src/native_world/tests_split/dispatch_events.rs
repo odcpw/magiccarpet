@@ -1,4 +1,41 @@
 #[test]
+fn level_two_wind_latch_is_consumed_by_the_actual_player_visit() {
+    let mut session = level_two_campaign_session();
+    let slot = session.session.state.live.core.state.entity_index;
+    let player = &mut session.economy.entities[usize::from(slot)];
+    player.set_control_flags(player.control_flags | 0x800);
+    let evidence = session.step_outer_turn(PlayerCommand::default(), 0);
+    assert!(evidence.iter().any(|step| step.movement_resolution == "skipped"));
+    assert_eq!(session.economy.entities[usize::from(slot)].control_flags & 0x800, 0);
+    assert_eq!(session.shared_spells().player_entity.control_flags & 0x800, 0);
+    let following = session.step_outer_turn(PlayerCommand::default(), 0);
+    assert!(!following.is_empty());
+    assert!(following.iter().all(|step| step.movement_resolution != "skipped"));
+}
+
+#[test]
+fn level_two_wind_pulse_reaches_the_constructed_castle_carrier() {
+    let mut session = level_two_campaign_session();
+    let position = session.session.state.live.core.state.position;
+    let player_slot = session.session.state.live.core.state.entity_index;
+    let castle_slot = session.economy_mut().build_castle(position, player_slot)
+        .expect("ordinary Castle constructor");
+    let castle_position = session.economy().castle().unwrap().position;
+    let wind = session.economy_mut().allocate_authored_model22(110, castle_position, castle_position)
+        .expect("ordinary Wind constructor");
+    session.economy_mut().fields.authored_model22.iter_mut()
+        .find(|row| row.source_entity_index == wind.source_entity_index).unwrap().phase = 1;
+    session.economy.castle.as_mut().unwrap().pending_damage = 7;
+    session.step_level2_authored_model22_wind_pulse(wind.source_entity_index, None).unwrap();
+    let castle = session.economy().castle().unwrap();
+    assert_eq!(castle.source_entity_index, castle_slot);
+    assert_eq!(castle.pending_damage, 7 + i32::from(wind.subspell_index));
+    assert_eq!(castle.pending_attacker_entity_index, wind.entity_id);
+    assert_eq!(castle.source_word_30, 30);
+    assert_eq!(session.economy.entities[usize::from(castle_slot)].word_26(), wind.source_entity_index);
+}
+
+#[test]
 fn level_two_wind_sub33710_writes_strict_target_mailboxes_on_cadence() {
     assert!(level2_compare_axis_with_shift(
         Position {
@@ -56,6 +93,7 @@ fn level_two_wind_sub33710_writes_strict_target_mailboxes_on_cadence() {
     let parent_slot = parent.source_entity_index;
     session
         .economy_mut()
+        .fields
         .authored_model22
         .iter_mut()
         .find(|source| source.source_entity_index == parent_slot)
@@ -65,15 +103,18 @@ fn level_two_wind_sub33710_writes_strict_target_mailboxes_on_cadence() {
     // Row 1 is a qualified imported class-10/model-45 target. Rebind the
     // remote player row to model 2 so the same production scan exercises
     // the second `sub_33710` branch without adding a synthetic arena row.
+    // HouseFamily owns this row; moving only its projection is overwritten
+    // by the earlier House callback before the later wind callback visits it.
+    session.ordinary.house_mut(1).expect("authoritative House").position = parent.position;
     session.economy.entities[1].set_position(parent.position);
     session.economy.entities[112].model = 2;
     session.economy.entities[112].record[68] = 2;
     session.economy.entities[112].set_position(parent.position);
 
     session.step_outer_turn(PlayerCommand::default(), 0);
-    assert_eq!(session.economy.entities[1].source_wind_spell_payload(), 1_000);
+    assert_eq!(session.ordinary.houses.houses()[0].pending_damage, 1_000);
     assert_eq!(
-        session.economy.entities[1].source_wind_spell_owner(),
+        session.ordinary.houses.houses()[0].pending_attacker as u16,
         parent.entity_id
     );
     assert_eq!(session.economy.entities[112].source_spell_word_30(), 30);
@@ -87,8 +128,12 @@ fn level_two_wind_sub33710_writes_strict_target_mailboxes_on_cadence() {
 
     // The model-45 branch is `sub_11900`: a non-zero owner replaces its
     // payload on the next firing cadence rather than accumulating it.
-    session.economy.entities[1].record[98..102].copy_from_slice(&7_i32.to_le_bytes());
-    session.economy.entities[1].record[102..104].copy_from_slice(&55_u16.to_le_bytes());
+    let house = session.ordinary.house_mut(1).expect("authoritative House");
+    house.pending_damage = 7;
+    house.pending_attacker = 55;
+    session.step_level2_authored_model22_wind_pulse(parent_slot, None).unwrap();
+    assert_eq!(session.ordinary.houses.houses()[0].pending_damage, 1_000);
+    assert_eq!(session.ordinary.houses.houses()[0].pending_attacker as u16, parent.entity_id);
     let next_parent_position = session
         .economy()
         .authored_model22()
@@ -96,38 +141,40 @@ fn level_two_wind_sub33710_writes_strict_target_mailboxes_on_cadence() {
         .find(|source| source.source_entity_index == parent_slot)
         .expect("live wind parent")
         .position;
+    session.ordinary.house_mut(1).expect("authoritative House").position = next_parent_position;
     session.economy.entities[1].set_position(next_parent_position);
     session.economy.entities[112].set_position(next_parent_position);
     session
         .economy_mut()
+        .fields
         .authored_model22
         .iter_mut()
         .find(|source| source.source_entity_index == parent_slot)
         .expect("live wind parent")
         .phase = 16;
     session.step_outer_turn(PlayerCommand::default(), 0);
-    assert_eq!(session.economy.entities[1].source_wind_spell_payload(), 1_000);
+    assert_eq!(session.ordinary.houses.houses()[0].pending_damage, 1_000);
     assert_eq!(
-        session.economy.entities[1].source_wind_spell_owner(),
+        session.ordinary.houses.houses()[0].pending_attacker as u16,
         parent.entity_id
     );
 
-    // A non-firing phase leaves both target mailboxes untouched.
-    let payload_before = session.economy.entities[1].source_wind_spell_payload();
-    let owner_before = session.economy.entities[1].source_wind_spell_owner();
+    // The next House callback consumes the prior pulse. A non-firing wind
+    // phase must not refill its authoritative mailbox later in this pass.
+    let life_before = session.ordinary.houses.houses()[0].life;
     session
         .economy_mut()
+        .fields
         .authored_model22
         .iter_mut()
         .find(|source| source.source_entity_index == parent_slot)
         .expect("live wind parent")
         .phase = 17;
     session.step_outer_turn(PlayerCommand::default(), 0);
-    assert_eq!(
-        session.economy.entities[1].source_wind_spell_payload(),
-        payload_before
-    );
-    assert_eq!(session.economy.entities[1].source_wind_spell_owner(), owner_before);
+    let house = &session.ordinary.houses.houses()[0];
+    assert_eq!(house.pending_damage, 0);
+    assert_eq!(house.pending_attacker, 0);
+    assert_eq!(house.life, life_before - 1_000);
 }
 
 #[test]
@@ -319,64 +366,37 @@ fn level_two_wind_sub33340_filters_and_moves_model0_target_on_production_turn() 
         nonzero_roll_before
     );
 
-    // The class-10 allowlist in sub_33810 is independent of the
-    // class-3 model check. Model 39 takes the same non-player movement
-    // branch and still receives the source hit mailbox when airborne.
-    let class10_parent = session
-        .economy()
-        .authored_model22()
-        .iter()
+    // Exercise class10/39 through its actual constructor and carrier. A raw
+    // Nyphur reclassified as model39 retains a player action, so it is not a
+    // valid scheduler producer and correctly fails selector admission.
+    let class10_parent = session.economy().authored_model22().iter()
         .find(|source| source.source_entity_index == parent.source_entity_index)
-        .copied()
-        .expect("wind parent after non-zero model callback");
+        .copied().expect("wind parent after non-zero model callback");
     let class10_position = Position {
-        x: class10_parent.position.x.wrapping_add(1_024),
-        y: class10_parent.position.y,
+        x: class10_parent.axis_position.x.wrapping_add(1_024),
+        y: class10_parent.axis_position.y,
         z: class10_parent.position.z,
     };
+    let sphere = session.economy_mut()
+        .allocate_authored_model39(0, parent.source_entity_index, class10_position)
+        .expect("actual model39 constructor");
+    let slot = sphere.source_entity_index;
     {
-        let target = &mut session.economy.entities[usize::from(target_index)];
-        target.class = 10;
-        target.record[67] = 10;
-        target.model = 39;
-        target.record[68] = 39;
-        target.set_actual_speed(23);
-        target.set_yaw(0);
-        target.set_control_flags(0x1000_0000);
-        target.set_position(class10_position);
+        let mut economy = session.economy_mut();
+        let target = economy.spheres_mut().iter_mut()
+            .find(|sphere| sphere.source_entity_index == slot).unwrap();
+        target.yaw = 0;
+        target.control_flags |= 0x1000_0000;
     }
-    session
-        .economy_mut()
-        .map_chains
-        .sync_entity(RenderableMapSeed {
-            entity_index: target_index,
-            active: true,
-            x: class10_position.x,
-            y: class10_position.y,
-        })
-        .expect("class-10 target map chain follows its source position");
-    let class10_snapshot = session.economy.entities[usize::from(target_index)].clone();
-    assert!(level2_wind_sub33810_accepts(
-        parent_source_id,
-        &class10_snapshot
-    ));
-    let mut rejected_class10 = class10_snapshot.clone();
-    rejected_class10.model = 45;
-    rejected_class10.record[68] = 45;
-    assert!(!level2_wind_sub33810_accepts(
-        parent_source_id,
-        &rejected_class10
-    ));
-    session.step_outer_turn(PlayerCommand::default(), 0);
-    let class10_target = &session.economy.entities[usize::from(target_index)];
-    assert_eq!(class10_target.actual_speed, 23);
-    assert_eq!(class10_target.yaw, 204);
-    assert_ne!(class10_target.control_flags & 0x0000_0800, 0);
-    assert_eq!(
-        class10_target.source_wind_spell_payload(),
-        i32::from(parent.subspell_index)
-    );
-    assert_eq!(class10_target.source_wind_spell_owner(), parent.entity_id);
+    session.step_level2_authored_model22_sub33340_eligible_targets(parent.source_entity_index)
+        .expect("wind visits the current sphere carrier");
+    let target = session.economy().spheres().iter()
+        .find(|sphere| sphere.source_entity_index == slot).unwrap();
+    assert_eq!(target.yaw, 204);
+    assert_ne!(target.control_flags & 0x0000_0800, 0);
+    assert_eq!(target.ordinary_damage_payload, i32::from(parent.subspell_index));
+    assert_eq!(target.ordinary_damage_owner, parent.entity_id);
+    assert_eq!(target.mana, 512, "contact damage is not mana subtraction");
 
 }
 
@@ -1328,9 +1348,9 @@ fn level_two_authored_bee_actions20_to23_preserve_death_and_no_call_semantics() 
         .find(|bee| bee.source_entity_index == dying.source_entity_index)
         .copied()
         .expect("kill callback leaves a reclaimable source row");
-    assert!(!dead.active);
+    assert!(dead.active, "drawing disable retains the row until following-pass reclaim");
     assert!(!dead.drawing_enabled);
-    assert_eq!(dead.life, -1);
+    assert_eq!(dead.life, dying.life, "KillEntity does not rewrite life");
     assert!(session.economy().events().iter().any(|event| matches!(
         event,
         Level2EconomyEvent::ManaSphereSpawned {
@@ -1380,7 +1400,7 @@ fn level_two_authored_bee_actions20_to23_preserve_death_and_no_call_semantics() 
         .copied()
         .expect("no-call Bee state");
     assert!(
-        session
+        !session
             .economy_mut()
             .step_authored_bee_slot(no_call.source_entity_index, None)
     );
@@ -1394,9 +1414,9 @@ fn level_two_authored_bee_actions20_to23_preserve_death_and_no_call_semantics() 
     assert_eq!(after_no_call.action, before_no_call.action);
     assert_eq!(
         after_no_call.source_byte_3e,
-        before_no_call.source_byte_3e.wrapping_add(1)
+        before_no_call.source_byte_3e
     );
-    assert_eq!(after_no_call.phase, before_no_call.phase.wrapping_add(1));
+    assert_eq!(after_no_call.phase, before_no_call.phase);
     assert_eq!(after_no_call.entity_rng, before_no_call.entity_rng);
     assert_eq!(after_no_call.roll, before_no_call.roll);
 
@@ -3520,6 +3540,7 @@ fn level_two_authored_model22_runs_wind_constructor_chain_and_expiry() {
     // prologue returns every map-linked source slot to the shared arena.
     session
         .economy_mut()
+        .fields
         .authored_model22
         .iter_mut()
         .find(|source| source.source_entity_index == wind.source_entity_index)
@@ -5380,7 +5401,9 @@ fn level_two_public_fireball_lethal_bee_waits_for_phase_zero_and_credits_kill() 
             == 0
         {
             phase_zero_callback_seen = true;
-            assert!(!after.active);
+            assert!(after.active, "drawing disable retains the source class until following-pass reclaim");
+            assert_eq!(after.life, pre_kill.life, "KillEntity does not rewrite the lethal life value");
+            assert!(session.economy().map_chains.is_linked(bee_slot));
             assert!(!after.drawing_enabled);
             assert_eq!(after_counts, (1, 1));
             assert_eq!(

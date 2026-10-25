@@ -593,6 +593,7 @@ fn level_two_root_switch_materializes_authored_wind_on_production_turn() {
     let wind_slot = wind.source_entity_index;
     session
         .economy_mut()
+        .fields
         .authored_model22
         .iter_mut()
         .find(|source| source.source_entity_index == wind_slot)
@@ -1499,7 +1500,9 @@ fn level_two_group21_bee_extinction_advances_type7_objective_on_production_path(
             .expect("phase-gated action-21 row remains until the following boundary");
         if before.source_byte_3e & 7 == 0 {
             phase_zero_callback_seen = true;
-            assert!(!after.active);
+            assert!(after.active, "drawing disable retains the allocated source row");
+            assert_eq!(after.life, before.life);
+            assert!(session.economy().map_chains.is_linked(row229_slot));
             assert!(!after.drawing_enabled);
         } else {
             assert!(after.active);

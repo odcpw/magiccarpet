@@ -1597,108 +1597,7 @@ pub struct Level2Model13SpawnedChild {
     pub active: bool,
 }
 
-/// The production path which created a live Bee.
-///
-/// Package records and Morph spells share the same source arena, constructor,
-/// scheduler, and callbacks. Keeping their origins typed prevents a
-/// spell-created Bee from masquerading as an authored package row.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum BeeCreatureOrigin {
-    AuthoredRecord { authored_index: u16 },
-    MorphSpell { holder_slot: u16 },
-}
-
-/// Live semantic Bee creature constructed by remc2 `sub_4B590` (class 5,
-/// model 2). The state keeps the words consumed by the ordinary Bee actions
-/// and Morph's selector-12 parent follower.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct BeeCreatureRuntime {
-    pub source_entity_index: u16,
-    pub entity_id: u16,
-    pub entity_rng: u16,
-    pub origin: BeeCreatureOrigin,
-    pub parent_entity_index: u16,
-    pub source_class: u8,
-    pub model: u8,
-    pub action: u8,
-    pub minimum_speed: i16,
-    pub maximum_speed: i16,
-    pub actual_speed: i16,
-    /// NewEvent's source control dword. Action-17 movement consumes bit
-    /// 0x800 as the one-tick movement skip and stores the `sub_1B8C0`
-    /// obstruction marker in bit 0x40000.
-    pub control_flags: u32,
-    /// `SetEvent144_49C70` initializes the Bee's death-conversion mana from
-    /// half of its max life (the package-default constructor therefore starts
-    /// at 1500, while an authored maximum derives the matching half value).
-    pub mana: i32,
-    pub max_life: i16,
-    pub life: i16,
-    /// Source `sub_1BF90` damage mailbox. A Fireball writes these fields;
-    /// action 17 consumes and clears them at the next Bee callback.
-    pub pending_damage: i32,
-    pub pending_attacker_entity_index: u16,
-    /// Source word-0x26 after mailbox consumption.
-    pub damage_attacker_entity_index: u16,
-    /// Source word-0x24 copied from word-0x26 by `PreKillEntity_1C890`.
-    /// This is the identity carried into the qualifying creature census.
-    pub kill_credit_entity_index: u16,
-    pub subspell_index: u16,
-    pub dword_0x10: i32,
-    pub target_entity_index: Option<u16>,
-    pub yaw: i16,
-    pub pitch: i16,
-    pub roll: i16,
-    /// Source `byte_0x3E_62`, the per-model constructor counter.
-    pub source_byte_3e: u8,
-    /// Source `byte_0x39_57`, derived from descriptor row 73's cycle window.
-    pub source_byte_39: i16,
-    /// Descriptor row 73 `word_0xE_14` used by action 18 vertical tracking.
-    pub vertical_step: i16,
-    /// Descriptor row 73 `word_0x1A_26` used by the action-18 recoil latch.
-    pub action_window: i16,
-    /// Source `StageVar1_0x48_72`, the one-based runtime StageVar index set
-    /// by `sub_12330` after a successful constructor allocation.
-    pub stage_var1: u8,
-    /// Source `StageVar2_0x49_73`, used by scripted action 23's movement
-    /// callback.
-    pub stage_var2: u8,
-    /// Runtime kind-2 point copied from the selected StageVar. The authored
-    /// selector remains in `MissionContentSession`; this is the mutable event
-    /// callback's point carrier.
-    pub stage_target: Option<Position>,
-    /// Most recent `PrepareEventSound_6E450` sound selected by the Bee helper.
-    /// Zero means that this source has not emitted one yet.
-    pub last_sound_id: u16,
-    pub position: Position,
-    pub particle_index: u16,
-    pub shift_rot_x: u16,
-    pub shift_rot_y: u16,
-    pub phase: u8,
-    pub drawing_enabled: bool,
-    pub active: bool,
-}
-
-impl BeeCreatureRuntime {
-    #[must_use]
-    pub const fn authored_index(&self) -> Option<u16> {
-        match self.origin {
-            BeeCreatureOrigin::AuthoredRecord { authored_index } => Some(authored_index),
-            BeeCreatureOrigin::MorphSpell { .. } => None,
-        }
-    }
-}
-
-/// Live parent projection consumed by Morph's selector-12 Bee follower.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct BeeFollowerParent {
-    pub entity_index: u16,
-    pub position: Position,
-    pub yaw: i16,
-    pub roll: i16,
-    pub life: i32,
-    pub active: bool,
-}
+pub use creatures::bee::{BeeCreatureOrigin, BeeCreatureRuntime, BeeFollowerParent};
 
 /// Validated constructor output from the typed authored-StageVar relation.
 /// This stays private to the Level 2 reset producer so the economy allocator
@@ -1711,184 +1610,11 @@ struct Level2BeeStageRoute {
     stage_target: Position,
 }
 
-fn level2_bee_source_tile(position: Position) -> (u8, u8) {
-    (position.x.to_be_bytes()[0], position.y.to_be_bytes()[0])
-}
-
-fn level2_bee_slope_measure(terrain: &SessionTerrain, position: Position) -> i32 {
-    let (tile_x, tile_y) = level2_bee_source_tile(position);
-    let height = |x: u8, y: u8| {
-        i32::from(terrain.ground_height(Position {
-            x: u16::from(x) << 8,
-            y: u16::from(y) << 8,
-            z: 0,
-        })) >> 5
-    };
-    let point_1 = height(tile_x, tile_y);
-    let point_2 = height(tile_x.wrapping_add(1), tile_y);
-    let point_3 = height(tile_x.wrapping_add(1), tile_y.wrapping_add(1));
-    let point_4 = height(tile_x, tile_y.wrapping_add(1));
-    (point_1 + point_4 - point_2 - point_3)
-        .abs()
-        .max((point_1 + point_2 - point_4 - point_3).abs())
-}
-
-fn level2_bee_probe_blocked(terrain: &SessionTerrain, candidate: Position, heading: i16) -> bool {
-    // Descriptor 73's dword_0x14 is 0xffff_ffff, so the source's
-    // `~dword_0x14 & material_mask` test rejects no Day material. Its
-    // collision probe still has a 128-unit footprint and a Cave-only angle /
-    // ceiling branch; the authored Bee constructor is Day-only, but retaining
-    // that branch keeps this helper source-shaped if a preserved Cave row is
-    // ever supplied.
-    let mut probe = candidate;
-    let mut distance = 0_i32;
-    while distance <= i32::from(LEVEL2_BEE_COLLISION_HALF_EXTENT) {
-        if terrain.map_type == MapType::Cave {
-            let tile = crate::Tile {
-                x: probe.x.to_be_bytes()[0],
-                y: probe.y.to_be_bytes()[0],
-            };
-            if terrain.angle_flags(tile) & 8 != 0 {
-                return true;
-            }
-            if let Some(ceiling) = terrain.ceiling_height(probe) {
-                let ground = terrain.ground_height(probe);
-                if i32::from(128) + i32::from(ground) + i32::from(LEVEL2_BEE_GROUND_CLEARANCE)
-                    > i32::from(ceiling)
-                {
-                    return true;
-                }
-            }
-        }
-        distance += 256;
-        crate::move_entity(&mut probe, heading, 0, 256);
-    }
-    false
-}
-
-fn level2_bee_retry_headings(yaw: i16) -> [i16; 4] {
-    // This is the source's byte-preserving retry sequence from sub_1B8C0;
-    // the third and fourth headings are not ordinary +/-341 turns.
-    let yaw = i32::from(yaw);
-    let first = yaw & 0x07ff;
-    let second = (yaw + 341) & 0x07ff;
-    let third = ((yaw.wrapping_sub(85) as u16 & 0x00ff)
-        | ((((yaw.wrapping_sub(341) as u16) >> 8) & 7) << 8))
-        & 0x07ff;
-    let fourth = ((((yaw + 0x400) as u16) & 0x0700) | (yaw as u8 as u16)) & 0x07ff;
-    [
-        i16::try_from(first).expect("Bee source retry heading fits"),
-        i16::try_from(second).expect("Bee source retry heading fits"),
-        i16::try_from(third).expect("Bee source retry heading fits"),
-        i16::try_from(fourth).expect("Bee source retry heading fits"),
-    ]
-}
-
-fn level2_bee_turn_delta(from: i16, to: i16) -> i16 {
-    let from = i32::from(from) & 0x07ff;
-    let to = i32::from(to) & 0x07ff;
-    let mut delta = to - from;
-    if delta.abs() > 1024 {
-        delta += if delta >= 0 { -2048 } else { 2048 };
-    }
-    if delta == 0 {
-        return 0;
-    }
-    let magnitude = delta.abs().min(i32::from(LEVEL2_BEE_TURN_LIMIT));
-    i16::try_from(magnitude * delta.signum()).expect("Bee source turn delta fits")
-}
-
-fn move_level2_bee_source(source: &mut BeeCreatureRuntime, terrain: &SessionTerrain) {
-    if source.control_flags & LEVEL2_BEE_MOVEMENT_SKIP_BIT != 0 {
-        source.control_flags &= !LEVEL2_BEE_MOVEMENT_SKIP_BIT;
-        return;
-    }
-
-    let original = source.position;
-    let original_yaw = source.yaw;
-    for (attempt, heading) in level2_bee_retry_headings(original_yaw)
-        .into_iter()
-        .enumerate()
-    {
-        let mut candidate = original;
-        let ground = terrain.ground_height(candidate);
-        if candidate.z > ground {
-            candidate.z = candidate.z.wrapping_add(LEVEL2_BEE_GROUND_RELAXATION);
-        }
-        if candidate.z <= ground.wrapping_add(LEVEL2_BEE_GROUND_CLEARANCE) {
-            candidate.z = ground.wrapping_add(LEVEL2_BEE_GROUND_CLEARANCE);
-        }
-        crate::move_entity(&mut candidate, heading, 0, source.actual_speed);
-        let crossed_tile = level2_bee_source_tile(candidate) != level2_bee_source_tile(original);
-        let blocked = crossed_tile
-            && (level2_bee_probe_blocked(terrain, candidate, heading)
-                || level2_bee_slope_measure(terrain, candidate) >= LEVEL2_BEE_TERRAIN_THRESHOLD);
-        if blocked {
-            source.control_flags |= LEVEL2_BEE_OBSTRUCTION_BIT;
-            // The source commits each failed heading before the next retry;
-            // a later successful retry therefore retains the marker.
-            source.yaw = heading;
-            continue;
-        }
-
-        source.position = candidate;
-        source.yaw = heading.wrapping_add(level2_bee_turn_delta(heading, source.roll)) & 0x07ff;
-        if attempt == 0 {
-            source.control_flags &= !LEVEL2_BEE_OBSTRUCTION_BIT;
-        }
-        return;
-    }
-
-    // Descriptor 73 has byte_0x20 bit 0 set, so the source kills a Bee when
-    // every retry is blocked. Population-census decrementation is owned by
-    // the broader class-5 census projection and remains outside this typed
-    // economy seam.
-    source.life = -1;
-}
-
-fn select_level2_bee_class3_target(
-    source: &BeeCreatureRuntime,
-    candidates: &[(u16, Position, u32)],
-) -> Option<u16> {
-    let radius_squared = LEVEL2_BEE_AWARENESS_RADIUS * LEVEL2_BEE_AWARENESS_RADIUS;
-    let mut selected: Option<(u16, i64)> = None;
-    for &(target_index, target_position, control_flags) in candidates {
-        if control_flags & 0x20 != 0 {
-            continue;
-        }
-        let dx = i32::from(
-            target_position
-                .x
-                .wrapping_sub(source.position.x)
-                .cast_signed(),
-        );
-        let dy = i32::from(
-            target_position
-                .y
-                .wrapping_sub(source.position.y)
-                .cast_signed(),
-        );
-        let distance_squared = i64::from(dx) * i64::from(dx) + i64::from(dy) * i64::from(dy);
-        if distance_squared > radius_squared {
-            continue;
-        }
-        let heading = heading_for_positions(source.position, target_position);
-        if i32::from(angle_distance(i32::from(source.yaw), heading))
-            >= LEVEL2_BEE_AWARENESS_HALF_ANGLE
-        {
-            continue;
-        }
-        // The source uses strict `<`, preserving the first linked-list row
-        // when two candidates are equally distant.
-        if selected
-            .map(|(_, best_distance)| distance_squared < best_distance)
-            .unwrap_or(true)
-        {
-            selected = Some((target_index, distance_squared));
-        }
-    }
-    selected.map(|(target_index, _)| target_index)
-}
+#[cfg(test)]
+use creatures::bee::{
+    level2_bee_retry_headings, level2_bee_slope_measure, level2_bee_source_tile,
+    level2_bee_turn_delta,
+};
 
 pub use countdown_switch::Level2AuthoredSwitchProducerSource;
 
@@ -2213,76 +1939,9 @@ pub struct Level2Model17SpawnedChild {
     pub active: bool,
 }
 
-/// The authored class-10/model-22 wind parent created by the pinned
-/// `AddWind_4F040` constructor through `sub_4A310`. The source callback moves
-/// this parent and its chained model-75/action-82 rows; cross-entity pulse
-/// effects remain a separate follow-up.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct Level2AuthoredModel22Source {
-    pub source_entity_index: u16,
-    pub entity_id: u16,
-    pub entity_rng: u16,
-    pub authored_index: u16,
-    pub source_class: u8,
-    pub model: u8,
-    pub action: u8,
-    pub word_0x2c: i16,
-    pub word_0x2e: i16,
-    pub byte_0x38: u8,
-    pub actual_speed: i16,
-    pub minimum_speed: i16,
-    pub maximum_speed: i16,
-    pub max_life: i16,
-    pub life: i16,
-    pub subspell_index: u16,
-    pub control_flags: u32,
-    pub word_0x30: i16,
-    pub yaw: i16,
-    pub pitch: i16,
-    pub roll: i16,
-    pub particle_index: u16,
-    /// Source `array_0x52_82.pitch` from particle row 293, used as the
-    /// parent's X half-width by `CompareAxisWithShift_10750`.
-    pub shift_rot_x: i16,
-    /// Source `array_0x52_82.roll` from particle row 293, used as the
-    /// parent's Y half-width by `CompareAxisWithShift_10750`.
-    pub shift_rot_y: i16,
-    pub axis_position: Position,
-    pub position: Position,
-    pub phase: u8,
-    pub active: bool,
-}
-
-/// One class-10/model-75/action-82 row cloned by `AddWind_4F040`. `ApplyEvents`
-/// excludes model 75 before consulting class 10's disabled action-82 slot; it
-/// hides the row while the parent action-22 callback continues to own chain
-/// movement and linked expiry.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct Level2Model22SpawnedChild {
-    pub source_entity_index: u16,
-    pub entity_id: u16,
-    pub entity_rng: u16,
-    pub max_life: i16,
-    pub life: i16,
-    pub parent_entity_index: u16,
-    pub parent_entity_id: u16,
-    pub source_class: u8,
-    pub model: u8,
-    pub action: u8,
-    pub segment_index: u8,
-    pub word_0x2c: i16,
-    pub word_0x36: i16,
-    pub yaw: i16,
-    pub pitch: i16,
-    pub roll: i16,
-    pub particle_index: u16,
-    pub shift_rot_x: i16,
-    pub shift_rot_y: i16,
-    pub position: Position,
-    pub phase: u8,
-    pub drawing_enabled: bool,
-    pub active: bool,
-}
+pub use crate::world::fields::wind::{
+    Segment as Level2Model22SpawnedChild, Wind as Level2AuthoredModel22Source,
+};
 
 /// The authored class-10/model-76 Fire Spheres root constructed by the pinned
 /// `AddFireSpheres_4F2A0` path. The linked model-77 children are stored as
@@ -2957,9 +2616,7 @@ pub struct Level2EconomyState {
 
     model17_spawned_children: Vec<Level2Model17SpawnedChild>,
 
-    authored_model22: Vec<Level2AuthoredModel22Source>,
-
-    model22_spawned_children: Vec<Level2Model22SpawnedChild>,
+    pub(crate) fields: crate::world::fields::State,
 
     authored_model76: Vec<Level2AuthoredModel76Source>,
 
@@ -7852,7 +7509,7 @@ fn parse_runtime(bytes: &[u8]) -> Result<RuntimeSnapshot> {
     })
 }
 
-fn parse_presentation(bytes: &[u8]) -> Result<PresentationSelectors> {
+pub(crate) fn parse_presentation(bytes: &[u8]) -> Result<PresentationSelectors> {
     if bytes.len() != 10_720
         || bytes.get(..4) != Some(b"MCV1")
         || read_u16(bytes, 4, "presentation version")? != 1
