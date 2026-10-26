@@ -42,6 +42,8 @@ namespace MagicCarpet.Native
         private readonly Dictionary<int, OwnerCampaignMenuCache.PortalSound> soundBindings = new();
         private readonly List<(int x, int y)> pendingStamps = new();
         private readonly byte[] frameIndices = new byte[640 * 480], framePixels = new byte[640 * 480 * 4];
+        private readonly SourceCampaignMapHover hover = new();
+        private readonly SourceCampaignTerminalEffects terminalEffects = new();
         private Texture2D frame;
         private uint lastPresentationPass = uint.MaxValue;
         private bool frameComposed;
@@ -157,6 +159,8 @@ namespace MagicCarpet.Native
             if (Motion == null) throw new InvalidDataException("live source campaign map requires a refreshed artwork cache");
             Buffer.BlockCopy(pristineWorld, 0, world, 0, world.Length);
             pendingStamps.Clear();
+            hover.Reset();
+            terminalEffects.Reset();
             var center = Extent(37);
             Motion.Enter(menu, lookup, lastLaunched, Stamp, center.width / 2, center.height / 2);
             lastPresentationPass = uint.MaxValue;
@@ -171,15 +175,24 @@ namespace MagicCarpet.Native
         }
         internal string Step(GameRuntimeTransport.CampaignMenuSnapshot menu,
             Func<string, OwnerCampaignMenuCache.Mission> lookup, uint now, uint presentationPass,
-            Vector2 mouse, bool leftHeld, bool allowPan, FrontendMediaPresenter media)
+            Vector2 mouse, bool leftHeld, bool allowPan, FrontendMediaPresenter media,
+            SourceCampaignTerminalEffects.FinalMissionBinding finalMission = default)
         {
             SourcePassAdvanced = presentationPass != lastPresentationPass;
             if (!SourcePassAdvanced) return null;
             lastPresentationPass = presentationPass;
+            terminalEffects.Step(menu, finalMission, presentationPass);
             var center = Extent(37);
             return Motion.Step(menu, lookup, now, (int)mouse.x, (int)mouse.y, leftHeld, allowPan,
                 center.width / 2, center.height / 2, Extent, (x, y) => pendingStamps.Add((x, y)),
-                (id, kind, loops) => PlaySound(media, id, kind, loops));
+                (id, kind, loops) => PlaySound(media, id, kind, loops), terminalEffects.VolcanoEnabled);
+        }
+        internal void DrawOverlay(GameRuntimeTransport.CampaignMenuSnapshot menu, Rect view,
+            Vector2 logicalPointer, bool showHelp, uint sourceTick100Hz, bool allowHelp,
+            IReadOnlyList<OwnerCampaignMenuCache.Mission> missionOrder, Func<int, string> language)
+        {
+            hover.Draw(menu, Motion, view, logicalPointer, showHelp, sourceTick100Hz, allowHelp,
+                missionOrder, language, Bitmap, DialogText);
         }
         private void PlaySound(FrontendMediaPresenter media, int id, int kind, int loops)
         {
@@ -204,6 +217,13 @@ namespace MagicCarpet.Native
         internal void DrawMap(GameRuntimeTransport.CampaignMenuSnapshot menu, Rect view,
             Func<string, OwnerCampaignMenuCache.Mission> lookup, Func<string, bool, int> selector)
         {
+            DrawMap(menu, view, lookup, selector, null, null);
+        }
+        internal void DrawMap(GameRuntimeTransport.CampaignMenuSnapshot menu, Rect view,
+            Func<string, OwnerCampaignMenuCache.Mission> lookup, Func<string, bool, int> selector,
+            Func<string, bool> secretCompleted,
+            Func<string, SourceSecretPortalAnimation.Presentation> secretPresentation)
+        {
             if (Event.current.type == EventType.Repaint && (!frameComposed || SourcePassAdvanced))
             {
                 for (var y = 0; y < 480; y++)
@@ -217,12 +237,25 @@ namespace MagicCarpet.Native
                 foreach (var sprite in Motion.BackgroundSprites) Draw(sprite);
                 foreach (var level in menu.available_levels)
                 {
+                    var mission = lookup(level);
+                    if (mission.is_secret) continue;
                     var complete = menu.completed_levels.Contains(level);
                     if (!complete && (menu.phase == "results" || !Motion.Ready)) continue;
                     var chosen = selector?.Invoke(level, complete) ?? (complete ? 37 : 70);
                     if (chosen == -1) continue;
-                    var mission = lookup(level);
                     Composite(frameIndices, 640, 480, chosen < 0 ? complete ? 37 : 70 : chosen,
+                        mission.portal_x - Motion.X, mission.portal_y - Motion.Y);
+                }
+                foreach (var level in menu.available_levels)
+                {
+                    var mission = lookup(level);
+                    if (!mission.is_secret) continue;
+                    var complete = secretCompleted?.Invoke(level) == true;
+                    if (!complete && (menu.phase == "results" || !Motion.Ready)) continue;
+                    var secret = secretPresentation?.Invoke(level) ??
+                        SourceSecretPortalAnimation.Presentation.Hidden;
+                    if (!secret.Visible) continue;
+                    Composite(frameIndices, 640, 480, secret.Selector,
                         mission.portal_x - Motion.X, mission.portal_y - Motion.Y);
                 }
                 if (!Motion.ActorIsTravelling && Motion.Actor.HasValue) Draw(Motion.Actor.Value);

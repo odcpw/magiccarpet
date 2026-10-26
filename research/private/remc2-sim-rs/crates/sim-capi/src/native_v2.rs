@@ -14,6 +14,7 @@ mod events_audio_abi;
 mod game_runtime_abi;
 mod game_session_abi;
 mod level1_abi;
+mod secret_transition_abi;
 mod session_record;
 mod shared_types;
 mod validation;

@@ -47,6 +47,105 @@ fn level_two_outer_turn_dispatches_typed_source_rows() {
 }
 
 #[test]
+fn source31_authored_model28_scheduled_contact_and_expiry_reclaim() {
+    let root = std::env::var_os("MC_SECRET_CAMPAIGN_PACKAGE_ROOT").map_or_else(
+        || PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../generated"),
+        PathBuf::from,
+    );
+    let mut session = crate::campaign::CampaignSession::open(
+        root.join("mc-paj2-source-secret-31-campaign-package"),
+        crate::campaign::spec::CampaignSelection::secret_destination(31).unwrap(),
+    )
+    .expect("real Source31 package opens")
+    .simulation()
+    .clone();
+    let slot = session
+        .entities()
+        .iter()
+        .find(|row| row.active && row.class == 5 && row.model == 28)
+        .expect("Source31 constructs its authored model28 actor")
+        .index;
+    let handle = session
+        .session
+        .state
+        .live
+        .economy
+        .handle(slot)
+        .expect("authored actor generation");
+    let player_slot = session.state.entity_index;
+    let player_position = session.entities()[usize::from(player_slot)].position;
+
+    // Controlled contact setup on the actual authored row: select the source
+    // attack frame and a live player target without replacing either actor.
+    let attacker = {
+        let live = &mut session.session.state.live;
+        let row = &mut live.economy.entities[usize::from(slot)];
+        let attacker = row.source_id;
+        row.set_position(player_position);
+        row.set_source_action(226);
+        row.set_source_byte_46(4);
+        row.set_source_dword_10(8);
+        row.set_subspell_index(37);
+        row.set_phase(0);
+        row.set_control_flags(row.control_flags | 0x800);
+        row.record[97] = 16;
+        row.record[154..156].copy_from_slice(&player_slot.to_le_bytes());
+        crate::world::effects::sync_position(
+            &mut live.economy,
+            &mut live.terrain,
+            slot,
+            player_position,
+            true,
+            false,
+        )
+        .expect("authored actor remains linked in terrain");
+        attacker
+    };
+    session.step_level2_source_pass(0);
+    let row = &session.entities()[usize::from(slot)];
+    assert_eq!(
+        row.record[74], 5,
+        "scheduled attack consumes its contact frame"
+    );
+    assert_eq!(
+        row.phase, 1,
+        "the common same-pass source tail advances once"
+    );
+    assert_eq!(session.session.state.live.player_pending_damage, 37);
+    assert_eq!(session.session.state.live.player_pending_attacker, attacker);
+    let player = &session.entities()[usize::from(player_slot)];
+    assert_eq!(
+        i32::from_le_bytes(player.record[98..102].try_into().unwrap()),
+        37
+    );
+    assert_eq!(
+        u16::from_le_bytes(player.record[102..104].try_into().unwrap()),
+        attacker
+    );
+
+    // Controlled source StageVar16 expiry on that same generation. The
+    // callback hides this actor; only the following pass may reclaim it.
+    {
+        let row = &mut session.session.state.live.economy.entities[usize::from(slot)];
+        row.set_source_action(231);
+        row.record[77] = 16;
+        row.record[44..46].fill(0);
+        row.record[50..52].fill(0);
+    }
+    session.step_level2_source_pass(1);
+    assert!(session.entities()[usize::from(slot)].drawing_disabled());
+    assert!(
+        session.session.state.live.economy.resolve(handle).is_some(),
+        "hidden row survives its callback pass"
+    );
+    session.step_level2_source_pass(2);
+    assert!(
+        session.session.state.live.economy.resolve(handle).is_none(),
+        "following pass reclaims the original generation"
+    );
+}
+
+#[test]
 fn level_two_group31_tree_constructor_preserves_source_order_and_draws() {
     let mut session = level_two_campaign_session();
     let initial_global = session.economy().global_rng;

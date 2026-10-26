@@ -7,6 +7,12 @@
 
 use crate::native_world::RuntimeObjective;
 
+const SOURCE_PLAYER_SLOT_COUNT: usize = 8;
+
+pub(crate) mod delivery_collection;
+pub(crate) mod rival_wizard;
+pub(crate) mod target_death;
+
 /// `sub_58F00_game_objectives` owns one objective row in single-player,
 /// regardless of how many AI players the mission retains. Only its explicit
 /// multiplayer setting admits `NumberOfPlayers` objective owners.
@@ -57,6 +63,11 @@ pub struct ObjectiveState {
     /// Remaining objective-textbox presentation ticks.
     pub objective_textbox_ticks: u8,
     pub objectives: Box<[RuntimeObjective]>,
+    /// Source `Type_str_0x1AC_428.word_2BDE_12658[8]`, indexed by source
+    /// player slot. `sub_5C950` zeros these signed words when it initializes
+    /// each player's metadata; no collection writer is modeled yet.
+    pub(crate) collected_entity_indices:
+        [[i16; delivery_collection::COLLECTED_ENTITY_SLOT_COUNT]; SOURCE_PLAYER_SLOT_COUNT],
 }
 
 impl ObjectiveState {
@@ -73,6 +84,38 @@ impl ObjectiveState {
             objective_presentation_palette_mod: 1,
             objective_textbox_ticks,
             objectives,
+            collected_entity_indices: [[0_i16; delivery_collection::COLLECTED_ENTITY_SLOT_COUNT];
+                SOURCE_PLAYER_SLOT_COUNT],
+        }
+    }
+
+    /// Read one player's source collection list without inventing a default
+    /// for an absent player row. The objective evaluator must treat `None` as
+    /// an unsatisfied predicate.
+    #[must_use]
+    pub(crate) fn collected_entity_indices_for_player(
+        &self,
+        player_slot: usize,
+    ) -> Option<&[i16; delivery_collection::COLLECTED_ENTITY_SLOT_COUNT]> {
+        self.collected_entity_indices.get(player_slot)
+    }
+
+    /// Bind the omitted source list into both reset and gameplay receipts.
+    /// The source-zero reset list preserves the established baseline digest.
+    pub(crate) fn append_collected_entity_hash(&self, hasher: &mut sha2::Sha256) {
+        use sha2::Digest;
+        if self
+            .collected_entity_indices
+            .iter()
+            .flatten()
+            .any(|index| *index != 0)
+        {
+            hasher.update(b"source-player-collected-entities-v1");
+            for indices in &self.collected_entity_indices {
+                for index in indices {
+                    hasher.update(index.to_le_bytes());
+                }
+            }
         }
     }
 }

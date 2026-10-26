@@ -296,18 +296,56 @@ const LEVEL2_SPELL_TIER_THRESHOLDS: [[i32; 3]; PLAYER_SPELL_COUNT] = [
     [0, 400, 2_000],
     [0, 330, 990],
     [0, 360, 1_080],
-    [0, 400, 1_200],
-    [0, 400, 1_200],
+    [
+        crate::level_definition::STEAL_MANA_TIERS[0].single_player_experience,
+        crate::level_definition::STEAL_MANA_TIERS[1].single_player_experience,
+        crate::level_definition::STEAL_MANA_TIERS[2].single_player_experience,
+    ],
+    [
+        crate::level_definition::DUEL_TIERS[0].single_player_experience,
+        crate::level_definition::DUEL_TIERS[1].single_player_experience,
+        crate::level_definition::DUEL_TIERS[2].single_player_experience,
+    ],
     [0, 800, 1_600],
     [0, 1_200, 2_400],
     [0, 1_800, 3_600],
     [0, 2_000, 8_000],
-    [0, 450, 1_200],
-    [0, 1_500, 3_000],
-    [0, 400, 1_200],
-    [0, 360, 720],
-    [0, 400, 1_200],
-    [0, 800, 1_600],
+    [
+        crate::level_definition::MC2_SOURCE_SUMMON_ARMY_PROPERTIES
+            .tier_properties(crate::level_definition::SummonArmyTier::First)
+            .single_player_experience,
+        crate::level_definition::MC2_SOURCE_SUMMON_ARMY_PROPERTIES
+            .tier_properties(crate::level_definition::SummonArmyTier::Second)
+            .single_player_experience,
+        crate::level_definition::MC2_SOURCE_SUMMON_ARMY_PROPERTIES
+            .tier_properties(crate::level_definition::SummonArmyTier::Third)
+            .single_player_experience,
+    ],
+    [
+        crate::level_definition::GRAVITY_WELL_TIERS[0].experience_threshold,
+        crate::level_definition::GRAVITY_WELL_TIERS[1].experience_threshold,
+        crate::level_definition::GRAVITY_WELL_TIERS[2].experience_threshold,
+    ],
+    [
+        crate::level_definition::WHIRLWIND_TIERS[0].experience_threshold,
+        crate::level_definition::WHIRLWIND_TIERS[1].experience_threshold,
+        crate::level_definition::WHIRLWIND_TIERS[2].experience_threshold,
+    ],
+    [
+        crate::level_definition::late_spells::FOOLS_MANA_PROPERTIES.tiers[0].xpos1,
+        crate::level_definition::late_spells::FOOLS_MANA_PROPERTIES.tiers[1].xpos1,
+        crate::level_definition::late_spells::FOOLS_MANA_PROPERTIES.tiers[2].xpos1,
+    ],
+    [
+        crate::level_definition::late_spells::MAGIC_MINE_PROPERTIES.tiers[0].xpos1,
+        crate::level_definition::late_spells::MAGIC_MINE_PROPERTIES.tiers[1].xpos1,
+        crate::level_definition::late_spells::MAGIC_MINE_PROPERTIES.tiers[2].xpos1,
+    ],
+    [
+        crate::level_definition::late_spells::ALLIANCE_PROPERTIES.tiers[0].xpos1,
+        crate::level_definition::late_spells::ALLIANCE_PROPERTIES.tiers[1].xpos1,
+        crate::level_definition::late_spells::ALLIANCE_PROPERTIES.tiers[2].xpos1,
+    ],
     [0, 400, 1_600],
 ];
 const FRAME_ASSET_COUNT: usize = 76;
@@ -501,6 +539,7 @@ const LEVEL2_V5_PACKAGE_MEMBERS: [(&str, usize); 14] = [
     ("terrain.bin", TERRAIN_BYTES),
 ];
 
+mod source_kill_score;
 mod world_types;
 use world_types::Result;
 pub use world_types::*;
@@ -513,13 +552,25 @@ pub(crate) use simulation::CarriedSpellProgress;
 mod campaign_shared_families;
 pub(crate) use crate::world::terrain::cave_features;
 mod cave_spells;
+pub(crate) mod disaster_spells;
+pub(crate) mod reward_source;
+pub(crate) mod gravity_field;
+pub(crate) mod field_spells;
+pub(crate) mod summon_army;
+pub(crate) mod late_spells;
+pub(crate) mod magic_mine_spell;
+pub(crate) mod magic_mine_discharge;
+pub(crate) mod alliance_spell;
+pub(crate) mod directional_spells;
+pub(crate) mod final_volcano;
 mod countdown_switch;
 pub(crate) mod creatures;
 mod effects;
 mod guided_projectile;
 pub(crate) use effects::hidden_slots as hidden_effect_slots;
 mod level2_nyphur;
-mod lightning;
+pub(crate) mod lightning;
+mod meteor;
 mod night_cache;
 mod player_damage;
 mod player_spell_state;
@@ -1125,7 +1176,11 @@ pub enum FireballProjectileOrigin {
     Firefly,
     Dragon,
     Worm,
+    Wyvern,
+    Creature18,
+    Creature21,
     Eruption,
+    Cymmerian,
 }
 
 /// The shared class-9/model-0 Fireball flyer. Its callback owns target
@@ -1135,6 +1190,9 @@ pub enum FireballProjectileOrigin {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Level2FireballProjectile {
     pub origin: FireballProjectileOrigin,
+    /// Descriptor61 target selectors retained in source xtype/xsubtype bytes.
+    pub target_class: u8,
+    pub target_model: u8,
     pub source_entity_index: u16,
     pub entity_rng: u16,
     pub owner_entity_index: u16,
@@ -2201,6 +2259,12 @@ pub struct Level2AuthoredClass5RuntimeState {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct AuthoredFireflyRuntime {
     pub source_entity_index: u16,
+    /// Authored record identity, absent for imported and summoned Fireflies.
+    pub authored_index: Option<u16>,
+    /// Source parentId word (compact source record offset 44).
+    pub parent_entity_index: u16,
+    /// Source word_0x2E countdown (compact source record offset 50).
+    pub word_0x2e: u16,
     /// Source `word_0x32`, the Firefly peer-follow relation. This is not the
     /// class-5 child-chain `word_0x34` carried by the generic runtime state.
     pub linked_entity_index: u16,
@@ -2852,6 +2916,10 @@ pub struct Mc2LiveState {
     /// Source `FrameTimingIndex_26`, advanced once by PlayerEvents before
     /// UpdateEntities and kept distinct from every player's turn byte.
     pub(crate) source_frame_timing_index: u8,
+    /// Source global `setting_30`, independently advanced once per PlayerEvents pass.
+    pub(crate) source_setting_30: crate::campaign::source_setting::SourceSetting30,
+    pub(crate) source_player_result: crate::campaign::source_player_result::SourcePlayerResult,
+    pub(crate) source_menu_admission: Option<sim_session::SourceMenuAdmission>,
     /// Last source `dword_38527` class-10/model-45 membership rebuild.
     /// Unsupported speed bytes skip UpdateEntities and therefore retain this
     /// frozen list instead of rescanning current rows.
@@ -7273,14 +7341,16 @@ fn parse_players(
         }
         let left = read_i16(record, 554, "left spell slot")?;
         let right = read_i16(record, 556, "right spell slot")?;
-        let empty_hand = matches!(
+        let permits_empty_hand = matches!(
             profile,
             OwnerPackageProfile::Level2 | OwnerPackageProfile::Campaign
-        ) && left == -1
-            && right == -1;
-        if (!empty_hand && !(0..PLAYER_SPELL_COUNT_I16).contains(&left))
-            || (!empty_hand && !(0..PLAYER_SPELL_COUNT_I16).contains(&right))
-        {
+        );
+        // Source initialization fills each -1 hand independently; removing
+        // a spell can likewise clear just one hand.
+        let valid_hand = |hand| {
+            (0..PLAYER_SPELL_COUNT_I16).contains(&hand) || (permits_empty_hand && hand == -1)
+        };
+        if !valid_hand(left) || !valid_hand(right) {
             return Err(NativeWorldError::new(format!(
                 "player {slot} spell selection is out of bounds"
             )));
@@ -7358,6 +7428,8 @@ fn parse_players(
                 )
             })
             .transpose()?;
+        let level1_source_kill_score_matrix = (profile == OwnerPackageProfile::Level1)
+            .then(source_kill_score::SourceKillScoreMatrix::from_new_source_player_slot);
         players.push(PlayerSnapshot {
             slot: u8::try_from(slot).expect("eight player slots"),
             is_ai: ai == 1,
@@ -7382,6 +7454,7 @@ fn parse_players(
             runtime_spell_experience,
             spell_unlocked_levels,
             type_str_164_auxiliary,
+            level1_source_kill_score_matrix,
             banishment_state_0x006,
             // Campaign packages contain reset players; projectile accounting
             // begins at the ordinary runtime producer, not an imported save.
@@ -7423,6 +7496,12 @@ fn parse_runtime(bytes: &[u8]) -> Result<RuntimeSnapshot> {
     {
         return Err(NativeWorldError::new(
             "runtime player slot/count is out of bounds",
+        ));
+    }
+    let active_stage_variable_count = read_u8(bytes, 66, "runtime stage-variable count")?;
+    if active_stage_variable_count > 10 {
+        return Err(NativeWorldError::new(
+            "runtime stage-variable count exceeds the source limit",
         ));
     }
     let mut stages = Vec::with_capacity(8);
@@ -7550,6 +7629,7 @@ fn parse_runtime(bytes: &[u8]) -> Result<RuntimeSnapshot> {
         ),
         stages: stages.into_boxed_slice(),
         stage_variables: stage_variables.into_boxed_slice(),
+        active_stage_variable_count,
         player_inputs,
         bytes: bytes.to_vec().into_boxed_slice(),
     })

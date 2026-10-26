@@ -12,6 +12,9 @@
 #[cfg(test)]
 #[path = "global_context_tests.rs"]
 mod global_context_tests;
+mod marked_spells;
+mod runtime_catalog;
+mod source_scoreboard;
 mod spells;
 use crate::native_world::GlobalSpecialState;
 use spells::{mc2_spell_family, mc2_spell_kind_for_family, semantic_spell_kind};
@@ -28,7 +31,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use sim_definition::adapter::{
     artifact_node, definition_error, game_package_with_payloads, owner_provenance,
-    with_level_and_runtime_flow, with_level_definition,
+    with_level_and_runtime_flow,
 };
 use sim_definition::runtime_flow::{
     RuntimeFlowDefinition, RuntimeFlowDestination, RuntimeFlowEntry, RuntimeFlowNodeId,
@@ -481,8 +484,15 @@ fn load_mc2_campaign_internal(
                 mc2_runtime_flow(selection, descriptor.level_definition(), true)?,
             )
         }
-        _ if CampaignSelection::ordinary(selection.external_level) == Some(selection) => {
-            with_level_definition(definition, descriptor.level_definition().clone())
+        _ if CampaignSelection::ordinary(selection.external_level) == Some(selection)
+            || CampaignSelection::secret_destination(selection.internal_level)
+                == Some(selection) =>
+        {
+            with_level_and_runtime_flow(
+                definition,
+                descriptor.level_definition().clone(),
+                mc2_runtime_flow(selection, descriptor.level_definition(), true)?,
+            )
         }
         _ => {
             return Err(definition_error(
@@ -543,39 +553,23 @@ fn mc2_runtime_flow(
     level: &sim_definition::level_definition::LevelDefinition,
     include_cave: bool,
 ) -> crate::game_definition::Result<RuntimeFlowDefinition> {
-    let (bound_level, witnesses): (&str, &[&str]) = match selection {
-        CampaignSelection::LEVEL1 => (
-            "level.magic_carpet_2.night_spire",
-            &[
-                "objective.reach.foot_of_spire",
-                "objective.clear.spire_archers",
-            ],
-        ),
-        CampaignSelection::LEVEL2 => (
-            "level.magic_carpet_2.payahandra_ruins",
-            &[
-                "objective.defeat.nyphur",
-                "objective.reach.payahandra_ruins",
-            ],
-        ),
-        CampaignSelection::LEVEL3 => (
-            "level.magic_carpet_2.revealed_way",
-            &[
-                "objective.clear.guardian_dragons",
-                "objective.charge.reveal_entrance",
-            ],
-        ),
-        _ if include_cave && selection == CampaignSelection::ordinary(4).unwrap() => (
-            "level.magic_carpet_2.spider_cave",
-            &["objective.campaign.task_1", "objective.campaign.task_2"],
-        ),
-        _ => {
-            return Err(definition_error(
-                DefinitionErrorCode::InvalidSchema,
-                "mc2_campaign.runtime_flow",
-                "campaign selection has no qualified semantic runtime-flow binding",
-            ));
+    let witnesses: &[&str] = match selection {
+        CampaignSelection::LEVEL1 => &[
+            "objective.reach.foot_of_spire",
+            "objective.clear.spire_archers",
+        ],
+        CampaignSelection::LEVEL2 => &[
+            "objective.defeat.nyphur",
+            "objective.reach.payahandra_ruins",
+        ],
+        CampaignSelection::LEVEL3 => &[
+            "objective.clear.guardian_dragons",
+            "objective.charge.reveal_entrance",
+        ],
+        _ if include_cave && selection == CampaignSelection::ordinary(4).unwrap() => {
+            &["objective.campaign.task_1", "objective.campaign.task_2"]
         }
+        _ => &[],
     };
     for witness in witnesses {
         let objective = sim_definition::adapter::stable_objective_id(witness)?;
@@ -588,75 +582,31 @@ fn mc2_runtime_flow(
         }
     }
 
-    let spire = SemanticLevelId::parse("level.magic_carpet_2.night_spire")?;
-    let payahandra = SemanticLevelId::parse("level.magic_carpet_2.payahandra_ruins")?;
-    let entrance = SemanticLevelId::parse("level.magic_carpet_2.revealed_way")?;
-    let cave = SemanticLevelId::parse("level.magic_carpet_2.spider_cave")?;
-    let mut presentation_levels = vec![
-        (&spire, "night_spire"),
-        (&payahandra, "payahandra_ruins"),
-        (&entrance, "revealed_way"),
-    ];
-    if include_cave {
-        presentation_levels.push((&cave, "spider_cave"));
-    }
-    let presentation = RuntimeFlowPresentationDefinition::new(
-        SemanticPresentationCueId::parse(TITLE_PRESENTATION_CUE_ID)?,
-        presentation_levels
-            .into_iter()
-            .map(|(level_id, name)| {
-                Ok(RuntimeFlowPresentationEntry::new(
-                    level_id.clone(),
-                    SemanticPresentationCueId::parse(&format!(
-                        "presentation.magic_carpet_2.{name}.loading"
-                    ))?,
-                    SemanticPresentationCueId::parse(&format!(
-                        "presentation.magic_carpet_2.{name}.entry"
-                    ))?,
-                    SemanticPresentationCueId::parse(&format!(
-                        "presentation.magic_carpet_2.{name}.completion"
-                    ))?,
-                ))
+    let (ordinary_count, secrets) = if CampaignSelection::ordinary(selection.external_level)
+        == Some(selection)
+    {
+        (
+            selection
+                .external_level
+                .max(if include_cave { 4 } else { 3 }),
+            Vec::new(),
+        )
+    } else {
+        let origin = (1..=25)
+            .filter_map(CampaignSelection::ordinary)
+            .find(|origin| {
+                super::mc2_secret_flow::association_for(*origin, selection.internal_level).is_some()
             })
-            .collect::<crate::game_definition::Result<Vec<_>>>()?,
-    );
-    let title = RuntimeFlowDestination::Title {
-        node_id: RuntimeFlowNodeId::parse("flow.magic_carpet_2.return_to_title")?,
+            .ok_or_else(|| {
+                definition_error(
+                    DefinitionErrorCode::InvalidSchema,
+                    "mc2_campaign.runtime_flow",
+                    "secret package has no source portal association",
+                )
+            })?;
+        (origin.external_level, vec![selection.internal_level])
     };
-    let mut entries = vec![
-        RuntimeFlowEntry::new(
-            spire.clone(),
-            RuntimeFlowDestination::Level {
-                level_id: payahandra.clone(),
-            },
-        ),
-        RuntimeFlowEntry::new(
-            payahandra,
-            RuntimeFlowDestination::Level {
-                level_id: entrance.clone(),
-            },
-        ),
-        RuntimeFlowEntry::new(
-            entrance,
-            if include_cave {
-                RuntimeFlowDestination::Level {
-                    level_id: cave.clone(),
-                }
-            } else {
-                title.clone()
-            },
-        ),
-    ];
-    if include_cave {
-        entries.push(RuntimeFlowEntry::new(cave, title));
-    }
-    RuntimeFlowDefinition::new(
-        SemanticGameId::parse("game.magic_carpet_2")?,
-        SemanticLevelId::parse(bound_level)?,
-        spire,
-        entries,
-        presentation,
-    )
+    runtime_catalog::compose(selection, ordinary_count, &secrets)
 }
 
 fn campaign_package_bytes(root: &Path) -> crate::game_definition::Result<(u64, u64)> {
@@ -779,6 +729,10 @@ struct Mc2CampaignReplaySave {
     completed_levels: Option<Vec<SemanticLevelId>>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     level_statistics: Vec<crate::game_runtime::CompletedLevelStatistics>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    secret_flow: Option<crate::game_runtime::secret_flow::SecretFlowState>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    retained_campaign: Option<crate::game_runtime::CampaignSaveState>,
     operations: Vec<crate::game_runtime::ReplayOperation<GameCommand>>,
     expected_tick: u64,
     expected_state_hash: u64,
@@ -802,6 +756,10 @@ struct Mc2CampaignReplaySavePayload<'a> {
     completed_levels: Option<&'a [SemanticLevelId]>,
     #[serde(skip_serializing_if = "<[crate::game_runtime::CompletedLevelStatistics]>::is_empty")]
     level_statistics: &'a [crate::game_runtime::CompletedLevelStatistics],
+    #[serde(skip_serializing_if = "Option::is_none")]
+    secret_flow: Option<&'a crate::game_runtime::secret_flow::SecretFlowState>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    retained_campaign: Option<&'a crate::game_runtime::CampaignSaveState>,
     operations: &'a [crate::game_runtime::ReplayOperation<GameCommand>],
     expected_tick: u64,
     expected_state_hash: u64,
@@ -828,6 +786,8 @@ impl Mc2CampaignReplaySave {
             global_context_changes: Vec::new(),
             completed_levels: Some(completed_levels),
             level_statistics: Vec::new(),
+            secret_flow: None,
+            retained_campaign: None,
             operations,
             expected_tick: snapshot.tick,
             expected_state_hash: snapshot.state_hash,
@@ -850,6 +810,8 @@ impl Mc2CampaignReplaySave {
             global_context_changes: &self.global_context_changes,
             completed_levels: self.completed_levels.as_deref(),
             level_statistics: &self.level_statistics,
+            secret_flow: self.secret_flow.as_ref(),
+            retained_campaign: self.retained_campaign.as_ref(),
             operations: &self.operations,
             expected_tick: self.expected_tick,
             expected_state_hash: self.expected_state_hash,
@@ -907,6 +869,8 @@ struct Mc2CampaignMapSave {
     state: crate::game_runtime::CampaignSaveState,
     semantic_spell_carry: Option<Mc2SemanticSpellCarry>,
     carry_destination_level: Option<SemanticLevelId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    secret_flow: Option<crate::game_runtime::secret_flow::SecretFlowState>,
     receipt_sha256: String,
 }
 
@@ -919,7 +883,13 @@ impl Mc2CampaignMapSave {
             &self.carry_destination_level,
         ))
         .expect("campaign map save payload is serializable");
-        hex_digest(Sha256::digest(bytes).into())
+        if let Some(secret_flow) = &self.secret_flow {
+            let extended = serde_json::to_vec(&(bytes, secret_flow))
+                .expect("secret campaign map payload is serializable");
+            hex_digest(Sha256::digest(extended).into())
+        } else {
+            hex_digest(Sha256::digest(bytes).into())
+        }
     }
 }
 
@@ -941,6 +911,7 @@ struct ResolvedMc2RuntimePackage {
 pub struct Mc2LoadingPresentation {
     pub schema: &'static str,
     pub level_id: SemanticLevelId,
+    pub source_selection: CampaignSelection,
     pub cue_id: SemanticPresentationCueId,
     pub package_graph_hash: String,
     pub definition_hash: String,
@@ -1039,19 +1010,20 @@ impl Mc2RuntimePackageResolver {
             .unwrap_or_default())
     }
 
-    // The opening release's three-mission definitions are immutable save
-    // identities. Reconstruct that exact base for verification, never rewrite
-    // a saved definition or its replay receipts to adopt an installed suffix.
-    fn retained_opening_definition(
+    // Retained saves keep their exact closed catalog and receipt identities.
+    // Reconstruct that canonical prefix from current package inputs rather
+    // than rewriting a save to adopt an installed ordinary or secret suffix.
+    fn retained_catalog_definition(
         &self,
         package: &ResolvedMc2RuntimePackage,
+        requested: &RuntimeFlowDefinition,
     ) -> crate::game_definition::Result<Option<GameDefinition>> {
-        if self.flow.entries().len() != 4
-            || !matches!(
-                package.selection,
-                CampaignSelection::LEVEL1 | CampaignSelection::LEVEL2 | CampaignSelection::LEVEL3
-            )
-        {
+        if !self.flow.continues_catalog(requested) {
+            return Ok(None);
+        }
+        let (ordinary_count, secrets) = runtime_catalog::dimensions(requested)?;
+        let canonical = runtime_catalog::compose(package.selection, ordinary_count, &secrets)?;
+        if &canonical != requested {
             return Ok(None);
         }
         let level = package
@@ -1059,11 +1031,10 @@ impl Mc2RuntimePackageResolver {
             .level_definition()
             .expect("campaign has a level")
             .clone();
-        let flow = mc2_runtime_flow(package.selection, &level, false)?;
         Ok(Some(with_level_and_runtime_flow(
             (*package.definition).clone(),
             level,
-            flow,
+            canonical,
         )))
     }
 
@@ -1091,11 +1062,16 @@ impl Mc2RuntimePackageResolver {
             || definition.definition_hash() != package.definition.definition_hash()
             || definition.revision() != package.definition.revision()
         {
-            let retained = self.retained_opening_definition(package).map_err(|error| {
-                crate::game_runtime::RuntimeTransitionError::InvalidRuntimeFlow {
-                    message: error.to_string(),
-                }
-            })?;
+            let retained = self
+                .retained_catalog_definition(
+                    package,
+                    definition.runtime_flow().expect("bound definition flow"),
+                )
+                .map_err(|error| {
+                    crate::game_runtime::RuntimeTransitionError::InvalidRuntimeFlow {
+                        message: error.to_string(),
+                    }
+                })?;
             if retained.as_ref().is_some_and(|base| {
                 definition.package_graph_hash() == base.package_graph_hash()
                     && definition.definition_hash() == base.definition_hash()
@@ -1171,27 +1147,21 @@ impl Mc2RuntimePackageResolver {
                 runtime_capture_sha256,
             ));
         }
-        let include_cave = loaded
+        let selections = loaded
             .iter()
-            .any(|(_, _, selection, _, _)| Some(*selection) == CampaignSelection::ordinary(4));
+            .map(|(_, _, selection, _, _)| *selection)
+            .collect::<Vec<_>>();
+        let (ordinary_count, secret_indices) = runtime_catalog::installed(&selections)?;
         for (input, mut definition, selection, source_package_sha256, runtime_capture_sha256) in
             loaded
         {
-            if include_cave
-                && matches!(
-                    selection,
-                    CampaignSelection::LEVEL1
-                        | CampaignSelection::LEVEL2
-                        | CampaignSelection::LEVEL3
-                )
-            {
-                let level = definition
-                    .level_definition()
-                    .expect("campaign has a level")
-                    .clone();
-                let installed_flow = mc2_runtime_flow(selection, &level, true)?;
-                definition = with_level_and_runtime_flow(definition, level, installed_flow);
-            }
+            let level = definition
+                .level_definition()
+                .expect("validated campaign has a level")
+                .clone();
+            let installed_flow =
+                runtime_catalog::compose(selection, ordinary_count, &secret_indices)?;
+            definition = with_level_and_runtime_flow(definition, level, installed_flow);
             let definition = Arc::new(definition);
             definition.verify_identity()?;
             let candidate = definition.runtime_flow().cloned().ok_or_else(|| {
@@ -1205,6 +1175,7 @@ impl Mc2RuntimePackageResolver {
                 if candidate.game_id() != expected.game_id()
                     || candidate.entry_level_id() != expected.entry_level_id()
                     || candidate.entries() != expected.entries()
+                    || candidate.secret_entries() != expected.secret_entries()
                 {
                     return Err(definition_error(
                         DefinitionErrorCode::DependencyFailed,
@@ -1252,7 +1223,40 @@ impl Mc2RuntimePackageResolver {
                 ));
             }
         }
-        if by_level.len() != observed_flow.entries().len() {
+        for entry in observed_flow.secret_entries() {
+            let origin = by_level
+                .get(entry.origin_level_id())
+                .expect("secret origin belongs to closed ordinary flow");
+            let destination = by_level.get(entry.secret_level_id()).ok_or_else(|| {
+                definition_error(
+                    DefinitionErrorCode::DependencyFailed,
+                    entry.secret_level_id().as_str(),
+                    "installed campaign package set is missing a declared secret mission",
+                )
+            })?;
+            if super::mc2_secret_flow::entry_for(
+                origin.selection,
+                destination.selection.internal_level,
+                origin
+                    .definition
+                    .runtime_flow()
+                    .expect("validated ordinary flow"),
+                destination
+                    .definition
+                    .runtime_flow()
+                    .expect("validated secret flow"),
+            )
+            .as_ref()
+                != Some(entry)
+            {
+                return Err(definition_error(
+                    DefinitionErrorCode::InvalidSchema,
+                    entry.secret_level_id().as_str(),
+                    "installed secret package disagrees with the source portal association",
+                ));
+            }
+        }
+        if by_level.len() != observed_flow.entries().len() + observed_flow.secret_entries().len() {
             return Err(definition_error(
                 DefinitionErrorCode::InvalidSchema,
                 "runtime_package_resolver.packages",
@@ -1357,6 +1361,55 @@ impl Mc2RuntimePackageResolver {
             .pending_definition
             .as_ref()
             .ok_or_else(|| invalid("Loading has no pending definition"))?;
+        self.definition_presentation(pending, identity.presentation.cue_id)
+    }
+
+    /// Observe the exact installed presentation binding after a direct secret
+    /// entry. This reads the live session; it does not fabricate a Loading mode.
+    pub fn active_entry_presentation(
+        &self,
+        runtime: &crate::game_runtime::GameRuntime<Mc2CampaignBackend>,
+        guard: crate::game_runtime::RuntimeGuard,
+    ) -> Result<Mc2LoadingPresentation, crate::game_runtime::RuntimeTransitionError> {
+        use crate::game_runtime::{RuntimeDefinitionIdentity, RuntimeMode, RuntimeTransitionError};
+        runtime
+            .validate_guard(guard)
+            .map_err(Box::new)
+            .map_err(RuntimeTransitionError::Guard)?;
+        let identity = runtime.identity();
+        if identity.mode != RuntimeMode::Playing {
+            return Err(RuntimeTransitionError::InvalidMode {
+                expected: RuntimeMode::Playing,
+                actual: identity.mode,
+            });
+        }
+        let session =
+            runtime
+                .session()
+                .ok_or_else(|| RuntimeTransitionError::InvalidRuntimeFlow {
+                    message: "Playing has no active session".to_owned(),
+                })?;
+        let definition = session.definition();
+        self.definition_presentation(
+            &RuntimeDefinitionIdentity {
+                package_graph_hash: definition.package_graph_hash().to_owned(),
+                definition_hash: definition.definition_hash().to_owned(),
+                definition_revision: definition.revision(),
+                runtime_flow: definition.runtime_flow().cloned(),
+            },
+            identity.presentation.cue_id,
+        )
+    }
+
+    fn definition_presentation(
+        &self,
+        pending: &crate::game_runtime::RuntimeDefinitionIdentity,
+        cue_id: crate::game_definition::SemanticPresentationCueId,
+    ) -> Result<Mc2LoadingPresentation, crate::game_runtime::RuntimeTransitionError> {
+        let invalid =
+            |message: &str| crate::game_runtime::RuntimeTransitionError::InvalidRuntimeFlow {
+                message: message.to_owned(),
+            };
         let flow = pending
             .runtime_flow
             .as_ref()
@@ -1392,7 +1445,8 @@ impl Mc2RuntimePackageResolver {
         Ok(Mc2LoadingPresentation {
             schema: "mc2-loading-presentation/v1",
             level_id: flow.bound_level_id().clone(),
-            cue_id: identity.presentation.cue_id,
+            source_selection: package.selection,
+            cue_id,
             package_graph_hash: pending.package_graph_hash.clone(),
             definition_hash: pending.definition_hash.clone(),
             definition_revision: pending.definition_revision,
@@ -1630,6 +1684,11 @@ impl Mc2RuntimePackageResolver {
                 carry_destination_level: pending
                     .get(&runtime.identity().runtime_id)
                     .map(|pending| pending.destination_level.clone()),
+                secret_flow: (!runtime
+                    .secret_flow_state()
+                    .discovered_secret_levels()
+                    .is_empty())
+                .then(|| runtime.secret_flow_state().clone()),
                 receipt_sha256: String::new(),
             };
             if mode == crate::game_runtime::RuntimeMode::Title
@@ -1678,7 +1737,7 @@ impl Mc2RuntimePackageResolver {
         })?;
         let catalog = default_catalog().map_err(Mc2CampaignReplaySaveError::Definition)?;
         let retained = if session.definition().runtime_flow() != package.definition.runtime_flow() {
-            self.retained_opening_definition(package)
+            self.retained_catalog_definition(package, flow)
                 .map_err(Mc2CampaignReplaySaveError::Definition)?
         } else {
             None
@@ -1709,6 +1768,12 @@ impl Mc2RuntimePackageResolver {
             &snapshot,
         );
         save.level_statistics = runtime.completed_level_statistics().to_vec();
+        save.secret_flow = (!runtime
+            .secret_flow_state()
+            .discovered_secret_levels()
+            .is_empty())
+        .then(|| runtime.secret_flow_state().clone());
+        save.retained_campaign = runtime.retained_campaign().cloned();
         save.initial_global_context = session.backend().package_campaign.source_global_context();
         save.global_context_changes = session.backend().global_context_changes.clone();
         save.receipt_sha256 = save.compute_receipt_sha256();
@@ -1821,6 +1886,15 @@ impl Mc2RuntimePackageResolver {
             }
             self.exact_package_for_definition(&save.state.definition)
                 .map_err(Mc2CampaignReplaySaveError::Runtime)?;
+            let secret_flow = save.secret_flow.unwrap_or_default();
+            crate::game_runtime::GameRuntime::<Mc2CampaignBackend>::validate_secret_restore_fields(
+                &save.state.definition,
+                &secret_flow,
+                None,
+                &save.state.completed_levels,
+                &save.state.level_statistics,
+            )
+            .map_err(Mc2CampaignReplaySaveError::Runtime)?;
             let destination = save.carry_destination_level;
             if save.semantic_spell_carry.is_some() != destination.is_some() {
                 return Err(Mc2CampaignReplaySaveError::InvalidSave {
@@ -1853,17 +1927,22 @@ impl Mc2RuntimePackageResolver {
                     message: "source context owner is unavailable".to_owned(),
                 }
             })?;
-            let identity = runtime
-                .restore_campaign_resolved(guard, save.state, |definition, selected| {
-                    self.exact_package_for_definition(definition)?;
-                    self.package(selected)
-                        .map(|package| Arc::clone(&package.definition))
-                        .ok_or_else(|| {
-                            crate::game_runtime::RuntimeTransitionError::InvalidRuntimeFlow {
-                                message: "saved campaign selection is not installed".to_owned(),
-                            }
-                        })
-                })
+            runtime
+                .restore_campaign_resolved(
+                    guard,
+                    save.state,
+                    secret_flow,
+                    |definition, selected| {
+                        self.exact_package_for_definition(definition)?;
+                        self.package(selected)
+                            .map(|package| Arc::clone(&package.definition))
+                            .ok_or_else(|| {
+                                crate::game_runtime::RuntimeTransitionError::InvalidRuntimeFlow {
+                                    message: "saved campaign selection is not installed".to_owned(),
+                                }
+                            })
+                    },
+                )
                 .map_err(Mc2CampaignReplaySaveError::Runtime)?;
             if let Some(carry) = save.semantic_spell_carry {
                 pending.insert(
@@ -1882,7 +1961,7 @@ impl Mc2RuntimePackageResolver {
             if let Some(context) = warm_context {
                 contexts.insert(guard.runtime_id, context);
             }
-            return Ok(identity);
+            return Ok(runtime.identity());
         }
         let save: Mc2CampaignReplaySave = serde_json::from_slice(bytes).map_err(|error| {
             Mc2CampaignReplaySaveError::InvalidSave {
@@ -1934,7 +2013,7 @@ impl Mc2RuntimePackageResolver {
         })?;
         let catalog = default_catalog().map_err(Mc2CampaignReplaySaveError::Definition)?;
         let retained = if save.definition.runtime_flow() != package.definition.runtime_flow() {
-            self.retained_opening_definition(package)
+            self.retained_catalog_definition(package, flow)
                 .map_err(Mc2CampaignReplaySaveError::Definition)?
         } else {
             None
@@ -1942,6 +2021,20 @@ impl Mc2RuntimePackageResolver {
         save.definition
             .verify_semantic_variant_of(retained.as_ref().unwrap_or(&package.definition), &catalog)
             .map_err(Mc2CampaignReplaySaveError::Definition)?;
+        let secret_flow = save.secret_flow.unwrap_or_default();
+        let retained_campaign = save.retained_campaign;
+        crate::game_runtime::GameRuntime::<Mc2CampaignBackend>::validate_secret_restore_fields(
+            &save.definition,
+            &secret_flow,
+            retained_campaign.as_ref(),
+            save.completed_levels.as_deref().unwrap_or_default(),
+            &save.level_statistics,
+        )
+        .map_err(Mc2CampaignReplaySaveError::Runtime)?;
+        if let Some(parent) = retained_campaign.as_ref() {
+            self.exact_package_for_definition(&parent.definition)
+                .map_err(Mc2CampaignReplaySaveError::Runtime)?;
+        }
         let definition = Arc::new(save.definition);
         let semantic_spell_carry = save.semantic_spell_carry;
         let initial_global_context = save.initial_global_context;
@@ -1965,7 +2058,7 @@ impl Mc2RuntimePackageResolver {
                 message: "source context owner is unavailable".to_owned(),
             }
         })?;
-        let identity = runtime
+        runtime
             .restore_playing_resolved(
                 guard,
                 definition,
@@ -2011,6 +2104,14 @@ impl Mc2RuntimePackageResolver {
                                 .to_owned(),
                         });
                     }
+                    // SLEV retains the receiver's nonserialized globals only
+                    // after the saved receipts verify. Apply them to the
+                    // private candidate before publishing either Playing or
+                    // Paused; the public mutable session gate remains closed
+                    // while paused.
+                    if let Some(context) = warm_context {
+                        candidate.backend_mut().apply_source_context_change(context);
+                    }
                     Ok(())
                 },
                 |candidate, enabled, show_foreign_text| {
@@ -2021,16 +2122,12 @@ impl Mc2RuntimePackageResolver {
                 observe,
             )
             .map_err(Mc2CampaignReplaySaveError::Restore)?;
-        if let Some(context) = warm_context {
-            runtime
-                .session_mut()
-                .expect("verified replay owns a session")
-                .backend_mut()
-                .apply_source_context_change(context);
-        }
+        runtime
+            .restore_secret_flow_state(secret_flow, retained_campaign)
+            .map_err(Mc2CampaignReplaySaveError::Runtime)?;
         pending.remove(&guard.runtime_id);
         contexts.remove(&guard.runtime_id);
-        Ok(identity)
+        Ok(runtime.identity())
     }
 
     /// Test-route history is returned only after the authoritative loader has
@@ -2127,6 +2224,235 @@ impl Mc2RuntimePackageResolver {
         save.completed_levels = completed_levels;
         save.receipt_sha256 = save.compute_receipt_sha256();
         serde_json::to_vec(&save).unwrap()
+    }
+
+    /// Consume an authoritative secret entry or secret completion before the
+    /// ordinary completion edge. Package resolution and candidate construction
+    /// precede publication, so an unavailable secret leaves the parent live.
+    pub fn advance_secret_if_ready(
+        &self,
+        runtime: &mut crate::game_runtime::GameRuntime<Mc2CampaignBackend>,
+        guard: crate::game_runtime::RuntimeGuard,
+        session_guard: crate::game_session::SessionGuard,
+    ) -> Result<
+        Option<crate::game_runtime::SecretTransitionReceipt>,
+        crate::game_runtime::RuntimeTransitionError,
+    > {
+        use crate::game_runtime::{RuntimeTransitionError, secret_flow::SecretMissionOutcome};
+        runtime
+            .validate_guard(guard)
+            .map_err(Box::new)
+            .map_err(RuntimeTransitionError::Guard)?;
+        let Some(session) = runtime.session() else {
+            return Ok(None);
+        };
+        let status = session
+            .completion_status(session_guard)
+            .map_err(Box::new)
+            .map_err(RuntimeTransitionError::SessionGuard)?
+            .value;
+        let source = self.exact_package_for_definition(session.definition())?;
+        if runtime.secret_flow_state().return_frame().is_some()
+            && session.backend().campaign.simulation().secret_banishment_result()
+        {
+            return self.abandon_secret_if_active(runtime, guard, session_guard);
+        }
+        if session.backend().campaign.simulation().secret_entry_ready() {
+            let association = super::mc2_secret_flow::association_for_origin(source.selection)
+                .ok_or_else(|| RuntimeTransitionError::InvalidRuntimeFlow {
+                    message: "secret trigger has no source campaign association".to_owned(),
+                })?;
+            let destination = self
+                .by_level
+                .values()
+                .find(|package| {
+                    package.selection.internal_level == association.destination_level_index()
+                })
+                .ok_or_else(|| RuntimeTransitionError::InvalidRuntimeFlow {
+                    message: "source secret destination package is not installed".to_owned(),
+                })?;
+            let source_flow = session.definition().runtime_flow().ok_or_else(|| {
+                RuntimeTransitionError::InvalidRuntimeFlow {
+                    message: "secret source has no runtime flow".to_owned(),
+                }
+            })?;
+            let destination_flow = destination.definition.runtime_flow().ok_or_else(|| {
+                RuntimeTransitionError::InvalidRuntimeFlow {
+                    message: "secret destination has no runtime flow".to_owned(),
+                }
+            })?;
+            let entry = super::mc2_secret_flow::entry_for(
+                source.selection,
+                association.destination_level_index(),
+                source_flow,
+                destination_flow,
+            )
+            .ok_or_else(|| RuntimeTransitionError::InvalidRuntimeFlow {
+                message: "installed secret definition does not match the source association"
+                    .to_owned(),
+            })?;
+            let secret_id = entry.secret_level_id().clone();
+            let carry = session.backend().transition_spell_carry()?;
+            let context = session.backend().campaign.source_global_context();
+            let receipt =
+                runtime.enter_secret_resolved(guard, session_guard, |source_session| {
+                    let generation = source_session
+                        .identity()
+                        .generation
+                        .checked_add(1)
+                        .and_then(std::num::NonZeroU64::new)
+                        .ok_or(RuntimeTransitionError::GenerationExhausted)?;
+                    let mut candidate = crate::game_session::GameSession::open_with_generation(
+                        &Mc2CampaignAdapter,
+                        Arc::clone(&destination.definition),
+                        source_session.identity().session_id,
+                        generation,
+                        destination.inputs.clone(),
+                    )
+                    .map_err(|error| {
+                        RuntimeTransitionError::InvalidNextDefinition {
+                            message: error.to_string(),
+                        }
+                    })?;
+                    candidate.backend_mut().apply_semantic_spell_carry(&carry)?;
+                    candidate
+                        .backend_mut()
+                        .install_initial_source_context(context)?;
+                    Ok((secret_id, candidate))
+                })?;
+            return Ok(Some(receipt));
+        }
+        if runtime.secret_flow_state().return_frame().is_none()
+            || !matches!(status, GameCompletionStatus::Completed { .. })
+        {
+            return Ok(None);
+        }
+        let carry = session.backend().transition_spell_carry()?;
+        let context = session.backend().campaign.source_global_context();
+        let mut pending = self.pending_spell_carries.lock().map_err(|_| {
+            RuntimeTransitionError::InvalidRuntimeFlow {
+                message: "resolver spell-carry state is unavailable".to_owned(),
+            }
+        })?;
+        let mut contexts = self.detached_source_contexts.lock().map_err(|_| {
+            RuntimeTransitionError::InvalidRuntimeFlow {
+                message: "source context owner is unavailable".to_owned(),
+            }
+        })?;
+        let receipt = runtime.return_from_secret_resolved(
+            guard,
+            session_guard,
+            SecretMissionOutcome::Completed,
+            |parent| {
+                self.exact_package_for_definition(&parent.definition)?;
+                parent
+                    .selected_level_id
+                    .as_ref()
+                    .and_then(|id| self.package(id))
+                    .map(|package| Arc::clone(&package.definition))
+                    .ok_or_else(|| RuntimeTransitionError::InvalidRuntimeFlow {
+                        message: "retained secret origin is not installed".to_owned(),
+                    })
+            },
+        )?;
+        let destination_level = receipt
+            .after
+            .campaign_menu
+            .as_ref()
+            .and_then(|menu| menu.selected_level_id.clone())
+            .expect("validated secret parent retains its selected origin");
+        pending.insert(
+            guard.runtime_id,
+            Mc2PendingSpellCarry {
+                session_generation: runtime
+                    .campaign_session_generation()
+                    .expect("secret return owns map lifetime"),
+                destination_level,
+                carry,
+            },
+        );
+        contexts.insert(guard.runtime_id, context);
+        Ok(Some(receipt))
+    }
+
+    /// Return an abandoned MC2 secret mission to its retained campaign.
+    /// Abandonment keeps the entry spell carry and never promotes mission XP.
+    pub fn abandon_secret_if_active(
+        &self,
+        runtime: &mut crate::game_runtime::GameRuntime<Mc2CampaignBackend>,
+        guard: crate::game_runtime::RuntimeGuard,
+        session_guard: crate::game_session::SessionGuard,
+    ) -> Result<
+        Option<crate::game_runtime::SecretTransitionReceipt>,
+        crate::game_runtime::RuntimeTransitionError,
+    > {
+        use crate::game_runtime::{RuntimeTransitionError, secret_flow::SecretMissionOutcome};
+
+        runtime
+            .validate_guard(guard)
+            .map_err(Box::new)
+            .map_err(RuntimeTransitionError::Guard)?;
+        let session = runtime
+            .session()
+            .ok_or_else(|| RuntimeTransitionError::InvalidMode {
+                expected: crate::game_runtime::RuntimeMode::Playing,
+                actual: runtime.identity().mode,
+            })?;
+        session
+            .completion_status(session_guard)
+            .map_err(Box::new)
+            .map_err(RuntimeTransitionError::SessionGuard)?;
+        self.exact_package_for_definition(session.definition())?;
+        if runtime.secret_flow_state().return_frame().is_none() {
+            return Ok(None);
+        }
+
+        let carry = session.backend().initial_semantic_spell_carry()?;
+        let context = session.backend().campaign.source_global_context();
+        let mut pending = self.pending_spell_carries.lock().map_err(|_| {
+            RuntimeTransitionError::InvalidRuntimeFlow {
+                message: "resolver spell-carry state is unavailable".to_owned(),
+            }
+        })?;
+        let mut contexts = self.detached_source_contexts.lock().map_err(|_| {
+            RuntimeTransitionError::InvalidRuntimeFlow {
+                message: "source context owner is unavailable".to_owned(),
+            }
+        })?;
+        let receipt = runtime.return_from_secret_resolved(
+            guard,
+            session_guard,
+            SecretMissionOutcome::Abandoned,
+            |parent| {
+                self.exact_package_for_definition(&parent.definition)?;
+                parent
+                    .selected_level_id
+                    .as_ref()
+                    .and_then(|id| self.package(id))
+                    .map(|package| Arc::clone(&package.definition))
+                    .ok_or_else(|| RuntimeTransitionError::InvalidRuntimeFlow {
+                        message: "retained secret origin is not installed".to_owned(),
+                    })
+            },
+        )?;
+        let destination_level = receipt
+            .after
+            .campaign_menu
+            .as_ref()
+            .and_then(|menu| menu.selected_level_id.clone())
+            .expect("validated secret parent retains its selected origin");
+        pending.insert(
+            guard.runtime_id,
+            Mc2PendingSpellCarry {
+                session_generation: runtime
+                    .campaign_session_generation()
+                    .expect("abandoned secret return owns map lifetime"),
+                destination_level,
+                carry,
+            },
+        );
+        contexts.insert(guard.runtime_id, context);
+        Ok(Some(receipt))
     }
 
     /// Resolve the active semantic completion edge and accept it without a
@@ -2409,21 +2735,23 @@ impl GameAdapter for Mc2CampaignAdapter {
             load_mc2_campaign_inputs(&input, &catalog).map_err(CampaignBackendError::Definition)?;
         let selection = CampaignDescriptor::declared_selection(&input.package_root)
             .map_err(|error| CampaignBackendError::Open(CampaignOpenError::Preflight(error)))?;
-        if definition
-            .runtime_flow()
-            .is_some_and(|flow| flow.entries().len() == 4)
-            && matches!(
-                selection,
-                CampaignSelection::LEVEL1 | CampaignSelection::LEVEL2 | CampaignSelection::LEVEL3
-            )
-        {
+        if let Some(flow) = definition.runtime_flow() {
+            let (ordinary_count, secret_indices) =
+                runtime_catalog::dimensions(flow).map_err(CampaignBackendError::Definition)?;
+            let canonical = runtime_catalog::compose(selection, ordinary_count, &secret_indices)
+                .map_err(CampaignBackendError::Definition)?;
+            if flow != &canonical {
+                return Err(CampaignBackendError::Definition(definition_error(
+                    DefinitionErrorCode::InvalidSchema,
+                    "mc2_campaign.runtime_flow",
+                    "definition does not match its canonical source-selected catalog",
+                )));
+            }
             let level = package_base
                 .level_definition()
                 .expect("campaign has a level")
                 .clone();
-            let flow = mc2_runtime_flow(selection, &level, true)
-                .map_err(CampaignBackendError::Definition)?;
-            package_base = with_level_and_runtime_flow(package_base, level, flow);
+            package_base = with_level_and_runtime_flow(package_base, level, canonical);
         }
         definition
             .verify_semantic_variant_of(&package_base, &catalog)
@@ -2622,6 +2950,10 @@ impl GameSessionBackend for Mc2CampaignBackend {
         self.campaign.tick()
     }
 
+    fn flight_assistance_menu_open(&self) -> bool {
+        self.campaign.simulation().level2_player_menu_state() != 0
+    }
+
     fn completion_status(&self) -> GameCompletionStatus {
         let exit = self.campaign.simulation().level_exit_sequence();
         if !exit.complete {
@@ -2708,6 +3040,7 @@ impl GameSessionBackend for Mc2CampaignBackend {
             .unwrap_or_default();
         CampaignSnapshot {
             tick: flight.tick,
+            source_menu_admission: self.campaign.simulation().source_menu_admission(),
             effect_head: self.campaign.effect_cursor().next_sequence,
             state_hash: self.campaign.state_hash(),
             terrain_hash: self.campaign.terrain_hash(),
@@ -2739,6 +3072,14 @@ impl GameSessionBackend for Mc2CampaignBackend {
                 mana: shared_spells.player_mana(),
                 max_mana: player_entity.max_mana,
             },
+            source_scoreboard: source_scoreboard::observe(
+                compatibility,
+                &source_scoreboard::source_names(),
+            )
+            .unwrap_or_else(|error| sim_session::SourceScoreboard {
+                players: Vec::new(),
+                projection_error: Some(error.to_string()),
+            }),
             player_spells: spells::observe(shared_spells),
             player_immobilized_ticks: u16::from(flight.immobilize_counter.cast_unsigned()),
             source_camera_fov: {
@@ -2808,8 +3149,13 @@ impl GameSessionBackend for Mc2CampaignBackend {
     }
 
     fn step(&mut self, command: Self::Command) -> Result<(), Self::Error> {
-        let player_command = self.campaign_player_command(&command)?;
+        let mut player_command = self.campaign_player_command(&command)?;
         let mut candidate = self.campaign.clone();
+        let menu_admitted = command.abandon_action.is_some_and(|action| {
+            candidate
+                .simulation_mut()
+                .prepare_source_menu_action(action, &mut player_command)
+        });
         candidate
             .simulation_mut()
             .advance_elapsed_centiseconds(command.elapsed_centiseconds);
@@ -2827,6 +3173,9 @@ impl GameSessionBackend for Mc2CampaignBackend {
         }) {
             return Err(CampaignBackendError::StepRejected { message });
         }
+        candidate
+            .simulation_mut()
+            .finish_source_menu_action(command.abandon_action, menu_admitted);
         self.campaign = candidate;
         self.replay_operations
             .push(crate::game_runtime::ReplayOperation::Step { command });
@@ -3364,6 +3713,14 @@ impl Mc2CampaignBackend {
         {
             return Ok(player_command);
         }
+        if command.mark_spell.is_some() || command.cycle_marked_spell.is_some() {
+            return marked_spells::player_command(
+                self.campaign.simulation().shared_spells(),
+                command,
+                player_command,
+            )
+            .map_err(|message| CampaignBackendError::StepRejected { message });
+        }
         if let Some(assignment) = &command.assign_spell {
             if command.select_spell.is_some() {
                 return Err(CampaignBackendError::StepRejected {
@@ -3522,7 +3879,7 @@ pub(crate) mod tests {
             SpellKind::Invisibility,
             SpellKind::BeyondSight,
             SpellKind::Morph,
-            SpellKind::Lightning,
+            SpellKind::Meteor,
         ];
         // Controlled progression input tests the real carry consumer; no
         // gameplay, pickup, or earned completion claim is made by this setup.
@@ -3757,7 +4114,10 @@ pub(crate) mod tests {
     fn runtime_loading_presentation_binds_installed_identity_and_cancel() {
         use crate::game_runtime::{GameRuntime, RuntimeMode, RuntimeTransitionError};
         let mut resolver = Mc2RuntimePackageResolver::load([
-            Mc2CampaignInputs::new(level_one_descriptor_fixture_path()),
+            Mc2CampaignInputs::new(
+                PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../../generated/mc-bhq8-level1-collision-v5-night"),
+            ),
             Mc2CampaignInputs::new(descriptor_fixture_path()),
             Mc2CampaignInputs::new(level_three_descriptor_fixture_path()),
         ])
@@ -3774,9 +4134,18 @@ pub(crate) mod tests {
             .unwrap();
         assert_eq!(first.environment, "night");
         assert_eq!(first.artwork_profile, "ordinary");
+        assert_eq!(first.source_selection, CampaignSelection::LEVEL1);
+        assert_eq!(
+            serde_json::to_value(&first).unwrap()["source_selection"],
+            serde_json::json!({"external_level":1,"internal_level":0,"map_type_id":1})
+        );
         assert_eq!(first.cue_id, loading.presentation.cue_id);
         let manifest: serde_json::Value = serde_json::from_slice(
-            &fs::read(level_one_descriptor_fixture_path().join("manifest.json")).unwrap(),
+            &fs::read(
+                PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../../generated/mc-bhq8-level1-collision-v5-night/manifest.json"),
+            )
+            .unwrap(),
         )
         .unwrap();
         assert_eq!(
@@ -3836,6 +4205,403 @@ pub(crate) mod tests {
             .open_pending(&mut runtime, retry.guard(), 195)
             .unwrap();
         assert_eq!(playing.mode, RuntimeMode::Playing);
+        let active = resolver
+            .active_entry_presentation(&runtime, playing.guard())
+            .unwrap();
+        assert_eq!(active.level_id, first.level_id);
+        assert_eq!(active.source_selection, first.source_selection);
+        assert_eq!(active.package_graph_hash, first.package_graph_hash);
+        assert_eq!(active.definition_hash, first.definition_hash);
+        assert_eq!(active.environment, first.environment);
+        assert_eq!(active.artwork_profile, first.artwork_profile);
+        assert_eq!(active.cue_id, playing.presentation.cue_id);
+        assert!(matches!(
+            resolver.active_entry_presentation(&runtime, retry.guard()),
+            Err(RuntimeTransitionError::Guard(_))
+        ));
+        let original = Arc::clone(&resolver.by_level[&entry].definition);
+        resolver.by_level.get_mut(&entry).unwrap().definition =
+            Arc::new(reissue_at_revision(&original, original.revision() + 1).unwrap());
+        assert!(matches!(
+            resolver.active_entry_presentation(&runtime, playing.guard()),
+            Err(RuntimeTransitionError::InvalidRuntimeFlow { .. })
+        ));
+        assert_eq!(runtime.identity(), playing);
+    }
+
+    #[test]
+    fn actual_source_thirty_package_opens_with_its_canonical_secret_selection() {
+        let package = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../generated/mc-paj2-source30-campaign-package");
+        let definition =
+            Arc::new(load_mc2_campaign(&package, &default_catalog().unwrap()).unwrap());
+        let flow = definition.runtime_flow().unwrap();
+        assert_eq!(
+            flow.bound_level_id().as_str(),
+            "level.magic_carpet_2.karakir"
+        );
+        assert_eq!(flow.secret_entries().len(), 1);
+        assert_eq!(
+            flow.secret_entries()[0].origin_level_id().as_str(),
+            "level.magic_carpet_2.t_klom"
+        );
+        assert_eq!(
+            CampaignDescriptor::declared_selection(&package).unwrap(),
+            CampaignSelection::secret_destination(30).unwrap()
+        );
+        let mut session = GameSession::open(
+            &Mc2CampaignAdapter,
+            Arc::clone(&definition),
+            7190,
+            Mc2CampaignInputs::new(&package),
+        )
+        .unwrap();
+        assert_eq!(
+            session.definition().definition_hash(),
+            definition.definition_hash()
+        );
+        let before = session.identity();
+        session
+            .step(before.guard(), GameCommand::default())
+            .unwrap();
+        assert!(session.identity().tick > before.tick);
+        // This is a genuine package/open/scheduled-step check. It grants no
+        // discovery, frontier, portal entry, completion, or return result.
+    }
+
+    #[test]
+    fn abandoned_secret_return_preserves_parent_and_entry_carry() {
+        use crate::game_runtime::{
+            CampaignMenuCommand, CampaignMenuPhase, CampaignSaveState, GameRuntime, RuntimeMode,
+            RuntimeTransitionError, SecretTransitionKind,
+        };
+        use crate::game_session::GameCompletionStatistics;
+
+        // This boundary fixture supplies a retained Level-5 frontier and enters
+        // its installed secret through the existing runtime boundary. Inventory
+        // and XP use the genuine Level 1 package and award primitive; this does
+        // not claim a played Level 1-4 frontier or source portal gameplay.
+        let generated = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../generated");
+        let resolver = Mc2RuntimePackageResolver::load(
+            [
+                "mc-bhq8-level1-collision-v5-night",
+                "level2-day-block32-campaign-v2",
+                "level3-day-block32-campaign-recipe-v2",
+                "mc-bhq6-ordinary-20261025-zclu5fjj/level4",
+                "mc-paj2-source4-campaign-package",
+                "mc-paj2-source30-campaign-package",
+            ]
+            .map(|path| Mc2CampaignInputs::new(generated.join(path))),
+        )
+        .unwrap();
+        let level1_root = generated.join("mc-bhq8-level1-collision-v5-night");
+        let level1_package = resolver
+            .package(resolver.flow().entry_level_id())
+            .expect("resolver retains the genuine Level 1 package");
+        let mut level1_session = GameSession::open(
+            &Mc2CampaignAdapter,
+            Arc::clone(&level1_package.definition),
+            7434,
+            Mc2CampaignInputs::new(level1_root),
+        )
+        .unwrap();
+        let initial_inventory = level1_session.backend().semantic_spell_carry().unwrap();
+        assert_eq!(
+            initial_inventory.acquired,
+            vec![SpellKind::Fireball, SpellKind::Possession]
+        );
+        let fireball_family = mc2_spell_family(SpellKind::Fireball).unwrap();
+        let level1_player = level1_session
+            .backend()
+            .campaign
+            .simulation()
+            .shared_spells()
+            .local_player()
+            .entity_index;
+        level1_session
+            .backend_mut()
+            .campaign
+            .simulation_mut()
+            .shared_spells_mut()
+            .award_spell_experience(level1_player, fireball_family, 1);
+        let inherited_carry = level1_session.backend().transition_spell_carry().unwrap();
+        assert_eq!(inherited_carry.acquired, initial_inventory.acquired);
+        assert_eq!(inherited_carry.selected, initial_inventory.selected);
+        let inherited_fireball = inherited_carry
+            .progression
+            .iter()
+            .find(|progress| progress.spell == SpellKind::Fireball)
+            .expect("the source award adds Fireball to the genuine Level 1 carry");
+        assert!(inherited_fireball.persistent_experience > 0);
+        assert_eq!(inherited_fireball.runtime_experience, 0);
+        let secret_entry = resolver.flow().secret_entries().first().unwrap();
+        let origin = secret_entry.origin_level_id().clone();
+        let secret_level = secret_entry.secret_level_id().clone();
+        let origin_index = resolver
+            .flow()
+            .entries()
+            .iter()
+            .position(|entry| entry.level_id() == &origin)
+            .unwrap();
+        assert_eq!(origin_index, 4);
+        let completed_levels = resolver
+            .flow()
+            .entries()
+            .iter()
+            .take(origin_index)
+            .map(|entry| entry.level_id().clone())
+            .collect::<Vec<_>>();
+        let level_statistics = completed_levels
+            .iter()
+            .map(|level_id| crate::game_runtime::CompletedLevelStatistics {
+                level_id: level_id.clone(),
+                statistics: GameCompletionStatistics {
+                    spells_found_percent: 15,
+                    hit_accuracy_percent: 25,
+                    creatures_killed_percent: 35,
+                    mana_collected_percent: 45,
+                    time_taken_seconds: 123,
+                },
+            })
+            .collect::<Vec<_>>();
+        let entry_definition = Arc::clone(
+            &resolver
+                .package(resolver.flow().entry_level_id())
+                .unwrap()
+                .definition,
+        );
+        let parent_save = CampaignSaveState {
+            definition: entry_definition.as_ref().clone(),
+            phase: CampaignMenuPhase::MissionSelect,
+            completed_level_id: None,
+            selected_level_id: Some(origin.clone()),
+            completed_levels: completed_levels.clone(),
+            level_statistics: level_statistics.clone(),
+        };
+        let mut runtime = GameRuntime::<Mc2CampaignBackend>::title(7433).unwrap();
+        let title = runtime.identity();
+        let map = runtime
+            .restore_campaign_resolved(
+                title.guard(),
+                parent_save,
+                Default::default(),
+                |definition, selected| {
+                    resolver.exact_package_for_definition(definition)?;
+                    resolver
+                        .package(selected)
+                        .map(|package| Arc::clone(&package.definition))
+                        .ok_or_else(|| RuntimeTransitionError::InvalidRuntimeFlow {
+                            message: "saved campaign selection is not installed".to_owned(),
+                        })
+                },
+            )
+            .unwrap();
+        let loading = resolver
+            .campaign_menu_command(&mut runtime, map.guard(), CampaignMenuCommand::StartMission)
+            .unwrap();
+        let playing = resolver
+            .open_pending(&mut runtime, loading.guard(), 7433)
+            .unwrap();
+        let ordinary_session_guard = playing.session.as_ref().unwrap().guard();
+        let ordinary_before = runtime.identity();
+        assert!(
+            resolver
+                .abandon_secret_if_active(&mut runtime, playing.guard(), ordinary_session_guard)
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(runtime.identity(), ordinary_before);
+
+        let stale_outer = crate::game_runtime::RuntimeGuard {
+            runtime_id: playing.runtime_id,
+            generation: playing.generation - 1,
+        };
+        assert!(matches!(
+            resolver.abandon_secret_if_active(&mut runtime, stale_outer, ordinary_session_guard),
+            Err(RuntimeTransitionError::Guard(_))
+        ));
+        let mut stale_session = ordinary_session_guard;
+        stale_session.expected_tick += 1;
+        assert!(matches!(
+            resolver.abandon_secret_if_active(&mut runtime, playing.guard(), stale_session),
+            Err(RuntimeTransitionError::SessionGuard(_))
+        ));
+        assert_eq!(runtime.identity(), ordinary_before);
+        assert!(runtime.secret_flow_state().return_frame().is_none());
+
+        runtime
+            .session_mut()
+            .unwrap()
+            .backend_mut()
+            .apply_semantic_spell_carry(&inherited_carry)
+            .unwrap();
+        assert_eq!(
+            runtime
+                .session()
+                .unwrap()
+                .backend()
+                .semantic_spell_carry()
+                .unwrap(),
+            inherited_carry
+        );
+        let retained_parent = runtime.retained_campaign().cloned().unwrap();
+        assert_eq!(retained_parent.selected_level_id.as_ref(), Some(&origin));
+        assert_eq!(retained_parent.completed_levels, completed_levels);
+        assert_eq!(retained_parent.level_statistics, level_statistics);
+
+        let parent_session_guard = runtime.session().unwrap().identity().guard();
+        let secret_receipt = runtime
+            .enter_secret_resolved(playing.guard(), parent_session_guard, |parent_session| {
+                resolver.exact_package_for_definition(parent_session.definition())?;
+                let destination = resolver.package(&secret_level).ok_or_else(|| {
+                    RuntimeTransitionError::InvalidRuntimeFlow {
+                        message: "installed secret package is unavailable".to_owned(),
+                    }
+                })?;
+                let generation = parent_session
+                    .identity()
+                    .generation
+                    .checked_add(1)
+                    .and_then(std::num::NonZeroU64::new)
+                    .ok_or(RuntimeTransitionError::GenerationExhausted)?;
+                let mut candidate = GameSession::open_with_generation(
+                    &Mc2CampaignAdapter,
+                    Arc::clone(&destination.definition),
+                    parent_session.identity().session_id,
+                    generation,
+                    destination.inputs.clone(),
+                )
+                .map_err(|error| {
+                    RuntimeTransitionError::InvalidNextDefinition {
+                        message: error.to_string(),
+                    }
+                })?;
+                let carry = parent_session.backend().transition_spell_carry()?;
+                let context = parent_session.backend().campaign.source_global_context();
+                candidate.backend_mut().apply_semantic_spell_carry(&carry)?;
+                candidate
+                    .backend_mut()
+                    .install_initial_source_context(context)?;
+                Ok((secret_level.clone(), candidate))
+            })
+            .unwrap();
+        assert!(secret_receipt.verify());
+        assert_eq!(secret_receipt.kind, SecretTransitionKind::Entry);
+
+        let entry_carry = runtime
+            .session()
+            .unwrap()
+            .backend()
+            .initial_semantic_spell_carry()
+            .unwrap();
+        assert_eq!(entry_carry, inherited_carry);
+        let source_context = runtime
+            .session()
+            .unwrap()
+            .backend()
+            .campaign
+            .source_global_context();
+        let entry_fireball = entry_carry
+            .progression
+            .iter()
+            .find(|progress| progress.spell == SpellKind::Fireball)
+            .expect("the genuine inherited carry retains its Fireball XP baseline");
+        let secret_player = runtime
+            .session()
+            .unwrap()
+            .backend()
+            .campaign
+            .simulation()
+            .shared_spells()
+            .local_player()
+            .entity_index;
+        runtime
+            .session_mut()
+            .unwrap()
+            .backend_mut()
+            .campaign
+            .simulation_mut()
+            .shared_spells_mut()
+            .award_spell_experience(secret_player, fireball_family, 777);
+        let mission_carry = runtime
+            .session()
+            .unwrap()
+            .backend()
+            .semantic_spell_carry()
+            .unwrap();
+        assert_eq!(mission_carry.acquired, entry_carry.acquired);
+        let mission_fireball = mission_carry
+            .progression
+            .iter()
+            .find(|progress| progress.spell == SpellKind::Fireball)
+            .expect("the secret's source XP award updates the carried Fireball");
+        assert_eq!(
+            mission_fireball.persistent_experience,
+            entry_fireball.persistent_experience
+        );
+        assert_eq!(
+            mission_fireball.runtime_experience,
+            entry_fireball.runtime_experience.checked_add(777).unwrap()
+        );
+        assert_ne!(mission_carry, entry_carry);
+
+        let secret_playing = runtime.identity();
+        let paused = runtime.pause(secret_playing.guard()).unwrap();
+        assert_eq!(paused.mode, RuntimeMode::Paused);
+        let paused_session_guard = paused.session.as_ref().unwrap().guard();
+        let paused_context = runtime
+            .session()
+            .unwrap()
+            .backend()
+            .campaign
+            .source_global_context();
+        let receipt = resolver
+            .abandon_secret_if_active(&mut runtime, paused.guard(), paused_session_guard)
+            .unwrap()
+            .unwrap();
+        assert!(receipt.verify());
+        assert_eq!(receipt.kind, SecretTransitionKind::AbandonedReturn);
+        assert_eq!(receipt.before.mode, RuntimeMode::Paused);
+        assert_eq!(receipt.after.mode, RuntimeMode::Campaign);
+        assert_eq!(receipt.origin_level_id, origin);
+        assert_eq!(
+            receipt
+                .after
+                .campaign_menu
+                .as_ref()
+                .unwrap()
+                .selected_level_id
+                .as_ref(),
+            Some(&origin)
+        );
+        assert_eq!(runtime.campaign_save_state().unwrap(), retained_parent);
+        let secret_progress = receipt.after.secret_campaign.as_ref().unwrap();
+        assert!(secret_progress.discovered_levels.contains(&secret_level));
+        assert!(!secret_progress.completed_levels.contains(&secret_level));
+
+        let pending = resolver
+            .pending_spell_carries
+            .lock()
+            .unwrap()
+            .get(&paused.runtime_id)
+            .cloned()
+            .unwrap();
+        assert_eq!(pending.destination_level, origin);
+        assert_eq!(
+            pending.session_generation,
+            runtime.campaign_session_generation().unwrap()
+        );
+        assert_eq!(pending.carry, entry_carry);
+        assert_eq!(
+            resolver
+                .detached_source_contexts
+                .lock()
+                .unwrap()
+                .get(&paused.runtime_id),
+            Some(&paused_context)
+        );
+        assert_ne!(mission_carry, pending.carry);
+        assert_eq!(source_context, paused_context);
     }
 
     #[test]
@@ -3944,6 +4710,68 @@ pub(crate) mod tests {
             3
         );
         assert_eq!(resolver.save_replay(&restored).unwrap(), bytes);
+        let warm_context = GlobalSpecialState {
+            protection_ticks: 23,
+            visibility_mode: 2,
+        };
+        // Keep the envelope valid while making the replay's final state
+        // receipt false, so this exercises candidate verification itself.
+        let mut corrupt: Mc2CampaignReplaySave = serde_json::from_slice(&bytes).unwrap();
+        corrupt.expected_state_hash ^= 1;
+        corrupt.receipt_sha256 = corrupt.compute_receipt_sha256();
+        let corrupt_bytes = serde_json::to_vec(&corrupt).unwrap();
+        let mut rejected = GameRuntime::<Mc2CampaignBackend>::title(7124).unwrap();
+        let before = rejected.identity();
+        assert!(matches!(
+            resolver.load_replay_with_source_context(
+                &mut rejected,
+                before.guard(),
+                7124,
+                &corrupt_bytes,
+                warm_context,
+            ),
+            Err(Mc2CampaignReplaySaveError::Restore(
+                crate::game_runtime::RestorePlayingError::Transition(
+                    crate::game_runtime::RuntimeTransitionError::InvalidReplay { .. }
+                )
+            ))
+        ));
+        assert_eq!(rejected.identity(), before);
+        assert!(rejected.session().is_none());
+        let mut warm = GameRuntime::<Mc2CampaignBackend>::title(7122).unwrap();
+        let guard = warm.identity().guard();
+        let loaded = resolver
+            .load_replay_with_source_context(&mut warm, guard, 7122, &bytes, warm_context)
+            .unwrap();
+        assert_eq!(loaded.mode, crate::game_runtime::RuntimeMode::Paused);
+        assert!(
+            warm.session_mut().is_none(),
+            "warm restore must preserve the paused gameplay mutation gate"
+        );
+        assert_eq!(warm.session().unwrap().identity().tick, tick);
+        assert_eq!(
+            warm.session()
+                .unwrap()
+                .backend()
+                .campaign
+                .source_global_context(),
+            warm_context
+        );
+        let warm_bytes = resolver.save_replay(&warm).unwrap();
+        let mut roundtrip = GameRuntime::<Mc2CampaignBackend>::title(7123).unwrap();
+        let guard = roundtrip.identity().guard();
+        resolver
+            .load_replay(&mut roundtrip, guard, 7123, &warm_bytes)
+            .unwrap();
+        assert_eq!(
+            roundtrip.identity().mode,
+            crate::game_runtime::RuntimeMode::Paused
+        );
+        assert_eq!(
+            roundtrip.session().unwrap().snapshot().value,
+            warm.session().unwrap().snapshot().value
+        );
+        assert_eq!(resolver.save_replay(&roundtrip).unwrap(), warm_bytes);
     }
 
     #[test]
@@ -4005,6 +4833,7 @@ pub(crate) mod tests {
             state,
             semantic_spell_carry: Some(carry.clone()),
             carry_destination_level: Some(destination),
+            secret_flow: None,
             receipt_sha256: String::new(),
         };
         save.receipt_sha256 = save.compute_receipt_sha256();
@@ -36804,6 +37633,8 @@ pub(crate) mod tests {
             cast_selected: true,
             select_spell: None,
             assign_spell: None,
+            mark_spell: None,
+            cycle_marked_spell: None,
             recenter: false,
             full_stop: false,
             show_objective: false,
@@ -36811,6 +37642,7 @@ pub(crate) mod tests {
             look_pitch: 23,
             recover_player: false,
             remove_castle_stage: false,
+            abandon_action: None,
             elapsed_centiseconds: 0,
         });
         assert_eq!(mapped.opcode, 0);

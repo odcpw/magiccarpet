@@ -51,6 +51,25 @@ pub(crate) fn construct(
     Some(slot)
 }
 
+/// Construct the source Volcano produced by a live Volcano spell projectile.
+/// Keep ownership on the scheduled terrain row so its synchronous damage,
+/// audio and spell-experience consumers use the actual caster.
+pub(crate) fn construct_owned(
+    arena: &mut SourceArena,
+    terrain: &mut SessionTerrain,
+    position: Position,
+    owner: u16,
+) -> Option<u16> {
+    let slot = construct(arena, terrain, position)?;
+    let source = arena.entities.get_mut(usize::from(slot))?;
+    source.source_id = owner;
+    source
+        .record
+        .get_mut(30..32)?
+        .copy_from_slice(&owner.to_le_bytes());
+    Some(slot)
+}
+
 /// sub_31940 publishes geometry and controller writes before area116A0,
 /// then audio, the center cap and the actual eruption child constructor.
 pub(crate) fn step<F, G>(

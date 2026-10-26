@@ -1,4 +1,4 @@
-//! The shared sub_65820 flyer used by Lightning and Spider web.
+//! The shared sub_65820 flyer used by Meteor and Spider web.
 //! SourceArena owns fixed addresses; the scheduler owns phase and reclaim.
 
 use super::{EntitySnapshot, ParticleParameter, SessionTerrain, area_damage};
@@ -33,6 +33,33 @@ pub(crate) struct StepOutcome {
     pub music_player: Option<u16>,
     pub accuracy: Option<(u16, bool)>,
     pub captured_holder: Option<u16>,
+}
+
+/// Source `sub_65780`: only its projectile model allowlist increments the
+/// human player's accuracy counters. The hit counts only when the actual
+/// recipient and the projectile's captured target belong to the same source
+/// actor. A `None` result means this source row is not an accuracy attempt.
+pub(super) fn source_accuracy(
+    arena: &SourceArena,
+    projectile_model: u8,
+    owner_slot: u16,
+    hit_slot: Option<u16>,
+    original_target: u16,
+) -> Option<(u16, bool)> {
+    if !matches!(projectile_model, 0 | 1 | 3 | 7..=9 | 12 | 17 | 25 | 28) {
+        return None;
+    }
+    let owner = arena.entities.get(usize::from(owner_slot))?;
+    if (owner.class, owner.model) != (3, 0) {
+        return None;
+    }
+    let matched = hit_slot
+        .zip((original_target != 0).then_some(original_target))
+        .is_some_and(|(hit, target)| {
+            arena.entities[usize::from(hit)].source_id
+                == arena.entities[usize::from(target)].source_id
+        });
+    Some((owner_slot, matched))
 }
 
 fn word(row: &EntitySnapshot, offset: usize) -> u16 {
@@ -81,7 +108,7 @@ fn aim_at(row: &mut EntitySnapshot, position: Position) {
 /// Acquisition reads the current byte39/StageVar2/parentId, not the decoded
 /// packet left at an address now occupied by a typed creature. Membership
 /// stays frozen; this projects only fields used by sub_67CB0's class5 gate.
-fn class5_eligible(arena: &SourceArena, slot: u16, owner: u16) -> bool {
+fn class5_gate_fields(arena: &SourceArena, slot: u16) -> Option<(u8, u8, u16)> {
     let fields = if let Some(row) = arena
         .authored_class5()
         .iter()
@@ -150,11 +177,24 @@ fn class5_eligible(arena: &SourceArena, slot: u16, owner: u16) -> bool {
             .get(usize::from(slot))
             .map(|row| (row.record[61], row.record[77], word(row, 44)))
     };
-    fields.is_some_and(|(cadence, stage, parent)| cadence != 0 && !(stage == 14 && parent == owner))
+    fields
+}
+
+pub(super) fn class5_eligible(arena: &SourceArena, slot: u16, owner: u16, ray: bool) -> bool {
+    class5_gate_fields(arena, slot).is_some_and(|(cadence, stage, parent)| {
+        // The ray's source branch compares word2C; ordinary guided shots
+        // compare parentId. Keep that distinction even for allied actors.
+        let allegiance = if ray {
+            word(&arena.entities[usize::from(slot)], 48)
+        } else {
+            parent
+        };
+        cadence != 0 && !(stage == 14 && allegiance == owner)
+    })
 }
 
 /// sub_10780: preserve map-chain order, selectors and strict source extents.
-fn collision(arena: &mut SourceArena, row: &EntitySnapshot) -> Option<(u16, Position)> {
+pub(super) fn collision(arena: &mut SourceArena, row: &EntitySnapshot) -> Option<(u16, Position)> {
     let width = i32::from(row.array_pitch()) + 255;
     let radius = ((width - width.signum() * 255) >> 8) as u8;
     for slot in source_map_search_slots(
@@ -194,10 +234,14 @@ fn collision(arena: &mut SourceArena, row: &EntitySnapshot) -> Option<(u16, Posi
 
 /// sub_68490/685D0 use wrapped XY distance despite the source helper's name.
 fn score(row: &EntitySnapshot, position: Position) -> u32 {
+    score_with_pitch(row, position, 113)
+}
+
+pub(super) fn score_with_pitch(row: &EntitySnapshot, position: Position, pitch_limit: i32) -> u32 {
     let (yaw, pitch) = projectile_guidance_angles(row.position, position);
     let yaw = angle_distance(i32::from(row.yaw), i32::from(yaw));
     let pitch = angle_distance(i32::from(row.pitch), i32::from(pitch));
-    if yaw > 113 || pitch > 113 {
+    if yaw > 113 || i32::from(pitch) > pitch_limit {
         return u32::MAX;
     }
     let dx = i32::from(position.x.wrapping_sub(row.position.x) as i16);
@@ -226,11 +270,15 @@ fn score(row: &EntitySnapshot, position: Position) -> u32 {
 
 /// sub_68940 precedes ordinary acquisition, and deliberately measures range
 /// from the trap to the projectile's owner rather than to the projectile.
-fn acquire_capture(
+pub(super) fn acquire_capture(
     arena: &mut SourceArena,
     row: &mut EntitySnapshot,
     targets: &Targets<'_>,
 ) -> Result<bool, String> {
+    // sub_68940 rejects other models before consulting the owner or traps.
+    if !matches!(row.model, 0 | 2..=5 | 8..=9 | 12 | 22..=23 | 26 | 28 | 30) {
+        return Ok(false);
+    }
     let Some(owner) = arena.entities.get(usize::from(row.source_id)) else {
         return Err("guided projectile owner address is outside arena".to_owned());
     };
@@ -270,8 +318,8 @@ fn acquire_capture(
     Ok(selected.is_some())
 }
 
-/// Only model3's exercised sub_67CB0 branch is admitted here. Web21 is
-/// explicitly absent from the original acquisition selectors.
+/// Models3/4 share this sub_67CB0 branch. The other terrain flyers may
+/// acquire a capture trap, but are absent from ordinary target acquisition.
 fn acquire(
     arena: &mut SourceArena,
     row: &mut EntitySnapshot,
@@ -304,7 +352,9 @@ fn acquire(
             let Some(target) = area_damage::source_actor(arena, None, slot) else {
                 continue;
             };
-            if target.source_id == row.source_id || !class5_eligible(arena, slot, row.source_id) {
+            if target.source_id == row.source_id
+                || !class5_eligible(arena, slot, row.source_id, false)
+            {
                 continue;
             }
             let value = score(
@@ -364,6 +414,101 @@ fn acquire(
     Ok(selected.is_some())
 }
 
+/// sub_67CB0 models7/8 search only class3, bounded by the owner's descriptor
+/// range. Model8 first admits the source capture-trap branch; model7 does not.
+fn acquire_directional(
+    arena: &mut SourceArena,
+    row: &mut EntitySnapshot,
+    targets: &Targets<'_>,
+    outcome: &mut StepOutcome,
+) -> Result<bool, String> {
+    if acquire_capture(arena, row, targets)? {
+        return Ok(true);
+    }
+    let mut best = u32::MAX;
+    let mut selected = None;
+    for &slot in targets.class3 {
+        let Some(target) = area_damage::source_actor(arena, None, slot) else {
+            continue;
+        };
+        if target.class != 3
+            || target.source_id == row.source_id
+            || target.control_flags & 0x20 != 0
+        {
+            continue;
+        }
+        let position = centre(target.position, target.model, target.shape.vertical_offset);
+        let dx = i32::from(target.position.x.wrapping_sub(row.position.x) as i16);
+        let dy = i32::from(target.position.y.wrapping_sub(row.position.y) as i16);
+        let dz = i32::from(target.position.z) - i32::from(row.position.z);
+        let distance = crate::legacy_sqrt(
+            dx.wrapping_mul(dx)
+                .wrapping_add(dy.wrapping_mul(dy))
+                .wrapping_add(dz.wrapping_mul(dz)) as u32,
+        );
+        if distance > u32::from(targets.owner_target_range) {
+            continue;
+        }
+        let value = score(row, position);
+        if value < best {
+            best = value;
+            selected = Some((slot, target, position));
+        }
+    }
+    if let Some((slot, target, position)) = selected {
+        put(row, 154, slot);
+        aim_at(row, position);
+        if (target.class, target.model) == (3, 0) {
+            outcome.music_player = Some(slot);
+        }
+    }
+    Ok(selected.is_some())
+}
+
+/// sub_67CB0 model25 searches only the current class5 families admitted by
+/// sub_3A7F0. Keep frozen list order while reading each live StageVar carrier.
+fn acquire_alliance(
+    arena: &mut SourceArena,
+    row: &mut EntitySnapshot,
+    targets: &Targets<'_>,
+) -> Result<bool, String> {
+    let mut best = u32::MAX;
+    let mut selected = None;
+    for slots in targets.class5 {
+        for &slot in slots {
+            let Some(actor) = area_damage::source_actor(arena, None, slot) else {
+                continue;
+            };
+            if actor.source_id == row.source_id {
+                continue;
+            }
+            let Some((cadence, stage, _)) = class5_gate_fields(arena, slot) else {
+                continue;
+            };
+            let mut target = arena.entities[usize::from(slot)].clone();
+            target.class = actor.class;
+            target.model = actor.model;
+            target.record[77] = stage;
+            if cadence == 0 || !crate::spells::late::alliance::eligible_target(&target) {
+                continue;
+            }
+            let value = score(
+                row,
+                centre(actor.position, actor.model, actor.shape.vertical_offset),
+            );
+            if value < best {
+                best = value;
+                selected = Some(slot);
+            }
+        }
+    }
+    if let Some(slot) = selected {
+        put(row, 154, slot);
+        aim_at(row, target_position(arena, slot)?);
+    }
+    Ok(selected.is_some())
+}
+
 fn reflect(
     arena: &mut SourceArena,
     terrain: &mut SessionTerrain,
@@ -372,7 +517,7 @@ fn reflect(
     outcome: &mut StepOutcome,
 ) -> Result<bool, String> {
     let row = arena.entities[usize::from(slot)].clone();
-    // Of the two callers, only Lightning's 10/17 product is reflectable.
+    // Of the two callers, only Meteor's 10/17 product is reflectable.
     if (row.record[71], row.record[72]) != (10, 17) {
         return Ok(false);
     }
@@ -430,7 +575,7 @@ fn reflect(
     Ok(true)
 }
 
-fn absorb(
+pub(super) fn absorb(
     arena: &mut SourceArena,
     terrain: &mut SessionTerrain,
     particles: &[ParticleParameter],
@@ -439,7 +584,7 @@ fn absorb(
     outcome: &mut StepOutcome,
 ) -> Result<bool, String> {
     let row = &arena.entities[usize::from(slot)];
-    let Some(hit) = hit.filter(|_| row.model == 3) else {
+    let Some(hit) = hit.filter(|_| matches!(row.model, 3 | 9 | 12)) else {
         return Ok(false);
     };
     let target = &arena.entities[usize::from(hit)];
@@ -471,19 +616,11 @@ fn absorb(
     outcome.sounds.push((slot, 26));
     // NewEvent may have replaced any of these fixed addresses.
     let holder = word(&arena.entities[usize::from(slot)], 42);
-    if holder != 0 {
-        let row = arena
-            .entities
-            .get(usize::from(holder))
-            .ok_or("guided projectile captured holder address is outside arena")?;
-        let (model, duration) = (row.model, row.record[74]);
-        let target = &mut arena.entities[usize::from(hit)];
-        put(target, 58, u16::from(model));
-        put(target, 56, u16::from(duration));
-        let row = &mut arena.entities[usize::from(holder)];
-        row.active_value = 1;
-        put(row, 50, 1);
-        outcome.captured_holder = Some(holder);
+    if holder != 0
+        && let Some(capture) =
+            crate::world::fields::magic_mine::capture(&mut arena.entities, hit, slot)
+    {
+        outcome.captured_holder = Some(capture.holder_slot);
     }
     Ok(true)
 }
@@ -491,17 +628,33 @@ fn absorb(
 fn construct_impact(
     arena: &mut SourceArena,
     terrain: &mut SessionTerrain,
+    particles: &[ParticleParameter],
     slot: u16,
 ) -> Result<Option<u16>, String> {
     let parent = &arena.entities[usize::from(slot)];
     let position = parent.position;
     match (parent.record[71], parent.record[72]) {
-        (10, 66) => crate::world::fields::status::construct(
+        (10, 72) => super::summon_army::construct_ring_impact(arena, terrain, particles, slot),
+        (10, 74) => Ok(super::alliance_spell::construct_impact(arena, terrain)),
+        (10, 25 | 26) => {
+            super::directional_spells::construct_impact(arena, terrain, particles, slot)
+        }
+        (10, 22) => crate::world::fields::construct_spell_wind(arena, terrain, particles, position),
+        (10, 67) => crate::world::fields::gravity::construct(arena, terrain, position, 20_000, 120),
+        (10, 9 | 11 | 15 | 71) => {
+            let projectile = parent.clone();
+            super::disaster_spells::construct_effect(arena, terrain, &projectile)
+        }
+        (10, model @ (65 | 66)) => crate::world::fields::status::construct(
             arena,
             terrain,
             position,
             sim_definition::adapter::mc2_field_definition(
-                FieldKind::Web,
+                if model == 65 {
+                    FieldKind::Slowing
+                } else {
+                    FieldKind::Web
+                },
                 TilePosition { x: 0, y: 0 },
             ),
         ),
@@ -549,7 +702,23 @@ pub(crate) fn step(
         .entities
         .get(usize::from(slot))
         .filter(|row| {
-            row.active && matches!((row.class, row.model, row.action), (9, 3, 3) | (9, 21, 22))
+            row.active
+                && matches!(
+                    (row.class, row.model, row.action),
+                    (9, 2, 2)
+                        | (9, 3, 3)
+                        | (9, 4, 4)
+                        | (9, 5, 5)
+                        | (9, 7, 7)
+                        | (9, 8, 8)
+                        | (9, 20, 21)
+                        | (9, 21, 22)
+                        | (9, 22, 23)
+                        | (9, 23, 24)
+                        | (9, 24, 25)
+                        | (9, 25, 26)
+                        | (9, 26, 27)
+                )
         })
         .ok_or_else(|| format!("guided projectile callback lost slot{slot}"))?
         .clone();
@@ -569,10 +738,14 @@ pub(crate) fn step(
         );
     } else if row.control_flags & 2 == 0 {
         row.set_control_flags(row.control_flags | 2);
-        let acquired = if row.model == 3
-            && let Some(targets) = targets
-        {
-            acquire(arena, &mut row, targets, &mut outcome)?
+        let acquired = if let Some(targets) = targets {
+            match row.model {
+                7 | 8 => acquire_directional(arena, &mut row, targets, &mut outcome)?,
+                25 => acquire_alliance(arena, &mut row, targets)?,
+                3 | 4 | 22 | 26 => acquire(arena, &mut row, targets, &mut outcome)?,
+                2 | 5 | 20 | 23 => acquire_capture(arena, &mut row, targets)?,
+                _ => false,
+            }
         } else {
             false
         };
@@ -611,7 +784,7 @@ pub(crate) fn step(
         if let Some(z) = limit {
             row.set_position(Position { z, ..row.position });
             arena.entities[usize::from(slot)] = row.clone();
-            if terrain.material_mask(row.position) == 1 {
+            if !matches!(row.model, 4 | 22 | 24 | 26) && terrain.material_mask(row.position) == 1 {
                 let splash = crate::world::effects::allocate(
                     arena,
                     terrain,
@@ -652,25 +825,20 @@ pub(crate) fn step(
         arena.entities[usize::from(slot)].disable_drawing();
         return Ok(outcome);
     }
-    let Some(impact_slot) = construct_impact(arena, terrain, slot)? else {
+    let Some(impact_slot) = construct_impact(arena, terrain, particles, slot)? else {
         // Source retries on the next visit; allocation failure does not hide.
         return Ok(outcome);
     };
     outcome.impact_slot = Some(impact_slot);
     let current = arena.entities[usize::from(slot)].clone();
     // sub_65780 runs after allocation, against the current fixed addresses.
-    if matches!(current.model, 0 | 1 | 3 | 7..=9 | 12 | 17 | 25 | 28)
-        && let Some(owner) = arena.entities.get(usize::from(current.source_id))
-        && (owner.class, owner.model) == (3, 0)
-    {
-        let matched = hit_slot
-            .zip((original_target != 0).then_some(original_target))
-            .is_some_and(|(hit, target)| {
-                arena.entities[usize::from(hit)].source_id
-                    == arena.entities[usize::from(target)].source_id
-            });
-        outcome.accuracy = Some((current.source_id, matched));
-    }
+    outcome.accuracy = source_accuracy(
+        arena,
+        current.model,
+        current.source_id,
+        hit_slot,
+        original_target,
+    );
     if let Some(target) = hit_slot {
         // sub_686D0 precedes the spell XP award.
         if let Some(owner) = arena.entities.get_mut(usize::from(current.source_id))
@@ -710,6 +878,7 @@ pub(crate) fn step(
         effect.yaw = current.yaw;
         effect.subspell_index = current.subspell_index;
     }
+    crate::world::fields::sync_wind_impact(arena, impact_slot);
     arena.entities[usize::from(slot)].disable_drawing();
     if impact_slot == slot
         && let Some(effect) = arena
@@ -721,4 +890,123 @@ pub(crate) fn step(
         effect.control_flags = arena.entities[usize::from(slot)].control_flags;
     }
     Ok(outcome)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn accepted_mine_collision_without_holder_hides_flyer_without_capturing_zero() {
+        let mut simulation = super::super::tests::level_two_campaign_session();
+        let particles = simulation.session.definition.presentation.particles.clone();
+        let live = &mut simulation.session.state.live;
+        let owner = live.core.state.entity_index;
+        let search_offsets = source_search_offsets(1);
+        let tile = (0..65_536_u32)
+            .map(|tile| Position {
+                x: (((tile & 255) << 8) | 128) as u16,
+                y: (((tile >> 8) << 8) | 128) as u16,
+                z: 0,
+            })
+            .find(|position| {
+                source_map_search_slots(&live.economy.map_chains, *position, &search_offsets)
+                    .is_empty()
+            })
+            .expect("Level2 fixture has an empty collision cell");
+        let position = Position {
+            z: live.terrain.ground_height(tile),
+            ..tile
+        };
+        let mine_slot = crate::world::fields::magic_mine::construct(
+            &mut live.economy,
+            &mut live.terrain,
+            position,
+            *particles
+                .get(66)
+                .expect("Level2 fixture retains Magic Mine particle66"),
+        )
+        .unwrap()
+        .expect("Magic Mine source slot available");
+        assert_ne!(owner, 0);
+        assert_ne!(mine_slot, owner);
+        {
+            let mine = &mut live.economy.entities[usize::from(mine_slot)];
+            mine.record[54..56].copy_from_slice(&owner.to_le_bytes());
+            mine.record[88..90].copy_from_slice(&256_i16.to_le_bytes());
+            mine.record[90..92].copy_from_slice(&256_i16.to_le_bytes());
+            mine.record[92..94].copy_from_slice(&256_i16.to_le_bytes());
+        }
+
+        let flyer_slot = live
+            .economy
+            .allocate_source_slot_with_terrain(&mut live.terrain)
+            .expect("guided flyer source slot available");
+        let mut flyer = crate::world::terrain::cave_features::new_event(
+            flyer_slot,
+            live.economy.new_event_rng(flyer_slot),
+            position,
+        );
+        flyer.class = 9;
+        flyer.model = 3;
+        flyer.record[67] = 9;
+        flyer.record[68] = 3;
+        flyer.set_source_action(3);
+        flyer.source_id = owner;
+        flyer.record[30..32].copy_from_slice(&owner.to_le_bytes());
+        flyer.record[42..44].fill(0);
+        flyer.record[69] = 10;
+        flyer.record[70] = 78;
+        flyer.record[88..90].copy_from_slice(&256_i16.to_le_bytes());
+        flyer.record[90..92].copy_from_slice(&256_i16.to_le_bytes());
+        flyer.record[92..94].copy_from_slice(&256_i16.to_le_bytes());
+        flyer.set_actual_speed(0);
+        flyer.record[136..138].copy_from_slice(&0_i16.to_le_bytes());
+        flyer.set_life(100);
+        live.economy.source_rng.insert(flyer_slot, flyer.entity_rng);
+        live.economy.entities[usize::from(flyer_slot)] = flyer;
+        crate::world::effects::sync_position(
+            &mut live.economy,
+            &mut live.terrain,
+            flyer_slot,
+            position,
+            true,
+            false,
+        )
+        .unwrap();
+
+        let zero_before = live.economy.entities[0].clone();
+        let outcome = step(
+            &mut live.economy,
+            &mut live.terrain,
+            &particles,
+            flyer_slot,
+            Guidance {
+                yaw_turn: 0,
+                pitch_turn: 0,
+            },
+            None,
+        )
+        .expect("accepted model78 collision is absorbed");
+
+        assert_eq!(outcome.captured_holder, None);
+        assert_eq!(outcome.sounds.as_slice(), &[(flyer_slot, 26)]);
+        assert!(live.economy.entities[usize::from(flyer_slot)].drawing_disabled());
+        assert_eq!(
+            u16::from_le_bytes(
+                live.economy.entities[usize::from(mine_slot)].record[58..60]
+                    .try_into()
+                    .unwrap()
+            ),
+            u16::MAX
+        );
+        assert_eq!(
+            live.economy.entities[0].active_value,
+            zero_before.active_value
+        );
+        assert_eq!(
+            &live.economy.entities[0].record[50..52],
+            &zero_before.record[50..52]
+        );
+    }
 }

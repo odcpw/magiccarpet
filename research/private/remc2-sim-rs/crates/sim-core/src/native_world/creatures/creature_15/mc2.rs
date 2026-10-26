@@ -6,7 +6,7 @@ use super::{
     CastleDefenderState, DefenderContext, DefenderOrigin, DefenderTarget, SOURCE_CLASS,
     SOURCE_MODEL, StageState, advance_proximity, bind_stage, stage_prepass,
 };
-use crate::Position;
+use crate::{FlightWorld, Position, level1_mission::AuthoredFeature};
 
 pub(crate) fn targets_in_economy(
     economy: &crate::native_world::Level2EconomyState,
@@ -609,6 +609,29 @@ pub(crate) fn prepare_source_pass(
             }
         }
     }
+}
+
+/// Construct an authored class-5/model-15 source through the CastleDefender
+/// owner, then bind its optional StageVar route before the source cursor can
+/// dispatch the newly allocated slot.
+pub(crate) fn allocate_authored_route(
+    arena: &mut SourceArena,
+    runtime: &mut RuntimeSnapshot,
+    feature: AuthoredFeature,
+    max_life: i32,
+    terrain: &SessionTerrain,
+    stage_index: Option<u8>,
+) -> Option<u16> {
+    let authored_position = feature.world_position(0);
+    let position = feature.world_position(terrain.ground_height(authored_position));
+    let actor =
+        arena
+            .economy
+            .allocate_campaign_castle_defender(feature.index, position, max_life)?;
+    if let Some(index) = stage_index {
+        bind_authored_route(arena, runtime, actor.source_entity_index, index);
+    }
+    Some(actor.source_entity_index)
 }
 
 pub(crate) fn bind_authored_route(

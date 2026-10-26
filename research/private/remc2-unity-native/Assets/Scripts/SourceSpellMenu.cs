@@ -5,7 +5,7 @@ namespace MagicCarpet.Native
 {
     // DrawBottomSpellsMenu_2ECC0 / spell choice press, move and release.
     // This owner retains only the pointer choice. Rust owns unlocks, tier
-    // admission, assignments and the resulting holder configuration.
+    // admission, assignment/mark state and the resulting holder configuration.
     internal sealed class SourceSpellMenu
     {
         private EngineSessionTransport.SpellObservation choice;
@@ -21,9 +21,15 @@ namespace MagicCarpet.Native
         private static int Family(string id) => id switch {
             "spell.fireball" => 0, "spell.possession" => 1, "spell.castle" => 2,
             "spell.speed" => 3, "spell.morph" => 4, "spell.heal" => 5,
-            "spell.shield" => 6, "spell.rebound" => 8, "spell.lightning" => 9,
-            "spell.teleport" => 10, "spell.invisibility" => 11,
-            "spell.beyond_sight" => 12, "spell.cave_in" => 25,
+            "spell.shield" => 6, "spell.lightning" => 7, "spell.rebound" => 8,
+            "spell.meteor" => 9, "spell.teleport" => 10,
+            "spell.invisibility" => 11, "spell.beyond_sight" => 12,
+            "spell.steal_mana" => 13, "spell.duel" => 14, "spell.tremor" => 15,
+            "spell.crater" => 16, "spell.earthquake" => 17, "spell.volcano" => 18,
+            "spell.summon_army" => 19, "spell.gravity_well" => 20,
+            "spell.whirlwind" => 21, "spell.fools_mana" => 22,
+            "spell.magic_mine" => 23, "spell.alliance" => 24,
+            "spell.cave_in" => 25,
             _ => throw new InvalidOperationException("unbound source spell artwork: " + id)
         };
 
@@ -31,8 +37,12 @@ namespace MagicCarpet.Native
 
         internal EngineSessionTransport.SpellAssignment Draw(
             EngineSessionTransport.CampaignSnapshotValue snapshot,
-            Func<int, Texture2D> bitmap, Func<int, Vector2Int> size)
+            Func<int, Texture2D> bitmap,
+            Func<int, Vector2Int> size,
+            bool markHeld,
+            out EngineSessionTransport.SpellMark mark)
         {
+            mark = null;
             if (snapshot?.player_spells == null) return null;
             const int columns = 13, edge = 8, panelWidth = 48, panelHeight = 36, top = 408;
             var scale = Mathf.Min(Screen.width / 640f, Screen.height / 480f);
@@ -54,8 +64,8 @@ namespace MagicCarpet.Native
                 Sprite(89, x, y);
                 if (spell == null) continue;
                 Sprite(97 + Family(spell.id), x, y);
-                if (spell.hand == "left" || spell.hand == "both") Sprite(149, x, y);
-                if (spell.hand == "right" || spell.hand == "both") Sprite(150, x + panelWidth - 12, y);
+                if (spell.marked_hand == "left") Sprite(149, x, y);
+                if (spell.marked_hand == "right") Sprite(150, x + panelWidth - size(149).x, y);
                 if (new Rect(x, y, panelWidth, panelHeight).Contains(pointer))
                 {
                     hovered = slot;
@@ -92,13 +102,25 @@ namespace MagicCarpet.Native
             }
             else if (hovered >= 0 && Event.current.type == EventType.MouseDown && Event.current.button <= 1)
             {
-                choice = Array.Find(snapshot.player_spells, row => row.menu_slot == hovered && row.acquired);
-                button = Event.current.button;
-                tier = Mathf.Clamp(choice.tier, 0, choice.unlocked_tier);
-                var extent = size(163);
-                var start = MagicCarpetRuntime.SpellTierMenuStartX(hovered, columns, edge, panelWidth, 3, extent.x);
-                virtualX = start + (tier + .5f) * extent.x;
-                physicalX = pointer.x;
+                var spell = Array.Find(snapshot.player_spells, row => row.menu_slot == hovered && row.acquired);
+                if (markHeld)
+                {
+                    var hand = Event.current.button == 0 ? "left" : "right";
+                    mark = new EngineSessionTransport.SpellMark {
+                        spell_id = spell.id,
+                        hand = spell.marked_hand == hand ? "none" : hand
+                    };
+                }
+                else
+                {
+                    choice = spell;
+                    button = Event.current.button;
+                    tier = Mathf.Clamp(choice.tier, 0, choice.unlocked_tier);
+                    var extent = size(163);
+                    var start = MagicCarpetRuntime.SpellTierMenuStartX(hovered, columns, edge, panelWidth, 3, extent.x);
+                    virtualX = start + (tier + .5f) * extent.x;
+                    physicalX = pointer.x;
+                }
                 Event.current.Use();
             }
             return null;

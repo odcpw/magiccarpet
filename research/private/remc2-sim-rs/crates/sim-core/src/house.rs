@@ -616,7 +616,16 @@ impl HouseState {
                 snapshot.index
             )
         })?;
-        Self::from_source_snapshot(snapshot, parameter)
+        if !matches!(
+            snapshot.action,
+            HOUSE_TERRAIN_TO_LIVE_ACTION | HOUSE_LIVE_ACTION
+        ) {
+            return Err(format!(
+                "house entity {} reset action is {}, expected {HOUSE_TERRAIN_TO_LIVE_ACTION} or {HOUSE_LIVE_ACTION}",
+                snapshot.index, snapshot.action
+            ));
+        }
+        Self::decode_source_snapshot(snapshot, parameter)
     }
 
     fn from_source_snapshot(

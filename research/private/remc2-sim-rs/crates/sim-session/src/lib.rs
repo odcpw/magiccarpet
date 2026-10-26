@@ -71,6 +71,22 @@ pub struct PlayerVitals {
     pub max_mana: i32,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct SourceSorcererScore {
+    pub source_slot: u8,
+    pub display_name: String,
+    pub outline_palette_index: u8,
+    pub text_palette_index: u8,
+    pub max_mana: i32,
+    pub kills8: [i16; 8],
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize)]
+pub struct SourceScoreboard {
+    pub players: Vec<SourceSorcererScore>,
+    pub projection_error: Option<String>,
+}
+
 /// Current hand assignment; an acquired spell may also be selected without
 /// occupying either hand. This is observed authority, not a client preference.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
@@ -107,6 +123,7 @@ pub struct SpellObservation {
     pub menu_slot: u8,
     pub mana_cost: i32,
     pub hand: SpellHand,
+    pub marked_hand: SpellMarkHand,
     pub availability: SpellAvailability,
 }
 
@@ -188,6 +205,10 @@ pub struct CampaignSnapshot {
     pub player_pose: PlayerPose,
     pub player_motion: PlayerMotion,
     pub player_vitals: PlayerVitals,
+    /// Admission of the source menu command applied on this exact tick, if any.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_menu_admission: Option<SourceMenuAdmission>,
+    pub source_scoreboard: SourceScoreboard,
     /// Source Spider immobilization countdown; presentation must not invent one.
     pub player_immobilized_ticks: u16,
     pub source_camera_pose: CameraPose,
@@ -233,6 +254,55 @@ pub struct SpellAssignment {
     pub hand: SpellAssignmentHand,
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SpellMarkHand {
+    None,
+    Left,
+    Right,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct SpellMark {
+    pub spell_id: SemanticId,
+    pub hand: SpellMarkHand,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SpellCycleDirection {
+    Next,
+    Previous,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct MarkedSpellCycle {
+    pub hand: SpellAssignmentHand,
+    pub direction: SpellCycleDirection,
+}
+
+/// Semantic menu input; the game adapter owns the menu state and decides
+/// whether the corresponding source action can be admitted.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AbandonAction {
+    ToggleGameplayMap,
+    OpenAbandonConfirmation,
+    ConfirmAbandon,
+    CancelAbandonConfirmation,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+pub struct SourceMenuAdmission {
+    pub action: AbandonAction,
+    pub admitted: bool,
+    pub map_open: bool,
+    #[serde(serialize_with = "serialize_u64_decimal")]
+    pub tick: u64,
+}
+
 /// Portable player commands. Game adapters own their admission and rules;
 /// no remc2 opcode or bitfield crosses this boundary.
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
@@ -264,6 +334,12 @@ pub struct GameCommand {
     /// adapter validates the choice before executing the ordinary game turn.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub assign_spell: Option<SpellAssignment>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mark_spell: Option<SpellMark>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cycle_marked_spell: Option<MarkedSpellCycle>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub abandon_action: Option<AbandonAction>,
     #[serde(skip_serializing_if = "is_false")]
     pub recenter: bool,
     #[serde(skip_serializing_if = "is_false")]
@@ -519,6 +595,10 @@ pub trait GameSessionBackend {
     fn tick(&self) -> u64;
     fn completion_status(&self) -> GameCompletionStatus;
     fn snapshot(&self) -> Self::Snapshot;
+    /// Whether the authoritative game menu excludes idle flight assistance.
+    fn flight_assistance_menu_open(&self) -> bool {
+        false
+    }
     fn events_after(&self, cursor: u64, limit: usize) -> Result<EventPage, Self::Error>;
     fn audio_for_event(&self, event_sequence: u64) -> Result<GameAudioCommand, Self::Error>;
     fn step(&mut self, command: Self::Command) -> Result<(), Self::Error>;

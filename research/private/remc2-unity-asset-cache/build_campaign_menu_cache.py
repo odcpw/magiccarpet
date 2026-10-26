@@ -18,13 +18,32 @@ from pathlib import Path
 
 import build_cache as cache
 
-SCHEMA = "mc2-owner-campaign-menu-cache/v2"
-LEVEL_IDS = (
+SCHEMA = "mc2-owner-campaign-menu-cache/v3"
+OPENING_LEVEL_IDS = (
     "level.magic_carpet_2.night_spire",
     "level.magic_carpet_2.payahandra_ruins",
     "level.magic_carpet_2.revealed_way",
     "level.magic_carpet_2.spider_cave",
 )
+
+
+def source_catalog() -> tuple[bytes, list[tuple[int, str, int]]]:
+    path = cache.REPO / "research/private/remc2-sim-rs/crates/sim-core/src/campaign/backend/runtime_catalog.tsv"
+    payload = path.read_bytes()
+    rows = []
+    for line in payload.decode("ascii").splitlines():
+        if not line or line.startswith("#"):
+            continue
+        index, level_id, map_type = line.split("\t")
+        if not re.fullmatch(r"level\.[a-z0-9_]+\.[a-z0-9_]+", level_id):
+            raise cache.CacheError("source campaign catalog has an invalid semantic identity")
+        rows.append((int(index), level_id, int(map_type)))
+    if ([row[0] for row in rows] != [*range(25), *range(30, 35)]
+            or tuple(row[1] for row in rows[:4]) != OPENING_LEVEL_IDS
+            or len({row[1] for row in rows}) != 30
+            or any(row[2] not in (0, 1, 2) for row in rows)):
+        raise cache.CacheError("source campaign catalog does not bind the thirty source missions")
+    return payload, rows
 
 
 def source_missions(language: bytes) -> list[dict]:
@@ -44,15 +63,37 @@ def source_missions(language: bytes) -> list[dict]:
     records = cache.language_records(language)
     if len(names) != 61 or len(portals) != 26 or any(len(row) != 11 for row in portals):
         raise cache.CacheError("pinned campaign name/portal tables changed")
+    secret_blob = subprocess.run(
+        ["git", "-C", str(cache.REMC2_GIT), "show",
+         f"{cache.PINNED_REMC2_COMMIT}:remc2/engine/Type_SecretMapScreenPortals_E2970.cpp"],
+        check=True, stdout=subprocess.PIPE, timeout=30).stdout
+    if hashlib.sha256(secret_blob).hexdigest() != "b8072edf2a27527340b721725edc5db75cde7c9c2759ae7218b08dbb1fe51cc7":
+        raise cache.CacheError("pinned secret portal source changed")
+    secret_source = secret_blob.decode()
+    secrets = [[int(value.strip(), 0) for value in row.split(",")]
+               for row in re.findall(r"\{([^{}]+)\}", secret_source)]
+    if (len(secrets) != 6 or any(len(row) != 8 for row in secrets)
+            or any(secrets[-1]) or [(row[1], row[2]) for row in secrets[:-1]]
+            != [(4, 30), (7, 31), (11, 32), (17, 33), (19, 34)]):
+        raise cache.CacheError("pinned secret portal associations changed")
+    secret_by_index = {row[2]: row for row in secrets[:-1]}
+    _, catalog = source_catalog()
     # PresentLevelDescription_80C30 selects 23 + zero-based level index.
-    return [dict(level_id=level_id, name=names[index], name_source_bytes=names[index].encode("ascii").hex(),
-                 pause_profile=("night", "day", "day", "cave")[index],
-                 briefing=records[23 + index].decode("ascii") if records[23 + index].isascii() else None,
-                 briefing_text_id=f"text.mc2.record.{23 + index}",
-                 viewport_x=portals[index][1], viewport_y=portals[index][2],
-                 portal_x=portals[index][5], portal_y=portals[index][6],
-                 portal_width=portals[index][3], portal_height=portals[index][4])
-            for index, level_id in enumerate(LEVEL_IDS)]
+    missions = []
+    for index, level_id, map_type in catalog:
+        secret = secret_by_index.get(index)
+        origin = secret[1] if secret else index
+        portal = portals[origin]
+        missions.append(dict(level_id=level_id, name=names[index],
+            name_source_bytes=names[index].encode("ascii").hex(),
+            source_internal_index=index, source_ordinary_index=origin, is_secret=secret is not None,
+            pause_profile=("day", "night", "cave")[map_type],
+            briefing=records[23 + origin].decode("ascii") if records[23 + origin].isascii() else None,
+            briefing_text_id=f"text.mc2.record.{23 + origin}",
+            viewport_x=min(portal[1], 640), viewport_y=min(portal[2], 480),
+            portal_x=secret[3] if secret else portal[5], portal_y=secret[4] if secret else portal[6],
+            portal_width=40 if secret else portal[3], portal_height=40 if secret else portal[4]))
+    return missions
 
 
 def source_startup() -> dict:
@@ -236,6 +277,19 @@ def build(owner: Path, output: Path, *, rnc_decoder: Path | None = None) -> dict
         startup["bitmaps"] = [bitmap(startup_sprites, startup_table, startup_palette, selector,
             f"startup-{selector:03d}.rgba8") for selector, (_, width, height) in enumerate(startup_table)
             if width and height]
+        # SetKeysDialog retains bank4 sprites but changes the screen/palette
+        # through sub_7A110_load_hscreen case15.
+        settings_indices = cache.decode_container_blob(decoder, source, 0x145210,
+            640 * 480, work, "settings-background")
+        settings_palette = source[0x163EFC:0x1641FC]
+        if len(settings_palette) != 768 or max(settings_palette) > 63:
+            raise cache.CacheError("settings palette is not RGB6")
+        settings_rgba = bytes(channel for index in settings_indices
+            for channel in (*[component * 4 for component in settings_palette[index * 3:index * 3 + 3]], 255))
+        write("settings-background.rgba8", settings_rgba)
+        settings = dict(width=640, height=480, background_path="settings-background.rgba8",
+            bitmaps=[bitmap(startup_sprites, startup_table, settings_palette, selector,
+                f"settings-{selector:03d}.rgba8") for selector in (107, 108, 110)])
         # sub_7A110_load_hscreen(8,4) loads its own coloured 7px font.
         # DrawText_7FB90 indexes this table by the original byte directly;
         # DATA/FONT1's byte+1 monochrome mapping is a different draw path.
@@ -307,7 +361,7 @@ def build(owner: Path, output: Path, *, rnc_decoder: Path | None = None) -> dict
             palette_path = f"pause-{profile}-palette.rgb6"
             write(palette_path, pause_palette)
             entries = []
-            for selector in (*range(168, 171), *range(174, 179), 257, 258):
+            for selector in (85, 86, *range(168, 171), *range(174, 179), 257, 258):
                 entry = bitmap(pause_data, pause_table, pause_palette, selector,
                     f"pause-{profile}-{selector:03d}.rgba8")
                 offset, width, height = pause_table[selector]
@@ -379,7 +433,9 @@ def build(owner: Path, output: Path, *, rnc_decoder: Path | None = None) -> dict
         write("map-border.mask.u8", border_mask)
         motion.update(border_indices_path="map-border.indices.u8", border_mask_path="map-border.mask.u8")
         indexed_portals = []
-        for selector in (*range(1, 152), *range(206, 212), *range(277, 285), *range(297, 305)):
+        # DrawFrameAnim increments a selector equal to endIndex before drawing,
+        # then wraps on the following source interval.
+        for selector in (*range(1, 152), *range(206, 212), *range(270, 274), *range(277, 285), *range(297, 313)):
             offset, width, height = portal_table[selector]
             indices, mask, _ = cache.materialize_indexed_rle(sprites, offset, width, height)
             indices_path, mask_path = f"map-{selector:03d}.indices.u8", f"map-{selector:03d}.mask.u8"
@@ -411,7 +467,7 @@ def build(owner: Path, output: Path, *, rnc_decoder: Path | None = None) -> dict
             controls=source_campaign_controls(), colours_path="campaign-colours.u8",
             english_statistics=any(alias.upper() == "LANGUAGE/D2.TXT" for alias in default_locale["aliases"]),
             bitmaps=[bitmap(sprites, portal_table, palette, selector, f"map-{selector:03d}.rgba8")
-                for selector in (*range(246, 259), 274, 275)], indexed_portals=indexed_portals)
+                for selector in (*range(237, 240), *range(246, 269), 274, 275)], indexed_portals=indexed_portals)
         for kind, selector in [("completed", 37), ("available", 70)]:
             row = bitmap(sprites, portal_table, palette, selector, f"portal-{kind}.rgba8")
             bindings.append(dict(kind=kind, path=row["path"], width=row["width"], height=row["height"]))
@@ -455,7 +511,10 @@ def build(owner: Path, output: Path, *, rnc_decoder: Path | None = None) -> dict
             motion["sounds"].append(dict(bank=0, id=sample_id, path=path, volume=127, pan=64, rate=100,
                 if_not_playing=True, source_record_sha256=record["payload_sha256"],
                 **cache.wav_properties(payload, f"source map sample{sample_id}")))
+    catalog_payload, _ = source_catalog()
+    write("source-runtime-catalog.tsv", catalog_payload)
     manifest = dict(schema=SCHEMA, source_commit=cache.PINNED_REMC2_COMMIT,
+                    source_catalog_path="source-runtime-catalog.tsv",
                     source_hscreen_sha256=hashlib.sha256(source).hexdigest(),
                     source_language_sha256=hashlib.sha256(language).hexdigest(),
                     language_cache=dict(path="language", binding_sha256=language_binding["binding_sha256"],
@@ -463,7 +522,7 @@ def build(owner: Path, output: Path, *, rnc_decoder: Path | None = None) -> dict
                     source_calls=["sub_7A110_load_hscreen(8,6)", "DrawNetGameMapBackground_85C8B", "PresentLevelDescription_80C30"],
                     width=1280, height=960, view_width=640, view_height=480,
                     missions=source_missions(language), portals=bindings, outputs=outputs,
-                    startup=startup, pause=pause, portal_animation=portal_animation,
+                    startup=startup, settings=settings, pause=pause, portal_animation=portal_animation,
                     campaign=campaign_presentation, click_sound=click_sound,
                     decoder=provenance)
     (output / "manifest.json").write_text(json.dumps(manifest, indent=2, ensure_ascii=False) + "\n")
@@ -471,7 +530,7 @@ def build(owner: Path, output: Path, *, rnc_decoder: Path | None = None) -> dict
 
 
 def extend_missions(owner: Path, base: Path, output: Path) -> dict:
-    """Retain validated map pixels while extending their source mission bindings."""
+    """Extend the legacy opening bindings without changing their four-mission schema."""
     manifest = json.loads((base / "manifest.json").read_text())
     if (manifest.get("schema") != "mc2-owner-campaign-menu-cache/v1"
             or manifest.get("source_commit") != cache.PINNED_REMC2_COMMIT):
@@ -480,7 +539,7 @@ def extend_missions(owner: Path, base: Path, output: Path) -> dict:
     if hashlib.sha256(language).hexdigest() != manifest.get("source_language_sha256"):
         raise cache.CacheError("campaign briefing source changed")
     fields = tuple(manifest["missions"][0])
-    missions = [{key: row[key] for key in fields} for row in source_missions(language)]
+    missions = [{key: row[key] for key in fields} for row in source_missions(language)[:4]]
     if manifest["missions"] != missions[:len(manifest["missions"])]:
         raise cache.CacheError("existing campaign mission bindings differ from source")
     payloads = []

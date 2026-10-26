@@ -67,6 +67,51 @@ namespace MagicCarpet.Native.Tests
 
         [Test]
         [Timeout(180000)]
+        public void Source31SecretEnvironmentCacheReachesRealSessionSceneConsumer()
+        {
+            var package = Path.Combine(
+                PrivateRoot,
+                "generated/mc-paj2-source-secret-31-campaign-package");
+            var wrongPackage = Path.Combine(
+                PrivateRoot,
+                "generated/mc-paj2-source-secret-34-campaign-package");
+            var cachePath = Path.Combine(
+                PrivateRoot,
+                "generated/mc-paj2-environment-source31-audio-20261026");
+            var selection = NativeSim.CampaignSelection.Create(32, 31, 1);
+
+            Assert.That(File.Exists(Path.Combine(package, "manifest.json")), Is.True,
+                "the actual source 31 Night campaign package must be installed");
+            Assert.That(File.Exists(Path.Combine(wrongPackage, "manifest.json")), Is.True,
+                "the actual source 34 Day campaign package is the wrong-package control");
+
+            var cache = OwnerAssetCache.OpenAndValidateEnvironment(cachePath, package);
+            var profile = cache.EnvironmentMaterials.profile;
+            Assert.That(profile.external_level, Is.EqualTo(selection.externalLevel));
+            Assert.That(profile.internal_level, Is.EqualTo(selection.internalLevel));
+            Assert.That(profile.map_type.id == selection.mapType, Is.True);
+
+            using (var session = NativeCampaignSession.Open(package, selection, cachePath))
+            using (var surface = new CampaignPresentationSurface())
+            {
+                Assert.That(session.Selection.externalLevel, Is.EqualTo(32));
+                Assert.That(session.Selection.internalLevel, Is.EqualTo(31));
+                Assert.That(session.Selection.mapType, Is.EqualTo(1));
+                surface.PresentEnvironment(session, cache);
+                Assert.That(surface.WorldReady && surface.LiveMinimapReady, Is.True,
+                    "the selected secret package reaches the Environment scene consumer");
+                Assert.That(surface.FrameHash, Is.Not.Zero);
+                Assert.That(surface.Tick, Is.Zero,
+                    "this cache/session consumer check does not perform gameplay");
+            }
+
+            Assert.Throws<InvalidDataException>(
+                () => OwnerAssetCache.OpenAndValidateEnvironment(cachePath, wrongPackage),
+                "a source 31 Night cache must reject the different source 34 Day package");
+        }
+
+        [Test]
+        [Timeout(180000)]
         public void QualifiedOwnerFrameFollowsObservedTitleLoadingAndPlayingModes()
         {
             var cache = OwnerAssetCache.OpenAndValidate(
@@ -197,6 +242,9 @@ namespace MagicCarpet.Native.Tests
                 };
                 var binding = new GameRuntimeTransport.LoadingPresentationBinding {
                     schema = "mc2-loading-presentation/v1", level_id = identity.presentation.level_id,
+                    source_selection = new GameRuntimeTransport.LoadingSourceSelection {
+                        external_level = 6, internal_level = 5, map_type_id = 2
+                    },
                     cue_id = identity.presentation.cue_id, definition_revision = "1",
                     definition_hash = identity.pending_definition.definition_hash,
                     package_graph_hash = identity.pending_definition.package_graph_hash,
@@ -206,6 +254,54 @@ namespace MagicCarpet.Native.Tests
                 };
                 presenter.Present(identity, binding);
                 Assert.That(presenter.IsVisible, Is.True);
+                var playing = new GameRuntimeTransport.Identity {
+                    mode = GameRuntimeTransport.PlayingMode,
+                    active_runtime_flow = identity.pending_definition.runtime_flow,
+                    session = new EngineSessionTransport.Identity {
+                        package_graph_hash = identity.pending_definition.package_graph_hash,
+                        definition_hash = identity.pending_definition.definition_hash,
+                        definition_revision = identity.pending_definition.definition_revision
+                    },
+                    presentation = new GameRuntimeTransport.RuntimePresentationCue {
+                        cue_id = "presentation.authored.new_destination.entry",
+                        phase = GameRuntimeTransport.LevelEntryPresentationPhase,
+                        level_id = identity.presentation.level_id
+                    }
+                };
+                var activeBinding = new GameRuntimeTransport.LoadingPresentationBinding {
+                    schema = binding.schema, level_id = binding.level_id,
+                    cue_id = playing.presentation.cue_id,
+                    package_graph_hash = binding.package_graph_hash,
+                    definition_hash = binding.definition_hash,
+                    definition_revision = binding.definition_revision,
+                    source_package_sha256 = binding.source_package_sha256,
+                    owner_export_package_sha256 = binding.owner_export_package_sha256,
+                    runtime_capture_sha256 = binding.runtime_capture_sha256,
+                    source_selection = binding.source_selection,
+                    environment = binding.environment,
+                    artwork_profile = binding.artwork_profile
+                };
+                Assert.DoesNotThrow(
+                    () => GameRuntimeTransport.ValidateActiveEntryPresentation(playing, activeBinding));
+                activeBinding.source_selection.map_type_id = 1;
+                Assert.Throws<InvalidDataException>(
+                    () => GameRuntimeTransport.ValidateActiveEntryPresentation(playing, activeBinding));
+                activeBinding.source_selection.map_type_id = 2;
+                playing.presentation.phase = GameRuntimeTransport.LoadingPresentationPhase;
+                Assert.Throws<InvalidOperationException>(
+                    () => GameRuntimeTransport.ValidateActiveEntryPresentation(playing, activeBinding),
+                    "active-entry bindings require a Playing identity cue");
+                playing.presentation.phase = GameRuntimeTransport.LevelEntryPresentationPhase;
+                binding.source_selection.map_type_id = 1;
+                Assert.Throws<InvalidDataException>(
+                    () => GameRuntimeTransport.ValidateLoadingPresentation(identity, binding),
+                    "the source map type must agree with the returned environment");
+                binding.source_selection.map_type_id = 2;
+                binding.artwork_profile = "unknown";
+                Assert.Throws<InvalidDataException>(
+                    () => GameRuntimeTransport.ValidateLoadingPresentation(identity, binding),
+                    "unknown artwork profiles must not enter generic loading");
+                binding.artwork_profile = "ordinary";
                 binding.definition_hash = "sha256:" + new string('e', 64);
                 Assert.Throws<InvalidDataException>(() => presenter.Present(identity, binding));
                 Assert.That(presenter.IsVisible, Is.False, "a failed binding hides the previous frame");

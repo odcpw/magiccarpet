@@ -1,4 +1,4 @@
-//! Selection-bound music assets for the installed opening campaign caches.
+//! Selection-bound music assets for qualified campaign caches.
 
 use super::campaign_abi::CampaignDayMusicLifecycle;
 use super::validation::read_qualified_cache_file;
@@ -68,7 +68,20 @@ fn binding(selection: CampaignSelection, campaign_package_sha256: &str) -> AbiRe
     };
     // Sound.cpp passes logical track - 1 to SOUND_init_MIDI_sequence.
     // Each map type therefore consumes its own owner MUSIC.DAT record.
-    let (xmi_path, xmi_bytes, xmi_sha256) = match track {
+    let (xmi_path, xmi_bytes, xmi_sha256) = source_xmi(track)?;
+    Ok(MusicBinding {
+        descriptor,
+        bytes,
+        sha256,
+        track,
+        xmi_path,
+        xmi_bytes,
+        xmi_sha256,
+    })
+}
+
+fn source_xmi(track: u8) -> AbiResult<(&'static str, usize, &'static str)> {
+    Ok(match track {
         1 => (
             "audio/music/C2GAME1.xmi",
             10_352,
@@ -85,15 +98,6 @@ fn binding(selection: CampaignSelection, campaign_package_sha256: &str) -> AbiRe
             "566769008b9598bd03ad657575daa089f217385d7e7671dd948e6b2fea1e3251",
         ),
         _ => return Err(invalid("campaign music track is not source-bound")),
-    };
-    Ok(MusicBinding {
-        descriptor,
-        bytes,
-        sha256,
-        track,
-        xmi_path,
-        xmi_bytes,
-        xmi_sha256,
     })
 }
 
@@ -139,7 +143,7 @@ struct CacheOutput {
     sha256: String,
 }
 
-fn verify_manifest(root: &Path, spec: &MusicBinding) -> AbiResult<CacheManifest> {
+fn read_manifest(root: &Path) -> AbiResult<CacheManifest> {
     let path = root.join("manifest.json");
     let metadata = fs::symlink_metadata(&path).map_err(|error| {
         AbiError::new(
@@ -160,6 +164,10 @@ fn verify_manifest(root: &Path, spec: &MusicBinding) -> AbiResult<CacheManifest>
     })?;
     let manifest: CacheManifest = serde_json::from_slice(&bytes)
         .map_err(|error| invalid(format!("invalid campaign audio manifest: {error}")))?;
+    Ok(manifest)
+}
+
+fn verify_manifest(manifest: CacheManifest, spec: &MusicBinding) -> AbiResult<CacheManifest> {
     let expected_schema = match spec.track {
         1 => "mc2-owner-unity-asset-cache/v2",
         3 => "mc2-environment-material-cache/v1",
@@ -187,6 +195,92 @@ fn verify_manifest(root: &Path, spec: &MusicBinding) -> AbiResult<CacheManifest>
     Ok(manifest)
 }
 
+fn output<'a>(manifest: &'a CacheManifest, path: &str) -> AbiResult<&'a CacheOutput> {
+    let mut rows = manifest.outputs.iter().filter(|row| row.path == path);
+    let row = rows
+        .next()
+        .ok_or_else(|| invalid(format!("campaign music lacks {path}")))?;
+    if rows.next().is_some() {
+        return Err(invalid(format!("campaign music duplicates {path}")));
+    }
+    Ok(row)
+}
+
+fn load_environment_music(
+    root: &Path,
+    manifest: CacheManifest,
+    selection: CampaignSelection,
+    owner_package_sha256: &str,
+    campaign_package_sha256: &str,
+) -> AbiResult<CampaignDayMusicLifecycle> {
+    use sim_core::presentation::environment_materials::EnvironmentResources;
+
+    if CampaignSelection::ordinary(selection.external_level) != Some(selection)
+        && CampaignSelection::secret_destination(selection.internal_level) != Some(selection)
+    {
+        return Err(invalid(
+            "Environment music selection is not a source campaign identity",
+        ));
+    }
+    let resources = EnvironmentResources::load(root)
+        .map_err(|error| invalid(format!("invalid music Environment cache: {error}")))?;
+    let profile = resources
+        .profile
+        .as_ref()
+        .ok_or_else(|| invalid("music Environment profile missing"))?;
+    if profile.external_level != selection.external_level
+        || profile.internal_level != selection.internal_level
+        || profile.map_type.id != selection.map_type_id
+        || profile.owner_export_package_sha256 != owner_package_sha256
+        || profile.campaign_package_sha256 != campaign_package_sha256
+    {
+        return Err(invalid(
+            "Environment music profile does not match the active package",
+        ));
+    }
+    let (track, schema, map_name) = match selection.map_type_id {
+        0 => (2, "mc2-day-audio/v1", "Day"),
+        1 => (1, "mc2-night-audio/v1", "Night"),
+        2 => (3, "mc2-cave-audio/v1", "Cave"),
+        _ => return Err(invalid("Environment music has an unknown source map type")),
+    };
+    let row = output(&manifest, "audio/descriptor.json")?;
+    if row.bytes == 0 || row.bytes > 512 * 1024 {
+        return Err(invalid("Environment music descriptor exceeds its bound"));
+    }
+    let bytes = read_qualified_cache_file(root, &row.path, row.bytes, &row.sha256)?;
+    let descriptor: Value = serde_json::from_slice(&bytes)
+        .map_err(|error| invalid(format!("invalid Environment music descriptor: {error}")))?;
+    let container = output(&manifest, "audio/MUSIC.DAT")?;
+    if descriptor["schema"] != schema
+        || manifest.profile.as_ref() != Some(&descriptor["profile"])
+        || descriptor["sound"]["bank"] != selection.map_type_id
+        || descriptor["music"]["maptype_music"] != track
+        || descriptor["music"]["map_type"] != map_name
+        || descriptor["music"]["bank"] != 1
+        || descriptor["music"]["channel"] != 0
+        || descriptor["music"]["driver"] != "f"
+        || descriptor["music"]["container_path"] != container.path
+        || descriptor["music"]["container_sha256"] != container.sha256
+    {
+        return Err(invalid(
+            "Environment music descriptor has a different source profile or track",
+        ));
+    }
+    let _ = read_qualified_cache_file(root, &container.path, container.bytes, &container.sha256)?;
+    let (xmi_path, xmi_bytes, xmi_sha256) = source_xmi(track)?;
+    let xmi = output(&manifest, xmi_path)?;
+    if xmi.bytes != xmi_bytes || xmi.sha256 != xmi_sha256 {
+        return Err(invalid(
+            "Environment selected XMI is not the pinned source track",
+        ));
+    }
+    let _ = read_qualified_cache_file(root, xmi_path, xmi_bytes, xmi_sha256)?;
+    let mut music = CampaignDayMusicLifecycle::start_day();
+    music.track = track;
+    Ok(music)
+}
+
 /// Existing sealed Night assets retain their exact content pins. Day and Cave
 /// envelopes also carry the owner and campaign package identities.
 pub(super) fn load_campaign_music(
@@ -198,9 +292,27 @@ pub(super) fn load_campaign_music(
     let Some(root) = owner_cache.and_then(audio_root) else {
         return Ok(None);
     };
+    let manifest = read_manifest(&root)?;
+    // The historical Cave descriptor keeps its sealed content pin. New
+    // Environment descriptors explicitly bind the selected source containers.
+    let historical_cave = selection == CampaignSelection::ordinary(4).unwrap()
+        && manifest.outputs.iter().any(|row| {
+            row.path == "audio/descriptor.json"
+                && row.sha256 == "a3c7e8467c9ba0d5973310745ec938d64436069d0b9b67622256268776599336"
+        });
+    if manifest.schema == "mc2-environment-material-cache/v1" && !historical_cave {
+        return load_environment_music(
+            &root,
+            manifest,
+            selection,
+            owner_package_sha256,
+            campaign_package_sha256,
+        )
+        .map(Some);
+    }
     let spec = binding(selection, campaign_package_sha256)?;
     let descriptor = read_qualified_cache_file(&root, spec.descriptor, spec.bytes, spec.sha256)?;
-    let manifest = verify_manifest(&root, &spec)?;
+    let manifest = verify_manifest(manifest, &spec)?;
     let descriptor: Value = serde_json::from_slice(&descriptor)
         .map_err(|error| invalid(format!("invalid campaign music descriptor: {error}")))?;
     if spec.track == 1 {
@@ -241,6 +353,36 @@ mod tests {
 
     fn generated() -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../generated")
+    }
+
+    #[test]
+    fn selected_environment_caches_bind_all_source_music_tracks_and_packages() {
+        for (source, expected_track) in [(4, 2), (30, 3), (31, 1), (32, 3), (33, 3), (34, 2)] {
+            let root =
+                generated().join(format!("mc-paj2-environment-source{source}-audio-20261026"));
+            let manifest: Value =
+                serde_json::from_slice(&fs::read(root.join("manifest.json")).unwrap()).unwrap();
+            let profile = &manifest["profile"];
+            let selection = if source == 4 {
+                CampaignSelection::ordinary(5).unwrap()
+            } else {
+                CampaignSelection::secret_destination(source).unwrap()
+            };
+            let owner = profile["owner_export_package_sha256"].as_str().unwrap();
+            let campaign = profile["campaign_package_sha256"].as_str().unwrap();
+            let music = load_campaign_music(Some(&root), selection, owner, campaign)
+                .unwrap()
+                .unwrap();
+            assert_eq!(music.track, expected_track, "source {source}");
+            assert!(music.loaded && music.playing);
+            assert!(load_campaign_music(Some(&root), selection, "wrong-owner", campaign).is_err());
+            assert!(load_campaign_music(Some(&root), selection, owner, "wrong-campaign").is_err());
+            let wrong_map = CampaignSelection {
+                map_type_id: (selection.map_type_id + 1) % 3,
+                ..selection
+            };
+            assert!(load_campaign_music(Some(&root), wrong_map, owner, campaign).is_err());
+        }
     }
 
     #[test]

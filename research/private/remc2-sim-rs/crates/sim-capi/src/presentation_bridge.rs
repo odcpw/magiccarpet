@@ -522,7 +522,7 @@ fn campaign_map_plan(
     let visibility = session
         .campaign_presentation_visibility(selection)
         .map_err(|error| error.to_string())?;
-    let palette = if selection == CampaignSelection::ordinary(4).expect("ordinary Cave identity") {
+    let palette = if selection.map_type_id == 2 {
         &CAVE_MINIMAP_PALETTE
     } else {
         &DAY_MINIMAP_PALETTE
@@ -535,9 +535,18 @@ fn campaign_map_plan(
                 && entity.active_value != 0
         });
 
-    let mut entities = Vec::new();
+    let mut inputs = Vec::new();
     for entity in session.entities() {
         if !entity.active || entity.drawing_disabled() {
+            continue;
+        }
+        // The typed Firefly carrier owns its slot after adoption or spawn.
+        if entity.class == 5
+            && entity.model == 19
+            && session.economy().authored_class5().iter().any(|source| {
+                source.active && source.model == 19 && source.source_entity_index == entity.index
+            })
+        {
             continue;
         }
         let source_player_entity_index = entity.source_player_entity_index();
@@ -553,6 +562,84 @@ fn campaign_map_plan(
                     entity.index
                 )
             })?;
+        inputs.push((input, parameter_record_index));
+    }
+
+    // Imported and newly spawned Fireflies are scheduled through the typed
+    // class-5 carrier. Adoption retires the raw row, so observing only the raw
+    // pool drops real creatures from both the minimap and the full map.
+    for firefly in session.economy().authored_fireflies() {
+        let Some(source) = session.economy().authored_class5().iter().find(|source| {
+            source.source_entity_index == firefly.source_entity_index
+                && source.model == 19
+                && source.active
+                && source.drawing_enabled
+        }) else {
+            continue;
+        };
+        if firefly.control_flags & 0x400 != 0 {
+            continue;
+        }
+        let slot = source.source_entity_index;
+        let raw = session
+            .entities()
+            .get(usize::from(slot))
+            .ok_or_else(|| format!("Firefly minimap source slot {slot} is absent"))?;
+        let owner = session.economy().source_owner(slot);
+        let imported = owner == 0
+            && firefly.authored_index.is_none()
+            && !raw.active
+            && raw.class == 5
+            && raw.model == 19;
+        let source_id = if owner != 0 {
+            owner
+        } else if imported {
+            raw.source_id
+        } else {
+            slot
+        };
+        let player_link = if imported {
+            raw.source_player_entity_index()
+        } else {
+            0
+        };
+        if (slot == nyphur.entity_index || player_link == nyphur.entity_index)
+            && !visibility.visible_to_local_player
+        {
+            continue;
+        }
+        let is_player = |index: u16| {
+            session.entities().iter().any(|candidate| {
+                candidate.index == index && candidate.active && candidate.class == 3
+            })
+        };
+        inputs.push((
+            Level1MinimapEntityInput {
+                source_slot: slot,
+                class: 5,
+                model: source.model,
+                action: source.action,
+                phase: source.phase,
+                control_flags: firefly.control_flags,
+                source_id,
+                source_id_is_player: is_player(source_id),
+                source_id_is_local_player: source_id == local_entity_index,
+                player_link,
+                player_link_is_player: is_player(player_link),
+                player_link_is_local_player: player_link == local_entity_index,
+                parent_id: firefly.parent_entity_index,
+                stage_var_2: firefly.stage_var2 as i8,
+                word_32: firefly.linked_entity_index,
+                position: source.position,
+                active: true,
+            },
+            0,
+        ));
+    }
+    inputs.sort_unstable_by_key(|(input, _)| input.source_slot);
+
+    let mut entities = Vec::new();
+    for (input, parameter_record_index) in inputs {
         let command = if selection == CampaignSelection::LEVEL1 {
             // The qualified Night package uses DrawMinimapEntities' Night
             // classifier directly; Day palette overrides are a separate branch.
@@ -572,7 +659,7 @@ fn campaign_map_plan(
         (command.x, command.y) = geometry.project(map_view, input.position);
         entities.push(Level2MinimapEntity {
             source_order: command.source_slot,
-            subject_entity_index: entity.index,
+            subject_entity_index: input.source_slot,
             x: command.x,
             y: command.y,
             selector: command.selector,

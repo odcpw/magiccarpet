@@ -323,6 +323,8 @@ pub(crate) const fn source_model(kind: EffectKind) -> u8 {
         EffectKind::BurningDebris => 16,
         EffectKind::Eruption => 18,
         EffectKind::EruptionSmoke => 19,
+        EffectKind::LightningEndpoint => 23,
+        EffectKind::LightningStorm => 38,
         EffectKind::AmbientSmoke => 60,
         EffectKind::PossessionContact => 70,
         EffectKind::FireSpheres => 76,
@@ -345,6 +347,8 @@ pub(crate) const fn source_kind(model: u8) -> Option<EffectKind> {
         16 => EffectKind::BurningDebris,
         18 => EffectKind::Eruption,
         19 => EffectKind::EruptionSmoke,
+        23 => EffectKind::LightningEndpoint,
+        38 => EffectKind::LightningStorm,
         60 => EffectKind::AmbientSmoke,
         70 => EffectKind::PossessionContact,
         76 => EffectKind::FireSpheres,
@@ -420,6 +424,22 @@ pub(crate) fn allocate(
     particles: &[ParticleParameter],
 ) -> Result<Option<u16>, String> {
     let model = source_model(definition.kind());
+    if matches!(model, 23 | 38) {
+        use crate::native_world::lightning::{self, Product};
+        let product = if model == 23 {
+            Product::Endpoint
+        } else {
+            Product::Storm
+        };
+        let slot = lightning::construct(arena, terrain, particles, product, position)?;
+        if let Some(slot) = slot {
+            let row = &mut arena.entities[usize::from(slot)];
+            row.set_max_life(definition.lifetime_base());
+            row.set_life(definition.lifetime_base());
+            row.set_subspell_index(definition.damage());
+        }
+        return Ok(slot);
+    }
     if model == 76 {
         let particle = particles
             .get(340)

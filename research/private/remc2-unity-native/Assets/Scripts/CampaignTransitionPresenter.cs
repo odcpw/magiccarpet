@@ -365,6 +365,40 @@ namespace MagicCarpet.Native
             root.SetActive(true);
         }
 
+        internal GameRuntimeTransport.LoadingPresentationBinding PresentActiveEntry(
+            GameRuntimeTransport.Identity identity)
+        {
+            if (disposed) throw new ObjectDisposedException(nameof(CampaignTransitionPresenter));
+            var binding = GameRuntimeTransport.ReadActiveEntryPresentation(identity);
+            PresentActiveEntry(identity, binding);
+            return binding;
+        }
+
+        private void PresentActiveEntry(
+            GameRuntimeTransport.Identity identity,
+            GameRuntimeTransport.LoadingPresentationBinding binding)
+        {
+            if (disposed) throw new ObjectDisposedException(nameof(CampaignTransitionPresenter));
+            Hide();
+            GameRuntimeTransport.ValidateActiveEntryPresentation(identity, binding);
+            if (binding.artwork_profile != "secret")
+                throw new InvalidDataException("a secret Playing entry requires the original secret loading artwork");
+
+            // Keep the exact guarded active-entry binding available to the
+            // failure UI even if resolving the source frame fails.
+            Destination = binding;
+            var frame = resolveFrame(binding);
+            if (root == null) CreateSurface(parent);
+            BindFrame(frame.Indices, frame.Palette);
+            boundRuntime = identity.runtime_id;
+            boundGeneration = identity.generation;
+            boundDefinition = binding.definition_hash;
+            LastPresentedCueId = binding.cue_id;
+            LastPresentationSequence = new[] { binding.cue_id };
+            Failure = null;
+            root.SetActive(true);
+        }
+
         internal void Present(
             GameRuntimeTransport.CompletionTransitionReceipt receipt)
         {
@@ -466,6 +500,15 @@ namespace MagicCarpet.Native
             GameRuntimeTransport.LoadingPresentationBinding binding,
             GameRuntimeTransport.InstalledPackageResource[] packages)
         {
+            return PreflightDestination(binding, packages, out _);
+        }
+
+        internal static GameRuntimeTransport.InstalledPackageResource PreflightDestination(
+            GameRuntimeTransport.LoadingPresentationBinding binding,
+            GameRuntimeTransport.InstalledPackageResource[] packages,
+            out OwnerAssetCache environmentCache)
+        {
+            environmentCache = null;
             GameRuntimeTransport.InstalledPackageResource match = null;
             foreach (var resource in packages ?? Array.Empty<GameRuntimeTransport.InstalledPackageResource>())
             {
@@ -484,6 +527,32 @@ namespace MagicCarpet.Native
             var rootPath = Path.GetFullPath(match.presentation_cache_path);
             var cache = JsonUtility.FromJson<CacheManifest>(System.Text.Encoding.UTF8.GetString(
                 ReadBounded(ConfinedFile(rootPath, "manifest.json"), 16 * 1024 * 1024)));
+            if (cache?.schema == "mc2-environment-material-cache/v1")
+            {
+                environmentCache = OwnerAssetCache.OpenAndValidateEnvironment(
+                    rootPath, match.package_dir);
+                var profile = environmentCache.EnvironmentMaterials?.profile;
+                var source = binding?.source_selection;
+                var profileEnvironment = profile?.map_type?.id switch
+                {
+                    0 => "day",
+                    1 => "night",
+                    2 => "cave",
+                    _ => null,
+                };
+                if (source == null || profile == null ||
+                    profile.external_level != source.external_level ||
+                    profile.internal_level != source.internal_level ||
+                    profile.map_type?.id != source.map_type_id ||
+                    profileEnvironment != binding.environment ||
+                    profile.campaign_package_sha256 != binding.source_package_sha256 ||
+                    profile.owner_export_package_sha256 != binding.owner_export_package_sha256)
+                {
+                    throw new InvalidDataException(
+                        "The environment cache does not bind the guarded source selection and provenance.");
+                }
+                return match;
+            }
             if (cache?.schema == OwnerAssetCache.NightSchema)
             {
                 if (cache.bindings == null ||

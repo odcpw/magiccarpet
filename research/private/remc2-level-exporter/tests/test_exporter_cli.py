@@ -50,9 +50,12 @@ def compile_selector_harness(directory: Path) -> Path:
 #include <string>
 
 int main(int argc, char** argv) {
-    for (int i = 1; i < argc; ++i) {
+    const bool secret = argc > 1 && std::string(argv[1]) == "--secret-index";
+    for (int i = secret ? 2 : 1; i < argc; ++i) {
         try {
-            const auto selection = mc2_exporter::parse_external_level(argv[i]);
+            const auto selection = secret
+                ? mc2_exporter::parse_secret_index(argv[i])
+                : mc2_exporter::parse_external_level(argv[i]);
             std::cout << selection.external << ":" << selection.internal << "\\n";
         } catch (const std::exception& error) {
             std::cerr << error.what() << "\\n";
@@ -84,6 +87,22 @@ def test_selector_mapping_and_rejection() -> None:
             text=True,
         )
         assert mapped.stdout.splitlines() == ["1:0", "2:1", "25:24"]
+
+        secrets = subprocess.run(
+            [str(binary), "--secret-index", "30", "31", "32", "33", "34"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        assert secrets.stdout.splitlines() == ["31:30", "32:31", "33:32", "34:33", "35:34"]
+
+        for invalid in ("", "29", "35", "-1", "+30", "30x"):
+            rejected = subprocess.run(
+                [str(binary), "--secret-index", invalid],
+                capture_output=True,
+                text=True,
+            )
+            assert rejected.returncode != 0, invalid
 
         for invalid in ("", "0", "26", "-1", "+1", "1x", " 2", "2 ", "999999999999999999999"):
             rejected = subprocess.run(
@@ -145,6 +164,25 @@ def test_invalid_cli_has_no_partial_output() -> None:
         assert duplicate.returncode != 0
         assert not duplicate_output.exists()
         assert not Path(f"{duplicate_output}.staging").exists()
+
+        # The separate source-secret selector must not widen the ordinary
+        # selector or leave partial packages for unsupported source inputs.
+        for index, arguments in enumerate((
+            ["--secret-index", "35", "--campaign-package"],
+            ["--secret-index", "+30", "--campaign-package"],
+            ["--secret-index", "30junk", "--campaign-package"],
+            ["--secret-index", "30"],
+            ["--level", "1", "--secret-index", "30", "--campaign-package"],
+        )):
+            output = parent / f"invalid-secret-{index}"
+            result = subprocess.run(
+                [str(exporter), "--owner-root", str(owner_root), "--output", str(output), *arguments],
+                capture_output=True,
+                text=True,
+            )
+            assert result.returncode != 0, (arguments, result.stdout, result.stderr)
+            assert not output.exists(), arguments
+            assert not Path(f"{output}.staging").exists(), arguments
 
 
 def _tree_bytes(root: Path) -> dict[str, bytes]:

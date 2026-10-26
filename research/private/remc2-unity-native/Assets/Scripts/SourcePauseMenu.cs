@@ -56,7 +56,7 @@ namespace MagicCarpet.Native
                 foreach (var row in binding.profiles)
                 {
                     if (row == null || row.id is not ("night" or "day" or "cave") || row.colour_indices?.Length != 5 ||
-                        row.building_colours?.Length != 3 || row.bitmaps?.Length != 10 || profiles.ContainsKey(row.id))
+                        row.building_colours?.Length != 3 || row.bitmaps?.Length is not (10 or 12) || profiles.ContainsKey(row.id))
                         throw new InvalidDataException("source pause palette/profile binding is invalid");
                     var profile = new Profile { Colours = row.colour_indices, Building = row.building_colours };
                     profiles.Add(row.id, profile);
@@ -81,6 +81,8 @@ namespace MagicCarpet.Native
                     }
                     foreach (var selector in new[] { 168, 169, 170, 174, 175, 176, 177, 178, 257, 258 })
                         if (!profile.Bitmaps.ContainsKey(selector)) throw new InvalidDataException("source pause sprite is unbound");
+                    if (row.bitmaps.Length == 12 && (!profile.Bitmaps.ContainsKey(85) || !profile.Bitmaps.ContainsKey(86)))
+                        throw new InvalidDataException("source sorcerer score sprites are unbound");
                     foreach (var selector in new[] { 174, 175, 176, 177, 178 })
                         if (!profile.Disabled.ContainsKey(selector)) throw new InvalidDataException("source pause shading is unbound");
                     var atlas = OwnerCampaignMenuCache.Texture(read(binding.font.path,
@@ -99,6 +101,12 @@ namespace MagicCarpet.Native
         }
 
         internal void Reset() { confirmation = CampaignMenuPresenter.Action.None; options = false; volume = 0; }
+        internal SourceMenuText GameplayText(string profile) => profiles.TryGetValue(profile, out var value)
+            ? value.Text : throw new InvalidDataException("source gameplay font profile is unbound: " + profile);
+        internal Texture2D GameplayBitmap(string profile, int selector) => profiles[profile].Bitmaps.TryGetValue(selector, out var value)
+            ? value : throw new InvalidDataException("source gameplay sprite is unbound: " + selector);
+        internal Color GameplayColor(string profile, byte index) => profiles[profile].Palette[index];
+        internal byte GameplayBlackIndex(string profile) => checked((byte)profiles[profile].Colours[0]);
         internal bool DismissSubmenu()
         {
             if (confirmation == CampaignMenuPresenter.Action.None && !options && volume == 0) return false;
@@ -306,6 +314,7 @@ namespace MagicCarpet.Native
                 if (supported && click(hit))
                 {
                     var option = index;
+                    var brightnessStep = Event.current.button == 1 ? -1 : 1;
                     preferences.ApplySource(draft => {
                         switch (option) {
                             case 0: draft.show_help = !draft.show_help; break;
@@ -315,7 +324,8 @@ namespace MagicCarpet.Native
                             case 4: draft.flight_assistance = !draft.flight_assistance; break;
                             case 5:
                                 var terrain = profile == profiles["night"] ? 1 : profile == profiles["cave"] ? 2 : 0;
-                                draft.brightness[terrain] = (draft.brightness[terrain] + 1) % 5;
+                                // ReadOptionMenuEvents calls ChangeSettings with a3=1, so both ends clamp.
+                                draft.brightness[terrain] = Mathf.Clamp(draft.brightness[terrain] + brightnessStep, 0, 4);
                                 break;
                             case 8: draft.reflections = !draft.reflections; break;
                             case 9: draft.sky = !draft.sky; break;

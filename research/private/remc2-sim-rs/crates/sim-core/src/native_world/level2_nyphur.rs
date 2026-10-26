@@ -2814,6 +2814,17 @@ impl Level2NyphurDispatcher {
         self.common_upkeep.mana_regen = mana_regen;
     }
 
+    /// Keep direct spell writes visible to the next ordinary AI upkeep.
+    /// Life and mana are retained here as well as in the numeric source row.
+    pub(super) fn sync_spell_target_resources(&mut self, source: &EntitySnapshot) -> bool {
+        if !source.active || source.class != 3 || source.index != self.common_upkeep.source_slot {
+            return false;
+        }
+        self.common_upkeep.life = source.life;
+        self.common_upkeep.mana = source.mana;
+        true
+    }
+
     /// Apply one `sub_159E0` threat increment to Nyphur's authoritative
     /// `Type_str_164::array_0x1FC` carrier. The caller supplies the attacking
     /// player's color and the source-width signed delta; this branch does not

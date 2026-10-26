@@ -4,10 +4,10 @@ use super::{
     BeeActionContext, BeeActor, BeeCreatureOrigin, BeeCreatureRuntime, BeeEffects,
     BeeStageDescriptor, BeeStageRuntime,
 };
-use crate::campaign::source_arena::SourceArena;
+use crate::campaign::source_arena::{SourceArena, SourceEntityHandle, SourceEntityView};
 use crate::native_world::{
-    Level2EconomyEvent, MapType, ParticleParameter, RuntimeRelation, RuntimeSnapshot,
-    SessionTerrain, level2_class5,
+    Level2DynamicArenaKind, Level2EconomyEvent, MapType, ParticleParameter, RuntimeRelation,
+    RuntimeSnapshot, SessionTerrain, level2_class5,
 };
 use crate::{Position, renderable_map_chain::RenderableMapSeed};
 
@@ -72,12 +72,74 @@ pub(crate) fn allocate_morph(
     Some(source)
 }
 
+/// Source `sub_3A5B0`'s class-5 Army producer for Day-map Bee model 2.
+/// Runtime and particles are part of the family-adapter contract; this native
+/// constructor consumes neither because Bee owns its constructor phase and
+/// has no particle-bound constructor.
+pub(crate) fn allocate_summoned(
+    arena: &mut SourceArena,
+    _runtime: &mut RuntimeSnapshot,
+    terrain: &mut SessionTerrain,
+    _particles: &[ParticleParameter],
+    position: Position,
+    parent_slot: u16,
+    owner_id: u16,
+    holder_slot: u16,
+) -> Result<Option<SourceEntityHandle>, String> {
+    if terrain.map_type() != MapType::Day {
+        return Ok(None);
+    }
+    let Some(slot) = arena.allocate_source_slot_with_terrain(terrain) else {
+        return Ok(None);
+    };
+    let Some(mut source) = arena.economy.initialize_bee_creature_at_slot(
+        slot,
+        BeeCreatureOrigin::SummonedSpell { holder_slot },
+        position,
+        parent_slot,
+        owner_id,
+        23,
+        0,
+        13,
+        None,
+        crate::level_definition::BEE_CLASS_PROPERTIES.max_life,
+        terrain,
+    ) else {
+        return Err(format!(
+            "Bee Army summon could not initialize allocated source slot{slot}"
+        ));
+    };
+
+    // sub_3A5B0 writes the child's timer and clears current/max mana after
+    // the source constructor has initialized its ordinary Bee state.
+    source.mana = 0;
+    source.stage_remaining = 250;
+    let Some(owned) = arena
+        .economy
+        .bee_creatures
+        .iter_mut()
+        .find(|owned| owned.active && owned.source_entity_index == slot)
+    else {
+        return Err(format!(
+            "Bee Army summon lost typed source row at slot{slot}"
+        ));
+    };
+    *owned = source;
+
+    crate::world::effects::sync_position(arena, terrain, slot, position, true, false)
+        .map_err(|error| format!("Bee Army summon at slot{slot} lost its map link: {error}"))?;
+    let handle = arena
+        .handle(slot)
+        .ok_or_else(|| format!("Bee Army summon lost generation-bound slot{slot}"))?;
+    Ok(Some(handle))
+}
+
 impl BeeStageRuntime for RuntimeSnapshot {
     fn descriptor(&self, index: u8) -> Option<BeeStageDescriptor> {
-        let row = self
-            .stage_variables
-            .get(usize::from(index))
-            .filter(|_| index != 0)?;
+        if index == 0 || index > self.active_stage_variable_count() {
+            return None;
+        }
+        let row = self.stage_variables.get(usize::from(index))?;
         let scalar = match row.relation {
             RuntimeRelation::AxisScalar(value) => value,
             _ => 0,
@@ -117,7 +179,11 @@ impl BeeStageRuntime for RuntimeSnapshot {
     }
 
     fn rearm_model_relations(&mut self) {
-        for (index, row) in self.stage_variables.iter_mut().enumerate().skip(1) {
+        for index in 1..=self.active_stage_variable_count() {
+            let index = usize::from(index);
+            let Some(row) = self.stage_variables.get_mut(index) else {
+                continue;
+            };
             if matches!(row.kind, 3 | 4 | 5 | 8 | 9) && row.flags as u8 & 6 == 6 {
                 row.flags = (row.flags as u8 & !4) as i8;
                 self.bytes[392 + index * 12 + 1] = row.flags as u8;
@@ -295,6 +361,9 @@ pub(crate) fn stage_prepass_in_arena(
     local: Option<(u16, Position, i16, i16)>,
 ) {
     adopt_imported_bees(arena);
+    for slot in &frozen_models[2] {
+        import_source_alliance_control(arena, *slot);
+    }
     let rows = actor_rows(arena, frozen_models, frozen_players, local);
     for slot in &frozen_models[2] {
         if let Some(source) = arena
@@ -305,6 +374,7 @@ pub(crate) fn stage_prepass_in_arena(
         {
             super::stage_prepass(source, runtime, &rows);
         }
+        publish_source_alliance_control(arena, *slot);
     }
 }
 
@@ -347,6 +417,7 @@ pub(crate) fn bind_authored_route(
     slot: u16,
     index: u8,
 ) {
+    import_source_alliance_control(arena, slot);
     if let Some(source) = arena
         .economy
         .bee_creatures
@@ -355,6 +426,100 @@ pub(crate) fn bind_authored_route(
     {
         super::bind_stage(source, index, runtime);
     }
+    publish_source_alliance_control(arena, slot);
+}
+
+/// The Alliance impact kernel still writes its source fields into the retained
+/// entity row. Apply those writes only while that exact slot and source id
+/// still name the current generation-bound typed Bee.
+fn exact_source_bee_row(arena: &SourceArena, source: BeeCreatureRuntime) -> bool {
+    if !source.active || source.source_class != 5 || source.model != 2 {
+        return false;
+    }
+    let Some(handle) = arena.handle(source.source_entity_index) else {
+        return false;
+    };
+    if !matches!(
+        arena.resolve(handle),
+        Some(SourceEntityView::Dynamic(
+            Level2DynamicArenaKind::BeeCreature
+        ))
+    ) {
+        return false;
+    }
+    arena
+        .entities
+        .get(usize::from(source.source_entity_index))
+        .is_some_and(|row| {
+            row.index == source.source_entity_index
+                && row.source_id == source.entity_id
+                && row.class == source.source_class
+                && row.model == source.model
+        })
+}
+
+/// Import the source Alliance control write before the ordinary typed Bee
+/// callback. StageVar2=14 with StageVar1=0 is the kernel's exact transition.
+fn import_source_alliance_control(arena: &mut SourceArena, slot: u16) {
+    let Some(index) = arena
+        .economy
+        .bee_creatures
+        .iter()
+        .position(|source| source.active && source.source_entity_index == slot)
+    else {
+        return;
+    };
+    let source = arena.economy.bee_creatures[index];
+    if !exact_source_bee_row(arena, source) {
+        return;
+    }
+    let Some(raw) = arena.entities.get(usize::from(slot)) else {
+        return;
+    };
+    if raw.record[76] != 0 || raw.record[77] != 14 {
+        return;
+    }
+    let action = raw.action;
+    let parent = u16::from_le_bytes([raw.record[44], raw.record[45]]);
+    let stage_relation = u16::from_le_bytes([raw.record[78], raw.record[79]]);
+    let stage_remaining = i16::from_le_bytes([raw.record[50], raw.record[51]]);
+    let stage_duration = i16::from_le_bytes([raw.record[52], raw.record[53]]);
+    let target = u16::from_le_bytes([raw.record[154], raw.record[155]]);
+    let source = &mut arena.economy.bee_creatures[index];
+    source.action = action;
+    source.parent_entity_index = parent;
+    source.stage_var1 = raw.record[76];
+    source.stage_var2 = raw.record[77];
+    source.stage_relation = stage_relation;
+    source.stage_remaining = stage_remaining;
+    source.stage_duration = stage_duration;
+    source.target_entity_index = Some(target).filter(|target| *target != 0);
+}
+
+/// Keep the retained row's Alliance control fields as a shadow of typed Bee
+/// authority so the next source impact cannot replay stale countdown state.
+fn publish_source_alliance_control(arena: &mut SourceArena, slot: u16) {
+    let Some(source) = arena
+        .economy
+        .bee_creatures
+        .iter()
+        .find(|source| source.active && source.source_entity_index == slot)
+        .copied()
+    else {
+        return;
+    };
+    if !exact_source_bee_row(arena, source) {
+        return;
+    }
+    let raw = &mut arena.entities[usize::from(slot)];
+    raw.set_source_action(source.action);
+    raw.record[44..46].copy_from_slice(&source.parent_entity_index.to_le_bytes());
+    raw.record[76] = source.stage_var1;
+    raw.record[77] = source.stage_var2;
+    raw.record[78..80].copy_from_slice(&source.stage_relation.to_le_bytes());
+    raw.record[50..52].copy_from_slice(&source.stage_remaining.to_le_bytes());
+    raw.record[52..54].copy_from_slice(&source.stage_duration.to_le_bytes());
+    raw.record[154..156].copy_from_slice(&source.target_entity_index.unwrap_or(0).to_le_bytes());
 }
 
 /// Allocations and map writes remain on the one arena. Contact and player XP
@@ -371,6 +536,7 @@ pub(crate) fn step_in_arena(
     local: Option<(u16, Position, i16, i16)>,
     mut actors: Option<crate::native_world::area_damage::ActorDomains<'_>>,
 ) -> Result<BeeEffects, String> {
+    import_source_alliance_control(arena, slot);
     let mut rows = actor_rows(arena, frozen_models, frozen_players, local);
     // The target's vertical shape belongs to its current carrier. A newly
     // allocated Goat/Archer must not inherit a previous raw row's array.yaw.
@@ -402,6 +568,7 @@ pub(crate) fn step_in_arena(
     );
     let after = arena.economy.bee_creatures[index];
     if !effects.callback_executed {
+        publish_source_alliance_control(arena, slot);
         return Ok(effects);
     }
     arena.economy.source_rng.insert(slot, after.entity_rng);
@@ -545,6 +712,7 @@ pub(crate) fn step_in_arena(
     if !after.drawing_enabled {
         arena.economy.deferred_bee_reclaims.insert(slot);
     }
+    publish_source_alliance_control(arena, slot);
     Ok(effects)
 }
 

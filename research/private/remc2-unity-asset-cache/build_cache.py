@@ -6191,6 +6191,7 @@ def _level2_sound_selector(expression: str) -> dict[str, Any]:
 def campaign_music_census(track: int) -> dict[str, Any]:
     """Controller events from the pinned owner's actual MUSIC record."""
     division, loops = {
+        1: (201, [(0, 1, 116, 0), (158265, 1, 117, 127)]),
         2: (167, [(0, 2, 116, 0)]),
         3: (270, [(3, 9, 116, 0), (86400, 9, 117, 127)]),
         4: (254, [(0, 2, 116, 0), (69117, 2, 117, 127)]),
@@ -6209,23 +6210,27 @@ def campaign_music_control(track: int) -> dict[str, Any]:
                 envelope_min=0, envelope_max=127, envelope_step_per_callback=1,
                 playback_slot_census=campaign_music_census(track),
                 loop_scan_pointer_census=campaign_music_census(track + 1),
-                audible_channel_resolution="Source_playback_track_minus_one_loop_scan_track")
+                audible_channel_resolution=(
+                    "Unresolved_playback_slot0_has_no_CC119_but_loop_scan_slot1_tags_channels7_8"
+                    if track == 1 else "Source_playback_track_minus_one_loop_scan_track"))
 
 
 def export_campaign_music(stage, outputs, work, music_data, records, track):
     """Sound.cpp passes track-1 to playback but track to its loop scan."""
-    if track not in (2, 3):
-        raise CacheError("campaign export requires Day2 or Cave3 source music")
+    if track not in (1, 2, 3):
+        raise CacheError("campaign export requires Night1, Day2, or Cave3 source music")
     slot = track - 1
     label = f"C2GAME{track}"
     record = records[slot]
     expected_hash = {
+        1: "0f8081d8ef6ad609f406638862a573b9d1d014f940f0f3194e4d5687f724bd8d",
         2: "8c98b86e74a6187a3a08ac34ef81aa3bd97cf493c34bee88b6d6969e79a6c856",
         3: "566769008b9598bd03ad657575daa089f217385d7e7671dd948e6b2fea1e3251",
     }[track]
     offset = record["relative_data_offset"]
     payload = music_data[offset:offset + record["bytes"]]
-    if record["filename"] != label + ".XMI" or sha256_bytes(payload) != expected_hash:
+    if (record["filename"] != label + ".XMI" or record["word"] != 90
+            or sha256_bytes(payload) != expected_hash):
         raise CacheError("selected source MUSIC record changed")
     xmi = write_output(stage, outputs, f"audio/music/{label}.xmi", payload,
                        kind="owner_XMIDI_FORM_XDIR_exact_record",
@@ -11183,66 +11188,156 @@ def environment_importer():
     return module
 
 
-def add_cave_audio(cache, owner_root, catalog_path):
-    """Compose Mission4's source bank2 and logical music3 into its new cache."""
+def add_campaign_environment_audio(cache, owner_root, catalog_path):
+    """Materialize the audio banks selected by this package's actual map type."""
     environment = environment_importer()
     manifest = environment.validate(cache)
     profile = manifest["profile"]
-    if (profile["external_level"], profile["internal_level"], profile["map_type"]["id"]) != (4, 3, 2):
-        raise CacheError("Cave audio requires the ordinary Mission4 environment")
+    map_id = profile.get("map_type", {}).get("id")
+    selectors = {
+        0: (0, 2, "mc2-day-audio/v1"),
+        1: (1, 1, "mc2-night-audio/v1"),
+        2: (2, 3, "mc2-cave-audio/v1"),
+    }
+    if map_id not in selectors:
+        raise CacheError("campaign environment audio has no source map selector")
+    sound_bank, music_track, audio_schema = selectors[map_id]
     if (cache / "audio").exists():
-        raise CacheError("Cave audio already exists; never replace a live cache")
+        raise CacheError("campaign environment audio already exists; never replace a live cache")
     catalog = load_json(catalog_path)
     if sha256_file(catalog_path) != profile["catalog_file_sha256"]:
-        raise CacheError("Cave audio owner catalog identity changed")
+        raise CacheError("campaign environment audio owner catalog identity changed")
     sources = {r["path"]: r for r in catalog["files"]}
     containers = {}
     outputs = manifest["outputs"]
     for name in ("SOUND.DAT", "MUSIC.DAT"):
         relative = "SOUND/" + name
         payload = confined_source(owner_root, relative).read_bytes()
-        row = sources[relative]
-        if len(payload) != row["size"] or sha256_bytes(payload) != row["sha256"]:
-            raise CacheError("Cave audio container differs from owner catalog")
+        payload_sha256 = sha256_bytes(payload)
+        row = sources.get(relative)
+        if (not isinstance(row, dict) or row.get("asset_id") != f"owner_data:{relative}"
+                or len(payload) != row.get("size")
+                or payload_sha256 != row.get("sha256")
+                or row.get("content_address") != f"sha256:{payload_sha256}"):
+            raise CacheError(f"campaign environment audio container differs from owner catalog: {relative}")
         containers[name] = payload
         write_output(cache, outputs, "audio/" + name, payload,
-                     kind="owner_audio_exact_container", source_asset_ids=[row["asset_id"]])
+                     kind="owner_audio_exact_container",
+                     source_asset_ids=[row["asset_id"]],
+                     extra={"bank": sound_bank if name == "SOUND.DAT" else 1,
+                            "map_type": profile["map_type"]["name"],
+                            "maptype_music": music_track if name == "MUSIC.DAT" else None,
+                            "channel": 0 if name == "MUSIC.DAT" else None,
+                            "driver": "f" if name == "MUSIC.DAT" else None})
         if not any(r["asset_id"] == row["asset_id"] for r in manifest["source_files"]):
             manifest["source_files"].append({k: row[k] for k in
                 ("asset_id", "path", "size", "content_address", "category")})
-    with tempfile.TemporaryDirectory(prefix="mc-cave-audio-") as work_name:
+    reachable = []
+    if map_id == 0:
+        reachable, _unreachable = _campaign_day_audio_denominator()
+        sound_ids = sorted({
+            sound_id
+            for occurrence in reachable
+            for sound_id in _level2_sound_selector(occurrence["sound_expression"])["sound_ids"]
+        })
+    elif map_id == 1:
+        sound_ids = list(LEVEL1_SOUND_IDS)
+    else:
+        sound_ids = list(range(1, 70))
+
+    with tempfile.TemporaryDirectory(prefix="mc-campaign-environment-audio-") as work_name:
         work = Path(work_name)
         decoder, decoder_identity = compile_rnc_decoder(work)
-        decoded = {}
-        for name, selector, count_rows, count in (("SOUND.DAT", 2, 6, 69), ("MUSIC.DAT", 0, 4, 6)):
-            container = containers[name]
-            _, row = container_descriptor(container, count_rows=count_rows, selector=selector,
-                                           row=3 if name == "SOUND.DAT" else 2, label=name)
-            metadata = decode_container_blob(decoder, container, row["metadata_offset"],
-                                             row["metadata_size"], work, name + "-metadata")
-            data = decode_container_blob(decoder, container, row["data_offset"],
-                                         row["data_size"], work, name + "-data")
-            decoded[name] = (data, packed_audio_records(metadata, data, expected_count=count, label=name))
-        music_data, music_records = decoded["MUSIC.DAT"]
-        music_rows, presentation = export_campaign_music(cache, outputs, work, music_data, music_records, 3)
-        sound_data, sound_records = decoded["SOUND.DAT"]
+        sound_container = containers["SOUND.DAT"]
+        sound_counts, sound_row = container_descriptor(
+            sound_container, count_rows=6, selector=sound_bank, row=3,
+            label=f"{profile['map_type']['name']} sound bank {sound_bank} quality 822")
+        if map_id in (0, 1) and sound_counts != [0, 0, 0, 10, 10, 0]:
+            raise CacheError(f"{profile['map_type']['name']} sound quality rows changed")
+        sound_metadata = decode_container_blob(
+            decoder, sound_container, sound_row["metadata_offset"],
+            sound_row["metadata_size"], work, "campaign-sound-metadata")
+        sound_data = decode_container_blob(
+            decoder, sound_container, sound_row["data_offset"],
+            sound_row["data_size"], work, "campaign-sound-data")
+        expected_sound_count = 69 if map_id == 2 else 64
+        sound_records = packed_audio_records(
+            sound_metadata, sound_data, expected_count=expected_sound_count,
+            label=f"campaign sound bank {sound_bank}")
+
         sounds = []
-        for record in sound_records:
-            sound_id = record["slot"] + 1
+        for sound_id in sound_ids:
+            if not 1 <= sound_id <= len(sound_records):
+                raise CacheError(f"selected source sound ID is outside bank {sound_bank}: {sound_id}")
+            record = sound_records[sound_id - 1]
+            row = dict(sound_id=sound_id, filename=record["filename"],
+                       metadata_slot=record["slot"], relative_data_offset=record["relative_data_offset"],
+                       record_bytes=record["bytes"], record_sha256=record["payload_sha256"],
+                       metadata_word=record["word"], bank=sound_bank)
+            if map_id == 1:
+                null = sound_id == 12
+                row.update(
+                    quality=822, quality_index=3,
+                    semantic_name=Path(record["filename"]).stem.lower(),
+                    play_class=("explicit_null" if null else "loop" if sound_id in (1, 2, 5, 31) else "one_shot"),
+                    playback_scope=("explicit_null" if null else "local_ambient" if sound_id in (1, 2, 5, 31)
+                                   else "local_feedback" if sound_id in (14, 29) else "original_stereo_positional"),
+                    loop_target_volume=(0 if null else {1: 70, 2: 70, 5: 120, 31: 85}.get(sound_id, 127)),
+                    mapping_status="explicit_null" if null else "proven_campaign_Night")
+                if null:
+                    row.update(asset_path=None, asset_sha256=None, wav=None)
+                    sounds.append(row)
+                    continue
             offset = record["relative_data_offset"]
             payload = sound_data[offset:offset + record["bytes"]]
-            properties = wav_properties(payload, f"Cave sound {sound_id}")
-            row = write_output(cache, outputs, f"audio/sfx/{sound_id:03d}.wav", payload,
-                               kind="owner_RIFF_WAVE_exact_cave_record",
-                               source_asset_ids=["owner_data:SOUND/SOUND.DAT"])
-            sounds.append(dict(sound_id=sound_id, filename=record["filename"],
-                               asset_path=row["path"], asset_sha256=row["sha256"], wav=properties))
-    descriptor = dict(schema="mc2-cave-audio/v1", profile=profile,
-                      sound=dict(bank=2, records=sounds, decoder=decoder_identity),
-                      music=dict(bank=1, channel=0, driver="f", map_type="Cave", maptype_music=3,
-                                 records=music_rows, **presentation))
+            properties = wav_properties(payload, f"{profile['map_type']['name']} sound {sound_id}")
+            output_row = write_output(
+                cache, outputs, f"audio/sfx/{sound_id:03d}.wav", payload,
+                kind=f"owner_RIFF_WAVE_exact_campaign_{profile['map_type']['name'].lower()}_record",
+                source_asset_ids=["owner_data:SOUND/SOUND.DAT"],
+                extra={"bank": sound_bank, "quality": 822, "quality_index": 3,
+                       "sound_id": sound_id, **properties})
+            row.update(asset_path=output_row["path"], asset_sha256=output_row["sha256"], wav=properties)
+            sounds.append(row)
+
+        music_container = containers["MUSIC.DAT"]
+        music_counts, music_row = container_descriptor(
+            music_container, count_rows=4, selector=0, row=2,
+            label=f"campaign music channel 0 {profile['map_type']['name']}")
+        if music_counts != [2, 2, 2, 2]:
+            raise CacheError("campaign music channel counts changed")
+        music_metadata = decode_container_blob(
+            decoder, music_container, music_row["metadata_offset"],
+            music_row["metadata_size"], work, "campaign-music-metadata")
+        music_data = decode_container_blob(
+            decoder, music_container, music_row["data_offset"],
+            music_row["data_size"], work, "campaign-music-data")
+        music_records = packed_audio_records(
+            music_metadata, music_data, expected_count=6, label="campaign music channel 0")
+        expected_music_names = ["C2GAME1.XMI", "C2GAME2.XMI", "C2GAME3.XMI",
+                                "C2SETUP.XMI", "C2INTRO.XMI", "C2CUTS.XMI"]
+        if ([record["filename"] for record in music_records] != expected_music_names
+                or any(record["word"] != 90 for record in music_records)):
+            raise CacheError("campaign MUSIC metadata changed")
+        music_rows, presentation = export_campaign_music(
+            cache, outputs, work, music_data, music_records, music_track)
+
+    music = dict(bank=1, channel=0, driver="f", map_type=profile["map_type"]["name"],
+                 maptype_music=music_track, container_path="audio/MUSIC.DAT",
+                 container_sha256=sha256_bytes(containers["MUSIC.DAT"]),
+                 records=music_rows, record_census_sha256=environment.digest(environment.canonical(music_rows)),
+                 decoder=decoder_identity, **presentation)
+    sound = dict(bank=sound_bank, quality=822, quality_index=3,
+                 bank_counts_by_quality_index=sound_counts,
+                 container_path="audio/SOUND.DAT",
+                 container_sha256=sha256_bytes(containers["SOUND.DAT"]),
+                 records=sounds, record_census_sha256=environment.digest(environment.canonical(sounds)),
+                 decoder=decoder_identity)
+    if map_id == 0:
+        sound["reachable_occurrence_count"] = len(reachable)
+    descriptor = dict(schema=audio_schema, profile=profile, sound=sound, music=music)
     write_output(cache, outputs, "audio/descriptor.json", canonical_json(descriptor),
-                 kind="canonical_cave_audio_descriptor",
+                 kind=f"canonical_{profile['map_type']['name'].lower()}_audio_descriptor",
                  source_asset_ids=["owner_data:SOUND/SOUND.DAT", "owner_data:SOUND/MUSIC.DAT"])
     manifest["cache_content_sha256"] = environment.content_identity(outputs)
     manifest.pop("manifest_payload_sha256")
@@ -11264,8 +11359,8 @@ def build_environment_material_cache(owner_root, package, catalog, output):
         load_proven_decoder, fsync_tree, validate_output_path,
     )
     manifest = environment.build(owner_root, package, catalog, output, codecs)
-    if manifest["profile"]["external_level"] == 4 and manifest["profile"]["map_type"]["id"] == 2:
-        return add_cave_audio(output, owner_root, catalog)
+    if manifest["profile"]["map_type"]["id"] in (0, 1, 2):
+        return add_campaign_environment_audio(output, owner_root, catalog)
     return manifest
 
 

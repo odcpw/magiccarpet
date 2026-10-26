@@ -233,10 +233,12 @@ where
                 |arena, request| damage(arena, DamageRequest::Rectangle(request)),
                 |arena, terrain, request| {
                     if request.alternate {
-                        return Err(
-                            "final-volcano eruption91 requires the final encounter constructor"
-                                .into(),
-                        );
+                        return Ok(crate::native_world::reward_source::construct(
+                            arena,
+                            terrain,
+                            request.position,
+                            request.owner,
+                        ));
                     }
                     let child = crate::world::effects::allocate(
                         arena,

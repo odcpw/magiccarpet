@@ -199,19 +199,20 @@ pub(crate) fn construct(
 
 /// The production path which created a live Bee.
 ///
-/// Package records and Morph spells share the same source arena, constructor,
-/// scheduler, and callbacks. Keeping their origins typed prevents a
-/// spell-created Bee from masquerading as an authored package row.
+/// Package records, Morph, and Army spells share the same source arena,
+/// constructor, scheduler, and callbacks. Keeping their origins typed prevents
+/// a spell-created Bee from masquerading as an authored package row.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum BeeCreatureOrigin {
     InitialPackage,
     AuthoredRecord { authored_index: u16 },
     MorphSpell { holder_slot: u16 },
+    SummonedSpell { holder_slot: u16 },
 }
 
 /// Live semantic Bee creature constructed by remc2 `sub_4B590` (class 5,
 /// model 2). The state keeps the words consumed by the ordinary Bee actions
-/// and Morph's selector-12 parent follower.
+/// and the spell-owned action 23 countdown.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct BeeCreatureRuntime {
     pub source_entity_index: u16,
@@ -341,7 +342,9 @@ impl BeeCreatureRuntime {
     pub const fn authored_index(&self) -> Option<u16> {
         match self.origin {
             BeeCreatureOrigin::AuthoredRecord { authored_index } => Some(authored_index),
-            BeeCreatureOrigin::InitialPackage | BeeCreatureOrigin::MorphSpell { .. } => None,
+            BeeCreatureOrigin::InitialPackage
+            | BeeCreatureOrigin::MorphSpell { .. }
+            | BeeCreatureOrigin::SummonedSpell { .. } => None,
         }
     }
 }

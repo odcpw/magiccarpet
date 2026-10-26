@@ -151,7 +151,16 @@ pub(crate) fn update_shared_stage_variables(
     entities: &[EntitySnapshot],
     models: &[Vec<u16>; 29],
 ) {
-    for (index, row) in runtime.stage_variables.iter_mut().enumerate().skip(1) {
+    // Source count is the highest active authored index, so retain and visit
+    // holes below it; a cleared count suppresses this scan without erasing rows.
+    let active_count = usize::from(runtime.active_stage_variable_count());
+    for (index, row) in runtime
+        .stage_variables
+        .iter_mut()
+        .enumerate()
+        .skip(1)
+        .take(active_count)
+    {
         let mut flags = row.flags as u8;
         match row.kind {
             3 | 4 | 5 | 8 | 9 => {
@@ -201,7 +210,9 @@ pub(crate) fn bind_source(
     let source = arena
         .entities
         .get_mut(usize::from(slot))
-        .filter(|source| source.active && source.class == 5 && matches!(source.model, 3 | 9))
+        .filter(|source| {
+            source.active && source.class == 5 && matches!(source.model, 3 | 9 | 17 | 18 | 26 | 28)
+        })
         .ok_or_else(|| format!("source route lost creature slot {slot}"))?;
     edit_route(source, |route| route.bind(runtime, index));
     Ok(())
@@ -221,11 +232,9 @@ pub(crate) fn prepare_source_pass(
         .map(|target| target.index)
         .collect::<std::collections::BTreeSet<_>>();
     for &slot in model_slots {
-        let Some(source) = arena
-            .entities
-            .get_mut(usize::from(slot))
-            .filter(|source| source.active && source.class == 5 && matches!(source.model, 3 | 9))
-        else {
+        let Some(source) = arena.entities.get_mut(usize::from(slot)).filter(|source| {
+            source.active && source.class == 5 && matches!(source.model, 3 | 9 | 17 | 18 | 26 | 28)
+        }) else {
             continue;
         };
         edit_route(source, |route| {

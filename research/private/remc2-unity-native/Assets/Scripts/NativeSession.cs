@@ -236,7 +236,10 @@ namespace MagicCarpet.Native
             uint elapsedCentiseconds = 0,
             EngineSessionTransport.SpellAssignment assignment = null,
             bool showObjective = false,
-            bool removeCastleStage = false)
+            bool removeCastleStage = false,
+            EngineSessionTransport.SpellMark mark = null,
+            EngineSessionTransport.MarkedSpellCycle cycle = null,
+            string abandonAction = null)
         {
             return gameRuntime?.CampaignStep(
                     roll,
@@ -244,7 +247,7 @@ namespace MagicCarpet.Native
                     flags,
                     lookYaw,
                     lookPitch,
-                    selectSpell, recenter, fullStop, recoverPlayer, elapsedCentiseconds, assignment, showObjective, removeCastleStage) ??
+                    selectSpell, recenter, fullStop, recoverPlayer, elapsedCentiseconds, assignment, showObjective, removeCastleStage, mark, cycle, abandonAction) ??
                 throw new InvalidOperationException("session does not own a game runtime");
         }
 
@@ -306,7 +309,7 @@ namespace MagicCarpet.Native
                 "session does not own a game runtime");
         }
 
-        internal GameRuntimeTransport.CompletionTransitionReceipt GameRuntimeFinishMissionIfReady()
+        internal SecretTransitionTransport.AcceptedBoundaryReceipt GameRuntimeFinishMissionIfReady()
         {
             return gameRuntime != null ? gameRuntime.FinishMissionIfReady() :
                 throw new InvalidOperationException("session does not own a game runtime");
@@ -316,6 +319,12 @@ namespace MagicCarpet.Native
         {
             return gameRuntime?.Close() ?? throw new InvalidOperationException(
                 "session does not own a game runtime");
+        }
+
+        internal GameRuntimeTransport.Identity GameRuntimeClose(out SecretTransitionTransport.Receipt secretReturn)
+        {
+            if (gameRuntime == null) throw new InvalidOperationException("session does not own a game runtime");
+            return gameRuntime.Close(out secretReturn);
         }
 
         internal GameRuntimeTransport.Identity GameRuntimeRestartNewGame()

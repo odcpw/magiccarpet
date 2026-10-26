@@ -96,8 +96,22 @@ pub enum ExistingHandler {
     Mushrooms = 37,
     Spider = 38,
     SpiderWeb = 39,
-    LightningProjectile = 40,
+    MeteorProjectile = 40,
     MorphBody = 41,
+    LightningProjectile = 42,
+    Wyvern = 43,
+    Creature17 = 44,
+    Creature17Projectile = 45,
+    DisasterSpellProjectile = 46,
+    FieldSpellProjectile = 47,
+    DirectionalSpellProjectile = 48,
+    Creature23 = 49,
+    Creature26 = 50,
+    Cymmerian = 51,
+    SummonArmyProjectile = 52,
+    Creature28 = 53,
+    MagicMineProjectile = 54,
+    AllianceProjectile = 55,
 }
 
 impl ExistingHandler {
@@ -148,8 +162,26 @@ impl ExistingHandler {
             Self::Mushrooms => "authored cave mushroom constructor",
             Self::Spider => "authored Spider constructor and live web attack",
             Self::SpiderWeb => "Spider ranged web projectile and status impact",
-            Self::LightningProjectile => "Lightning holder projectile and Meteor impact",
+            Self::MeteorProjectile => "Meteor holder projectile and impact",
+            Self::LightningProjectile => "Lightning holder rays, storm emitter and endpoint damage",
             Self::MorphBody => "Morph constructor and controlled StageVar2 selector12 body",
+            Self::Wyvern => "authored Wyvern constructor and live descriptor61 burst",
+            Self::Creature17 => "ordinary model17 stance, combat and lifecycle",
+            Self::Creature23 => "ordinary model23 Lightning, sphere capture and lifecycle",
+            Self::Creature26 => "ordinary model26 mana drain, spell theft and lifecycle",
+            Self::Creature28 => "ordinary model28 movement, combat and lifecycle",
+            Self::Cymmerian => "ordinary Cymmerian split, combat and StageVar lifecycle",
+            Self::SummonArmyProjectile => "ordinary Summon Army flyer and real ring fan-out",
+            Self::MagicMineProjectile => "ordinary Magic Mine flyer and field",
+            Self::AllianceProjectile => "ordinary Alliance flyer and terminal effect",
+            Self::Creature17Projectile => "model17 guided Slowing projectile",
+            Self::FieldSpellProjectile => "ordinary Gravity Well and Whirlwind guided flyers",
+            Self::DirectionalSpellProjectile => {
+                "ordinary Steal Mana and Duel guided flyers and terminal fields"
+            }
+            Self::DisasterSpellProjectile => {
+                "ordinary terrain spell cast and scheduled terrain impact"
+            }
         }
     }
 
@@ -194,8 +226,22 @@ impl ExistingHandler {
             Self::Creature24 => "creature24-family",
             Self::Spider => "spider-family",
             Self::SpiderWeb => "spider-web-projectile",
+            Self::MeteorProjectile => "meteor-projectile",
             Self::LightningProjectile => "lightning-projectile",
             Self::MorphBody => "morph-body",
+            Self::Wyvern => "wyvern-family",
+            Self::Creature17 => "creature17-family",
+            Self::Creature23 => "creature23-family",
+            Self::Creature26 => "creature26-family",
+            Self::Creature28 => "creature28-family",
+            Self::Cymmerian => "cymmerian-family",
+            Self::SummonArmyProjectile => "summon-army-projectile",
+            Self::MagicMineProjectile => "magic-mine-projectile",
+            Self::AllianceProjectile => "alliance-projectile",
+            Self::Creature17Projectile => "creature17-projectile",
+            Self::FieldSpellProjectile => "field-spell-projectile",
+            Self::DirectionalSpellProjectile => "directional-spell-projectile",
+            Self::DisasterSpellProjectile => "disaster-spell-projectile",
             Self::Mushrooms => "mushrooms",
         }
     }
@@ -352,7 +398,7 @@ compiled_registry! {
         (Mushrooms, 2, [18, 19]);
         (PlayerFlight, 3, [0]);
         (NyphurPlayer, 3, [1]);
-        (PlayerFlight, 3, [2, 3, 12]);
+        (PlayerFlight, 3, [2, 3, 11, 12]);
         (CastleRoot, 3, [4, 5, 6]);
         (ManaCarrier, 3, [9]);
         (DragonFamily, 5, [1, 2, 3, 4, 5]);
@@ -368,24 +414,45 @@ compiled_registry! {
         (TraderFamily, 5, [112, 113, 114, 115, 116, 117, 118, 119]);
         (CastleAuxiliary, 5, [120, 121, 122, 123, 124, 125, 127]);
         (FireflyFamily, 5, [153, 154, 155, 156, 157, 159]);
-        (MorphBody, 5, [135, 207]);
+        (Wyvern, 5, [128, 129, 130, 131, 132, 133, 135]);
+        (Creature17, 5, [136, 137, 138, 139, 140, 141, 143]);
+        (Cymmerian, 5, [200, 201, 202, 203, 204, 205, 207]);
         (Spider, 5, [160, 161, 162, 163, 164, 165, 167]);
         (Creature22, 5, [176, 177, 178, 179, 180, 181, 183]);
+        (Creature23, 5, [184, 185, 186, 187, 188, 189, 191]);
+        (Creature26, 5, [208, 209, 210, 211, 212, 213, 215]);
+        (Creature28, 5, [224, 225, 226, 227, 228, 229, 231]);
         (Creature24, 5, [192, 193, 194, 195, 196, 197, 198, 199]);
         (MultipartFamily, 5, [232]);
         (ProjectileFamily, 9, [0, 1, 10, 13]);
-        (LightningProjectile, 9, [3]);
+        (MeteorProjectile, 9, [3]);
+        (Creature17Projectile, 9, [21]);
+        (SummonArmyProjectile, 9, [25]);
+        (DisasterSpellProjectile, 9, [2, 4, 5, 24]);
+        (FieldSpellProjectile, 9, [23, 27]);
+        (MagicMineProjectile, 9, [30]);
+        (AllianceProjectile, 9, [26]);
+        (LightningProjectile, 9, [9, 12, 14]);
+        (LightningProjectile, 10, [23, 40]);
+        (Class10Effects, 10, [62]);
         (Model6ProjectileChild, 9, [15]);
         (ProjectileFamily, 9, [18, 29]);
         (SpiderWeb, 9, [22]);
         (CaveSpell, 9, [31]);
-        (TerrainDisasters, 10, [11]);
-        (Fields, 10, [36, 37, 70, 71]);
+        (TerrainDisasters, 10, [9, 11, 15, 78]);
+        (Fields, 10, [36, 37, 70, 71, 72, 73, 74]);
+        (Fields, 10, [81, 85]);
         (Class10Effects, 10, [0, 1, 2, 3, 4, 5, 6, 7, 12, 13, 14, 16, 17, 18, 19, 22, 41, 42, 43, 44, 45, 48, 51, 52, 53, 58, 59, 64, 65, 76, 77, 80, 83, 86, 98]);
         (SwitchProducers, 11, [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 31]);
         (ObjectiveSwitch, 11, [32]);
         (Class14Events, 14, [8, 9, 10]);
-        (SpellHolderAndPickup, 15, [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 15, 16, 17, 18, 19, 20, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 75, 76, 77, 78]);
+        (SpellHolderAndPickup, 15, [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 75, 76, 77, 78]);
+        (SpellHolderAndPickup, 15, [45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56]);
+        (SpellHolderAndPickup, 15, [60, 61, 62, 63, 64, 65]);
+        (SpellHolderAndPickup, 15, [66, 67, 68]);
+        (SpellHolderAndPickup, 15, [69, 70, 71, 72, 73, 74]);
+        (SpellHolderAndPickup, 15, [57, 58, 59]);
+        (Class10Effects, 10, [79]);
     }
     update_only_actions {
         (BallisticScenery, 2, [21]);
@@ -393,10 +460,13 @@ compiled_registry! {
         (TerrainStripController, 10, [68, 69]);
         (CaveFeatures, 10, [87, 88, 89, 90, 91, 92, 93]);
         (Class10Effects, 10, [94]);
+        (Class10Effects, 10, [25, 26]);
         (CaveSpell, 10, [96]);
         (CountdownSwitch, 11, [13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44]);
         (TerrainStripController, 14, [6, 7]);
         (SpellHolderAndPickup, 15, [12, 13]);
+        (DirectionalSpellProjectile, 9, [7, 8]);
+        (SpellHolderAndPickup, 15, [39, 42]);
     }
     constructors {
         (TreeLifecycle, 2, [0]);
@@ -419,12 +489,27 @@ compiled_registry! {
         (VillagerFamily, 5, [13]);
         (TraderFamily, 5, [14]);
         (CastleAuxiliary, 5, [15]);
+        (Wyvern, 5, [16]);
+        (Creature17, 5, [17]);
         (FireflyFamily, 5, [19]);
         (Spider, 5, [20]);
         (Creature22, 5, [22]);
+        (Creature23, 5, [23]);
+        (Creature26, 5, [26]);
+        (Creature28, 5, [28]);
+        (Cymmerian, 5, [25]);
         (Creature24, 5, [24]);
         (ProjectileFamily, 9, [0, 1, 10, 13]);
-        (LightningProjectile, 9, [3]);
+        (MeteorProjectile, 9, [3]);
+        (Creature17Projectile, 9, [20]);
+        (SummonArmyProjectile, 9, [24]);
+        (DisasterSpellProjectile, 9, [2, 4, 5, 23]);
+        (FieldSpellProjectile, 9, [22, 26]);
+        (MagicMineProjectile, 9, [29]);
+        (AllianceProjectile, 9, [25]);
+        (LightningProjectile, 9, [9, 12]);
+        (LightningProjectile, 10, [23, 38]);
+        (Class10Effects, 10, [57]);
         (Model6ProjectileChild, 9, [14]);
         (ProjectileFamily, 9, [17, 28]);
         (SpiderWeb, 9, [21]);
@@ -433,14 +518,22 @@ compiled_registry! {
         (TerrainStripController, 10, [63, 64]);
         (CaveFeatures, 10, [80, 81, 82, 83, 84, 85, 86]);
         (CaveSpell, 10, [89]);
-        (TerrainDisasters, 10, [11]);
-        (Fields, 10, [34, 65, 66]);
+        (TerrainDisasters, 10, [9, 11, 15, 71]);
+        (Fields, 10, [34, 65, 66, 67, 74, 78]);
+        (DirectionalSpellProjectile, 9, [7, 8]);
+        (DirectionalSpellProjectile, 10, [25, 26]);
         (SwitchProducers, 11, [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 31]);
         (CountdownSwitch, 11, [13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44]);
         (ObjectiveSwitch, 11, [32]);
         (TerrainStripController, 14, [1, 2]);
         (Class14Events, 14, [3, 4, 5]);
-        (SpellHolderAndPickup, 15, [0, 1, 2, 3, 5, 6, 8, 9, 10, 11, 12, 25]);
+        (SpellHolderAndPickup, 15, [0, 1, 2, 3, 5, 6, 7, 8, 9, 10, 11, 12, 25]);
+        (SpellHolderAndPickup, 15, [15, 16, 17, 18]);
+        (SpellHolderAndPickup, 15, [20, 21]);
+        (SpellHolderAndPickup, 15, [22]);
+        (SpellHolderAndPickup, 15, [23, 24]);
+        (SpellHolderAndPickup, 15, [19]);
+        (SpellHolderAndPickup, 15, [13, 14]);
     }
 }
 
@@ -675,7 +768,7 @@ mod tests {
         let mut expected = BTreeMap::new();
         for (class, actions, handler) in [
             (2_u16, &[18_u16, 19][..], "mushrooms"),
-            (3_u16, &[2_u16, 3, 12][..], "player-flight"),
+            (3_u16, &[2_u16, 3, 11, 12][..], "player-flight"),
             (3, &[4, 6][..], "castle-root"),
             (5, &[1, 2, 3, 4, 5][..], "dragon-family"),
             (
@@ -687,8 +780,44 @@ mod tests {
             (5, &[8][..], "goat-family"),
             (5, &[32][..], "archer-family"),
             (5, &[160, 161, 162, 163, 164, 165, 167][..], "spider-family"),
+            (5, &[128, 129, 130, 131, 132, 133, 135][..], "wyvern-family"),
+            (
+                5,
+                &[136, 137, 138, 139, 140, 141, 143][..],
+                "creature17-family",
+            ),
+            (
+                5,
+                &[200, 201, 202, 203, 204, 205, 207][..],
+                "cymmerian-family",
+            ),
+            (
+                5,
+                &[184, 185, 186, 187, 188, 189, 191][..],
+                "creature23-family",
+            ),
+            (
+                5,
+                &[208, 209, 210, 211, 212, 213, 215][..],
+                "creature26-family",
+            ),
+            (
+                5,
+                &[224, 225, 226, 227, 228, 229, 231][..],
+                "creature28-family",
+            ),
             (9, &[22][..], "spider-web-projectile"),
-            (9, &[3][..], "lightning-projectile"),
+            (9, &[3][..], "meteor-projectile"),
+            (9, &[21][..], "creature17-projectile"),
+            (9, &[25][..], "summon-army-projectile"),
+            (15, &[57, 58, 59][..], "spell-holder-and-pickup-family"),
+            (10, &[79][..], "class10-effects"),
+            (9, &[2, 4, 5, 24][..], "disaster-spell-projectile"),
+            (9, &[23, 27][..], "field-spell-projectile"),
+            (9, &[9, 12, 14][..], "lightning-projectile"),
+            (9, &[29][..], "projectile-family"),
+            (10, &[23, 40][..], "lightning-projectile"),
+            (10, &[62][..], "class10-effects"),
             (
                 5,
                 &[120, 121, 122, 123, 124, 125, 127][..],
@@ -703,12 +832,28 @@ mod tests {
             (14, &[9][..], "level2-class14-events"),
             (
                 15,
-                &[15, 16, 17, 24, 25, 26, 27, 28, 29, 30, 31, 32, 75, 76, 77][..],
+                &[
+                    15, 16, 17, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 75, 76, 77,
+                ][..],
                 "spell-holder-and-pickup-family",
             ),
             (9, &[31][..], "cave-spell"),
-            (10, &[11][..], "terrain-disasters"),
-            (10, &[36, 37, 70, 71][..], "world-fields"),
+            (9, &[30][..], "magic-mine-projectile"),
+            (9, &[26][..], "alliance-projectile"),
+            (10, &[9, 11, 15, 78][..], "terrain-disasters"),
+            (
+                15,
+                &[
+                    45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 60, 61, 62, 63, 64, 65, 66, 67,
+                    68, 69, 70, 71, 72, 73, 74,
+                ][..],
+                "spell-holder-and-pickup-family",
+            ),
+            (
+                10,
+                &[36, 37, 70, 71, 72, 73, 74, 81, 85][..],
+                "world-fields",
+            ),
             (
                 5,
                 &[176, 177, 178, 179, 180, 181, 183][..],
@@ -738,6 +883,9 @@ mod tests {
             (10, &[68, 69][..], "terrain-strip-controller"),
             (10, &[87, 88, 89, 90, 91, 92, 93][..], "cave-features"),
             (10, &[94][..], "class10-effects"),
+            (9, &[7, 8][..], "directional-spell-projectile"),
+            (10, &[25, 26][..], "class10-effects"),
+            (15, &[39, 42][..], "spell-holder-and-pickup-family"),
             (10, &[96][..], "cave-spell"),
             (
                 11,
@@ -778,16 +926,42 @@ mod tests {
             ),
             (14, &[1, 2][..], "terrain-strip-controller"),
             (14, &[4][..], "level2-class14-events"),
-            (15, &[5, 8, 9, 10, 25][..], "spell-holder-and-pickup-family"),
+            (
+                15,
+                &[5, 7, 8, 9, 10, 25][..],
+                "spell-holder-and-pickup-family",
+            ),
             (9, &[30][..], "cave-spell"),
             (10, &[89][..], "cave-spell"),
-            (10, &[11][..], "terrain-disasters"),
-            (10, &[34, 65, 66][..], "world-fields"),
+            (10, &[9, 11, 15, 71][..], "terrain-disasters"),
+            (10, &[34, 65, 66, 67, 74, 78][..], "world-fields"),
+            (9, &[29][..], "magic-mine-projectile"),
+            (9, &[25][..], "alliance-projectile"),
+            (15, &[23, 24][..], "spell-holder-and-pickup-family"),
+            (9, &[7, 8][..], "directional-spell-projectile"),
+            (10, &[25, 26][..], "directional-spell-projectile"),
+            (15, &[13, 14][..], "spell-holder-and-pickup-family"),
             (5, &[22][..], "creature22-family"),
+            (5, &[23][..], "creature23-family"),
+            (5, &[26][..], "creature26-family"),
+            (5, &[28][..], "creature28-family"),
+            (5, &[25][..], "cymmerian-family"),
             (5, &[24][..], "creature24-family"),
             (5, &[20][..], "spider-family"),
+            (5, &[16][..], "wyvern-family"),
+            (5, &[17][..], "creature17-family"),
             (9, &[21][..], "spider-web-projectile"),
-            (9, &[3][..], "lightning-projectile"),
+            (9, &[3][..], "meteor-projectile"),
+            (9, &[20][..], "creature17-projectile"),
+            (9, &[24][..], "summon-army-projectile"),
+            (15, &[19][..], "spell-holder-and-pickup-family"),
+            (9, &[2, 4, 5, 23][..], "disaster-spell-projectile"),
+            (9, &[22, 26][..], "field-spell-projectile"),
+            (15, &[15, 16, 17, 18, 20, 21, 22][..], "spell-holder-and-pickup-family"),
+            (9, &[9, 12][..], "lightning-projectile"),
+            (9, &[28][..], "projectile-family"),
+            (10, &[23, 38][..], "lightning-projectile"),
+            (10, &[57][..], "class10-effects"),
         ] {
             for model in models {
                 expected.insert(format!("Constructor:ClassModel:{class}:{model}"), handler);
@@ -814,7 +988,9 @@ mod tests {
         assert_eq!(registry["action_dispatch_sites"][0], "ApplyEvents");
         assert_eq!(registry["action_dispatch_sites"][1], "UpdateEntities");
         assert_eq!(registry["constructor_dispatch_site"], "Constructor");
-        assert_eq!(CAMPAIGN_BEHAVIOR_REGISTRY.entries().len(), 632);
+        // 886 macro-generated keys plus the pinned TypeSubtype 10/45 entry
+        // composed explicitly after the constructor table.
+        assert_eq!(CAMPAIGN_BEHAVIOR_REGISTRY.entries().len(), 887);
         validate_against_source(CAMPAIGN_BEHAVIOR_REGISTRY.entries(), &source_keys)
             .expect("compiled entries retain exact pinned sites and selector shapes");
 
@@ -843,21 +1019,20 @@ mod tests {
                 Err(RegistryValidationError::UnknownImplementedKey(_))
             ));
         }
-        // Spider action166 has a table address but no source dispatcher case.
-        // A complete ordinary family must not silently turn it into a no-op.
-        for site in [DispatchSite::ApplyEvents, DispatchSite::UpdateEntities] {
-            let key = BehaviorKey {
-                dispatch_site: site.id(),
-                selector: BehaviorSelector::ClassAction {
-                    class: 5,
-                    action: 166,
-                },
-            };
-            assert!(CAMPAIGN_BEHAVIOR_REGISTRY.entry(&key).is_none());
-            assert!(matches!(
-                CAMPAIGN_BEHAVIOR_REGISTRY.validate_declared_closure(&BTreeSet::from([key])),
-                Err(RegistryValidationError::UnknownImplementedKey(_))
-            ));
+        // Wyvern134, model17/142, Spider166, model23/190 and model26/214 have table addresses but no pinned source
+        // dispatcher implementation. Neither may become an invented no-op.
+        for action in [134, 142, 166, 190, 206, 214, 230] {
+            for site in [DispatchSite::ApplyEvents, DispatchSite::UpdateEntities] {
+                let key = BehaviorKey {
+                    dispatch_site: site.id(),
+                    selector: BehaviorSelector::ClassAction { class: 5, action },
+                };
+                assert!(CAMPAIGN_BEHAVIOR_REGISTRY.entry(&key).is_none());
+                assert!(matches!(
+                    CAMPAIGN_BEHAVIOR_REGISTRY.validate_declared_closure(&BTreeSet::from([key])),
+                    Err(RegistryValidationError::UnknownImplementedKey(_))
+                ));
+            }
         }
         let compiled_keys = CAMPAIGN_BEHAVIOR_REGISTRY
             .entries()
@@ -929,7 +1104,7 @@ mod tests {
             );
         }
         expected_handlers.extend(supplemental_handlers);
-        assert_eq!(expected_handlers.len(), 632);
+        assert_eq!(expected_handlers.len(), 887);
 
         for entry in CAMPAIGN_BEHAVIOR_REGISTRY.entries() {
             assert_eq!(

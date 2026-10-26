@@ -2030,6 +2030,21 @@ impl GoatFamily {
         true
     }
 
+    /// Gravity's sub_3A200 writes an absolute accumulated bounty and owner,
+    /// independently of the ordinary/contact damage writer's replace rules.
+    pub(crate) fn set_gravity_bounty(&mut self, slot: u16, payload: i32, owner: u16) -> bool {
+        let Some(goat) = self
+            .goats
+            .iter_mut()
+            .find(|goat| goat.active && goat.entity_index == slot)
+        else {
+            return false;
+        };
+        goat.pending_damage = payload;
+        goat.pending_attacker = owner as i16;
+        true
+    }
+
     #[cfg(test)]
     pub fn replace_goat_for_test(&mut self, updated: GoatState) -> bool {
         let Some(index) = self
@@ -2040,6 +2055,32 @@ impl GoatFamily {
             return false;
         };
         self.goats[index] = updated;
+        true
+    }
+
+    /// Apply the fields written by Alliance's source impact to the live Goat
+    /// authority before its next scheduled visit.
+    pub(crate) fn sync_alliance_target(&mut self, row: &EntitySnapshot) -> bool {
+        if !row.active || row.class != GOAT_CLASS || row.model != GOAT_MODEL {
+            return false;
+        }
+        let Some(goat) = self.goats.iter_mut().find(|goat| {
+            goat.active && goat.entity_index == row.index && goat.source_id == row.source_id
+        }) else {
+            return false;
+        };
+        let bytes = row.record_bytes();
+        if bytes.len() < 156 {
+            return false;
+        }
+        goat.action = row.action;
+        goat.stage_var_1 = bytes[76] as i8;
+        goat.stage_var_2 = bytes[77] as i8;
+        goat.stage_target = read_u16(bytes, 78);
+        goat.parent_entity_index = read_u16(bytes, 44);
+        goat.lifetime = read_i16(bytes, 50);
+        goat.initial_lifetime = read_i16(bytes, 52);
+        goat.target_entity_index = relation_index(read_u16(bytes, 154));
         true
     }
 

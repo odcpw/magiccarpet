@@ -193,6 +193,37 @@ impl RuntimeFlowEntry {
     }
 }
 
+/// One optional secret mission reachable from an ordinary campaign mission.
+///
+/// The association is semantic package meaning. Source portal numbers and
+/// trigger actions stay inside the source adapter that produces the request.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct RuntimeFlowSecretEntry {
+    origin_level_id: SemanticLevelId,
+    secret_level_id: SemanticLevelId,
+}
+
+impl RuntimeFlowSecretEntry {
+    #[must_use]
+    pub const fn new(origin_level_id: SemanticLevelId, secret_level_id: SemanticLevelId) -> Self {
+        Self {
+            origin_level_id,
+            secret_level_id,
+        }
+    }
+
+    #[must_use]
+    pub const fn origin_level_id(&self) -> &SemanticLevelId {
+        &self.origin_level_id
+    }
+
+    #[must_use]
+    pub const fn secret_level_id(&self) -> &SemanticLevelId {
+        &self.secret_level_id
+    }
+}
+
 /// Closed ordered runtime-flow catalog plus the level bound by this one-level
 /// game definition.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -201,6 +232,8 @@ pub struct RuntimeFlowDefinition {
     bound_level_id: SemanticLevelId,
     entry_level_id: SemanticLevelId,
     entries: Vec<RuntimeFlowEntry>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    secret_entries: Vec<RuntimeFlowSecretEntry>,
     presentation: RuntimeFlowPresentationDefinition,
 }
 
@@ -211,6 +244,8 @@ struct RuntimeFlowDefinitionWire {
     bound_level_id: SemanticLevelId,
     entry_level_id: SemanticLevelId,
     entries: Vec<RuntimeFlowEntry>,
+    #[serde(default)]
+    secret_entries: Vec<RuntimeFlowSecretEntry>,
     presentation: RuntimeFlowPresentationDefinition,
 }
 
@@ -220,11 +255,12 @@ impl<'de> Deserialize<'de> for RuntimeFlowDefinition {
         D: Deserializer<'de>,
     {
         let wire = RuntimeFlowDefinitionWire::deserialize(deserializer)?;
-        Self::new(
+        Self::new_with_secret_entries(
             wire.game_id,
             wire.bound_level_id,
             wire.entry_level_id,
             wire.entries,
+            wire.secret_entries,
             wire.presentation,
         )
         .map_err(serde::de::Error::custom)
@@ -245,11 +281,42 @@ impl RuntimeFlowDefinition {
         entries: Vec<RuntimeFlowEntry>,
         presentation: RuntimeFlowPresentationDefinition,
     ) -> Result<Self> {
+        Self::new_with_secret_entries(
+            game_id,
+            bound_level_id,
+            entry_level_id,
+            entries,
+            Vec::new(),
+            presentation,
+        )
+    }
+
+    /// Construct a closed ordered ordinary flow plus its optional secret
+    /// mission associations.
+    ///
+    /// A package may bind either an ordinary entry or one of the declared
+    /// secret missions. Secret missions remain outside the ordinary frontier
+    /// and do not alter its linear completion edges.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for duplicate or dangling ordinary entries, invalid
+    /// secret associations, missing presentation bindings, cycles, skipped
+    /// ordinary entries, or a non-terminating ordinary flow.
+    pub fn new_with_secret_entries(
+        game_id: SemanticGameId,
+        bound_level_id: SemanticLevelId,
+        entry_level_id: SemanticLevelId,
+        entries: Vec<RuntimeFlowEntry>,
+        secret_entries: Vec<RuntimeFlowSecretEntry>,
+        presentation: RuntimeFlowPresentationDefinition,
+    ) -> Result<Self> {
         let flow = Self {
             game_id,
             bound_level_id,
             entry_level_id,
             entries,
+            secret_entries,
             presentation,
         };
         flow.verify()?;
@@ -277,24 +344,53 @@ impl RuntimeFlowDefinition {
     }
 
     #[must_use]
+    pub fn secret_entries(&self) -> &[RuntimeFlowSecretEntry] {
+        &self.secret_entries
+    }
+
+    #[must_use]
+    pub fn secret_entry(
+        &self,
+        secret_level_id: &SemanticLevelId,
+    ) -> Option<&RuntimeFlowSecretEntry> {
+        self.secret_entries
+            .iter()
+            .find(|entry| entry.secret_level_id() == secret_level_id)
+    }
+
+    #[must_use]
+    pub fn contains_level(&self, level_id: &SemanticLevelId) -> bool {
+        self.entries
+            .iter()
+            .any(|entry| entry.level_id() == level_id)
+            || self.secret_entry(level_id).is_some()
+    }
+
+    #[must_use]
     pub const fn presentation(&self) -> &RuntimeFlowPresentationDefinition {
         &self.presentation
     }
 
-    /// Whether this catalog retains the active campaign, optionally appending
-    /// missions before the same terminal destination. Existing levels, edges
-    /// and presentation cues stay identical; only the old terminal edge may
-    /// lead into the appended suffix. Bound levels are checked by the caller.
+    /// Whether this catalog retains the active campaign while appending ordinary
+    /// entries or secret associations. Existing entries, associations, edges,
+    /// and presentation cues stay identical; only the old terminal edge may lead
+    /// into an appended ordinary suffix. Bound levels are checked by the caller.
     #[must_use]
     pub fn continues_catalog(&self, previous: &Self) -> bool {
         if self.game_id != previous.game_id
             || self.entry_level_id != previous.entry_level_id
             || self.presentation.title_cue != previous.presentation.title_cue
+            || self.secret_entries.len() < previous.secret_entries.len()
+            || self.secret_entries[..previous.secret_entries.len()] != previous.secret_entries
         {
             return false;
         }
         if self.entries == previous.entries {
-            return self.presentation == previous.presentation;
+            return previous
+                .presentation
+                .entries
+                .iter()
+                .all(|entry| self.presentation.entry(entry.level_id()) == Some(entry));
         }
         let count = previous.entries.len();
         if count == 0 || self.entries.len() <= count {
@@ -331,50 +427,61 @@ impl RuntimeFlowDefinition {
                 "runtime flow title presentation must use the engine-owned campaign title slot",
             ));
         }
-        if self.presentation.entries.len() != self.entries.len() {
+        if self.presentation.entries.len() != self.entries.len() + self.secret_entries.len() {
             return Err(flow_error(
                 "runtime_flow.presentation.entries",
-                "presentation bindings must cover every playable runtime-flow entry exactly once",
+                "presentation bindings must cover every ordinary and secret runtime-flow entry exactly once",
             ));
         }
-        let mut presentation_ids = BTreeSet::new();
+        let mut presentation_ids: BTreeSet<&SemanticLevelId> = BTreeSet::new();
         for presentation in &self.presentation.entries {
-            if !presentation_ids.insert(presentation.level_id.clone()) {
+            if !presentation_ids.insert(presentation.level_id()) {
                 return Err(flow_error(
                     presentation.level_id.as_str(),
                     "presentation bindings duplicate a semantic level",
                 ));
             }
-            if !self
-                .entries
-                .iter()
-                .any(|entry| entry.level_id() == presentation.level_id())
-            {
+            if !self.contains_level(presentation.level_id()) {
                 return Err(flow_error(
                     presentation.level_id.as_str(),
                     "presentation binding names a level absent from the runtime flow",
                 ));
             }
         }
-        let mut ids = BTreeSet::new();
+        let mut ids: BTreeSet<&SemanticLevelId> = BTreeSet::new();
         for entry in &self.entries {
-            if !ids.insert(entry.level_id.clone()) {
+            if !ids.insert(entry.level_id()) {
                 return Err(flow_error(
                     entry.level_id.as_str(),
                     "runtime flow level ID is duplicated",
                 ));
             }
         }
-        if !ids.contains(&self.bound_level_id) {
-            return Err(flow_error(
-                self.bound_level_id.as_str(),
-                "bound semantic level is absent from the runtime flow",
-            ));
+        let ordinary_ids = ids.clone();
+        for entry in &self.secret_entries {
+            if !ordinary_ids
+                .iter()
+                .any(|level_id| *level_id == entry.origin_level_id())
+            {
+                return Err(flow_error(
+                    entry.origin_level_id().as_str(),
+                    "secret mission origin is absent from the ordinary runtime flow",
+                ));
+            }
+            if !ids.insert(entry.secret_level_id()) {
+                return Err(flow_error(
+                    entry.secret_level_id().as_str(),
+                    "secret mission duplicates an ordinary or secret level ID",
+                ));
+            }
         }
-        if !ids.contains(&self.entry_level_id) {
+        if !ordinary_ids
+            .iter()
+            .any(|level_id| *level_id == &self.entry_level_id)
+        {
             return Err(flow_error(
                 self.entry_level_id.as_str(),
-                "runtime flow entry level is absent",
+                "runtime flow entry level is absent from the ordinary campaign",
             ));
         }
         if self.entries[0].level_id != self.entry_level_id {
@@ -385,7 +492,7 @@ impl RuntimeFlowDefinition {
         }
         for entry in &self.entries {
             if let RuntimeFlowDestination::Level { level_id } = &entry.completion_destination
-                && !ids.contains(level_id)
+                && !ordinary_ids.iter().any(|entry_id| *entry_id == level_id)
             {
                 return Err(flow_error(
                     level_id.as_str(),
@@ -397,7 +504,7 @@ impl RuntimeFlowDefinition {
         let mut visited = BTreeSet::new();
         let mut current = &self.entry_level_id;
         loop {
-            if !visited.insert(current.clone()) {
+            if !visited.insert(current) {
                 return Err(flow_error(
                     current.as_str(),
                     "runtime flow contains a cycle",
@@ -440,6 +547,12 @@ impl RuntimeFlowDefinition {
             return Err(flow_error(
                 "runtime_flow.entries",
                 "final runtime flow entry must return to Title",
+            ));
+        }
+        if !ids.iter().any(|level_id| *level_id == &self.bound_level_id) {
+            return Err(flow_error(
+                self.bound_level_id.as_str(),
+                "bound semantic level is absent from the ordinary and secret runtime flow",
             ));
         }
         Ok(())
@@ -522,6 +635,28 @@ mod tests {
         .unwrap()
     }
 
+    fn flow_with_one_secret(bound_level_id: SemanticLevelId) -> RuntimeFlowDefinition {
+        let ordinary = valid_flow();
+        let secret = level("level.magic_carpet_2.secret_fixture");
+        let mut presentations = ordinary.presentation().entries().to_vec();
+        presentations.extend(presentation(&[secret.as_str()]).entries().iter().cloned());
+        RuntimeFlowDefinition::new_with_secret_entries(
+            ordinary.game_id().clone(),
+            bound_level_id,
+            ordinary.entry_level_id().clone(),
+            ordinary.entries().to_vec(),
+            vec![RuntimeFlowSecretEntry::new(
+                level("level.magic_carpet_2.payahandra_ruins"),
+                secret,
+            )],
+            RuntimeFlowPresentationDefinition::new(
+                ordinary.presentation().title_cue().clone(),
+                presentations,
+            ),
+        )
+        .unwrap()
+    }
+
     #[test]
     fn catalog_extension_preserves_prior_edges_cues_and_terminal() {
         let previous = valid_flow();
@@ -571,6 +706,81 @@ mod tests {
         changed_game.game_id = SemanticGameId::parse("game.another_campaign").unwrap();
         changed_game.verify().unwrap();
         assert!(!changed_game.continues_catalog(&previous));
+    }
+
+    #[test]
+    fn secret_missions_are_closed_associations_outside_the_ordinary_frontier() {
+        let secret = level("level.magic_carpet_2.secret_fixture");
+        let flow = flow_with_one_secret(secret.clone());
+        assert_eq!(flow.entries().len(), 3);
+        assert_eq!(flow.secret_entries().len(), 1);
+        assert!(flow.contains_level(&secret));
+        assert_eq!(
+            flow.secret_entry(&secret)
+                .unwrap()
+                .origin_level_id()
+                .as_str(),
+            "level.magic_carpet_2.payahandra_ruins"
+        );
+        assert_eq!(
+            flow.bound_level_id(),
+            &secret,
+            "secret packages bind the associated secret ID without joining the ordinary frontier"
+        );
+        assert!(flow.continues_catalog(&valid_flow()));
+        assert!(!valid_flow().continues_catalog(&flow));
+        assert_eq!(
+            serde_json::from_str::<RuntimeFlowDefinition>(&serde_json::to_string(&flow).unwrap())
+                .unwrap(),
+            flow
+        );
+
+        let ordinary = valid_flow();
+        let mut presentations = ordinary.presentation().entries().to_vec();
+        presentations.extend(presentation(&[secret.as_str()]).entries().iter().cloned());
+        let secret_presentation = RuntimeFlowPresentationDefinition::new(
+            ordinary.presentation().title_cue().clone(),
+            presentations,
+        );
+        let missing_origin = RuntimeFlowDefinition::new_with_secret_entries(
+            ordinary.game_id().clone(),
+            ordinary.bound_level_id().clone(),
+            ordinary.entry_level_id().clone(),
+            ordinary.entries().to_vec(),
+            vec![RuntimeFlowSecretEntry::new(
+                level("level.magic_carpet_2.not_in_campaign"),
+                secret.clone(),
+            )],
+            secret_presentation.clone(),
+        );
+        assert!(missing_origin.is_err());
+
+        let duplicated_secret = RuntimeFlowDefinition::new_with_secret_entries(
+            ordinary.game_id().clone(),
+            ordinary.bound_level_id().clone(),
+            ordinary.entry_level_id().clone(),
+            ordinary.entries().to_vec(),
+            vec![RuntimeFlowSecretEntry::new(
+                ordinary.entry_level_id().clone(),
+                ordinary.entry_level_id().clone(),
+            )],
+            RuntimeFlowPresentationDefinition::new(
+                ordinary.presentation().title_cue().clone(),
+                ordinary
+                    .presentation()
+                    .entries()
+                    .iter()
+                    .cloned()
+                    .chain(
+                        presentation(&[ordinary.entry_level_id().as_str()])
+                            .entries()
+                            .iter()
+                            .cloned(),
+                    )
+                    .collect(),
+            ),
+        );
+        assert!(duplicated_secret.is_err());
     }
 
     #[test]

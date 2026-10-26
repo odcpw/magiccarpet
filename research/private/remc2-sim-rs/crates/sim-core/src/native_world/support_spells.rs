@@ -1,17 +1,105 @@
 //! Lossless MC2 holder adapter for the support spell behavior owner.
 
-use super::{EntitySnapshot, Level2SharedSpellResetSession, RenderableMapSeed};
-use crate::Position;
+use super::{EntitySnapshot, Level2SharedSpellResetSession, RenderableMapSeed, SessionTerrain};
 use crate::campaign::{source_arena::SourceArena, state::CanonicalRuntimeState};
 use crate::spell_activation::{level2_set_spell_profile, support_spell_rule};
 use crate::spells::support::{
     SupportSpellHolder, SupportSpellPlayer, SupportSpellSound, SupportSpellStep, TeleportCastles,
 };
+use crate::{FlightWorld, Position};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct ReboundReflection {
     pub target_slot: u16,
     pub mana_after: i32,
+}
+
+/// The shared detached holder callback, source sub_692C0/sub_59DC0.
+/// Parent and thief are current fixed-address views, read after the producer
+/// has committed its source mutations. The ordinary scheduler owns phase.
+pub(crate) fn step_detached_holder<W: FlightWorld>(
+    holder: &mut EntitySnapshot,
+    parent: &EntitySnapshot,
+    thief: &EntitySnapshot,
+    terrain: &W,
+) -> Result<(), String> {
+    if holder.class != 15 || holder.model >= 26 || holder.action != 78 {
+        return Err("detached spell callback requires class15/action78".to_owned());
+    }
+    let mut complete = parent.life < 0 || parent.control_flags & 0x400 != 0;
+    if !complete {
+        let counter = holder.source_dword_10();
+        if counter <= 5 {
+            let mut position = parent.position;
+            holder.set_yaw(parent.yaw);
+            holder.set_pitch(parent.pitch);
+            crate::move_entity(
+                &mut position,
+                parent.yaw,
+                parent.pitch.wrapping_sub((counter as i16).wrapping_mul(16)),
+                384,
+            );
+            holder.set_position(position);
+        } else if thief.life < 0 || thief.control_flags & 0x400 != 0 {
+            complete = true;
+        } else {
+            let mut target = thief.position;
+            crate::move_entity(&mut target, thief.yaw, 0, 384);
+            let (yaw, pitch) =
+                crate::level1_mission::projectile_guidance_angles(holder.position, target);
+            let mut position = holder.position;
+            let speed = counter.wrapping_sub(5).wrapping_mul(32) as i16;
+            crate::move_entity(&mut position, yaw, pitch, speed);
+            let ground = terrain.ground_height(position);
+            if i32::from(position.z) < i32::from(ground) + 64 {
+                position.z = ground;
+                complete = true;
+            }
+            holder.set_position(position);
+        }
+        holder.set_source_dword_10(counter.wrapping_add(1));
+    }
+    if complete {
+        holder.set_source_action(holder.model * 3 + 1);
+        holder.record[42..44].copy_from_slice(&0_u16.to_le_bytes());
+        holder.set_control_flags(holder.control_flags | 0x0200_0000);
+    }
+    Ok(())
+}
+
+/// Commit the detached callback against the same holder and map carriers as
+/// ordinary pickup/acquisition. No parallel spell state is retained here.
+pub(crate) fn step_detached_source_slot(
+    shared: &mut Level2SharedSpellResetSession,
+    arena: &mut SourceArena,
+    terrain: &mut SessionTerrain,
+    source_slot: u16,
+) -> Result<(), String> {
+    let mut holder = shared
+        .pickup(source_slot)
+        .filter(|row| row.active && row.class == 15 && row.action == 78)
+        .cloned()
+        .ok_or_else(|| format!("detached holder {source_slot} is not retained"))?;
+    let parent_slot = holder.source_spell_parent_entity_index();
+    let thief_slot = u16::from_le_bytes([holder.record[42], holder.record[43]]);
+    let parent = arena
+        .entities
+        .get(usize::from(parent_slot))
+        .ok_or("detached holder parent address is outside arena")?;
+    let thief = arena
+        .entities
+        .get(usize::from(thief_slot))
+        .ok_or("detached holder thief address is outside arena")?;
+    step_detached_holder(&mut holder, parent, thief, terrain)?;
+    shared.sync_pickup_from_authority(&holder);
+    if let Some(raw) = arena
+        .entities
+        .get_mut(usize::from(source_slot))
+        .filter(|row| row.active && row.class == 15)
+    {
+        *raw = holder.clone();
+    }
+    crate::world::effects::sync_position(arena, terrain, source_slot, holder.position, true, false)
 }
 
 pub(super) fn commit_reflection(
@@ -345,10 +433,105 @@ pub(super) fn step_source_slot(
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use crate::PlayerCommand;
     use crate::level1_mission::parse_authored_features;
     use crate::native_world::{Mc2DispatchEvent, NativeWorld};
     use std::path::PathBuf;
+
+    struct DetachedGround;
+
+    impl FlightWorld for DetachedGround {
+        fn ground_height(&self, _: Position) -> i16 {
+            0
+        }
+        fn ceiling_height(&self, _: Position) -> Option<i16> {
+            None
+        }
+        fn material_mask(&self, _: Position) -> u32 {
+            1
+        }
+        fn angle_flags(&self, _: crate::Tile) -> u8 {
+            0
+        }
+    }
+
+    fn detached_holder() -> EntitySnapshot {
+        let mut row = crate::native_world::cave_features::new_event(
+            3,
+            7,
+            Position {
+                x: 4096,
+                y: 4096,
+                z: 1000,
+            },
+        );
+        row.class = 15;
+        row.model = 8;
+        row.set_source_action(78);
+        row.record[42..44].copy_from_slice(&2_u16.to_le_bytes());
+        row
+    }
+
+    #[test]
+    fn detached_holder_orbits_parent_before_chasing_thief() {
+        let mut holder = detached_holder();
+        let mut parent = holder.clone();
+        parent.set_yaw(512);
+        parent.set_pitch(64);
+        let thief = parent.clone();
+        for counter in 0..=5 {
+            let mut expected = parent.position;
+            crate::move_entity(&mut expected, parent.yaw, parent.pitch - counter * 16, 384);
+            step_detached_holder(&mut holder, &parent, &thief, &DetachedGround).unwrap();
+            assert_eq!(holder.position, expected);
+            assert_eq!(holder.source_dword_10(), i32::from(counter + 1));
+            assert_eq!((holder.yaw, holder.pitch, holder.action), (512, 64, 78));
+        }
+        let before = holder.position;
+        let mut target = thief.position;
+        crate::move_entity(&mut target, thief.yaw, 0, 384);
+        let (yaw, pitch) = crate::level1_mission::projectile_guidance_angles(before, target);
+        let mut expected = before;
+        crate::move_entity(&mut expected, yaw, pitch, 32);
+        step_detached_holder(&mut holder, &parent, &thief, &DetachedGround).unwrap();
+        assert_eq!(holder.position, expected);
+        assert_eq!(holder.source_dword_10(), 7);
+        assert_eq!(holder.action, 78);
+    }
+
+    #[test]
+    fn detached_holder_returns_on_parent_thief_or_ground_boundary() {
+        let parent = detached_holder();
+        let mut thief = parent.clone();
+        thief.set_life(-1);
+        let mut holder = detached_holder();
+        holder.set_source_dword_10(6);
+        step_detached_holder(&mut holder, &parent, &thief, &DetachedGround).unwrap();
+        assert_eq!(holder.source_dword_10(), 7);
+        assert_eq!(holder.action, 25);
+        assert_eq!(&holder.record[42..44], &[0, 0]);
+        assert_ne!(holder.control_flags & 0x0200_0000, 0);
+
+        let mut dead_parent = parent.clone();
+        dead_parent.set_life(-1);
+        let mut holder = detached_holder();
+        holder.set_source_dword_10(6);
+        step_detached_holder(&mut holder, &dead_parent, &parent, &DetachedGround).unwrap();
+        assert_eq!(holder.source_dword_10(), 6);
+        assert_eq!(holder.action, 25);
+
+        let mut holder = detached_holder();
+        holder.set_source_dword_10(6);
+        holder.set_position(Position {
+            z: 20,
+            ..parent.position
+        });
+        step_detached_holder(&mut holder, &parent, &parent, &DetachedGround).unwrap();
+        assert_eq!(holder.position.z, 0);
+        assert_eq!(holder.source_dword_10(), 7);
+        assert_eq!(holder.action, 25);
+    }
 
     #[test]
     fn owner_support_pickups_cast_through_numeric_scheduler_and_player_consumers() {
@@ -589,6 +772,8 @@ mod tests {
                             source_mana: 1_000,
                             source_dword_0x10: 0,
                             target_source_entity_index: owner,
+                            target_class: 0,
+                            target_model: 0,
                         },
                         0,
                     )

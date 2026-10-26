@@ -13,17 +13,21 @@ use crate::{
     native_world::{Mc2DispatchEvent, NativeWorld, NativeWorldError, NativeWorldInspection},
 };
 
+pub(crate) mod authored_spawn;
 pub mod backend;
 pub(crate) mod completion_statistics;
 pub mod dispatch;
 pub mod journal;
 pub(crate) mod mc2_level_definition;
+pub(crate) mod mc2_secret_flow;
 pub mod objective_speech;
 pub mod objectives;
 pub mod schedule;
 #[doc(hidden)]
 pub mod source_arena;
 pub mod source_facts;
+pub(crate) mod source_player_result;
+pub(crate) mod source_setting;
 pub mod spec;
 pub(crate) mod sprite_render;
 pub mod state;

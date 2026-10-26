@@ -3344,6 +3344,27 @@ impl Level2EconomyState {
         source
     }
 
+    /// Final encounter phase12 calls AddMeteor_4ED70 and then overwrites the
+    /// same typed source carrier. The caller owns NewEvent and map publication.
+    pub(crate) fn initialize_boss_meteor(
+        &mut self,
+        source_entity_index: u16,
+        position: Position,
+        owner: u16,
+    ) -> Level2AuthoredModel17Source {
+        self.initialize_authored_model17(source_entity_index, u16::MAX, position);
+        let source = self
+            .authored_model17
+            .last_mut()
+            .expect("model17 initializer publishes its new source row");
+        source.position.z = 0;
+        source.life = 70;
+        source.max_life = 70;
+        source.entity_id = owner;
+        self.source_owner.insert(source_entity_index, owner);
+        *source
+    }
+
     /// Advance one authored Meteor through pinned `sub_32880`.  SEARCH.DAT
     /// shape 0 is the four-cell 2x2 kernel centered at (15,15); the source's
     /// iterator executes the first three cells because its return value is
@@ -4532,6 +4553,32 @@ impl Level2EconomyState {
         self.castle
     }
 
+    /// Resolve a live Castle by its source slot, rather than assuming that
+    /// the local player's Castle is the target of every world interaction.
+    pub(crate) fn castle_at(&self, slot: u16) -> Option<&Level2CastleState> {
+        self.castle_entry(slot).filter(|castle| castle.active)
+    }
+
+    pub(crate) fn castle_at_mut(&mut self, slot: u16) -> Option<&mut Level2CastleState> {
+        self.castle_entry_mut(slot).filter(|castle| castle.active)
+    }
+
+    pub(super) fn castle_entry(&self, slot: u16) -> Option<&Level2CastleState> {
+        self.castle
+            .as_ref()
+            .filter(|castle| castle.source_entity_index == slot)
+    }
+
+    pub(super) fn castle_entry_mut(&mut self, slot: u16) -> Option<&mut Level2CastleState> {
+        self.castle
+            .as_mut()
+            .filter(|castle| castle.source_entity_index == slot)
+    }
+
+    pub(crate) fn live_castles(&self) -> impl Iterator<Item = &Level2CastleState> {
+        self.castle.iter().filter(|castle| castle.active)
+    }
+
     #[cfg(test)]
     pub(crate) fn set_castle_mana_prerequisite_for_test(
         &mut self,
@@ -4666,7 +4713,7 @@ impl Level2EconomyState {
                 Level2DynamicArenaKind::PossessionEffect,
             );
         }
-        if let Some(castle) = self.castle.filter(|castle| castle.active) {
+        for castle in self.live_castles() {
             visit(
                 castle.source_entity_index,
                 Level2DynamicArenaKind::CastleRoot,
@@ -5070,8 +5117,7 @@ impl Level2EconomyState {
             }
             Level2DynamicArenaKind::PossessionEffect => selector!(self.possession_effects),
             Level2DynamicArenaKind::CastleRoot => self
-                .castle
-                .filter(|row| row.active && row.source_entity_index == source_slot)
+                .castle_at(source_slot)
                 .map(|row| (row.source_class, row.action)),
             Level2DynamicArenaKind::CastleChild
             | Level2DynamicArenaKind::CastleDefender
@@ -5310,7 +5356,7 @@ impl Level2EconomyState {
             .map(|row| row.source_entity_index)
             .collect::<BTreeSet<_>>();
         let mut active_dynamic_source_slots = BTreeSet::new();
-        if let Some(castle) = self.castle.filter(|castle| castle.active) {
+        for castle in self.live_castles() {
             active_dynamic_source_slots.insert(castle.source_entity_index);
         }
         active_dynamic_source_slots.extend(
@@ -5346,7 +5392,8 @@ impl Level2EconomyState {
             imported_source_slots.contains(&row.source_entity_index)
                 || active_dynamic_source_slots.contains(&row.source_entity_index)
         });
-        if let Some(castle) = self.castle.filter(|castle| castle.active) {
+        let castles = self.live_castles().copied().collect::<Vec<_>>();
+        for castle in castles {
             self.install_owner_mana_row(
                 castle.source_entity_index,
                 castle.source_class,
@@ -6651,12 +6698,15 @@ impl Level2EconomyState {
                 }
                 BeeCreatureOrigin::AuthoredRecord { authored_index } => {
                     // Preserve the established authored-Bee hash stream
-                    // byte-for-byte. Package identity already proves this
-                    // origin; only Morph needs an added discriminator.
+                    // byte-for-byte; spell-created origins carry markers.
                     hasher.update(authored_index.to_le_bytes());
                 }
                 BeeCreatureOrigin::MorphSpell { holder_slot } => {
                     hasher.update(b"morph-bee-origin-v1");
+                    hasher.update(holder_slot.to_le_bytes());
+                }
+                BeeCreatureOrigin::SummonedSpell { holder_slot } => {
+                    hasher.update(b"summoned-spell-bee-origin-v1");
                     hasher.update(holder_slot.to_le_bytes());
                 }
             }
@@ -7277,6 +7327,15 @@ impl Level2EconomyState {
             hasher.update(state.stage_target.y.to_le_bytes());
             hasher.update(state.stage_target.z.to_le_bytes());
             hasher.update([u8::from(state.movement_blocked)]);
+            if state.parent_entity_index != 0 || state.word_0x2e != 0 {
+                hasher.update(b"firefly-parent-countdown-v1");
+                hasher.update(state.parent_entity_index.to_le_bytes());
+                hasher.update(state.word_0x2e.to_le_bytes());
+            }
+            if let Some(authored_index) = state.authored_index {
+                hasher.update(b"firefly-authored-origin-v1");
+                hasher.update(authored_index.to_le_bytes());
+            }
         }
         hasher.update(b"authored-dragon-v2");
         for state in &self.authored_dragons {
@@ -7535,9 +7594,25 @@ impl Level2EconomyState {
                 FireballProjectileOrigin::Worm => {
                     hasher.update(b"worm-fireball-origin-v1");
                 }
+                FireballProjectileOrigin::Wyvern => {
+                    hasher.update(b"wyvern-fireball-origin-v1");
+                }
+                FireballProjectileOrigin::Creature21 => {
+                    hasher.update(b"creature21-fireball-origin-v1");
+                }
+                FireballProjectileOrigin::Cymmerian => {
+                    hasher.update(b"cymmerian-fireball-origin-v1");
+                }
+                FireballProjectileOrigin::Creature18 => {
+                    hasher.update(b"creature18-fireball-origin-v1");
+                }
                 FireballProjectileOrigin::Eruption => {
                     hasher.update(b"eruption-fireball-origin-v1");
                 }
+            }
+            if projectile.target_class != 0 || projectile.target_model != 0 {
+                hasher.update(b"fireball-target-selector-v1");
+                hasher.update([projectile.target_class, projectile.target_model]);
             }
             hasher.update(projectile.source_entity_index.to_le_bytes());
             hasher.update(projectile.entity_rng.to_le_bytes());
@@ -7920,6 +7995,31 @@ mod source_effect_allocator_tests {
             .join("../../../generated/mc-cf02-campaign-package-v2-b/qualified-level2");
         let session = CampaignSession::open(path, CampaignSelection::LEVEL2).unwrap();
         session.simulation().source_arena().clone()
+    }
+
+    #[test]
+    fn firefly_parent_and_countdown_change_reset_state() {
+        let mut arena = arena();
+        let state = *arena
+            .economy
+            .authored_fireflies
+            .first()
+            .expect("actual Level2 reset retains typed Fireflies");
+        let original = arena.economy.reset_hash();
+        arena.economy.authored_fireflies[0].parent_entity_index =
+            state.parent_entity_index.wrapping_add(1);
+        assert_ne!(arena.economy.reset_hash(), original);
+        arena.economy.authored_fireflies[0] = state;
+        assert_eq!(arena.economy.reset_hash(), original);
+        arena.economy.authored_fireflies[0].word_0x2e = state.word_0x2e.wrapping_add(1);
+        assert_ne!(arena.economy.reset_hash(), original);
+        arena.economy.authored_fireflies[0] = state;
+        assert_eq!(arena.economy.reset_hash(), original);
+        arena.economy.authored_fireflies[0].authored_index =
+            Some(state.authored_index.unwrap_or(0).wrapping_add(1));
+        assert_ne!(arena.economy.reset_hash(), original);
+        arena.economy.authored_fireflies[0] = state;
+        assert_eq!(arena.economy.reset_hash(), original);
     }
 
     fn raw_effect(arena: &mut crate::campaign::source_arena::SourceArena) -> u16 {

@@ -93,7 +93,7 @@ impl NeutralSession {
                 write_json(&session.snapshot(), buffer, capacity, out_length)
             }
             Self::Runtime(runtime) => {
-                write_json(&runtime.session()?.snapshot(), buffer, capacity, out_length)
+                write_json(&runtime.campaign_snapshot()?, buffer, capacity, out_length)
             }
         }
     }

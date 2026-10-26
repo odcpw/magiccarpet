@@ -41,13 +41,6 @@ namespace MagicCarpet.Native
         { public string operation = "install"; public string profile_dir; }
         [Serializable] private sealed class ApplyCommand
         { public string operation = "apply"; public PlayerPreferences preferences; }
-        [Serializable] private sealed class PreviewAudioCommand
-        {
-            public string operation = "preview_audio";
-            public bool sound_enabled, music_enabled, speech_enabled;
-            public int sound_volume, music_volume;
-        }
-
         internal struct InputFrame
         {
             internal bool Forward, Backward, Left, Right;
@@ -57,8 +50,11 @@ namespace MagicCarpet.Native
 
         private readonly Func<string, PlayerPreferencesSnapshot> command;
         private PlayerPreferences draft;
-        private Vector2 scroll;
+        private readonly SourceSettingsDialog sourceSettingsDialog = new();
+        private SourceSettingsDialog.Page page = SourceSettingsDialog.Page.Keys;
+        private int selectedKeySlot;
         private int captureKey = -1;
+        private bool keyCaptureRejected;
         private string status;
         private float roll, pitch;
         private bool fullscreenApplied;
@@ -98,10 +94,16 @@ namespace MagicCarpet.Native
             }
         }
 
-        internal void Open()
+        internal void Open() => Open(SourceSettingsDialog.Page.Keys);
+
+        internal void Open(SourceSettingsDialog.Page requestedPage)
         {
             draft = JsonUtility.FromJson<PlayerPreferences>(JsonUtility.ToJson(Current.preferences));
-            captureKey = -1;
+            page = requestedPage;
+            sourceSettingsDialog.Open(requestedPage);
+            selectedKeySlot = 0;
+            captureKey = requestedPage == SourceSettingsDialog.Page.Keys ? 0 : -1;
+            keyCaptureRejected = false;
             status = null;
         }
 
@@ -112,20 +114,28 @@ namespace MagicCarpet.Native
             // Closing is always possible, including an unavailable transport.
             draft = null;
             captureKey = -1;
+            keyCaptureRejected = false;
+            sourceSettingsDialog.Close();
         }
 
         internal bool Apply()
         {
-            if (draft == null) return false;
+            if (draft == null || keyCaptureRejected) return false;
             try
             {
                 Synchronize(command(JsonUtility.ToJson(new ApplyCommand { preferences = draft })));
                 draft = null;
                 captureKey = -1;
+                sourceSettingsDialog.Close();
                 Debug.Log($"MC_PREFERENCES_APPLIED player={Current.preferences.player_name} forward={Current.preferences.keys[0]} sound={Current.preferences.sound_volume} help={Current.preferences.show_help}");
                 return true;
             }
-            catch (Exception error) { status = error.Message; return false; }
+            catch (Exception error)
+            {
+                sourceSettingsDialog.RestoreCursor();
+                status = error.Message;
+                return false;
+            }
         }
 
         internal bool ApplySource(Action<PlayerPreferences> change)
@@ -152,16 +162,66 @@ namespace MagicCarpet.Native
             if (draft == null) throw new InvalidOperationException("preferences are not open");
             if (slot < 0 || slot >= draft.keys.Length) throw new ArgumentOutOfRangeException(nameof(slot));
             captureKey = slot;
+            keyCaptureRejected = false;
+            status = null;
         }
 
         internal bool CaptureKey(Event input)
         {
             if (captureKey < 0 || input.type != EventType.KeyDown) return false;
-            if (input.keyCode != KeyCode.Escape) draft.keys[captureKey] = input.keyCode.ToString();
-            captureKey = -1;
+            if (input.keyCode == KeyCode.Escape)
+            {
+                captureKey = -1;
+                keyCaptureRejected = false;
+                status = null;
+                input.Use();
+                return true;
+            }
+            var slot = captureKey;
+            if (!IsSupportedPreferenceKey(input.keyCode))
+            {
+                keyCaptureRejected = true;
+                status = "That key is not available in the source settings.";
+                input.Use();
+                return true;
+            }
+            var key = input.keyCode.ToString();
+            if (slot < 4 && (input.keyCode is KeyCode.C or KeyCode.L or KeyCode.Space))
+            {
+                keyCaptureRejected = true;
+                status = "That key conflicts with a reserved control.";
+                input.Use();
+                return true;
+            }
+            var duplicate = false;
+            for (var index = 0; index < draft.keys.Length; index++)
+                if (index != slot && string.Equals(draft.keys[index], key, StringComparison.OrdinalIgnoreCase) &&
+                    (slot != 6 || index < 4))
+                { duplicate = true; break; }
+            if (duplicate)
+            {
+                keyCaptureRejected = true;
+                status = "That key is already assigned to another control.";
+                input.Use();
+                return true;
+            }
+            draft.keys[slot] = key;
+            keyCaptureRejected = false;
+            selectedKeySlot = Math.Min(slot + 1, draft.keys.Length - 1);
+            captureKey = slot + 1 < draft.keys.Length ? slot + 1 : -1;
+            status = null;
             input.Use();
             return true;
         }
+
+        private static bool IsSupportedPreferenceKey(KeyCode key) => key is
+            KeyCode.A or KeyCode.B or KeyCode.C or KeyCode.D or KeyCode.E or KeyCode.F or
+            KeyCode.G or KeyCode.H or KeyCode.I or KeyCode.J or KeyCode.K or KeyCode.L or
+            KeyCode.M or KeyCode.N or KeyCode.O or KeyCode.Q or KeyCode.S or KeyCode.T or
+            KeyCode.U or KeyCode.V or KeyCode.W or KeyCode.X or KeyCode.Y or KeyCode.Z or
+            KeyCode.UpArrow or KeyCode.DownArrow or KeyCode.LeftArrow or KeyCode.RightArrow or
+            KeyCode.Return or KeyCode.Space or KeyCode.LeftControl or KeyCode.RightControl or
+            KeyCode.LeftShift or KeyCode.RightShift or KeyCode.LeftAlt or KeyCode.RightAlt;
 
         internal bool Held(int slot) => Enum.TryParse<KeyCode>(Current.preferences.keys[slot], out var key) && Input.GetKey(key);
         internal bool Pressed(int slot) => Enum.TryParse<KeyCode>(Current.preferences.keys[slot], out var key) && Input.GetKeyDown(key);
@@ -211,84 +271,32 @@ namespace MagicCarpet.Native
             return frame;
         }
 
-        internal void Draw()
+        internal void Draw(OwnerCampaignMenuCache cache)
         {
             if (!IsOpen) return;
-            // A focused TextField consumes character keys during GUILayout.
-            // Capture first so rebinding cannot edit the player's name instead.
-            CaptureKey(Event.current);
-            var width = Mathf.Min(660, Screen.width - 24);
-            var height = Mathf.Min(680, Screen.height - 24);
-            var rect = new Rect((Screen.width - width) / 2, (Screen.height - height) / 2, width, height);
-            GUI.Box(rect, "Player preferences");
-            var content = new Rect(rect.x + 12, rect.y + 28, rect.width - 24, rect.height - 90);
-            GUILayout.BeginArea(content);
-            scroll = GUILayout.BeginScrollView(scroll);
-            GUILayout.Label("Player name (12 characters)");
-            draft.player_name = GUILayout.TextField(draft.player_name, 12);
-            GUILayout.Label("Input device");
-            GUILayout.BeginHorizontal();
-            if (GUILayout.Toggle(draft.input_device == "mouse_keyboard", "Mouse + keyboard")) draft.input_device = "mouse_keyboard";
-            if (GUILayout.Toggle(draft.input_device == "keyboard", "Keyboard")) draft.input_device = "keyboard";
-            var wasEnabled = GUI.enabled;
-            GUI.enabled = HasJoystick();
-            if (GUILayout.Toggle(draft.input_device == "joystick", "Joystick")) draft.input_device = "joystick";
-            GUI.enabled = wasEnabled;
-            GUILayout.EndHorizontal();
-            if (!HasJoystick()) GUILayout.Label("No joystick detected. Keyboard and mouse remain available.");
-            draft.invert_mouse = GUILayout.Toggle(draft.invert_mouse, "Invert vertical steering");
-            Slider("Mouse sensitivity (%)", ref draft.mouse_sensitivity, 10, 400);
-            Slider("Joystick dead zone (%)", ref draft.joystick_dead_zone, 0, 75);
-            draft.flight_assistance = GUILayout.Toggle(draft.flight_assistance, "Flight assistance (idle recenter)");
-            // SetKeysDialog_79610: LANG444..453 index the same ten slots as
-            // sub_5BCC0 defaults and the authoritative Rust preference array.
-            var labels = new[] { "Move player forwards", "Move player backwards", "Move player left", "Move player right",
-                "Map screen", "Spell menu", "Player information", "Spell menu: mark spells",
-                "Marked spells: toggle forwards", "Marked spells: toggle backwards" };
-            for (var i = 0; i < labels.Length; i++)
+            try
             {
-                GUILayout.BeginHorizontal();
-                GUILayout.Label(labels[i]);
-                if (GUILayout.Button(captureKey == i ? "Press key (Esc cancels)" : draft.keys[i], GUILayout.Width(220)))
-                {
-                    BeginKeyCapture(i);
-                    GUI.FocusControl(null);
-                }
-                GUILayout.EndHorizontal();
+                if (page == SourceSettingsDialog.Page.Keys) CaptureKey(Event.current);
+                var result = sourceSettingsDialog.Draw(cache, page, draft, captureKey, selectedKeySlot, status);
+                if (result.ClearStatus) status = null;
+                else if (result.Status != null) status = result.Status;
+                if (result.SelectedKeySlot >= 0) selectedKeySlot = result.SelectedKeySlot;
+                if (result.BeginKeyCapture >= 0) BeginKeyCapture(result.BeginKeyCapture);
+                if (result.Confirm) Apply();
+                else if (result.Cancel) Cancel();
             }
-            var priorAudio = (draft.sound_enabled, draft.music_enabled, draft.speech_enabled, draft.sound_volume, draft.music_volume);
-            draft.sound_enabled = GUILayout.Toggle(draft.sound_enabled, "Sound effects");
-            Slider("Sound volume", ref draft.sound_volume, 0, 127);
-            draft.music_enabled = GUILayout.Toggle(draft.music_enabled, "Music");
-            Slider("Music volume", ref draft.music_volume, 0, 127);
-            draft.speech_enabled = GUILayout.Toggle(draft.speech_enabled, "Speech");
-            if (priorAudio != (draft.sound_enabled, draft.music_enabled, draft.speech_enabled, draft.sound_volume, draft.music_volume))
+            catch (Exception error)
             {
-                try { Synchronize(command(JsonUtility.ToJson(new PreviewAudioCommand {
-                    sound_enabled = draft.sound_enabled, music_enabled = draft.music_enabled,
-                    speech_enabled = draft.speech_enabled, sound_volume = draft.sound_volume,
-                    music_volume = draft.music_volume }))); }
-                catch (Exception error) { status = error.Message; }
+                sourceSettingsDialog.RestoreCursor();
+                status = error.Message;
             }
-            draft.show_help = GUILayout.Toggle(draft.show_help, "Control help");
-            Slider("Day brightness", ref draft.brightness[0], 0, 4);
-            Slider("Night brightness", ref draft.brightness[1], 0, 4);
-            Slider("Cave brightness", ref draft.brightness[2], 0, 4);
-            draft.fullscreen = GUILayout.Toggle(draft.fullscreen, "Fullscreen");
-            GUILayout.Label("P: pause · Esc: abandon mission · F5: save · R: restart · F10: quit\nC/middle mouse: recenter · Backspace: full stop\nMouse/joystick: steer · Space: cast selected spell");
-            if (!string.IsNullOrEmpty(status)) GUILayout.Label(status);
-            GUILayout.EndScrollView();
-            GUILayout.EndArea();
-            var y = rect.yMax - 50;
-            if (GUI.Button(new Rect(rect.x + 12, y, (width - 36) / 2, 38), "Apply and save"))
-                Apply();
-            if (GUI.Button(new Rect(rect.x + width / 2 + 6, y, (width - 36) / 2, 38), "Cancel")) Cancel();
         }
 
-        private static void Slider(string label, ref int value, int min, int max)
+        internal bool ToggleFullscreen()
         {
-            GUILayout.Label(label + ": " + value);
-            value = Mathf.RoundToInt(GUILayout.HorizontalSlider(value, min, max));
+            if (IsOpen || Current?.preferences == null) return false;
+            var fullscreen = Current.preferences.fullscreen;
+            return ApplySource(preferences => preferences.fullscreen = !fullscreen);
         }
 
         internal void DrawEffects(int terrain = 0, bool playing = false)

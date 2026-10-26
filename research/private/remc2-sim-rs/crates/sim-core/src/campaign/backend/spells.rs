@@ -8,7 +8,7 @@ use crate::{
     spell_activation::{SpellActivationHolder, SpellCasterState, activate_spell},
 };
 use sim_definition::SemanticId;
-use sim_session::{SpellAvailability, SpellHand, SpellObservation};
+use sim_session::{SpellAvailability, SpellHand, SpellMarkHand, SpellObservation};
 
 struct SpellBinding {
     kind: SpellKind,
@@ -69,6 +69,18 @@ const BINDINGS: &[SpellBinding] = &[
         name: "Beyond Sight",
     },
     SpellBinding {
+        kind: SpellKind::StealMana,
+        family: 13,
+        id: "spell.steal_mana",
+        name: "Steal Mana",
+    },
+    SpellBinding {
+        kind: SpellKind::Duel,
+        family: 14,
+        id: "spell.duel",
+        name: "Duel",
+    },
+    SpellBinding {
         kind: SpellKind::Heal,
         family: 5,
         id: "spell.heal",
@@ -82,9 +94,15 @@ const BINDINGS: &[SpellBinding] = &[
     },
     SpellBinding {
         kind: SpellKind::Lightning,
-        family: 9,
+        family: 7,
         id: "spell.lightning",
         name: "Lightning",
+    },
+    SpellBinding {
+        kind: SpellKind::Meteor,
+        family: 9,
+        id: "spell.meteor",
+        name: "Meteor",
     },
     SpellBinding {
         kind: SpellKind::Teleport,
@@ -99,6 +117,66 @@ const BINDINGS: &[SpellBinding] = &[
         family: 25,
         id: "spell.cave_in",
         name: "Cave In",
+    },
+    SpellBinding {
+        kind: SpellKind::Tremor,
+        family: 15,
+        id: "spell.tremor",
+        name: "Tremor",
+    },
+    SpellBinding {
+        kind: SpellKind::Crater,
+        family: 16,
+        id: "spell.crater",
+        name: "Crater",
+    },
+    SpellBinding {
+        kind: SpellKind::Earthquake,
+        family: 17,
+        id: "spell.earthquake",
+        name: "Earthquake",
+    },
+    SpellBinding {
+        kind: SpellKind::Volcano,
+        family: 18,
+        id: "spell.volcano",
+        name: "Volcano",
+    },
+    SpellBinding {
+        kind: SpellKind::SummonArmy,
+        family: 19,
+        id: "spell.summon_army",
+        name: "Summon Army",
+    },
+    SpellBinding {
+        kind: SpellKind::GravityWell,
+        family: 20,
+        id: "spell.gravity_well",
+        name: "Gravity Well",
+    },
+    SpellBinding {
+        kind: SpellKind::Whirlwind,
+        family: 21,
+        id: "spell.whirlwind",
+        name: "Whirlwind",
+    },
+    SpellBinding {
+        kind: SpellKind::FoolsMana,
+        family: 22,
+        id: "spell.fools_mana",
+        name: "Fool's Mana",
+    },
+    SpellBinding {
+        kind: SpellKind::MagicMine,
+        family: 23,
+        id: "spell.magic_mine",
+        name: "Magic Mine",
+    },
+    SpellBinding {
+        kind: SpellKind::Alliance,
+        family: 24,
+        id: "spell.alliance",
+        name: "Alliance",
     },
 ];
 
@@ -225,6 +303,11 @@ pub(super) fn observe(shared: &Level2SharedSpellResetSession) -> Vec<SpellObserv
                 id: SemanticId::parse(binding.id).expect("static semantic spell ID"),
                 display_name: binding.name.to_owned(),
                 acquired,
+                marked_hand: match player.spell_hand_eligibility[usize::from(binding.family)] {
+                    1 => SpellMarkHand::Left,
+                    2 => SpellMarkHand::Right,
+                    _ => SpellMarkHand::None,
+                },
                 selected: acquired && selected == Some(binding.family),
                 tier: holder.map_or(0, |holder| holder.level_gate),
                 unlocked_tier: player.spell_unlocked_levels[usize::from(binding.family)].clamp(0, 2)
@@ -288,6 +371,18 @@ mod tests {
         assert_eq!(mc2_spell_kind_for_family(25), Some(SpellKind::CaveIn));
         assert!(SOURCE_SPELL_INDEX_MAP.contains(&25));
         assert_eq!(format!("spell.{}", SpellKind::CaveIn.as_str()), id.as_str());
+
+        for (id, kind, family) in [
+            ("spell.summon_army", SpellKind::SummonArmy, 19),
+            ("spell.magic_mine", SpellKind::MagicMine, 23),
+            ("spell.alliance", SpellKind::Alliance, 24),
+        ] {
+            let id = SemanticId::parse(id).unwrap();
+            assert_eq!(semantic_spell_kind(&id), Some(kind));
+            assert_eq!(mc2_spell_family(kind), Some(family));
+            assert_eq!(mc2_spell_kind_for_family(family), Some(kind));
+            assert!(SOURCE_SPELL_INDEX_MAP.contains(&family));
+        }
 
         for unsupported in ["spell.family25", "spell.cavein", "spell.cave_in.projectile"] {
             let id = SemanticId::parse(unsupported).unwrap();

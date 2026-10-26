@@ -5,6 +5,7 @@
 //! the nested `GameSession`; this module does not create a second gameplay
 //! authority or a parallel step API.
 
+use super::secret_transition_abi::BoundaryTransitionReceipt;
 use super::*;
 use serde::Deserialize;
 use sim_core::{
@@ -54,7 +55,7 @@ pub(super) struct RuntimeRecord {
     // mutation, not once per frame-plane, palette, entity and HUD query.
     campaign_presentation_dirty: bool,
     audio: super::campaign_audio_state::CampaignRuntimeAudio,
-    completion_transition_receipt: Option<CompletionTransitionReceipt>,
+    completion_transition_receipt: Option<BoundaryTransitionReceipt>,
     closed: bool,
 }
 
@@ -94,6 +95,35 @@ impl RuntimeRecord {
                 ),
             )
         })
+    }
+
+    pub(super) fn campaign_snapshot(
+        &self,
+    ) -> AbiResult<sim_session::SessionObservation<sim_session::CampaignSnapshot>> {
+        let session = self.session()?;
+        let mut observation = session.snapshot();
+        let local_slot = session
+            .backend()
+            .campaign_presentation_source()
+            .simulation()
+            .shared_spells()
+            .local_player()
+            .slot;
+        if let Some(local) = observation
+            .value
+            .source_scoreboard
+            .players
+            .iter_mut()
+            .find(|player| player.source_slot == local_slot)
+        {
+            local.display_name = self
+                .runtime
+                .identity()
+                .player_preferences
+                .preferences
+                .player_name;
+        }
+        Ok(observation)
     }
 
     pub(super) fn session_mut(&mut self) -> AbiResult<&mut GameSession<Mc2CampaignBackend>> {
@@ -330,6 +360,7 @@ impl RuntimeRecord {
                 },
             )
             .map_err(map_transition_error)?;
+        self.completion_transition_receipt = None;
         Ok(())
     }
 
@@ -751,19 +782,24 @@ impl RuntimeRecord {
                 },
             )
             .map_err(map_transition_error)?;
-        self.completion_transition_receipt = Some(receipt);
+        self.completion_transition_receipt = Some(BoundaryTransitionReceipt::OrdinaryCompletion {
+            ordinary_completion: receipt,
+        });
         self.campaign_presentation = None;
         Ok(())
     }
 
     fn completion_transition_receipt(&self) -> AbiResult<&CompletionTransitionReceipt> {
         self.ensure_open()?;
-        self.completion_transition_receipt.as_ref().ok_or_else(|| {
-            AbiError::new(
-                MC_STATUS_INVALID_ARGUMENT,
-                "NO_COMPLETION_TRANSITION_RECEIPT: no completion transition has been accepted",
-            )
-        })
+        self.completion_transition_receipt
+            .as_ref()
+            .and_then(BoundaryTransitionReceipt::ordinary_completion)
+            .ok_or_else(|| {
+                AbiError::new(
+                    MC_STATUS_INVALID_ARGUMENT,
+                    "NO_COMPLETION_TRANSITION_RECEIPT: no completion transition has been accepted",
+                )
+            })
     }
 
     fn campaign_menu_command(
@@ -796,6 +832,7 @@ impl RuntimeRecord {
                 command,
             )
             .map_err(map_transition_error)?;
+        self.completion_transition_receipt = None;
         Ok(())
     }
 
@@ -807,6 +844,35 @@ impl RuntimeRecord {
         expected_tick: u64,
     ) -> AbiResult<()> {
         self.validate_transition(handle, runtime_generation, RuntimeMode::Playing)?;
+        let resolver = self.resolver.as_ref().ok_or_else(|| {
+            AbiError::new(
+                MC_STATUS_INVALID_ARGUMENT,
+                "MISSING_RUNTIME_RESOLVER: mission boundary requires installed packages",
+            )
+        })?;
+        if let Some(receipt) = resolver
+            .advance_secret_if_ready(
+                &mut self.runtime,
+                RuntimeGuard {
+                    runtime_id: handle,
+                    generation: runtime_generation,
+                },
+                SessionGuard {
+                    session_id: handle,
+                    generation: session_generation,
+                    expected_tick,
+                },
+            )
+            .map_err(map_transition_error)?
+        {
+            self.completion_transition_receipt =
+                Some(BoundaryTransitionReceipt::SecretTransition {
+                    secret_transition: receipt,
+                });
+            self.campaign_presentation = None;
+            self.reset_audio();
+            return Ok(());
+        }
         let completion = self
             .session()?
             .completion_status(SessionGuard {
@@ -844,6 +910,36 @@ impl RuntimeRecord {
         session_generation: u64,
         expected_tick: u64,
     ) -> AbiResult<()> {
+        self.ensure_open()?;
+        let resolver = self.resolver.as_ref().ok_or_else(|| {
+            AbiError::new(
+                MC_STATUS_INVALID_ARGUMENT,
+                "campaign return needs its installed package resolver",
+            )
+        })?;
+        if let Some(receipt) = resolver
+            .abandon_secret_if_active(
+                &mut self.runtime,
+                RuntimeGuard {
+                    runtime_id: handle,
+                    generation: runtime_generation,
+                },
+                SessionGuard {
+                    session_id: handle,
+                    generation: session_generation,
+                    expected_tick,
+                },
+            )
+            .map_err(map_transition_error)?
+        {
+            self.completion_transition_receipt =
+                Some(BoundaryTransitionReceipt::SecretTransition {
+                    secret_transition: receipt,
+                });
+            self.campaign_presentation = None;
+            self.reset_audio();
+            return Ok(());
+        }
         self.resolver
             .as_ref()
             .ok_or_else(|| {
@@ -865,6 +961,7 @@ impl RuntimeRecord {
                 },
             )
             .map_err(map_transition_error)?;
+        self.completion_transition_receipt = None;
         Ok(())
     }
 
@@ -1654,6 +1751,37 @@ pub extern "C" fn mc_game_runtime_loading_presentation_json_v1(
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn mc_game_runtime_active_entry_presentation_json_v1(
+    handle: u64,
+    generation: u64,
+    buffer: *mut u8,
+    capacity: u32,
+    out_length: *mut u32,
+) -> i32 {
+    boundary(|| {
+        with_runtime(handle, |record| {
+            record.validate_transition(handle, generation, RuntimeMode::Playing)?;
+            let resolver = record.resolver.as_ref().ok_or_else(|| {
+                AbiError::new(MC_STATUS_INVALID_ARGUMENT,
+                    "MISSING_RUNTIME_RESOLVER: active entry presentation requires installed packages")
+            })?;
+            let value = resolver
+                .active_entry_presentation(
+                    &record.runtime,
+                    RuntimeGuard {
+                        runtime_id: handle,
+                        generation,
+                    },
+                )
+                .map_err(map_transition_error)?;
+            let observation =
+                serde_json::json!({"identity": record.runtime.identity(), "value": value});
+            super::game_session_abi::write_json(&observation, buffer, capacity, out_length)
+        })
+    })
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn mc_game_runtime_cancel_loading_v1(handle: u64, generation: u64) -> i32 {
     boundary(|| with_runtime_mut(handle, |record| record.cancel_loading(handle, generation)))
 }
@@ -1890,6 +2018,30 @@ pub extern "C" fn mc_game_runtime_completion_transition_receipt_json_v1(
                 capacity,
                 out_length,
             )
+        })
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn mc_game_runtime_boundary_transition_receipt_json_v1(
+    handle: u64,
+    buffer: *mut u8,
+    capacity: u32,
+    out_length: *mut u32,
+) -> i32 {
+    boundary(|| {
+        with_runtime(handle, |record| {
+            record.ensure_open()?;
+            record
+                .completion_transition_receipt
+                .as_ref()
+                .ok_or_else(|| {
+                    AbiError::new(
+                        MC_STATUS_INVALID_ARGUMENT,
+                        "NO_BOUNDARY_TRANSITION_RECEIPT: no runtime boundary has been accepted",
+                    )
+                })?
+                .write_json(buffer, capacity, out_length)
         })
     })
 }
@@ -3444,7 +3596,10 @@ mod tests {
             receipt_sha256: "0".repeat(64),
         };
         with_runtime_mut(handle, |runtime| {
-            runtime.completion_transition_receipt = Some(receipt);
+            runtime.completion_transition_receipt =
+                Some(BoundaryTransitionReceipt::OrdinaryCompletion {
+                    ordinary_completion: receipt,
+                });
             Ok(())
         })
         .unwrap();

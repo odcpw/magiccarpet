@@ -140,6 +140,7 @@ namespace MagicCarpet.Native
             public int mana_cost;
             public string hand;
             public string availability;
+            public string marked_hand;
         }
 
         [Serializable]
@@ -174,6 +175,8 @@ namespace MagicCarpet.Native
             public Pose player_pose;
             public Motion player_motion;
             public PlayerVitals player_vitals;
+            public SourceMenuAdmission source_menu_admission;
+            public SourceScoreboard source_scoreboard;
             public SpellObservation[] player_spells;
             public ushort player_immobilized_ticks;
             public CameraPose source_camera_pose;
@@ -185,10 +188,36 @@ namespace MagicCarpet.Native
         }
 
         [Serializable]
+        internal sealed class SourceMenuAdmission
+        {
+            public string action;
+            public bool admitted;
+            public bool map_open;
+            public string tick;
+        }
+
+        [Serializable]
         internal sealed class CampaignSnapshotObservation
         {
             public Identity identity;
             public CampaignSnapshotValue value;
+        }
+
+        [Serializable]
+        internal sealed class SourceSorcererScore
+        {
+            public byte source_slot;
+            public string display_name;
+            public byte outline_palette_index, text_palette_index;
+            public int max_mana;
+            public short[] kills8;
+        }
+
+        [Serializable]
+        internal sealed class SourceScoreboard
+        {
+            public SourceSorcererScore[] players;
+            public string projection_error;
         }
 
         [Serializable]
@@ -362,6 +391,38 @@ namespace MagicCarpet.Native
         private sealed class SpellAssignmentCommand : Command
         {
             public SpellAssignment assign_spell;
+        }
+
+        [Serializable]
+        internal sealed class SpellMark
+        {
+            public string spell_id;
+            public string hand;
+        }
+
+        [Serializable]
+        internal sealed class MarkedSpellCycle
+        {
+            public string hand;
+            public string direction;
+        }
+
+        [Serializable]
+        private sealed class SpellMarkCommand : Command
+        {
+            public SpellMark mark_spell;
+        }
+
+        [Serializable]
+        private sealed class MarkedSpellCycleCommand : Command
+        {
+            public MarkedSpellCycle cycle_marked_spell;
+        }
+
+        [Serializable]
+        private sealed class AbandonActionCommand : Command
+        {
+            public string abandon_action;
         }
 
         internal ulong Handle { get; }
@@ -560,7 +621,10 @@ namespace MagicCarpet.Native
             uint elapsedCentiseconds = 0,
             SpellAssignment assignment = null,
             bool showObjective = false,
-            bool removeCastleStage = false)
+            bool removeCastleStage = false,
+            SpellMark mark = null,
+            MarkedSpellCycle cycle = null,
+            string abandonAction = null)
         {
             ValidateIdentityForHandle(handle, identity);
             var bits = unchecked((byte)flags);
@@ -568,9 +632,18 @@ namespace MagicCarpet.Native
             {
                 throw new ArgumentException("movement flags are outside the neutral command contract");
             }
-            if (assignment != null && selectSpell != null)
-                throw new ArgumentException("spell selection and assignment are separate commands");
-            Command command = assignment != null ? new SpellAssignmentCommand { assign_spell = assignment } : selectSpell == null
+            if ((assignment != null ? 1 : 0) + (selectSpell != null ? 1 : 0) +
+                (mark != null ? 1 : 0) + (cycle != null ? 1 : 0) +
+                (abandonAction != null ? 1 : 0) > 1)
+                throw new ArgumentException("menu operations require separate commands");
+            if (abandonAction != null && abandonAction != "toggle_gameplay_map" &&
+                abandonAction != "open_abandon_confirmation" &&
+                abandonAction != "confirm_abandon" && abandonAction != "cancel_abandon_confirmation")
+                throw new ArgumentException("unknown abandon confirmation action", nameof(abandonAction));
+            Command command = abandonAction != null ? new AbandonActionCommand { abandon_action = abandonAction }
+                : mark != null ? new SpellMarkCommand { mark_spell = mark }
+                : cycle != null ? new MarkedSpellCycleCommand { cycle_marked_spell = cycle }
+                : assignment != null ? new SpellAssignmentCommand { assign_spell = assignment } : selectSpell == null
                 ? new Command()
                 : new SpellSelectionCommand { select_spell = selectSpell };
             command.longitudinal = (bits & 0x01) != 0

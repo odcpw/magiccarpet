@@ -14,7 +14,7 @@ use sha2::{Digest, Sha256};
 
 use crate::{
     FlightWorld,
-    campaign::spec::{BehaviorSelector, CampaignDefinition},
+    campaign::spec::{BehaviorSelector, CampaignDefinition, CampaignSelection},
     level1_mission::{
         AUTHORED_FEATURE_BYTES, AUTHORED_FEATURE_COUNT, AuthoredFeature, Level1MissionTemplate,
         Level1ResetSourceSlot, parse_authored_features,
@@ -617,11 +617,10 @@ impl MissionContentTemplate {
                 .map_err(MissionContentError::Decode)?
                 .into_boxed_slice();
 
-        // Nyphur's wizard settings and the retained Level-2 activation plan
-        // are package capabilities. Their presence is selected by the live
-        // reset selector declared in required_behaviors, never by checking an
-        // external level number.
-        let requires_nyphur_settings = definition.required_behavior_keys().any(|key| {
+        // Wizard reset settings are shared by missions with this behavior.
+        // They do not identify the mission whose authored rows are bound by
+        // the checked-in Level-2 activation artifact.
+        let requires_wizard_settings = definition.required_behavior_keys().any(|key| {
             key.dispatch_site == 2
                 && matches!(
                     key.selector,
@@ -631,10 +630,12 @@ impl MissionContentTemplate {
                     }
                 )
         });
-        if requires_nyphur_settings {
+        if requires_wizard_settings {
             template.wizard_map_settings = parse_level2_wizard_map_settings(authored)
                 .map_err(MissionContentError::Decode)?
                 .into_boxed_slice();
+        }
+        if definition.identity == CampaignSelection::LEVEL2 {
             template.level2_activation_plan = Some(
                 checked_in_level2_activation_plan(&template.authored_features)
                     .map_err(MissionContentError::InvalidReset)?,
@@ -887,6 +888,41 @@ mod tests {
             MissionContentProfile::LEVEL1
         );
         assert!(MissionContentProfile::from_metadata(1, 0, 0).is_err());
+    }
+
+    #[test]
+    fn actual_source4_day_template_uses_its_authored_rows_without_level2_plan() {
+        use crate::campaign::dispatch::CAMPAIGN_BEHAVIOR_REGISTRY;
+
+        let package = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../generated/mc-paj2-source4-campaign-package");
+        let selection = CampaignDefinition::declared_selection(&package).unwrap();
+        assert_eq!(
+            (
+                selection.external_level,
+                selection.internal_level,
+                selection.map_type_id
+            ),
+            (5, 4, 0)
+        );
+        let definition =
+            CampaignDefinition::preflight(&package, selection, &CAMPAIGN_BEHAVIOR_REGISTRY)
+                .expect("genuine source4 campaign preflight");
+        let inspection = NativeWorld::inspect_campaign_definition(&definition)
+            .expect("genuine source4 inspection");
+        let template = inspection
+            .mission_content_template_from_definition(&definition)
+            .expect("Day wizard settings do not select another mission's activation plan");
+        assert_eq!(template.profile().level, CampaignLevel::Descriptor);
+        assert_eq!(template.profile().map, MissionMap::Day);
+        assert_eq!(
+            template.wizard_map_settings().len(),
+            LEVEL2_WIZARD_MAP_SETTINGS_COUNT
+        );
+        assert_eq!(template.authored_features().len(), AUTHORED_FEATURE_COUNT);
+        assert_eq!(template.authored_features()[12].activation_group, 0);
+        assert!(template.session().level2_activation_plan().is_none());
+        assert!(checked_in_level2_activation_plan(template.authored_features()).is_err());
     }
 
     #[test]

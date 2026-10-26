@@ -16,6 +16,8 @@ namespace MagicCarpet.Native
         {
             public string level_id, name, briefing, briefing_text_id, name_source_bytes, pause_profile;
             public int viewport_x, viewport_y, portal_x, portal_y, portal_width, portal_height;
+            public int source_ordinary_index, source_internal_index;
+            public bool is_secret;
         }
         [Serializable] private sealed class Output { public string path, sha256; public int bytes; }
         [Serializable] private sealed class Portal { public string kind, path; public int width, height; }
@@ -38,6 +40,41 @@ namespace MagicCarpet.Native
         }
         [Serializable] internal sealed class PortalSound
         { public int bank, id, volume, pan, rate; public string path; public bool if_not_playing; }
+        [Serializable] private sealed class SettingsBinding
+        {
+            public int width, height;
+            public string background_path;
+            public BitmapBinding[] bitmaps;
+        }
+
+        internal sealed class SettingsAssets : IDisposable
+        {
+            internal Texture2D Background { get; private set; }
+            private readonly Dictionary<int, Texture2D> bitmaps = new();
+            internal SettingsAssets(int width, int height, string backgroundPath,
+                BitmapBinding[] bindings, Func<string, int, byte[]> read)
+            {
+                if (width != 640 || height != 480 || bindings?.Length != 3)
+                    throw new InvalidDataException("source settings artwork binding is incomplete");
+                try
+                {
+                    Background = Texture(read(backgroundPath, 640 * 480 * 4), 640, 480, "MC2 source settings screen15");
+                    LoadBitmaps(bindings, bitmaps, read);
+                    if (!bitmaps.ContainsKey(107) || !bitmaps.ContainsKey(108) || !bitmaps.ContainsKey(110))
+                        throw new InvalidDataException("source settings focus artwork is unbound");
+                }
+                catch { Dispose(); throw; }
+            }
+            internal Texture2D Bitmap(int selector) => bitmaps.TryGetValue(selector, out var value) ? value :
+                throw new InvalidDataException("unbound source settings sprite " + selector);
+            public void Dispose()
+            {
+                if (Background != null) Destroy(Background);
+                Background = null;
+                foreach (var texture in bitmaps.Values) Destroy(texture);
+                bitmaps.Clear();
+            }
+        }
         [Serializable] internal sealed class PortalAnimationBinding
         {
             public int clock_hz, step_ticks, opening_first, opening_last, loop_first, loop_last,
@@ -61,13 +98,14 @@ namespace MagicCarpet.Native
         }
         [Serializable] private sealed class Manifest
         {
-            public string schema, source_commit, source_language_sha256;
+            public string schema, source_commit, source_language_sha256, source_catalog_path;
             public LanguageBinding language_cache;
             public int width, height, view_width, view_height;
             public Mission[] missions;
             public Portal[] portals;
             public Output[] outputs;
             public StartupBinding startup;
+            public SettingsBinding settings;
             public PortalAnimationBinding portal_animation;
             public SourcePauseMenu.Binding pause;
             public SourceCampaignMap.Binding campaign;
@@ -87,6 +125,7 @@ namespace MagicCarpet.Native
         internal StartupBinding Startup { get; private set; }
         internal PortalAnimationBinding PortalAnimation { get; private set; }
         internal SourceMenuText StartupText { get; private set; }
+        internal SettingsAssets Settings { get; private set; }
         internal SourcePauseMenu PauseMenu { get; private set; }
         internal SourceCampaignMap Campaign { get; private set; }
         internal PortalSound ClickSound { get; private set; }
@@ -100,14 +139,20 @@ namespace MagicCarpet.Native
                 throw new InvalidDataException("campaign menu cache must use regular owner files");
             var manifest = JsonUtility.FromJson<Manifest>(File.ReadAllText(manifestPath));
             if (manifest == null ||
-                (manifest.schema != "mc2-owner-campaign-menu-cache/v1" && manifest.schema != "mc2-owner-campaign-menu-cache/v2") ||
+                (manifest.schema != "mc2-owner-campaign-menu-cache/v1" && manifest.schema != "mc2-owner-campaign-menu-cache/v2" &&
+                 manifest.schema != "mc2-owner-campaign-menu-cache/v3") ||
                 manifest.source_commit != "6806c7204d17220ecc0430759f784aea8ee2ddb2" ||
                 manifest.width != 1280 || manifest.height != 960 || manifest.view_width != 640 || manifest.view_height != 480 ||
-                manifest.missions?.Length != 4 || manifest.portals?.Length != 2 || manifest.outputs == null ||
+                manifest.missions?.Length != (manifest.schema == "mc2-owner-campaign-menu-cache/v3" ? 30 : 4) ||
+                manifest.portals?.Length != 2 || manifest.outputs == null ||
                 manifest.outputs.Length < 4 ||
                 (manifest.schema == "mc2-owner-campaign-menu-cache/v1" && manifest.outputs.Length != 4))
                 throw new InvalidDataException("campaign menu cache has an unsupported source binding");
-            if (manifest.schema == "mc2-owner-campaign-menu-cache/v2") BindLanguage(root, manifest);
+            if (manifest.schema == "mc2-owner-campaign-menu-cache/v3" &&
+                manifest.missions.Any(mission => mission == null || mission.source_ordinary_index < 0 ||
+                    mission.source_ordinary_index >= 25))
+                throw new InvalidDataException("campaign mission has an invalid source briefing origin");
+            if (manifest.schema != "mc2-owner-campaign-menu-cache/v1") BindLanguage(root, manifest);
             missions = manifest.missions.ToDictionary(mission => mission.level_id, StringComparer.Ordinal);
             foreach (var mission in missions.Values)
                 if (string.IsNullOrWhiteSpace(mission.name) || string.IsNullOrWhiteSpace(mission.briefing) ||
@@ -134,6 +179,19 @@ namespace MagicCarpet.Native
             }
             try
             {
+                if (manifest.schema == "mc2-owner-campaign-menu-cache/v3")
+                {
+                    if (manifest.source_catalog_path != "source-runtime-catalog.tsv")
+                        throw new InvalidDataException("source mission catalog is unbound");
+                    var receipt = manifest.outputs.Single(row => row.path == manifest.source_catalog_path);
+                    if (receipt.bytes <= 0 || receipt.bytes > 16384)
+                        throw new InvalidDataException("source mission catalog extent is invalid");
+                    ValidateSourceCatalog(Read(manifest.source_catalog_path, receipt.bytes), manifest.missions);
+                    var selectors = manifest.campaign?.indexed_portals?.Select(row => row.selector).ToArray();
+                    if (selectors == null || Enumerable.Range(270, 4).Concat(Enumerable.Range(305, 8))
+                            .Any(selector => !selectors.Contains(selector)))
+                        throw new InvalidDataException("source secret portal art is incomplete");
+                }
                 var indices = Read("world-map.indices.u8", 1280 * 960);
                 var palette = Read("palette.rgb6", 768);
                 if (palette.Any(channel => channel > 63)) throw new InvalidDataException("campaign palette is not RGB6");
@@ -219,6 +277,9 @@ namespace MagicCarpet.Native
                                 throw new InvalidDataException("source title animation frame is unbound");
                     }
                 }
+                if (manifest.settings != null)
+                    Settings = new SettingsAssets(manifest.settings.width, manifest.settings.height,
+                        manifest.settings.background_path, manifest.settings.bitmaps, Read);
                 PortalAnimation = manifest.portal_animation;
                 if (PortalAnimation != null)
                 {
@@ -265,6 +326,18 @@ namespace MagicCarpet.Native
 
         internal Mission ForMission(string level) => missions.TryGetValue(level, out var mission) ? mission :
             throw new InvalidDataException("campaign menu has no owner presentation for " + level);
+
+        internal IReadOnlyList<Mission> MissionOrder => missions.Values.Where(row => !row.is_secret)
+            .OrderBy(row => row.source_ordinary_index).ToArray();
+        internal SourceCampaignTerminalEffects.FinalMissionBinding FinalMissionBinding
+        {
+            get
+            {
+                var final = missions.Values.SingleOrDefault(row => row.source_ordinary_index == 24 && !row.is_secret);
+                return final == null ? default : new SourceCampaignTerminalEffects.FinalMissionBinding(
+                    final.level_id, final.source_ordinary_index, final.is_secret);
+            }
+        }
 
         private static void LoadBitmaps(BitmapBinding[] bindings, Dictionary<int, Texture2D> destination,
             Func<string, int, byte[]> read)
@@ -327,6 +400,31 @@ namespace MagicCarpet.Native
             return File.ReadAllBytes(path);
         }
 
+        private static void ValidateSourceCatalog(byte[] bytes, Mission[] bindings)
+        {
+            if (bytes.Any(value => value > 127))
+                throw new InvalidDataException("source mission catalog is not ASCII");
+            var rows = Encoding.ASCII.GetString(bytes).Split('\n')
+                .Where(line => line.Length != 0 && !line.StartsWith("#", StringComparison.Ordinal)).ToArray();
+            if (rows.Length != 30)
+                throw new InvalidDataException("source mission catalog must contain the thirty original missions");
+            var origins = new[] { 4, 7, 11, 17, 19 };
+            var profiles = new[] { "day", "night", "cave" };
+            for (var row = 0; row < rows.Length; row++)
+            {
+                var fields = rows[row].Split('\t');
+                var index = row < 25 ? row : row + 5;
+                var mission = bindings[row];
+                if (fields.Length != 3 || fields[0] != index.ToString(System.Globalization.CultureInfo.InvariantCulture) ||
+                    !int.TryParse(fields[2], out var mapType) || mapType < 0 || mapType > 2 ||
+                    fields[2] != mapType.ToString(System.Globalization.CultureInfo.InvariantCulture) ||
+                    fields[1] != mission.level_id || mission.source_internal_index != index ||
+                    mission.is_secret != (row >= 25) || mission.pause_profile != profiles[mapType] ||
+                    mission.source_ordinary_index != (row < 25 ? row : origins[row - 25]))
+                    throw new InvalidDataException("campaign mission differs from its exact source catalog binding");
+            }
+        }
+
         private void BindLanguage(string root, Manifest menu)
         {
             var binding = menu.language_cache;
@@ -377,8 +475,10 @@ namespace MagicCarpet.Native
             for (var index = 0; index < menu.missions.Length; index++)
             {
                 var mission = menu.missions[index];
-                var record = locale.records[23 + index];
-                if (record.selector != 23 + index || mission.briefing_text_id != record.id)
+                var selector = 23 + (menu.schema == "mc2-owner-campaign-menu-cache/v3"
+                    ? mission.source_ordinary_index : index);
+                var record = locale.records[selector];
+                if (record.selector != selector || mission.briefing_text_id != record.id)
                     throw new InvalidDataException("campaign briefing is bound to the wrong source record");
                 mission.briefing = Encoding.GetEncoding(28591).GetString(text, record.offset, record.bytes);
             }
@@ -455,6 +555,8 @@ namespace MagicCarpet.Native
 
         public void Dispose()
         {
+            Settings?.Dispose();
+            Settings = null;
             StartupText?.Dispose();
             StartupText = null;
             PauseMenu?.Dispose();

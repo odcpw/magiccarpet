@@ -573,10 +573,16 @@ impl<B: super::GameSessionBackend<Command = sim_session::GameCommand>> super::Ga
             || command.cast_right
             || command.cast_selected
             || command.select_spell.is_some()
+            || command.abandon_action.is_some()
             || command.look_yaw != 0
             || command.look_pitch != 0
             || command.recenter
             || command.full_stop;
+        // Read the menu state retained by the gameplay backend before this
+        // command is dispatched. Client/UI menu state is only an input source.
+        let menu_open = self
+            .session()
+            .is_some_and(|session| session.backend().flight_assistance_menu_open());
         if self.player_preferences.observe_input(
             AssistanceInput {
                 roll: command.roll_axis,
@@ -585,7 +591,7 @@ impl<B: super::GameSessionBackend<Command = sim_session::GameCommand>> super::Ga
             },
             AssistancePolicy {
                 playing: true,
-                menu_open: false,
+                menu_open,
                 network: false,
             },
         ) {

@@ -1358,6 +1358,12 @@ int32_t mc_game_runtime_open_level_v1(
 int32_t mc_game_runtime_loading_presentation_json_v1(
     uint64_t handle, uint64_t generation,
     uint8_t *buffer, uint32_t capacity, uint32_t *out_length);
+/* Reads the exact installed source presentation binding of the live Playing
+ * session after direct secret entry. Does not create a Loading owner. */
+int32_t mc_game_runtime_active_entry_presentation_json_v1(
+    uint64_t handle, uint64_t generation,
+    uint8_t *buffer, uint32_t capacity, uint32_t *out_length);
+
 int32_t mc_game_runtime_cancel_loading_v1(
     uint64_t handle, uint64_t generation);
 int32_t mc_game_runtime_restart_new_game_v1(
@@ -1380,6 +1386,11 @@ int32_t mc_game_runtime_accept_transition_v1(
     uint64_t session_generation,
     uint64_t expected_tick);
 int32_t mc_game_runtime_completion_transition_receipt_json_v1(
+    uint64_t handle, uint8_t *buffer, uint32_t capacity,
+    uint32_t *out_length);
+/* Tagged accepted boundary: ordinary_completion or secret_transition, with
+ * exactly one typed receipt payload. The ordinary-only query stays strict. */
+int32_t mc_game_runtime_boundary_transition_receipt_json_v1(
     uint64_t handle, uint8_t *buffer, uint32_t capacity,
     uint32_t *out_length);
 int32_t mc_game_runtime_campaign_menu_command_json_v1(

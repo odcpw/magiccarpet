@@ -3,6 +3,8 @@
 //! Field callbacks borrow actor/player carriers. The source scheduler retains
 //! phase advancement, dispatch order and following-pass reclaim.
 
+pub(crate) mod gravity;
+pub(crate) mod magic_mine;
 pub mod palette;
 pub(crate) mod status;
 pub(crate) mod transport;
@@ -40,6 +42,58 @@ pub(crate) struct State {
     pub(crate) authored_model22: Vec<wind::Wind>,
     pub(crate) model22_spawned_children: Vec<wind::Segment>,
     pub(crate) palette: palette::Palette,
+}
+
+/// Ordinary spell delivery uses the same wind root/segment authority as
+/// authored births. The sentinel carries absence of an authored record only;
+/// it does not select another allocator or update path.
+pub(crate) fn construct_spell_wind(
+    arena: &mut crate::campaign::source_arena::SourceArena,
+    terrain: &mut crate::native_world::SessionTerrain,
+    particles: &[crate::native_world::ParticleParameter],
+    position: crate::Position,
+) -> Result<Option<u16>, String> {
+    let definition = wind::Definition::from_particles(particles)?;
+    let Some(root) =
+        arena
+            .economy
+            .allocate_authored_wind(u16::MAX, position, position, terrain, definition)
+    else {
+        return Ok(None);
+    };
+    let rows = arena.economy.fields.source_rows();
+    for row in rows.into_iter().filter(|row| {
+        row.index == root.source_entity_index
+            || row.source_spell_parent_entity_index() == root.source_entity_index
+    }) {
+        let (slot, position) = (row.index, row.position);
+        arena.entities[usize::from(slot)] = row;
+        crate::world::effects::sync_position(arena, terrain, slot, position, true, false)?;
+    }
+    Ok(Some(root.source_entity_index))
+}
+
+/// Commit the shared projectile's post-constructor writes, and its caller's
+/// duration override, to the wind owner read by simulation and presentation.
+pub(crate) fn sync_wind_impact(arena: &mut crate::campaign::source_arena::SourceArena, slot: u16) {
+    let Some(row) = arena.entities.get(usize::from(slot)) else {
+        return;
+    };
+    if let Some(wind) = arena
+        .economy
+        .fields
+        .authored_model22
+        .iter_mut()
+        .find(|wind| wind.active && wind.source_entity_index == slot)
+    {
+        wind.entity_id = row.source_id;
+        wind.yaw = row.yaw;
+        wind.pitch = row.pitch;
+        wind.max_life = row.max_life as i16;
+        wind.life = row.life as i16;
+        wind.subspell_index = row.subspell_index;
+        wind.control_flags = row.control_flags;
+    }
 }
 
 impl State {

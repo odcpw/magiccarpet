@@ -120,5 +120,139 @@ namespace MagicCarpet.Native.Tests
             menus.Step(false, true, false, false, false, false);
             Assert.That(menus.Current, Is.EqualTo(SourceCampaignMenus.Mode.Flight), "death closes source menus");
         }
+
+        [Test]
+        public void PlayerInformationIsAMapHoldAndRestoresTheMapOnRelease()
+        {
+            var menus = new SourceCampaignMenus();
+            menus.Step(false, false, false, false, false, true, informationHeld: true);
+            Assert.That(menus.Current, Is.EqualTo(SourceCampaignMenus.Mode.Flight));
+            menus.Step(true, false, false, false, false, true);
+            menus.Step(false, false, false, false, false, true, informationHeld: true);
+            Assert.That(menus.PlayerInformationOpen && menus.MapOpen && menus.AdmitFlightInput, Is.True);
+            menus.Step(false, true, false, false, false, true, informationHeld: true);
+            Assert.That(menus.Current, Is.EqualTo(SourceCampaignMenus.Mode.MapSpells));
+            menus.Step(false, false, false, false, false, true);
+            Assert.That(menus.Current, Is.EqualTo(SourceCampaignMenus.Mode.Map));
+            menus.Step(false, false, false, false, false, true, previousMarkedHeld: true);
+            Assert.That(menus.PlayerInformationOpen, Is.True, "source Alt/reverse modifier also shows the scores");
+            menus.Step(false, false, false, false, false, true);
+            Assert.That(menus.Current, Is.EqualTo(SourceCampaignMenus.Mode.Map));
+        }
+
+        [Test]
+        public void MarkedSpellModifiersConsumeOneHandPulseAndNeverCastOnFollowingHeldFrames()
+        {
+            var menus = new SourceCampaignMenus();
+            var next = menus.Step(false, false, false, true, false, true, nextMarkedHeld: true);
+            Assert.That((next.CycleHand, next.CycleDirection), Is.EqualTo(((byte)1, 1)));
+            var held = menus.Step(false, false, false, true, false, true, nextMarkedHeld: true);
+            Assert.That(held.CycleHand, Is.Zero);
+            Assert.That(held.SuppressCasting, Is.True);
+            menus.Step(false, false, false, false, false, true);
+            var previous = menus.Step(false, false, false, false, true, true,
+                nextMarkedHeld: true, previousMarkedHeld: true);
+            Assert.That((previous.CycleHand, previous.CycleDirection), Is.EqualTo(((byte)2, -1)),
+                "reverse has source precedence when both modifiers are held");
+            menus.Step(false, false, false, false, false, true);
+            var spell = menus.Step(false, true, false, true, false, true, nextMarkedHeld: true);
+            Assert.That(spell.CycleHand, Is.Zero, "spell menu owns its marking/assignment click before cycling");
+            Assert.That(menus.SpellOpen, Is.True);
+        }
+
+        [Test]
+        public void InformationModifierCyclesBackwardsOnlyWithinTheMap()
+        {
+            var menus = new SourceCampaignMenus();
+            menus.Step(true, false, false, false, false, true);
+            var cycle = menus.Step(false, false, false, false, true, true, informationHeld: true);
+            Assert.That((cycle.CycleHand, cycle.CycleDirection), Is.EqualTo(((byte)2, -1)));
+            Assert.That(cycle.SuppressCasting, Is.True);
+            menus.Step(false, false, false, false, false, true, informationHeld: true);
+            Assert.That(menus.PlayerInformationOpen, Is.True);
+            menus.Step(false, false, false, false, false, false, informationHeld: true);
+            Assert.That(menus.Current, Is.EqualTo(SourceCampaignMenus.Mode.Flight));
+        }
+
+        [Test]
+        public void TerminalVolcanoRequiresTheEarnedFinalOrdinaryMissionBinding()
+        {
+            const string finalId = "level.final";
+            var binding = new SourceCampaignTerminalEffects.FinalMissionBinding(finalId, 24, false);
+            var results = new GameRuntimeTransport.CampaignMenuSnapshot {
+                phase = "results", completed_level_id = finalId,
+                available_levels = new[] { finalId }, completed_levels = new[] { finalId }
+            };
+            var missionSelect = new GameRuntimeTransport.CampaignMenuSnapshot {
+                phase = "mission_select", available_levels = new[] { finalId },
+                completed_levels = new[] { finalId }
+            };
+
+            Assert.That(SourceCampaignTerminalEffects.IsEarnedFinalMission(results, binding), Is.True);
+            Assert.That(SourceCampaignTerminalEffects.IsEarnedFinalMission(missionSelect, binding), Is.True,
+                "the earned binding remains authoritative after dismissing results");
+            Assert.That(SourceCampaignTerminalEffects.IsEarnedFinalMission(results, default), Is.False,
+                "an absent owner binding fails closed");
+            Assert.That(SourceCampaignTerminalEffects.IsEarnedFinalMission(results,
+                new SourceCampaignTerminalEffects.FinalMissionBinding(finalId, 23, false)), Is.False,
+                "a different ordinary ordinal cannot enable the terminal row");
+            Assert.That(SourceCampaignTerminalEffects.IsEarnedFinalMission(results,
+                new SourceCampaignTerminalEffects.FinalMissionBinding(finalId, 24, true)), Is.False,
+                "a secret mission cannot enable the ordinary ending");
+
+            var unrelatedCatalog = new string[25];
+            for (var i = 0; i < unrelatedCatalog.Length; i++) unrelatedCatalog[i] = "other." + i;
+            Assert.That(SourceCampaignTerminalEffects.IsEarnedFinalMission(new GameRuntimeTransport.CampaignMenuSnapshot {
+                phase = "mission_select", available_levels = unrelatedCatalog,
+                completed_levels = (string[])unrelatedCatalog.Clone()
+            }, binding), Is.False, "25 completed unrelated entries do not substitute for the exact final ID");
+        }
+
+        [Test]
+        public void EarnedTerminalVolcanoAnimationContinuesAcrossResultsDismissalAndMapReentry()
+        {
+            const string finalId = "level.final";
+            var binding = new SourceCampaignTerminalEffects.FinalMissionBinding(finalId, 24, false);
+            var results = new GameRuntimeTransport.CampaignMenuSnapshot {
+                phase = "results", completed_level_id = finalId,
+                available_levels = new[] { finalId }, completed_levels = new[] { finalId }
+            };
+            var missionSelect = new GameRuntimeTransport.CampaignMenuSnapshot {
+                phase = "mission_select", selected_level_id = finalId,
+                available_levels = new[] { finalId }, completed_levels = new[] { finalId }
+            };
+            var decorations = Array.ConvertAll(new int[11], _ => new SourceMapMotion.DecorationBinding());
+            decorations[0] = new SourceMapMotion.DecorationBinding {
+                kind = 3, x = 10, y = 12, target_x = 20, target_y = 12,
+                first = 100, last = 102
+            };
+            var motion = new SourceMapMotion(
+                Array.ConvertAll(new int[15], _ => new SourceMapMotion.BackgroundBinding()), decorations);
+            var effects = new SourceCampaignTerminalEffects();
+            OwnerCampaignMenuCache.Mission Lookup(string id) => new() {
+                level_id = id, viewport_x = 0, viewport_y = 0, portal_x = 0, portal_y = 0
+            };
+            void Step(GameRuntimeTransport.CampaignMenuSnapshot menu, uint now, uint pass)
+            {
+                var enabled = effects.Step(menu, binding, pass);
+                Assert.That(enabled, Is.True, "the test binding is present and authoritatively earned");
+                motion.Step(menu, Lookup, now, 0, 0, false, false, 0, 0,
+                    _ => (1, 1), (_, _) => { }, (_, _, _) => { }, enabled);
+            }
+
+            motion.Enter(results, Lookup, finalId, (_, _) => { }, 0, 0);
+            Step(results, 0, 1);  // Starts the source animation row.
+            Step(results, 8, 2);  // Creates its persistent path.
+            Step(results, 16, 3); // Advances the source frame and position.
+            Assert.That(motion.DecorationSprites[0].Selector, Is.EqualTo(101));
+            Assert.That((motion.DecorationSprites[0].X, motion.DecorationSprites[0].Y), Is.EqualTo((18, 12)));
+
+            effects.Reset(); // SourceCampaignMap.Enter resets eligibility, not the motion row.
+            motion.Enter(missionSelect, Lookup, finalId, (_, _) => { }, 0, 0);
+            Step(missionSelect, 24, 4);
+            Assert.That(motion.DecorationSprites[0].Selector, Is.EqualTo(102),
+                "reentry keeps the already-running kind-3 selector instead of restarting phase zero");
+            Assert.That((motion.DecorationSprites[0].X, motion.DecorationSprites[0].Y), Is.EqualTo((20, 12)));
+        }
     }
 }

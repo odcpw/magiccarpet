@@ -155,6 +155,14 @@ namespace MagicCarpet.Native
         }
 
         [Serializable]
+        internal sealed class LoadingSourceSelection
+        {
+            public ushort external_level;
+            public ushort internal_level;
+            public byte map_type_id;
+        }
+
+        [Serializable]
         internal sealed class LoadingPresentationBinding
         {
             public string schema;
@@ -166,6 +174,7 @@ namespace MagicCarpet.Native
             public string source_package_sha256;
             public string owner_export_package_sha256;
             public string runtime_capture_sha256;
+            public LoadingSourceSelection source_selection;
             public string environment;
             public string artwork_profile;
         }
@@ -202,6 +211,57 @@ namespace MagicCarpet.Native
             return observation.value;
         }
 
+        internal static LoadingPresentationBinding ReadActiveEntryPresentation(Identity playing)
+        {
+            ValidateIdentityPresentation(playing);
+            if (playing.mode != PlayingMode || playing.active_runtime_flow == null ||
+                !HasSessionIdentity(playing) || HasDefinitionIdentityData(playing.pending_definition))
+            {
+                throw new InvalidOperationException(
+                    "active-entry assets require the exact Playing runtime identity");
+            }
+            var handle = ParseCounter(playing.runtime_id, "runtime_id");
+            var generation = ParseCounter(playing.generation, "generation");
+            var observation = ReadJson<LoadingPresentationObservation>(
+                (IntPtr buffer, uint capacity, out uint length) =>
+                    NativeSim.mc_game_runtime_active_entry_presentation_json_v1(
+                        handle, generation, buffer, capacity, out length),
+                "read active-entry presentation");
+            if (!SameIdentity(playing, observation?.identity))
+            {
+                throw new InvalidDataException(
+                    "active-entry asset observation changed its runtime identity");
+            }
+            ValidateActiveEntryPresentation(playing, observation.value);
+            return observation.value;
+        }
+
+        internal static void ValidateActiveEntryPresentation(
+            Identity playing,
+            LoadingPresentationBinding binding)
+        {
+            ValidateIdentityPresentation(playing);
+            var flow = playing?.active_runtime_flow;
+            var session = playing?.session;
+            if (playing?.mode != PlayingMode || flow == null || session == null ||
+                binding?.schema != "mc2-loading-presentation/v1" ||
+                binding.level_id != flow.bound_level_id ||
+                binding.cue_id != playing.presentation.cue_id ||
+                binding.package_graph_hash != session.package_graph_hash ||
+                binding.definition_hash != session.definition_hash ||
+                binding.definition_revision != session.definition_revision ||
+                !IsLoadingHash(binding.source_package_sha256) ||
+                !IsLoadingHash(binding.owner_export_package_sha256) ||
+                !IsLoadingHash(binding.runtime_capture_sha256) ||
+                !IsLoadingDefinitionHash(binding.definition_hash) ||
+                !IsLoadingDefinitionHash(binding.package_graph_hash) ||
+                !IsLoadingPresentationSourceBinding(binding))
+            {
+                throw new InvalidDataException(
+                    "active-entry assets do not bind the exact Playing session definition");
+            }
+        }
+
         internal static void ValidateLoadingPresentation(Identity loading, LoadingPresentationBinding binding)
         {
             ValidateIdentityPresentation(loading);
@@ -217,9 +277,28 @@ namespace MagicCarpet.Native
                 !IsLoadingHash(binding.owner_export_package_sha256) ||
                 !IsLoadingHash(binding.runtime_capture_sha256) ||
                 !IsLoadingDefinitionHash(binding.definition_hash) || !IsLoadingDefinitionHash(binding.package_graph_hash) ||
-                binding.environment is not ("day" or "night" or "cave") ||
-                binding.artwork_profile is not ("ordinary" or "secret"))
+                !IsLoadingPresentationSourceBinding(binding))
                 throw new InvalidDataException("loading assets do not bind the exact pending destination definition");
+        }
+
+        private static bool IsLoadingPresentationSourceBinding(LoadingPresentationBinding binding)
+        {
+            var selection = binding?.source_selection;
+            if (selection == null)
+                return false;
+
+            var expectedEnvironment = selection.map_type_id switch
+            {
+                0 => "day",
+                1 => "night",
+                2 => "cave",
+                _ => null,
+            };
+            var expectedArtworkProfile = selection.internal_level > 24 && selection.internal_level < 50
+                ? "secret"
+                : "ordinary";
+            return expectedEnvironment != null && binding.environment == expectedEnvironment &&
+                binding.artwork_profile == expectedArtworkProfile;
         }
 
         private static bool IsLoadingHash(string value) => value?.Length == 64 &&
@@ -237,7 +316,8 @@ namespace MagicCarpet.Native
             if (after.runtime_id != loading.runtime_id ||
                 ParseCounter(after.generation, "generation") != checked(generation + 1) ||
                 after.mode is not (TitleMode or CampaignMode) || HasDefinitionIdentityData(after.pending_definition) ||
-                !string.IsNullOrEmpty(after.session?.session_id))
+                !string.IsNullOrEmpty(after.session?.session_id) ||
+                !SameSecretCampaign(loading.secret_campaign, after.secret_campaign))
                 throw new InvalidOperationException("loading cancellation did not return an unbound frontend owner");
             return after;
         }
@@ -258,12 +338,28 @@ namespace MagicCarpet.Native
         }
 
         [Serializable]
+        internal sealed class RuntimeFlowSecretEntry
+        {
+            public string origin_level_id;
+            public string secret_level_id;
+        }
+
+        [Serializable]
         internal sealed class RuntimeFlowDefinition
         {
             public string game_id;
             public string bound_level_id;
             public string entry_level_id;
             public RuntimeFlowEntry[] entries;
+            [OptionalField] public RuntimeFlowSecretEntry[] secret_entries;
+        }
+
+        [Serializable]
+        internal sealed class SecretCampaignSnapshot
+        {
+            public string[] discovered_levels;
+            public string[] completed_levels;
+            [OptionalField] public string return_origin;
         }
 
         [Serializable]
@@ -280,6 +376,7 @@ namespace MagicCarpet.Native
             [OptionalField] public DefinitionIdentity pending_definition;
             [OptionalField] public RuntimeFlowDefinition active_runtime_flow;
             [OptionalField] public EngineSessionTransport.Identity session;
+            [OptionalField] public SecretCampaignSnapshot secret_campaign;
         }
 
         [Serializable]
@@ -543,6 +640,7 @@ namespace MagicCarpet.Native
                     after.session.generation != before.session.generation ||
                     after.session.tick != before.session.tick ||
                     !PreservesSessionBinding(before.session, after.session)) ||
+                !SameSecretCampaign(before.secret_campaign, after.secret_campaign) ||
                 !SameRuntimeFlow(before.active_runtime_flow, after.active_runtime_flow))
             {
                 throw new InvalidOperationException("saving replay mutated the game runtime");
@@ -643,7 +741,7 @@ namespace MagicCarpet.Native
             return identity;
         }
 
-        internal CompletionTransitionReceipt FinishMissionIfReady()
+        internal SecretTransitionTransport.AcceptedBoundaryReceipt FinishMissionIfReady()
         {
             RequireSessionMode(allowPaused: false, "finish mission boundary");
             var before = Current;
@@ -652,9 +750,23 @@ namespace MagicCarpet.Native
                 ParseCounter(before.session.generation, "session_generation"), ParseCounter(before.session.tick, "tick")), "finish mission boundary");
             var after = IdentitySnapshot();
             if (SameIdentity(before, after)) return null;
-            var receipt = ReadJson<CompletionTransitionReceipt>((IntPtr buffer, uint capacity, out uint length) =>
-                NativeSim.mc_game_runtime_completion_transition_receipt_json_v1(RequireHandle(), buffer, capacity, out length), "read mission completion receipt");
-            ValidateCompletionTransitionReceipt(receipt, before, after, generation);
+            var maximumLength = NegotiatedContract.limits.maximum_output_json_bytes;
+            var bytes = ReadBytes(
+                (IntPtr buffer, uint capacity, out uint length) =>
+                    NativeSim.mc_game_runtime_boundary_transition_receipt_json_v1(
+                        RequireHandle(), buffer, capacity, out length),
+                maximumLength,
+                "read accepted runtime boundary receipt");
+            var receipt = SecretTransitionTransport.Decode(bytes, maximumLength);
+            if (receipt.kind == SecretTransitionTransport.OrdinaryCompletionBoundaryKind)
+            {
+                ValidateCompletionTransitionReceipt(
+                    receipt.ordinary_completion, before, after, generation);
+            }
+            else
+            {
+                SecretTransitionTransport.ValidateSecretTransition(receipt, before, after);
+            }
             return receipt;
         }
 
@@ -781,7 +893,8 @@ namespace MagicCarpet.Native
                 !PreservesSessionBinding(before.session, identity.session) ||
                 identity.session.generation != before.session.generation ||
                 identity.session.tick != before.session.tick ||
-                !SameRuntimeFlow(before.active_runtime_flow, identity.active_runtime_flow))
+                !SameRuntimeFlow(before.active_runtime_flow, identity.active_runtime_flow) ||
+                !SameSecretCampaign(before.secret_campaign, identity.secret_campaign))
             {
                 throw new InvalidOperationException(
                     "paused frame mutated the runtime or gameplay session identity");
@@ -789,8 +902,11 @@ namespace MagicCarpet.Native
             return CampaignSnapshot();
         }
 
-        internal Identity Close()
+        internal Identity Close() => Close(out _);
+
+        internal Identity Close(out SecretTransitionTransport.Receipt secretReturn)
         {
+            secretReturn = null;
             if ((Current?.mode != PlayingMode && Current?.mode != PausedMode) ||
                 !HasSessionIdentity(Current))
             {
@@ -807,6 +923,21 @@ namespace MagicCarpet.Native
                     ParseCounter(before.session.tick, "tick")),
                 "close game runtime");
             var identity = IdentitySnapshot();
+            if (identity.mode == CampaignMode)
+            {
+                var maximumLength = NegotiatedContract.limits.maximum_output_json_bytes;
+                var bytes = ReadBytes(
+                    (IntPtr buffer, uint capacity, out uint length) =>
+                        NativeSim.mc_game_runtime_boundary_transition_receipt_json_v1(
+                            RequireHandle(), buffer, capacity, out length),
+                    maximumLength, "read abandoned secret return receipt");
+                var envelope = SecretTransitionTransport.Decode(bytes, maximumLength);
+                var receipt = SecretTransitionTransport.ValidateSecretTransition(envelope, before, identity);
+                if (receipt.kind != SecretTransitionTransport.AbandonedReturnKind)
+                    throw new InvalidDataException("close did not return an abandoned-secret receipt");
+                secretReturn = receipt;
+                return identity;
+            }
             if (identity.mode != TitleMode ||
                 ParseCounter(identity.generation, "generation") !=
                     checked(beforeRuntimeGeneration + 1) ||
@@ -840,7 +971,10 @@ namespace MagicCarpet.Native
             uint elapsedCentiseconds = 0,
             EngineSessionTransport.SpellAssignment assignment = null,
             bool showObjective = false,
-            bool removeCastleStage = false)
+            bool removeCastleStage = false,
+            EngineSessionTransport.SpellMark mark = null,
+            EngineSessionTransport.MarkedSpellCycle cycle = null,
+            string abandonAction = null)
         {
             RequireSessionMode(allowPaused: false, "campaign step");
             var before = Current;
@@ -857,7 +991,7 @@ namespace MagicCarpet.Native
                 lookYaw,
                 lookPitch,
                 NegotiatedSessionContract.limits.maximum_command_json_bytes,
-                selectSpell, recenter, fullStop, recoverPlayer, elapsedCentiseconds, assignment, showObjective, removeCastleStage);
+                selectSpell, recenter, fullStop, recoverPlayer, elapsedCentiseconds, assignment, showObjective, removeCastleStage, mark, cycle, abandonAction);
             var identity = IdentitySnapshot();
             if (identity.mode != PlayingMode ||
                 ParseCounter(identity.generation, "generation") != beforeRuntimeGeneration ||
@@ -1072,6 +1206,9 @@ namespace MagicCarpet.Native
                         throw new InvalidOperationException("Campaign runtime identity is incomplete");
                     ValidateRuntimeFlow(identity.active_runtime_flow);
                     var campaignLevels = identity.active_runtime_flow.entries.Select(entry => entry.level_id).ToArray();
+                    var selectableLevels = new HashSet<string>(campaignLevels, StringComparer.Ordinal);
+                    foreach (var secret in identity.secret_campaign?.discovered_levels ?? Array.Empty<string>())
+                        selectableLevels.Add(secret);
                     var menu = identity.campaign_menu;
                     if (menu.briefing_speech != null &&
                         (menu.phase != "mission_select" || string.IsNullOrEmpty(menu.briefing_level_id) ||
@@ -1090,7 +1227,7 @@ namespace MagicCarpet.Native
                         menu.completed_levels.Distinct().Count() != menu.completed_levels.Length ||
                         menu.available_levels.Distinct().Count() != menu.available_levels.Length ||
                         menu.completed_levels.Any(level => !campaignLevels.Contains(level)) ||
-                        menu.available_levels.Any(level => !campaignLevels.Contains(level)) ||
+                        menu.available_levels.Any(level => !selectableLevels.Contains(level)) ||
                         (menu.phase == "results" && !string.IsNullOrEmpty(menu.selected_level_id)) ||
                         (!string.IsNullOrEmpty(menu.briefing_level_id) && !menu.available_levels.Contains(menu.briefing_level_id)))
                         throw new InvalidOperationException("Campaign menu is not bound to its retained flow and phase");
@@ -1149,6 +1286,60 @@ namespace MagicCarpet.Native
                     EngineSessionTransport.ValidateIdentity(identity.session);
                     ValidateRuntimeFlow(identity.active_runtime_flow);
                     break;
+            }
+            ValidateSecretCampaign(identity);
+        }
+
+        private static void ValidateSecretCampaign(Identity identity)
+        {
+            var snapshot = identity?.secret_campaign;
+            var flow = identity.active_runtime_flow ?? identity.pending_definition?.runtime_flow;
+            var secretEntries = flow?.secret_entries ?? Array.Empty<RuntimeFlowSecretEntry>();
+            var boundSecret = secretEntries.FirstOrDefault(entry =>
+                entry != null && entry.secret_level_id == flow?.bound_level_id);
+            if (snapshot == null)
+            {
+                if (boundSecret != null)
+                    throw new InvalidOperationException(
+                        "a secret-bound runtime is missing its discovered return frame");
+                return;
+            }
+
+            if (snapshot.discovered_levels == null ||
+                snapshot.discovered_levels.Length == 0 || snapshot.completed_levels == null ||
+                snapshot.discovered_levels.Any(level => !IsSemanticId(level, "level")) ||
+                snapshot.discovered_levels.Distinct(StringComparer.Ordinal).Count() !=
+                    snapshot.discovered_levels.Length ||
+                snapshot.completed_levels.Any(level => !snapshot.discovered_levels.Contains(level)) ||
+                snapshot.completed_levels.Distinct(StringComparer.Ordinal).Count() !=
+                    snapshot.completed_levels.Length ||
+                (flow != null && snapshot.discovered_levels.Any(level =>
+                    !secretEntries.Any(entry => entry != null && entry.secret_level_id == level))))
+            {
+                throw new InvalidOperationException(
+                    "secret campaign progress is not bound to its runtime-flow catalog");
+            }
+
+            if (boundSecret != null &&
+                (!snapshot.discovered_levels.Contains(boundSecret.secret_level_id) ||
+                 identity.mode is not (LoadingMode or PlayingMode or PausedMode) ||
+                 ((identity.mode is PlayingMode or PausedMode) &&
+                  snapshot.return_origin != boundSecret.origin_level_id)))
+            {
+                throw new InvalidOperationException(
+                    "a secret-bound runtime has no exact discovered parent return frame");
+            }
+
+            if (snapshot.return_origin != null &&
+                (identity.mode is not (PlayingMode or PausedMode or LoadingMode) || flow == null ||
+                 !IsSemanticId(snapshot.return_origin, "level") ||
+                 !secretEntries.Any(entry => entry != null &&
+                     entry.origin_level_id == snapshot.return_origin &&
+                     entry.secret_level_id == flow.bound_level_id &&
+                     snapshot.discovered_levels.Contains(entry.secret_level_id))))
+            {
+                throw new InvalidOperationException(
+                    "secret campaign return origin is not bound to the active secret level");
             }
         }
 
@@ -1211,6 +1402,7 @@ namespace MagicCarpet.Native
                 identity.session.definition_hash != before.session.definition_hash ||
                 identity.session.definition_revision != before.session.definition_revision ||
                 !SameRuntimeFlow(before.active_runtime_flow, identity.active_runtime_flow) ||
+                !SameSecretCampaign(before.secret_campaign, identity.secret_campaign) ||
                 ParseCounter(identity.session.generation, "session_generation") !=
                     checked(beforeSessionGeneration + 1) ||
                 ParseCounter(identity.session.tick, "tick") != beforeTick)
@@ -1405,7 +1597,8 @@ namespace MagicCarpet.Native
                 (!string.IsNullOrEmpty(flow.game_id) ||
                     !string.IsNullOrEmpty(flow.bound_level_id) ||
                     !string.IsNullOrEmpty(flow.entry_level_id) ||
-                    flow.entries != null);
+                    flow.entries != null ||
+                    flow.secret_entries != null);
         }
 
         private static void ValidateRuntimeFlow(RuntimeFlowDefinition flow)
@@ -1420,8 +1613,7 @@ namespace MagicCarpet.Native
             var levelIds = flow.entries.Select(entry => entry?.level_id).ToArray();
             if (levelIds.Any(levelId => !IsSemanticId(levelId, "level")) ||
                 levelIds.Distinct(StringComparer.Ordinal).Count() != levelIds.Length ||
-                flow.entry_level_id != levelIds[0] ||
-                !levelIds.Contains(flow.bound_level_id))
+                flow.entry_level_id != levelIds[0])
             {
                 throw new InvalidOperationException("runtime flow level identity is invalid");
             }
@@ -1450,6 +1642,22 @@ namespace MagicCarpet.Native
                         "runtime flow Title destination is invalid");
                 }
             }
+            var ordinaryLevels = new HashSet<string>(levelIds, StringComparer.Ordinal);
+            var catalogLevels = new HashSet<string>(ordinaryLevels, StringComparer.Ordinal);
+            foreach (var secret in flow.secret_entries ?? Array.Empty<RuntimeFlowSecretEntry>())
+            {
+                if (secret == null ||
+                    !IsSemanticId(secret.origin_level_id, "level") ||
+                    !IsSemanticId(secret.secret_level_id, "level") ||
+                    !ordinaryLevels.Contains(secret.origin_level_id) ||
+                    !catalogLevels.Add(secret.secret_level_id))
+                {
+                    throw new InvalidOperationException(
+                        "runtime flow secret association is invalid or duplicated");
+                }
+            }
+            if (!catalogLevels.Contains(flow.bound_level_id))
+                throw new InvalidOperationException("runtime flow bound level is outside its validated catalog");
         }
 
         private static bool IsSemanticId(string value, string expectedNamespace)
@@ -1541,6 +1749,17 @@ namespace MagicCarpet.Native
                     return false;
                 }
             }
+            var leftSecrets = left.secret_entries ?? Array.Empty<RuntimeFlowSecretEntry>();
+            var rightSecrets = right.secret_entries ?? Array.Empty<RuntimeFlowSecretEntry>();
+            if (leftSecrets.Length != rightSecrets.Length) return false;
+            for (var index = 0; index < leftSecrets.Length; index++)
+            {
+                if (leftSecrets[index]?.origin_level_id != rightSecrets[index]?.origin_level_id ||
+                    leftSecrets[index]?.secret_level_id != rightSecrets[index]?.secret_level_id)
+                {
+                    return false;
+                }
+            }
             return true;
         }
 
@@ -1555,7 +1774,8 @@ namespace MagicCarpet.Native
                 SameDefinitionIdentity(left.pending_definition, right.pending_definition) &&
                 SameRuntimeFlow(left.active_runtime_flow, right.active_runtime_flow) &&
                 SameCampaignMenu(left.campaign_menu, right.campaign_menu) &&
-                SameSessionIdentity(left.session, right.session);
+                SameSessionIdentity(left.session, right.session) &&
+                SameSecretCampaign(left.secret_campaign, right.secret_campaign);
         }
 
         private static bool HasCampaignMenuData(CampaignMenuSnapshot menu) => menu != null &&
@@ -1572,6 +1792,21 @@ namespace MagicCarpet.Native
                 left.selected_level_id == right.selected_level_id && left.briefing_level_id == right.briefing_level_id &&
                 SameBriefingSpeech(left.briefing_speech, right.briefing_speech) &&
                 left.completed_levels.SequenceEqual(right.completed_levels) && left.available_levels.SequenceEqual(right.available_levels);
+        }
+
+        internal static bool SameSecretCampaign(
+            SecretCampaignSnapshot left,
+            SecretCampaignSnapshot right)
+        {
+            if (left == null || right == null) return left == right;
+            if (left.discovered_levels == null || right.discovered_levels == null ||
+                left.completed_levels == null || right.completed_levels == null)
+            {
+                return false;
+            }
+            return left.return_origin == right.return_origin &&
+                left.discovered_levels.SequenceEqual(right.discovered_levels) &&
+                left.completed_levels.SequenceEqual(right.completed_levels);
         }
 
         private static bool SameBriefingSpeech(CampaignSpeechSegment left, CampaignSpeechSegment right)

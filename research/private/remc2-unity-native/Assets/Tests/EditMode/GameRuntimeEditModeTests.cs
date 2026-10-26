@@ -1,6 +1,7 @@
 using System;
 using System.IO;
 using System.Runtime.InteropServices;
+using System.Runtime.Serialization.Json;
 using System.Text;
 using NUnit.Framework;
 using UnityEngine;
@@ -9,6 +10,256 @@ namespace MagicCarpet.Native.Tests
 {
     public sealed class GameRuntimeEditModeTests
     {
+        private const string SecretOriginLevel = "level.magic_carpet_2.t_klom";
+        private const string SecretDestinationLevel = "level.magic_carpet_2.karakir";
+
+        private static string[] SecretOrdinaryLevels() => new[] {
+            "level.magic_carpet_2.night_spire",
+            "level.magic_carpet_2.payahandra_ruins",
+            "level.magic_carpet_2.revealed_way",
+            "level.magic_carpet_2.spider_cave",
+            SecretOriginLevel
+        };
+
+        private static GameRuntimeTransport.RuntimeFlowDefinition SecretRuntimeFlow(string boundLevelId)
+        {
+            var levels = SecretOrdinaryLevels();
+            var entries = new GameRuntimeTransport.RuntimeFlowEntry[levels.Length];
+            for (var index = 0; index < levels.Length; index++)
+            {
+                var destination = index + 1 < levels.Length
+                    ? new GameRuntimeTransport.RuntimeFlowDestination {
+                        kind = "level", level_id = levels[index + 1]
+                    }
+                    : new GameRuntimeTransport.RuntimeFlowDestination {
+                        kind = "title", node_id = "flow.magic_carpet_2.return_to_title"
+                    };
+                entries[index] = new GameRuntimeTransport.RuntimeFlowEntry {
+                    level_id = levels[index], completion_destination = destination
+                };
+            }
+            return new GameRuntimeTransport.RuntimeFlowDefinition {
+                game_id = "game.magic_carpet_2",
+                bound_level_id = boundLevelId,
+                entry_level_id = levels[0],
+                entries = entries,
+                secret_entries = new[] {
+                    new GameRuntimeTransport.RuntimeFlowSecretEntry {
+                        origin_level_id = SecretOriginLevel,
+                        secret_level_id = SecretDestinationLevel
+                    }
+                }
+            };
+        }
+
+        private static GameRuntimeTransport.SecretCampaignSnapshot SecretProgress(
+            string returnOrigin,
+            bool completed)
+        {
+            return new GameRuntimeTransport.SecretCampaignSnapshot {
+                discovered_levels = new[] { SecretDestinationLevel },
+                completed_levels = completed
+                    ? new[] { SecretDestinationLevel }
+                    : Array.Empty<string>(),
+                return_origin = returnOrigin
+            };
+        }
+
+        private static EngineSessionTransport.Identity SecretSession(
+            string generation,
+            string tick,
+            char definitionHash)
+        {
+            return new EngineSessionTransport.Identity {
+                engine_contract = EngineSessionTransport.EngineContract,
+                package_graph_hash = "sha256:" + new string('a', 64),
+                definition_hash = "sha256:" + new string(definitionHash, 64),
+                definition_revision = "1",
+                session_id = "771",
+                generation = generation,
+                tick = tick
+            };
+        }
+
+        private static GameRuntimeTransport.Identity SecretPlayingIdentity(
+            string mode,
+            string runtimeGeneration,
+            string boundLevelId,
+            EngineSessionTransport.Identity session,
+            GameRuntimeTransport.SecretCampaignSnapshot secretCampaign)
+        {
+            var suffix = boundLevelId.Substring(boundLevelId.LastIndexOf('.') + 1);
+            return new GameRuntimeTransport.Identity {
+                runtime_contract = GameRuntimeTransport.RuntimeContract,
+                runtime_id = "771",
+                generation = runtimeGeneration,
+                mode = mode,
+                active_runtime_flow = SecretRuntimeFlow(boundLevelId),
+                session = session,
+                secret_campaign = secretCampaign,
+                presentation = new GameRuntimeTransport.RuntimePresentationCue {
+                    cue_id = "presentation.magic_carpet_2." + suffix + ".entry",
+                    phase = GameRuntimeTransport.LevelEntryPresentationPhase,
+                    level_id = boundLevelId
+                }
+            };
+        }
+
+        private static GameRuntimeTransport.Identity SecretLoadingIdentity(string returnOrigin)
+        {
+            return new GameRuntimeTransport.Identity {
+                runtime_contract = GameRuntimeTransport.RuntimeContract,
+                runtime_id = "771",
+                generation = "8",
+                mode = GameRuntimeTransport.LoadingMode,
+                pending_definition = new GameRuntimeTransport.DefinitionIdentity {
+                    package_graph_hash = "sha256:" + new string('a', 64),
+                    definition_hash = "sha256:" + new string('b', 64),
+                    definition_revision = "1",
+                    runtime_flow = SecretRuntimeFlow(SecretDestinationLevel)
+                },
+                secret_campaign = SecretProgress(returnOrigin, completed: true),
+                presentation = new GameRuntimeTransport.RuntimePresentationCue {
+                    cue_id = "presentation.magic_carpet_2.karakir.loading",
+                    phase = GameRuntimeTransport.LoadingPresentationPhase,
+                    level_id = SecretDestinationLevel
+                }
+            };
+        }
+
+        private static GameRuntimeTransport.Identity SecretCampaignMapIdentity(
+            string runtimeGeneration = "31")
+        {
+            var levels = SecretOrdinaryLevels();
+            var available = new string[levels.Length + 1];
+            Array.Copy(levels, available, levels.Length);
+            available[levels.Length] = SecretDestinationLevel;
+            var boundOrdinary = levels[1];
+            return new GameRuntimeTransport.Identity {
+                runtime_contract = GameRuntimeTransport.RuntimeContract,
+                runtime_id = "771",
+                generation = runtimeGeneration,
+                mode = GameRuntimeTransport.CampaignMode,
+                active_runtime_flow = SecretRuntimeFlow(boundOrdinary),
+                secret_campaign = SecretProgress(null, completed: true),
+                presentation = new GameRuntimeTransport.RuntimePresentationCue {
+                    cue_id = "presentation.campaign.map",
+                    phase = GameRuntimeTransport.CampaignMapPresentationPhase,
+                    level_id = SecretOriginLevel
+                },
+                campaign_menu = new GameRuntimeTransport.CampaignMenuSnapshot {
+                    phase = "mission_select",
+                    completed_level_id = boundOrdinary,
+                    completed_levels = new[] { levels[0], boundOrdinary },
+                    available_levels = available,
+                    selected_level_id = SecretOriginLevel,
+                    briefing_level_id = SecretOriginLevel
+                }
+            };
+        }
+
+        private static SecretTransitionTransport.Receipt SecretEntryReceipt()
+        {
+            var source = SecretSession("40", "71", 'b');
+            var destination = SecretSession("41", "0", 'c');
+            var before = SecretPlayingIdentity(
+                GameRuntimeTransport.PlayingMode, "22", SecretOriginLevel, source, null);
+            var after = SecretPlayingIdentity(
+                GameRuntimeTransport.PlayingMode, "23", SecretDestinationLevel,
+                destination, SecretProgress(SecretOriginLevel, completed: false));
+            return new SecretTransitionTransport.Receipt {
+                receipt_contract = SecretTransitionTransport.ReceiptContract,
+                kind = SecretTransitionTransport.EntryKind,
+                before = before,
+                after = after,
+                source_session = source,
+                origin_level_id = SecretOriginLevel,
+                secret_level_id = SecretDestinationLevel,
+                receipt_sha256 = new string('0', 64)
+            };
+        }
+
+        private static SecretTransitionTransport.Receipt SecretCompletedReturnReceipt()
+        {
+            var source = SecretSession("41", "88", 'c');
+            var before = SecretPlayingIdentity(
+                GameRuntimeTransport.PlayingMode, "23", SecretDestinationLevel,
+                source, SecretProgress(SecretOriginLevel, completed: false));
+            // The Rust receipt contract advances runtime generation by exactly
+            // one; this return starts at 23 and therefore lands at 24.
+            var after = SecretCampaignMapIdentity("24");
+            return new SecretTransitionTransport.Receipt {
+                receipt_contract = SecretTransitionTransport.ReceiptContract,
+                kind = SecretTransitionTransport.CompletedReturnKind,
+                before = before,
+                after = after,
+                source_session = source,
+                origin_level_id = SecretOriginLevel,
+                secret_level_id = SecretDestinationLevel,
+                receipt_sha256 = new string('0', 64)
+            };
+        }
+
+        private static SecretTransitionTransport.Receipt SecretAbandonedReturnReceipt()
+        {
+            var receipt = SecretCompletedReturnReceipt();
+            receipt.kind = SecretTransitionTransport.AbandonedReturnKind;
+            receipt.after.secret_campaign.completed_levels = Array.Empty<string>();
+            return receipt;
+        }
+
+        private static string SerializeDataContractJson<T>(T value)
+        {
+            using var stream = new MemoryStream();
+            new DataContractJsonSerializer(typeof(T)).WriteObject(stream, value);
+            return Encoding.UTF8.GetString(stream.ToArray());
+        }
+
+        private static T DataContractJsonRoundTrip<T>(T value) where T : class
+        {
+            using var stream = new MemoryStream();
+            var serializer = new DataContractJsonSerializer(typeof(T));
+            serializer.WriteObject(stream, value);
+            stream.Position = 0;
+            return serializer.ReadObject(stream) as T;
+        }
+
+        private static byte[] SerializeBoundaryEnvelope(
+            SecretTransitionTransport.AcceptedBoundaryReceipt envelope)
+        {
+            // Rust serializes this as a tagged enum: the kind and only the
+            // selected payload are present. Build that wire shape explicitly
+            // so the fixture does not acquire CLR-only envelope members.
+            var json = new StringBuilder("{\"kind\":\"")
+                .Append(envelope.kind)
+                .Append('"');
+            if (envelope.HasOrdinaryCompletionField)
+            {
+                json.Append(",\"ordinary_completion\":")
+                    .Append(envelope.ordinary_completion == null
+                        ? "null"
+                        : SerializeDataContractJson(envelope.ordinary_completion));
+            }
+            if (envelope.HasSecretTransitionField)
+            {
+                json.Append(",\"secret_transition\":")
+                    .Append(envelope.secret_transition == null
+                        ? "null"
+                        : SerializeDataContractJson(envelope.secret_transition));
+            }
+            return Encoding.UTF8.GetBytes(json.Append('}').ToString());
+        }
+
+        private static SecretTransitionTransport.AcceptedBoundaryReceipt DecodeBoundaryEnvelope(
+            SecretTransitionTransport.Receipt receipt,
+            string kind = SecretTransitionTransport.SecretTransitionBoundaryKind)
+        {
+            var envelope = new SecretTransitionTransport.AcceptedBoundaryReceipt { kind = kind };
+            envelope.secret_transition = receipt;
+            return SecretTransitionTransport.Decode(
+                SerializeBoundaryEnvelope(envelope), 1024 * 1024);
+        }
+
         private static string[] InstalledOpeningArguments()
         {
             var generated = Path.Combine(PrivateRoot, "generated");
@@ -318,7 +569,7 @@ namespace MagicCarpet.Native.Tests
         [Test]
         public void OwnerCampaignMapUsesSourceMissionNamesAndRejectsAlteredPixels()
         {
-            var source = Path.Combine(PrivateRoot, "generated/mc2-campaign-menu-cache");
+            var source = Path.Combine(PrivateRoot, "generated/mc-shared-source-map-motion-20261026");
             using (var cache = new OwnerCampaignMenuCache(source))
             {
                 Assert.That(cache.World.width, Is.EqualTo(1280));
@@ -802,6 +1053,256 @@ namespace MagicCarpet.Native.Tests
             Assert.Throws<InvalidOperationException>(() => GameRuntimeTransport.ValidateIdentity(identity, 771));
         }
 
+        [Test]
+        public void CampaignIdentityAllowsOnlyDiscoveredSecretsAndKeepsOrdinaryCompletionsSeparate()
+        {
+            var identity = SecretCampaignMapIdentity();
+            Assert.DoesNotThrow(() => GameRuntimeTransport.ValidateIdentity(identity, 771));
+
+            identity.secret_campaign = null;
+            Assert.Throws<InvalidOperationException>(
+                () => GameRuntimeTransport.ValidateIdentity(identity, 771),
+                "a catalog secret without discovered progress is not a selectable campaign choice");
+
+            identity = SecretCampaignMapIdentity();
+            var levels = SecretOrdinaryLevels();
+            identity.campaign_menu.completed_levels = new[] {
+                levels[0], levels[1], SecretDestinationLevel
+            };
+            Assert.Throws<InvalidOperationException>(
+                () => GameRuntimeTransport.ValidateIdentity(identity, 771),
+                "secret completions belong to secret_campaign, not the ordinary frontier");
+        }
+
+        [Test]
+        public void SecretCampaignSnapshotBindsReturnOriginToLoadingAndPausedBoundSecret()
+        {
+            var loading = SecretLoadingIdentity(returnOrigin: null);
+            Assert.DoesNotThrow(() => GameRuntimeTransport.ValidateIdentity(loading, 771),
+                "a discovered secret may be Loading before its parent return frame is opened");
+            loading.secret_campaign.return_origin = SecretOriginLevel;
+            Assert.DoesNotThrow(() => GameRuntimeTransport.ValidateIdentity(loading, 771));
+            loading.secret_campaign.return_origin = SecretOrdinaryLevels()[1];
+            Assert.Throws<InvalidOperationException>(
+                () => GameRuntimeTransport.ValidateIdentity(loading, 771));
+
+            loading = SecretLoadingIdentity(returnOrigin: null);
+            loading.secret_campaign = null;
+            Assert.Throws<InvalidOperationException>(
+                () => GameRuntimeTransport.ValidateIdentity(loading, 771),
+                "a secret Loading identity must carry its discovered destination");
+
+            var paused = SecretPlayingIdentity(
+                GameRuntimeTransport.PausedMode, "32", SecretDestinationLevel,
+                SecretSession("54", "18", 'c'),
+                SecretProgress(SecretOriginLevel, completed: false));
+            Assert.DoesNotThrow(() => GameRuntimeTransport.ValidateIdentity(paused, 771));
+
+            // Production runtime identities are decoded with this serializer;
+            // JsonUtility materializes absent nested DTOs as empty objects.
+            var roundTrip = DataContractJsonRoundTrip(paused);
+            Assert.That(roundTrip, Is.Not.Null,
+                "the production identity serializer reconstructs the typed DTO");
+            Assert.That(roundTrip.campaign_menu, Is.Null,
+                "Rust omits campaign_menu outside Campaign mode");
+            Assert.That(
+                GameRuntimeTransport.SameSecretCampaign(
+                    paused.secret_campaign, roundTrip.secret_campaign), Is.True,
+                "the typed DTO preserves discovered, completed and return-origin save state");
+            Assert.DoesNotThrow(() => GameRuntimeTransport.ValidateIdentity(roundTrip, 771));
+
+            roundTrip.secret_campaign.return_origin = null;
+            Assert.That(
+                GameRuntimeTransport.SameSecretCampaign(
+                    paused.secret_campaign, roundTrip.secret_campaign), Is.False,
+                "save and pause guards compare the active parent return frame");
+            Assert.Throws<InvalidOperationException>(
+                () => GameRuntimeTransport.ValidateIdentity(roundTrip, 771),
+                "Playing and Paused secret sessions require the exact parent return frame");
+        }
+
+        [Test]
+        public void SecretBoundaryReceiptsBindEntryAndReturnAndRejectAmbiguity()
+        {
+            var ordinaryBoundary = new SecretTransitionTransport.AcceptedBoundaryReceipt {
+                kind = SecretTransitionTransport.OrdinaryCompletionBoundaryKind
+            };
+            ordinaryBoundary.ordinary_completion =
+                new GameRuntimeTransport.CompletionTransitionReceipt();
+            var decodedOrdinary = SecretTransitionTransport.Decode(
+                SerializeBoundaryEnvelope(ordinaryBoundary), 1024 * 1024);
+            Assert.That(decodedOrdinary.kind,
+                Is.EqualTo(SecretTransitionTransport.OrdinaryCompletionBoundaryKind));
+            Assert.That(decodedOrdinary.ordinary_completion, Is.Not.Null);
+            Assert.That(decodedOrdinary.secret_transition, Is.Null);
+            Assert.That(decodedOrdinary.HasOrdinaryCompletionField, Is.True);
+            Assert.That(decodedOrdinary.HasSecretTransitionField, Is.False);
+
+            var entry = SecretEntryReceipt();
+            GameRuntimeTransport.ValidateIdentity(entry.before, 771);
+            GameRuntimeTransport.ValidateIdentity(entry.after, 771);
+            var acceptedEntry = SecretTransitionTransport.ValidateSecretTransition(
+                DecodeBoundaryEnvelope(entry), entry.before, entry.after);
+            Assert.That(acceptedEntry.kind, Is.EqualTo(SecretTransitionTransport.EntryKind));
+            Assert.That(acceptedEntry.after.secret_campaign.return_origin,
+                Is.EqualTo(SecretOriginLevel));
+
+            var completedReturn = SecretCompletedReturnReceipt();
+            GameRuntimeTransport.ValidateIdentity(completedReturn.before, 771);
+            GameRuntimeTransport.ValidateIdentity(completedReturn.after, 771);
+            var acceptedReturn = SecretTransitionTransport.ValidateSecretTransition(
+                DecodeBoundaryEnvelope(completedReturn),
+                completedReturn.before, completedReturn.after);
+            Assert.That(acceptedReturn.after.campaign_menu.selected_level_id,
+                Is.EqualTo(SecretOriginLevel));
+            Assert.That(acceptedReturn.after.active_runtime_flow.bound_level_id,
+                Is.Not.EqualTo(SecretOriginLevel),
+                "the retained ordinary flow binding need not equal the selected return origin");
+
+            var skippedReturnGeneration = SecretCompletedReturnReceipt();
+            skippedReturnGeneration.after.generation = "25";
+            Assert.Throws<InvalidDataException>(() =>
+                SecretTransitionTransport.ValidateSecretTransition(
+                    DecodeBoundaryEnvelope(skippedReturnGeneration),
+                    skippedReturnGeneration.before, skippedReturnGeneration.after),
+                "a secret boundary must advance runtime generation by exactly one");
+
+            var abandonedReturn = SecretAbandonedReturnReceipt();
+            GameRuntimeTransport.ValidateIdentity(abandonedReturn.before, 771);
+            GameRuntimeTransport.ValidateIdentity(abandonedReturn.after, 771);
+            Assert.That(SecretTransitionTransport.ValidateSecretTransition(
+                DecodeBoundaryEnvelope(abandonedReturn),
+                abandonedReturn.before, abandonedReturn.after).kind,
+                Is.EqualTo(SecretTransitionTransport.AbandonedReturnKind));
+
+            var pausedAbandon = SecretAbandonedReturnReceipt();
+            pausedAbandon.before.mode = GameRuntimeTransport.PausedMode;
+            var acceptedPausedAbandon = SecretTransitionTransport.ValidateSecretTransition(
+                DecodeBoundaryEnvelope(pausedAbandon), pausedAbandon.before, pausedAbandon.after);
+            Assert.That(acceptedPausedAbandon.kind, Is.EqualTo(SecretTransitionTransport.AbandonedReturnKind));
+            var pausedCompletion = SecretCompletedReturnReceipt();
+            pausedCompletion.before.mode = GameRuntimeTransport.PausedMode;
+            Assert.Throws<InvalidDataException>(() =>
+                SecretTransitionTransport.ValidateSecretTransition(
+                    DecodeBoundaryEnvelope(pausedCompletion), pausedCompletion.before, pausedCompletion.after),
+                "paused Close can abandon a secret but cannot produce a completed return");
+
+            var abandonmentGrantedCompletion = SecretAbandonedReturnReceipt();
+            abandonmentGrantedCompletion.after.secret_campaign.completed_levels =
+                new[] { SecretDestinationLevel };
+            GameRuntimeTransport.ValidateIdentity(abandonmentGrantedCompletion.after, 771);
+            Assert.Throws<InvalidDataException>(() =>
+                SecretTransitionTransport.ValidateSecretTransition(
+                    DecodeBoundaryEnvelope(abandonmentGrantedCompletion),
+                    abandonmentGrantedCompletion.before, abandonmentGrantedCompletion.after),
+                "an abandoned return cannot add a secret completion result");
+
+            var wrongReturnMap = SecretCompletedReturnReceipt();
+            wrongReturnMap.after.campaign_menu.selected_level_id = SecretDestinationLevel;
+            wrongReturnMap.after.campaign_menu.briefing_level_id = SecretDestinationLevel;
+            wrongReturnMap.after.presentation.level_id = SecretDestinationLevel;
+            GameRuntimeTransport.ValidateIdentity(wrongReturnMap.after, 771);
+            Assert.Throws<InvalidDataException>(() =>
+                SecretTransitionTransport.ValidateSecretTransition(
+                    DecodeBoundaryEnvelope(wrongReturnMap),
+                    wrongReturnMap.before, wrongReturnMap.after),
+                "a valid selectable secret is not authority to skip restoring its origin");
+
+            var wrongReceiptKind = SecretEntryReceipt();
+            wrongReceiptKind.kind = "future_transition";
+            Assert.Throws<InvalidDataException>(() =>
+                SecretTransitionTransport.ValidateSecretTransition(
+                    DecodeBoundaryEnvelope(wrongReceiptKind),
+                    wrongReceiptKind.before, wrongReceiptKind.after));
+
+            var unknownEnvelope = new SecretTransitionTransport.AcceptedBoundaryReceipt {
+                kind = "future_boundary"
+            };
+            unknownEnvelope.secret_transition = SecretEntryReceipt();
+            Assert.Throws<InvalidDataException>(() => SecretTransitionTransport.Decode(
+                SerializeBoundaryEnvelope(unknownEnvelope), 1024 * 1024));
+
+            var unknownFieldJson = Encoding.UTF8.GetString(
+                SerializeBoundaryEnvelope(DecodeBoundaryEnvelope(SecretEntryReceipt())));
+            unknownFieldJson = unknownFieldJson.Insert(
+                unknownFieldJson.IndexOf('{') + 1, "\"unexpected\":null,");
+            Assert.Throws<InvalidDataException>(() => SecretTransitionTransport.Decode(
+                Encoding.UTF8.GetBytes(unknownFieldJson), 1024 * 1024),
+                "source-shaped boundary JSON still rejects an unknown member");
+
+            var unknownReceiptFieldJson = Encoding.UTF8.GetString(
+                SerializeBoundaryEnvelope(DecodeBoundaryEnvelope(SecretEntryReceipt())));
+            var receiptStart = unknownReceiptFieldJson.IndexOf(
+                "\"secret_transition\":{", StringComparison.Ordinal);
+            Assert.That(receiptStart, Is.GreaterThanOrEqualTo(0));
+            receiptStart = receiptStart + "\"secret_transition\":{".Length;
+            unknownReceiptFieldJson = unknownReceiptFieldJson.Insert(
+                receiptStart, "\"unexpected\":null,");
+            Assert.Throws<InvalidDataException>(() => SecretTransitionTransport.Decode(
+                Encoding.UTF8.GetBytes(unknownReceiptFieldJson), 1024 * 1024),
+                "secret receipt still rejects unknown members");
+
+            var duplicateKindJson = Encoding.UTF8.GetString(
+                SerializeBoundaryEnvelope(DecodeBoundaryEnvelope(SecretEntryReceipt())));
+            duplicateKindJson = duplicateKindJson.Insert(
+                duplicateKindJson.IndexOf('{') + 1,
+                "\"kind\":\"secret_transition\",");
+            Assert.Throws<InvalidDataException>(() => SecretTransitionTransport.Decode(
+                Encoding.UTF8.GetBytes(duplicateKindJson), 1024 * 1024),
+                "tagged envelope still rejects duplicate members");
+
+            var duplicateReceiptFieldJson = Encoding.UTF8.GetString(
+                SerializeBoundaryEnvelope(DecodeBoundaryEnvelope(SecretEntryReceipt())));
+            receiptStart = duplicateReceiptFieldJson.IndexOf(
+                "\"secret_transition\":{", StringComparison.Ordinal);
+            Assert.That(receiptStart, Is.GreaterThanOrEqualTo(0));
+            receiptStart = receiptStart + "\"secret_transition\":{".Length;
+            duplicateReceiptFieldJson = duplicateReceiptFieldJson.Insert(
+                receiptStart,
+                "\"receipt_contract\":\"" + SecretTransitionTransport.ReceiptContract + "\",");
+            Assert.Throws<InvalidDataException>(() => SecretTransitionTransport.Decode(
+                Encoding.UTF8.GetBytes(duplicateReceiptFieldJson), 1024 * 1024),
+                "secret receipt still rejects duplicate members");
+
+            var missingReceiptFieldJson = Encoding.UTF8.GetString(
+                SerializeBoundaryEnvelope(DecodeBoundaryEnvelope(SecretEntryReceipt())));
+            var digestMember = missingReceiptFieldJson.IndexOf(
+                "\"receipt_sha256\":", StringComparison.Ordinal);
+            Assert.That(digestMember, Is.GreaterThanOrEqualTo(0));
+            var digestValueEnd = missingReceiptFieldJson.IndexOf('}', digestMember);
+            Assert.That(digestValueEnd, Is.GreaterThan(digestMember));
+            var precedingComma = digestMember > 0 && missingReceiptFieldJson[digestMember - 1] == ',';
+            if (precedingComma)
+            {
+                missingReceiptFieldJson = missingReceiptFieldJson.Remove(
+                    digestMember - 1, digestValueEnd - digestMember + 1);
+            }
+            else
+            {
+                var followingComma = missingReceiptFieldJson.IndexOf(',', digestMember);
+                missingReceiptFieldJson = missingReceiptFieldJson.Remove(
+                    digestMember, followingComma - digestMember + 1);
+            }
+            Assert.Throws<InvalidDataException>(() => SecretTransitionTransport.Decode(
+                Encoding.UTF8.GetBytes(missingReceiptFieldJson), 1024 * 1024),
+                "secret receipt still requires every v1 member");
+
+            var ambiguousJson = Encoding.UTF8.GetString(
+                SerializeBoundaryEnvelope(DecodeBoundaryEnvelope(SecretEntryReceipt())));
+            ambiguousJson = ambiguousJson.Insert(
+                ambiguousJson.IndexOf('{') + 1, "\"ordinary_completion\":null,");
+            Assert.Throws<InvalidDataException>(() => SecretTransitionTransport.Decode(
+                Encoding.UTF8.GetBytes(ambiguousJson), 1024 * 1024),
+                "even an explicit null opposite payload makes the tagged union ambiguous");
+
+            var malformedHash = SecretEntryReceipt();
+            malformedHash.receipt_sha256 = new string('A', 64);
+            Assert.Throws<InvalidDataException>(() =>
+                SecretTransitionTransport.ValidateSecretTransition(
+                    DecodeBoundaryEnvelope(malformedHash),
+                    malformedHash.before, malformedHash.after));
+        }
+
         [TestCase(2, "objective.reach.payahandra_ruins", "Fly to Payahandra's ruins.")]
         [TestCase(3, "objective.clear.undead_horde", "Destroy the undead horde.")]
         [Timeout(180000)]
@@ -1090,13 +1591,24 @@ namespace MagicCarpet.Native.Tests
             var save = Path.Combine(Path.GetTempPath(), $"mc-menu-{Guid.NewGuid():N}.json");
             try
             {
+                var generated = Path.Combine(PrivateRoot, "generated");
+                // Use the same installed four-package input closure as run-campaign.sh.
+                // Native environment owners and presentation companions are distinct.
                 var args = new[] {
-                    "-mc-game-runtime", "-mc-runtime-package", LevelThreePackage,
-                    "-mc-runtime-package", LevelOnePackage,
-                    "-mc-runtime-owner-cache", LevelOneOwnerCache,
-                    "-mc-runtime-presentation-cache", LevelOneOwnerCache,
-                    "-mc-runtime-package", LevelTwoPackage,
-                    "-mc-runtime-loading-cache", LevelOneOwnerCache,
+                    "-mc-game-runtime", "-mc-runtime-package", Path.Combine(generated, "level3-day-block32-campaign-recipe-v2"),
+                    "-mc-runtime-owner-cache", Path.Combine(generated, "mc-level3-environment-exit-20261025"),
+                    "-mc-runtime-presentation-cache", Path.Combine(generated, "level3-day-spell-owner-cache-audio-v4"),
+                    "-mc-runtime-package", Path.Combine(generated, "mc-bhq8-level1-collision-v5-night"),
+                    "-mc-runtime-owner-cache", Path.Combine(generated, "mc-oi62-environment-level1-v2"),
+                    "-mc-runtime-presentation-cache", Path.Combine(generated, "mc2-level1-night-cache-v2"),
+                    "-mc-runtime-package", Path.Combine(generated, "mc-level2-vault-successor-closure-20261025"),
+                    "-mc-runtime-owner-cache", Path.Combine(generated, "mc-level2-vault-successor-environment-20261025"),
+                    "-mc-runtime-presentation-cache", Path.Combine(generated, "level2-vault-successor-owner-cache-20261025"),
+                    "-mc-runtime-package", Path.Combine(generated, "mc-bhq6-ordinary-20261025-zclu5fjj/level4"),
+                    "-mc-runtime-owner-cache", Path.Combine(generated, "mc-oi62-environment-level4-audio-v3"),
+                    "-mc-runtime-presentation-cache", Path.Combine(generated, "mc-oi62-environment-level4-audio-v3"),
+                    "-mc-runtime-loading-cache", Path.Combine(generated, "mc2-level1-night-cache-v2"),
+                    "-mc-runtime-menu-cache", Path.Combine(generated, "mc-shared-source-map-motion-20261026"),
                     "-mc-runtime-replay-save", save };
                 runtime.QualificationInitializeGameRuntimeProductionFromArguments(args);
                 var runtimeId = runtime.GameRuntimeProductionIdentity.runtime_id;

@@ -1939,6 +1939,11 @@ pub struct PlayerSnapshot {
     /// Source-exact Level 2 Type_str_164 carrier. Level 1 deliberately has no
     /// corresponding field because its sealed player record remains v2.
     pub type_str_164_auxiliary: Option<TypeStr164Auxiliary>,
+    /// Level 1's source `word_0x26_38` matrix is omitted from its sealed
+    /// player row. The decoder initializes this sidecar only for a verified
+    /// fresh Level 1 slot; missing state stays missing for other profiles.
+    pub(super) level1_source_kill_score_matrix:
+        Option<super::source_kill_score::SourceKillScoreMatrix>,
     /// Source `array_0x2BDE[playerColorIndex].byte_0x006_2BE4_11236`.
     ///
     /// This mutable Level 2 carrier is intentionally separate from the
@@ -1972,6 +1977,14 @@ impl PlayerSnapshot {
                 self.visibility_mode,
             ]);
         }
+        if let Some(matrix) = self.level1_source_kill_score_matrix {
+            if matrix.words().iter().any(|score| *score != 0) {
+                hasher.update(b"source-player-kill-score-matrix-v1");
+                for score in matrix.words() {
+                    hasher.update(score.to_le_bytes());
+                }
+            }
+        }
     }
 
     #[must_use]
@@ -1987,6 +2000,18 @@ impl PlayerSnapshot {
     #[must_use]
     pub const fn type_str_164_auxiliary(&self) -> Option<&TypeStr164Auxiliary> {
         self.type_str_164_auxiliary.as_ref()
+    }
+
+    /// Read the authoritative source kill-score matrix. Level 2 carries it
+    /// inside Type_str_164; Level 1 carries the field omitted from its sealed
+    /// row only after the source constructor has established its value.
+    #[must_use]
+    pub fn source_kill_scores(&self) -> Option<[i16; 8]> {
+        if let Some(auxiliary) = self.type_str_164_auxiliary.as_ref() {
+            return Some(auxiliary.word_0x26_38);
+        }
+        self.level1_source_kill_score_matrix
+            .map(|matrix| *matrix.words())
     }
 
     /// Read one source `Type_str_164::array_0x1FC` word without exposing the
@@ -2114,16 +2139,18 @@ impl PlayerSnapshot {
     }
 
     pub(super) fn increment_kill_score_for_color(&mut self, color: usize) -> bool {
-        let Some(auxiliary) = self.type_str_164_auxiliary.as_mut() else {
-            return false;
-        };
-        let Some(score) = auxiliary.word_0x26_38.get_mut(color) else {
-            return false;
-        };
-        *score = score.wrapping_add(1);
-        let offset = PLAYER_LEGACY_RECORD_BYTES + color * 2;
-        self.record[offset..offset + 2].copy_from_slice(&score.to_le_bytes());
-        true
+        if let Some(auxiliary) = self.type_str_164_auxiliary.as_mut() {
+            let Some(score) = auxiliary.word_0x26_38.get_mut(color) else {
+                return false;
+            };
+            *score = score.wrapping_add(1);
+            let offset = PLAYER_LEGACY_RECORD_BYTES + color * 2;
+            self.record[offset..offset + 2].copy_from_slice(&score.to_le_bytes());
+            return true;
+        }
+        self.level1_source_kill_score_matrix
+            .as_mut()
+            .is_some_and(|matrix| matrix.increment_for_color(color))
     }
 }
 
@@ -3744,9 +3771,15 @@ pub struct RuntimeSnapshot {
     pub objective_state: crate::campaign::objectives::ObjectiveState,
     pub stages: Box<[RuntimeStage]>,
     pub stage_variables: Box<[RuntimeStageVariable]>,
+    /// Source `countStageVars_0x36E00`: the last active authored index, not a
+    /// count of nonzero rows. StageVar rows beyond it remain preserved.
+    pub(crate) active_stage_variable_count: u8,
     pub player_inputs: [PlayerCommand; PLAYER_COUNT],
     pub(super) bytes: Box<[u8]>,
 }
+
+// `exporter_main.cpp` emits `countStageVars_0x36E00` at MCR1 byte 66.
+const SOURCE_ACTIVE_STAGE_VARIABLE_COUNT_OFFSET: usize = 66;
 
 impl std::ops::Deref for RuntimeSnapshot {
     type Target = crate::campaign::objectives::ObjectiveState;
@@ -3763,10 +3796,60 @@ impl std::ops::DerefMut for RuntimeSnapshot {
 }
 
 impl RuntimeSnapshot {
+    #[must_use]
+    pub(crate) const fn active_stage_variable_count(&self) -> u8 {
+        self.active_stage_variable_count
+    }
+
+    /// Publish a source count to both the typed view and its exported MCR1
+    /// byte. A zero count remains authoritative even when rows are populated.
+    pub(crate) fn set_active_stage_variable_count(&mut self, count: u8) -> bool {
+        if usize::from(count) > 10
+            || usize::from(count) > self.stage_variables.len().saturating_sub(1)
+        {
+            return false;
+        }
+        let Some(raw_count) = self
+            .bytes
+            .get_mut(SOURCE_ACTIVE_STAGE_VARIABLE_COUNT_OFFSET)
+        else {
+            return false;
+        };
+        *raw_count = count;
+        self.active_stage_variable_count = count;
+        true
+    }
+
+    /// Source sub_21490 clears only `countStageVars_0x36E00`; keep every
+    /// imported row intact and update the same raw byte used by reset/hash.
+    pub(crate) fn clear_active_stage_variable_count(&mut self) -> bool {
+        self.set_active_stage_variable_count(0)
+    }
+
+    /// Borrow only source-visible StageVars 1..=count. Index zero is the
+    /// reserved row, and a cleared count yields an empty view.
+    pub(crate) fn active_stage_variables(&self) -> &[RuntimeStageVariable] {
+        let start = if self.stage_variables.is_empty() { 0 } else { 1 };
+        let count = usize::from(self.active_stage_variable_count)
+            .min(self.stage_variables.len().saturating_sub(start))
+            .min(10);
+        &self.stage_variables[start..start + count]
+    }
+
+    pub(crate) fn active_stage_variables_mut(&mut self) -> &mut [RuntimeStageVariable] {
+        let start = if self.stage_variables.is_empty() { 0 } else { 1 };
+        let count = usize::from(self.active_stage_variable_count)
+            .min(self.stage_variables.len().saturating_sub(start))
+            .min(10);
+        &mut self.stage_variables[start..start + count]
+    }
+
     /// The direct-reference publication in source sub_12100's second loop.
     /// Matching the full authored relation word belongs to the content owner.
     pub(crate) fn bind_authored_stage_variable_entity(&mut self, index: u8, slot: u16) -> bool {
-        if !(1..=10).contains(&index) || !(1..1000).contains(&slot) {
+        if !(1..=self.active_stage_variable_count).contains(&index)
+            || !(1..1000).contains(&slot)
+        {
             return false;
         }
         let Some(stage) = self.stage_variables.get_mut(usize::from(index)) else {
@@ -3788,6 +3871,49 @@ impl RuntimeSnapshot {
         true
     }
 
+    /// Follow remc2 `sub_59760` when a bound kind-2 objective target is
+    /// converted into another runtime entity. Only open, nonterminal owner
+    /// rows can move the relation; the typed stage and raw snapshot bytes are
+    /// updated together.
+    pub(crate) fn replace_open_type2_target(
+        &mut self,
+        converted_entity_slot: u16,
+        replacement_entity_slot: u16,
+    ) -> usize {
+        let mut replaced = 0;
+        for stage_index in 0..self.stages.len() {
+            let is_open_target = self.objectives.iter().any(|objective| {
+                objective.is_level_end == 0
+                    && objective.stage_selectors.get(stage_index) == Some(&1)
+            });
+            if !is_open_target {
+                continue;
+            }
+            let offset = 192 + stage_index * 14;
+            if self.bytes.get(offset..offset + 14).is_none() {
+                continue;
+            }
+            let stage = &mut self.stages[stage_index];
+            if stage.kind != 2
+                || stage.flags & 1 == 0
+                || stage.relation != RuntimeRelation::LiveEntity(converted_entity_slot)
+            {
+                continue;
+            }
+            stage.relation = RuntimeRelation::LiveEntity(replacement_entity_slot);
+            let raw_stage = &mut self.bytes[offset..offset + 14];
+            raw_stage[1] = stage.flags as u8;
+            raw_stage[6] = 2;
+            raw_stage[10..14].copy_from_slice(
+                &u32::from(replacement_entity_slot)
+                    .wrapping_add(1)
+                    .to_le_bytes(),
+            );
+            replaced += 1;
+        }
+        replaced
+    }
+
     /// Exact reset-time source counters. Legacy captures did not export them.
     pub(super) fn constructor_counters(&self) -> Option<&[u8; 29]> {
         self.bytes.get(RUNTIME_BYTES..)?.try_into().ok()
@@ -3796,6 +3922,42 @@ impl RuntimeSnapshot {
     #[must_use]
     pub fn bytes(&self) -> &[u8] {
         &self.bytes
+    }
+
+    /// Source `D41A0_0.word_0x36546`, the final encounter's pressure speed.
+    /// The exported runtime buffer remains the reset and hash authority.
+    pub(crate) fn final_boss_pressure_speed(&self) -> Option<i16> {
+        let bytes: [u8; 2] = self.bytes.get(186..188)?.try_into().ok()?;
+        Some(i16::from_le_bytes(bytes))
+    }
+
+    /// Publish a source pressure-speed update into the retained runtime word.
+    #[must_use]
+    pub(crate) fn set_final_boss_pressure_speed(&mut self, value: i16) -> bool {
+        let Some(bytes) = self.bytes.get_mut(186..188) else {
+            return false;
+        };
+        bytes.copy_from_slice(&value.to_le_bytes());
+        true
+    }
+
+    /// Source `D41A0_0.word_0x36548`, immediately before the runtime stage
+    /// table at byte 192. Keep this view backed by the raw buffer so reset,
+    /// hash, and save consumers retain the same authoritative carrier.
+    #[must_use]
+    pub(crate) fn final_boss_active_counter(&self) -> Option<i16> {
+        let bytes: [u8; 2] = self.bytes.get(188..190)?.try_into().ok()?;
+        Some(i16::from_le_bytes(bytes))
+    }
+
+    /// Write the source final-boss lifecycle word into its raw runtime carrier.
+    #[must_use]
+    pub(crate) fn set_final_boss_active_counter(&mut self, value: i16) -> bool {
+        let Some(bytes) = self.bytes.get_mut(188..190) else {
+            return false;
+        };
+        bytes.copy_from_slice(&value.to_le_bytes());
+        true
     }
 
     /// Source word31/word33, retained in the validated MCR1 prefix. These
@@ -3870,7 +4032,9 @@ impl RuntimeSnapshot {
     /// `sub_12330` advances only the high byte of the selected runtime
     /// StageVar's word before applying its thinning rule. Keep the decoded
     /// record and the lossless runtime byte carrier synchronized so reset and
-    /// campaign hashing observe the same construction cadence.
+    /// campaign hashing observe the same construction cadence. The source
+    /// helper is direct-indexed and does not test `countStageVars`; count-bound
+    /// callers are gated by their own active-row scans.
     pub(super) fn advance_level2_stage_variable_counter(&mut self, stage_var_index: u8) -> bool {
         let Some(stage_var) = self.stage_variables.get_mut(usize::from(stage_var_index)) else {
             return false;
@@ -3891,7 +4055,9 @@ impl RuntimeSnapshot {
     /// `0x18` in the source flags byte even when the group has no remaining
     /// authored rows.
     pub(super) fn broadcast_authored_group(&mut self, group: i16) {
-        for (index, stage_var) in self.stage_variables.iter_mut().enumerate().skip(1) {
+        let active_count = usize::from(self.active_stage_variable_count());
+        for index in 1..=active_count {
+            let stage_var = &mut self.stage_variables[index];
             let RuntimeRelation::AxisScalar(value) = stage_var.relation else {
                 continue;
             };
@@ -4019,6 +4185,144 @@ impl RuntimeSnapshot {
             objective.is_level_end = state;
             self.bytes[304] = state;
         }
+    }
+}
+
+#[cfg(test)]
+mod target_replacement_tests {
+    use super::{RuntimeObjective, RuntimeRelation, RuntimeSnapshot, RuntimeStage};
+    use crate::{PlayerCommand, campaign::objectives::ObjectiveState};
+
+    fn runtime(stages: Vec<RuntimeStage>, objectives: Vec<RuntimeObjective>) -> RuntimeSnapshot {
+        let bytes = vec![0; 192 + stages.len() * 14].into_boxed_slice();
+        RuntimeSnapshot {
+            global_turn: 0,
+            random_state: 0,
+            local_player_slot: 0,
+            player_count: 1,
+            maptype_music: 0,
+            objective_state: ObjectiveState::new(0, 0, 0, objectives.into_boxed_slice()),
+            stages: stages.into_boxed_slice(),
+            stage_variables: Vec::new().into_boxed_slice(),
+            active_stage_variable_count: 0,
+            player_inputs: [PlayerCommand::default(); 8],
+            bytes,
+        }
+    }
+
+    #[test]
+    fn final_boss_word_36548_updates_only_its_raw_runtime_slice() {
+        let mut runtime = runtime(Vec::new(), Vec::new());
+        let before = runtime.bytes().to_vec();
+
+        assert_eq!(runtime.final_boss_active_counter(), Some(0));
+        assert!(runtime.set_final_boss_active_counter(1));
+        assert_eq!(runtime.final_boss_active_counter(), Some(1));
+        assert_eq!(&runtime.bytes()[188..190], &1_i16.to_le_bytes());
+        assert_eq!(&runtime.bytes()[..188], &before[..188]);
+        assert_eq!(&runtime.bytes()[190..], &before[190..]);
+
+        assert!(runtime.set_final_boss_active_counter(0));
+        assert_eq!(runtime.final_boss_active_counter(), Some(0));
+        assert_eq!(&runtime.bytes()[188..190], &before[188..190]);
+    }
+
+    #[test]
+    fn final_boss_word_36548_accessor_blocks_a_missing_raw_word() {
+        let mut runtime = runtime(Vec::new(), Vec::new());
+        runtime.bytes = vec![0; 189].into_boxed_slice();
+
+        assert_eq!(runtime.final_boss_active_counter(), None);
+        assert!(!runtime.set_final_boss_active_counter(1));
+    }
+
+    #[test]
+    fn final_boss_pressure_speed_uses_its_source_word_without_changing_counter() {
+        let mut runtime = runtime(Vec::new(), Vec::new());
+        assert!(runtime.set_final_boss_active_counter(7));
+        assert!(runtime.set_final_boss_pressure_speed(-80));
+        assert_eq!(runtime.final_boss_pressure_speed(), Some(-80));
+        assert_eq!(&runtime.bytes()[186..188], &(-80_i16).to_le_bytes());
+        assert_eq!(runtime.final_boss_active_counter(), Some(7));
+
+        runtime.bytes = vec![0; 187].into_boxed_slice();
+        assert_eq!(runtime.final_boss_pressure_speed(), None);
+        assert!(!runtime.set_final_boss_pressure_speed(1));
+    }
+
+    #[test]
+    fn conversion_replaces_only_an_open_bound_type_two_target_and_raw_relation() {
+        let mut runtime = runtime(
+            vec![
+                RuntimeStage {
+                    kind: 2,
+                    flags: 0,
+                    axis_x: 0,
+                    axis_y: 0,
+                    relation: RuntimeRelation::AuthoredFeature(100),
+                },
+                RuntimeStage {
+                    kind: 2,
+                    flags: 1,
+                    axis_x: 0,
+                    axis_y: 0,
+                    relation: RuntimeRelation::LiveEntity(41),
+                },
+                RuntimeStage {
+                    kind: 2,
+                    flags: 0,
+                    axis_x: 0,
+                    axis_y: 0,
+                    relation: RuntimeRelation::LiveEntity(41),
+                },
+                RuntimeStage {
+                    kind: 1,
+                    flags: 1,
+                    axis_x: 0,
+                    axis_y: 0,
+                    relation: RuntimeRelation::LiveEntity(41),
+                },
+                RuntimeStage {
+                    kind: 2,
+                    flags: 1,
+                    axis_x: 0,
+                    axis_y: 0,
+                    relation: RuntimeRelation::LiveEntity(42),
+                },
+            ],
+            vec![
+                RuntimeObjective {
+                    is_level_end: 0,
+                    text_selector: 0,
+                    done: 0,
+                    stage_selectors: [1, 1, 1, 1, 1, 0, 0, 0],
+                },
+                RuntimeObjective {
+                    is_level_end: 1,
+                    text_selector: 0,
+                    done: 0,
+                    stage_selectors: [0, 1, 0, 0, 0, 0, 0, 0],
+                },
+            ],
+        );
+
+        assert_eq!(runtime.bind_authored_stage_entity(100, 41), 1);
+        assert_eq!(runtime.bytes[198], 2);
+        assert_eq!(
+            u32::from_le_bytes(runtime.bytes[202..206].try_into().unwrap()),
+            42
+        );
+        assert_eq!(runtime.replace_open_type2_target(41, 73), 1);
+        assert_eq!(runtime.stages[0].relation, RuntimeRelation::LiveEntity(73));
+        assert_eq!(
+            u32::from_le_bytes(runtime.bytes[202..206].try_into().unwrap()),
+            74
+        );
+        assert_eq!(runtime.bytes[198], 2);
+        assert_eq!(runtime.stages[1].relation, RuntimeRelation::LiveEntity(41));
+        assert_eq!(runtime.stages[2].relation, RuntimeRelation::LiveEntity(41));
+        assert_eq!(runtime.stages[3].relation, RuntimeRelation::LiveEntity(41));
+        assert_eq!(runtime.stages[4].relation, RuntimeRelation::LiveEntity(42));
     }
 }
 
@@ -4384,6 +4688,27 @@ impl NativeWorldInspection {
             }
             session.session.rebase();
         }
+        let rival_wizard_by_id = definition
+            .rival_wizard_selectors()
+            .iter()
+            .map(|(id, selector)| {
+                let target =
+                    crate::campaign::objectives::rival_wizard::target_from_selector(*selector)
+                        .map_err(|error| NativeWorldError::new(error.to_string()))?;
+                if target.id() != id {
+                    return Err(NativeWorldError::new(
+                        "rival-wizard semantic identity disagrees with its source selector",
+                    ));
+                }
+                let bound = crate::campaign::objectives::rival_wizard::bind_target(
+                    &target,
+                    session.players(),
+                    &session.source_arena().entities,
+                )
+                .map_err(|error| NativeWorldError::new(error.to_string()))?;
+                Ok((bound.id, bound.entity_index))
+            })
+            .collect::<Result<BTreeMap<_, _>>>()?;
         session.bind_semantic_level_definition(crate::campaign::state::SemanticLevelBindings {
             level: definition.level_definition().clone(),
             authored_creature_kinds: definition.creature_bindings().clone(),
@@ -4408,7 +4733,7 @@ impl NativeWorldInspection {
             authored_mechanic_entities: definition.mechanic_entity_bindings().clone(),
             initial_source_mechanic_entities: definition.initial_mechanic_entity_bindings().clone(),
             standing_building_chains: definition.standing_building_chains().clone(),
-            rival_wizard_by_id: definition.rival_wizard_bindings().clone(),
+            rival_wizard_by_id,
         });
         let mut bound_mushroom = false;
         for entity in definition.level_definition().entities() {
@@ -4570,6 +4895,7 @@ impl NativeWorldInspection {
             self.players.clone(),
             self.runtime.clone(),
             self.presentation.clone(),
+            definition.campaign_spec.presentation_recipe.terrain_graphics_flags,
             Box::new([]),
             shared_spells,
             economy,
@@ -4691,6 +5017,7 @@ impl NativeWorldInspection {
             self.players.clone(),
             self.runtime.clone(),
             self.presentation.clone(),
+            0,
             bad_stones,
             shared_spells,
             economy,

@@ -7,6 +7,7 @@ use crate::{
 };
 
 pub const EXIT_PLAYER_ACTION: u8 = 12;
+pub const SECRET_EXIT_PLAYER_ACTION: u8 = 11;
 pub const EXIT_SWITCH_SOUND: u16 = 41;
 pub const EXIT_ACCELERATION_SOUND: u16 = 19;
 pub const EXIT_PALETTE_NONE: u8 = 0;
@@ -103,6 +104,31 @@ impl LevelExitSequence {
         player: &mut FlightState,
         context: &mut FlightContext,
         portal_position: Option<Position>,
+    ) -> Vec<LevelExitEffect> {
+        self.advance_sequence(world, profile, player, context, portal_position, false)
+    }
+
+    /// Action 11 shares `sub_5E8C0_endGameSeq` with the ordinary exit, but
+    /// phase 12 sets the source secret-transition bit in the player result.
+    pub(crate) fn advance_secret<W: FlightWorld>(
+        &mut self,
+        world: &W,
+        profile: FlightProfile,
+        player: &mut FlightState,
+        context: &mut FlightContext,
+        portal_position: Option<Position>,
+    ) -> Vec<LevelExitEffect> {
+        self.advance_sequence(world, profile, player, context, portal_position, true)
+    }
+
+    fn advance_sequence<W: FlightWorld>(
+        &mut self,
+        world: &W,
+        profile: FlightProfile,
+        player: &mut FlightState,
+        context: &mut FlightContext,
+        portal_position: Option<Position>,
+        secret_transition: bool,
     ) -> Vec<LevelExitEffect> {
         if !self.active || self.complete {
             return Vec::new();
@@ -244,8 +270,8 @@ impl LevelExitSequence {
                     }
                 }
                 12 => {
-                    self.result_code = 10;
-                    self.player_status_flags = 10;
+                    self.result_code = if secret_transition { 10 | 0x10 } else { 10 };
+                    self.player_status_flags = self.result_code;
                     self.display_blank = true;
                     self.blur_mode = 0;
                     self.active = false;
@@ -358,6 +384,57 @@ mod tests {
         }
         fn angle_flags(&self, _tile: crate::Tile) -> u8 {
             0
+        }
+    }
+
+    #[test]
+    fn secret_exit_sets_transition_bit_without_changing_ordinary_result() {
+        for secret in [false, true] {
+            let mut sequence = LevelExitSequence {
+                active: true,
+                phase: 12,
+                ..LevelExitSequence::default()
+            };
+            let mut player = FlightState::default();
+            let mut context = FlightContext::default();
+            let effects = if secret {
+                sequence.advance_secret(
+                    &FlatWorld,
+                    FlightProfile::OUTDOOR,
+                    &mut player,
+                    &mut context,
+                    None,
+                )
+            } else {
+                sequence.advance(
+                    &FlatWorld,
+                    FlightProfile::OUTDOOR,
+                    &mut player,
+                    &mut context,
+                    None,
+                )
+            };
+            let expected = if secret { 26 } else { 10 };
+            assert_eq!(
+                effects,
+                vec![LevelExitEffect::Completed {
+                    result_code: expected
+                }]
+            );
+            assert_eq!(sequence.player_status_flags, expected);
+            assert!(sequence.complete);
+            assert!(!sequence.active);
+            assert!(
+                sequence
+                    .advance_secret(
+                        &FlatWorld,
+                        FlightProfile::OUTDOOR,
+                        &mut player,
+                        &mut context,
+                        None,
+                    )
+                    .is_empty()
+            );
         }
     }
 

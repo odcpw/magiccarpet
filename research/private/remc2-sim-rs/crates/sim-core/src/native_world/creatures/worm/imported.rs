@@ -567,6 +567,8 @@ pub(crate) fn step_raw_multipart_action26<W: FlightWorld>(
             source_mana: 0,
             source_dword_0x10: 0,
             target_source_entity_index: target.slot,
+            target_class: 0,
+            target_model: 0,
         })
     } else {
         None

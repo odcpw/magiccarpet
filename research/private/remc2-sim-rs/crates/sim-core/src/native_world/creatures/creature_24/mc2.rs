@@ -457,7 +457,7 @@ fn hide_current(arena: &mut SourceArena, slot: u16) {
     }
 }
 
-fn kill(
+pub(crate) fn kill(
     arena: &mut SourceArena,
     terrain: &mut SessionTerrain,
     particles: &[ParticleParameter],
@@ -553,7 +553,7 @@ pub(crate) fn spawn_mana(
     crate::world::effects::sync_position(arena, terrain, slot, position, true, false)
 }
 
-fn expire(
+pub(crate) fn expire(
     arena: &mut SourceArena,
     terrain: &mut SessionTerrain,
     particles: &[ParticleParameter],

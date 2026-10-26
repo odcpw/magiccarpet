@@ -22,11 +22,16 @@ mod campaign_menu;
 mod loading;
 pub mod media;
 pub mod preferences;
+pub(crate) mod secret_flow;
 pub(crate) use campaign_menu::CampaignSaveState;
 pub use campaign_menu::{
     CampaignMenuCommand, CampaignMenuPhase, CampaignMenuSnapshot, CompletedLevelStatistics,
 };
 use loading::LoadingOrigin;
+pub use secret_flow::receipt::{
+    SECRET_TRANSITION_RECEIPT_CONTRACT, SecretTransitionKind, SecretTransitionReceipt,
+    SecretTransitionReceiptError,
+};
 
 // GOLDEN-CHANGE candidate: v11 adds the campaign owner required by remc2's
 // sub_46830_main_loop -> NewGameDialog_77350 return path. Completion releases
@@ -184,6 +189,17 @@ pub struct RuntimeIdentity {
     pub active_runtime_flow: Option<RuntimeFlowDefinition>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub session: Option<SessionIdentity>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub secret_campaign: Option<SecretCampaignSnapshot>,
+}
+
+/// Semantic portal progress; retained package and save payloads stay private.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct SecretCampaignSnapshot {
+    pub discovered_levels: Vec<SemanticLevelId>,
+    pub completed_levels: Vec<SemanticLevelId>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub return_origin: Option<SemanticLevelId>,
 }
 
 /// Immutable receipt for one accepted semantic level-completion boundary.
@@ -444,6 +460,8 @@ pub struct GameRuntime<B> {
     level_statistics: Vec<CompletedLevelStatistics>,
     frontend_media: media::FrontendMedia,
     player_preferences: preferences::PreferenceStore,
+    secret_flow: secret_flow::SecretFlowState,
+    retained_campaign: Option<CampaignSaveState>,
 }
 
 impl<B: GameSessionBackend> GameRuntime<B> {
@@ -464,6 +482,8 @@ impl<B: GameSessionBackend> GameRuntime<B> {
             level_statistics: Vec::new(),
             frontend_media: media::FrontendMedia::default(),
             player_preferences: preferences::PreferenceStore::default(),
+            secret_flow: secret_flow::SecretFlowState::default(),
+            retained_campaign: None,
             state: RuntimeState::Title {
                 session_generation: NonZeroU64::MIN,
                 presentation_cue: SemanticPresentationCueId::parse(TITLE_PRESENTATION_CUE_ID)
@@ -534,6 +554,307 @@ impl<B: GameSessionBackend> GameRuntime<B> {
             pending_definition,
             active_runtime_flow,
             session,
+            secret_campaign: (!self.secret_flow.discovered_secret_levels().is_empty()).then(|| {
+                SecretCampaignSnapshot {
+                    discovered_levels: self.secret_flow.discovered_secret_levels().to_vec(),
+                    completed_levels: self.secret_flow.completed_secret_levels().to_vec(),
+                    return_origin: self
+                        .secret_flow
+                        .return_frame()
+                        .map(|frame| frame.origin_level_id().clone()),
+                }
+            }),
+        }
+    }
+
+    pub(crate) fn secret_flow_state(&self) -> &secret_flow::SecretFlowState {
+        &self.secret_flow
+    }
+
+    pub(crate) fn retained_campaign(&self) -> Option<&CampaignSaveState> {
+        self.retained_campaign.as_ref()
+    }
+
+    /// The save owner validates these receipt-bound fields against the
+    /// destination definition before publishing its replay/map candidate.
+    pub(crate) fn restore_secret_flow_state(
+        &mut self,
+        state: secret_flow::SecretFlowState,
+        retained_campaign: Option<CampaignSaveState>,
+    ) -> Result<(), RuntimeTransitionError> {
+        let definition = match &self.state {
+            RuntimeState::Playing { session, .. } => session.definition().as_ref(),
+            RuntimeState::Campaign { definition, .. }
+            | RuntimeState::Loading { definition, .. } => definition.as_ref(),
+            RuntimeState::Title { .. } => {
+                return Err(RuntimeTransitionError::InvalidMode {
+                    expected: RuntimeMode::Playing,
+                    actual: RuntimeMode::Title,
+                });
+            }
+        };
+        Self::validate_secret_restore_fields(
+            definition,
+            &state,
+            retained_campaign.as_ref(),
+            &self.completed_levels,
+            &self.level_statistics,
+        )?;
+        self.secret_flow = state;
+        self.retained_campaign = retained_campaign;
+        Ok(())
+    }
+
+    pub(crate) fn validate_secret_restore_fields(
+        definition: &GameDefinition,
+        state: &secret_flow::SecretFlowState,
+        retained_campaign: Option<&CampaignSaveState>,
+        completed_levels: &[SemanticLevelId],
+        level_statistics: &[CompletedLevelStatistics],
+    ) -> Result<(), RuntimeTransitionError> {
+        let flow =
+            definition
+                .runtime_flow()
+                .ok_or_else(|| RuntimeTransitionError::InvalidReplay {
+                    message: "saved secret progress has no bound runtime flow".to_owned(),
+                })?;
+        state.validate_for_flow(flow)?;
+        if let Some(parent) = retained_campaign {
+            parent.definition.verify_identity().map_err(|error| {
+                RuntimeTransitionError::InvalidReplay {
+                    message: error.to_string(),
+                }
+            })?;
+            let parent_flow = parent.definition.runtime_flow().ok_or_else(|| {
+                RuntimeTransitionError::InvalidReplay {
+                    message: "retained secret parent has no runtime flow".to_owned(),
+                }
+            })?;
+            if !flow.continues_catalog(parent_flow)
+                || parent.completed_levels != completed_levels
+                || parent.level_statistics != level_statistics
+            {
+                return Err(RuntimeTransitionError::InvalidReplay {
+                    message: "retained secret parent disagrees with the saved campaign state"
+                        .to_owned(),
+                });
+            }
+        }
+        if state
+            .return_frame()
+            .is_some_and(|frame| Some(frame.parent_campaign()) != retained_campaign)
+        {
+            return Err(RuntimeTransitionError::InvalidReplay {
+                message: "secret session and retained campaign return frames disagree".to_owned(),
+            });
+        }
+        Ok(())
+    }
+
+    /// The installed backend derives the destination from the completed
+    /// source action and constructs the candidate, including spell carry,
+    /// before this owner releases the parent gameplay session.
+    pub(crate) fn enter_secret_resolved<F>(
+        &mut self,
+        guard: RuntimeGuard,
+        session_guard: SessionGuard,
+        prepare: F,
+    ) -> Result<SecretTransitionReceipt, RuntimeTransitionError>
+    where
+        F: FnOnce(
+            &GameSession<B>,
+        ) -> Result<(SemanticLevelId, GameSession<B>), RuntimeTransitionError>,
+    {
+        self.validate_guard(guard)
+            .map_err(Box::new)
+            .map_err(RuntimeTransitionError::Guard)?;
+        let before = self.identity();
+        let RuntimeState::Playing {
+            session,
+            paused: false,
+        } = &self.state
+        else {
+            return Err(RuntimeTransitionError::InvalidMode {
+                expected: RuntimeMode::Playing,
+                actual: self.identity().mode,
+            });
+        };
+        session
+            .completion_status(session_guard)
+            .map_err(Box::new)
+            .map_err(RuntimeTransitionError::SessionGuard)?;
+        let parent = self.retained_campaign.clone().ok_or_else(|| {
+            RuntimeTransitionError::InvalidRuntimeFlow {
+                message: "secret entry has no retained parent campaign selection".to_owned(),
+            }
+        })?;
+        let parent_flow = session.definition().runtime_flow().ok_or_else(|| {
+            RuntimeTransitionError::InvalidRuntimeFlow {
+                message: "secret entry source has no runtime flow".to_owned(),
+            }
+        })?;
+        let next_generation = self.next_generation()?;
+        let source_identity = session.identity();
+        let (secret_id, candidate) = prepare(session)?;
+        let candidate_identity = candidate.identity();
+        if candidate_identity.session_id != source_identity.session_id
+            || source_identity.generation.checked_add(1) != Some(candidate_identity.generation)
+        {
+            return Err(RuntimeTransitionError::InvalidRuntimeFlow {
+                message: "secret candidate does not advance the guarded session lifetime"
+                    .to_owned(),
+            });
+        }
+        candidate.definition().verify_identity().map_err(|error| {
+            RuntimeTransitionError::InvalidNextDefinition {
+                message: error.to_string(),
+            }
+        })?;
+        let candidate_flow = candidate.definition().runtime_flow().ok_or_else(|| {
+            RuntimeTransitionError::InvalidRuntimeFlow {
+                message: "secret candidate has no runtime flow".to_owned(),
+            }
+        })?;
+        if candidate_flow.bound_level_id() != &secret_id
+            || !candidate_flow.continues_catalog(parent_flow)
+        {
+            return Err(RuntimeTransitionError::InvalidRuntimeFlow {
+                message: "secret candidate does not match the installed destination and catalog"
+                    .to_owned(),
+            });
+        }
+        let origin_id = parent_flow.bound_level_id().clone();
+        let mut secret_flow = self.secret_flow.clone();
+        secret_flow.enter_secret(parent_flow, parent, secret_id.clone())?;
+        secret_flow.validate_for_flow(candidate_flow)?;
+        let previous_state = std::mem::replace(
+            &mut self.state,
+            RuntimeState::Playing {
+                session: candidate,
+                paused: false,
+            },
+        );
+        let previous_secret_flow = std::mem::replace(&mut self.secret_flow, secret_flow);
+        let previous_generation = self.generation;
+        self.generation = next_generation;
+        match SecretTransitionReceipt::new(
+            SecretTransitionKind::Entry,
+            before,
+            self.identity(),
+            source_identity,
+            origin_id,
+            secret_id,
+        ) {
+            Ok(receipt) => Ok(receipt),
+            Err(error) => {
+                self.state = previous_state;
+                self.secret_flow = previous_secret_flow;
+                self.generation = previous_generation;
+                Err(RuntimeTransitionError::InvalidRuntimeFlow {
+                    message: error.to_string(),
+                })
+            }
+        }
+    }
+
+    /// Restore the retained map only after the backend has resolved and
+    /// validated its selected origin. An abandoned secret grants no result.
+    pub(crate) fn return_from_secret_resolved<F>(
+        &mut self,
+        guard: RuntimeGuard,
+        session_guard: SessionGuard,
+        outcome: secret_flow::SecretMissionOutcome,
+        resolve: F,
+    ) -> Result<SecretTransitionReceipt, RuntimeTransitionError>
+    where
+        F: FnOnce(&CampaignSaveState) -> Result<Arc<GameDefinition>, RuntimeTransitionError>,
+    {
+        self.validate_guard(guard)
+            .map_err(Box::new)
+            .map_err(RuntimeTransitionError::Guard)?;
+        let before = self.identity();
+        let RuntimeState::Playing { session, .. } = &self.state else {
+            return Err(RuntimeTransitionError::InvalidMode {
+                expected: RuntimeMode::Playing,
+                actual: self.identity().mode,
+            });
+        };
+        let completion = session
+            .completion_status(session_guard)
+            .map_err(Box::new)
+            .map_err(RuntimeTransitionError::SessionGuard)?
+            .value;
+        if outcome == secret_flow::SecretMissionOutcome::Completed
+            && !matches!(completion, GameCompletionStatus::Completed { .. })
+        {
+            return Err(RuntimeTransitionError::CompletionNotReady);
+        }
+        let active_flow = session.definition().runtime_flow().ok_or_else(|| {
+            RuntimeTransitionError::InvalidRuntimeFlow {
+                message: "secret return source has no runtime flow".to_owned(),
+            }
+        })?;
+        let next_generation = self.next_generation()?;
+        let source_identity = session.identity();
+        let secret_id = active_flow.bound_level_id().clone();
+        let session_generation = session
+            .identity()
+            .generation
+            .checked_add(1)
+            .and_then(NonZeroU64::new)
+            .ok_or(RuntimeTransitionError::GenerationExhausted)?;
+        let mut secret_flow = self.secret_flow.clone();
+        let parent = secret_flow.return_to_parent(active_flow, outcome)?;
+        let selected = resolve(&parent)?;
+        let origin = parent.selected_level_id.as_ref().ok_or_else(|| {
+            RuntimeTransitionError::InvalidRuntimeFlow {
+                message: "secret return frame has no selected parent".to_owned(),
+            }
+        })?;
+        campaign_menu::validate_selected(&parent.definition, &selected, origin)?;
+        let origin_id = origin.clone();
+        let previous_completed =
+            std::mem::replace(&mut self.completed_levels, parent.completed_levels.clone());
+        let previous_statistics =
+            std::mem::replace(&mut self.level_statistics, parent.level_statistics.clone());
+        let previous_state = std::mem::replace(
+            &mut self.state,
+            RuntimeState::Campaign {
+                definition: Arc::new(parent.definition.clone()),
+                selected_definition: Some(selected),
+                session_generation,
+                phase: parent.phase,
+                completed_level: parent.completed_level_id.clone(),
+            },
+        );
+        let previous_parent = self.retained_campaign.replace(parent);
+        let previous_secret_flow = std::mem::replace(&mut self.secret_flow, secret_flow);
+        let previous_generation = self.generation;
+        self.generation = next_generation;
+        let kind = match outcome {
+            secret_flow::SecretMissionOutcome::Completed => SecretTransitionKind::CompletedReturn,
+            secret_flow::SecretMissionOutcome::Abandoned => SecretTransitionKind::AbandonedReturn,
+        };
+        match SecretTransitionReceipt::new(
+            kind,
+            before,
+            self.identity(),
+            source_identity,
+            origin_id,
+            secret_id,
+        ) {
+            Ok(receipt) => Ok(receipt),
+            Err(error) => {
+                self.state = previous_state;
+                self.completed_levels = previous_completed;
+                self.level_statistics = previous_statistics;
+                self.retained_campaign = previous_parent;
+                self.secret_flow = previous_secret_flow;
+                self.generation = previous_generation;
+                Err(RuntimeTransitionError::InvalidRuntimeFlow {
+                    message: error.to_string(),
+                })
+            }
         }
     }
 
@@ -778,10 +1099,52 @@ impl<B: GameSessionBackend> GameRuntime<B> {
         )
         .map_err(OpenLevelError::Session)?;
         initialize_candidate(&mut session).map_err(OpenLevelError::Transition)?;
+        let mut retained_campaign = match &self.state {
+            RuntimeState::Loading {
+                origin:
+                    LoadingOrigin::Campaign {
+                        definition,
+                        selected_definition,
+                        phase,
+                        completed_level,
+                    },
+                ..
+            } => Some(CampaignSaveState {
+                definition: definition.as_ref().clone(),
+                phase: *phase,
+                completed_level_id: completed_level.clone(),
+                selected_level_id: selected_definition
+                    .as_ref()
+                    .and_then(|definition| definition.runtime_flow())
+                    .map(|flow| flow.bound_level_id().clone()),
+                completed_levels: self.completed_levels.clone(),
+                level_statistics: self.level_statistics.clone(),
+            }),
+            _ => None,
+        };
+        let mut secret_flow = self.secret_flow.clone();
+        if let Some(flow) = session.definition().runtime_flow()
+            && let Some(entry) = flow.secret_entry(flow.bound_level_id())
+        {
+            let parent = retained_campaign.as_mut().ok_or_else(|| {
+                OpenLevelError::Transition(RuntimeTransitionError::InvalidRuntimeFlow {
+                    message: "secret revisit has no retained campaign map".to_owned(),
+                })
+            })?;
+            parent.selected_level_id = Some(entry.origin_level_id().clone());
+            secret_flow
+                .enter_discovered_secret(flow, parent.clone(), entry.secret_level_id().clone())
+                .map_err(OpenLevelError::Transition)?;
+            secret_flow
+                .validate_for_flow(flow)
+                .map_err(OpenLevelError::Transition)?;
+        }
         self.state = RuntimeState::Playing {
             session,
             paused: false,
         };
+        self.retained_campaign = retained_campaign;
+        self.secret_flow = secret_flow;
         self.generation = next_generation;
         Ok(self.identity())
     }
@@ -813,7 +1176,7 @@ impl<B: GameSessionBackend> GameRuntime<B> {
         A: GameAdapter<Backend = B, Error = B::Error>,
         F: FnOnce(&GameDefinition) -> Result<A::OpenInput, RuntimeTransitionError>,
         P: FnOnce(&mut GameSession<B>) -> Result<(), RuntimeTransitionError>,
-        V: FnOnce(&GameSession<B>) -> Result<(), RuntimeTransitionError>,
+        V: FnOnce(&mut GameSession<B>) -> Result<(), RuntimeTransitionError>,
         I: IntoIterator<Item = ReplayOperation<B::Command>>,
         O: FnMut(&GameSession<B>),
         S: FnMut(&mut GameSession<B>, bool, bool),
@@ -913,7 +1276,7 @@ impl<B: GameSessionBackend> GameRuntime<B> {
             before_operation(&mut candidate, operation_count)
                 .map_err(RestorePlayingError::Transition)?;
         }
-        verify(&candidate).map_err(RestorePlayingError::Transition)?;
+        verify(&mut candidate).map_err(RestorePlayingError::Transition)?;
         self.state = RuntimeState::Playing {
             session: candidate,
             paused,
@@ -1990,6 +2353,8 @@ mod tests {
             generation: 4,
             frontend_media: media::FrontendMedia::default(),
             player_preferences: preferences::PreferenceStore::default(),
+            secret_flow: secret_flow::SecretFlowState::default(),
+            retained_campaign: None,
             completed_levels: vec![resolver.flow().entry_level_id().clone()],
             level_statistics: Vec::new(),
             state: RuntimeState::Loading {
@@ -2036,6 +2401,8 @@ mod tests {
                 .take(2)
                 .map(|entry| entry.level_id().clone())
                 .collect(),
+            secret_flow: secret_flow::SecretFlowState::default(),
+            retained_campaign: None,
             level_statistics: Vec::new(),
             state: RuntimeState::Loading {
                 definition,
@@ -3175,6 +3542,8 @@ mod tests {
                 runtime_id: 523,
                 frontend_media: media::FrontendMedia::default(),
                 player_preferences: preferences::PreferenceStore::default(),
+                secret_flow: secret_flow::SecretFlowState::default(),
+                retained_campaign: None,
                 generation: 6,
                 completed_levels: Vec::new(),
                 level_statistics: Vec::new(),
@@ -3287,6 +3656,8 @@ mod tests {
             runtime_id: 525,
             frontend_media: media::FrontendMedia::default(),
             player_preferences: preferences::PreferenceStore::default(),
+            secret_flow: secret_flow::SecretFlowState::default(),
+            retained_campaign: None,
             generation: 6,
             completed_levels: Vec::new(),
             level_statistics: Vec::new(),
@@ -4514,6 +4885,8 @@ mod tests {
         let mut spliced = GameRuntime::<Mc2CampaignBackend> {
             frontend_media: media::FrontendMedia::default(),
             player_preferences: preferences::PreferenceStore::default(),
+            secret_flow: secret_flow::SecretFlowState::default(),
+            retained_campaign: None,
             runtime_id: 223,
             generation: 4,
             completed_levels: Vec::new(),

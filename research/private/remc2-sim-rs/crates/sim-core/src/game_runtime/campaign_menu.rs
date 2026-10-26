@@ -105,6 +105,25 @@ pub(super) fn presentation(
     }
 }
 
+fn append_discovered_secrets(
+    flow: &RuntimeFlowDefinition,
+    secret_flow: &super::secret_flow::SecretFlowState,
+    available: &mut Vec<SemanticLevelId>,
+) {
+    let ordinary = available.clone();
+    available.extend(
+        flow.secret_entries()
+            .iter()
+            .filter(|entry| {
+                ordinary.contains(entry.origin_level_id())
+                    && secret_flow
+                        .discovered_secret_levels()
+                        .contains(entry.secret_level_id())
+            })
+            .map(|entry| entry.secret_level_id().clone()),
+    );
+}
+
 impl<B: GameSessionBackend> GameRuntime<B> {
     #[must_use]
     pub fn campaign_menu_snapshot(&self) -> Option<CampaignMenuSnapshot> {
@@ -119,7 +138,7 @@ impl<B: GameSessionBackend> GameRuntime<B> {
             return None;
         };
         let flow = definition.runtime_flow().unwrap();
-        let briefing_level_id = flow
+        let ordinary_briefing = flow
             .entries()
             .iter()
             .find(|entry| !self.completed_levels.contains(entry.level_id()))
@@ -127,7 +146,7 @@ impl<B: GameSessionBackend> GameRuntime<B> {
         // NewGameDraw_7EAE0 stops portal hit testing at the first active
         // (unfinished) portal. Do not expose later portals just because a
         // direct-entry diagnostic happened to complete a later mission.
-        let frontier = briefing_level_id
+        let frontier = ordinary_briefing
             .as_ref()
             .and_then(|level| {
                 flow.entries()
@@ -135,12 +154,19 @@ impl<B: GameSessionBackend> GameRuntime<B> {
                     .position(|entry| entry.level_id() == level)
             })
             .map_or(flow.entries().len(), |index| index + 1);
-        let available_levels = flow
+        let mut available_levels = flow
             .entries()
             .iter()
             .take(frontier)
             .map(|entry| entry.level_id().clone())
-            .collect();
+            .collect::<Vec<_>>();
+        append_discovered_secrets(flow, &self.secret_flow, &mut available_levels);
+        let selected_secret = selected_definition
+            .as_ref()
+            .and_then(|definition| definition.runtime_flow())
+            .map(RuntimeFlowDefinition::bound_level_id)
+            .filter(|level| flow.secret_entry(level).is_some() && available_levels.contains(level));
+        let briefing_level_id = selected_secret.cloned().or(ordinary_briefing);
         Some(CampaignMenuSnapshot {
             phase: *phase,
             completed_level_id: completed_level.clone(),
@@ -204,6 +230,7 @@ impl<B: GameSessionBackend> GameRuntime<B> {
         &mut self,
         guard: RuntimeGuard,
         saved: CampaignSaveState,
+        secret_flow: super::secret_flow::SecretFlowState,
         resolve_selected: F,
     ) -> Result<RuntimeIdentity, RuntimeTransitionError>
     where
@@ -236,6 +263,7 @@ impl<B: GameSessionBackend> GameRuntime<B> {
                 message: "saved campaign menu has no runtime flow".to_owned(),
             }
         })?;
+        secret_flow.validate_for_flow(flow)?;
         let mut seen = std::collections::BTreeSet::new();
         if saved.completed_levels.iter().any(|level| {
             !flow.entries().iter().any(|entry| entry.level_id() == level) || !seen.insert(level)
@@ -260,13 +288,18 @@ impl<B: GameSessionBackend> GameRuntime<B> {
                 .iter()
                 .position(|entry| !saved.completed_levels.contains(entry.level_id()))
                 .map_or(flow.entries().len(), |index| index + 1);
-            if saved.selected_level_id.as_ref().is_some_and(|level| {
-                !flow
-                    .entries()
-                    .iter()
-                    .take(frontier)
-                    .any(|entry| entry.level_id() == level)
-            }) {
+            let mut available = flow
+                .entries()
+                .iter()
+                .take(frontier)
+                .map(|entry| entry.level_id().clone())
+                .collect::<Vec<_>>();
+            append_discovered_secrets(flow, &secret_flow, &mut available);
+            if saved
+                .selected_level_id
+                .as_ref()
+                .is_some_and(|level| !available.contains(level))
+            {
                 return Err(RuntimeTransitionError::InvalidReplay {
                     message: "saved selected mission is beyond the earned frontier".to_owned(),
                 });
@@ -309,6 +342,8 @@ impl<B: GameSessionBackend> GameRuntime<B> {
         };
         self.completed_levels = saved.completed_levels;
         self.level_statistics = saved.level_statistics;
+        self.secret_flow = secret_flow;
+        self.retained_campaign = None;
         self.generation = next_generation;
         Ok(self.identity())
     }
@@ -354,6 +389,8 @@ impl<B: GameSessionBackend> GameRuntime<B> {
                 *completed_level = None;
                 self.completed_levels.clear();
                 self.level_statistics.clear();
+                self.secret_flow = super::secret_flow::SecretFlowState::default();
+                self.retained_campaign = None;
             }
             CampaignMenuCommand::DismissResults if *phase == CampaignMenuPhase::Results => {
                 // The map focuses its first unfinished portal, independently
@@ -491,6 +528,65 @@ mod tests {
     use crate::game_definition::default_catalog;
 
     #[test]
+    fn discovered_secrets_require_their_ordinary_origin_at_the_frontier() {
+        use crate::game_definition::{
+            RuntimeFlowEntry, RuntimeFlowNodeId, RuntimeFlowPresentationDefinition,
+            RuntimeFlowPresentationEntry, SemanticGameId,
+        };
+        use sim_definition::runtime_flow::RuntimeFlowSecretEntry;
+        let origin = SemanticLevelId::parse("level.test.origin").unwrap();
+        let secret = SemanticLevelId::parse("level.test.secret").unwrap();
+        let cue = |name: &str| {
+            SemanticPresentationCueId::parse(&format!("presentation.test.{name}")).unwrap()
+        };
+        let flow = RuntimeFlowDefinition::new_with_secret_entries(
+            SemanticGameId::parse("game.test").unwrap(),
+            origin.clone(),
+            origin.clone(),
+            vec![RuntimeFlowEntry::new(
+                origin.clone(),
+                RuntimeFlowDestination::Title {
+                    node_id: RuntimeFlowNodeId::parse("flow.test.title").unwrap(),
+                },
+            )],
+            vec![RuntimeFlowSecretEntry::new(origin.clone(), secret.clone())],
+            RuntimeFlowPresentationDefinition::new(
+                SemanticPresentationCueId::parse(TITLE_PRESENTATION_CUE_ID).unwrap(),
+                vec![
+                    RuntimeFlowPresentationEntry::new(
+                        origin.clone(),
+                        cue("origin_loading"),
+                        cue("origin_entry"),
+                        cue("origin_completion"),
+                    ),
+                    RuntimeFlowPresentationEntry::new(
+                        secret.clone(),
+                        cue("secret_loading"),
+                        cue("secret_entry"),
+                        cue("secret_completion"),
+                    ),
+                ],
+            ),
+        )
+        .unwrap();
+        let mut available = vec![origin.clone()];
+        append_discovered_secrets(&flow, &Default::default(), &mut available);
+        assert_eq!(available, vec![origin.clone()]);
+        for completed in [false, true] {
+            let state = serde_json::from_value(serde_json::json!({
+                "discovered_secret_levels": [secret.clone()],
+                "completed_secret_levels": if completed { vec![secret.clone()] } else { Vec::new() },
+            })).unwrap();
+            let mut available = vec![origin.clone()];
+            append_discovered_secrets(&flow, &state, &mut available);
+            assert_eq!(available, vec![origin.clone(), secret.clone()]);
+            let mut unavailable = Vec::new();
+            append_discovered_secrets(&flow, &state, &mut unavailable);
+            assert!(unavailable.is_empty());
+        }
+    }
+
+    #[test]
     fn results_require_map_selection_before_loading_and_terminal_results_remain_on_map() {
         let generated = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../generated");
         let paths = [
@@ -526,6 +622,8 @@ mod tests {
         let mut runtime = GameRuntime::<Mc2CampaignBackend> {
             frontend_media: super::media::FrontendMedia::default(),
             player_preferences: super::preferences::PreferenceStore::default(),
+            secret_flow: super::secret_flow::SecretFlowState::default(),
+            retained_campaign: None,
             runtime_id: 771,
             generation: 4,
             completed_levels: vec![first.clone()],
@@ -554,13 +652,20 @@ mod tests {
         let mut restored = GameRuntime::<Mc2CampaignBackend>::title(772).unwrap();
         let restore_guard = restored.identity().guard();
         restored
-            .restore_campaign_resolved(restore_guard, saved.clone(), |_, level| {
-                Ok(definitions
-                    .iter()
-                    .find(|definition| definition.runtime_flow().unwrap().bound_level_id() == level)
-                    .unwrap()
-                    .clone())
-            })
+            .restore_campaign_resolved(
+                restore_guard,
+                saved.clone(),
+                Default::default(),
+                |_, level| {
+                    Ok(definitions
+                        .iter()
+                        .find(|definition| {
+                            definition.runtime_flow().unwrap().bound_level_id() == level
+                        })
+                        .unwrap()
+                        .clone())
+                },
+            )
             .unwrap();
         assert!(
             restored.session().is_none(),
@@ -587,6 +692,7 @@ mod tests {
                 .restore_campaign_resolved(
                     before_rejection.guard(),
                     duplicate,
+                    Default::default(),
                     |_, _| unreachable!("invalid statistics must reject before package resolution")
                 )
                 .is_err()
@@ -703,6 +809,8 @@ mod tests {
         let mut terminal = GameRuntime::<Mc2CampaignBackend> {
             frontend_media: super::media::FrontendMedia::default(),
             player_preferences: super::preferences::PreferenceStore::default(),
+            secret_flow: super::secret_flow::SecretFlowState::default(),
+            retained_campaign: None,
             runtime_id: 772,
             generation: 8,
             completed_levels: resolver
@@ -776,6 +884,8 @@ mod tests {
         let mut retained = GameRuntime::<Mc2CampaignBackend> {
             frontend_media: super::media::FrontendMedia::default(),
             player_preferences: super::preferences::PreferenceStore::default(),
+            secret_flow: super::secret_flow::SecretFlowState::default(),
+            retained_campaign: None,
             runtime_id: 773,
             generation: 4,
             completed_levels: vec![first.clone()],

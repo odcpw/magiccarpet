@@ -1538,6 +1538,11 @@ def build_environment_closure(
     paths.extend((f"DATA/{block16}.DAT", "DATA/FONT1.DAT", "DATA/FONT1.TAB"))
     if map_id == 0:
         paths.append("DATA/GTD2.DAT")
+    # LevelInit selects an owner sound bank by the package's actual map type,
+    # and the source music selector is package gameplay state. Retain both
+    # containers for every supported environment so its audio consumer uses
+    # this same selected package and closure.
+    paths.extend(("SOUND/SOUND.DAT", "SOUND/MUSIC.DAT"))
     catalog_data = read_json(catalog_path)
     catalog = Catalog(catalog_data)
     roots = []

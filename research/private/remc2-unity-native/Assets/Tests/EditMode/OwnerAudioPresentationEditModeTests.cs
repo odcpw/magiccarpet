@@ -20,6 +20,18 @@ namespace MagicCarpet.Native.Tests
             Environment.GetEnvironmentVariable("MC_CAMPAIGN_OWNER_CACHE_LEVEL3_V1") ??
             Path.Combine(PrivateRoot, "generated/level3-day-spell-owner-cache-audio-v4");
 
+        private static string SecretSource31NightCache =>
+            Path.Combine(PrivateRoot, "generated/mc-paj2-environment-source31-audio-20261026");
+
+        private static string SecretSource31Package =>
+            Path.Combine(PrivateRoot, "generated/mc-paj2-source-secret-31-campaign-package");
+
+        private static string SecretSource34DayCache =>
+            Path.Combine(PrivateRoot, "generated/mc-paj2-environment-source34-audio-20261026");
+
+        private static string SecretSource34Package =>
+            Path.Combine(PrivateRoot, "generated/mc-paj2-source-secret-34-campaign-package");
+
         [Test]
         public void CaveLoadsSourceBankTwoAndLogicalTrackThreeFromItsOwnEnvironment()
         {
@@ -39,6 +51,78 @@ namespace MagicCarpet.Native.Tests
                 Assert.That(music.clip.name, Does.StartWith("C2GAME3"));
                 Assert.That(music.clip.samples, Is.EqualTo(10584064));
                 Assert.That(music.clip.frequency, Is.EqualTo(44100));
+            }
+            finally { UnityEngine.Object.DestroyImmediate(root); }
+        }
+
+        [Test]
+        public void SecretSource31NightAndSource34DayLoadTheirSelectedEnvironmentAudio()
+        {
+            var nightCache = OwnerAssetCache.OpenAndValidateEnvironment(
+                SecretSource31NightCache, SecretSource31Package);
+            var nightRoot = new GameObject("Secret source 31 Night audio consumer");
+            try
+            {
+                using var audio = OwnerAudioPresentation.LoadCampaignEnvironment(
+                    nightCache,
+                    NativeSim.CampaignSelection.Create(32, 31, 1),
+                    nightRoot.transform);
+                Assert.That(audio.QualificationSoundCount, Is.EqualTo(32));
+                Assert.That(audio.QualificationHasSound(12), Is.True,
+                    "Night sound 12 remains an explicit null source row");
+                Assert.That(audio.QualificationHasSound(13), Is.False);
+                var music = Array.Find(nightRoot.GetComponentsInChildren<AudioSource>(),
+                    source => source.clip != null && source.clip.channels == 2);
+                Assert.That(music, Is.Not.Null);
+                Assert.That(music.clip.name, Does.StartWith("C2GAME1"));
+                Assert.That(music.clip.samples, Is.EqualTo(19472384));
+                Assert.That(music.clip.frequency, Is.EqualTo(44100));
+            }
+            finally { UnityEngine.Object.DestroyImmediate(nightRoot); }
+
+            var dayCache = OwnerAssetCache.OpenAndValidateEnvironment(
+                SecretSource34DayCache, SecretSource34Package);
+            var dayRoot = new GameObject("Secret source 34 Day audio consumer");
+            try
+            {
+                using var audio = OwnerAudioPresentation.LoadCampaignEnvironment(
+                    dayCache,
+                    NativeSim.CampaignSelection.Create(35, 34, 0),
+                    dayRoot.transform);
+                Assert.That(audio.QualificationSoundCount, Is.EqualTo(29));
+                Assert.That(audio.QualificationHasSound(61), Is.True);
+                Assert.That(audio.QualificationHasSound(63), Is.False);
+                var music = Array.Find(dayRoot.GetComponentsInChildren<AudioSource>(),
+                    source => source.clip != null && source.clip.channels == 2);
+                Assert.That(music, Is.Not.Null);
+                Assert.That(music.clip.name, Does.StartWith("C2GAME2"));
+                Assert.That(music.clip.samples, Is.EqualTo(16695296));
+                Assert.That(music.clip.frequency, Is.EqualTo(44100));
+            }
+            finally { UnityEngine.Object.DestroyImmediate(dayRoot); }
+        }
+
+        [Test]
+        public void SecretEnvironmentAudioRejectsWrongSelectionAndPackage()
+        {
+            var cache = OwnerAssetCache.OpenAndValidateEnvironment(
+                SecretSource31NightCache, SecretSource31Package);
+            var root = new GameObject("Secret source audio refusal test");
+            try
+            {
+                var wrongSelection = Assert.Throws<InvalidDataException>(
+                    () => OwnerAudioPresentation.LoadCampaignEnvironment(
+                        cache,
+                        NativeSim.CampaignSelection.Create(32, 31, 0),
+                        root.transform));
+                StringAssert.Contains("qualified destination-bound campaign",
+                    wrongSelection.Message);
+
+                var wrongPackage = Assert.Throws<InvalidDataException>(
+                    () => OwnerAssetCache.OpenAndValidateEnvironment(
+                        SecretSource31NightCache, SecretSource34Package));
+                StringAssert.Contains("campaign package definition does not match",
+                    wrongPackage.Message);
             }
             finally { UnityEngine.Object.DestroyImmediate(root); }
         }

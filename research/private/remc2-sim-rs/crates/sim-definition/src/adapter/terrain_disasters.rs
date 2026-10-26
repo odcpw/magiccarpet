@@ -1,9 +1,9 @@
 //! Pinned MC2 terrain constructor and physical spell-tier bindings.
 
 use crate::level_definition::{
-    ActivationGroupId, LevelEntityDefinition, LevelEntityId, LevelEntityKind,
-    LevelEntityPositionAccess, MechanicKind, TerrainDisasterDefinition, TerrainDisasterKind,
-    TilePosition,
+    ActivationGroupId, CRATER_PROPERTIES, EARTHQUAKE_PROPERTIES, LevelEntityDefinition,
+    LevelEntityId, LevelEntityKind, LevelEntityPositionAccess, MechanicKind, TREMOR_PROPERTIES,
+    TerrainDisasterDefinition, TerrainDisasterKind, TilePosition, VOLCANO_PROPERTIES,
 };
 
 #[must_use]
@@ -46,9 +46,18 @@ pub fn mc2_authored_terrain_disaster_definition(
         ));
     }
     let (max_life, lifetime, damage) = match kind {
-        TerrainDisasterKind::Volcano => ([7, 9, 11][tier], 17, [120, 240, 480][tier]),
-        TerrainDisasterKind::LoweringRing => (40, [6, 12, 24][tier], [50, 100, 300][tier]),
-        TerrainDisasterKind::Earthquake => (128, [16, 32, 64][tier], [80, 120, 320][tier]),
+        TerrainDisasterKind::Volcano => {
+            let rule = VOLCANO_PROPERTIES.tiers[tier];
+            (i32::from(rule.impact_parameter), 17, rule.damage)
+        }
+        TerrainDisasterKind::LoweringRing => {
+            let rule = CRATER_PROPERTIES.tiers[tier];
+            (40, i32::from(rule.impact_parameter), rule.damage)
+        }
+        TerrainDisasterKind::Earthquake => {
+            let rule = EARTHQUAKE_PROPERTIES.tiers[tier];
+            (128, i32::from(rule.impact_parameter), rule.damage)
+        }
         _ => unreachable!("only tier-bound constructors reached"),
     };
     Ok(TerrainDisasterDefinition::new(
@@ -76,11 +85,12 @@ pub fn mc2_grouped_terrain_disaster_definition(
             "authored tremor has invalid physical spell tier {tier}"
         ));
     }
+    let rule = TREMOR_PROPERTIES.tiers[tier];
     Ok(TerrainDisasterDefinition::new(
         kind,
         120,
-        [60, 80, 120][tier],
-        [20, 40, 50][tier],
+        i32::from(rule.impact_parameter),
+        rule.damage,
         1280,
         2048,
     ))

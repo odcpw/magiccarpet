@@ -82,6 +82,32 @@ fn level_two_type_str_164_auxiliary_materializes_and_reset_replays() {
 }
 
 #[test]
+fn campaign_player_hands_accept_independent_empty_selectors_and_reject_corrupt_values() {
+    let original = fs::read(level_two_fixture_path().join("players.bin")).unwrap();
+    for profile in [OwnerPackageProfile::Level2, OwnerPackageProfile::Campaign] {
+        for (left, right) in [(-1_i16, 0_i16), (2, -1), (-1, -1), (0, 1)] {
+            let mut bytes = original.clone();
+            bytes[12 + 554..12 + 556].copy_from_slice(&left.to_le_bytes());
+            bytes[12 + 556..12 + 558].copy_from_slice(&right.to_le_bytes());
+            let players = parse_players(&bytes, profile, OwnerPackageSchema::V5).unwrap();
+            assert_eq!(players[0].left_spell_slot_raw, left);
+            assert_eq!(players[0].right_spell_slot_raw, right);
+        }
+        for invalid in [-2_i16, PLAYER_SPELL_COUNT_I16] {
+            for offset in [554, 556] {
+                let mut bytes = original.clone();
+                bytes[12 + offset..12 + offset + 2].copy_from_slice(&invalid.to_le_bytes());
+                assert!(parse_players(&bytes, profile, OwnerPackageSchema::V5).is_err());
+            }
+        }
+    }
+    let (package, _) = fixture_paths();
+    let mut sealed = fs::read(package.join("players.bin")).unwrap();
+    sealed[12 + 554..12 + 556].copy_from_slice(&(-1_i16).to_le_bytes());
+    assert!(parse_players(&sealed, OwnerPackageProfile::Level1, OwnerPackageSchema::V2).is_err());
+}
+
+#[test]
 fn level_two_type_str_164_rejects_malformed_record_and_descriptor_inputs() {
     let package = level_two_fixture_path();
     let original = fs::read(package.join("players.bin")).unwrap();

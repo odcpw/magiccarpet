@@ -13,7 +13,8 @@ use crate::level_definition::{
     BUILDER_CLASS_PROPERTIES, TRADER_CLASS_PROPERTIES, VILLAGER_CLASS_PROPERTIES,
 };
 use crate::level1_mission::{
-    GlobalRngSite, Level1SourceEffect, Level1SourceEntityView, SOURCE_DISABLED_FLAG,
+    AuthoredFeature, GlobalRngSite, Level1SourceEffect, Level1SourceEntityView,
+    SOURCE_DISABLED_FLAG,
 };
 use crate::villager::{
     VillagerBehaviorConfig, VillagerState, VillagerStepEffect, step_villager_state_with_stage,
@@ -21,7 +22,7 @@ use crate::villager::{
 use crate::{FlightWorld, Position, distance_3d_wrapped, heading_for_positions};
 use sim_definition::adapter::{
     BUILDER_APPEARANCE, BUILDER_SOURCE_BINDING, TRADER_APPEARANCE, TRADER_SOURCE_BINDING,
-    VILLAGER_APPEARANCES,
+    VILLAGER_APPEARANCES, VILLAGER_SOURCE_BINDING,
 };
 
 pub const BUILDER_MODEL: u8 = BUILDER_SOURCE_BINDING.model;
@@ -2322,6 +2323,46 @@ impl crate::campaign::source_arena::SourceArena {
         source.publish_source(&mut self.entities[usize::from(slot)]);
         crate::world::effects::sync_position(self, terrain, slot, source.position, true, false)
             .ok()?;
+        Some(slot)
+    }
+
+    /// Construct an ordinary authored Builder or Villager through the same
+    /// NewEvent allocator and settlement source carrier used by house births.
+    /// Their semantic maximum life comes from the authored creature binding.
+    pub(crate) fn allocate_authored_resident(
+        &mut self,
+        feature: AuthoredFeature,
+        max_life: u32,
+        terrain: &mut crate::native_world::SessionTerrain,
+    ) -> Option<u16> {
+        if feature.kind != 5 {
+            return None;
+        }
+        let (model, action) = match feature.subtype {
+            12 => (BUILDER_MODEL, BUILDER_SOURCE_BINDING.action),
+            13 => (
+                VILLAGER_SOURCE_BINDING.model,
+                VILLAGER_SOURCE_BINDING.action,
+            ),
+            _ => return None,
+        };
+        let max_life = i32::try_from(max_life).ok()?;
+        let authored_position = feature.world_position(0);
+        let request = crate::level1_mission::HouseResidentRequest {
+            position: feature.world_position(terrain.ground_height(authored_position)),
+            model,
+            action,
+            attacker_entity_index: 0,
+        };
+        let slot = self.allocate_house_resident(0, 0, request, terrain)?;
+        let resident_index = self
+            .house_residents
+            .iter()
+            .position(|resident| resident.source_entity_index == slot)?;
+        self.house_residents[resident_index].max_life = max_life;
+        self.house_residents[resident_index].life = max_life;
+        let resident = self.house_residents[resident_index];
+        resident.publish_source(&mut self.entities[usize::from(slot)]);
         Some(slot)
     }
 

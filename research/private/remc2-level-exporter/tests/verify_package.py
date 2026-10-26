@@ -1831,7 +1831,7 @@ def _campaign_validate_reset_members(package: Path, spec: dict, files: dict, pro
         entities,
         profile["active_entities"],
         profile["map_type_id"],
-        bool(profile.get("ordinary")),
+        bool(profile.get("source_level_v4")),
     )
     require(_strict_equal(spec["authored_behavior_rows"], expected_rows), "authored_behavior_rows differ from fresh authored/reset decode")
 
@@ -1889,7 +1889,7 @@ def _campaign_validate_reset_members(package: Path, spec: dict, files: dict, pro
         == (0, profile["runtime_player_count"], profile["runtime_music_selector"]),
         "campaign runtime census profile scalars changed",
     )
-    accepted_stage_types = set(range(10)) if profile.get("ordinary") else {0, 3, 5, 7, 9}
+    accepted_stage_types = set(range(10)) if profile.get("source_level_v4") else {0, 3, 5, 7, 9}
     for index in range(8):
         offset = 192 + index * 14
         stage_type, flags = runtime[offset], runtime[offset + 1]
@@ -2084,7 +2084,7 @@ def _campaign_validate_source_facts(package: Path, facts_value: object, files: d
     stage, standing_selector, _axis_x, _axis_y = struct.unpack_from(
         "<bhhh", authored, 25972 + 4 * 7
     )
-    if "building-parameters" in source_fact_ids and not profile.get("ordinary"):
+    if "building-parameters" in source_fact_ids and not profile.get("source_level_v4"):
         require(
             stage == 9 and standing_selector == 153,
             "standing-building objective operation differs from qualified Level 2",
@@ -2092,7 +2092,7 @@ def _campaign_validate_source_facts(package: Path, facts_value: object, files: d
     elif "building-parameters" not in source_fact_ids:
         standing_selector = None
     standing_selectors = {standing_selector}
-    if profile.get("ordinary"):
+    if profile.get("source_level_v4"):
         standing_selectors = {
             selector for stage, selector, _x, _y in
             (struct.unpack_from("<bhhh", authored, 25972 + index * 7) for index in range(8))
@@ -2113,7 +2113,7 @@ def _campaign_validate_source_facts(package: Path, facts_value: object, files: d
         and row["class"] == 10
         and row["subtype"] == 45
     ]
-    if "building-parameters" in source_fact_ids and not profile.get("ordinary"):
+    if "building-parameters" in source_fact_ids and not profile.get("source_level_v4"):
         require(
             building_objective_provenance == [{
                 "authored_record": 153,
@@ -2212,7 +2212,7 @@ def _campaign_validate_operations(spec: dict, authored: bytes, files: dict, pack
         stage, selector, axis_x, axis_y = struct.unpack_from("<bhhh", authored, offset)
         if stage == -1:
             inactive_seen = True
-            require(profile.get("ordinary") or (selector, axis_x, axis_y) == (0, 0, 0), f"inactive objective row {index} has payload")
+            require(profile.get("source_level_v4") or (selector, axis_x, axis_y) == (0, 0, 0), f"inactive objective row {index} has payload")
             continue
         require(not inactive_seen and stage in profile["objective_stage_forms"], f"objective row {index} has an unproven operation form")
         expected_objectives.append({
@@ -2511,9 +2511,10 @@ def _campaign_validate_source_record(package: Path, selection: tuple[int, int, i
     pins = {int(fields[0]): fields for fields in (
         line.split("\t") for line in pins_path.read_text().splitlines() if line and not line.startswith("#")
     )}
-    pin = pins[selection[0]]
+    pin = pins.get(selection[0])
+    require(pin is not None, f"source external identity {selection[0]} has no pinned source-record receipt")
     actual = (record["packed_offset"], len(packed), hashlib.sha256(packed).hexdigest(), hashlib.sha256(decoded).hexdigest())
-    require(actual == (int(pin[1]), int(pin[2]), pin[3], pin[4]), "source packed span/decoded payload differs from pinned ordinary record")
+    require(actual == (int(pin[1]), int(pin[2]), pin[3], pin[4]), "source packed span/decoded payload differs from pinned source record")
     require(actual[0] + actual[1] <= record["container"]["bytes"], "source span exceeds container")
     require((record["packed_bytes"], record["packed_sha256"], record["decoded_bytes"], record["decoded_sha256"]) == (len(packed), actual[2], len(decoded), actual[3]), "source member extents/hashes differ")
     require(len(decoded) == 0x6604 and decoded == (package / "authored-level.bin").read_bytes(), "decoded source payload differs from authored adapter")
@@ -2561,17 +2562,28 @@ def verify_campaign_package(
             source_fact_ids=profile["source_fact_ids"] | {"collision-mask-bank"},
             collision_fact_version=2, collision_bank_bytes=4496,
             collision_bank_sha256="2915a6e48c696809eb003f7ef4c2d1b09015ce5eadba2fa3f9104a35a1d2e118")
-    if profile is None and 4 <= outer_selection[0] <= 25:
+    source_secret_selections = {
+        (31, 30, 2),
+        (32, 31, 1),
+        (33, 32, 2),
+        (34, 33, 2),
+        (35, 34, 0),
+    }
+    source_secret_label = 31 <= outer_selection[0] <= 35
+    if profile is None and (4 <= outer_selection[0] <= 25 or source_secret_label):
         external, internal, map_id = outer_selection
-        require(internal == external - 1 and map_id == ORDINARY_MAPS[internal], "ordinary source identity differs")
+        if source_secret_label:
+            require(outer_selection in source_secret_selections, "source secret identity differs")
+        else:
+            require(internal == external - 1 and map_id == ORDINARY_MAPS[internal], "ordinary source identity differs")
         authored = (package / "authored-level.bin").read_bytes()
         runtime = (package / "runtime.bin").read_bytes()
         entities = (package / "entities.bin").read_bytes()
         collision = (package / "collision-masks.bin").read_bytes()
         count = u16(runtime, 18)
-        require(1 <= count <= 8, "ordinary runtime player count is outside arena")
+        require(1 <= count <= 8, "source-level runtime player count is outside arena")
         profile = dict(CAMPAIGN_PROFILES[(2, 1, 0)],
-            ordinary=True, package_schema=ORDINARY_CAMPAIGN_PACKAGE_SCHEMA,
+            source_level_v4=True, package_schema=ORDINARY_CAMPAIGN_PACKAGE_SCHEMA,
             definition_schema="mc2-campaign-definition/v4", files=ORDINARY_CAMPAIGN_FILES,
             map_type_id=map_id, map_type_name=("Day", "Night", "Cave")[map_id],
             active_entities=sum(entities[12 + slot * 176 + 2] != 0 for slot in range(1000)), bound_player_slots=count,
@@ -2664,10 +2676,10 @@ def verify_campaign_package(
         spec["presentation_recipe"],
         files,
         owner_manifest=owner_manifest,
-        selection=outer_selection if profile.get("ordinary") else None,
-        source_flags=authored[4] if profile.get("ordinary") else 0,
+        selection=outer_selection if profile.get("source_level_v4") else None,
+        source_flags=authored[4] if profile.get("source_level_v4") else 0,
     )
-    if profile.get("ordinary"):
+    if profile.get("source_level_v4"):
         _campaign_validate_source_record(package, outer_selection)
         source_record = json.loads((package / "source-record.json").read_text())
         artifact_paths = {owner["logical_path"] for owner in source_record["owner_artifacts"]}

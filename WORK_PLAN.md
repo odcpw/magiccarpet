@@ -1,5 +1,9 @@
 # Shared-engine delivery plan
 
+Execution is paused at Oliver's 2026-10-26 wind-down request. The fleet is
+stopped and the heartbeat is paused. Resume implementation only when Oliver
+requests it; unfinished bead acceptance remains open.
+
 Read this plan and your current bead before each assignment, follow-up, resumed
 work session or heartbeat. Also reread after compaction and before declaring a
 handoff complete. Continue useful work; do not produce a read-receipt report.

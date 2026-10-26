@@ -520,6 +520,8 @@ impl Level2EconomyState {
                 source_mana: 0,
                 source_dword_0x10: 0,
                 target_source_entity_index: target.index,
+                target_class: 0,
+                target_model: 0,
             },
             0,
         );

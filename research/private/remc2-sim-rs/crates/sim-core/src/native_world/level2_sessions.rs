@@ -225,6 +225,200 @@ mod castle_revival_tests {
     }
 }
 
+#[cfg(test)]
+mod authored_spell_family_tests {
+    use super::*;
+
+    #[test]
+    fn authored_army_mine_and_alliance_rows_use_source_constructors_and_acquisition() {
+        let inspection = NativeWorld::inspect_level2(super::super::tests::level_two_fixture_path())
+            .expect("qualified source player/arena package");
+        let mut shared = Level2SharedSpellResetSession::from_campaign_parts(
+            inspection.entities(),
+            inspection.players(),
+            inspection.runtime(),
+        )
+        .unwrap();
+        let terrain = SessionTerrain::from_inspection(&inspection);
+        let mut economy = Level2EconomyState::from_parts(
+            terrain.clone(),
+            inspection.entities(),
+            shared.player_entity.mana,
+            shared.player_entity.model,
+            0,
+            shared.local_player.enabled_spell_holders[2],
+            inspection.runtime().random_state,
+        )
+        .unwrap();
+        let particle = ParticleParameter {
+            base_tmap: 0,
+            word_2: 0,
+            word_4: 0,
+            speed: 0,
+            rotation_speed: 0,
+            byte_10: 0,
+            byte_11: 0,
+            render_mode: 20,
+            byte_13: 0,
+        };
+        let particles = vec![particle; 78];
+
+        for family in [19_u8, 23, 24] {
+            let authored_index = 50_000 + u16::from(family);
+            let feature = crate::level1_mission::AuthoredFeature {
+                index: authored_index,
+                kind: 15,
+                subtype: i16::from(family),
+                tile_x: 8,
+                tile_y: 9,
+                activation_group: 0,
+                word_10: 0,
+                stage_tag: 1,
+                parameter_1: 0,
+                parameter_2: 0,
+                parameter_3: 0,
+            };
+            let slot = shared
+                .materialize_authored_spell_pickup(&mut economy, feature, &terrain, &particles)
+                .unwrap()
+                .expect("authored source slot allocated");
+            let profile = level2_set_spell_profile(family, 0)
+                .expect("typed family has its source SetSpell profile");
+            let pickup = shared
+                .pickup(slot)
+                .expect("ordinary source constructor published the pickup row");
+            assert_eq!(
+                (pickup.class, pickup.model, pickup.action),
+                (15, family, family * 3 + 1)
+            );
+            assert_eq!(pickup.subspell_index, profile.subspell_index);
+            assert_eq!(pickup.activation_value, profile.word_0x30);
+            assert_eq!(
+                (pickup.mana, pickup.max_mana, pickup.mana_regen),
+                (profile.mana, profile.max_mana, profile.mana_regen)
+            );
+            let acquisition = shared
+                .acquisitions
+                .iter()
+                .find(|state| state.family == family)
+                .expect("ordinary source pickup registered its acquisition state");
+            assert_eq!(acquisition.source_slot, slot);
+            assert_eq!(acquisition.source_action, family * 3 + 1);
+            assert_eq!(acquisition.subspell_index, profile.subspell_index);
+        }
+    }
+}
+
+#[cfg(test)]
+mod source30_house_action_51_tests {
+    use super::*;
+    use crate::{
+        PlayerCommand,
+        campaign::{CampaignSession, spec::CampaignSelection},
+        house::{HOUSE_TERRAIN_TO_LIVE_ACTION, HouseState, HouseStepEvent},
+        native_world::Mc2DispatchEvent,
+    };
+    use std::{collections::BTreeMap, path::PathBuf};
+
+    #[test]
+    fn actual_source30_open_keeps_action51_house_state_and_runs_its_build_consumer() {
+        let package = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../generated/mc-paj2-source30-campaign-package");
+        let mut session = CampaignSession::open(
+            &package,
+            CampaignSelection::secret_destination(30).expect("source30 selection"),
+        )
+        .expect("actual source30 campaign reset opens");
+
+        let source = session
+            .inspection()
+            .entities()
+            .get(4)
+            .expect("source30 house entity 4");
+        assert!(source.active);
+        assert_eq!((source.class, source.model), (10, 45));
+        assert_eq!(source.action, HOUSE_TERRAIN_TO_LIVE_ACTION);
+        assert_eq!(source.record_bytes()[73], HOUSE_TERRAIN_TO_LIVE_ACTION);
+
+        let house = session
+            .simulation()
+            .ordinary()
+            .houses()
+            .iter()
+            .find(|house| house.entity_index == 4)
+            .copied()
+            .expect("source30 action51 row materialized into HouseFamily");
+        assert_eq!(house.action, HOUSE_TERRAIN_TO_LIVE_ACTION);
+        assert_eq!(house.source_id, source.source_id);
+        assert_eq!(house.control_flags, source.control_flags);
+        assert_eq!((house.life, house.max_life), (source.life, source.max_life));
+        assert_eq!(house.phase, source.phase);
+        assert_eq!(house.position, source.position);
+        assert_eq!(house.build_tail, source.record_bytes()[59]);
+        assert_eq!(house.building_index, source.record_bytes()[74]);
+        assert_eq!(
+            session
+                .simulation()
+                .ordinary()
+                .house_parameters
+                .get(&house.building_index),
+            Some(&house.parameter)
+        );
+        assert!(
+            session
+                .simulation()
+                .ordinary()
+                .house_build_footprints
+                .contains_key(&house.building_index)
+        );
+
+        let parameters = BTreeMap::from([(house.building_index, house.parameter)]);
+        let mut unsupported = (*source).clone();
+        unsupported.action = u8::MAX;
+        assert!(HouseState::from_campaign_snapshot(&unsupported, &parameters).is_err());
+
+        session.step(PlayerCommand::default(), 0);
+        let first_dispatch = session.simulation().dispatch_events();
+        assert!(first_dispatch.iter().any(|event| matches!(
+            event,
+            Mc2DispatchEvent::House { source_slot: 4, events, .. }
+                if events.iter().any(|event| matches!(
+                    event,
+                    HouseStepEvent::ConstructionPass { .. }
+                        | HouseStepEvent::ConstructionCompleted { .. }
+                ))
+        )));
+        assert!(
+            !first_dispatch
+                .iter()
+                .any(|event| matches!(event, Mc2DispatchEvent::Error { source_slot: 4, .. }))
+        );
+
+        session.step(PlayerCommand::default(), 0);
+        let next_source = &session.simulation().entities()[4];
+        let next_house = session
+            .simulation()
+            .ordinary()
+            .houses()
+            .iter()
+            .find(|house| house.entity_index == 4)
+            .expect("source30 house remains joined through the next dispatch pass");
+        assert_eq!(next_source.action, next_house.action);
+        assert_eq!(
+            (next_source.life, next_source.max_life),
+            (next_house.life, next_house.max_life)
+        );
+        assert_eq!(next_source.phase, next_house.phase);
+        assert!(
+            !session
+                .simulation()
+                .dispatch_events()
+                .iter()
+                .any(|event| matches!(event, Mc2DispatchEvent::Error { source_slot: 4, .. }))
+        );
+    }
+}
+
 impl Level2SharedSpellResetSession {
     fn acquisition_from_source(
         source: &EntitySnapshot,
@@ -457,7 +651,7 @@ impl Level2SharedSpellResetSession {
         let acquisitions = pickups
             .iter()
             .chain(holders.iter().filter(|source| {
-                matches!(source.model, 3 | 4 | 6 | 9 | 11 | 12)
+                matches!(source.model, 3 | 4 | 6 | 7 | 9 | 11..=24)
                     && source.source_spell_parent_entity_index() == local_player.entity_index
                     && !pickups.iter().any(|pickup| pickup.model == source.model)
             }))
@@ -1947,11 +2141,13 @@ impl Level2SharedSpellResetSession {
             4 => 4,
             5 => 5,
             6 => 6,
+            7 => 7,
             8 => 8,
             9 => 9,
             10 => 10,
             11 => 11,
             12 => 12,
+            13..=24 => authored.subtype as u8,
             25 => 25,
             _ => {
                 return Err(NativeWorldError::new(format!(

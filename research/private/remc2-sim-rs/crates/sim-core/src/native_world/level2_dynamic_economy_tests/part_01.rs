@@ -601,6 +601,119 @@ fn level_two_mana_sphere_reclaims_contended_raw_relation_before_defender_selecti
 }
 
 #[test]
+fn model23_mana_sphere_lift_uses_raw_holder_word2c_and_rejects_a_stale_slot() {
+    let mut session = crate::native_world::tests::level_two_campaign_session();
+    let terrain = session.canonical_terrain().clone();
+    let holder_slot = session.state.entity_index;
+    let holder_position = Position {
+        x: 20_000,
+        y: 20_000,
+        z: 12_000,
+    };
+    let sphere = session
+        .economy_mut()
+        .allocate_authored_model39(
+            0,
+            0,
+            Position {
+                z: holder_position.z - 8,
+                ..holder_position
+            },
+        )
+        .expect("the ordinary source constructor allocates a sphere");
+    let sphere_slot = sphere.source_entity_index;
+    let mut entities = session.entities().to_vec();
+    let raw_holder = &mut entities[usize::from(holder_slot)];
+    raw_holder.active = true;
+    raw_holder.index = holder_slot;
+    raw_holder.class = 5;
+    raw_holder.model = 23;
+    raw_holder.position = holder_position;
+    raw_holder.record[67] = 5;
+    raw_holder.record[68] = 23;
+    raw_holder.record[44..46].copy_from_slice(&0x1234_u16.to_le_bytes());
+    raw_holder.record[48..50].copy_from_slice(&48_i16.to_le_bytes());
+    {
+        let mut economy = session.economy_mut();
+        let sphere = economy
+            .spheres_mut()
+            .iter_mut()
+            .find(|row| row.source_entity_index == sphere_slot)
+            .expect("allocated sphere remains live");
+        sphere.position = Position {
+            z: holder_position.z - 8,
+            ..holder_position
+        };
+        sphere.vertical_velocity = 0;
+        sphere.assigned_defender_slot = holder_slot;
+        sphere.control_flags |= 0x40;
+    }
+    {
+        let live = &mut session.session.state.live;
+        assert!(live.economy.economy.step_mana_sphere_slot(
+            sphere_slot,
+            &terrain,
+            &entities,
+            |_| 105,
+        ));
+    }
+    let lifted = session
+        .economy()
+        .spheres()
+        .iter()
+        .find(|row| row.source_entity_index == sphere_slot)
+        .expect("lifted sphere remains live");
+    assert_eq!(lifted.position.z, holder_position.z + 40);
+    assert_ne!(lifted.control_flags & 0x40, 0);
+    assert_eq!(lifted.phase, sphere.phase.wrapping_add(1));
+
+    // A reused raw slot must not be rescued by an older typed relation. The
+    // failed holder check consumes this visit and preserves its source tail.
+    entities[usize::from(holder_slot)].model = 2;
+    entities[usize::from(holder_slot)].record[68] = 2;
+    let stale_position = Position {
+        z: holder_position.z - 8,
+        ..holder_position
+    };
+    {
+        let mut economy = session.economy_mut();
+        let sphere = economy
+            .spheres_mut()
+            .iter_mut()
+            .find(|row| row.source_entity_index == sphere_slot)
+            .expect("sphere remains live for stale-holder case");
+        sphere.position = stale_position;
+        sphere.vertical_velocity = 0;
+        sphere.control_flags |= 0x40;
+    }
+    let phase_before_stale = session
+        .economy()
+        .spheres()
+        .iter()
+        .find(|row| row.source_entity_index == sphere_slot)
+        .unwrap()
+        .phase;
+    {
+        let live = &mut session.session.state.live;
+        assert!(live.economy.economy.step_mana_sphere_slot(
+            sphere_slot,
+            &terrain,
+            &entities,
+            |_| 105,
+        ));
+    }
+    let rejected = session
+        .economy()
+        .spheres()
+        .iter()
+        .find(|row| row.source_entity_index == sphere_slot)
+        .expect("stale-holder sphere remains live");
+    assert_eq!(rejected.position, stale_position);
+    assert_eq!(rejected.control_flags & 0x40, 0);
+    assert_eq!(rejected.phase, phase_before_stale.wrapping_add(1));
+}
+
+#[test]
 fn level_two_possession_expiry_retries_model12_allocation() {
     let mut session = level_two_possession_lifecycle_session();
     let source_id_entity_index = session.state.entity_index;
@@ -5318,6 +5431,8 @@ fn level_two_fireball_target_census_includes_only_live_map_linked_dragon_rows() 
         Some(Level2FireballGuidanceTarget {
             source_slot: root_slot,
             source_id: root_slot,
+            class: 5,
+            model: root.model,
             top_position: Position {
                 z: root.position.z.wrapping_add(root_render.render_yaw),
                 ..root.position
@@ -5332,6 +5447,8 @@ fn level_two_fireball_target_census_includes_only_live_map_linked_dragon_rows() 
         Some(Level2FireballCollisionTarget {
             source_slot: root_slot,
             source_id: root_slot,
+            class: 5,
+            model: root.model,
             position: root.position,
             half_width: root_render.render_pitch,
             vertical_offset: root_render.render_yaw,
@@ -5353,6 +5470,8 @@ fn level_two_fireball_target_census_includes_only_live_map_linked_dragon_rows() 
         Some(Level2FireballCollisionTarget {
             source_slot: first_part.source_entity_index,
             source_id: root_slot,
+            class: 5,
+            model: first_part.model,
             position: first_part.position,
             half_width: first_part.render_pitch,
             vertical_offset: first_part.render_yaw,

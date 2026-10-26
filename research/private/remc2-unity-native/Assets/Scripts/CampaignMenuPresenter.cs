@@ -24,23 +24,55 @@ namespace MagicCarpet.Native
         private FrontendMediaPresenter media;
         private MainAnimation[] mainAnimations;
         private readonly Dictionary<string, PortalState> portalStates = new(StringComparer.Ordinal);
+        private readonly Dictionary<string, SourceSecretPortalAnimation> secretPortalAnimations = new(StringComparer.Ordinal);
+        private readonly Dictionary<string, SourceSecretPortalAnimation.Presentation> secretPortalFrames = new(StringComparer.Ordinal);
         private string lastMode, lastCampaignPhase, portalTarget, statisticsLevel;
         private int lastAnimationFrame = -1;
         private bool briefingVisible;
         private float briefingElapsed;
+        private bool sourceBriefingSuppressed;
         private SourceScrollDialog scrollDialog;
         private SourceCampaignSaveSlots.Selection saveSlot;
         private string configuredSavePath;
         private string lastLaunchedMission, lastRuntimeId;
         private bool sourceLeftHeld;
+        private bool sourceMapCursorOwned, previousCursorVisible;
         internal bool IsSourceDialogOpen => scrollDialog != null ||
             lastMode == GameRuntimeTransport.CampaignMode && campaignCache?.Campaign?.Motion is { } motion &&
             (!motion.Ready || motion.Travelling);
         internal bool SourceBriefingReady => lastMode == GameRuntimeTransport.CampaignMode &&
-            campaignCache?.Campaign?.Motion is { Ready: true, Travelling: false } && statisticsLevel == null;
+            lastCampaignPhase == "mission_select" &&
+            campaignCache?.Campaign?.Motion is { Ready: true, Travelling: false } && statisticsLevel == null &&
+            !sourceBriefingSuppressed;
         internal void ConfigureSavePath(string path) { configuredSavePath = path; }
         internal SourceCampaignSaveSlots.Selection TakeSaveSlot()
         { var result = saveSlot; saveSlot = null; return result; }
+
+        internal void ReturnToSecretOrigin(
+            string originLevelId,
+            GameRuntimeTransport.Identity identity)
+        {
+            if (identity?.mode != GameRuntimeTransport.CampaignMode ||
+                identity.campaign_menu?.phase != "mission_select" ||
+                identity.campaign_menu.selected_level_id != originLevelId ||
+                string.IsNullOrWhiteSpace(originLevelId))
+            {
+                throw new InvalidOperationException(
+                    "secret return map requires Rust's selected MissionSelect origin");
+            }
+
+            // Re-enter the retained original map from Rust's returned
+            // selection, clearing any pre-secret portal travel or statistics.
+            SelectedMission = originLevelId;
+            lastLaunchedMission = originLevelId;
+            portalTarget = null;
+            statisticsLevel = null;
+            scrollDialog = null;
+            sourceLeftHeld = false;
+            portalStates.Clear();
+            lastMode = null;
+            lastCampaignPhase = null;
+        }
 
         internal void BeginBriefing(bool speechEnabled)
         {
@@ -68,6 +100,18 @@ namespace MagicCarpet.Native
 
         internal void AttachPreferences(PlayerPreferencesPresenter owner) { preferences = owner; }
         internal void AttachMedia(FrontendMediaPresenter owner) { media = owner; }
+        internal SourceMenuText GameplayText(string level)
+        {
+            campaignCache ??= new OwnerCampaignMenuCache(campaignCachePath ??
+                throw new InvalidOperationException("source gameplay font requires the menu cache"));
+            return campaignCache.PauseMenu.GameplayText(campaignCache.ForMission(level).pause_profile);
+        }
+        internal Texture2D GameplayBitmap(string level, int selector) =>
+            campaignCache.PauseMenu.GameplayBitmap(campaignCache.ForMission(level).pause_profile, selector);
+        internal Color GameplayColor(string level, byte index) =>
+            campaignCache.PauseMenu.GameplayColor(campaignCache.ForMission(level).pause_profile, index);
+        internal byte GameplayBlackIndex(string level) =>
+            campaignCache.PauseMenu.GameplayBlackIndex(campaignCache.ForMission(level).pause_profile);
         internal bool DismissPauseSubmenu() => campaignCache?.PauseMenu?.DismissSubmenu() == true;
 
         internal SourcePauseMenu.ConfirmationResult DrawAbandonConfirmation(
@@ -164,14 +208,22 @@ namespace MagicCarpet.Native
         internal Action Draw(GameRuntimeTransport.Identity identity, bool canSave, bool canLoad, bool objectivesSatisfied, string status)
         {
             var mode = identity.mode;
+            sourceBriefingSuppressed = false;
+            OwnSourceMapCursor(mode == GameRuntimeTransport.CampaignMode && preferences?.IsOpen != true);
             if (mode != GameRuntimeTransport.TitleMode && mode != GameRuntimeTransport.PausedMode && mode != GameRuntimeTransport.CampaignMode)
                 return Action.None;
             if (campaignCache == null && (campaignCachePath != null || mode == GameRuntimeTransport.CampaignMode))
                 campaignCache = new OwnerCampaignMenuCache(campaignCachePath ??
                     throw new InvalidOperationException("campaign map requires its decoded owner cache"));
+            if (mode == GameRuntimeTransport.CampaignMode &&
+                !string.IsNullOrEmpty(identity.campaign_menu?.briefing_level_id))
+                sourceBriefingSuppressed = SuppressSourceBriefing(
+                    identity.campaign_menu.briefing_level_id, identity.secret_campaign);
             if (identity.runtime_id != lastRuntimeId)
             {
                 lastRuntimeId = identity.runtime_id;
+                secretPortalAnimations.Clear();
+                secretPortalFrames.Clear();
                 lastLaunchedMission = identity.campaign_menu?.completed_level_id;
                 lastMode = null;
             }
@@ -194,7 +246,9 @@ namespace MagicCarpet.Native
             var now = unchecked((uint)(Time.realtimeSinceStartupAsDouble * 100));
             if (preferences?.IsOpen == true)
             {
-                preferences.Draw();
+                if (mode == GameRuntimeTransport.TitleMode && campaignCache?.Startup != null)
+                    DrawStartup(now, repaint, canSave, canLoad, status, false);
+                preferences.Draw(campaignCache);
                 return Action.None;
             }
             if (mode == GameRuntimeTransport.TitleMode && campaignCache?.Startup != null)
@@ -242,21 +296,26 @@ namespace MagicCarpet.Native
                         mouse.x = Mathf.Clamp(mouse.x, 0, 638); mouse.y = Mathf.Clamp(mouse.y, 0, 478);
                         arrival = sourceMap.Step(identity.campaign_menu, campaignCache.ForMission, now,
                             unchecked((uint)(Time.realtimeSinceStartupAsDouble * 30)), mouse, sourceLeftHeld,
-                            identity.campaign_menu.phase != "results" && statisticsLevel == null, media);
+                            identity.campaign_menu.phase != "results" && statisticsLevel == null, media,
+                            campaignCache.FinalMissionBinding);
                     }
                     UpdatePortals(identity.campaign_menu, now, repaint && sourceMap.SourcePassAdvanced);
-                    campaignCache.DrawMap(identity.campaign_menu, PortalSelector);
+                    UpdateSecretPortals(identity, now, repaint && sourceMap.SourcePassAdvanced);
+                    var completedSecrets = identity.secret_campaign?.completed_levels ?? Array.Empty<string>();
+                    sourceMap.DrawMap(identity.campaign_menu, sourceView, campaignCache.ForMission,
+                        PortalSelector, level => Array.IndexOf(completedSecrets, level) >= 0,
+                        SecretPortalPresentation);
                     if (repaint) lastAnimationFrame = Time.frameCount;
                     if (arrival != null)
                     {
-                        DrawMapCommands(identity.campaign_menu, status, false, false);
+                        DrawMapCommands(identity.campaign_menu, status, false, false, identity.secret_campaign);
                         portalTarget = arrival; SelectedMission = arrival; lastLaunchedMission = arrival;
                         lastMode = null; // The retained UI is re-entered after mission/abandon.
                         return Action.StartMission;
                     }
                     if (scrollDialog != null)
                     {
-                        DrawMapCommands(identity.campaign_menu, status, false, false);
+                        DrawMapCommands(identity.campaign_menu, status, false, false, identity.secret_campaign);
                         return DrawScrollDialog(identity.campaign_menu, repaint, now);
                     }
                     var showingResults = identity.campaign_menu.phase == "results";
@@ -274,7 +333,7 @@ namespace MagicCarpet.Native
                         campaignCache.Campaign.DrawStatistics(menu, focus, campaignCache.ForMission(level),
                             stats, campaignCache.SourceView(menu), campaignCache.ForMission,
                             PortalSelector, SourceText);
-                        DrawMapCommands(menu, status, false, false);
+                        DrawMapCommands(menu, status, false, false, identity.secret_campaign);
                         // NewGameDraw states4/5 consume any key or mouse
                         // button, with the map itself retained behind the sheet.
                         if (Event.current.type == EventType.KeyDown || Event.current.type == EventType.MouseDown)
@@ -285,7 +344,8 @@ namespace MagicCarpet.Native
                         }
                         return Action.None;
                     }
-                    var controlAction = DrawMapCommands(identity.campaign_menu, status, canSave);
+                    var controlAction = DrawMapCommands(identity.campaign_menu, status, canSave, true,
+                        identity.secret_campaign);
                     if (controlAction != Action.None || scrollDialog != null) return controlAction;
                     if (sourceMap.Motion.Ready && !sourceMap.Motion.Travelling &&
                         identity.campaign_menu.phase != "results" && Event.current.type == EventType.MouseDown)
@@ -341,10 +401,42 @@ namespace MagicCarpet.Native
                     GUI.Label(new Rect(x, y + 8, width, 80), status ?? help, message);
                 return Action.None;
             }
-            finally { GUI.color = oldColor; GUI.enabled = oldEnabled; }
+            finally
+            {
+                if (mode == GameRuntimeTransport.CampaignMode)
+                {
+                    GUI.color = Color.white;
+                    GUI.enabled = true;
+                    var view = campaignCache.SourceView(identity.campaign_menu);
+                    var pointer = (Event.current.mousePosition - view.position) * (640f / view.width);
+                    campaignCache.Campaign.DrawOverlay(identity.campaign_menu, view, pointer,
+                        preferences?.Current.preferences.show_help != false, now,
+                        scrollDialog == null && statisticsLevel == null && identity.campaign_menu.phase != "results" &&
+                        campaignCache.Campaign.Motion.Ready && !campaignCache.Campaign.Motion.Travelling,
+                        campaignCache.MissionOrder, SourceText);
+                }
+                GUI.color = oldColor;
+                GUI.enabled = oldEnabled;
+            }
         }
 
-        private Action DrawStartup(uint now, bool advance, bool canSave, bool canLoad, string status)
+        private void OwnSourceMapCursor(bool active)
+        {
+            if (active)
+            {
+                if (!sourceMapCursorOwned) previousCursorVisible = Cursor.visible;
+                sourceMapCursorOwned = true;
+                Cursor.visible = false;
+            }
+            else if (sourceMapCursorOwned)
+            {
+                Cursor.visible = previousCursorVisible;
+                sourceMapCursorOwned = false;
+            }
+        }
+
+        private Action DrawStartup(uint now, bool advance, bool canSave, bool canLoad, string status,
+            bool acceptInput = true)
         {
             var startup = campaignCache.Startup;
             if (mainAnimations == null)
@@ -392,18 +484,26 @@ namespace MagicCarpet.Native
                         0x258980 => Action.Quit,
                         _ => Action.None,
                     };
-                    var settings = entry.source_action == 0x259e00 || entry.source_action == 0x25a610;
+                    var settings = entry.source_action == 0x259e00 || entry.source_action == 0x25a610 || entry.source_action == 0x25a160;
                     GUI.enabled = action != Action.None && (action != Action.Save || canSave) ||
                         settings && preferences != null;
                     var hit = new Rect(view.x + entry.x * scale, view.y + entry.y * scale,
                         entry.width * scale, entry.height * scale);
-                    if (GUI.enabled && hit.Contains(Event.current.mousePosition))
+                    if (acceptInput && GUI.enabled && hit.Contains(Event.current.mousePosition))
                         DrawBitmap(entry.hover_selector, entry.x, entry.y);
                     if (scrollDialog != null) continue;
-                    if (GUI.Button(hit, GUIContent.none, GUIStyle.none))
+                    if (acceptInput && GUI.Button(hit, GUIContent.none, GUIStyle.none))
                     {
                         PlayClick();
-                        if (settings) { preferences.Open(); return Action.None; }
+                        if (settings)
+                        {
+                            preferences.Open(entry.source_action switch {
+                                0x259e00 => SourceSettingsDialog.Page.Name,
+                                0x25a610 => SourceSettingsDialog.Page.Keys,
+                                _ => SourceSettingsDialog.Page.Joystick
+                            });
+                            return Action.None;
+                        }
                         if (action == Action.Load || action == Action.Save)
                         {
                             scrollDialog = new SourceScrollDialog(action == Action.Load ? SourceScrollDialog.Kind.Load :
@@ -429,6 +529,7 @@ namespace MagicCarpet.Native
             if (animation == null) return;
             foreach (var level in menu.available_levels)
             {
+                if (campaignCache.ForMission(level).is_secret) continue;
                 var completed = Array.IndexOf(menu.completed_levels, level) >= 0;
                 if (!portalStates.TryGetValue(level, out var state))
                 {
@@ -464,6 +565,59 @@ namespace MagicCarpet.Native
                 }
             }
         }
+
+        private void UpdateSecretPortals(GameRuntimeTransport.Identity identity, uint now, bool advance)
+        {
+            var progress = identity.secret_campaign;
+            var discovered = progress?.discovered_levels ?? Array.Empty<string>();
+            var completed = progress?.completed_levels ?? Array.Empty<string>();
+            var secretEntries = identity.active_runtime_flow?.secret_entries ??
+                Array.Empty<GameRuntimeTransport.RuntimeFlowSecretEntry>();
+            secretPortalFrames.Clear();
+
+            foreach (var entry in secretEntries)
+            {
+                if (entry == null || string.IsNullOrEmpty(entry.secret_level_id) ||
+                    string.IsNullOrEmpty(entry.origin_level_id))
+                    throw new InvalidOperationException("Rust secret flow contains an incomplete portal binding");
+
+                var mission = campaignCache.ForMission(entry.secret_level_id);
+                var origin = campaignCache.ForMission(entry.origin_level_id);
+                if (!mission.is_secret || origin.is_secret ||
+                    mission.source_ordinary_index != origin.source_ordinary_index)
+                    throw new InvalidOperationException("source secret portal is not bound to its actual ordinary parent");
+
+                if (!secretPortalAnimations.TryGetValue(mission.level_id, out var animation))
+                {
+                    animation = new SourceSecretPortalAnimation();
+                    secretPortalAnimations.Add(mission.level_id, animation);
+                }
+                var presentation = animation.Step(
+                    mission.is_secret,
+                    Array.IndexOf(discovered, mission.level_id) >= 0,
+                    Array.IndexOf(completed, mission.level_id) >= 0,
+                    now,
+                    advance,
+                    identity.campaign_menu.phase == "mission_select" &&
+                    campaignCache.Campaign.Motion.Ready && !campaignCache.Campaign.Motion.Travelling);
+                if (presentation.PlayOpeningSound)
+                {
+                    var binding = campaignCache.PortalAnimation ??
+                        throw new InvalidOperationException("secret portal animation requires the source portal cache");
+                    var sound = binding.sound ??
+                        throw new InvalidOperationException("secret portal opening sound is unbound");
+                    if (media == null)
+                        throw new InvalidOperationException("secret portal animation requires the frontend audio owner");
+                    media.PlayMenuSample(sound.id, campaignCache.ReadPortalOpeningSound(), sound.volume,
+                        sound.pan, sound.rate, sound.if_not_playing);
+                }
+                secretPortalFrames[mission.level_id] = presentation;
+            }
+        }
+
+        private SourceSecretPortalAnimation.Presentation SecretPortalPresentation(string level) =>
+            secretPortalFrames.TryGetValue(level, out var presentation)
+                ? presentation : SourceSecretPortalAnimation.Presentation.Hidden;
 
         private int PortalSelector(string level, bool completed)
         {
@@ -505,7 +659,7 @@ namespace MagicCarpet.Native
         }
 
         private Action DrawMapCommands(GameRuntimeTransport.CampaignMenuSnapshot menu, string status, bool canSave,
-            bool acceptInput = true)
+            bool acceptInput, GameRuntimeTransport.SecretCampaignSnapshot secretCampaign)
         {
             var view = campaignCache.SourceView(menu);
             var scale = view.width / 640f;
@@ -539,13 +693,31 @@ namespace MagicCarpet.Native
                     default: throw new InvalidOperationException("unbound source campaign control action");
                 }
             }
-            if (acceptInput && briefingVisible && source.Motion.Ready && !source.Motion.Travelling && !string.IsNullOrEmpty(menu.briefing_level_id))
+            if (acceptInput && briefingVisible && source.Motion.Ready && !source.Motion.Travelling &&
+                !string.IsNullOrEmpty(menu.briefing_level_id) &&
+                !SuppressSourceBriefing(menu.briefing_level_id, secretCampaign))
             {
                 var mission = campaignCache.ForMission(menu.briefing_level_id);
                 source.DrawBriefing(menu, campaignCache.MapFocus(menu), mission.briefing, view, campaignCache.ForMission, PortalSelector);
             }
             if (!string.IsNullOrEmpty(status)) source.DialogText.DrawText(status, 130, 10, view, source.NearestColor(63, 63, 63));
             return Action.None;
+        }
+
+        private bool SuppressSourceBriefing(string level, GameRuntimeTransport.SecretCampaignSnapshot secretCampaign)
+        {
+            var mission = campaignCache.ForMission(level);
+            if (mission.is_secret) return true;
+
+            foreach (var secretLevel in secretCampaign?.discovered_levels ?? Array.Empty<string>())
+            {
+                var secret = campaignCache.ForMission(secretLevel);
+                if (!secret.is_secret)
+                    throw new InvalidOperationException("Rust secret frontier is not bound to source secret artwork");
+                if (secret.source_ordinary_index == mission.source_ordinary_index)
+                    return true;
+            }
+            return false;
         }
 
         private Action DrawScrollDialog(GameRuntimeTransport.CampaignMenuSnapshot menu, bool advance, uint now)
@@ -576,6 +748,7 @@ namespace MagicCarpet.Native
 
         public void Dispose()
         {
+            OwnSourceMapCursor(false);
             campaignCache?.Dispose();
             if (Application.isPlaying) UnityEngine.Object.Destroy(background);
             else UnityEngine.Object.DestroyImmediate(background);

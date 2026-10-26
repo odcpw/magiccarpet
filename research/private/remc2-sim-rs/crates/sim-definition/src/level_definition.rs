@@ -13,13 +13,37 @@ mod cave_features;
 pub use cave_features::{CaveFeatureDefinition, CaveFeatureKind};
 mod creatures;
 pub use creatures::{
-    BEE_CLASS_PROPERTIES, BeeClassProperties, CREATURE22_CLASS_PROPERTIES,
-    CREATURE24_CLASS_PROPERTIES, Creature22ClassProperties, Creature24ClassProperties,
+    FINAL_BOSS_CLASS_PROPERTIES, FinalBossClassProperties,
+    CYMMERIAN_CLASS_PROPERTIES, CymmerianClassProperties,
+    CREATURE28_CLASS_PROPERTIES, Creature28ClassProperties,
+    BEE_CLASS_PROPERTIES, BeeClassProperties, CREATURE17_CLASS_PROPERTIES,
+    CREATURE18_CLASS_PROPERTIES, CREATURE21_CLASS_PROPERTIES, CREATURE22_CLASS_PROPERTIES,
+    CREATURE23_CLASS_PROPERTIES, CREATURE24_CLASS_PROPERTIES, CREATURE26_CLASS_PROPERTIES,
+    Creature17ClassProperties, Creature18ClassProperties, Creature21ClassProperties,
+    Creature22ClassProperties, Creature23ClassProperties, Creature24ClassProperties,
+    Creature26ClassProperties, WYVERN_CLASS_PROPERTIES, WyvernClassProperties,
 };
 mod effects;
 pub use effects::{EffectDefinition, EffectKind};
+mod directional_spells;
+mod disaster_spells;
+pub use directional_spells::{DUEL_TIERS, DirectionalSpellTier, STEAL_MANA_TIERS};
+pub use disaster_spells::{
+    CRATER_PROPERTIES, DisasterSpellProperties, DisasterSpellTier, EARTHQUAKE_PROPERTIES,
+    TREMOR_PROPERTIES, VOLCANO_PROPERTIES,
+};
 mod fields;
 pub use fields::{FieldDefinition, FieldKind};
+mod field_spells;
+pub use field_spells::{FieldSpellTier, GRAVITY_WELL_TIERS, WHIRLWIND_TIERS};
+pub mod late_spells;
+mod summon_army;
+pub use summon_army::{
+    MC2_SOURCE_SUMMON_ARMY_PROPERTIES, SummonArmyEnvironment, SummonArmyMember,
+    SummonArmyProperties, SummonArmySelection, SummonArmyTier, SummonArmyTierProperties,
+};
+mod meteor;
+pub use meteor::{METEOR_PROPERTIES, MeteorProperties, MeteorTier};
 mod lightning;
 pub use lightning::{LIGHTNING_PROPERTIES, LightningProperties, LightningTier};
 mod scenery;
@@ -42,12 +66,29 @@ pub enum CreatureKind {
     Builder,
     Villager,
     Trader,
+    Wyvern,
+    #[serde(rename = "creature_17")]
+    Creature17,
+    #[serde(rename = "creature_18")]
+    Creature18,
+    #[serde(rename = "creature_26")]
+    Creature26,
+    #[serde(rename = "creature_27")]
+    Creature27,
+    Cymmerian,
     Firefly,
     Spider,
     #[serde(rename = "creature_22")]
     Creature22,
+    #[serde(rename = "creature_23")]
+    Creature23,
     #[serde(rename = "creature_24")]
     Creature24,
+    FinalBoss,
+    #[serde(rename = "creature_21")]
+    Creature21,
+    #[serde(rename = "creature_28")]
+    Creature28,
 }
 
 /// Typed class properties consumed by Archer construction, ground motion,
@@ -187,10 +228,20 @@ impl CreatureKind {
             Self::Builder => "builder",
             Self::Villager => "villager",
             Self::Trader => "trader",
+            Self::Wyvern => "wyvern",
+            Self::Creature17 => "creature_17",
+            Self::Creature18 => "creature_18",
+            Self::Creature26 => "creature_26",
+            Self::Creature27 => "creature_27",
+            Self::Cymmerian => "cymmerian",
             Self::Firefly => "firefly",
             Self::Spider => "spider",
             Self::Creature22 => "creature_22",
+            Self::Creature23 => "creature_23",
             Self::Creature24 => "creature_24",
+            Self::FinalBoss => "final_boss",
+            Self::Creature21 => "creature_21",
+            Self::Creature28 => "creature_28",
         }
     }
 }
@@ -218,7 +269,11 @@ pub const fn supports_authorable_creature_placement(kind: CreatureKind) -> bool 
     supports_complete_creature_lifecycle(kind)
         || matches!(
             kind,
-            CreatureKind::Goat | CreatureKind::Worm | CreatureKind::Villager | CreatureKind::Trader
+            CreatureKind::FinalBoss
+                | CreatureKind::Goat
+                | CreatureKind::Worm
+                | CreatureKind::Villager
+                | CreatureKind::Trader
         )
 }
 
@@ -231,7 +286,11 @@ pub const fn creature_max_life_upper_bound(kind: CreatureKind) -> Option<u32> {
         CreatureKind::Archer
         | CreatureKind::CastleDefender
         | CreatureKind::Creature22
+        | CreatureKind::Creature23
         | CreatureKind::Creature24
+        | CreatureKind::FinalBoss
+        | CreatureKind::Creature21
+        | CreatureKind::Creature28
         | CreatureKind::Dragon
         | CreatureKind::Firefly
         | CreatureKind::Goat
@@ -240,6 +299,8 @@ pub const fn creature_max_life_upper_bound(kind: CreatureKind) -> Option<u32> {
         | CreatureKind::Trader
         | CreatureKind::Villager
         | CreatureKind::Worm => Some(2_147_483_647),
+        CreatureKind::Wyvern | CreatureKind::Creature17 | CreatureKind::Creature18
+        | CreatureKind::Creature26 | CreatureKind::Creature27 | CreatureKind::Cymmerian => Some(2_147_483_647),
         _ => None,
     }
 }
@@ -256,9 +317,22 @@ pub enum SpellKind {
     Shield,
     Rebound,
     Lightning,
+    Meteor,
     Teleport,
     Invisibility,
     BeyondSight,
+    StealMana,
+    Duel,
+    Tremor,
+    Crater,
+    Earthquake,
+    Volcano,
+    SummonArmy,
+    GravityWell,
+    Whirlwind,
+    FoolsMana,
+    MagicMine,
+    Alliance,
     CaveIn,
 }
 
@@ -275,9 +349,22 @@ impl SpellKind {
             Self::Shield => "shield",
             Self::Rebound => "rebound",
             Self::Lightning => "lightning",
+            Self::Meteor => "meteor",
             Self::Teleport => "teleport",
             Self::Invisibility => "invisibility",
             Self::BeyondSight => "beyond_sight",
+            Self::StealMana => "steal_mana",
+            Self::Duel => "duel",
+            Self::Tremor => "tremor",
+            Self::Crater => "crater",
+            Self::Earthquake => "earthquake",
+            Self::Volcano => "volcano",
+            Self::SummonArmy => "summon_army",
+            Self::FoolsMana => "fools_mana",
+            Self::MagicMine => "magic_mine",
+            Self::Alliance => "alliance",
+            Self::GravityWell => "gravity_well",
+            Self::Whirlwind => "whirlwind",
             Self::CaveIn => "cave_in",
         }
     }
@@ -874,6 +961,13 @@ const fn is_read_only_entity_parameter(access: &LevelEntityParameterAccess) -> b
 #[serde(rename_all = "snake_case")]
 pub enum ObjectiveCondition {
     ReachLocation(TilePosition),
+    TargetDeath(LevelEntityId),
+    TargetDeathWithoutFont(LevelEntityId),
+    OwnedTargetAtLocation {
+        target: LevelEntityId,
+        location: TilePosition,
+    },
+    CollectedTarget(LevelEntityId),
     DefeatRivalWizard(RivalWizardId),
     AllOtherPlayersBanished,
     NoLivingCreatures(CreatureKind),
@@ -1454,6 +1548,22 @@ impl LevelDefinition {
                 return Err(format!(
                     "semantic objective {} Castle-mana percentage is outside 0..=100",
                     objective.id.as_str()
+                ));
+            }
+            let target = match &objective.condition {
+                ObjectiveCondition::TargetDeath(target)
+                | ObjectiveCondition::TargetDeathWithoutFont(target)
+                | ObjectiveCondition::CollectedTarget(target)
+                | ObjectiveCondition::OwnedTargetAtLocation { target, .. } => Some(target),
+                _ => None,
+            };
+            if let Some(target) = target
+                && !entities.iter().any(|entity| entity.id() == target)
+            {
+                return Err(format!(
+                    "semantic objective {} references missing target {}",
+                    objective.id.as_str(),
+                    target.as_str()
                 ));
             }
             if let ObjectiveCondition::NoLivingCreatures(kind) = objective.condition
@@ -2372,6 +2482,39 @@ impl LevelDefinition {
 #[cfg(test)]
 mod tests {
     use super::{ObjectiveCondition, RivalWizardId};
+
+    #[test]
+    fn target_objectives_require_a_package_present_target() {
+        use super::*;
+        use crate::adapter::{entity_definition, objective_definition};
+        let target = LevelEntityId::parse("scenery.target.test").unwrap();
+        let entity = entity_definition(
+            target.clone(),
+            LevelEntityKind::Scenery(SceneryKind::Tree),
+            TilePosition { x: 10, y: 20 },
+            None,
+        );
+        for condition in [
+            ObjectiveCondition::TargetDeath(target.clone()),
+            ObjectiveCondition::TargetDeathWithoutFont(target.clone()),
+            ObjectiveCondition::CollectedTarget(target.clone()),
+            ObjectiveCondition::OwnedTargetAtLocation {
+                target: target.clone(),
+                location: TilePosition { x: 30, y: 40 },
+            },
+        ] {
+            let objective = objective_definition(
+                LevelObjectiveId::parse("objective.target.test").unwrap(),
+                condition,
+                LevelObjectiveConditionAccess::ReadOnly,
+            );
+            assert!(
+                LevelDefinition::new(vec![entity.clone()], vec![objective.clone()], vec![]).is_ok()
+            );
+            let error = LevelDefinition::new(vec![], vec![objective], vec![]).unwrap_err();
+            assert!(error.contains("references missing target"));
+        }
+    }
 
     #[test]
     fn retained_field_and_mushroom_rules_survive_serialization_and_reject_rebinding() {

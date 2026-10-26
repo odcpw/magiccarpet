@@ -305,6 +305,8 @@ pub const fn mc2_effect_definition(kind: EffectKind) -> EffectDefinition {
         EffectKind::AmbientSmoke => (800, 100),
         EffectKind::PossessionContact => (8, 64000),
         EffectKind::FireSpheres => (80, 70),
+        EffectKind::LightningEndpoint => (8, 25),
+        EffectKind::LightningStorm => (32, 0),
     };
     EffectDefinition::new(kind, life, damage)
 }

@@ -172,13 +172,13 @@ namespace MagicCarpet.Native
             Func<string, OwnerCampaignMenuCache.Mission> lookup, uint now, int mouseX, int mouseY,
             bool leftHeld, bool allowPan, int centerX, int centerY,
             Func<int, (int width, int height)> extent, Action<int, int> stamp,
-            Action<int, int, int> sound)
+            Action<int, int, int> sound, bool terminalEffectEnabled)
         {
             if (viewportPath != null && viewportPath.Move())
             { viewportPath = null; Ready = true; DescriptionViewportY = Y; }
             else if (Ready && !Travelling && allowPan) Pan(mouseX, mouseY);
             StepBackground(now, leftHeld, sound);
-            StepDecorations(menu, now, sound);
+            StepDecorations(menu, now, terminalEffectEnabled, sound);
             Actor = null;
             ActorIsTravelling = Travelling;
             if (Travelling)
@@ -269,7 +269,7 @@ namespace MagicCarpet.Native
         }
 
         private void StepDecorations(GameRuntimeTransport.CampaignMenuSnapshot menu, uint now,
-            Action<int, int, int> sound)
+            bool terminalEffectEnabled, Action<int, int, int> sound)
         {
             decorationSprites.Clear();
             var frontier = menu.available_levels.Count(level => menu.completed_levels.Contains(level));
@@ -277,7 +277,7 @@ namespace MagicCarpet.Native
             {
                 var row = item.Binding;
                 if (row.kind == 2 && menu.phase == "results") continue;
-                if (row.kind == 2 && frontier != row.frontier || row.kind == 3 && Math.Max(0, frontier - 1) != row.frontier)
+                if (row.kind == 2 && frontier != row.frontier || row.kind == 3 && !terminalEffectEnabled)
                 { item.Phase = 0; continue; }
                 var initial = row.kind == 1 ? 2 : 1;
                 var moving = initial + 1;

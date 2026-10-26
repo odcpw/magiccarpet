@@ -39,6 +39,22 @@ pub struct SpellActivationHolder {
     pub action_marker: i8,
 }
 
+/// Narrow owner inputs for source directional spell constructors.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct ProjectileSpellCastInput {
+    pub aim_yaw: i16,
+    pub aim_pitch: i16,
+    pub auxiliary_byte: u8,
+    pub castle_mana: Option<i32>,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct ProjectileSpellHolderOutcome {
+    pub clear_player_aux: Option<u16>,
+    /// First successful product; additional linked shots remain in the arena.
+    pub projectile: Option<u16>,
+}
+
 /// Renderer-free input for one `GetScroll_69DB0` Speed-holder visit.
 ///
 /// The caller owns source-slot scheduling, player lookup, experience, audio,
@@ -411,11 +427,10 @@ impl SpellHolderAcquisitionState {
     }
 }
 
-/// The authored `Spells.cpp` rows consumed by `SetSpell_6D5E0` for the three
-/// generic Level 2 families.  Keeping this projection beside the generic
-/// acquisition helper makes the tier-dependent writes explicit instead of
-/// treating the frame-zero pickup bytes as the authority after a player
-/// changes `array_0x437[family]`.
+/// The source row projection consumed by `SetSpell_6D5E0`. Tier changes must
+/// apply the selected rules rather than reuse frame-zero pickup bytes. The
+/// focused family definitions below retain loaded owner SPELLS.DAT values
+/// and applicable SetDefaultSpells overrides.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Level2SetSpellProfile {
     pub subspell_index: u16,
@@ -431,8 +446,102 @@ pub struct Level2SetSpellProfile {
 /// Castle relation. The runtime resolves that dynamic cost at SetSpell.
 #[must_use]
 pub const fn level2_set_spell_profile(family: u8, tier: u8) -> Option<Level2SetSpellProfile> {
-    if family == 9 && tier < 3 {
+    if family == 19 && tier < 3 {
+        use crate::level_definition::{MC2_SOURCE_SUMMON_ARMY_PROPERTIES, SummonArmyTier};
+        let source_tier = match SummonArmyTier::from_level_gate(tier as i8) {
+            Some(value) => value,
+            None => return None,
+        };
+        let rule = MC2_SOURCE_SUMMON_ARMY_PROPERTIES.tier_properties(source_tier);
+        return Some(Level2SetSpellProfile {
+            subspell_index: rule.power,
+            word_0x30: rule.cooldown,
+            byte_0x3b: 1,
+            mana_regen: rule.castle_mana_required,
+            max_mana: rule.mana_cost,
+            mana: rule.mana_cost / rule.cooldown as i32,
+        });
+    }
+    if family >= 22 && family <= 24 && tier < 3 {
+        use crate::level_definition::late_spells::{
+            ALLIANCE_PROPERTIES, FOOLS_MANA_PROPERTIES, MAGIC_MINE_PROPERTIES,
+        };
+        let properties = match family {
+            22 => FOOLS_MANA_PROPERTIES,
+            23 => MAGIC_MINE_PROPERTIES,
+            _ => ALLIANCE_PROPERTIES,
+        };
+        let rule = properties.tiers[tier as usize];
+        return Some(Level2SetSpellProfile {
+            subspell_index: rule.subspell_index as u16,
+            word_0x30: rule.cooldown as u16,
+            byte_0x3b: ((rule.font_type & 1) == 0) as u8,
+            mana_regen: rule.runtime_castle_mana_limit,
+            max_mana: rule.mana_cost,
+            mana: rule.mana_cost / rule.cooldown as i32,
+        });
+    }
+    if (family == 20 || family == 21) && tier < 3 {
+        let rule = if family == 20 {
+            crate::level_definition::GRAVITY_WELL_TIERS[tier as usize]
+        } else {
+            crate::level_definition::WHIRLWIND_TIERS[tier as usize]
+        };
+        return Some(Level2SetSpellProfile {
+            subspell_index: rule.power,
+            word_0x30: rule.cooldown,
+            byte_0x3b: 1,
+            mana_regen: rule.castle_mana_required,
+            max_mana: rule.mana_cost,
+            mana: rule.mana_cost / rule.cooldown as i32,
+        });
+    }
+    if (family == 13 || family == 14) && tier < 3 {
+        let rule = if family == 13 {
+            crate::level_definition::STEAL_MANA_TIERS[tier as usize]
+        } else {
+            crate::level_definition::DUEL_TIERS[tier as usize]
+        };
+        return Some(Level2SetSpellProfile {
+            subspell_index: rule.power,
+            word_0x30: rule.cooldown,
+            byte_0x3b: 1,
+            mana_regen: rule.castle_mana_required,
+            max_mana: rule.mana_cost,
+            mana: rule.mana_cost / rule.cooldown as i32,
+        });
+    }
+    if family >= 15 && family <= 18 && tier < 3 {
+        let properties = match family {
+            15 => crate::level_definition::TREMOR_PROPERTIES,
+            16 => crate::level_definition::CRATER_PROPERTIES,
+            17 => crate::level_definition::EARTHQUAKE_PROPERTIES,
+            _ => crate::level_definition::VOLCANO_PROPERTIES,
+        };
+        let rule = properties.tiers[tier as usize];
+        return Some(Level2SetSpellProfile {
+            subspell_index: rule.damage,
+            word_0x30: rule.cooldown,
+            byte_0x3b: 1,
+            mana_regen: rule.castle_mana_required,
+            max_mana: rule.mana_cost,
+            mana: rule.mana_cost / rule.cooldown as i32,
+        });
+    }
+    if family == 7 && tier < 3 {
         let rule = crate::level_definition::LIGHTNING_PROPERTIES.tiers[tier as usize];
+        return Some(Level2SetSpellProfile {
+            subspell_index: rule.damage,
+            word_0x30: rule.cooldown,
+            // SetDefaultSpells sets fontType bit0 for Lightning tier0.
+            byte_0x3b: if tier == 0 { 0 } else { 1 },
+            mana_regen: rule.castle_mana_required,
+            max_mana: rule.mana_cost,
+            mana: rule.mana_cost / rule.cooldown as i32,
+        });
+    }
+    if family == 9 && tier < 3 {
+        let rule = crate::level_definition::METEOR_PROPERTIES.tiers[tier as usize];
         return Some(Level2SetSpellProfile {
             subspell_index: rule.damage,
             word_0x30: rule.cooldown,
@@ -802,7 +911,7 @@ pub fn acquire_level2_spell_holder_with_return_side(
     overlaps: bool,
     return_side: i16,
 ) -> SpellHolderAcquisitionResult {
-    if !matches!(state.family, 0..=6 | 8..=12 | 25) {
+    if !matches!(state.family, 0..=25) {
         return SpellHolderAcquisitionResult::Rejected(
             SpellHolderAcquisitionFailure::UnsupportedFamily,
         );
@@ -2406,9 +2515,51 @@ mod tests {
             (8, 0, 0, 125, 1, 40_000, 5_000, 40),
             (8, 1, 0, 251, 1, 80_000, 15_000, 59),
             (8, 2, 0, 125, 1, 160_000, 25_000, 200),
-            (9, 0, 1_750, 9, 1, 5_000, 1_000, 111),
-            (9, 1, 3_500, 17, 1, 9_000, 1_500, 88),
-            (9, 2, 7_000, 25, 1, 18_000, 2_000, 80),
+            // Loaded owner SPELLS.DAT, not the compiled fallback Spells.cpp.
+            (7, 0, 200, 5, 0, 30_000, 1_000, 200),
+            (7, 1, 300, 35, 1, 90_000, 10_000, 285),
+            (7, 2, 800, 45, 1, 120_000, 20_000, 444),
+            (9, 0, 4_000, 3, 1, 40_000, 6_000, 2_000),
+            (9, 1, 8_000, 7, 1, 80_000, 10_000, 1_428),
+            (9, 2, 16_000, 11, 1, 150_000, 20_000, 1_818),
+            (13, 0, 2000, 5, 1, 10000, 10000, 2000),
+            (13, 1, 4000, 7, 1, 16000, 20000, 2857),
+            (13, 2, 10, 21, 1, 32000, 30000, 1428),
+            (14, 0, 5170, 195, 1, 10000, 10000, 51),
+            (14, 1, 7720, 395, 1, 16000, 20000, 50),
+            (14, 2, 7720, 603, 1, 36000, 40000, 66),
+            (15, 0, 200, 31, 1, 80_000, 4_000, 129),
+            (15, 1, 300, 41, 1, 140_000, 6_000, 146),
+            (15, 2, 800, 61, 1, 180_000, 10_000, 163),
+            (16, 0, 250, 31, 1, 100_000, 6_000, 193),
+            (16, 1, 400, 41, 1, 150_000, 9_000, 219),
+            (16, 2, 900, 51, 1, 200_000, 12_000, 235),
+            (17, 0, 300, 21, 1, 150_000, 10_000, 476),
+            (17, 1, 500, 31, 1, 200_000, 12_000, 387),
+            (17, 2, 1_000, 41, 1, 250_000, 15_000, 365),
+            (18, 0, 400, 23, 1, 200_000, 12_000, 521),
+            (18, 1, 800, 33, 1, 250_000, 15_000, 454),
+            (18, 2, 1_200, 43, 1, 350_000, 18_000, 418),
+            (19, 0, 100, 299, 1, 150_000, 10_000, 33),
+            (19, 1, 100, 399, 1, 200_000, 20_000, 50),
+            (19, 2, 100, 499, 1, 300_000, 40_000, 80),
+            (20, 0, 750, 11, 1, 300_000, 15_000, 1_363),
+            (20, 1, 1_500, 21, 1, 350_000, 20_000, 952),
+            (20, 2, 3_000, 27, 1, 400_000, 30_000, 1_111),
+            (21, 0, 100, 7, 1, 60_000, 2_000, 285),
+            (21, 1, 180, 11, 1, 90_000, 2_500, 227),
+            (21, 2, 240, 21, 1, 120_000, 5_000, 238),
+            (22, 0, 500, 25, 1, 30_000, 15_000, 600),
+            (22, 1, 1_000, 25, 1, 40_000, 20_000, 800),
+            (22, 2, 2_000, 25, 1, 50_000, 25_000, 1_000),
+            // SetDefaultSpells overrides family23's castle gate, retaining
+            // the owner table's payload, cost and cooldown.
+            (23, 0, 1_000, 47, 1, 50_000, 10_000, 212),
+            (23, 1, 5_000, 67, 1, 70_000, 12_000, 179),
+            (23, 2, 10_000, 87, 1, 90_000, 24_000, 275),
+            (24, 0, 610, 23, 1, 200_000, 10_000, 434),
+            (24, 1, 1_100, 29, 1, 300_000, 18_000, 620),
+            (24, 2, 2_710, 63, 1, 400_000, 30_000, 476),
             (10, 0, 0, 11, 1, 5_000, 5_000, 454),
             (10, 1, 0, 11, 1, 40_000, 20_000, 1_818),
             (10, 2, 0, 11, 1, 60_000, 40_000, 3_636),
@@ -2435,7 +2586,7 @@ mod tests {
             );
         }
         assert_eq!(level2_set_spell_profile(6, 3), None);
-        assert_eq!(level2_set_spell_profile(7, 0), None);
+        assert_eq!(level2_set_spell_profile(7, 3), None);
     }
 
     #[test]
@@ -2482,14 +2633,14 @@ mod tests {
     }
 
     #[test]
-    fn level_two_generic_acquisition_rejects_unauthored_duplicate_and_no_overlap() {
-        // Family3 is the supported Speed pickup (action10 -> holder9).
-        // Family7 has a valid physical pickup action but no supported profile.
-        let mut unauthored = SpellHolderAcquisitionState::new(7, 200, 111, 22, 0);
-        let unauthored_before = unauthored;
+    fn level_two_generic_acquisition_rejects_out_of_range_duplicate_and_no_overlap() {
+        // The generic action relation admits all 26 physical source families;
+        // the next family has no authored action or SetSpell profile.
+        let mut out_of_range = SpellHolderAcquisitionState::new(26, 200, 111, 79, 0);
+        let out_of_range_before = out_of_range;
         assert_eq!(
             acquire_level2_spell_holder(
-                &mut unauthored,
+                &mut out_of_range,
                 PhysicalSpellActionRole::OrdinaryPickup,
                 true,
             ),
@@ -2497,7 +2648,7 @@ mod tests {
                 SpellHolderAcquisitionFailure::UnsupportedFamily
             )
         );
-        assert_eq!(unauthored, unauthored_before);
+        assert_eq!(out_of_range, out_of_range_before);
 
         let mut no_overlap = SpellHolderAcquisitionState::new(11, 201, 111, 34, 0);
         assert_eq!(

@@ -768,6 +768,318 @@ fn level_two_root_switches_materialize_all_authored_wind_groups() {
 }
 
 #[test]
+fn level_two_group15_wind_is_scheduled_in_source_order_and_reclaimed_next_pass() {
+    let mut inactive = level_two_campaign_session();
+    let inactive_root = inactive
+        .level2_imported_switch_roots
+        .iter()
+        .find(|root| root.authored_index == 121 && root.target_group == 15)
+        .copied()
+        .expect("authored row 121 group-15 producer");
+    let inactive_player = inactive.state.entity_index;
+    inactive
+        .set_level2_entity_position(
+            inactive_player,
+            Position {
+                x: inactive_root.position.x.wrapping_add(0x8000),
+                y: inactive_root.position.y,
+                z: inactive_root.position.z,
+            },
+        )
+        .expect("public player-position input remains outside the group-15 producer");
+    let mut activated_while_away = false;
+    for _ in 0..16 {
+        inactive.step_outer_turn(PlayerCommand::default(), 0);
+        activated_while_away |= inactive.dispatch_events().iter().any(|event| {
+            matches!(
+                event,
+                Mc2DispatchEvent::AuthoredGroupActivated { group: 15, .. }
+            )
+        });
+    }
+    assert!(!activated_while_away);
+    assert!(
+        inactive
+            .economy()
+            .authored_model22()
+            .iter()
+            .all(|source| source.authored_index != 122)
+    );
+    assert!(
+        inactive
+            .level2_imported_switch_roots
+            .iter()
+            .find(|root| root.source_slot == inactive_root.source_slot)
+            .expect("inactive group-15 producer remains live")
+            .drawing_enabled
+    );
+
+    let mut session = level_two_campaign_session();
+    let root = session
+        .level2_imported_switch_roots
+        .iter()
+        .find(|root| root.authored_index == 121 && root.target_group == 15)
+        .copied()
+        .expect("authored row 121 group-15 producer");
+    let authored_wind = session
+        .mission()
+        .authored_features()
+        .iter()
+        .find(|feature| feature.index == 122)
+        .copied()
+        .expect("authored group-15 wind row 122");
+    assert_eq!(
+        (
+            authored_wind.kind,
+            authored_wind.subtype,
+            authored_wind.activation_group,
+        ),
+        (10, 22, 15)
+    );
+    session
+        .set_level2_entity_position(session.state.entity_index, root.position)
+        .expect("public player-position input reaches the group-15 producer");
+
+    let mut activated = false;
+    for _ in 0..16 {
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        let events = session.dispatch_events();
+        let activation_at = events.iter().position(|event| {
+            matches!(
+                event,
+                Mc2DispatchEvent::AuthoredGroupActivated {
+                    source_slot,
+                    group: 15,
+                    authored_indices,
+                    ..
+                } if *source_slot == root.source_slot && authored_indices.as_ref() == [122]
+            )
+        });
+        if let Some(activation_at) = activation_at {
+            let wind = session
+                .economy()
+                .authored_model22()
+                .iter()
+                .find(|source| source.authored_index == 122)
+                .copied()
+                .expect("the group-15 constructor materializes row 122");
+            assert!(
+                wind.source_entity_index > root.source_slot,
+                "NewEvent places row 122 after the producer's source cursor"
+            );
+            let consumer_at = events
+                .iter()
+                .position(|event| {
+                    matches!(
+                        event,
+                        Mc2DispatchEvent::DynamicArena {
+                            kind: Level2DynamicArenaKind::AuthoredModel22,
+                            source_slot,
+                            ..
+                        } if *source_slot == wind.source_entity_index
+                    )
+                })
+                .expect("remaining source cursor dispatches row 122 in the producer pass");
+            assert!(
+                activation_at < consumer_at,
+                "the group event precedes row 122's scheduled callback"
+            );
+            let authored_position = authored_wind.world_position(0);
+            assert_eq!((wind.model, wind.action), (22, 22));
+            assert_eq!(
+                (wind.position.x, wind.position.y, wind.position.z),
+                (
+                    authored_position.x,
+                    authored_position.y,
+                    session.canonical_terrain().ground_height(authored_position),
+                )
+            );
+            assert_eq!(session.economy().model22_spawned_children().len(), 11);
+            activated = true;
+            break;
+        }
+    }
+    assert!(activated, "the real group-15 producer must reach row 122");
+
+    let wind_slot = session
+        .economy()
+        .authored_model22()
+        .iter()
+        .find(|source| source.authored_index == 122)
+        .expect("row 122 remains live after its scheduled callback")
+        .source_entity_index;
+    session
+        .economy_mut()
+        .fields
+        .authored_model22
+        .iter_mut()
+        .find(|source| source.source_entity_index == wind_slot)
+        .expect("row-122 wind source for lifetime boundary")
+        .life = 0;
+    session.step_outer_turn(PlayerCommand::default(), 0);
+    let hidden_wind = session
+        .economy()
+        .authored_model22()
+        .iter()
+        .find(|source| source.source_entity_index == wind_slot)
+        .expect("row 122 stays allocated through its callback epilogue");
+    assert_ne!(hidden_wind.control_flags & ENTITY_DRAW_DISABLED_BIT, 0);
+    assert!(session.economy().map_chains().is_linked(wind_slot));
+    assert!(session.dispatch_events().iter().any(|event| matches!(
+        event,
+        Mc2DispatchEvent::DynamicArena {
+            kind: Level2DynamicArenaKind::AuthoredModel22,
+            source_slot,
+            ..
+        } if *source_slot == wind_slot
+    )));
+
+    session.step_outer_turn(PlayerCommand::default(), 0);
+    assert!(
+        session
+            .economy()
+            .authored_model22()
+            .iter()
+            .all(|source| source.source_entity_index != wind_slot)
+    );
+    assert!(!session.economy().map_chains().is_linked(wind_slot));
+    assert!(!session.dispatch_events().iter().any(|event| matches!(
+        event,
+        Mc2DispatchEvent::AuthoredGroupActivated { group: 15, .. }
+    )));
+}
+
+#[test]
+fn level_two_reset_villagers_use_imported_family_source_dispatch() {
+    let source_entities = super::parse_entities(
+        &std::fs::read(level_two_campaign_fixture_path().join("entities.bin"))
+            .expect("qualified immutable Level 2 entity export"),
+    )
+    .expect("qualified immutable Level 2 source rows");
+    let mut session = level_two_campaign_session();
+    let mut authored_villagers = session
+        .mission()
+        .authored_features()
+        .iter()
+        .copied()
+        .filter(|feature| {
+            feature.activation_group == 0 && feature.kind == 5 && feature.subtype == 13
+        })
+        .collect::<Vec<_>>();
+    authored_villagers.sort_unstable_by_key(|feature| feature.index);
+    let expected_indices = authored_villagers
+        .iter()
+        .map(|feature| feature.index)
+        .collect::<Vec<_>>();
+    let expected_group0_indices = (284_u16..=290)
+        .chain(292..=294)
+        .chain(323..=341)
+        .collect::<Vec<_>>();
+    assert_eq!(expected_indices, expected_group0_indices);
+    assert_eq!(
+        expected_indices.len(),
+        crate::villager::LEVEL_TWO_VILLAGER_INDICES.len()
+    );
+    // The pinned Level 2 reset runs sub_4A1E0(0,1) before exporting frame
+    // zero, so these authored group-0 rows are already imported carriers.
+    let imported_villagers = session.ordinary().villagers();
+    let imported_slots = imported_villagers
+        .iter()
+        .map(|villager| villager.entity_index)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        imported_slots,
+        crate::villager::LEVEL_TWO_VILLAGER_INDICES.to_vec()
+    );
+    // The pinned reset already ran the authored group-0 constructors and
+    // their source callbacks before exporting frame zero. Use the exported
+    // raw entity rows as the position authority; the later source jitter and
+    // movement make authored tile centers an invalid expectation.
+    let mut expected_positions = imported_slots
+        .iter()
+        .map(|slot| {
+            let source = &source_entities[usize::from(*slot)];
+            (source.position.x, source.position.y, source.position.z)
+        })
+        .collect::<Vec<_>>();
+    expected_positions.sort_unstable();
+
+    let mut imported_positions = imported_villagers
+        .iter()
+        .map(|villager| {
+            (
+                villager.position.x,
+                villager.position.y,
+                villager.position.z,
+            )
+        })
+        .collect::<Vec<_>>();
+    imported_positions.sort_unstable();
+    assert_eq!(imported_positions, expected_positions);
+    assert!(imported_villagers.iter().all(|villager| {
+        villager.active
+            && villager.model == 13
+            && villager.action == 105
+            && villager.max_life == 1_000
+            && villager.life == 1_000
+    }));
+
+    let baseline_resident_slots = session
+        .economy()
+        .house_residents()
+        .iter()
+        .map(|resident| resident.source_entity_index)
+        .collect::<BTreeSet<_>>();
+    let imported_slot_set = imported_slots.iter().copied().collect::<BTreeSet<_>>();
+
+    session.step_outer_turn(PlayerCommand::default(), 0);
+    let events = session.dispatch_events();
+    let scheduled = events
+        .iter()
+        .filter_map(|event| match event {
+            Mc2DispatchEvent::Villager {
+                pass, source_slot, ..
+            } if imported_slot_set.contains(source_slot) => Some((*pass, *source_slot)),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        scheduled
+            .iter()
+            .map(|(_, source_slot)| *source_slot)
+            .collect::<Vec<_>>(),
+        imported_slots
+    );
+    assert!(scheduled.iter().all(|(pass, _)| *pass == 0));
+    assert!(!events.iter().any(|event| matches!(
+        event,
+        Mc2DispatchEvent::AuthoredGroupActivated { group: 0, .. }
+    )));
+
+    let duplicate_group0_residents = session
+        .economy()
+        .house_residents()
+        .iter()
+        .filter(|resident| {
+            !baseline_resident_slots.contains(&resident.source_entity_index)
+                && resident.model == 13
+                && expected_positions
+                    .binary_search(&(
+                        resident.position.x,
+                        resident.position.y,
+                        resident.position.z,
+                    ))
+                    .is_ok()
+        })
+        .map(|resident| resident.source_entity_index)
+        .collect::<BTreeSet<_>>();
+    assert!(
+        duplicate_group0_residents.is_empty(),
+        "the frame-zero group-0 Villagers must not be republished as HouseResidents"
+    );
+}
+
+#[test]
 fn level_two_model4_group31_stays_latent_before_player_level_end() {
     let inspection =
         NativeWorld::inspect_level2(level_two_fixture_path()).expect("qualified Level 2 package");

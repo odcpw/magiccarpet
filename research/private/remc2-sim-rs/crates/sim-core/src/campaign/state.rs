@@ -63,6 +63,7 @@ impl Default for CanonicalDigest {
 pub struct CampaignDefinition {
     pub profile: FlightProfile,
     pub package_sha256: String,
+    pub(crate) source_terrain_graphics_flags: u32,
     pub collision_masks_present: bool,
     pub identity_receipt: CanonicalDigest,
     semantic_level: Option<LevelDefinition>,
@@ -347,6 +348,7 @@ impl CampaignDefinition {
         package_sha256: String,
         collision_masks: Option<CollisionMaskBank>,
         presentation: PresentationSelectors,
+        source_terrain_graphics_flags: u32,
     ) -> Self {
         let collision_masks_present = collision_masks.is_some();
         let identity_receipt = digest_with(|hasher| {
@@ -364,6 +366,7 @@ impl CampaignDefinition {
         Self {
             profile,
             package_sha256,
+            source_terrain_graphics_flags,
             collision_masks_present,
             identity_receipt,
             semantic_level: None,
@@ -440,6 +443,11 @@ impl CampaignDefinition {
         self.semantic_level.as_ref()
     }
 
+    #[must_use]
+    pub(crate) const fn source_terrain_graphics_flags(&self) -> u32 {
+        self.source_terrain_graphics_flags
+    }
+
     pub(crate) fn authored_creature_max_life(&self, authored_record: u16) -> Option<u32> {
         let entity_id = self.authored_creature_entities.get(&authored_record)?;
         self.semantic_level
@@ -447,6 +455,41 @@ impl CampaignDefinition {
             .entity(entity_id)?
             .creature_health()
             .map(|health| health.max_life())
+    }
+
+    pub(crate) fn authored_creature_target_stages(&self, authored_record: u16) -> Vec<(usize, i8)> {
+        let Some(entity_id) = self.authored_creature_entities.get(&authored_record) else {
+            return Vec::new();
+        };
+        self.semantic_level.as_ref().map_or_else(Vec::new, |level| {
+            level
+                .objectives()
+                .iter()
+                .enumerate()
+                .filter_map(|(index, objective)| match objective.condition() {
+                    crate::level_definition::ObjectiveCondition::TargetDeath(target)
+                        if &target == entity_id =>
+                    {
+                        Some((index, 1))
+                    }
+                    crate::level_definition::ObjectiveCondition::TargetDeathWithoutFont(target)
+                        if &target == entity_id =>
+                    {
+                        Some((index, 2))
+                    }
+                    crate::level_definition::ObjectiveCondition::OwnedTargetAtLocation {
+                        target,
+                        ..
+                    } if &target == entity_id => Some((index, 4)),
+                    crate::level_definition::ObjectiveCondition::CollectedTarget(target)
+                        if &target == entity_id =>
+                    {
+                        Some((index, 6))
+                    }
+                    _ => None,
+                })
+                .collect()
+        })
     }
 
     pub(crate) fn standing_building_chain(&self, objective_id: &LevelObjectiveId) -> Option<&[u8]> {
@@ -939,6 +982,10 @@ fn digest_source_sidecars(state: &ResetState) -> CanonicalDigest {
 }
 
 fn digest_outer_reset_state(hasher: &mut Sha256, state: &ResetState) {
+    if state.source_setting_30.value() != 0 {
+        hasher.update(b"source-setting-30-v1");
+        hasher.update([state.source_setting_30.value()]);
+    }
     if state.source_frame_timing_index != 0 {
         hasher.update(b"level2-source-frame-timing-index-v1");
         hasher.update([state.source_frame_timing_index]);
@@ -954,6 +1001,7 @@ fn digest_outer_reset_state(hasher: &mut Sha256, state: &ResetState) {
     hasher.update(state.player_pending_attacker.to_le_bytes());
     hasher.update(state.player_life.to_le_bytes());
     hasher.update([state.player_menu_state]);
+    digest_source_menu_state(hasher, state);
     hasher.update(b"level2-player-death-notification-v1");
     match state.player_death_notification {
         Some(notification) => {
@@ -1015,6 +1063,33 @@ fn digest_outer_reset_state(hasher: &mut Sha256, state: &ResetState) {
             append_position(hasher, switch.position);
         }
         None => hasher.update([0]),
+    }
+}
+
+pub(crate) fn digest_source_menu_state(hasher: &mut Sha256, state: &ResetState) {
+    let result = state.source_player_result;
+    if result.raw_word() != 0 || state.source_menu_admission.is_some() {
+        hasher.update(b"source-menu-result-v1");
+        hasher.update(result.source_player_slot().to_le_bytes());
+        hasher.update(result.raw_word().to_le_bytes());
+        if let Some(admission) = state.source_menu_admission {
+            use sim_session::AbandonAction;
+            let action = match admission.action {
+                AbandonAction::ToggleGameplayMap => 0,
+                AbandonAction::OpenAbandonConfirmation => 1,
+                AbandonAction::ConfirmAbandon => 2,
+                AbandonAction::CancelAbandonConfirmation => 3,
+            };
+            hasher.update([
+                1,
+                action,
+                u8::from(admission.admitted),
+                u8::from(admission.map_open),
+            ]);
+            hasher.update(admission.tick.to_le_bytes());
+        } else {
+            hasher.update([0]);
+        }
     }
 }
 
@@ -1086,6 +1161,7 @@ fn digest_objectives(objectives: &super::objectives::ObjectiveState) -> Canonica
             ]);
             hasher.update(objective.stage_selectors);
         }
+        objectives.append_collected_entity_hash(hasher);
     })
 }
 
@@ -1160,6 +1236,61 @@ mod tests {
         );
         assert_eq!(session.campaign_state_hash(), public_hash);
         assert_eq!(session.terrain_hash(), terrain_hash);
+    }
+
+    #[test]
+    fn objective_collection_lists_are_runtime_carried_hashed_and_reset() {
+        let mut session = level_two_session();
+        assert_eq!(session.runtime().player_count, 2);
+        let baseline_hash = session.campaign_state_hash();
+
+        for player_slot in 0..8 {
+            assert_eq!(
+                session
+                    .runtime()
+                    .collected_entity_indices_for_player(player_slot),
+                Some(&[0_i16; 8]),
+                "source player slot {player_slot} starts with eight signed zero words"
+            );
+        }
+        assert_eq!(
+            session.runtime().collected_entity_indices_for_player(8),
+            None,
+            "an absent source player row must not be replaced with a default list"
+        );
+
+        session
+            .session
+            .state
+            .live
+            .core
+            .runtime
+            .objective_state
+            .collected_entity_indices[1][7] = 42;
+        assert_eq!(
+            session
+                .runtime()
+                .collected_entity_indices_for_player(1)
+                .map(|indices| indices[7]),
+            Some(42)
+        );
+        assert_eq!(
+            session.runtime().collected_entity_indices_for_player(0),
+            Some(&[0_i16; 8]),
+            "the source collection list belongs to its player row"
+        );
+        assert_ne!(
+            session.campaign_state_hash(),
+            baseline_hash,
+            "a changed nonzero source collection word must affect canonical state"
+        );
+
+        session.reset();
+        assert_eq!(
+            session.runtime().collected_entity_indices_for_player(1),
+            Some(&[0_i16; 8])
+        );
+        assert_eq!(session.campaign_state_hash(), baseline_hash);
     }
 
     #[test]

@@ -375,38 +375,50 @@ public:
 struct Arguments {
     fs::path owner_root;
     fs::path output;
-    mc2_exporter::ExternalLevelSelection level;
+    mc2_exporter::SourceLevelSelection level;
     bool campaign_package = false;
 };
 
 struct CampaignEmissionProfile;
-const CampaignEmissionProfile* campaign_emission_profile(std::uint16_t external);
+const CampaignEmissionProfile* campaign_emission_profile(
+    const mc2_exporter::SourceLevelSelection& selection);
 
 Arguments parse_arguments(int argc, char** argv) {
     Arguments result;
-    bool level_seen = false;
+    bool level_selector_seen = false;
     for (int index = 1; index < argc; ++index) {
         const std::string argument = argv[index];
-        if ((argument == "--owner-root" || argument == "--output" || argument == "--level") &&
+        if ((argument == "--owner-root" || argument == "--output" ||
+             argument == "--level" || argument == "--secret-index") &&
             index + 1 >= argc) {
             throw std::runtime_error("missing value after " + argument);
         }
         if (argument == "--owner-root") result.owner_root = argv[++index];
         else if (argument == "--output") result.output = argv[++index];
         else if (argument == "--level") {
-            if (level_seen) throw std::runtime_error("--level may be specified only once");
-            level_seen = true;
+            if (level_selector_seen) {
+                throw std::runtime_error("only one source level selector may be specified");
+            }
+            level_selector_seen = true;
             result.level = mc2_exporter::parse_external_level(argv[++index]);
+        }
+        else if (argument == "--secret-index") {
+            if (level_selector_seen) {
+                throw std::runtime_error("only one source level selector may be specified");
+            }
+            level_selector_seen = true;
+            result.level = mc2_exporter::parse_secret_index(argv[++index]);
         }
         else if (argument == "--campaign-package") {
             result.campaign_package = true;
         }
         else if (argument == "--help") {
             std::cout << "usage: remc2-level-exporter --owner-root PATH --output PRIVATE_PATH "
-                         "[--level EXTERNAL_LEVEL] [--campaign-package]\n"
-                         "  --level EXTERNAL_LEVEL  owner-data level 1..25 (default: 1)\n"
-                         "  --campaign-package      emit the profile-versioned campaign envelope for a "
-                         "census-profiled level\n";
+                         "[--level EXTERNAL_LEVEL | --secret-index SOURCE_INDEX] "
+                         "[--campaign-package]\n"
+                         "  --level EXTERNAL_LEVEL  ordinary owner-data level 1..25 (default: 1)\n"
+                         "  --secret-index INDEX   verified source secret destination (30..34)\n"
+                         "  --campaign-package      emit the profile-versioned campaign envelope\n";
             std::exit(0);
         } else {
             throw std::runtime_error("unknown argument: " + argument);
@@ -415,10 +427,13 @@ Arguments parse_arguments(int argc, char** argv) {
     if (result.owner_root.empty() || result.output.empty()) {
         throw std::runtime_error("--owner-root and --output are required");
     }
-    if (result.campaign_package &&
-        campaign_emission_profile(result.level.external) == nullptr) {
+    if (result.level.kind == mc2_exporter::SourceLevelKind::Secret &&
+        !result.campaign_package) {
+        throw std::runtime_error("--secret-index requires --campaign-package");
+    }
+    if (result.campaign_package && campaign_emission_profile(result.level) == nullptr) {
         throw std::runtime_error(
-            "--campaign-package requires an ordinary external level from 1 through 25");
+            "--campaign-package requires an ordinary level 1..25 or source secret index 30..34");
     }
     return result;
 }
@@ -1903,7 +1918,25 @@ struct CampaignEmissionProfile {
     bool includes_collision_masks = false;
 };
 
-const CampaignEmissionProfile* campaign_emission_profile(std::uint16_t external) {
+const CampaignEmissionProfile* campaign_emission_profile(
+    const mc2_exporter::SourceLevelSelection& selection) {
+    if (selection.kind == mc2_exporter::SourceLevelKind::Secret) {
+        static const CampaignEmissionProfile secret_destinations[] = {
+            {31, 30, 2, 0, 0, {}, 0, "mc2-player-arena/v4", true},
+            {32, 31, 1, 0, 0, {}, 0, "mc2-player-arena/v4", true},
+            {33, 32, 2, 0, 0, {}, 0, "mc2-player-arena/v4", true},
+            {34, 33, 2, 0, 0, {}, 0, "mc2-player-arena/v4", true},
+            {35, 34, 0, 0, 0, {}, 0, "mc2-player-arena/v4", true},
+        };
+        for (const auto& profile : secret_destinations) {
+            if (selection.external == profile.external &&
+                selection.internal == profile.internal) {
+                return &profile;
+            }
+        }
+        return nullptr;
+    }
+    const std::uint16_t external = selection.external;
     static const CampaignEmissionProfile kProfiles[] = {
         {1, 0, 1, 177, 1, {0, 5, 7}, 5, "mc2-player-arena/v2", true},
         {2, 1, 0, 114, 2, {3, 5, 7, 9}, 5, "mc2-player-arena/v4", true},
@@ -3455,7 +3488,7 @@ int run(const Arguments& arguments) {
     if (!level_one) manifest.erase("reset_projection");
     if (arguments.campaign_package) {
         const CampaignEmissionProfile* campaign_profile =
-            campaign_emission_profile(arguments.level.external);
+            campaign_emission_profile(arguments.level);
         if (campaign_profile == nullptr) {
             throw std::runtime_error(
                 "campaign envelope requested for a level without a census emission profile");
@@ -3555,8 +3588,13 @@ int run(const Arguments& arguments) {
 
     fs::rename(staging, output);
     staging_cleanup.committed = true;
-    std::cout << "exported deterministic private external Level "
-              << arguments.level.external << " package: " << output << "\n";
+    if (arguments.level.kind == mc2_exporter::SourceLevelKind::Secret) {
+        std::cout << "exported deterministic private source secret index "
+                  << arguments.level.internal << " package: " << output << "\n";
+    } else {
+        std::cout << "exported deterministic private external Level "
+                  << arguments.level.external << " package: " << output << "\n";
+    }
     return 0;
 }
 

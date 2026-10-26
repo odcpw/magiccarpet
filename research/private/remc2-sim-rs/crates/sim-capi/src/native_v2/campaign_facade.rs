@@ -558,6 +558,12 @@ impl GameSessionBackend for SealedLevel1Backend {
     }
 
     fn step(&mut self, command: Self::Command) -> Result<(), Self::Error> {
+        if command.abandon_action.is_some() {
+            return Err(AbiError::new(
+                MC_STATUS_VALIDATION_FAILED,
+                "source menu actions are unavailable in this session",
+            ));
+        }
         self.session.step(mc2_player_command(command));
         Ok(())
     }
@@ -888,6 +894,9 @@ mod tests {
         let command = GameCommand {
             show_objective: false,
             assign_spell: None,
+            mark_spell: None,
+            cycle_marked_spell: None,
+            abandon_action: None,
             longitudinal: LongitudinalControl::Decelerate,
             lateral: LateralControl::Positive,
             roll_axis: -32,

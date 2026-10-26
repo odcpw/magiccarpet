@@ -266,7 +266,8 @@ impl GoatFamily {
                 .into_boxed_slice(),
         );
         self.refresh_views(arena);
-        for index in 1..runtime.stage_variables.len() {
+        let active_stage_variable_count = usize::from(runtime.active_stage_variable_count());
+        for index in 1..=active_stage_variable_count {
             let stage = runtime.stage_variables[index];
             if stage.kind == 7 && stage.flags as u8 & 0x18 != 0 {
                 runtime.stage_variables[index].flags &= if stage.flags as u8 & 0x10 != 0 {

@@ -3966,6 +3966,47 @@ fn level_two_nyphur_sub_14250_uses_live_castle_defender_projection() {
 }
 
 #[test]
+fn direct_spell_resources_survive_actual_ai_upkeep() {
+    let inspection = NativeWorld::inspect_level2(level_two_fixture_path()).unwrap();
+    let mut synchronized = inspection.level2_reset_session().unwrap();
+    let baseline = synchronized.nyphur_common_upkeep().unwrap();
+    let slot = usize::from(baseline.source_slot);
+    let life = baseline.life - 200;
+    let mana = baseline.mana - 400;
+    {
+        let live = &mut synchronized.session.state.live;
+        live.economy.entities[slot].set_life(life);
+        live.economy.entities[slot].set_mana(mana);
+    }
+    let mut unsynchronized = synchronized.clone();
+    {
+        let live = &mut synchronized.session.state.live;
+        let dispatcher = live.nyphur_dispatcher.as_mut().unwrap();
+        let before = dispatcher.common_upkeep(0);
+        assert!(!dispatcher.sync_spell_target_resources(
+            &live.economy.entities[usize::from(live.core.state.entity_index)],
+        ));
+        assert_eq!(dispatcher.common_upkeep(0), before);
+        assert!(dispatcher.sync_spell_target_resources(&live.economy.entities[slot]));
+    }
+    // This checks the resource authority boundary and its actual next source
+    // callback. It does not claim ordinary Steal Mana or Duel collision.
+    synchronized.step_outer_turn(PlayerCommand::default(), 0);
+    unsynchronized.step_outer_turn(PlayerCommand::default(), 0);
+    let expected_life = life.wrapping_add(i32::from(baseline.life_regen));
+    let expected_mana = mana
+        .wrapping_add(baseline.mana_regen)
+        .min(baseline.max_mana);
+    let after = synchronized.nyphur_common_upkeep().unwrap();
+    assert_eq!((after.life, after.mana), (expected_life, expected_mana));
+    let row = &synchronized.session.state.live.economy.entities[slot];
+    assert_eq!((row.life, row.mana), (expected_life, expected_mana));
+    let control = unsynchronized.nyphur_common_upkeep().unwrap();
+    assert_eq!((control.life, control.mana), (baseline.life, baseline.mana));
+    assert_ne!((after.life, after.mana), (control.life, control.mana));
+}
+
+#[test]
 fn level_two_ai_common_upkeep_matches_0002_0007_0009() {
     let inspection =
         NativeWorld::inspect_level2(level_two_fixture_path()).expect("qualified Level 2 package");

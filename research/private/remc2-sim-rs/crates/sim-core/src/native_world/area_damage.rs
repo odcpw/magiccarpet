@@ -132,6 +132,181 @@ pub(crate) fn contact(
     .submit_damage(slot, payload, owner, DamageWriter::Contact)
 }
 
+/// Gravity reads and replaces the complete signed source bounty. Unlike an
+/// ordinary hit, replacing this mailbox must neither narrow nor combine it.
+pub(crate) fn source_bounty(
+    arena: &SourceArena,
+    actors: Option<ActorDomains<'_>>,
+    slot: u16,
+) -> Result<(i32, u16), String> {
+    if let Some(view) = actors
+        .as_ref()
+        .and_then(|domains| domains.source_view(slot))
+    {
+        return Ok((view.pending_damage, view.pending_attacker));
+    }
+    read_arena_bounty(arena, slot)
+}
+
+pub(crate) fn replace_source_bounty(
+    arena: &mut SourceArena,
+    actors: Option<ActorDomains<'_>>,
+    slot: u16,
+    payload: i32,
+    owner: u16,
+) -> Result<(), String> {
+    edit_source_bounty(arena, actors, slot, |damage, attacker| {
+        *damage = payload;
+        *attacker = owner;
+    })
+}
+
+/// Read the same canonical mailbox order as `edit_arena_bounty` without
+/// materializing a missing model9 sidecar or changing any carrier state.
+fn read_arena_bounty(arena: &SourceArena, slot: u16) -> Result<(i32, u16), String> {
+    let economy = &arena.economy;
+    if let Some(row) = economy
+        .spheres
+        .iter()
+        .find(|row| row.active && row.source_entity_index == slot)
+    {
+        return Ok((row.ordinary_damage_payload, row.ordinary_damage_owner));
+    }
+    if let Some(row) = economy
+        .castle_defenders
+        .iter()
+        .find(|row| row.active && row.source_entity_index == slot)
+    {
+        return Ok((row.pending_damage, row.pending_attacker_entity_index));
+    }
+    if let Some(row) = economy.castle_at(slot) {
+        return Ok((row.pending_damage, row.pending_attacker_entity_index));
+    }
+    if let Some(row) = economy
+        .bee_creatures
+        .iter()
+        .find(|row| row.active && row.source_entity_index == slot)
+    {
+        return Ok((row.pending_damage, row.pending_attacker_entity_index));
+    }
+    if let Some(row) = economy
+        .house_residents
+        .iter()
+        .find(|row| row.active && row.source_entity_index == slot)
+    {
+        return Ok((row.pending_damage, row.attacker_entity_index));
+    }
+    if let Some(row) = economy
+        .authored_dragon_parts
+        .iter()
+        .find(|row| row.active && row.source_entity_index == slot)
+    {
+        return Ok((row.pending_damage, row.pending_word_0x62));
+    }
+    if let Some(row) = economy
+        .authored_class5_model3_children
+        .iter()
+        .find(|row| row.active && row.source_entity_index == slot)
+    {
+        return Ok((row.damage_dword_0x5e_94, row.pending_word_0x62));
+    }
+    if let Some(row) = economy
+        .authored_class5
+        .iter()
+        .find(|row| row.active && row.source_entity_index == slot)
+    {
+        let owner = row.pending_word_0x62;
+        if let Some(state) = economy
+            .authored_class5_archer
+            .iter()
+            .find(|state| state.source_entity_index == slot)
+        {
+            return Ok((state.pending_damage, owner));
+        }
+        if let Some(state) = economy
+            .authored_class5_model3
+            .iter()
+            .find(|state| state.source_entity_index == slot)
+        {
+            return Ok((state.damage_dword_0x5e_94, owner));
+        }
+        if let Some(state) = economy
+            .authored_class5_runtime
+            .iter()
+            .find(|state| state.source_entity_index == slot)
+        {
+            return Ok((state.pending_damage, owner));
+        }
+        if row.model == 9 {
+            return Ok((0, owner));
+        }
+        return Err(format!("area class5 slot {slot} has no ordinary mailbox"));
+    }
+    if economy.live_arena_cursor_row(slot).is_some() {
+        return Err(format!(
+            "damage slot {slot} has no canonical mailbox writer"
+        ));
+    }
+    let row = arena
+        .entities
+        .get(usize::from(slot))
+        .filter(|row| row.active)
+        .ok_or_else(|| format!("area raw slot {slot} no longer live"))?;
+    Ok((
+        row.source_wind_spell_payload(),
+        row.source_wind_spell_owner(),
+    ))
+}
+
+fn edit_source_bounty<R>(
+    arena: &mut SourceArena,
+    mut actors: Option<ActorDomains<'_>>,
+    slot: u16,
+    edit: impl FnOnce(&mut i32, &mut u16) -> R,
+) -> Result<R, String> {
+    if let Some(domains) = actors.as_mut()
+        && let Some(view) = domains.source_view(slot)
+    {
+        let mut payload = view.pending_damage;
+        let mut owner = view.pending_attacker;
+        let result = edit(&mut payload, &mut owner);
+        if let Some(house) = domains
+            .houses
+            .house_mut(slot)
+            .filter(|row| row.source_retained())
+        {
+            house.pending_damage = payload;
+            house.pending_attacker = i16::from_le_bytes(owner.to_le_bytes());
+        } else if let Some(villager) = domains
+            .villagers
+            .villagers_mut()
+            .iter_mut()
+            .find(|row| row.source_retained() && row.entity_index == slot)
+        {
+            villager.pending_damage = payload;
+            villager.pending_attacker = i16::from_le_bytes(owner.to_le_bytes());
+        } else {
+            if !domains.goats.set_gravity_bounty(slot, payload, owner) {
+                return Err(format!("source bounty lost live carrier {slot}"));
+            }
+            let goat = domains
+                .goats
+                .goats()
+                .iter()
+                .find(|row| row.entity_index == slot)
+                .ok_or_else(|| format!("source bounty lost Goat projection {slot}"))?;
+            arena.economy.sync_authored_goat_projection(goat);
+        }
+        return Ok(result);
+    }
+    ArenaTargets {
+        arena,
+        actors: None,
+        player: None,
+    }
+    .edit_arena_bounty(slot, edit)
+}
+
 /// Read the same current carrier used by damage writers. Terrain owns cell
 /// traversal and admission; it must not consult a previous raw occupant.
 pub(crate) fn source_actor(
@@ -177,10 +352,7 @@ pub(crate) fn source_life(
     row_life!(economy.authored_dragon_parts);
     row_life!(economy.authored_class5_model3_children);
     row_life!(economy.authored_class5);
-    if let Some(row) = economy
-        .castle
-        .filter(|row| row.active && row.source_entity_index == slot)
-    {
+    if let Some(row) = economy.castle_at(slot) {
         return Some(row.life);
     }
     if economy.live_arena_cursor_row(slot).is_some() {
@@ -489,7 +661,7 @@ impl AreaWorld for ArenaTargets<'_, '_> {
             .filter(|row| row.active && row.class == 3 && row.index != 0)
             .map(|row| row.index)
             .collect::<BTreeSet<_>>();
-        if let Some(castle) = self.arena.economy.castle.filter(|row| row.active) {
+        for castle in self.arena.economy.live_castles() {
             slots.insert(castle.source_entity_index);
         }
         // Preserve the imported intrusive class list, including the retained
@@ -594,10 +766,7 @@ impl AreaWorld for ArenaTargets<'_, '_> {
                 control_flags: row.control_flags,
             });
         }
-        if let Some(row) = economy
-            .castle
-            .filter(|row| row.active && row.source_entity_index == slot)
-        {
+        if let Some(row) = economy.castle_at(slot) {
             return Some(Actor {
                 source_id: row.source_id_entity_index,
                 class: row.source_class,
@@ -821,13 +990,7 @@ impl AreaWorld for ArenaTargets<'_, '_> {
     }
 
     fn mark_model2(&mut self, slot: u16) -> Result<(), String> {
-        if let Some(row) = self
-            .arena
-            .economy
-            .castle
-            .as_mut()
-            .filter(|row| row.active && row.source_entity_index == slot)
-        {
+        if let Some(row) = self.arena.economy.castle_at_mut(slot) {
             row.source_word_30 = 30;
         } else {
             let row = self
@@ -875,85 +1038,97 @@ impl ArenaTargets<'_, '_> {
             }
             return Ok(());
         }
+        if self
+            .arena
+            .economy
+            .house_residents
+            .iter()
+            .any(|row| row.active && row.source_entity_index == slot)
+        {
+            if !self
+                .arena
+                .economy
+                .submit_settlement_damage(slot, i32::from(payload), owner, writer)
+            {
+                return Err(format!("area settlement slot {slot} rejected its mailbox"));
+            }
+            return Ok(());
+        }
+        self.edit_arena_bounty(slot, |damage, attacker| {
+            DamageMailboxMut::new(damage, attacker).submit(i32::from(payload), owner, writer);
+        })
+    }
+
+    /// Canonical mailbox selection is shared by contact/ordinary writers and
+    /// Gravity's full-width access; typed occupants never fall through to raw.
+    fn edit_arena_bounty<R>(
+        &mut self,
+        slot: u16,
+        edit: impl FnOnce(&mut i32, &mut u16) -> R,
+    ) -> Result<R, String> {
         let economy = &mut self.arena.economy;
         if let Some(row) = economy
             .spheres
             .iter_mut()
             .find(|row| row.active && row.source_entity_index == slot)
         {
-            DamageMailboxMut::new(
+            return Ok(edit(
                 &mut row.ordinary_damage_payload,
                 &mut row.ordinary_damage_owner,
-            )
-            .submit(i32::from(payload), owner, writer);
-            return Ok(());
+            ));
         }
         if let Some(row) = economy
             .castle_defenders
             .iter_mut()
             .find(|row| row.active && row.source_entity_index == slot)
         {
-            DamageMailboxMut::new(
+            return Ok(edit(
                 &mut row.pending_damage,
                 &mut row.pending_attacker_entity_index,
-            )
-            .submit(i32::from(payload), owner, writer);
-            return Ok(());
+            ));
         }
-        if let Some(row) = economy
-            .castle
-            .as_mut()
-            .filter(|row| row.active && row.source_entity_index == slot)
-        {
-            DamageMailboxMut::new(
+        if let Some(row) = economy.castle_at_mut(slot) {
+            return Ok(edit(
                 &mut row.pending_damage,
                 &mut row.pending_attacker_entity_index,
-            )
-            .submit(i32::from(payload), owner, writer);
-            return Ok(());
+            ));
         }
         if let Some(row) = economy
             .bee_creatures
             .iter_mut()
             .find(|row| row.active && row.source_entity_index == slot)
         {
-            DamageMailboxMut::new(
+            return Ok(edit(
                 &mut row.pending_damage,
                 &mut row.pending_attacker_entity_index,
-            )
-            .submit(i32::from(payload), owner, writer);
-            return Ok(());
+            ));
         }
-        if economy
+        if let Some(row) = economy
             .house_residents
-            .iter()
-            .any(|row| row.active && row.source_entity_index == slot)
+            .iter_mut()
+            .find(|row| row.active && row.source_entity_index == slot)
         {
-            if !economy.submit_settlement_damage(slot, i32::from(payload), owner, writer) {
-                return Err(format!("area settlement slot {slot} rejected its mailbox"));
-            }
-            return Ok(());
+            return Ok(edit(
+                &mut row.pending_damage,
+                &mut row.attacker_entity_index,
+            ));
         }
         if let Some(row) = economy
             .authored_dragon_parts
             .iter_mut()
             .find(|row| row.active && row.source_entity_index == slot)
         {
-            DamageMailboxMut::new(&mut row.pending_damage, &mut row.pending_word_0x62).submit(
-                i32::from(payload),
-                owner,
-                writer,
-            );
-            return Ok(());
+            return Ok(edit(&mut row.pending_damage, &mut row.pending_word_0x62));
         }
         if let Some(row) = economy
             .authored_class5_model3_children
             .iter_mut()
             .find(|row| row.active && row.source_entity_index == slot)
         {
-            DamageMailboxMut::new(&mut row.damage_dword_0x5e_94, &mut row.pending_word_0x62)
-                .submit(i32::from(payload), owner, writer);
-            return Ok(());
+            return Ok(edit(
+                &mut row.damage_dword_0x5e_94,
+                &mut row.pending_word_0x62,
+            ));
         }
         if let Some(row) = economy
             .authored_class5
@@ -1000,12 +1175,7 @@ impl ArenaTargets<'_, '_> {
                     .ok_or_else(|| format!("area class5 slot {slot} has no ordinary mailbox"))?
                     .pending_damage
             };
-            DamageMailboxMut::new(damage, &mut row.pending_word_0x62).submit(
-                i32::from(payload),
-                owner,
-                writer,
-            );
-            return Ok(());
+            return Ok(edit(damage, &mut row.pending_word_0x62));
         }
         if economy.live_arena_cursor_row(slot).is_some() {
             return Err(format!(
@@ -1020,10 +1190,10 @@ impl ArenaTargets<'_, '_> {
             .ok_or_else(|| format!("area raw slot {slot} no longer live"))?;
         let mut damage = row.source_wind_spell_payload();
         let mut attacker = row.source_wind_spell_owner();
-        DamageMailboxMut::new(&mut damage, &mut attacker).submit(i32::from(payload), owner, writer);
+        let result = edit(&mut damage, &mut attacker);
         row.record[98..102].copy_from_slice(&damage.to_le_bytes());
         row.record[102..104].copy_from_slice(&attacker.to_le_bytes());
-        Ok(())
+        Ok(result)
     }
 }
 
@@ -1031,6 +1201,54 @@ impl ArenaTargets<'_, '_> {
 mod tests {
     use super::*;
     use crate::world::terrain::disasters::{RingProfile, mc2};
+
+    #[test]
+    fn gravity_bounty_preserves_full_signed_mailbox_and_typed_authority() {
+        let session = super::super::tests::level_two_campaign_session();
+        let mut arena = session.source_arena().clone();
+        let bee = arena
+            .economy
+            .allocate_authored_bee(
+                1,
+                session.state.position,
+                None,
+                3000,
+                &session.session.state.live.terrain,
+            )
+            .expect("authored Day Bee birth");
+        let slot = bee.source_entity_index;
+        // Raw bytes are a projection, not this live creature's mailbox.
+        arena.entities[usize::from(slot)].record[98..102].copy_from_slice(&123_i32.to_le_bytes());
+        replace_source_bounty(&mut arena, None, slot, 100_001, 0).unwrap();
+        assert_eq!(source_bounty(&arena, None, slot).unwrap(), (100_001, 0));
+        let (payload, _) = source_bounty(&arena, None, slot).unwrap();
+        replace_source_bounty(&mut arena, None, slot, payload.wrapping_add(3001), u16::MAX)
+            .unwrap();
+        let typed = arena
+            .economy
+            .bee_creatures
+            .iter()
+            .find(|row| row.source_entity_index == slot)
+            .unwrap();
+        assert_eq!(
+            (typed.pending_damage, typed.pending_attacker_entity_index),
+            (103_002, u16::MAX)
+        );
+        assert_eq!(
+            arena.entities[usize::from(slot)].source_wind_spell_payload(),
+            123
+        );
+        replace_source_bounty(&mut arena, None, slot, i32::MIN, 0).unwrap();
+        assert_eq!(source_bounty(&arena, None, slot).unwrap(), (i32::MIN, 0));
+
+        let raw_slot = session.state.entity_index;
+        replace_source_bounty(&mut arena, None, raw_slot, -70_000, u16::MAX).unwrap();
+        assert_eq!(
+            source_bounty(&arena, None, raw_slot).unwrap(),
+            (-70_000, u16::MAX)
+        );
+        assert!(replace_source_bounty(&mut arena, None, u16::MAX, 1, 2).is_err());
+    }
 
     #[test]
     fn selected_contact_uses_authored_bee_geometry_and_mailbox() {
@@ -1349,7 +1567,11 @@ mod tests {
             shape(28, 28, 28, 28),
             "copied death mana must not resize constructor geometry before its visit"
         );
-        assert!(arena.economy.step_mana_sphere_slot(slot, terrain, |_| 52));
+        assert!(
+            arena
+                .economy
+                .step_mana_sphere_slot(slot, terrain, &arena.entities, |_| 52,)
+        );
         let current = arena
             .economy
             .spheres()
@@ -1424,11 +1646,12 @@ mod tests {
             assert_eq!(current.incoming_owner_entity_index, 0);
         }
         assert_ne!(arena.economy.reset_hash(), zero_hash);
-        assert!(
-            arena
-                .economy
-                .step_mana_sphere_slot(sphere.source_entity_index, terrain, |_| 52)
-        );
+        assert!(arena.economy.step_mana_sphere_slot(
+            sphere.source_entity_index,
+            terrain,
+            &arena.entities,
+            |_| 52,
+        ));
         let current = arena
             .economy
             .spheres()

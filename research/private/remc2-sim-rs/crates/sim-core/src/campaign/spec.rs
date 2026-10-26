@@ -166,7 +166,7 @@ struct CampaignPackageProfile {
 }
 
 /// Caller identity that must equal both the outer and descriptor identities.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 pub struct CampaignSelection {
     pub external_level: u16,
     pub internal_level: u16,
@@ -203,9 +203,70 @@ impl CampaignSelection {
         internal_level: 2,
         map_type_id: 0,
     };
+
+    /// Source index 30 is external 31 in the Cave environment.
+    pub const SECRET_DESTINATION_30: Self = Self {
+        external_level: 31,
+        internal_level: 30,
+        map_type_id: 2,
+    };
+    /// Source index 31 is external 32 in the Night environment.
+    pub const SECRET_DESTINATION_31: Self = Self {
+        external_level: 32,
+        internal_level: 31,
+        map_type_id: 1,
+    };
+    /// Source index 32 is external 33 in the Cave environment.
+    pub const SECRET_DESTINATION_32: Self = Self {
+        external_level: 33,
+        internal_level: 32,
+        map_type_id: 2,
+    };
+    /// Source index 33 is external 34 in the Cave environment.
+    pub const SECRET_DESTINATION_33: Self = Self {
+        external_level: 34,
+        internal_level: 33,
+        map_type_id: 2,
+    };
+    /// Source index 34 is external 35 in the Day environment.
+    pub const SECRET_DESTINATION_34: Self = Self {
+        external_level: 35,
+        internal_level: 34,
+        map_type_id: 0,
+    };
+
+    /// Resolve only the source secret destinations with verified source
+    /// records. Ordinary missions keep using [`Self::ordinary`].
+    #[must_use]
+    pub fn secret_destination(internal_level: u16) -> Option<Self> {
+        match internal_level {
+            30 => Some(Self::SECRET_DESTINATION_30),
+            31 => Some(Self::SECRET_DESTINATION_31),
+            32 => Some(Self::SECRET_DESTINATION_32),
+            33 => Some(Self::SECRET_DESTINATION_33),
+            34 => Some(Self::SECRET_DESTINATION_34),
+            _ => None,
+        }
+    }
 }
 
 fn campaign_package_profile(selection: CampaignSelection) -> Option<CampaignPackageProfile> {
+    if CampaignSelection::secret_destination(selection.internal_level) == Some(selection) {
+        return Some(CampaignPackageProfile {
+            members: &ORDINARY_CAMPAIGN_MEMBERS,
+            package_schema: ORDINARY_CAMPAIGN_PACKAGE_SCHEMA,
+            definition_schema: ORDINARY_CAMPAIGN_DEFINITION_SCHEMA,
+            player_schema: "mc2-player-arena/v4",
+            player_version: 4,
+            player_record_bytes: 663,
+            feature_allocator_bytes: 4_032,
+            feature_allocator_trace_count: 0,
+            has_collision_bank: true,
+            has_building_parameters: true,
+            has_presentation_assets: false,
+            has_owner_manifest: false,
+        });
+    }
     match selection {
         CampaignSelection::LEVEL1 => Some(CampaignPackageProfile {
             members: &LEVEL1_CAMPAIGN_MEMBERS,
@@ -625,7 +686,7 @@ pub struct CampaignDefinition {
     mechanic_by_initial_source_slot: BTreeMap<u16, MechanicKind>,
     mechanic_entity_by_authored_record: BTreeMap<u16, LevelEntityId>,
     standing_building_chains: BTreeMap<LevelObjectiveId, Box<[u8]>>,
-    rival_wizard_by_id: BTreeMap<RivalWizardId, u16>,
+    rival_wizard_selectors: BTreeMap<RivalWizardId, u16>,
     mechanic_entity_by_initial_source_slot: BTreeMap<u16, LevelEntityId>,
     movable_entity_bindings: BTreeMap<LevelEntityId, Mc2EntityRuntimeBinding>,
     local_player_fireball_mana_cost: Option<i32>,
@@ -2105,7 +2166,7 @@ impl CampaignDefinition {
             mechanic_by_initial_source_slot,
             mechanic_entity_by_authored_record: semantic_level.mechanic_entity_by_authored_record,
             standing_building_chains: semantic_level.standing_building_chains,
-            rival_wizard_by_id: semantic_level.rival_wizard_by_id,
+            rival_wizard_selectors: semantic_level.rival_wizard_selectors,
             mechanic_entity_by_initial_source_slot,
             movable_entity_bindings,
             local_player_fireball_mana_cost,
@@ -2254,8 +2315,8 @@ impl CampaignDefinition {
         &self.standing_building_chains
     }
 
-    pub(crate) fn rival_wizard_bindings(&self) -> &BTreeMap<RivalWizardId, u16> {
-        &self.rival_wizard_by_id
+    pub(crate) fn rival_wizard_selectors(&self) -> &BTreeMap<RivalWizardId, u16> {
+        &self.rival_wizard_selectors
     }
 
     pub(crate) fn movable_entity_binding(
@@ -3438,7 +3499,7 @@ fn validate_source_record(
         })
         .ok_or_else(|| CampaignPackageError {
             stage,
-            message: "ordinary source record has no pinned container span".to_owned(),
+            message: "source record has no pinned container span".to_owned(),
         })?;
     if receipt.len() != 5
         || receipt[1].parse::<u64>().ok() != Some(packed_offset)
@@ -3448,7 +3509,7 @@ fn validate_source_record(
     {
         return fail(
             stage,
-            "source packed span/decoded payload differs from the pinned ordinary record",
+            "source packed span/decoded payload differs from the pinned source record",
         );
     }
     if packed_offset
@@ -4664,6 +4725,66 @@ mod tests {
     };
     use std::{fs, path::PathBuf};
 
+    #[test]
+    fn source_secret_selection_is_exact_and_uses_the_existing_v4_profile() {
+        let expected = [
+            (30, 31, 2),
+            (31, 32, 1),
+            (32, 33, 2),
+            (33, 34, 2),
+            (34, 35, 0),
+        ];
+        for (internal, external, map_type_id) in expected {
+            let selection = CampaignSelection::secret_destination(internal)
+                .expect("source receipt verifies this secret destination");
+            assert_eq!(
+                (
+                    selection.internal_level,
+                    selection.external_level,
+                    selection.map_type_id
+                ),
+                (internal, external, map_type_id)
+            );
+            let profile = super::campaign_package_profile(selection)
+                .expect("verified secret destination has the source package profile");
+            assert_eq!(
+                profile.package_schema,
+                super::ORDINARY_CAMPAIGN_PACKAGE_SCHEMA
+            );
+            assert_eq!(
+                profile.definition_schema,
+                super::ORDINARY_CAMPAIGN_DEFINITION_SCHEMA
+            );
+        }
+
+        for unknown_internal in [25, 26, 29, 35, 36, u16::MAX] {
+            assert_eq!(
+                CampaignSelection::secret_destination(unknown_internal),
+                None,
+                "unknown source index {unknown_internal} must remain rejected"
+            );
+        }
+        assert!(CampaignSelection::ordinary(25).is_some());
+        assert_eq!(CampaignSelection::ordinary(26), None);
+        assert_eq!(CampaignSelection::ordinary(31), None);
+        assert!(
+            super::campaign_package_profile(CampaignSelection {
+                external_level: 32,
+                internal_level: 31,
+                map_type_id: 2,
+            })
+            .is_none()
+        );
+        assert_eq!(
+            serde_json::to_value(CampaignSelection::SECRET_DESTINATION_31).unwrap(),
+            serde_json::json!({
+                "external_level": 32,
+                "internal_level": 31,
+                "map_type_id": 1
+            })
+        );
+    }
+
     fn fixture() -> PathBuf {
         std::env::var_os("MC_CAMPAIGN_PACKAGE").map_or_else(
             || {
@@ -4705,7 +4826,7 @@ mod tests {
     }
 
     #[test]
-    fn ordinary_owner_packages_decode_without_claiming_runtime_closure() {
+    fn ordinary_and_secret_owner_packages_decode_without_claiming_runtime_closure() {
         use crate::campaign::{CampaignSession, spec::DecodedCampaignPackage};
         let root = std::env::var_os("MC_ORDINARY_CAMPAIGN_PACKAGES").map_or_else(
             || {
@@ -4810,17 +4931,117 @@ mod tests {
                 );
             }
         }
-        assert_eq!(CampaignSelection::ordinary(0), None);
-        assert_eq!(CampaignSelection::ordinary(26), None);
-        let selection = CampaignSelection::ordinary(4).unwrap();
-        let error = CampaignSession::open(root.join("level4"), selection).unwrap_err();
+
+        let secret_root = std::env::var_os("MC_SECRET_CAMPAIGN_PACKAGE_ROOT").map_or_else(
+            || PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../generated"),
+            PathBuf::from,
+        );
+        for (internal, expected, packed_offset, packed_bytes, package_name) in [
+            (
+                30,
+                CampaignSelection {
+                    external_level: 31,
+                    internal_level: 30,
+                    map_type_id: 2,
+                },
+                76_591,
+                2_850,
+                "mc-paj2-source30-campaign-package",
+            ),
+            (
+                31,
+                CampaignSelection {
+                    external_level: 32,
+                    internal_level: 31,
+                    map_type_id: 1,
+                },
+                79_441,
+                4_014,
+                "mc-paj2-source-secret-31-campaign-package",
+            ),
+            (
+                32,
+                CampaignSelection {
+                    external_level: 33,
+                    internal_level: 32,
+                    map_type_id: 2,
+                },
+                83_455,
+                2_187,
+                "mc-paj2-source-secret-32-campaign-package",
+            ),
+            (
+                33,
+                CampaignSelection {
+                    external_level: 34,
+                    internal_level: 33,
+                    map_type_id: 2,
+                },
+                85_642,
+                3_164,
+                "mc-paj2-source-secret-33-campaign-package",
+            ),
+            (
+                34,
+                CampaignSelection {
+                    external_level: 35,
+                    internal_level: 34,
+                    map_type_id: 0,
+                },
+                88_806,
+                4_440,
+                "mc-paj2-source-secret-34-campaign-package",
+            ),
+        ] {
+            let selection = CampaignSelection::secret_destination(internal)
+                .expect("captured source secret has a strict selection");
+            assert_eq!(selection, expected, "secret source index {internal}");
+            let package = secret_root.join(package_name);
+            let decoded = DecodedCampaignPackage::decode(&package, selection)
+                .unwrap_or_else(|error| panic!("secret source index {internal}: {error}"));
+            assert_eq!(decoded.identity, selection);
+            assert_eq!(decoded.authored_bytes().len(), 0x6604);
+            assert_eq!(
+                decoded.authored_bytes()[6],
+                selection.map_type_id as u8,
+                "secret source index {internal} map type"
+            );
+            assert_eq!(
+                decoded.member("source-record.bin"),
+                Some(decoded.authored_bytes()),
+                "secret source index {internal} decoded record"
+            );
+            let source_record = decoded
+                .source_record
+                .as_ref()
+                .expect("secret package is bound to its pinned source record");
+            assert_eq!(source_record.packed_offset, packed_offset);
+            assert_eq!(source_record.packed_bytes, packed_bytes);
+        }
+
+        let secret30 = secret_root.join("mc-paj2-source30-campaign-package");
+        let wrong_environment = CampaignSelection {
+            map_type_id: 0,
+            ..CampaignSelection::SECRET_DESTINATION_30
+        };
+        let error = DecodedCampaignPackage::decode(&secret30, wrong_environment)
+            .expect_err("a secret package cannot be decoded under the wrong map profile");
         assert!(
-            !error
+            error
                 .to_string()
                 .contains("has no campaign package profile")
         );
+
+        assert_eq!(CampaignSelection::ordinary(0), None);
+        assert_eq!(CampaignSelection::ordinary(26), None);
+        let selection = CampaignSelection::ordinary(4).unwrap();
+        let mut level4 = CampaignSession::open(root.join("level4"), selection)
+            .expect("the actual Level 4 source package has a runtime profile");
+        level4.step(crate::PlayerCommand::default(), 0);
         assert!(
-            error.to_string().contains("capability") || error.to_string().contains("unsupported")
+            level4.tick() > 0,
+            "Level 4 advances the source scheduler: {:?}",
+            level4.events()
         );
     }
 

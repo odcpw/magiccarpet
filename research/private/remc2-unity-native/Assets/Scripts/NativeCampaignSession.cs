@@ -257,16 +257,19 @@ namespace MagicCarpet.Native
                     "campaign presentation borrow requires the bound runtime handle");
             }
             ValidateSelection(selection);
-            if (!IsPresentationSelection(selection))
-            {
-                throw new InvalidDataException(
-                    "campaign presentation borrow rejects an unknown profile");
-            }
             var packageIdentity = ReadPackageIdentity(packagePath, selection);
             var status = NativeSim.mc_native_campaign_world_info(
                 handle, out var worldInfo, 64);
             NativeSession.Check(status, "read borrowed campaign world identity");
-            ValidateWorldInfo(worldInfo, selection);
+            ValidateWorldInfo(worldInfo, packageIdentity.Selection);
+            var afterBorrow = ReadPackageIdentity(
+                packagePath,
+                packageIdentity.Selection);
+            if (!SameIdentity(packageIdentity, afterBorrow))
+            {
+                throw new InvalidDataException(
+                    "campaign package or definition changed while borrowing");
+            }
             var borrowed = new NativeCampaignSession(
                 handle,
                 false,
@@ -296,6 +299,7 @@ namespace MagicCarpet.Native
             string packagePath,
             NativeSim.CampaignSelection selection)
         {
+            ValidateSelection(selection);
             if (string.IsNullOrWhiteSpace(packagePath))
             {
                 throw new InvalidDataException(
@@ -318,10 +322,17 @@ namespace MagicCarpet.Native
             var definition = RequireRegularFile(package, "campaign-definition.json");
             var envelope = JsonUtility.FromJson<CampaignDefinitionEnvelope>(
                 File.ReadAllText(definition));
-            if (envelope?.identity == null ||
-                envelope.identity.external_level != selection.externalLevel ||
-                envelope.identity.internal_level != selection.internalLevel ||
-                envelope.identity.map_type_id != selection.mapType)
+            if (envelope?.identity == null)
+            {
+                throw new InvalidDataException(
+                    "campaign package definition has no source selection identity");
+            }
+            var packageSelection = NativeSim.CampaignSelection.Create(
+                envelope.identity.external_level,
+                envelope.identity.internal_level,
+                envelope.identity.map_type_id);
+            ValidateSelection(packageSelection);
+            if (!SameSelection(packageSelection, selection))
             {
                 throw new InvalidDataException(
                     "campaign package definition does not match the requested selection");
@@ -330,7 +341,7 @@ namespace MagicCarpet.Native
                 package,
                 Sha256(manifest),
                 Sha256(definition),
-                selection);
+                packageSelection);
         }
 
         private static string RequireRegularFile(string packagePath, string name)
@@ -387,16 +398,6 @@ namespace MagicCarpet.Native
             return left.externalLevel == right.externalLevel &&
                    left.internalLevel == right.internalLevel &&
                    left.mapType == right.mapType;
-        }
-
-        private static bool IsPresentationSelection(
-            NativeSim.CampaignSelection selection)
-        {
-            return selection.externalLevel == 1 && selection.internalLevel == 0 && selection.mapType == 1 ||
-                   selection.externalLevel == 4 && selection.internalLevel == 3 && selection.mapType == 2 ||
-                   selection.mapType == 0 &&
-                   (selection.externalLevel == 2 && selection.internalLevel == 1 ||
-                    selection.externalLevel == 3 && selection.internalLevel == 2);
         }
 
         private static void ValidateSelection(NativeSim.CampaignSelection selection)

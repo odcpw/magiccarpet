@@ -22,6 +22,8 @@ pub enum EffectKind {
     PossessionContact,
     FireSpheres,
     FadingSmoke,
+    LightningEndpoint,
+    LightningStorm,
 }
 
 impl EffectKind {
@@ -45,6 +47,8 @@ impl EffectKind {
             Self::PossessionContact => "possession_contact",
             Self::FireSpheres => "fire_spheres",
             Self::FadingSmoke => "fading_smoke",
+            Self::LightningEndpoint => "lightning_endpoint",
+            Self::LightningStorm => "lightning_storm",
         }
     }
 }

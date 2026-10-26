@@ -15,7 +15,7 @@ use sim_definition::adapter::{
     field_entity_definition, house_construction_entity_definition,
     mc2_authored_terrain_disaster_definition, mc2_effect_definition, mc2_field_definition,
     mushroom_entity_definition, objective_definition, stable_entity_id, stable_objective_id,
-    stable_rival_wizard_id, terrain_disaster_entity_definition,
+    terrain_disaster_entity_definition,
 };
 
 use crate::{
@@ -35,12 +35,6 @@ use super::spec::{CampaignSelection, ObjectiveOperation};
 
 const MC2_LEVEL_ENTITY_IDS: &str = include_str!("mc2_level_entity_ids.tsv");
 const MC2_LEVEL_OBJECTIVE_IDS: &str = include_str!("mc2_level_objective_ids.tsv");
-const NYPHUR_RIVAL_WIZARD_ID: &str = "rival_wizard.nyphur";
-const LEVEL_TWO_NYPHUR_OBJECTIVE_SLOT: u8 = 1;
-// MC2 stage type 3 stores a one-based player selector, not an entity slot.
-// The qualified player census binds selector 2 to Nyphur's entity row 112.
-const LEVEL_TWO_NYPHUR_PLAYER_SELECTOR: u16 = 2;
-const LEVEL_TWO_NYPHUR_ENTITY_INDEX: u16 = 112;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum Mc2MovableRuntimeHint {
@@ -67,7 +61,7 @@ pub(crate) struct Mc2LevelDefinition {
     pub(crate) mechanic_entity_by_authored_record: BTreeMap<u16, LevelEntityId>,
     pub(crate) movable_runtime_hint_by_entity_id: BTreeMap<LevelEntityId, Mc2MovableRuntimeHint>,
     pub(crate) standing_building_chains: BTreeMap<LevelObjectiveId, Box<[u8]>>,
-    pub(crate) rival_wizard_by_id: BTreeMap<RivalWizardId, u16>,
+    pub(crate) rival_wizard_selectors: BTreeMap<RivalWizardId, u16>,
 }
 
 impl Mc2LevelDefinition {
@@ -110,9 +104,11 @@ impl Mc2LevelDefinition {
             (10, 34) => Some(LevelEntityKind::Mechanic(MechanicKind::Field {
                 kind: FieldKind::Transport,
             })),
-            (10, 11) => Some(LevelEntityKind::Mechanic(MechanicKind::TerrainDisaster {
-                kind: TerrainDisasterKind::LoweringRing,
-            })),
+            (10, model @ (9 | 11 | 15 | 71)) => {
+                Some(LevelEntityKind::Mechanic(MechanicKind::TerrainDisaster {
+                    kind: Self::terrain_disaster_kind(model),
+                }))
+            }
             (5, model) => match Self::creature_for_model(model) {
                 Some(kind) => Some(LevelEntityKind::Creature(kind)),
                 None => None,
@@ -160,11 +156,24 @@ impl Mc2LevelDefinition {
             (15, 4) => Some(LevelEntityKind::SpellPickup(SpellKind::Morph)),
             (15, 5) => Some(LevelEntityKind::SpellPickup(SpellKind::Heal)),
             (15, 6) => Some(LevelEntityKind::SpellPickup(SpellKind::Shield)),
+            (15, 7) => Some(LevelEntityKind::SpellPickup(SpellKind::Lightning)),
             (15, 8) => Some(LevelEntityKind::SpellPickup(SpellKind::Rebound)),
-            (15, 9) => Some(LevelEntityKind::SpellPickup(SpellKind::Lightning)),
+            (15, 9) => Some(LevelEntityKind::SpellPickup(SpellKind::Meteor)),
             (15, 10) => Some(LevelEntityKind::SpellPickup(SpellKind::Teleport)),
             (15, 11) => Some(LevelEntityKind::SpellPickup(SpellKind::Invisibility)),
             (15, 12) => Some(LevelEntityKind::SpellPickup(SpellKind::BeyondSight)),
+            (15, 13) => Some(LevelEntityKind::SpellPickup(SpellKind::StealMana)),
+            (15, 14) => Some(LevelEntityKind::SpellPickup(SpellKind::Duel)),
+            (15, 15) => Some(LevelEntityKind::SpellPickup(SpellKind::Tremor)),
+            (15, 16) => Some(LevelEntityKind::SpellPickup(SpellKind::Crater)),
+            (15, 17) => Some(LevelEntityKind::SpellPickup(SpellKind::Earthquake)),
+            (15, 18) => Some(LevelEntityKind::SpellPickup(SpellKind::Volcano)),
+            (15, 19) => Some(LevelEntityKind::SpellPickup(SpellKind::SummonArmy)),
+            (15, 20) => Some(LevelEntityKind::SpellPickup(SpellKind::GravityWell)),
+            (15, 21) => Some(LevelEntityKind::SpellPickup(SpellKind::Whirlwind)),
+            (15, 22) => Some(LevelEntityKind::SpellPickup(SpellKind::FoolsMana)),
+            (15, 23) => Some(LevelEntityKind::SpellPickup(SpellKind::MagicMine)),
+            (15, 24) => Some(LevelEntityKind::SpellPickup(SpellKind::Alliance)),
             (15, 25) => Some(LevelEntityKind::SpellPickup(SpellKind::CaveIn)),
             _ => None,
         }
@@ -178,14 +187,21 @@ impl Mc2LevelDefinition {
             3 => Some(CreatureKind::Worm),
             4 => Some(CreatureKind::Archer),
             9 => Some(CreatureKind::Skeleton),
+            10 => Some(CreatureKind::FinalBoss),
             12 => Some(CreatureKind::Builder),
             13 => Some(CreatureKind::Villager),
             14 => Some(CreatureKind::Trader),
             15 => Some(CreatureKind::CastleDefender),
+            16 => Some(CreatureKind::Wyvern),
+            17 => Some(CreatureKind::Creature17),
             19 => Some(CreatureKind::Firefly),
             20 => Some(CreatureKind::Spider),
             22 => Some(CreatureKind::Creature22),
+            23 => Some(CreatureKind::Creature23),
             24 => Some(CreatureKind::Creature24),
+            25 => Some(CreatureKind::Cymmerian),
+            26 => Some(CreatureKind::Creature26),
+            28 => Some(CreatureKind::Creature28),
             _ => None,
         }
     }
@@ -243,6 +259,16 @@ impl Mc2LevelDefinition {
         }
     }
 
+    const fn terrain_disaster_kind(model: u8) -> TerrainDisasterKind {
+        match model {
+            9 => TerrainDisasterKind::Volcano,
+            11 => TerrainDisasterKind::LoweringRing,
+            15 => TerrainDisasterKind::Earthquake,
+            71 => TerrainDisasterKind::Tremor,
+            _ => unreachable!(),
+        }
+    }
+
     pub(crate) const fn effect_kind(model: u8) -> Option<EffectKind> {
         Some(match model {
             0 => EffectKind::Impact,
@@ -258,6 +284,8 @@ impl Mc2LevelDefinition {
             16 => EffectKind::BurningDebris,
             18 => EffectKind::Eruption,
             19 => EffectKind::EruptionSmoke,
+            23 => EffectKind::LightningEndpoint,
+            38 => EffectKind::LightningStorm,
             60 => EffectKind::AmbientSmoke,
             70 => EffectKind::PossessionContact,
             76 => EffectKind::FireSpheres,
@@ -390,10 +418,23 @@ impl Mc2LevelDefinition {
             (15, 5, 16) => Some(SpellKind::Heal),
             (15, 6, 19) => Some(SpellKind::Shield),
             (15, 8, 25) => Some(SpellKind::Rebound),
-            (15, 9, 28 | 29) => Some(SpellKind::Lightning),
+            (15, 9, 28 | 29) => Some(SpellKind::Meteor),
+            (15, 7, 22 | 23) => Some(SpellKind::Lightning),
             (15, 10, 31) => Some(SpellKind::Teleport),
             (15, 11, 34) => Some(SpellKind::Invisibility),
             (15, 12, 37) => Some(SpellKind::BeyondSight),
+            (15, 13, 40 | 41) => Some(SpellKind::StealMana),
+            (15, 14, 43 | 44) => Some(SpellKind::Duel),
+            (15, 15, 46 | 47) => Some(SpellKind::Tremor),
+            (15, 16, 49 | 50) => Some(SpellKind::Crater),
+            (15, 17, 52 | 53) => Some(SpellKind::Earthquake),
+            (15, 18, 55 | 56) => Some(SpellKind::Volcano),
+            (15, 19, 58 | 59) => Some(SpellKind::SummonArmy),
+            (15, 20, 61 | 62) => Some(SpellKind::GravityWell),
+            (15, 21, 64 | 65) => Some(SpellKind::Whirlwind),
+            (15, 22, 67 | 68) => Some(SpellKind::FoolsMana),
+            (15, 23, 70 | 71) => Some(SpellKind::MagicMine),
+            (15, 24, 73 | 74) => Some(SpellKind::Alliance),
             (15, 25, 76 | 77) => Some(SpellKind::CaveIn),
             _ => None,
         }
@@ -494,7 +535,9 @@ impl Mc2LevelDefinition {
                 continue;
             };
             let role = match (feature.kind, model) {
-                (10, 11) => "mechanic.lowering_ring".to_owned(),
+                (10, model @ (9 | 11 | 15 | 71)) => {
+                    format!("mechanic.{}", Self::terrain_disaster_kind(model).as_str())
+                }
                 (10, 22) => "mechanic.wind".to_owned(),
                 (10, 34) => "mechanic.transport".to_owned(),
                 (10, model) => {
@@ -538,7 +581,7 @@ impl Mc2LevelDefinition {
         let mut authored_record_by_entity_id = BTreeMap::new();
         let mut movable_runtime_hint_by_entity_id = BTreeMap::new();
         let mut standing_building_chains = BTreeMap::new();
-        let mut rival_wizard_by_id = BTreeMap::new();
+        let mut rival_wizard_selectors = BTreeMap::new();
         let mut entities = Vec::new();
         let activation_groups = features
             .iter()
@@ -560,14 +603,21 @@ impl Mc2LevelDefinition {
                 (5, 3) => Some(CreatureKind::Worm),
                 (5, 4) => Some(CreatureKind::Archer),
                 (5, 9) => Some(CreatureKind::Skeleton),
+                (5, 10) => Some(CreatureKind::FinalBoss),
                 (5, 12) => Some(CreatureKind::Builder),
                 (5, 13) => Some(CreatureKind::Villager),
                 (5, 14) => Some(CreatureKind::Trader),
                 (5, 15) => Some(CreatureKind::CastleDefender),
+                (5, 16) => Some(CreatureKind::Wyvern),
+                (5, 17) => Some(CreatureKind::Creature17),
+                (5, 23) => Some(CreatureKind::Creature23),
                 (5, 19) => Some(CreatureKind::Firefly),
                 (5, 20) => Some(CreatureKind::Spider),
                 (5, 22) => Some(CreatureKind::Creature22),
                 (5, 24) => Some(CreatureKind::Creature24),
+                (5, 25) => Some(CreatureKind::Cymmerian),
+                (5, 26) => Some(CreatureKind::Creature26),
+                (5, 28) => Some(CreatureKind::Creature28),
                 _ => None,
             };
             let activation_group = u16::try_from(feature.activation_group)
@@ -607,9 +657,16 @@ impl Mc2LevelDefinition {
                 if matches!(
                     kind,
                     CreatureKind::Firefly
+                        | CreatureKind::FinalBoss
                         | CreatureKind::Goat
                         | CreatureKind::Archer
                         | CreatureKind::CastleDefender
+                        | CreatureKind::Wyvern
+                        | CreatureKind::Creature17
+                        | CreatureKind::Creature23
+                        | CreatureKind::Creature26
+                        | CreatureKind::Creature28
+                        | CreatureKind::Cymmerian
                         | CreatureKind::Creature22
                         | CreatureKind::Creature24
                         | CreatureKind::Bee
@@ -621,6 +678,9 @@ impl Mc2LevelDefinition {
                         | CreatureKind::Worm
                 ) {
                     let max_life = match kind {
+                        CreatureKind::FinalBoss => {
+                            crate::level_definition::FINAL_BOSS_CLASS_PROPERTIES.max_life
+                        }
                         CreatureKind::Firefly => {
                             crate::native_world::level2_class5::firefly::FIREFLY_LIFE
                         }
@@ -629,6 +689,24 @@ impl Mc2LevelDefinition {
                         CreatureKind::CastleDefender => {
                             crate::level_definition::CASTLE_DEFENDER_CLASS_PROPERTIES.max_life
                                 as i32
+                        }
+                        CreatureKind::Wyvern => {
+                            crate::level_definition::WYVERN_CLASS_PROPERTIES.max_life
+                        }
+                        CreatureKind::Creature17 => {
+                            crate::level_definition::CREATURE17_CLASS_PROPERTIES.max_life
+                        }
+                        CreatureKind::Creature23 => {
+                            crate::level_definition::CREATURE23_CLASS_PROPERTIES.max_life
+                        }
+                        CreatureKind::Creature26 => {
+                            crate::level_definition::CREATURE26_CLASS_PROPERTIES.max_life
+                        }
+                        CreatureKind::Creature28 => {
+                            crate::level_definition::CREATURE28_CLASS_PROPERTIES.maximum_life
+                        }
+                        CreatureKind::Cymmerian => {
+                            crate::level_definition::CYMMERIAN_CLASS_PROPERTIES.max_life
                         }
                         CreatureKind::Creature22 => {
                             crate::level_definition::CREATURE22_CLASS_PROPERTIES.max_life
@@ -956,10 +1034,23 @@ impl Mc2LevelDefinition {
                 (15, 5) => Some(SpellKind::Heal),
                 (15, 6) => Some(SpellKind::Shield),
                 (15, 8) => Some(SpellKind::Rebound),
-                (15, 9) => Some(SpellKind::Lightning),
+                (15, 9) => Some(SpellKind::Meteor),
+                (15, 7) => Some(SpellKind::Lightning),
                 (15, 10) => Some(SpellKind::Teleport),
                 (15, 11) => Some(SpellKind::Invisibility),
                 (15, 12) => Some(SpellKind::BeyondSight),
+                (15, 13) => Some(SpellKind::StealMana),
+                (15, 14) => Some(SpellKind::Duel),
+                (15, 15) => Some(SpellKind::Tremor),
+                (15, 16) => Some(SpellKind::Crater),
+                (15, 17) => Some(SpellKind::Earthquake),
+                (15, 18) => Some(SpellKind::Volcano),
+                (15, 19) => Some(SpellKind::SummonArmy),
+                (15, 20) => Some(SpellKind::GravityWell),
+                (15, 21) => Some(SpellKind::Whirlwind),
+                (15, 22) => Some(SpellKind::FoolsMana),
+                (15, 23) => Some(SpellKind::MagicMine),
+                (15, 24) => Some(SpellKind::Alliance),
                 (15, 25) => Some(SpellKind::CaveIn),
                 _ => None,
             };
@@ -1020,8 +1111,8 @@ impl Mc2LevelDefinition {
                             .expect("guarded effect kind"),
                     }
                 }
-                (10, 11) => MechanicKind::TerrainDisaster {
-                    kind: TerrainDisasterKind::LoweringRing,
+                (10, model @ (9 | 11 | 15 | 71)) => MechanicKind::TerrainDisaster {
+                    kind: Self::terrain_disaster_kind(model as u8),
                 },
                 (14, 2) => MechanicKind::CaveCorridor,
                 // The two source callbacks observe the rebuilt class-5 model
@@ -1126,6 +1217,27 @@ impl Mc2LevelDefinition {
                         )
                     })?;
                 let condition = match operation.stage_index {
+                    1 | 2 | 4 | 6 => {
+                        let authored_record = u16::try_from(operation.objective_selector)
+                            .map_err(|_| format!("objective {} has invalid authored target {}", operation.objective_slot, operation.objective_selector))?;
+                        let target = authored_record_by_entity_id.iter()
+                            .find(|(_, record)| **record == authored_record)
+                            .map(|(id, _)| id.clone())
+                            .ok_or_else(|| format!("objective {} targets unsupported authored entity {}", operation.objective_slot, authored_record))?;
+                        match operation.stage_index {
+                            1 => ObjectiveCondition::TargetDeath(target),
+                            2 => ObjectiveCondition::TargetDeathWithoutFont(target),
+                            4 => ObjectiveCondition::OwnedTargetAtLocation {
+                                target,
+                                location: TilePosition {
+                                    x: u16::try_from(operation.axis_x).map_err(|_| "delivery objective has invalid x".to_owned())?,
+                                    y: u16::try_from(operation.axis_y).map_err(|_| "delivery objective has invalid y".to_owned())?,
+                                },
+                            },
+                            6 => ObjectiveCondition::CollectedTarget(target),
+                            _ => unreachable!(),
+                        }
+                    }
                     0 => ObjectiveCondition::CastleManaPercent(
                         u16::try_from(operation.objective_selector).map_err(|_| {
                             format!(
@@ -1141,24 +1253,10 @@ impl Mc2LevelDefinition {
                                 operation.objective_slot, operation.objective_selector
                             )
                         })?;
-                        if selection.external_level != 2
-                            || operation.objective_slot != LEVEL_TWO_NYPHUR_OBJECTIVE_SLOT
-                            || player_selector != LEVEL_TWO_NYPHUR_PLAYER_SELECTOR
-                        {
-                            return Err(format!(
-                                "rival-wizard objective {} does not match the qualified Nyphur target binding",
-                                operation.objective_slot
-                            ));
-                        }
-                        let target = stable_rival_wizard_id(NYPHUR_RIVAL_WIZARD_ID)
+                        let target = super::objectives::rival_wizard::target_from_selector(player_selector)
                             .map_err(|error| error.to_string())?;
-                        if rival_wizard_by_id
-                            .insert(target.clone(), LEVEL_TWO_NYPHUR_ENTITY_INDEX)
-                            .is_some()
-                        {
-                            return Err("duplicate qualified rival-wizard target binding".to_owned());
-                        }
-                        ObjectiveCondition::DefeatRivalWizard(target)
+                        rival_wizard_selectors.insert(target.id().clone(), target.selector());
+                        ObjectiveCondition::DefeatRivalWizard(target.id().clone())
                     }
                     5 => ObjectiveCondition::ReachLocation(TilePosition {
                         x: u16::try_from(operation.axis_x).map_err(|_| {
@@ -1313,7 +1411,7 @@ impl Mc2LevelDefinition {
             mechanic_entity_by_authored_record,
             movable_runtime_hint_by_entity_id,
             standing_building_chains,
-            rival_wizard_by_id,
+            rival_wizard_selectors,
         })
     }
 }
@@ -1542,4 +1640,36 @@ fn bind_private_entity(
         movable_hints.insert(id.clone(), hint);
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod spell_family_binding_tests {
+    use super::*;
+
+    #[test]
+    fn army_magic_mine_and_alliance_bind_ordinary_source_rows() {
+        for (family, kind) in [
+            (19, SpellKind::SummonArmy),
+            (23, SpellKind::MagicMine),
+            (24, SpellKind::Alliance),
+        ] {
+            assert_eq!(
+                Mc2LevelDefinition::authored_kind(15, family),
+                Some(LevelEntityKind::SpellPickup(kind))
+            );
+            assert_eq!(
+                Mc2LevelDefinition::spell_for_reset_selector(15, u16::from(family), family * 3 + 1),
+                Some(kind)
+            );
+            assert_eq!(
+                Mc2LevelDefinition::spell_for_reset_selector(15, u16::from(family), family * 3 + 2),
+                Some(kind)
+            );
+            assert_eq!(
+                Mc2LevelDefinition::spell_for_reset_selector(15, u16::from(family), family * 3),
+                None,
+                "active holder action is not a pickup source"
+            );
+        }
+    }
 }

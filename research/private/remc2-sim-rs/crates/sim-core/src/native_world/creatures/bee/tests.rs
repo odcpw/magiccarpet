@@ -1,6 +1,101 @@
 use super::*;
 use crate::native_world::TerrainPlanes;
 
+fn allocate_typed_morph_shadow(
+    arena: &mut crate::campaign::source_arena::SourceArena,
+    terrain: &mut SessionTerrain,
+    parent_slot: u16,
+    position: Position,
+    raw_source_id: u16,
+) -> u16 {
+    let holder_slot = arena
+        .allocate_source_slot()
+        .expect("reserve a Morph holder source slot");
+    let source = mc2::allocate_morph(
+        arena,
+        terrain,
+        holder_slot,
+        parent_slot,
+        parent_slot,
+        position,
+    )
+    .expect("Day-map Morph constructs a typed Bee");
+    let slot = source.source_entity_index;
+    let typed = arena
+        .economy
+        .bee_creatures
+        .iter_mut()
+        .find(|source| source.active && source.source_entity_index == slot)
+        .expect("Morph Bee remains in its typed owner");
+    typed.action = 18;
+    typed.stage_var1 = 0;
+    typed.stage_var2 = 12;
+    typed.stage_relation = 9;
+    typed.stage_remaining = 5;
+    typed.stage_duration = 6;
+    typed.target_entity_index = Some(parent_slot);
+
+    // Typed Bees retain their former source record as an inactive compatibility
+    // row. The Alliance kernel still resolves its class/model and control data
+    // from that row by the source map order.
+    let raw = &mut arena.entities[usize::from(slot)];
+    raw.source_id = raw_source_id;
+    raw.class = 5;
+    raw.model = 2;
+    raw.record[67] = 5;
+    raw.record[68] = 2;
+    raw.set_source_action(18);
+    raw.record[44..46].copy_from_slice(&parent_slot.to_le_bytes());
+    raw.record[76] = 0;
+    raw.record[77] = 12;
+    raw.record[78..80].copy_from_slice(&9_u16.to_le_bytes());
+    raw.record[50..52].copy_from_slice(&5_i16.to_le_bytes());
+    raw.record[52..54].copy_from_slice(&6_i16.to_le_bytes());
+    raw.record[154..156].copy_from_slice(&parent_slot.to_le_bytes());
+    slot
+}
+
+fn allocate_alliance_center(
+    arena: &mut crate::campaign::source_arena::SourceArena,
+    terrain: &mut SessionTerrain,
+    position: Position,
+) -> u16 {
+    let slot = arena
+        .allocate_source_slot_with_terrain(terrain)
+        .expect("allocate Alliance's active Bee center");
+    let row = crate::world::terrain::cave_features::new_event(
+        slot,
+        arena.economy.new_event_rng(slot),
+        position,
+    );
+    let mut row = row;
+    row.class = 5;
+    row.model = 2;
+    row.record[67] = 5;
+    row.record[68] = 2;
+    arena.entities[usize::from(slot)] = row;
+    slot
+}
+
+fn run_alliance_impact(
+    arena: &mut crate::campaign::source_arena::SourceArena,
+    terrain: &mut SessionTerrain,
+    bee_slot: u16,
+    center_slot: u16,
+    owner_slot: u16,
+) -> crate::spells::late::alliance::Impact {
+    let impact_slot = crate::native_world::alliance_spell::construct_impact(arena, terrain)
+        .expect("construct the real source Alliance terminal");
+    let effect = &mut arena.entities[usize::from(impact_slot)];
+    effect.source_id = owner_slot;
+    effect.record[30..32].copy_from_slice(&owner_slot.to_le_bytes());
+    effect.record[74] = 32;
+    effect.subspell_index = 40;
+    effect.record[154..156].copy_from_slice(&center_slot.to_le_bytes());
+    crate::native_world::alliance_spell::step_impact(arena, impact_slot, &[bee_slot])
+        .expect("consume the real source Alliance terminal")
+}
+
 fn terrain() -> SessionTerrain {
     let plane = || vec![0; 65_536].into_boxed_slice();
     SessionTerrain::from_planes(
@@ -564,4 +659,245 @@ fn owner_data_death_outputs_use_frozen_raw_replacements_in_source_order() {
         arena.economy.source_rng[&source.source_entity_index],
         dying.entity_rng
     );
+}
+
+#[test]
+fn army_ring_allocates_a_generation_bound_summoned_bee_with_source_fields() {
+    let session = crate::native_world::tests::level_two_campaign_session();
+    let mut arena = session.source_arena().clone();
+    let mut runtime = session.session.state.live.core.runtime.clone();
+    let mut terrain = session.session.state.live.terrain.clone();
+    let particles = &session.session.definition.presentation.particles;
+    let position = session.state.position;
+    let parent_slot = session.state.entity_index;
+    let owner_id = session.state.entity_index;
+    let holder_slot = arena
+        .allocate_source_slot()
+        .expect("reserve the Army holder source slot");
+
+    let handle = mc2::allocate_summoned(
+        &mut arena,
+        &mut runtime,
+        &mut terrain,
+        particles,
+        position,
+        parent_slot,
+        owner_id,
+        holder_slot,
+    )
+    .unwrap()
+    .expect("Day-map Army Bee has source capacity");
+    let source = arena
+        .bee_creatures()
+        .iter()
+        .find(|source| source.source_entity_index == handle.source_slot)
+        .expect("Army Bee remains in the canonical typed owner");
+    assert_eq!(
+        (source.source_class, source.model, source.action),
+        (5, 2, 23)
+    );
+    assert_eq!(source.entity_id, owner_id);
+    assert_eq!(source.parent_entity_index, parent_slot);
+    assert_eq!(source.stage_var2, 13);
+    assert_eq!(source.stage_remaining, 250);
+    assert_eq!(source.mana, 0);
+    assert_eq!(source.position, position);
+    assert_eq!(
+        source.origin,
+        BeeCreatureOrigin::SummonedSpell { holder_slot }
+    );
+    assert!(arena.map_chains.is_linked(handle.source_slot));
+    assert_eq!(handle.generation, arena.slot_generation(handle.source_slot));
+
+    let empty = std::collections::BTreeMap::new();
+    let identity = arena
+        .creature_runtime_identity(handle.source_slot, &empty, &empty)
+        .expect("summoned Bee resolves as a live creature root");
+    assert_eq!(identity.handle, handle);
+    assert_eq!(identity.kind, crate::level_definition::CreatureKind::Bee);
+    assert_eq!(identity.root_slot, handle.source_slot);
+    assert_eq!(
+        identity.origin,
+        crate::campaign::source_arena::CreatureRootOrigin::SummonedSpell { holder_slot }
+    );
+    assert_eq!(identity.raw_model, Some(2));
+    assert!(identity.living);
+}
+
+#[test]
+fn army_ring_returns_none_when_the_shared_source_arena_is_exhausted() {
+    let session = crate::native_world::tests::level_two_campaign_session();
+    let mut arena = session.source_arena().clone();
+    let mut runtime = session.session.state.live.core.runtime.clone();
+    let mut terrain = session.session.state.live.terrain.clone();
+    let particles = &session.session.definition.presentation.particles;
+    while arena.allocate_source_slot().is_some() {}
+
+    let result = mc2::allocate_summoned(
+        &mut arena,
+        &mut runtime,
+        &mut terrain,
+        particles,
+        session.state.position,
+        session.state.entity_index,
+        session.state.entity_index,
+        session.state.entity_index,
+    )
+    .unwrap();
+
+    assert_eq!(result, None);
+}
+
+#[test]
+fn alliance_impact_syncs_only_the_exact_typed_bee_before_its_source_visit() {
+    let mut session = crate::native_world::tests::level_two_campaign_session();
+    let mut arena = session.source_arena().clone();
+    let mut terrain = session.session.state.live.terrain.clone();
+    let parent_slot = session.state.entity_index;
+    let position = session.state.position;
+    let center_slot = allocate_alliance_center(&mut arena, &mut terrain, position);
+
+    let bee_slot =
+        allocate_typed_morph_shadow(&mut arena, &mut terrain, parent_slot, position, parent_slot);
+    let impact = run_alliance_impact(&mut arena, &mut terrain, bee_slot, center_slot, parent_slot);
+    assert_eq!(impact.affected_entities, vec![bee_slot]);
+    let raw = &arena.entities[usize::from(bee_slot)];
+    assert!(!raw.active, "the retained Bee row is only a source shadow");
+    assert_eq!(raw.action, 18);
+    assert_eq!(raw.record[76], 0);
+    assert_eq!(raw.record[77], 14);
+    assert_eq!(
+        u16::from_le_bytes([raw.record[44], raw.record[45]]),
+        parent_slot
+    );
+    assert_eq!(u16::from_le_bytes([raw.record[50], raw.record[51]]), 40);
+    assert_eq!(u16::from_le_bytes([raw.record[52], raw.record[53]]), 40);
+    assert_eq!(u16::from_le_bytes([raw.record[154], raw.record[155]]), 0);
+
+    *session.source_arena_mut() = arena;
+    *session.canonical_terrain_mut() = terrain;
+    session.step_outer_turn(crate::PlayerCommand::default(), 0);
+    let first_remaining;
+    {
+        let arena = session.source_arena();
+        let bee = arena
+            .bee_creatures()
+            .iter()
+            .find(|source| source.active && source.source_entity_index == bee_slot)
+            .expect("the Bee remains in its typed owner");
+        assert_eq!(
+            bee.action, 17,
+            "action18 consumes the cleared word96 target"
+        );
+        assert_eq!(bee.stage_var1, 0);
+        assert_eq!(bee.stage_var2, 14);
+        assert_eq!(bee.parent_entity_index, parent_slot);
+        assert_eq!(bee.stage_relation, 0);
+        assert!((1..=40).contains(&bee.stage_remaining));
+        assert_eq!(bee.stage_duration, 40);
+        first_remaining = bee.stage_remaining;
+        let raw = &arena.entities[usize::from(bee_slot)];
+        assert_eq!(raw.action, bee.action);
+        assert_eq!(raw.record[77], bee.stage_var2);
+        assert_eq!(
+            u16::from_le_bytes([raw.record[50], raw.record[51]]),
+            bee.stage_remaining as u16
+        );
+    }
+    session.step_outer_turn(crate::PlayerCommand::default(), 0);
+    let arena = session.source_arena();
+    let bee = arena
+        .bee_creatures()
+        .iter()
+        .find(|source| source.active && source.source_entity_index == bee_slot)
+        .expect("the allied Bee remains live through its countdown");
+    assert!(bee.stage_remaining < first_remaining);
+    assert_eq!(
+        u16::from_le_bytes([
+            arena.entities[usize::from(bee_slot)].record[50],
+            arena.entities[usize::from(bee_slot)].record[51],
+        ]),
+        bee.stage_remaining as u16
+    );
+
+    let mut arena = session.source_arena().clone();
+    let mut terrain = session.canonical_terrain().clone();
+    let wrong_source_id = parent_slot.wrapping_add(1);
+    let rejected_center_slot = allocate_alliance_center(&mut arena, &mut terrain, position);
+    let rejected_slot = allocate_typed_morph_shadow(
+        &mut arena,
+        &mut terrain,
+        parent_slot,
+        position,
+        wrong_source_id,
+    );
+    arena
+        .economy
+        .bee_creatures
+        .iter_mut()
+        .find(|source| source.active && source.source_entity_index == rejected_slot)
+        .expect("mismatched-source Bee exists")
+        .target_entity_index = None;
+    let rejected_impact = run_alliance_impact(
+        &mut arena,
+        &mut terrain,
+        rejected_slot,
+        rejected_center_slot,
+        parent_slot,
+    );
+    assert_eq!(rejected_impact.affected_entities, vec![rejected_slot]);
+    *session.source_arena_mut() = arena;
+    *session.canonical_terrain_mut() = terrain;
+    session.step_outer_turn(crate::PlayerCommand::default(), 0);
+    let arena = session.source_arena();
+    let rejected = arena
+        .bee_creatures()
+        .iter()
+        .find(|source| source.active && source.source_entity_index == rejected_slot)
+        .expect("the mismatched slot remains a typed Bee");
+    assert_eq!(
+        rejected.stage_var2, 12,
+        "a different source id cannot import Alliance state"
+    );
+    assert_eq!(rejected.parent_entity_index, parent_slot);
+    assert_eq!(
+        arena.entities[usize::from(rejected_slot)].record[77],
+        14,
+        "mismatched source rows are not written back either"
+    );
+}
+
+#[test]
+fn bee_stagevar_access_uses_source_count_without_compacting_sparse_rows() {
+    let session = crate::native_world::tests::level_two_campaign_session();
+    let mut runtime = session.session.state.live.core.runtime.clone();
+    let row = |kind, flags| crate::native_world::RuntimeStageVariable {
+        kind,
+        flags,
+        word_2: 0,
+        relation: crate::native_world::RuntimeRelation::Null,
+    };
+
+    runtime.stage_variables[1] = row(3, 6);
+    runtime.stage_variables[2] = row(0, 6);
+    runtime.stage_variables[3] = row(9, 6);
+    runtime.stage_variables[4] = row(4, 6);
+    assert!(runtime.set_active_stage_variable_count(3));
+
+    assert_eq!(runtime.descriptor(0), None);
+    assert_eq!(runtime.descriptor(2).map(|stage| stage.kind), Some(0));
+    assert_eq!(runtime.descriptor(3).map(|stage| stage.kind), Some(9));
+    assert_eq!(runtime.descriptor(4), None);
+
+    runtime.rearm_model_relations();
+    assert_eq!(runtime.stage_variables[1].flags, 2);
+    assert_eq!(runtime.stage_variables[2].flags, 6);
+    assert_eq!(runtime.stage_variables[3].flags, 2);
+    assert_eq!(runtime.stage_variables[4].flags, 6);
+
+    runtime.stage_variables[1].flags = 6;
+    assert!(runtime.set_active_stage_variable_count(0));
+    assert_eq!(runtime.descriptor(1), None);
+    runtime.rearm_model_relations();
+    assert_eq!(runtime.stage_variables[1].flags, 6);
 }
