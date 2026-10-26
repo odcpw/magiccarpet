@@ -226,7 +226,8 @@ namespace MagicCarpet.Native
             bool fullStop = false,
             bool recoverPlayer = false,
             uint elapsedCentiseconds = 0,
-            EngineSessionTransport.SpellAssignment assignment = null)
+            EngineSessionTransport.SpellAssignment assignment = null,
+            bool showObjective = false)
         {
             return gameRuntime?.CampaignStep(
                     roll,
@@ -234,7 +235,7 @@ namespace MagicCarpet.Native
                     flags,
                     lookYaw,
                     lookPitch,
-                    selectSpell, recenter, fullStop, recoverPlayer, elapsedCentiseconds, assignment) ??
+                    selectSpell, recenter, fullStop, recoverPlayer, elapsedCentiseconds, assignment, showObjective) ??
                 throw new InvalidOperationException("session does not own a game runtime");
         }
 
@@ -265,9 +266,9 @@ namespace MagicCarpet.Native
         }
 
         internal EngineSessionTransport.CampaignSnapshotObservation
-            GameRuntimeCampaignPausedFrame(uint elapsedCentiseconds = 0)
+            GameRuntimeCampaignPausedFrame(uint elapsedCentiseconds = 0, bool showObjective = false)
         {
-            return gameRuntime?.CampaignPausedFrame(elapsedCentiseconds) ??
+            return gameRuntime?.CampaignPausedFrame(elapsedCentiseconds, showObjective) ??
                 throw new InvalidOperationException("session does not own a game runtime");
         }
 

@@ -107,6 +107,9 @@ pub enum Mode20SpriteReject {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum SourceSpriteCompositor {
+    /// All source DrawSprite indexed operations, selected by the live world
+    /// painter rather than by a creature/spell-specific wrapper.
+    Indexed { mode: u8, owner_color: u8 },
     /// `DrawSprite_41BD3` cases 0/1: source index zero is transparent and
     /// nonzero pixels are copied directly or translated through the fog row.
     Standard,
@@ -125,10 +128,50 @@ enum SourceSpriteCompositor {
 /// and 0 for the terrain-projected shadow. These values affect both the
 /// screen anchor and vertical source sampling.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum SourceSpritePass {
+pub enum SourceSpritePass {
     Primary,
     Reflection,
     Shadow,
+}
+
+/// Canonical world consumer for all nine `DrawSprite_41BD3` pixel operations.
+/// Clipping bounds the work to the viewport while retaining the original
+/// sampling phase, including sprites much larger than the visible screen.
+#[allow(clippy::too_many_arguments)]
+pub fn rasterize_indexed_source_sprite(
+    framebuffer: &mut [u8],
+    viewport_width: usize,
+    viewport_height: usize,
+    placement: Mode20SpritePlacement,
+    source_width: u16,
+    source_height: u16,
+    source_pixels: &[u8],
+    tables: &[u8],
+    roll: i16,
+    pixel_mode: u8,
+    owner_color: u8,
+    pass: SourceSpritePass,
+) -> Result<Mode20SpriteRasterStats, String> {
+    if pixel_mode > 8 {
+        return Err("source sprite pixel operation exceeds 8".into());
+    }
+    rasterize_source_sprite_with_clipping(
+        framebuffer,
+        viewport_width,
+        viewport_height,
+        placement,
+        source_width,
+        source_height,
+        source_pixels,
+        tables,
+        roll,
+        SourceSpriteCompositor::Indexed {
+            mode: pixel_mode,
+            owner_color,
+        },
+        pass,
+        true,
+    )
 }
 
 #[must_use]
@@ -343,6 +386,36 @@ pub fn project_fixed_sprite_with_definition(
     )
 }
 
+/// Primary multipart sprites change camera-relative depth after rotation,
+/// before near-plane/range admission, sizing and fog. Their earlier shadow
+/// and reflection calls continue to use the unmodified source position.
+pub(crate) fn project_fixed_sprite_with_depth_adjustment(
+    definition: Mode20SpriteDefinition,
+    entity_frame: Option<u8>,
+    quarter_sum_anchor: bool,
+    camera: Mode20SpriteCamera,
+    entity: Mode20SpriteEntity,
+    source_width: u16,
+    source_height: u16,
+    depth_adjustment: i16,
+) -> Result<Mode20SpritePlacement, Mode20SpriteReject> {
+    project_source_sprite_with_depth_adjustment(
+        entity_frame.map_or(
+            SourceSpriteSelectorMode::Fixed,
+            SourceSpriteSelectorMode::EntityFrame,
+        ),
+        definition,
+        camera,
+        entity,
+        source_width,
+        source_height,
+        quarter_sum_anchor,
+        quarter_sum_anchor && entity_frame.is_some(),
+        Mode20SpriteProjectionLimits::exact(),
+        depth_adjustment,
+    )
+}
+
 #[must_use]
 pub fn project_fixed_sprite_with_definition_and_limits(
     definition: Mode20SpriteDefinition,
@@ -447,15 +520,36 @@ pub fn source_sprite_view(
     entity_y: u16,
     render_cutoff_squared: u32,
 ) -> Result<(i32, i32, u32), Mode20SpriteReject> {
+    source_sprite_view_with_depth_adjustment(
+        render_x,
+        render_y,
+        camera_yaw,
+        entity_x,
+        entity_y,
+        render_cutoff_squared,
+        0,
+    )
+}
+
+fn source_sprite_view_with_depth_adjustment(
+    render_x: u16,
+    render_y: u16,
+    camera_yaw: i16,
+    entity_x: u16,
+    entity_y: u16,
+    render_cutoff_squared: u32,
+    depth_adjustment: i16,
+) -> Result<(i32, i32, u32), Mode20SpriteReject> {
     let yaw = usize::try_from(i32::from(camera_yaw) & 0x07ff).unwrap();
     let sin_yaw = SIN_16_16[yaw];
     let cos_yaw = SIN_16_16[512 + yaw];
     let dx = i32::from(entity_x.wrapping_sub(render_x).cast_signed());
     let dy = i32::from(render_y.wrapping_sub(entity_y).cast_signed());
-    let forward_depth = sin_yaw
+    let forward_depth = (sin_yaw
         .wrapping_mul(dx)
         .wrapping_add(cos_yaw.wrapping_mul(dy))
-        >> 16;
+        >> 16)
+        .wrapping_add(i32::from(depth_adjustment));
     if forward_depth <= 64 {
         return Err(Mode20SpriteReject::BehindObjectNearPlane);
     }
@@ -484,6 +578,32 @@ fn project_source_sprite_with_limits(
     shadow_quarter_sum_anchor: bool,
     limits: Mode20SpriteProjectionLimits,
 ) -> Result<Mode20SpritePlacement, Mode20SpriteReject> {
+    project_source_sprite_with_depth_adjustment(
+        selector_mode,
+        definition,
+        camera,
+        entity,
+        source_width,
+        source_height,
+        quarter_sum_anchor,
+        shadow_quarter_sum_anchor,
+        limits,
+        0,
+    )
+}
+
+fn project_source_sprite_with_depth_adjustment(
+    selector_mode: SourceSpriteSelectorMode,
+    definition: Mode20SpriteDefinition,
+    camera: Mode20SpriteCamera,
+    entity: Mode20SpriteEntity,
+    source_width: u16,
+    source_height: u16,
+    quarter_sum_anchor: bool,
+    shadow_quarter_sum_anchor: bool,
+    limits: Mode20SpriteProjectionLimits,
+    depth_adjustment: i16,
+) -> Result<Mode20SpritePlacement, Mode20SpriteReject> {
     if source_width == 0 || source_height == 0 {
         return Err(Mode20SpriteReject::EmptySource);
     }
@@ -491,13 +611,14 @@ fn project_source_sprite_with_limits(
         return Err(Mode20SpriteReject::NonPositiveProjection);
     }
 
-    let (lateral, forward_depth, distance_squared) = source_sprite_view(
+    let (lateral, forward_depth, distance_squared) = source_sprite_view_with_depth_adjustment(
         camera.render_x,
         camera.render_y,
         camera.yaw,
         entity.x,
         entity.y,
         limits.render_cutoff_squared,
+        depth_adjustment,
     )?;
 
     let brightness = if distance_squared <= limits.fog_start_squared {
@@ -538,7 +659,10 @@ fn project_source_sprite_with_limits(
 
     let raw_height = projection.scale.wrapping_mul(definition.logical_height) / forward_depth;
     let raw_width = raw_height.wrapping_mul(i32::from(source_width)) / i32::from(source_height);
-    if raw_width <= 0 || raw_height <= 0 {
+    // DrawSprites adds one to both dimensions before calling DrawSprite.
+    // A distant positive-height effect with a truncated zero extent still
+    // draws one pixel; zero logical height was rejected above.
+    if raw_width < 0 || raw_height < 0 {
         return Err(Mode20SpriteReject::NonPositiveProjection);
     }
 
@@ -852,22 +976,27 @@ fn rasterize_source_sprite_with_clipping(
             framebuffer.len()
         ));
     }
+    let needs_fog = match compositor {
+        SourceSpriteCompositor::Indexed { mode, .. } => matches!(mode, 1 | 6 | 7 | 8),
+        SourceSpriteCompositor::ShadowMask => true,
+        _ => placement.brightness != 0x2000,
+    };
     let maximum_fog_address = usize::try_from(placement.brightness)
         .ok()
-        .filter(|brightness| {
-            compositor == SourceSpriteCompositor::ShadowMask || *brightness != 0x2000
-        })
+        .filter(|_| needs_fog)
         .map_or(0, |brightness| brightness | 0xff);
-    if (compositor == SourceSpriteCompositor::ShadowMask || placement.brightness != 0x2000)
-        && tablesn.len() <= maximum_fog_address
-    {
+    if needs_fog && tablesn.len() <= maximum_fog_address {
         return Err(format!(
             "source sprite fog translation address {maximum_fog_address:#06x} exceeds {} TABLESN bytes",
             tablesn.len(),
         ));
     }
     let maximum_blend_address = 0x13fff;
-    if compositor == SourceSpriteCompositor::DestinationBlend
+    if (compositor == SourceSpriteCompositor::DestinationBlend
+        || matches!(
+            compositor,
+            SourceSpriteCompositor::Indexed { mode: 2..=7, .. }
+        ))
         && tablesn.len() <= maximum_blend_address
     {
         return Err(format!(
@@ -1052,6 +1181,30 @@ fn rasterize_source_sprite_with_clipping(
                 * viewport_width
                 + usize::try_from(screen_x).expect("clipped X is non-negative");
             let output = match compositor {
+                SourceSpriteCompositor::Indexed { mode, owner_color } => {
+                    let previous = usize::from(framebuffer[destination]);
+                    let source = usize::from(source);
+                    let owner = usize::from(owner_color);
+                    let brightness = usize::try_from(placement.brightness)
+                        .map_err(|_| "source sprite brightness is negative")?;
+                    let blend = match mode {
+                        0 => source as u8,
+                        1 => tablesn[brightness | source],
+                        2 | 6 => tablesn[0x4000 + (source << 8 | previous)],
+                        3 | 7 => tablesn[0x4000 + (previous << 8 | source)],
+                        4 => tablesn[0x4000 + (owner << 8 | source)],
+                        5 => tablesn[0x4000 + (source << 8 | owner)],
+                        // Source assigns LOBYTE(brightness) = destination;
+                        // quarter-fog shadow brightness may retain low bits.
+                        8 => tablesn[(brightness & !0xff) | previous],
+                        _ => unreachable!("pixel operation validated at the world boundary"),
+                    };
+                    if matches!(mode, 6 | 7) {
+                        tablesn[brightness | usize::from(blend)]
+                    } else {
+                        blend
+                    }
+                }
                 SourceSpriteCompositor::Standard if placement.brightness == 0x2000 => source,
                 SourceSpriteCompositor::Standard => {
                     let address = usize::try_from(placement.brightness)
@@ -1073,8 +1226,9 @@ fn rasterize_source_sprite_with_clipping(
                     }
                 }
                 SourceSpriteCompositor::ShadowMask => {
-                    let address = usize::try_from(placement.brightness)
+                    let address = (usize::try_from(placement.brightness)
                         .expect("qualified shadow brightness is non-negative")
+                        & !0xff)
                         | usize::from(framebuffer[destination]);
                     tablesn[address]
                 }
@@ -1110,6 +1264,134 @@ mod tests {
             yaw: 0,
             projection: projection(),
         }
+    }
+
+    #[test]
+    fn multipart_primary_depth_changes_admission_size_and_fog_without_moving_shadow_basis() {
+        let definition = Mode20SpriteDefinition {
+            base_selector: 1,
+            logical_height: 128,
+        };
+        let entity = Mode20SpriteEntity {
+            x: 1000,
+            y: 488,
+            z: 100,
+            yaw: 0,
+        };
+        let base =
+            project_fixed_sprite_with_definition(definition, None, false, camera(), entity, 2, 2)
+                .unwrap();
+        let adjusted = project_fixed_sprite_with_depth_adjustment(
+            definition,
+            None,
+            false,
+            camera(),
+            entity,
+            2,
+            2,
+            390,
+        )
+        .unwrap();
+        assert_eq!(base.forward_depth, 512);
+        assert_eq!(adjusted.forward_depth, 902);
+        assert_eq!(adjusted.distance_squared, 902 * 902);
+        assert!(adjusted.projected_height < base.projected_height);
+        assert_eq!(
+            base.forward_depth, 512,
+            "the earlier shadow/reflection basis remains unchanged"
+        );
+        let near = Mode20SpriteEntity { y: 937, ..entity };
+        assert_eq!(
+            project_fixed_sprite_with_definition(definition, None, false, camera(), near, 2, 2),
+            Err(Mode20SpriteReject::BehindObjectNearPlane),
+        );
+        assert_eq!(
+            project_fixed_sprite_with_depth_adjustment(
+                definition,
+                None,
+                false,
+                camera(),
+                near,
+                2,
+                2,
+                390
+            )
+            .unwrap()
+            .forward_depth,
+            453,
+            "the depth adjustment precedes the primary near-plane test",
+        );
+        let distant = Mode20SpriteEntity {
+            y: 1000_u16.wrapping_sub(4200),
+            ..entity
+        };
+        let far = project_fixed_sprite_with_depth_adjustment(
+            definition,
+            None,
+            false,
+            camera(),
+            distant,
+            2,
+            2,
+            390,
+        )
+        .unwrap();
+        assert_eq!(far.distance_squared, 4590 * 4590);
+        assert_eq!(far.brightness, 0x0900);
+        assert_eq!(
+            far.brightness as u16,
+            crate::campaign::sprite_render::source_sprite_pixel_metadata(0, far.distance_squared)
+                .unwrap()
+                .brightness,
+        );
+    }
+
+    #[test]
+    fn tiny_positive_source_sprite_keeps_the_trailing_one_pixel() {
+        let projected = project_fixed_sprite_with_definition(
+            Mode20SpriteDefinition {
+                base_selector: 1,
+                logical_height: 1,
+            },
+            None,
+            false,
+            camera(),
+            Mode20SpriteEntity {
+                x: 1000,
+                y: 0,
+                z: 0,
+                yaw: 0,
+            },
+            1,
+            1,
+        )
+        .unwrap();
+        assert_eq!(
+            (projected.projected_width, projected.projected_height),
+            (1, 1)
+        );
+        assert!(
+            project_sprite_shadow(projected, camera(), 0, true).is_err(),
+            "the shadow uses unincremented dimensions and must still reject zero"
+        );
+        let mut frame = vec![0; 320 * 200];
+        let result = rasterize_indexed_source_sprite(
+            &mut frame,
+            320,
+            200,
+            projected,
+            1,
+            1,
+            &[7],
+            &vec![0; 83456],
+            0,
+            0,
+            0,
+            SourceSpritePass::Primary,
+        )
+        .unwrap();
+        assert_eq!(result.framebuffer_writes, 1);
+        assert_eq!(frame.iter().filter(|&&pixel| pixel == 7).count(), 1);
     }
 
     #[test]
@@ -1329,9 +1611,55 @@ mod tests {
     }
 
     #[test]
+    fn indexed_world_operations_preserve_source_blend_direction_owner_and_fog() {
+        let mut tables = vec![0_u8; 83456];
+        for (address, value) in [
+            (0x1209, 41),
+            (0x4000 + (9 << 8 | 77), 31),
+            (0x4000 + (77 << 8 | 9), 42),
+            (0x4000 + (123 << 8 | 9), 53),
+            (0x4000 + (9 << 8 | 123), 64),
+            (0x1200 | 31, 71),
+            (0x1200 | 42, 82),
+            (0x1200 | 77, 93),
+        ] {
+            tables[address] = value;
+        }
+        for (mode, expected) in [9, 41, 31, 42, 53, 64, 71, 82, 93].into_iter().enumerate() {
+            let mut frame = [77_u8; 16];
+            let projected = Mode20SpritePlacement {
+                bottom_x: 2,
+                bottom_y: 2,
+                projected_width: 1,
+                projected_height: 1,
+                ..placement(false, 0x1200)
+            };
+            let receipt = rasterize_indexed_source_sprite(
+                &mut frame,
+                4,
+                4,
+                projected,
+                1,
+                1,
+                &[9],
+                &tables,
+                0,
+                mode as u8,
+                123,
+                SourceSpritePass::Primary,
+            )
+            .unwrap();
+            assert_eq!(receipt.framebuffer_writes, 1, "source operation {mode}");
+            assert_eq!(frame[6], expected, "source operation {mode}");
+        }
+    }
+
+    #[test]
     fn shadow_nonzero_source_is_mask_over_existing_destination() {
         let source = [1, 0, 2, 3, 4, 5, 6, 7];
-        let mut shadow = placement(false, 0x1800);
+        // Shadow fog is quartered before adding/subtracting 0x2000. Its
+        // low byte must be replaced, not ORed into the destination index.
+        let mut shadow = placement(false, 0x18c0);
         shadow.bottom_y = 2;
         let mut tablesn = vec![0_u8; 0x1900];
         for destination in 0..256 {

@@ -12,3 +12,4 @@ pub(crate) mod creature_24;
 pub(crate) mod morph;
 pub(crate) mod settlements;
 pub(crate) mod spider;
+pub(crate) mod stage_route;

@@ -98,7 +98,10 @@ namespace MagicCarpet.Native
             soundVolume = preferences.sound_volume;
             musicVolume = preferences.music_volume;
             if (!ducked && !restoring) { soundUnits = soundVolume; musicUnits = musicVolume; }
-            source.volume = preferences.speech_enabled && preferences.sound_enabled
+            // ChangeSettings_1A970's Speech option only gates future cues.
+            // The current CD segment continues; the Sound option separately
+            // owns StopCdPlayback and the device stop edge.
+            source.volume = preferences.sound_enabled
                 ? preferences.sound_volume / 127f : 0;
         }
 

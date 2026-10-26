@@ -158,6 +158,15 @@ namespace MagicCarpet.Native.Tests
                 });
                 Assert.That(audio.QualificationMusicStartCount, Is.EqualTo(1));
                 Assert.That(audio.QualificationMusicUpdatesEnabled, Is.True);
+
+                audio.EndCampaignSamples();
+                var retained = Array.FindAll(root.GetComponentsInChildren<AudioSource>(),
+                    source => source.clip != null);
+                Assert.That(retained.Length, Is.EqualTo(1),
+                    "EndSample retires every device sample while leaving music to its Rust projection");
+                Assert.That(retained[0].clip.name, Does.StartWith("C2GAME2"));
+                Assert.That(audio.QualificationMusicStartCount, Is.EqualTo(1),
+                    "sample cleanup must not invent a music restart");
             }
             finally
             {

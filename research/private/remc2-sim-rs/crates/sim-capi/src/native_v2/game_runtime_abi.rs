@@ -525,7 +525,8 @@ impl RuntimeRecord {
                 record.effect_state_hashes,
             ))
         });
-        let (assets, state, music, mut effect_state_hashes) = match retained {
+        let initializing = retained.is_none();
+        let (assets, state, mut music, mut effect_state_hashes) = match retained {
             Some(retained) => retained,
             None => (
                 load_optional_day_frame_assets(
@@ -547,6 +548,19 @@ impl RuntimeRecord {
                 BTreeMap::new(),
             ),
         };
+        if initializing
+            && (self.runtime.identity().mode == RuntimeMode::Paused
+                || !self
+                    .runtime
+                    .identity()
+                    .player_preferences
+                    .preferences
+                    .music_enabled)
+        {
+            if let Some(music) = music.as_mut() {
+                music.stop();
+            }
+        }
         for command in self.audio.commands.values() {
             effect_state_hashes
                 .insert(command.event_sequence.saturating_sub(1), command.state_hash);
@@ -583,6 +597,16 @@ impl RuntimeRecord {
                 generation,
             })
             .map_err(map_transition_error)?;
+        // PauseUnpauseGame_18BB0 ends samples and stops music. CD speech
+        // has separate ownership and continues across this edge.
+        self.reset_audio();
+        if let Some(music) = self
+            .campaign_presentation
+            .as_mut()
+            .and_then(|r| r.day_music.as_mut())
+        {
+            music.stop();
+        }
         self.rebind_audio_generation();
         Ok(())
     }
@@ -600,6 +624,7 @@ impl RuntimeRecord {
             session_generation,
             expected_tick,
             0,
+            false,
         )
     }
 
@@ -610,6 +635,7 @@ impl RuntimeRecord {
         session_generation: u64,
         expected_tick: u64,
         elapsed_centiseconds: u32,
+        show_objective: bool,
     ) -> AbiResult<()> {
         self.validate_transition(handle, runtime_generation, RuntimeMode::Paused)?;
         self.campaign_presentation_dirty = true;
@@ -626,6 +652,7 @@ impl RuntimeRecord {
                 },
                 guard,
                 elapsed_centiseconds,
+                show_objective,
             )
             .map_err(map_paused_frame_error)?;
         self.sync_audio(true)?;
@@ -640,6 +667,21 @@ impl RuntimeRecord {
                 generation,
             })
             .map_err(map_transition_error)?;
+        if self
+            .runtime
+            .identity()
+            .player_preferences
+            .preferences
+            .music_enabled
+        {
+            if let Some(music) = self
+                .campaign_presentation
+                .as_mut()
+                .and_then(|r| r.day_music.as_mut())
+            {
+                music.restart();
+            }
+        }
         self.rebind_audio_generation();
         Ok(())
     }
@@ -1531,8 +1573,15 @@ pub extern "C" fn mc_game_runtime_paused_frame_timed_v1(
     session_generation: u64,
     expected_tick: u64,
     elapsed_centiseconds: u32,
+    show_objective: u8,
 ) -> i32 {
     boundary(|| {
+        if show_objective > 1 {
+            return Err(AbiError::new(
+                MC_STATUS_INVALID_ARGUMENT,
+                "show_objective must be zero or one",
+            ));
+        }
         with_runtime_mut(handle, |runtime| {
             runtime.paused_frame_timed(
                 handle,
@@ -1540,6 +1589,7 @@ pub extern "C" fn mc_game_runtime_paused_frame_timed_v1(
                 session_generation,
                 expected_tick,
                 elapsed_centiseconds,
+                show_objective != 0,
             )
         })
     })
@@ -1605,6 +1655,7 @@ pub extern "C" fn mc_game_runtime_preferences_command_json_v1(
             )
         })?;
         with_runtime_mut(handle, |record| {
+            let before = record.runtime.identity().player_preferences.preferences;
             record
                 .runtime
                 .preferences_command(
@@ -1614,8 +1665,25 @@ pub extern "C" fn mc_game_runtime_preferences_command_json_v1(
                     },
                     command,
                 )
-                .map(|_| ())
-                .map_err(|error| AbiError::new(MC_STATUS_INVALID_ARGUMENT, error))
+                .map_err(|error| AbiError::new(MC_STATUS_INVALID_ARGUMENT, error))?;
+            let after = record.runtime.identity().player_preferences.preferences;
+            if before.sound_enabled != after.sound_enabled {
+                record.reset_audio();
+            }
+            if before.music_enabled != after.music_enabled {
+                if let Some(music) = record
+                    .campaign_presentation
+                    .as_mut()
+                    .and_then(|r| r.day_music.as_mut())
+                {
+                    if after.music_enabled {
+                        music.restart();
+                    } else {
+                        music.stop();
+                    }
+                }
+            }
+            Ok(())
         })
     })
 }
@@ -2480,7 +2548,7 @@ mod tests {
     }
 
     #[test]
-    fn runtime_source_objective_speech_uses_retained_audio_pool_across_pause() {
+    fn runtime_pause_ends_source_audio_pool_and_resume_restarts_loaded_music() {
         let mut handle = 0;
         assert_eq!(mc_game_runtime_create_v1(&raw mut handle), MC_STATUS_OK);
         assert_eq!(
@@ -2545,6 +2613,13 @@ mod tests {
             status
         };
         assert_eq!(check_effect_page(1), MC_STATUS_OK);
+        with_runtime_mut(handle, |record| {
+            // Use the actual loaded map's lifecycle, independent of a sound card.
+            let presentation = record.take_campaign_presentation_record()?;
+            record.retain_campaign_presentation_record(presentation);
+            Ok(())
+        })
+        .unwrap();
         assert_eq!(mc_game_runtime_pause_v1(handle, 3), MC_STATUS_OK);
         assert_eq!(check_effect_page(1), MC_STATUS_GENERATION_MISMATCH);
         assert_eq!(check_effect_page(2), MC_STATUS_OK);
@@ -2557,10 +2632,22 @@ mod tests {
                 &raw mut paused,
                 struct_size::<McAudioCommandV2>()
             ),
-            MC_STATUS_OK
+            MC_STATUS_BOUNDS
         );
-        assert_eq!(paused.state_hash, command.state_hash);
-        assert_eq!(paused.voice_index, command.voice_index);
+        with_runtime(handle, |record| {
+            assert!(record.audio.voices.iter().all(Option::is_none));
+            assert!(record.audio.commands.is_empty());
+            if let Some(music) = record
+                .campaign_presentation
+                .as_ref()
+                .and_then(|r| r.day_music)
+            {
+                assert!(!music.playing);
+                assert!(!music.envelope.timer_active);
+            }
+            Ok(())
+        })
+        .unwrap();
         assert_eq!(
             mc_game_runtime_audio_voice_complete_v1(
                 handle,
@@ -2577,8 +2664,23 @@ mod tests {
                 command.voice_index,
                 command.event_sequence
             ),
-            MC_STATUS_OK
+            MC_STATUS_BOUNDS
         );
+        assert_eq!(mc_game_runtime_resume_v1(handle, 4), MC_STATUS_OK);
+        with_runtime(handle, |record| {
+            assert!(record.audio.voices.iter().all(Option::is_none));
+            if let Some(music) = record
+                .campaign_presentation
+                .as_ref()
+                .and_then(|r| r.day_music)
+            {
+                assert!(music.playing);
+                assert_eq!(music.start_count, 2);
+                assert_eq!(music.volume, 127);
+            }
+            Ok(())
+        })
+        .unwrap();
         assert_eq!(mc_game_runtime_destroy_v1(handle), MC_STATUS_OK);
     }
 
@@ -2684,9 +2786,10 @@ mod tests {
         );
         assert_eq!(save_json["completed_levels"], serde_json::json!([]));
         let operations = save_json["operations"].as_array().unwrap();
-        assert_eq!(operations.len(), 5);
-        assert_eq!(operations[3]["operation"], "paused_frame");
+        assert_eq!(operations.len(), 6);
+        assert_eq!(operations[3]["operation"], "pause");
         assert_eq!(operations[4]["operation"], "paused_frame");
+        assert_eq!(operations[5]["operation"], "paused_frame");
         assert_eq!(save_json["paused"], true);
 
         let mut restored = 0_u64;

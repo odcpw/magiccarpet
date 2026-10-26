@@ -741,7 +741,8 @@ pub struct McCampaignEntityPresentationV2 {
     pub brightness: u16,
     pub draw_order: u32,
     pub control_flags: u32,
-    pub reserved: [u32; 1],
+    pub primary_depth_adjustment: i16,
+    pub reserved: u16,
 }
 
 /// Additive family-6 Shield state projection.  The row is generation-bound

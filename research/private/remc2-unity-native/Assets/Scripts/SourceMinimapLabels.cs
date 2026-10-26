@@ -42,11 +42,11 @@ namespace MagicCarpet.Native
         internal bool[] Coverage { get; private set; }
 
         internal int Materialize(byte[] frame, NativeCampaignSession session,
-            OwnerAssetCache cache, byte[] tables, ulong generation, ulong tick)
+            OwnerAssetCache cache, byte[] tables, ulong generation, ulong tick, bool fullMap = false)
         {
             if (Coverage != null) Array.Clear(coverage, 0, coverage.Length);
             Coverage = null;
-            var snapshot = Read(session.Handle, generation, tick);
+            var snapshot = Read(session.Handle, generation, tick, fullMap);
             if (snapshot.labels.Length == 0) return 0;
             if (cache?.EnvironmentMaterials == null)
                 throw new InvalidOperationException("Beyond Sight labels require the package FONT1 bank");
@@ -68,22 +68,24 @@ namespace MagicCarpet.Native
                     throw new InvalidOperationException("Beyond Sight FONT1 glyph is incomplete");
                 glyphs.Add(selector, new Glyph { Width = row.width, Height = row.height, Mask = mask });
             }
-            var written = Rasterize(frame, snapshot, tables, glyphs, generation, tick, coverage);
+            var written = Rasterize(frame, snapshot, tables, glyphs, generation, tick, coverage, fullMap);
             if (written != 0) Coverage = coverage;
             return written;
         }
 
-        private static Snapshot Read(ulong handle, ulong generation, ulong tick)
+        private static Snapshot Read(ulong handle, ulong generation, ulong tick, bool fullMap)
         {
-            var status = NativeSim.mc_native_campaign_minimap_labels_json(
-                handle, generation, tick, IntPtr.Zero, 0, out var required);
+            var status = fullMap ? NativeSim.mc_native_campaign_world_map_labels_json(
+                handle, generation, tick, IntPtr.Zero, 0, out var required) : NativeSim.mc_native_campaign_minimap_labels_json(
+                handle, generation, tick, IntPtr.Zero, 0, out required);
             if (status != NativeSim.Bounds || required == 0 || required > 8192)
                 throw new InvalidOperationException("Beyond Sight label sizing failed: " + NativeSession.ReadLastError());
             var buffer = Marshal.AllocHGlobal(checked((int)required));
             try
             {
-                status = NativeSim.mc_native_campaign_minimap_labels_json(
-                    handle, generation, tick, buffer, required, out var written);
+                status = fullMap ? NativeSim.mc_native_campaign_world_map_labels_json(
+                    handle, generation, tick, buffer, required, out var written) : NativeSim.mc_native_campaign_minimap_labels_json(
+                    handle, generation, tick, buffer, required, out written);
                 if (status != NativeSim.Ok || written != required)
                     throw new InvalidOperationException("Beyond Sight label copy failed: " + NativeSession.ReadLastError());
                 var bytes = new byte[checked((int)written)];
@@ -98,7 +100,7 @@ namespace MagicCarpet.Native
         }
 
         internal static int Rasterize(byte[] frame, Snapshot snapshot, byte[] tables,
-            IReadOnlyDictionary<int, Glyph> font, ulong generation, ulong tick, bool[] coverage = null)
+            IReadOnlyDictionary<int, Glyph> font, ulong generation, ulong tick, bool[] coverage = null, bool fullMap = false)
         {
             if (frame == null || frame.Length != 320 * 200 || tables == null || tables.Length != 83456 ||
                 snapshot == null || snapshot.generation != generation || snapshot.tick != tick || snapshot.labels == null ||
@@ -114,15 +116,15 @@ namespace MagicCarpet.Native
                 previous = label.source_order;
                 // Source checks the dot against the circular map before drawing
                 // its name. The text itself clips to the screen, not the circle.
-                if (label.x < 0 || label.x >= 128 || label.y < 0 || label.y >= 128) continue;
+                if (label.x < 0 || label.x >= (fullMap ? 191 : 128) || label.y < 0 || label.y >= (fullMap ? 200 : 128)) continue;
                 var phase = label.y < 64 ? 63 - label.y : label.y - 64;
                 var halfSpan = (64 * tables[0x14300 + phase * 4]) >> 8;
-                if (label.x < 64 - halfSpan || label.x >= 64 + halfSpan) continue;
+                if (!fullMap && (label.x < 64 - halfSpan || label.x >= 64 + halfSpan)) continue;
                 // The existing indexed frame is 320x200; map commands use
                 // 128-unit source coordinates. FONT1 masks already have the
                 // low-resolution dimensions (e.g. the four-by-seven N glyph).
-                var cursor = (label.x + 4) / 2;
-                var top = label.y / 2;
+                var cursor = (label.x + 4) / (fullMap ? 1 : 2);
+                var top = label.y / (fullMap ? 1 : 2);
                 foreach (var character in label.text)
                 {
                     if (character > 255 || !font.TryGetValue(character + 1, out var glyph) ||

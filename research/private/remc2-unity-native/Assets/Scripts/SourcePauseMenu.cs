@@ -11,6 +11,7 @@ namespace MagicCarpet.Native
     // through the retained Rust runtime/preferences owners.
     internal sealed class SourcePauseMenu : IDisposable
     {
+        internal enum ConfirmationResult { None, Confirm, Cancel }
         [Serializable] internal sealed class ProfileBinding
         {
             public string id, palette_path;
@@ -121,6 +122,59 @@ namespace MagicCarpet.Native
             };
         }
 
+        /// DrawOkCancelMenu_30A60 with SelectedMenuItem=1. Escape requests
+        /// this source dialog without setting GAME_PAUSED. The caller owns
+        /// its pending action and the runtime to close on confirmation.
+        internal ConfirmationResult DrawAbandonConfirmation(string profileId,
+            bool mapOpen, bool alive, bool flash, bool acceptInput = true)
+        {
+            if (!profiles.TryGetValue(profileId, out var profile))
+                throw new InvalidDataException("mission has no source confirmation palette: " + profileId);
+            var scale = Mathf.Min(Screen.width / 640f, Screen.height / 480f);
+            var view = new Rect((Screen.width - 640 * scale) / 2, (Screen.height - 480 * scale) / 2,
+                640 * scale, 480 * scale);
+            return DrawConfirmation(profile, 2, view, mapOpen || !alive ? 6 : 132,
+                mapOpen || !alive ? 6 : 50, flash, acceptInput);
+        }
+
+        private ConfirmationResult DrawConfirmation(Profile profile, int textSelector,
+            Rect view, int textX, int textY, bool flash, bool acceptInput = true)
+        {
+            var scale = view.width / 640f;
+            Rect At(Rect rect) => new(view.x + rect.x * scale, view.y + rect.y * scale,
+                rect.width * scale, rect.height * scale);
+            profile.Text.DrawText(language(textSelector) + "?", textX, textY, view,
+                profile.Palette[profile.Colours[flash ? 2 : 0]]);
+            foreach (var (selector, x) in new[] { (257, 270), (258, 320) })
+            {
+                var texture = profile.Bitmaps[selector];
+                GUI.DrawTexture(At(new Rect(x, 104, texture.width, texture.height)), texture);
+            }
+            if (!acceptInput) return ConfirmationResult.None;
+            var result = ConfirmationInput(Event.current, At(new Rect(270, 104, 50, 32)),
+                At(new Rect(320, 104, 50, 32)));
+            if (result != ConfirmationResult.None) Event.current.Use();
+            return result;
+        }
+
+        internal static ConfirmationResult ConfirmationInput(Event input, Rect okay, Rect cancel) =>
+            ConfirmationInput(input.type, input.keyCode, input.button, input.mousePosition, okay, cancel);
+
+        internal static ConfirmationResult ConfirmationInput(EventType type, KeyCode key,
+            int button, Vector2 position, Rect okay, Rect cancel)
+        {
+            if (type == EventType.KeyDown)
+                return key switch {
+                    KeyCode.Return or KeyCode.KeypadEnter => ConfirmationResult.Confirm,
+                    KeyCode.Escape => ConfirmationResult.Cancel,
+                    _ => ConfirmationResult.None
+                };
+            if (type != EventType.MouseDown || button < 0 || button > 1) return ConfirmationResult.None;
+            if (okay.Contains(position)) return ConfirmationResult.Confirm;
+            if (cancel.Contains(position)) return ConfirmationResult.Cancel;
+            return ConfirmationResult.None;
+        }
+
         internal CampaignMenuPresenter.Action Draw(string profileId, PlayerPreferencesPresenter preferences,
             bool canSave, bool canLoad)
         {
@@ -142,20 +196,14 @@ namespace MagicCarpet.Native
             if (confirmation != CampaignMenuPresenter.Action.None)
             {
                 var selector = confirmation == CampaignMenuPresenter.Action.Save ? 424 : 423;
-                profile.Text.DrawText(language(selector) + "?", 132, 50, view, profile.Palette[profile.Colours[2]]);
-                DrawBitmap(257, 270, 104);
-                DrawBitmap(258, 320, 104);
-                var okay = profile.Bitmaps[257];
-                var cancel = profile.Bitmaps[258];
-                if (Click(new Rect(270, 104, okay.width, okay.height)))
+                var result = DrawConfirmation(profile, selector, view, 132, 50, true);
+                if (result == ConfirmationResult.Confirm)
                 {
                     var action = confirmation;
                     confirmation = CampaignMenuPresenter.Action.None;
-                    Event.current.Use();
                     return action;
                 }
-                if (Click(new Rect(320, 104, cancel.width, cancel.height)))
-                { confirmation = CampaignMenuPresenter.Action.None; Event.current.Use(); }
+                if (result == ConfirmationResult.Cancel) confirmation = CampaignMenuPresenter.Action.None;
                 return CampaignMenuPresenter.Action.None;
             }
             if (options)

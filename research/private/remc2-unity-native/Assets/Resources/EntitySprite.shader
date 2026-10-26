@@ -113,7 +113,8 @@ Shader "MagicCarpet/EntitySprite"
                         index = sourceTable(16384.0 + _SourceOwnerColor * 256.0 + index);
                     else if (mode == 5.0)
                         index = sourceTable(16384.0 + index * 256.0 + _SourceOwnerColor);
-                    else if (mode == 8.0) index = sourceTable(_SourceBrightness + destination);
+                    else if (mode == 8.0)
+                        index = sourceTable(floor(_SourceBrightness / 256.0) * 256.0 + destination);
                     if (mode == 6.0 || mode == 7.0)
                         index = sourceTable(_SourceBrightness + index);
                 }

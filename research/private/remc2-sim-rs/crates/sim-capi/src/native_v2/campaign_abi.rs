@@ -403,6 +403,16 @@ impl CampaignDayMusicLifecycle {
         self.envelope.stop();
     }
 
+    pub(super) fn restart(&mut self) {
+        if !self.loaded || !self.active {
+            return;
+        }
+        self.envelope.start();
+        self.playing = true;
+        self.volume = 127;
+        self.start_count = self.start_count.wrapping_add(1);
+    }
+
     pub(super) fn end(&mut self) {
         if !self.loaded {
             return;
@@ -567,7 +577,7 @@ pub(super) fn with_campaign_session<T>(
     operation(&record)
 }
 
-fn with_campaign_presentation_session_mut<T>(
+pub(super) fn with_campaign_presentation_session_mut<T>(
     handle: u64,
     operation: impl FnOnce(&mut CampaignSessionRecord, bool) -> AbiResult<T>,
 ) -> AbiResult<T> {
@@ -2619,7 +2629,7 @@ pub extern "C" fn mc_native_campaign_day_indexed_frame_copy(
 }
 
 /// Copy the committed world scene before temporal blending and HUD/minimap.
-/// The caller composes source sprites before applying the indexed history LUT.
+/// The completion flag identifies frames that already contain source sprites.
 #[unsafe(no_mangle)]
 pub extern "C" fn mc_native_campaign_scene_frame_copy(
     handle: u64,
@@ -2631,16 +2641,19 @@ pub extern "C" fn mc_native_campaign_scene_frame_copy(
     out_revision: *mut u64,
     out_blur_mode: *mut u8,
     out_use_exit_tables: *mut u8,
+    out_source_sprites_composited: *mut u8,
 ) -> i32 {
     boundary(|| {
         require_output(out_written, "scene index count")?;
         require_output(out_revision, "scene revision")?;
         require_output(out_blur_mode, "scene blur mode")?;
         require_output(out_use_exit_tables, "scene exit table selection")?;
+        require_output(out_source_sprites_composited, "scene sprite completion")?;
         write_output(out_written, 0);
         write_output(out_revision, 0);
         write_output(out_blur_mode, 0);
         write_output(out_use_exit_tables, 0);
+        write_output(out_source_sprites_composited, 0);
         with_campaign_presentation_session_mut(handle, |session, _borrowed_runtime| {
             with_level2_campaign_day_frame(session, generation, expected_tick, |frame| {
                 if frame.scene_indices.len() != 320 * 200 || frame.scene_blur_mode > 2 {
@@ -2665,6 +2678,10 @@ pub extern "C" fn mc_native_campaign_scene_frame_copy(
                 write_output(out_revision, frame.scene_revision);
                 write_output(out_blur_mode, frame.scene_blur_mode);
                 write_output(out_use_exit_tables, u8::from(frame.scene_use_exit_tables));
+                write_output(
+                    out_source_sprites_composited,
+                    u8::from(frame.source_sprites_composited),
+                );
                 Ok(())
             })
         })
@@ -3658,7 +3675,8 @@ pub extern "C" fn mc_native_campaign_entity_presentations_copy(
                     brightness: row.brightness,
                     draw_order: row.draw_order,
                     control_flags: row.control_flags,
-                    reserved: [0; 1],
+                    primary_depth_adjustment: row.primary_depth_adjustment,
+                    reserved: 0,
                 };
                 unsafe { buffer.add(ordinal).write_unaligned(value) };
             }

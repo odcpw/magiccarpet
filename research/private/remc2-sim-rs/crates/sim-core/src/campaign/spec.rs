@@ -598,6 +598,7 @@ pub struct CampaignDefinition {
     pub package_sha256: String,
     pub identity: CampaignSelection,
     pub campaign_spec: CampaignSpec,
+    pub wizard_settings: [SourceWizardSettings; 8],
     presentation_assets: Vec<PortablePresentationAsset>,
     pub source_facts: Vec<SourceFact>,
     pub required_behaviors: Vec<BehaviorRequirement>,
@@ -1561,6 +1562,7 @@ impl CampaignDefinition {
             members,
             files,
             presentation_assets,
+            wizard_settings,
             ..
         } = decoded;
         let profile = campaign_package_profile(caller).expect("decoded package has a profile");
@@ -2061,6 +2063,7 @@ impl CampaignDefinition {
             package_root: package_root.to_path_buf(),
             package_sha256,
             identity: descriptor_selection,
+            wizard_settings,
             campaign_spec: CampaignSpec {
                 authored_records,
                 authored_behavior_rows: declared_rows,

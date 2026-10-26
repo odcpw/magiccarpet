@@ -2582,7 +2582,7 @@ fn cf12_world_info(handle: u64) -> McCampaignWorldInfoV2 {
 fn same_tick_camera_refresh_keeps_generic_and_retained_frames_identical() {
     let generated = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../generated");
     let package = generated.join("level3-day-block32-campaign-recipe-v2");
-    let cache = generated.join("level3-day-spell-owner-cache-audio-v4/components/material");
+    let cache = generated.join("mc-level3-environment-exit-20261025");
     let package = package.to_string_lossy();
     let cache = cache.to_string_lossy();
     let selection = McCampaignSelectionV2 {
@@ -2632,6 +2632,7 @@ fn same_tick_camera_refresh_keeps_generic_and_retained_frames_identical() {
     let mut revision = 99;
     let mut blur = 99;
     let mut exit_tables = 99;
+    let mut sprites_composited = 99;
     assert_eq!(
         mc_native_campaign_scene_frame_copy(
             handle,
@@ -2642,11 +2643,15 @@ fn same_tick_camera_refresh_keeps_generic_and_retained_frames_identical() {
             &raw mut written,
             &raw mut revision,
             &raw mut blur,
-            &raw mut exit_tables
+            &raw mut exit_tables,
+            &raw mut sprites_composited
         ),
         MC_STATUS_BUFFER_TOO_SMALL
     );
-    assert_eq!((written, revision, blur, exit_tables), (0, 0, 0, 0));
+    assert_eq!(
+        (written, revision, blur, exit_tables, sprites_composited),
+        (0, 0, 0, 0, 0)
+    );
     assert!(scene.iter().all(|&index| index == 0xa5));
     assert_eq!(
         mc_native_campaign_scene_frame_copy(
@@ -2658,12 +2663,56 @@ fn same_tick_camera_refresh_keeps_generic_and_retained_frames_identical() {
             &raw mut written,
             &raw mut revision,
             &raw mut blur,
-            &raw mut exit_tables
+            &raw mut exit_tables,
+            &raw mut sprites_composited
         ),
         MC_STATUS_OK
     );
     assert_eq!(written, 64000);
+    assert_eq!(sprites_composited, 1);
     let initial_scene_revision = revision;
+    let mut map = vec![0; 64000];
+    let mut map_palette = vec![0; 768];
+    let mut entities = vec![McCampaignMinimapEntityV2::default(); 1000];
+    let mut marks = vec![McCampaignMinimapMarkV2::default(); 64];
+    let mut map_state = McCampaignMinimapStateV2::default();
+    let mut map_copy = |frame: &mut Vec<u8>,
+                        entities: &mut Vec<McCampaignMinimapEntityV2>,
+                        marks: &mut Vec<McCampaignMinimapMarkV2>,
+                        state: &mut McCampaignMinimapStateV2| {
+        super::campaign_world_map::mc_native_campaign_world_map_copy(
+            handle,
+            0,
+            0,
+            frame.as_mut_ptr(),
+            frame.len() as u32,
+            map_palette.as_mut_ptr(),
+            map_palette.len() as u32,
+            entities.as_mut_ptr(),
+            entities.len() as u32,
+            marks.as_mut_ptr(),
+            marks.len() as u32,
+            state,
+            struct_size::<McCampaignMinimapStateV2>(),
+        )
+    };
+    assert_eq!(
+        map_copy(&mut map, &mut entities, &mut marks, &mut map_state),
+        MC_STATUS_OK
+    );
+    assert_eq!(map_state.generation, 0);
+    assert_eq!(map_state.tick, 0);
+    assert!(map.iter().any(|&index| index != map[0]));
+    assert!(map.chunks_exact(320).all(|row| row[191] == row[192]));
+    let repeated_map = map.clone();
+    assert_eq!(
+        map_copy(&mut map, &mut entities, &mut marks, &mut map_state),
+        MC_STATUS_OK
+    );
+    assert_eq!(
+        map, repeated_map,
+        "repeated map reads retain the committed narrow source view"
+    );
     // Isolate the same-tick camera-cache boundary. The sim-core exit test
     // exercises the real action12 producer; this fixture earns no transition.
     with_campaign_session_mut(handle, |record| {
@@ -2684,11 +2733,15 @@ fn same_tick_camera_refresh_keeps_generic_and_retained_frames_identical() {
             &raw mut written,
             &raw mut revision,
             &raw mut blur,
-            &raw mut exit_tables
+            &raw mut exit_tables,
+            &raw mut sprites_composited
         ),
         MC_STATUS_GENERATION_MISMATCH
     );
-    assert_eq!((written, revision, blur, exit_tables), (0, 0, 0, 0));
+    assert_eq!(
+        (written, revision, blur, exit_tables, sprites_composited),
+        (0, 0, 0, 0, 0)
+    );
     let (refreshed, generic) = copy();
     assert_ne!(initial, refreshed);
     assert_eq!(generic.newly_committed, 1);
@@ -2717,7 +2770,8 @@ fn same_tick_camera_refresh_keeps_generic_and_retained_frames_identical() {
             &raw mut written,
             &raw mut revision,
             &raw mut blur,
-            &raw mut exit_tables
+            &raw mut exit_tables,
+            &raw mut sprites_composited
         ),
         MC_STATUS_OK
     );
@@ -3738,7 +3792,7 @@ fn cf14_level3_uses_generic_campaign_abi() {
                 && row.pixel_mode <= 7
                 && row.brightness <= 0x2000
                 && row.owner_color == 0x7b
-                && row.reserved == [0; 1]
+                && row.reserved == 0
         }));
     };
     assert_level3_surfaces(0, false);

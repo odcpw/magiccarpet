@@ -28,7 +28,7 @@ impl CampaignRuntimeAudio {
         paused: bool,
     ) -> AbiResult<Vec<(u8, u8)>> {
         if self.generation != generation {
-            // Pause/resume explicitly rebind without clearing voices. A
+            // Pause clears voices, while resume explicitly rebinds. A
             // remaining generation change is a real session reset; include
             // the first newly produced frame instead of skipping its events.
             *self = Self {

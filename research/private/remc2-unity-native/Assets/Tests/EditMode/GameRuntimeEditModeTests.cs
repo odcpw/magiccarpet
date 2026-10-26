@@ -3464,6 +3464,23 @@ namespace MagicCarpet.Native.Tests
                 Assert.That(channel.clip.samples, Is.EqualTo(1374156));
                 Assert.That(channel.clip.frequency, Is.EqualTo(44100));
                 Assert.That(channel.clip.channels, Is.EqualTo(2));
+                var playingClip = channel.clip;
+                var wasPlaying = channel.isPlaying;
+                var cursor = channel.timeSamples;
+                var prefs = new PlayerPreferences {
+                    sound_enabled = true, speech_enabled = true,
+                    sound_volume = 91, music_volume = 127
+                };
+                speech.ApplyPreferences(prefs);
+                Assert.That(channel.volume, Is.EqualTo(91f / 127));
+                prefs.speech_enabled = false;
+                speech.ApplyPreferences(prefs);
+                Assert.That(channel.volume, Is.EqualTo(91f / 127),
+                    "source Speech Off gates future segments without muting the current CD segment");
+                Assert.That(channel.clip, Is.SameAs(playingClip));
+                Assert.That(channel.isPlaying, Is.EqualTo(wasPlaying));
+                Assert.That(channel.timeSamples, Is.GreaterThanOrEqualTo(cursor));
+                Assert.That(speech.PlayCount, Is.EqualTo(4), "preference changes cannot restart speech");
                 Assert.Throws<InvalidDataException>(() => speech.Play(4, 31000, 161));
                 Assert.Throws<InvalidDataException>(() => speech.Play(4, 32000, 1));
                 Assert.Throws<InvalidDataException>(() => speech.Play(4, 0, 0));

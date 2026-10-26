@@ -521,6 +521,7 @@ pub(crate) use effects::hidden_slots as hidden_effect_slots;
 mod level2_nyphur;
 mod lightning;
 mod night_cache;
+mod player_damage;
 mod support_spells;
 pub(crate) mod terrain_strip;
 use creatures::worm::imported as campaign_multipart;
@@ -727,6 +728,7 @@ pub struct CampaignEntityPresentation {
     /// Ordinal within the source tile's live map chain.
     pub draw_order: u32,
     pub control_flags: u32,
+    pub primary_depth_adjustment: i16,
 }
 
 /// Level 2's shared spell/economy reset projection. The two active authored
@@ -2763,6 +2765,7 @@ mod level2_authored_slots;
 pub(crate) mod level2_class5;
 mod level2_dynamic_economy;
 mod level2_sessions;
+mod spell_entry;
 #[cfg(test)]
 use level2_sessions::validate_level2_ordinary_census;
 

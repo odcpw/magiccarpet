@@ -77,6 +77,29 @@ impl ObjectiveState {
     }
 }
 
+impl crate::native_world::Mc2Simulation {
+    /// The keyboard producer precedes PresentObjective for both playing and
+    /// paused outer frames. Keep the source byte carrier and typed state in
+    /// the runtime owner together; clients only submit a held input.
+    pub(crate) fn apply_objective_input(&mut self, held: bool) {
+        self.session
+            .state
+            .live
+            .core
+            .runtime
+            .apply_objective_input(held);
+    }
+
+    pub(crate) fn clear_objective_textbox(&mut self) {
+        self.session
+            .state
+            .live
+            .core
+            .runtime
+            .clear_objective_textbox();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;

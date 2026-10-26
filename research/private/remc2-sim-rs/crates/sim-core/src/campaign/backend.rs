@@ -2449,6 +2449,9 @@ impl GameSessionBackend for Mc2CampaignBackend {
         candidate
             .simulation_mut()
             .advance_elapsed_centiseconds(command.elapsed_centiseconds);
+        candidate
+            .simulation_mut()
+            .apply_objective_input(command.show_objective);
         let _evidence = candidate.step_with_tuning(
             player_command,
             CAMPAIGN_SPEED_INDEX,
@@ -2467,19 +2470,33 @@ impl GameSessionBackend for Mc2CampaignBackend {
     }
 
     fn paused_frame(&mut self) -> Result<(), Self::Error> {
-        self.paused_frame_timed(0)
+        self.paused_frame_timed(0, false)
     }
 
-    fn paused_frame_timed(&mut self, elapsed_centiseconds: u32) -> Result<(), Self::Error> {
+    fn enter_pause(&mut self) {
+        self.campaign.simulation_mut().clear_objective_textbox();
+        self.replay_operations
+            .push(crate::game_runtime::ReplayOperation::Pause);
+    }
+
+    fn paused_frame_timed(
+        &mut self,
+        elapsed_centiseconds: u32,
+        show_objective: bool,
+    ) -> Result<(), Self::Error> {
         let mut candidate = self.campaign.clone();
         candidate
             .simulation_mut()
             .advance_elapsed_centiseconds(elapsed_centiseconds);
+        candidate
+            .simulation_mut()
+            .apply_objective_input(show_objective);
         candidate.paused_frame();
         self.campaign = candidate;
         self.replay_operations
             .push(crate::game_runtime::ReplayOperation::PausedFrame {
                 elapsed_centiseconds,
+                show_objective,
             });
         Ok(())
     }
@@ -2644,6 +2661,7 @@ impl Mc2CampaignBackend {
         }
         let selected = SOURCE_SPELL_INDEX_MAP
             .get(usize::from(player.selected_spell_ui_index))
+            .filter(|family| spells::acquired_holder(shared, **family).is_some())
             .and_then(|family| mc2_spell_kind_for_family(*family))
             .filter(|kind| acquired.contains(kind));
         Ok(Mc2SemanticSpellCarry {
@@ -2694,17 +2712,6 @@ impl Mc2CampaignBackend {
                 },
             );
         }
-        // Normalize package-present families too: saving the installed entry
-        // exports their learned flags alongside newly allocated families.
-        // Reinstallation must produce the same complete entry baseline.
-        families.extend(
-            current
-                .acquired
-                .iter()
-                .filter_map(|kind| mc2_spell_family(*kind)),
-        );
-        families.sort_unstable();
-        families.dedup();
         let selected_family = carry
             .selected
             .map(|kind| {
@@ -2736,36 +2743,52 @@ impl Mc2CampaignBackend {
                     })
                 })
                 .collect::<Result<Vec<_>, crate::game_runtime::RuntimeTransitionError>>()?;
-            campaign
-                .simulation_mut()
-                .apply_carried_spell_families(&families, selected_family)
-                .and_then(|()| {
+            // InitialiseSpells admits learned families before any map-start
+            // allocation. Rebuild that unpublished entry rather than keeping
+            // the destination's direct-entry StartingSpells or their RNG use.
+            let selected = campaign
+                .rebuild_for_spell_carry(&families, selected_family)
+                .and_then(|selected| {
                     campaign
                         .simulation_mut()
-                        .apply_carried_spell_progression(&progression)
+                        .apply_carried_spell_progression(&progression)?;
+                    Ok(selected)
                 })
-                .map_err(
-                    |error| crate::game_runtime::RuntimeTransitionError::InvalidRuntimeFlow {
+                .map_err(|error| {
+                    crate::game_runtime::RuntimeTransitionError::InvalidRuntimeFlow {
                         message: format!("cannot apply semantic spell carry: {error}"),
-                    },
-                )
+                    }
+                })?;
+            Ok::<_, crate::game_runtime::RuntimeTransitionError>(selected)
         };
         let mut campaign = self.campaign.clone();
         let mut package_campaign = self.package_campaign.clone();
-        apply(&mut campaign)?;
+        let selected_family = apply(&mut campaign)?;
         apply(&mut package_campaign)?;
-        self.campaign = campaign;
-        self.package_campaign = package_campaign;
-        let installed = self.semantic_spell_carry()?;
-        if !carry
-            .acquired
-            .iter()
-            .all(|kind| installed.acquired.contains(kind))
-            || installed.selected != carry.selected
+        if let Some(binding) = self.goat_policy_binding {
+            campaign.apply_enemy_goat_policy(binding);
+        }
+        if let Some(binding) = self.fireball_binding {
+            campaign
+                .apply_local_player_fireball_mana_cost(binding.mana_cost())
+                .map_err(|error| {
+                    crate::game_runtime::RuntimeTransitionError::InvalidRuntimeFlow {
+                        message: format!("cannot reapply carried Fireball binding: {error}"),
+                    }
+                })?;
+        }
+        campaign.apply_fireball_launch_sound(self.campaign.simulation().fireball_launch_sound_id);
+        let installed = Self::semantic_spell_carry_from_campaign(&campaign)?;
+        if installed.acquired.len() != carry.acquired.len()
+            || !carry
+                .acquired
+                .iter()
+                .all(|kind| installed.acquired.contains(kind))
+            || installed.selected != selected_family.and_then(mc2_spell_kind_for_family)
             || carry.progression.iter().any(|entry| {
                 let family =
                     usize::from(mc2_spell_family(entry.spell).expect("validated carry family"));
-                let player = self.campaign.simulation().shared_spells().local_player();
+                let player = campaign.simulation().shared_spells().local_player();
                 player.persistent_spell_experience[family] != entry.persistent_experience
                     || player.runtime_spell_experience[family] != entry.runtime_experience
                     || player.spell_unlocked_levels[family] != entry.unlocked_tier
@@ -2779,6 +2802,8 @@ impl Mc2CampaignBackend {
                 },
             );
         }
+        self.campaign = campaign;
+        self.package_campaign = package_campaign;
         Ok(())
     }
 
@@ -3175,6 +3200,12 @@ pub(crate) mod tests {
             next.backend_mut()
                 .apply_semantic_spell_carry(&carry)
                 .unwrap();
+            let installed = next.backend().semantic_spell_carry().unwrap();
+            assert_eq!(installed.acquired.len(), learned.len());
+            assert!(
+                installed.acquired.iter().all(|kind| learned.contains(kind)),
+                "continuation must not grant the destination's direct-entry StartingSpells"
+            );
             let shared = next.backend().campaign.simulation().shared_spells();
             let player = shared.local_player();
             for kind in &learned {
@@ -3473,7 +3504,7 @@ pub(crate) mod tests {
         let paused = runtime.pause(guard).unwrap();
         let session_guard = runtime.session().unwrap().identity().guard();
         runtime
-            .paused_campaign_frame_timed(paused.guard(), session_guard, 177)
+            .paused_campaign_frame_timed(paused.guard(), session_guard, 177, false)
             .unwrap();
         assert_eq!(runtime.session().unwrap().identity().tick, tick);
         assert_eq!(
@@ -8358,6 +8389,84 @@ pub(crate) mod tests {
             .step(guard(&session), GameCommand::default())
             .unwrap();
         assert_eq!(session.snapshot().value.player_vitals.mana, before - cost);
+    }
+
+    #[test]
+    fn campaign_held_objective_input_keeps_source_text_visible_and_releases_for_opening_missions() {
+        let catalog = default_catalog().unwrap();
+        let generated = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../generated");
+        let cases = [
+            "mc-bhq8-level1-collision-v5-night",
+            "level2-day-block32-campaign-v2",
+            "level3-day-block32-campaign-recipe-v2",
+            "mc-bhq6-ordinary-20261025-zclu5fjj/level4",
+        ];
+        for (index, path) in cases.into_iter().enumerate() {
+            let root = generated.join(path);
+            let definition = load_mc2_campaign(&root, &catalog).unwrap();
+            let mut session = GameSession::open(
+                &Mc2CampaignAdapter,
+                Arc::new(definition),
+                7_600 + index as u64,
+                Mc2CampaignInputs::new(root),
+            )
+            .unwrap();
+            for _ in 0..2 {
+                let frame = session
+                    .step(
+                        guard(&session),
+                        GameCommand {
+                            show_objective: true,
+                            ..Default::default()
+                        },
+                    )
+                    .unwrap();
+                assert_eq!(frame.value.objective_textbox_ticks, 1, "{path}");
+                assert_eq!(
+                    session
+                        .backend()
+                        .campaign
+                        .simulation()
+                        .runtime()
+                        .objective_textbox_ticks,
+                    1,
+                    "{path}: snapshot reads the canonical presentation carrier"
+                );
+            }
+            let released = session
+                .step(guard(&session), GameCommand::default())
+                .unwrap();
+            assert_eq!(released.value.objective_textbox_ticks, 0, "{path}");
+            assert!(matches!(
+                session.backend().replay_operations.last(),
+                Some(crate::game_runtime::ReplayOperation::Step { command })
+                    if !command.show_objective
+            ));
+            let held = &session.backend().replay_operations[0];
+            assert!(matches!(
+                held,
+                crate::game_runtime::ReplayOperation::Step { command }
+                    if command.show_objective
+            ));
+            let tick = session.identity().tick;
+            let paused_held = session
+                .paused_frame_timed(guard(&session), 0, true)
+                .unwrap();
+            assert_eq!(paused_held.identity.tick, tick, "{path}");
+            assert_eq!(paused_held.value.objective_textbox_ticks, 1, "{path}");
+            assert!(matches!(
+                session.backend().replay_operations.last(),
+                Some(crate::game_runtime::ReplayOperation::PausedFrame {
+                    show_objective: true,
+                    ..
+                })
+            ));
+            let paused_released = session
+                .paused_frame_timed(guard(&session), 0, false)
+                .unwrap();
+            assert_eq!(paused_released.identity.tick, tick, "{path}");
+            assert_eq!(paused_released.value.objective_textbox_ticks, 0, "{path}");
+        }
     }
 
     #[test]
@@ -16553,6 +16662,10 @@ pub(crate) mod tests {
         for (operation_index, operation) in trace.operations.into_iter().enumerate() {
             let guard = current.identity().guard();
             match operation {
+                ReplayOperation::Pause => {
+                    current.backend_mut().enter_pause();
+                    continue;
+                }
                 ReplayOperation::SpeechPreference {
                     enabled,
                     show_foreign_text,
@@ -16572,9 +16685,10 @@ pub(crate) mod tests {
                 }
                 ReplayOperation::PausedFrame {
                     elapsed_centiseconds,
+                    show_objective,
                 } => {
                     current
-                        .paused_frame_timed(guard, elapsed_centiseconds)
+                        .paused_frame_timed(guard, elapsed_centiseconds, show_objective)
                         .map_err(|error| {
                             Mc2CampaignReplaySaveError::Restore(
                                 RestorePlayingError::ReplayPausedFrame {
@@ -36184,6 +36298,7 @@ pub(crate) mod tests {
             assign_spell: None,
             recenter: false,
             full_stop: false,
+            show_objective: false,
             look_yaw: -17,
             look_pitch: 23,
             recover_player: false,

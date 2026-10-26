@@ -737,6 +737,17 @@ namespace MagicCarpet.Native
             if (campaignMusicGeneration != 0) campaignMusicGeneration = generation;
         }
 
+        /// Consume PauseUnpauseGame_18BB0's EndSample_8D8F0 edge. The Rust
+        /// pool has already retired these voices, so device cleanup must not
+        /// send ordinary finite-sample completion acknowledgements. Music is
+        /// controlled by ApplyCampaignMusic; CD speech has its own source.
+        internal void EndCampaignSamples()
+        {
+            loops.Clear();
+            QualificationStopPositionals();
+            fadeAccumulator = 0f;
+        }
+
         internal void ApplyCampaignMusic(NativeSim.CampaignDayMusicSnapshot state)
         {
             Require(state.abiVersion == NativeSim.AbiVersion && state.structSize == 80 &&

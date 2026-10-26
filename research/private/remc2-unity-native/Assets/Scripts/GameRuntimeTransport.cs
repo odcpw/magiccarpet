@@ -745,7 +745,7 @@ namespace MagicCarpet.Native
             return receipt;
         }
 
-        internal EngineSessionTransport.CampaignSnapshotObservation CampaignPausedFrame(uint elapsedCentiseconds = 0)
+        internal EngineSessionTransport.CampaignSnapshotObservation CampaignPausedFrame(uint elapsedCentiseconds = 0, bool showObjective = false)
         {
             RequireSessionMode(allowPaused: true, "campaign paused frame");
             if (Current.mode != PausedMode)
@@ -759,7 +759,7 @@ namespace MagicCarpet.Native
                     RequireHandle(),
                     ParseCounter(before.generation, "generation"),
                     ParseCounter(before.session.generation, "session_generation"),
-                    ParseCounter(before.session.tick, "tick"), elapsedCentiseconds),
+                    ParseCounter(before.session.tick, "tick"), elapsedCentiseconds, showObjective ? (byte)1 : (byte)0),
                 "service game runtime paused frame");
             var identity = IdentitySnapshot();
             if (identity.mode != PausedMode ||
@@ -824,7 +824,8 @@ namespace MagicCarpet.Native
             bool fullStop = false,
             bool recoverPlayer = false,
             uint elapsedCentiseconds = 0,
-            EngineSessionTransport.SpellAssignment assignment = null)
+            EngineSessionTransport.SpellAssignment assignment = null,
+            bool showObjective = false)
         {
             RequireSessionMode(allowPaused: false, "campaign step");
             var before = Current;
@@ -841,7 +842,7 @@ namespace MagicCarpet.Native
                 lookYaw,
                 lookPitch,
                 NegotiatedSessionContract.limits.maximum_command_json_bytes,
-                selectSpell, recenter, fullStop, recoverPlayer, elapsedCentiseconds, assignment);
+                selectSpell, recenter, fullStop, recoverPlayer, elapsedCentiseconds, assignment, showObjective);
             var identity = IdentitySnapshot();
             if (identity.mode != PlayingMode ||
                 ParseCounter(identity.generation, "generation") != beforeRuntimeGeneration ||

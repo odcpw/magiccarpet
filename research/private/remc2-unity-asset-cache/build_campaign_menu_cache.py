@@ -245,6 +245,53 @@ def build(owner: Path, output: Path, *, rnc_decoder: Path | None = None) -> dict
         write("palette.rgb6", palette)
         bindings = []
         portal_table = cache.bitmap_records(table)
+        # Bank6 uses its own coloured font and shifts the bitmap table by one
+        # before DrawText_7FB90. Reusing the bank4 title font changes both its
+        # colours and 8x14 advances. Retain the actual source masks/indices for
+        # the results sheet's palette-table shading over animated portals.
+        campaign_font_data = cache.decode_container_blob(decoder, source,
+            0x1641FC, 12754, work, "campaign-font")
+        campaign_font_table_bytes = cache.decode_container_blob(decoder, source,
+            0x1646BA, 1638, work, "campaign-font-table")
+        campaign_font_table = cache.bitmap_records(campaign_font_table_bytes)
+        if len(campaign_font_table) != 273 or campaign_font_table[66][1:] != (8, 14):
+            raise cache.CacheError("pinned campaign font table changed")
+        campaign_font_rgba = bytearray(160 * 252 * 4)
+        campaign_glyphs = []
+        for index, (offset, width, height) in enumerate(campaign_font_table):
+            if width > 10 or height > 14:
+                raise cache.CacheError("campaign font exceeds its source atlas cell")
+            indices, mask, _ = cache.materialize_indexed_rle(campaign_font_data, offset, width, height)
+            x, y = index % 16 * 10, index // 16 * 14
+            campaign_glyphs.append(dict(index=index, x=x, y=y, width=width, height=height))
+            for local_y in range(height):
+                for local_x in range(width):
+                    pixel = local_y * width + local_x
+                    if mask[pixel]:
+                        target = ((y + local_y) * 160 + x + local_x) * 4
+                        campaign_font_rgba[target:target + 4] = bytes((*[channel * 4 for channel in
+                            palette[indices[pixel] * 3:indices[pixel] * 3 + 3]], 255))
+        write("campaign-font.rgba8", bytes(campaign_font_rgba))
+        campaign_font = dict(path="campaign-font.rgba8", width=160, height=252,
+            advance_x=8, advance_y=14, glyph_mapping="mc2-hscreen-bank6-byte-plus-one/v1",
+            glyphs=campaign_glyphs, decoded_dat_sha256=hashlib.sha256(campaign_font_data).hexdigest(),
+            decoded_tab_sha256=hashlib.sha256(campaign_font_table_bytes).hexdigest())
+        campaign_colours = cache.decode_container_blob(decoder, source, 0x13B3B8,
+            16384, work, "campaign-colours")
+        write("campaign-colours.u8", campaign_colours)
+        indexed_portals = []
+        for selector in (*range(33, 45), *range(70, 85)):
+            offset, width, height = portal_table[selector]
+            indices, mask, _ = cache.materialize_indexed_rle(sprites, offset, width, height)
+            indices_path, mask_path = f"map-{selector:03d}.indices.u8", f"map-{selector:03d}.mask.u8"
+            write(indices_path, bytes(indices))
+            write(mask_path, bytes(mask))
+            indexed_portals.append(dict(selector=selector, width=width, height=height,
+                indices_path=indices_path, mask_path=mask_path))
+        campaign_presentation = dict(font=campaign_font, colours_path="campaign-colours.u8",
+            english_statistics=any(alias.upper() == "LANGUAGE/D2.TXT" for alias in default_locale["aliases"]),
+            bitmaps=[bitmap(sprites, portal_table, palette, selector, f"map-{selector:03d}.rgba8")
+                for selector in (274, 275)], indexed_portals=indexed_portals)
         for kind, selector in [("completed", 37), ("available", 70)]:
             row = bitmap(sprites, portal_table, palette, selector, f"portal-{kind}.rgba8")
             bindings.append(dict(kind=kind, path=row["path"], width=row["width"], height=row["height"]))
@@ -279,6 +326,7 @@ def build(owner: Path, output: Path, *, rnc_decoder: Path | None = None) -> dict
                     width=1280, height=960, view_width=640, view_height=480,
                     missions=source_missions(language), portals=bindings, outputs=outputs,
                     startup=startup, pause=pause, portal_animation=portal_animation,
+                    campaign=campaign_presentation,
                     decoder=provenance)
     (output / "manifest.json").write_text(json.dumps(manifest, indent=2, ensure_ascii=False) + "\n")
     return manifest

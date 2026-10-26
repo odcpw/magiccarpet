@@ -5,6 +5,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     fmt, fs,
     path::{Component, Path},
+    sync::Arc,
 };
 
 use serde::{Deserialize, Serialize};
@@ -143,6 +144,7 @@ pub struct EnvironmentResources {
     sky: Option<Box<[u8]>>,
     day_exit_tables: Option<Box<[u8]>>,
     day_exit_renderer_tables: Option<Box<[u8]>>,
+    source_tmaps: Option<Arc<crate::source_sprite_tmap::SourceSpriteTmapBank>>,
 }
 
 #[cfg(test)]
@@ -194,6 +196,7 @@ impl EnvironmentResources {
             sky: Some(sky),
             day_exit_tables: None,
             day_exit_renderer_tables: None,
+            source_tmaps: None,
         }
     }
     pub fn palette_rgb8(&self) -> &[u8] {
@@ -204,6 +207,9 @@ impl EnvironmentResources {
     }
     pub fn colors(&self) -> &[u8] {
         &self.colors
+    }
+    pub fn source_tmaps(&self) -> Option<&crate::source_sprite_tmap::SourceSpriteTmapBank> {
+        self.source_tmaps.as_deref()
     }
     pub fn blocks(&self) -> &[u8] {
         &self.blocks
@@ -476,6 +482,34 @@ impl EnvironmentResources {
             tables[0x4000..0x14000].copy_from_slice(exit);
             tables.into_boxed_slice()
         });
+        // Texture payloads have already passed the complete manifest and
+        // decoded owner-byte checks above. Retain their canonical bank once
+        // so every source world pass shares it without per-frame file I/O.
+        let frames = descriptor["tmaps"]["textures"]
+            .as_array()
+            .ok_or_else(|| invalid("environment textures missing"))?
+            .iter()
+            .filter(|row| row["source_empty"] != true)
+            .map(|row| {
+                Ok(crate::source_sprite_tmap::SourceSpriteTmapFrame {
+                    selector: row["index"]
+                        .as_u64()
+                        .ok_or_else(|| invalid("TMAP selector missing"))?
+                        as u16,
+                    width: row["width"]
+                        .as_u64()
+                        .ok_or_else(|| invalid("TMAP width missing"))?
+                        as u16,
+                    height: row["height"]
+                        .as_u64()
+                        .ok_or_else(|| invalid("TMAP height missing"))?
+                        as u16,
+                    pixels: product(&products, field(row, "indices_path")?, None)?.into(),
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let source_tmaps =
+            crate::source_sprite_tmap::SourceSpriteTmapBank::new(frames).map_err(invalid)?;
         Ok(Self {
             profile: Some(profile),
             content_sha256: content.to_owned(),
@@ -486,6 +520,7 @@ impl EnvironmentResources {
             sky,
             day_exit_tables,
             day_exit_renderer_tables,
+            source_tmaps: Some(Arc::new(source_tmaps)),
         })
     }
 }

@@ -338,6 +338,7 @@ namespace MagicCarpet.Native
             public bool full_stop;
             public bool recover_player;
             public uint elapsed_centiseconds;
+            public bool show_objective;
             public int look_yaw;
             public int look_pitch;
         }
@@ -556,7 +557,8 @@ namespace MagicCarpet.Native
             bool fullStop = false,
             bool recoverPlayer = false,
             uint elapsedCentiseconds = 0,
-            SpellAssignment assignment = null)
+            SpellAssignment assignment = null,
+            bool showObjective = false)
         {
             ValidateIdentityForHandle(handle, identity);
             var bits = unchecked((byte)flags);
@@ -584,6 +586,7 @@ namespace MagicCarpet.Native
             command.full_stop = fullStop;
             command.recover_player = recoverPlayer;
             command.elapsed_centiseconds = elapsedCentiseconds;
+            command.show_objective = showObjective;
             command.look_yaw = unchecked((short)lookYaw);
             command.look_pitch = unchecked((short)lookPitch);
             var bytes = Encoding.UTF8.GetBytes(JsonUtility.ToJson(command));

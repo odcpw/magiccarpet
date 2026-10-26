@@ -378,7 +378,15 @@ pub fn rasterize_classic_hd_terrain(
     tablesn: &[u8],
     provenance: u8,
 ) -> Result<ClassicHdRasterReceipt, ClassicHdRasterError> {
-    rasterize_terrain_inner(writer, terrain, terrain_atlas, tablesn, provenance, None)
+    rasterize_terrain_inner(
+        writer,
+        terrain,
+        terrain_atlas,
+        tablesn,
+        provenance,
+        None,
+        None,
+    )
 }
 
 /// Stamp the source painter rank for every pixel actually written by terrain.
@@ -407,9 +415,50 @@ pub fn rasterize_classic_hd_terrain_with_occlusion(
         tablesn,
         provenance,
         Some((owner_orders, pixel_orders)),
+        None,
     )
 }
 
+/// MC2 world painter boundary: each billboard bucket is consumed immediately
+/// after its own terrain cell, including cells whose material was clipped.
+/// The complete reflection walk precedes the primary walk, so mode26 water
+/// reads the reflected terrain and sprites already present at each pixel.
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
+pub fn rasterize_classic_hd_terrain_composed(
+    writer: &mut ClassicHdFrameWriter<'_>,
+    terrain: &ClassicHdTerrainRender,
+    terrain_atlas: &[u8],
+    tables: &[u8],
+    provenance: u8,
+    owner_orders: &[u16],
+    pixel_orders: &mut [u16],
+    reflections_enabled: bool,
+    after_cell: &mut dyn FnMut(
+        TerrainPass,
+        usize,
+        &mut ClassicHdFrameWriter<'_>,
+    ) -> Result<(), ClassicHdRasterError>,
+) -> Result<ClassicHdRasterReceipt, ClassicHdRasterError> {
+    if owner_orders.len() != terrain.lattice.vertices.len()
+        || pixel_orders.len() != writer.profile().extent()
+    {
+        return Err(ClassicHdRasterError(
+            "outdoor composed source order extent is invalid".into(),
+        ));
+    }
+    pixel_orders.fill(0);
+    rasterize_terrain_inner(
+        writer,
+        terrain,
+        terrain_atlas,
+        tables,
+        provenance,
+        Some((owner_orders, pixel_orders)),
+        Some((reflections_enabled, after_cell)),
+    )
+}
+
+#[allow(clippy::type_complexity)]
 fn rasterize_terrain_inner(
     writer: &mut ClassicHdFrameWriter<'_>,
     terrain: &ClassicHdTerrainRender,
@@ -417,6 +466,14 @@ fn rasterize_terrain_inner(
     tablesn: &[u8],
     provenance: u8,
     mut orders: Option<(&[u16], &mut [u16])>,
+    mut after_cell: Option<(
+        bool,
+        &mut dyn FnMut(
+            TerrainPass,
+            usize,
+            &mut ClassicHdFrameWriter<'_>,
+        ) -> Result<(), ClassicHdRasterError>,
+    )>,
 ) -> Result<ClassicHdRasterReceipt, ClassicHdRasterError> {
     validate_writer(writer)?;
     if writer.profile().profile_revision != terrain.profile_revision {
@@ -434,12 +491,64 @@ fn rasterize_terrain_inner(
     validate_submission_plan(&terrain.submissions, terrain)?;
     let mut receipt = ClassicHdRasterReceipt::empty();
     let stream_mode5 = writer.width() > 320 || writer.height() > 200;
-    for triangle in terrain
-        .submissions
-        .reflected
-        .iter()
-        .chain(terrain.submissions.primary.iter())
-    {
+    let mut steps = Vec::new();
+    if let Some((reflections_enabled, _)) = after_cell.as_ref() {
+        let owners = orders
+            .as_ref()
+            .ok_or_else(|| ClassicHdRasterError("composed terrain lacks source orders".into()))?
+            .0;
+        let mut schedule: Vec<_> = owners
+            .iter()
+            .copied()
+            .enumerate()
+            .filter(|(_, rank)| *rank != 0)
+            .collect();
+        schedule.sort_unstable_by_key(|(_, rank)| *rank);
+        for (pass, triangles, enabled) in [
+            (
+                TerrainPass::Reflected,
+                &terrain.submissions.reflected,
+                *reflections_enabled,
+            ),
+            (TerrainPass::Primary, &terrain.submissions.primary, true),
+        ] {
+            if !enabled {
+                continue;
+            }
+            let mut triangles = triangles.iter().peekable();
+            for &(owner, _) in &schedule {
+                while triangles
+                    .peek()
+                    .is_some_and(|triangle| triangle.owner_index == owner)
+                {
+                    steps.push((triangles.next(), None));
+                }
+                steps.push((None, Some((pass, owner))));
+            }
+            if triangles.next().is_some() {
+                return Err(ClassicHdRasterError(
+                    "terrain triangles differ from source cell schedule".into(),
+                ));
+            }
+        }
+    } else {
+        steps.extend(
+            terrain
+                .submissions
+                .reflected
+                .iter()
+                .chain(terrain.submissions.primary.iter())
+                .map(|triangle| (Some(triangle), None)),
+        );
+    }
+    for (triangle, bucket) in steps {
+        if let Some((pass, owner)) = bucket {
+            if let Some((_, consumer)) = after_cell.as_mut() {
+                consumer(pass, owner, writer)?;
+            }
+            continue;
+        }
+        let triangle = triangle.expect("terrain or billboard step");
         let vertices = triangle_vertices(triangle, terrain)?;
         let texture_base = terrain_texture_base(triangle.texture_index)?;
         let stamp = orders.as_mut().map(|(owners, plane)| {

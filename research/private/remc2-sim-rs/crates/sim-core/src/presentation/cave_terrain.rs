@@ -61,6 +61,7 @@ pub struct CaveTerrainPlan {
     clear_index: u8,
     triangles: Vec<Triangle>,
     cell_orders: Vec<u16>,
+    cell_textures: Vec<u8>,
     pub input_hash: u64,
     pub command_hash: u64,
 }
@@ -102,7 +103,7 @@ impl CaveTerrainPlan {
         tables: &[u8],
         provenance: u8,
     ) -> Result<CaveRasterReceipt, ClassicHdRasterError> {
-        self.rasterize_inner(writer, atlas, tables, provenance, None)
+        self.rasterize_inner(writer, atlas, tables, provenance, None, None)
     }
 
     /// Stamp the source cell's order at each pixel actually written by its
@@ -122,9 +123,42 @@ impl CaveTerrainPlan {
             ));
         }
         orders.fill(0);
-        self.rasterize_inner(writer, atlas, tables, provenance, Some(orders))
+        self.rasterize_inner(writer, atlas, tables, provenance, Some(orders), None)
     }
 
+    /// Source cell order is ceiling, floor, then that cell's shadow/primary
+    /// billboard chain. Clipped materials do not discard a live bucket.
+    #[allow(clippy::type_complexity)]
+    pub fn rasterize_composed(
+        &self,
+        writer: &mut ClassicHdFrameWriter<'_>,
+        atlas: &[u8],
+        tables: &[u8],
+        provenance: u8,
+        orders: &mut [u16],
+        after_cell: &mut dyn FnMut(
+            u16,
+            u8,
+            &mut ClassicHdFrameWriter<'_>,
+        ) -> Result<(), ClassicHdRasterError>,
+    ) -> Result<CaveRasterReceipt, ClassicHdRasterError> {
+        if orders.len() != writer.profile().extent() {
+            return Err(ClassicHdRasterError(
+                "Cave composed source extent differs".into(),
+            ));
+        }
+        orders.fill(0);
+        self.rasterize_inner(
+            writer,
+            atlas,
+            tables,
+            provenance,
+            Some(orders),
+            Some(after_cell),
+        )
+    }
+
+    #[allow(clippy::type_complexity)]
     fn rasterize_inner(
         &self,
         writer: &mut ClassicHdFrameWriter<'_>,
@@ -132,6 +166,13 @@ impl CaveTerrainPlan {
         tables: &[u8],
         provenance: u8,
         mut orders: Option<&mut [u16]>,
+        mut after_cell: Option<
+            &mut dyn FnMut(
+                u16,
+                u8,
+                &mut ClassicHdFrameWriter<'_>,
+            ) -> Result<(), ClassicHdRasterError>,
+        >,
     ) -> Result<CaveRasterReceipt, ClassicHdRasterError> {
         if writer.profile().profile_revision != self.profile_revision
             || atlas.len() != CLASSIC_HD_TERRAIN_ATLAS_BYTES
@@ -145,7 +186,18 @@ impl CaveTerrainPlan {
             terrain_texture_base(triangle.texture)?;
         }
         let mut receipt = CaveRasterReceipt::default();
+        let mut completed_cell = 0_u16;
         for triangle in &self.triangles {
+            while after_cell.is_some() && completed_cell + 1 < triangle.cell_order {
+                completed_cell += 1;
+                if let Some(consumer) = after_cell.as_mut() {
+                    consumer(
+                        completed_cell,
+                        self.cell_textures[usize::from(completed_cell)],
+                        writer,
+                    )?;
+                }
+            }
             let provenance = provenance | if triangle.ceiling { 4 } else { 2 };
             let written_pixels = if let Some(orders) = orders.as_deref_mut() {
                 let width = writer.width();
@@ -187,6 +239,14 @@ impl CaveTerrainPlan {
             } else {
                 receipt.floor_pixels_written += written_pixels;
             }
+            // A source cell can have ceiling and floor triangles. Its
+            // bucket follows all of them, never the first floor span.
+            // The loop below drains it when the following cell begins.
+        }
+        if let Some(consumer) = after_cell.as_mut() {
+            for cell in completed_cell + 1..self.cell_textures.len() as u16 {
+                consumer(cell, self.cell_textures[usize::from(cell)], writer)?;
+            }
         }
         Ok(receipt)
     }
@@ -196,6 +256,20 @@ pub fn build_cave_terrain(
     profile: &ClassicHdRenderProfile,
     camera: Level1TerrainFrameCamera,
     resources: CaveTerrainResources<'_>,
+) -> Result<CaveTerrainPlan, ClassicHdRasterError> {
+    build_cave_terrain_projected(
+        profile,
+        camera,
+        resources,
+        ClassicHdProjection::from_profile(profile, camera),
+    )
+}
+
+pub(crate) fn build_cave_terrain_projected(
+    profile: &ClassicHdRenderProfile,
+    camera: Level1TerrainFrameCamera,
+    resources: CaveTerrainResources<'_>,
+    projection: ClassicHdProjection,
 ) -> Result<CaveTerrainPlan, ClassicHdRasterError> {
     if !profile.is_compatibility_profile() {
         return Err(ClassicHdRasterError(
@@ -215,7 +289,6 @@ pub fn build_cave_terrain(
             ));
         }
     }
-    let projection = ClassicHdProjection::from_profile(profile, camera);
     // Only tile/view coordinates and source seam/parity bits are shared.
     // Every Cave altitude, wave, shade, and clipping bit is computed below.
     let grid = outdoor_grid(OutdoorGridInput {
@@ -233,11 +306,13 @@ pub fn build_cave_terrain(
     let mut triangles = Vec::new();
     let mut cell_orders = vec![0; 65_536];
     let mut cell_order = 0_u16;
+    let mut cell_textures = vec![0_u8];
     for row in (1..OUTDOOR_GRID_ROWS).rev() {
         let start = row * OUTDOOR_GRID_COLUMNS;
         let flags = std::array::from_fn(|column| grid[start + column].feature_flags);
         for owner in terrain_row_anchor_order(start, &flags) {
             cell_order += 1;
+            cell_textures.push(vertices[owner].map_or(0, |vertex| vertex.texture));
             let indices = [owner, owner + 1, owner - 39, owner - 40];
             // haveBillboard is set from the owner's accepted lattice point,
             // independently of an adjacent vertex rejecting a material quad.
@@ -298,6 +373,20 @@ pub fn build_cave_terrain(
     }
     input.extend_from_slice(&camera.source_turn.to_le_bytes());
     input.push(resources.clear_index);
+    if projection != ClassicHdProjection::from_profile(profile, camera) {
+        for value in [
+            projection.scale,
+            projection.pitch_offset,
+            projection.center_x,
+            projection.center_y,
+            projection.viewport_x,
+            projection.viewport_y,
+            projection.viewport_width,
+            projection.viewport_height,
+        ] {
+            input.extend_from_slice(&value.to_le_bytes());
+        }
+    }
     for plane in [
         resources.terrain_types,
         resources.ground_heights,
@@ -313,6 +402,7 @@ pub fn build_cave_terrain(
         clear_index: resources.clear_index,
         triangles,
         cell_orders,
+        cell_textures,
         input_hash: byte_hash(&input),
         command_hash,
     })
@@ -474,6 +564,7 @@ mod tests {
         let plan = CaveTerrainPlan {
             profile_revision: profile.profile_revision,
             clear_index: 254,
+            cell_textures: vec![0, 0, 0],
             triangles: vec![
                 Triangle {
                     vertices: [point(0, 0), point(20, 0), point(0, 20)],

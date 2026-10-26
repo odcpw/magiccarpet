@@ -227,6 +227,67 @@ impl CampaignSession {
         self.simulation.reset();
     }
 
+    /// Reconstruct an unpublished continuation from the imported source
+    /// arena, before destination direct-start spells consume slots or RNG.
+    pub(crate) fn rebuild_for_spell_carry(
+        &mut self,
+        learned: &[u8],
+        selected_family: Option<u8>,
+    ) -> Result<Option<u8>, NativeWorldError> {
+        if self.tick() != 0 {
+            return Err(NativeWorldError::new(
+                "spell entry can only replace an unpublished initial campaign",
+            ));
+        }
+        if selected_family.is_some_and(|family| !learned.contains(&family)) {
+            return Err(NativeWorldError::new(
+                "carried selected spell is not learned",
+            ));
+        }
+        let level = self.simulation.semantic_level_definition().cloned();
+        let simulation = self
+            .inspection
+            .campaign_reset_session_with_spell_entry(&self.definition, Some(learned))?;
+        let mut candidate = self.clone();
+        candidate.simulation = simulation;
+        for (player_index, objective) in self.simulation.runtime().objectives.iter().enumerate() {
+            candidate
+                .simulation
+                .session
+                .state
+                .live
+                .core
+                .runtime
+                .set_level2_objective_text_selector_for(
+                    player_index,
+                    usize::from(objective.text_selector),
+                );
+        }
+        if let Some(level) = level {
+            candidate.apply_semantic_level_variant(&level)?;
+        }
+        let player = candidate.simulation.shared_spells().local_player();
+        let active = player
+            .enabled_spell_holders
+            .iter()
+            .enumerate()
+            .filter_map(|(family, holder)| (*holder != 0).then_some(family as u8))
+            .collect::<Vec<_>>();
+        let selected = selected_family
+            .filter(|family| active.contains(family))
+            .or_else(|| {
+                crate::SOURCE_SPELL_INDEX_MAP
+                    .get(usize::from(player.selected_spell_ui_index))
+                    .copied()
+                    .filter(|family| active.contains(family))
+            });
+        candidate
+            .simulation
+            .apply_carried_spell_families(&active, selected)?;
+        *self = candidate;
+        Ok(selected)
+    }
+
     pub(crate) fn apply_semantic_level_variant(
         &mut self,
         level: &LevelDefinition,

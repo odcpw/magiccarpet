@@ -269,6 +269,26 @@ pub fn build_classic_hd_terrain(
     validate_resources(profile, resources, sky_bank)?;
     let projection = ClassicHdProjection::from_profile(profile, camera);
     let sky = render_classic_hd_sky(profile, camera, resources.sky, sky_bank)?;
+    build_classic_hd_terrain_projected(profile, camera, resources, sky_bank, projection, sky)
+}
+
+/// Reuse the source terrain owner for a real DrawWorld viewport, such as
+/// the full map's narrow right-hand world view. Geometry is projected at that
+/// viewport's own scale; the caller supplies its matching source sky plane.
+pub(crate) fn build_classic_hd_terrain_projected(
+    profile: &ClassicHdRenderProfile,
+    camera: Level1TerrainFrameCamera,
+    resources: ClassicHdTerrainResources<'_>,
+    sky_bank: ClassicHdSkyBank,
+    projection: ClassicHdProjection,
+    sky: Vec<u8>,
+) -> Result<ClassicHdTerrainRender, ClassicHdTerrainError> {
+    validate_resources(profile, resources, sky_bank)?;
+    if sky.len() != profile.extent() || projection.profile_revision != profile.profile_revision {
+        return Err(ClassicHdTerrainError(
+            "source world viewport differs from its frame owner".into(),
+        ));
+    }
     let lattice = build_lattice(profile, camera, resources.shading, resources.angles)?;
     let projected = lattice
         .vertices
@@ -293,7 +313,23 @@ pub fn build_classic_hd_terrain(
         })
         .collect::<Vec<_>>();
     let submissions = build_submission_plan(camera, &lattice, &projected);
-    let input_hash = hash_inputs(profile, camera, resources, sky_bank);
+    let mut input_hash = hash_inputs(profile, camera, resources, sky_bank);
+    if projection != ClassicHdProjection::from_profile(profile, camera) {
+        let mut input = input_hash.to_le_bytes().to_vec();
+        for value in [
+            projection.scale,
+            projection.pitch_offset,
+            projection.center_x,
+            projection.center_y,
+            projection.viewport_x,
+            projection.viewport_y,
+            projection.viewport_width,
+            projection.viewport_height,
+        ] {
+            input.extend_from_slice(&value.to_le_bytes());
+        }
+        input_hash = byte_hash(&input);
+    }
     let command_hash = hash_submissions(&submissions);
     Ok(ClassicHdTerrainRender {
         profile_revision: profile.profile_revision,

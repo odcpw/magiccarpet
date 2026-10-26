@@ -1364,7 +1364,7 @@ int32_t mc_game_runtime_paused_frame_v1(
     uint64_t expected_tick);
 int32_t mc_game_runtime_paused_frame_timed_v1(
     uint64_t handle, uint64_t runtime_generation, uint64_t session_generation,
-    uint64_t expected_tick, uint32_t elapsed_centiseconds);
+    uint64_t expected_tick, uint32_t elapsed_centiseconds, uint8_t show_objective);
 int32_t mc_game_runtime_resume_v1(
     uint64_t handle, uint64_t generation);
 int32_t mc_game_runtime_accept_transition_v1(

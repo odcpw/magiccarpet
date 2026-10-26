@@ -265,6 +265,10 @@ pub struct GameCommand {
     pub recenter: bool,
     #[serde(skip_serializing_if = "is_false")]
     pub full_stop: bool,
+    /// Keep the current objective visible for this input frame. The game
+    /// adapter owns its presentation lifetime and source frame ordering.
+    #[serde(skip_serializing_if = "is_false")]
+    pub show_objective: bool,
     pub look_yaw: i16,
     pub look_pitch: i16,
 }
@@ -515,11 +519,18 @@ pub trait GameSessionBackend {
     fn events_after(&self, cursor: u64, limit: usize) -> Result<EventPage, Self::Error>;
     fn audio_for_event(&self, event_sequence: u64) -> Result<GameAudioCommand, Self::Error>;
     fn step(&mut self, command: Self::Command) -> Result<(), Self::Error>;
+    /// Apply package-declared presentation changes at an accepted pause edge.
+    /// This cannot advance gameplay or fail after lifecycle publication.
+    fn enter_pause(&mut self) {}
     /// Service deterministic backend work that the bound package declares
     /// before its gameplay pause gate. Implementations must not advance the
     /// gameplay tick or execute a gameplay command.
     fn paused_frame(&mut self) -> Result<(), Self::Error>;
-    fn paused_frame_timed(&mut self, _elapsed_centiseconds: u32) -> Result<(), Self::Error> {
+    fn paused_frame_timed(
+        &mut self,
+        _elapsed_centiseconds: u32,
+        _show_objective: bool,
+    ) -> Result<(), Self::Error> {
         self.paused_frame()
     }
     fn reset_for_definition(&mut self, definition: &GameDefinition) -> Result<(), Self::Error>;
@@ -762,18 +773,19 @@ impl<B: GameSessionBackend> GameSession<B> {
         &mut self,
         guard: SessionGuard,
     ) -> Result<SessionObservation<B::Snapshot>, GameSessionError<B::Error>> {
-        self.paused_frame_timed(guard, 0)
+        self.paused_frame_timed(guard, 0, false)
     }
 
     pub fn paused_frame_timed(
         &mut self,
         guard: SessionGuard,
         elapsed_centiseconds: u32,
+        show_objective: bool,
     ) -> Result<SessionObservation<B::Snapshot>, GameSessionError<B::Error>> {
         self.validate_guard(guard)
             .map_err(GameSessionError::Guard)?;
         self.backend
-            .paused_frame_timed(elapsed_centiseconds)
+            .paused_frame_timed(elapsed_centiseconds, show_objective)
             .map_err(GameSessionError::Backend)?;
         Ok(self.snapshot())
     }

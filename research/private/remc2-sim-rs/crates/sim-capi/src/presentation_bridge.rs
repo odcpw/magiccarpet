@@ -23,6 +23,7 @@ use sim_core::{
     native_world::{
         MapType, Mc2Simulation, RuntimeRelation, TerrainPlanes, campaign_hud_palette_indices,
     },
+    presentation::world_map::{MapGeometry, WorldMapView},
 };
 
 /// Source-ordered Level 2 minimap entity presentation row.
@@ -479,6 +480,36 @@ pub(crate) fn campaign_minimap_plan(
     session: &Mc2Simulation,
     selection: CampaignSelection,
 ) -> Result<Level2MinimapPlan, String> {
+    campaign_map_plan(session, selection, &session.state, MapGeometry::MINIMAP)
+}
+
+/// The full map uses the same source classifiers, visibility and objective
+/// producers as the corner map, projected directly into its rectangular
+/// source space. The camera is the retained PlayerEvents view used by both
+/// DrawWorld and DrawMinimap, rather than the later moved player entity.
+pub(crate) fn campaign_world_map_plan(
+    session: &Mc2Simulation,
+    selection: CampaignSelection,
+    camera: sim_session::CameraPose,
+) -> Result<Level2MinimapPlan, String> {
+    let mut view = session.state.clone();
+    view.position.x = camera.x;
+    view.position.y = camera.y;
+    view.yaw = camera.yaw;
+    campaign_map_plan(session, selection, &view, MapGeometry::FULL_MAP)
+}
+
+fn campaign_map_plan(
+    session: &Mc2Simulation,
+    selection: CampaignSelection,
+    view: &FlightState,
+    geometry: MapGeometry,
+) -> Result<Level2MinimapPlan, String> {
+    let map_view = WorldMapView {
+        x: view.position.x,
+        y: view.position.y,
+        yaw: view.yaw,
+    };
     let local_player_slot = session.runtime().local_player_slot as usize;
     let local_player = session
         .players()
@@ -535,9 +566,10 @@ pub(crate) fn campaign_minimap_plan(
                 palette,
             )
         };
-        let Some(command) = command else {
+        let Some(mut command) = command else {
             continue;
         };
+        (command.x, command.y) = geometry.project(map_view, input.position);
         entities.push(Level2MinimapEntity {
             source_order: command.source_slot,
             subject_entity_index: entity.index,
@@ -572,7 +604,7 @@ pub(crate) fn campaign_minimap_plan(
                     .map(|entity| (player, entity))
             })
         {
-            let (x, y) = level1_minimap_project(&session.state, entity.position, 128, 256);
+            let (x, y) = geometry.project(map_view, entity.position);
             let palette_index = level2_day_player_colour(session, entity.index, false, palette)
                 .ok_or_else(|| "Beyond Sight player colour is unavailable".to_owned())?;
             let source_order = entities
@@ -604,7 +636,7 @@ pub(crate) fn campaign_minimap_plan(
     let objective = session
         .runtime()
         .objectives
-        .get(local_player_slot)
+        .get(usize::from(local_player.player_color_index()))
         .ok_or_else(|| "level2 minimap local objective is unavailable".to_owned())?;
     let stage_index = usize::from(objective.text_selector);
     let stage = session
@@ -616,18 +648,16 @@ pub(crate) fn campaign_minimap_plan(
     if let Some((_, target)) = session.campaign_exit_objective_target() {
         // Source completion points at the live exit trigger with an arrow
         // only; it does not surround the portal with an objective rectangle.
-        append_objective_arrow(&mut marks, &session.state, target, palette.spells);
+        append_objective_arrow(&mut marks, view, target, palette.spells, geometry);
     }
     if objective.is_level_end == 0 && stage.kind == 5 {
-        let (x, y) = level1_minimap_project(
-            &session.state,
+        let (x, y) = geometry.project(
+            map_view,
             sim_core::Position {
                 x: stage.axis_x as u16,
                 y: stage.axis_y as u16,
                 z: 0,
             },
-            LEVEL2_MINIMAP_SIDE,
-            256,
         );
         marks.push(Level2MinimapMark {
             source_order: u16::try_from(stage_index)
@@ -642,13 +672,14 @@ pub(crate) fn campaign_minimap_plan(
         });
         append_objective_arrow(
             &mut marks,
-            &session.state,
+            view,
             Position {
                 x: stage.axis_x as u16,
                 y: stage.axis_y as u16,
                 z: 0,
             },
             palette.spells,
+            geometry,
         );
     }
     if objective.is_level_end == 0 && stage.kind == 7 {
@@ -692,7 +723,7 @@ pub(crate) fn campaign_minimap_plan(
                 .get(&current)
                 .ok_or_else(|| "creature objective source link leaves its model list".to_owned())?;
             current = entity.next_relation.unwrap_or(0);
-            let (x, y) = level1_minimap_project(&session.state, entity.position, 128, 256);
+            let (x, y) = geometry.project(map_view, entity.position);
             marks.push(Level2MinimapMark {
                 source_order: marks.len() as u16,
                 subject_entity_index: entity.index,
@@ -703,14 +734,14 @@ pub(crate) fn campaign_minimap_plan(
                 help_selector: 0x52,
                 visible: u8::from(session.state.tick & 3 == 0),
             });
-            let distance = minimap_objective_distance(session.state.position, entity.position);
+            let distance = minimap_objective_distance(view.position, entity.position);
             if distance < nearest_distance {
                 nearest_distance = distance;
                 nearest = Some(entity.position);
             }
         }
         if let Some(target) = nearest {
-            append_objective_arrow(&mut marks, &session.state, target, palette.spells);
+            append_objective_arrow(&mut marks, view, target, palette.spells, geometry);
         }
     }
 
@@ -718,7 +749,7 @@ pub(crate) fn campaign_minimap_plan(
         let mut nearest = None;
         let mut nearest_distance = 0x1000000;
         for (slot, position) in session.campaign_building_objective_targets(stage_index) {
-            let (x, y) = level1_minimap_project(&session.state, position, 128, 256);
+            let (x, y) = geometry.project(map_view, position);
             marks.push(Level2MinimapMark {
                 source_order: marks.len() as u16,
                 subject_entity_index: slot,
@@ -729,14 +760,14 @@ pub(crate) fn campaign_minimap_plan(
                 help_selector: 0x52,
                 visible: u8::from(session.state.tick & 3 == 0),
             });
-            let distance = minimap_objective_distance(session.state.position, position);
+            let distance = minimap_objective_distance(view.position, position);
             if distance < nearest_distance {
                 nearest_distance = distance;
                 nearest = Some(position);
             }
         }
         if let Some(target) = nearest {
-            append_objective_arrow(&mut marks, &session.state, target, palette.spells);
+            append_objective_arrow(&mut marks, view, target, palette.spells, geometry);
         }
     }
 
@@ -769,8 +800,15 @@ fn append_objective_arrow(
     player: &FlightState,
     target: Position,
     palette_index: u8,
+    geometry: MapGeometry,
 ) {
-    let xy = minimap_objective_arrow(player, target, 128, 128, 256);
+    let xy = minimap_objective_arrow(
+        player,
+        target,
+        geometry.width,
+        geometry.height,
+        geometry.scaling,
+    );
     let first_order = marks.last().map_or(0, |mark| mark.source_order + 1);
     for (order, vertex) in [0, 1, 3, 4, 5, 6, 2].into_iter().enumerate() {
         marks.push(Level2MinimapMark {
@@ -782,6 +820,51 @@ fn append_objective_arrow(
             visible: u8::from(player.tick & 0x40 != 0 && (player.tick / 6) & 1 != 0),
             ..Level2MinimapMark::default()
         });
+    }
+}
+
+#[test]
+fn world_map_plan_projects_live_opening_entities_with_the_retained_camera() {
+    let generated = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../generated");
+    for (name, selection) in [
+        (
+            "mc-bhq8-level1-collision-v5-night",
+            CampaignSelection::LEVEL1,
+        ),
+        ("level2-day-block32-campaign-v2", CampaignSelection::LEVEL2),
+        (
+            "level3-day-block32-campaign-recipe-v2",
+            CampaignSelection::LEVEL3,
+        ),
+        (
+            "mc-bhq6-ordinary-20261025-zclu5fjj/level4",
+            CampaignSelection::ordinary(4).unwrap(),
+        ),
+    ] {
+        let campaign =
+            sim_core::campaign::CampaignSession::open(generated.join(name), selection).unwrap();
+        let session = campaign.simulation();
+        let mut camera = session.world_map_camera();
+        camera.x = camera.x.wrapping_add(1_024);
+        camera.yaw = camera.yaw.wrapping_add(128);
+        let map = campaign_world_map_plan(session, selection, camera).unwrap();
+        let minimap = campaign_minimap_plan(session, selection).unwrap();
+        assert!(!map.entities.is_empty(), "{name}: live source entities");
+        assert_eq!(map.entities.len(), minimap.entities.len(), "{name}");
+        for (row, corner) in map.entities.iter().zip(&minimap.entities) {
+            assert_eq!(
+                row.subject_entity_index, corner.subject_entity_index,
+                "{name}"
+            );
+            assert_eq!(row.selector, corner.selector, "{name}");
+            assert_eq!(row.palette_index, corner.palette_index, "{name}");
+            let entity = &session.entities()[usize::from(row.subject_entity_index)];
+            assert_eq!(
+                (row.x, row.y),
+                MapGeometry::FULL_MAP.project(camera.into(), entity.position),
+                "{name}"
+            );
+        }
     }
 }
 
@@ -915,7 +998,7 @@ fn objective_arrow_preserves_source_vertex_order_and_native_pulse() {
     let before = player.clone();
     let xy = minimap_objective_arrow(&player, target, 128, 128, 256);
     let mut marks = Vec::new();
-    append_objective_arrow(&mut marks, &player, target, 123);
+    append_objective_arrow(&mut marks, &player, target, 123, MapGeometry::MINIMAP);
     assert_eq!(marks.len(), 7);
     for (order, vertex) in [0, 1, 3, 4, 5, 6, 2].into_iter().enumerate() {
         assert_eq!(
@@ -928,7 +1011,7 @@ fn objective_arrow_preserves_source_vertex_order_and_native_pulse() {
     assert_eq!(player, before);
     player.tick = 64;
     marks.clear();
-    append_objective_arrow(&mut marks, &player, target, 123);
+    append_objective_arrow(&mut marks, &player, target, 123, MapGeometry::MINIMAP);
     assert!(marks.iter().all(|mark| mark.visible == 0));
 }
 

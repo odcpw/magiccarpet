@@ -9,6 +9,80 @@ namespace MagicCarpet.Native.Tests
     public sealed class NativeCampaignSessionEditModeTests
     {
         [Test]
+        public void OpeningNativeWorldScenesPresentOnceWithoutASecondSpritePass()
+        {
+            Assert.That(SystemInfo.graphicsDeviceType,
+                Is.Not.EqualTo(UnityEngine.Rendering.GraphicsDeviceType.Null));
+            var generated = Path.GetFullPath(Path.Combine(Application.dataPath, "../../generated"));
+            var packages = new[] {
+                "mc-bhq8-level1-collision-v5-night", "mc-level2-vault-successor-closure-20261025",
+                "level3-day-block32-campaign-recipe-v2", "mc-bhq6-ordinary-20261025-zclu5fjj/level4"
+            };
+            var caches = new[] {
+                "mc-oi62-environment-level1-v2", "mc-level2-vault-successor-environment-20261025",
+                "mc-level3-environment-exit-20261025", "mc-oi62-environment-level4-audio-v3"
+            };
+            var capture = new Texture2D(320, 200, TextureFormat.RGBA32, false, true);
+            var previous = RenderTexture.active;
+            try
+            {
+                for (var level = 1; level <= 4; level++)
+                {
+                    var package = Path.Combine(generated, packages[level - 1]);
+                    var cachePath = Path.Combine(generated, caches[level - 1]);
+                    var cache = OwnerAssetCache.OpenAndValidateEnvironment(cachePath, package);
+                    using var native = NativeCampaignSession.Open(package,
+                        NativeSim.CampaignSelection.Create((ushort)level, (ushort)(level - 1),
+                            (byte)(level == 1 ? 1 : level == 4 ? 2 : 0)), cachePath);
+                    using var surface = new CampaignPresentationSurface();
+                    surface.PresentEnvironment(native, cache, 0);
+                    Assert.That(native.SceneSpritesComposited, Is.True,
+                        "the scene copy must carry its own committed native world-composition flag");
+                    var revision = native.SceneFrameRevision;
+                    var expected = (byte[])native.SceneFrameIndices.Clone();
+                    var materialCamera = surface.FrameCamera.transform.parent
+                        .GetComponentsInChildren<Camera>().Single(camera => camera.depth == -100f);
+                    materialCamera.Render();
+                    RenderTexture.active = materialCamera.targetTexture;
+                    capture.ReadPixels(new Rect(0, 0, 320, 200), 0, 0); capture.Apply();
+                    var actual = capture.GetPixels32();
+                    var actualIndices = new byte[320 * 200];
+                    for (var y = 0; y < 200; y++)
+                        for (var x = 0; x < 320; x++)
+                            actualIndices[(199 - y) * 320 + x] = actual[y * 320 + x].r;
+                    CollectionAssert.AreEqual(expected, actualIndices, $"native world pixels level={level}");
+                    Assert.That(surface.Root.GetComponentsInChildren<CampaignEntitySurfaceMarker>(), Is.Empty,
+                        "a complete native world must not load and materialize a duplicate Unity sprite world");
+                    surface.PresentEnvironment(native, cache, 0);
+                    Assert.That(native.SceneFrameRevision, Is.EqualTo(revision));
+                    CollectionAssert.AreEqual(expected, native.SceneFrameIndices);
+                    surface.PresentEnvironment(native, cache, 0, true);
+                    var map = native.WorldMap(native.Tick);
+                    var mapPixels = (byte[])map.indices.Clone();
+                    var divider = cache.ReadOutput(cache.EnvironmentMaterials.colors.path)[0];
+                    for (var y = 0; y < 200; y++)
+                    {
+                        Assert.That(mapPixels[y * 320 + 191], Is.EqualTo(divider));
+                        Assert.That(mapPixels[y * 320 + 192], Is.EqualTo(divider));
+                    }
+                    Assert.That(map.entities.Length, Is.EqualTo(map.state.entityCount));
+                    Assert.That(map.marks.Length, Is.EqualTo(map.state.markCount));
+                    CollectionAssert.AreEqual(mapPixels, native.WorldMap(native.Tick).indices,
+                        $"map reads preserve native viewport history level={level}");
+                    surface.PresentEnvironment(native, cache, 0, true);
+                    surface.PresentEnvironment(native, cache, 0);
+                    Assert.That(native.SceneFrameRevision, Is.EqualTo(revision));
+                    CollectionAssert.AreEqual(expected, native.SceneFrameIndices);
+                }
+            }
+            finally
+            {
+                RenderTexture.active = previous;
+                UnityEngine.Object.DestroyImmediate(capture);
+            }
+        }
+
+        [Test]
         public void SourceSpriteCompositorUsesPriorIndexedDestinationFogOrderAndTerrainCoverage()
         {
             Assert.That(SystemInfo.graphicsDeviceType,

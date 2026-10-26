@@ -630,7 +630,7 @@ fn render_level1_frame(
 ) -> Result<Level1TerrainFrame, TerrainFrameError> {
     validate_resources(&resources)?;
     let projection = if map_right_viewport {
-        level1_map_projection(camera)
+        source_map_projection(camera)
     } else {
         level1_projection(camera)
     };
@@ -675,7 +675,7 @@ fn render_level1_frame(
     };
     let plan = submit_outdoor_grid(eye_for_submission, &lattice, &projected);
     let mut indices = if map_right_viewport {
-        draw_level1_map_sky(camera, resources.sky)?
+        draw_source_map_sky(camera, resources.sky)?
     } else {
         draw_level1_sky(camera, resources.sky)?
     };
@@ -3024,7 +3024,7 @@ pub fn level1_projection(camera: Level1TerrainFrameCamera) -> OutdoorProjection 
 }
 
 #[must_use]
-fn level1_map_projection(camera: Level1TerrainFrameCamera) -> OutdoorProjection {
+pub(crate) fn source_map_projection(camera: Level1TerrainFrameCamera) -> OutdoorProjection {
     const WIDTH: i32 = 128;
     const HEIGHT: i32 = 200;
     let diagonal = legacy_sqrt(u32::try_from(WIDTH * WIDTH + HEIGHT * HEIGHT).unwrap()) as i32;
@@ -3052,7 +3052,7 @@ pub fn draw_level1_sky(
     draw_level1_sky_viewport(camera, sky, LEVEL1_VIEW_WIDTH, 0)
 }
 
-fn draw_level1_map_sky(
+pub(crate) fn draw_source_map_sky(
     camera: Level1TerrainFrameCamera,
     sky: &[u8],
 ) -> Result<Vec<u8>, TerrainFrameError> {
@@ -3079,7 +3079,7 @@ fn draw_level1_sky_viewport(
     let projection = if viewport_width == LEVEL1_VIEW_WIDTH {
         level1_projection(camera)
     } else {
-        level1_map_projection(camera)
+        source_map_projection(camera)
     };
     let roll = i32::from(camera.roll) & 0x07ff;
     let cos = SIN_16_16[usize::try_from(512 + roll).expect("masked sky cosine index")];

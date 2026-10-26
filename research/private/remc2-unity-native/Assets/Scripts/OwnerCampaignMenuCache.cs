@@ -70,6 +70,7 @@ namespace MagicCarpet.Native
             public StartupBinding startup;
             public PortalAnimationBinding portal_animation;
             public SourcePauseMenu.Binding pause;
+            public SourceCampaignMap.Binding campaign;
         }
 
         private readonly Dictionary<string, Mission> missions;
@@ -84,6 +85,7 @@ namespace MagicCarpet.Native
         internal PortalAnimationBinding PortalAnimation { get; private set; }
         internal SourceMenuText StartupText { get; private set; }
         internal SourcePauseMenu PauseMenu { get; private set; }
+        internal SourceCampaignMap Campaign { get; private set; }
 
         internal OwnerCampaignMenuCache(string path)
         {
@@ -235,6 +237,8 @@ namespace MagicCarpet.Native
                     portalSound = Read(sound.path, manifest.outputs.Single(row => row.path == sound.path).bytes);
                 }
                 if (manifest.pause != null) PauseMenu = new SourcePauseMenu(manifest.pause, Read, LanguageText);
+                if (manifest.campaign != null)
+                    Campaign = new SourceCampaignMap(manifest.campaign, Read, indices, palette);
                 if (consumedOutputs.Count != manifest.outputs.Length)
                     throw new InvalidDataException("campaign cache contains unbound output receipts");
             }
@@ -398,6 +402,9 @@ namespace MagicCarpet.Native
             {
                 var mission = ForMission(level);
                 var completed = menu.completed_levels.Contains(level);
+                // NewGameDraw state4 shows the earned result before opening
+                // the next portal. State3/5 admits the available portal.
+                if (menu.phase == "results" && !completed) continue;
                 var selected = selector != null && PortalAnimation != null ? selector(level, completed) : -2;
                 if (selected == -1) continue; // Source first pass opens sound before drawing.
                 var texture = selected >= 0 ? PortalBitmap(selected) : portals[completed ? "completed" : "available"];
@@ -424,6 +431,8 @@ namespace MagicCarpet.Native
             StartupText = null;
             PauseMenu?.Dispose();
             PauseMenu = null;
+            Campaign?.Dispose();
+            Campaign = null;
             foreach (var texture in portals.Values) Destroy(texture);
             portals.Clear();
             foreach (var texture in startupBitmaps.Values) Destroy(texture);

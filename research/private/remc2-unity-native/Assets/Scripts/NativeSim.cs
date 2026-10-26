@@ -543,7 +543,8 @@ namespace MagicCarpet.Native
             internal ushort brightness;
             internal uint drawOrder;
             internal uint controlFlags;
-            internal uint reserved;
+            internal short primaryDepthAdjustment;
+            internal ushort reserved;
         }
 
         [StructLayout(LayoutKind.Sequential)]
@@ -2456,7 +2457,22 @@ namespace MagicCarpet.Native
         internal static extern int mc_native_campaign_scene_frame_copy(
             ulong handle, ulong generation, ulong expectedTick,
             [Out] byte[] indices, uint capacity, out uint written,
-            out ulong revision, out byte blurMode, out byte useExitTables);
+            out ulong revision, out byte blurMode, out byte useExitTables,
+            out byte sourceSpritesComposited);
+
+        [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+        internal static extern int mc_native_campaign_world_map_copy(
+            ulong handle, ulong generation, ulong expectedTick,
+            [Out] byte[] indices, uint indexCapacity,
+            [Out] byte[] palette, uint paletteCapacity,
+            [Out] CampaignMinimapEntity[] entities, uint entityCapacity,
+            [Out] CampaignMinimapMark[] marks, uint markCapacity,
+            ref CampaignMinimapState state, uint stateSize);
+
+        [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+        internal static extern int mc_native_campaign_world_map_labels_json(
+            ulong handle, ulong generation, ulong expectedTick,
+            IntPtr buffer, uint capacity, out uint length);
 
         [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
         internal static extern int mc_native_campaign_cave_occlusion_copy(
@@ -2659,7 +2675,7 @@ namespace MagicCarpet.Native
         [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
         internal static extern int mc_game_runtime_paused_frame_timed_v1(
             ulong handle, ulong runtimeGeneration, ulong sessionGeneration,
-            ulong expectedTick, uint elapsedCentiseconds);
+            ulong expectedTick, uint elapsedCentiseconds, byte showObjective);
 
         [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
         internal static extern int mc_game_runtime_resume_v1(
@@ -3351,7 +3367,8 @@ namespace MagicCarpet.Native
             RequireOffset<CampaignEntityPresentation>(nameof(CampaignEntityPresentation.brightness), 50);
             RequireOffset<CampaignEntityPresentation>(nameof(CampaignEntityPresentation.drawOrder), 52);
             RequireOffset<CampaignEntityPresentation>(nameof(CampaignEntityPresentation.controlFlags), 56);
-            RequireOffset<CampaignEntityPresentation>(nameof(CampaignEntityPresentation.reserved), 60);
+            RequireOffset<CampaignEntityPresentation>(nameof(CampaignEntityPresentation.primaryDepthAdjustment), 60);
+            RequireOffset<CampaignEntityPresentation>(nameof(CampaignEntityPresentation.reserved), 62);
             RequireOffset<CampaignShieldSnapshot>(nameof(CampaignShieldSnapshot.parentStatusFlags), 48);
             RequireOffset<CampaignInvisibleSnapshot>(nameof(CampaignInvisibleSnapshot.parentStatusFlags), 52);
             RequireOffset<CampaignBeyondSightSnapshot>(nameof(CampaignBeyondSightSnapshot.experienceAwarded), 52);

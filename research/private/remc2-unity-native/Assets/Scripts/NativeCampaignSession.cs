@@ -72,6 +72,7 @@ namespace MagicCarpet.Native
         internal ulong SceneFrameRevision { get; private set; }
         internal byte SceneBlurMode { get; private set; }
         internal bool SceneUseExitTables { get; private set; }
+        internal bool SceneSpritesComposited { get; private set; }
 
         private NativeCampaignSession(
             ulong handle,
@@ -698,13 +699,16 @@ namespace MagicCarpet.Native
                 dayIndexedFrameIndices.Length);
             NativeSession.Check(NativeSim.mc_native_campaign_scene_frame_copy(
                 Handle, generation, expectedTick, SceneFrameIndices, (uint)SceneFrameIndices.Length,
-                out var sceneWritten, out var sceneRevision, out var blurMode, out var useExitTables),
+                out var sceneWritten, out var sceneRevision, out var blurMode, out var useExitTables,
+                out var sourceSpritesComposited),
                 "copy composed-world source inputs");
-            if (sceneWritten != SceneFrameIndices.Length || blurMode > 2 || useExitTables > 1)
+            if (sceneWritten != SceneFrameIndices.Length || blurMode > 2 || useExitTables > 1 ||
+                sourceSpritesComposited > 1)
                 throw new InvalidOperationException("Scene frame returned incomplete bytes or invalid source state");
             SceneFrameRevision = sceneRevision;
             SceneBlurMode = blurMode;
             SceneUseExitTables = useExitTables != 0;
+            SceneSpritesComposited = sourceSpritesComposited != 0;
             {
                 // The retained ABI name is historical; outdoor and Cave
                 // frames both supply source painter-order coverage.
@@ -919,6 +923,29 @@ namespace MagicCarpet.Native
                 throw new InvalidOperationException(
                     "native Level 2 Day HUD spell row is outside qualified owner roots");
             }
+        }
+
+        private readonly byte[] worldMapIndices = new byte[320 * 200];
+        private readonly byte[] worldMapPalette = new byte[768];
+        private readonly NativeSim.CampaignMinimapEntity[] worldMapEntities = new NativeSim.CampaignMinimapEntity[1000];
+        private readonly NativeSim.CampaignMinimapMark[] worldMapMarks = new NativeSim.CampaignMinimapMark[64];
+
+        internal (byte[] indices, byte[] palette, NativeSim.CampaignMinimapState state,
+            NativeSim.CampaignMinimapEntity[] entities, NativeSim.CampaignMinimapMark[] marks)
+            WorldMap(ulong expectedTick)
+        {
+            var state = default(NativeSim.CampaignMinimapState);
+            NativeSession.Check(NativeSim.mc_native_campaign_world_map_copy(
+                Handle, generation, expectedTick, worldMapIndices, (uint)worldMapIndices.Length,
+                worldMapPalette, (uint)worldMapPalette.Length,
+                worldMapEntities, (uint)worldMapEntities.Length,
+                worldMapMarks, (uint)worldMapMarks.Length, ref state, 72), "copy source split world map");
+            ValidateMinimapState(state, generation, expectedTick);
+            var entities = worldMapEntities.Take(checked((int)state.entityCount)).ToArray();
+            var marks = worldMapMarks.Take(checked((int)state.markCount)).ToArray();
+            ValidateMinimapEntities(entities, generation, expectedTick);
+            ValidateMinimapMarks(marks, generation, expectedTick);
+            return (worldMapIndices, worldMapPalette, state, entities, marks);
         }
 
         internal NativeSim.CampaignMinimapState MinimapState(ulong expectedTick)

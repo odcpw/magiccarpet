@@ -985,8 +985,11 @@ impl SourceSchedulerWorld for Level2SourceSchedulerWorld<'_, '_> {
             }
             PassPhase::PreDispatch => {
                 let live = &mut self.owner.session.state.live;
-                live.economy
-                    .advance_authored_firefly_stage_rows(&mut live.core.runtime)?;
+                creatures::stage_route::update_shared_stage_variables(
+                    &mut live.core.runtime,
+                    &live.economy.entities,
+                    &self.pass_start_class5_model_slots,
+                );
                 // Authored groups are consumed synchronously by the numeric
                 // source callback which fires their class-11 producer.  A
                 // live producer row is not itself proof that the callback has
@@ -1043,10 +1046,20 @@ impl SourceSchedulerWorld for Level2SourceSchedulerWorld<'_, '_> {
                             state.roll_accumulator,
                         )),
                     );
+                    creatures::stage_route::prepare_source_pass(
+                        &mut live.economy,
+                        &mut live.core.runtime,
+                        &self.pass_start_class5_model_slots[3],
+                    );
                     level2_class5::archer::prepare_archer_source_pass(
                         &mut live.economy,
                         &mut live.core.runtime,
                         &self.pass_start_class5_model_slots,
+                    );
+                    creatures::stage_route::prepare_source_pass(
+                        &mut live.economy,
+                        &mut live.core.runtime,
+                        &self.pass_start_class5_model_slots[9],
                     );
                     creatures::settlements::runtime::prepare_source_pass(
                         &mut live.economy,
@@ -1060,6 +1073,8 @@ impl SourceSchedulerWorld for Level2SourceSchedulerWorld<'_, '_> {
                         &live.terrain,
                         &self.pass_start_class5_model_slots,
                     );
+                    live.economy
+                        .advance_authored_firefly_stage_rows(&mut live.core.runtime)?;
                     creatures::spider::mc2::prepare_source_pass(
                         &mut live.economy,
                         &mut live.core.runtime,
@@ -4925,7 +4940,7 @@ impl Mc2Simulation {
         state: FlightState,
         terrain: SessionTerrain,
         entities: Box<[EntitySnapshot]>,
-        players: Box<[PlayerSnapshot]>,
+        mut players: Box<[PlayerSnapshot]>,
         runtime: RuntimeSnapshot,
         presentation: PresentationSelectors,
         bad_stones: Box<[Level2BadStone]>,
@@ -4945,6 +4960,15 @@ impl Mc2Simulation {
         // stages, and player rows; this constructor only projects that
         // qualified frame zero into the generic flight session.
         let local_player = shared_spells.local_player.clone();
+        for player in &mut players {
+            if let Some(authoritative) = shared_spells
+                .players()
+                .iter()
+                .find(|candidate| candidate.entity_index == player.entity_index)
+            {
+                player.clone_from(authoritative);
+            }
+        }
         let caster = shared_spells.caster;
         let enabled_holder_indices = local_player.enabled_spell_holders;
         let selected_family = SOURCE_SPELL_INDEX_MAP
@@ -6337,6 +6361,35 @@ impl Mc2Simulation {
                         .iter()
                         .position(|slot| *slot == entity_index)
                         .map_or(u32::MAX, |ordinal| ordinal as u32);
+                    let primary_depth_adjustment = if control_flags & 0x2000_0000 != 0 {
+                        let body =
+                            self.entities()
+                                .get(usize::from(entity_index))
+                                .ok_or_else(|| {
+                                    NativeWorldError::new("multipart sprite has no source entity")
+                                })?;
+                        let parent_slot = u16::from_le_bytes(
+                            body.record_bytes()[54..56]
+                                .try_into()
+                                .expect("source word32"),
+                        );
+                        let parent =
+                            self.entities()
+                                .get(usize::from(parent_slot))
+                                .ok_or_else(|| {
+                                    NativeWorldError::new(
+                                        "multipart sprite parent is outside the source arena",
+                                    )
+                                })?;
+                        crate::campaign::sprite_render::source_multipart_primary_depth_adjustment(
+                            body.record_bytes()[63],
+                            parent.yaw as u16,
+                            camera_yaw,
+                        )
+                        .map_err(NativeWorldError::new)?
+                    } else {
+                        0
+                    };
                     Ok(CampaignEntityPresentation {
                         entity_index,
                         source_id,
@@ -6356,6 +6409,7 @@ impl Mc2Simulation {
                         brightness: pixels.brightness,
                         draw_order,
                         control_flags,
+                        primary_depth_adjustment,
                     })
                 },
             )
@@ -15551,6 +15605,16 @@ impl Mc2Simulation {
                     live.shared_spells.player_entity.set_yaw(yaw);
                     live.shared_spells
                         .sync_typed_spell_parent_caches_from_player_entity();
+                    for player in &mut live.core.players {
+                        player_damage::publish_flight_feedback(&live.core.state, player);
+                    }
+                    for player in &mut live.shared_spells.players {
+                        player_damage::publish_flight_feedback(&live.core.state, player);
+                    }
+                    player_damage::publish_flight_feedback(
+                        &live.core.state,
+                        &mut live.shared_spells.local_player,
+                    );
                 }
             }
             (ExistingHandler::SpellHolderAndPickup, SourceRoute::SpeedPickup) => {
@@ -16992,56 +17056,13 @@ impl Mc2Simulation {
         let stage_index = u8::try_from(stage_relation).map_err(|_| {
             format!("model-9 StageVar relation {stage_relation} exceeds source byte width")
         })?;
-        let stage_variable = self
-            .session
-            .state
-            .live
-            .core
-            .runtime
-            .stage_variables
-            .get(usize::from(stage_index))
-            .copied()
-            .ok_or_else(|| format!("model-9 StageVar relation {stage_index} is out of bounds"))?;
-        let old_counter = (stage_variable.word_2 >> 8) as u8;
-        if !self
-            .session
-            .state
-            .live
-            .core
-            .runtime
-            .advance_level2_stage_variable_counter(stage_index)
-        {
-            return Err(format!(
-                "model-9 StageVar relation {stage_index} could not advance its raw carrier"
-            ));
-        }
-        let reject = match stage_variable.flags as u8 & 0x60 {
-            0x20 => old_counter & 3 == 3,
-            0x40 => old_counter & 1 != 0,
-            0x60 => old_counter & 3 != 0,
-            _ => false,
-        };
-        if reject {
-            return Err(format!(
-                "model-9 StageVar relation {stage_index} reached source thinning before sub_12470 is admitted"
-            ));
-        }
-        let word_0x4a = if stage_variable.kind == 6 {
-            match stage_variable.relation {
-                RuntimeRelation::Scalar(value) | RuntimeRelation::AxisScalar(value) => value as u16,
-                RuntimeRelation::AuthoredFeature(value)
-                | RuntimeRelation::LiveEntity(value)
-                | RuntimeRelation::LiveEntityIndex(value) => value,
-                RuntimeRelation::Null => 0,
-            }
-        } else {
-            0
-        };
-        let source = &mut self.session.state.live.economy.entities[usize::from(source_slot)];
-        source.set_source_action(source.model.wrapping_mul(8).wrapping_add(7));
-        source.record[76] = stage_index;
-        source.record[77] = stage_variable.kind as u8;
-        source.record[78..80].copy_from_slice(&word_0x4a.to_le_bytes());
+        let live = &mut self.session.state.live;
+        creatures::stage_route::bind_source(
+            &mut live.economy,
+            &mut live.core.runtime,
+            source_slot,
+            stage_index,
+        )?;
         Ok(())
     }
 
@@ -22730,6 +22751,9 @@ impl Mc2Simulation {
             .shared_spells
             .absorb_player_shield_damage(player_entity_index, damage, attacker);
         let applied_damage = shield_damage.map_or(damage, |damage| damage.applied_damage);
+        if shield_damage.is_some() {
+            award_source_spell_experience(&mut self.session.state.live, player_entity_index, 6);
+        }
         self.session.state.live.player_life = self
             .session
             .state
@@ -22818,6 +22842,39 @@ impl Mc2Simulation {
             .live
             .shared_spells
             .set_player_entity_damage_result(killer, attacker, lethal);
+        let feedback = {
+            let live = &mut self.session.state.live;
+            let attacker_position = live.economy.entities[usize::from(attacker)].position;
+            let numeric_player = &mut live.economy.entities[usize::from(player_entity_index)];
+            let sound = player_damage::receive_hit(
+                &mut live.core.state,
+                numeric_player,
+                attacker_position,
+                applied_damage,
+                lethal,
+            );
+            live.shared_spells
+                .sync_player_entity_from_authority(numeric_player);
+            for player in &mut live.core.players {
+                player_damage::publish_flight_feedback(&live.core.state, player);
+            }
+            for player in &mut live.shared_spells.players {
+                player_damage::publish_flight_feedback(&live.core.state, player);
+            }
+            player_damage::publish_flight_feedback(
+                &live.core.state,
+                &mut live.shared_spells.local_player,
+            );
+            live.economy
+                .fields
+                .palette
+                .request(crate::world::fields::PaletteRequest { mode: 2, count: 0 });
+            if let Some(effects) = live.core.context.effects.as_mut() {
+                effects.palette_submode = 2;
+            }
+            sound
+        };
+        self.push_flight_effect(feedback);
         shield_damage
             .is_none()
             .then_some((damage, attacker, lethal))

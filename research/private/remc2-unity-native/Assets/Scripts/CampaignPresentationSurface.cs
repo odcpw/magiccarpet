@@ -152,6 +152,7 @@ namespace MagicCarpet.Native
         private CampaignMinimapOverlay minimapOverlay;
         private readonly byte[] presentedIndices = new byte[320 * 200];
         private readonly SourceMinimapLabels sourceMinimapLabels = new();
+        private byte fullMapCrossColor;
         private readonly Dictionary<int, MinimapSymbolPixels> minimapSymbols = new();
         internal sealed class MinimapSymbolPixels
         {
@@ -182,6 +183,7 @@ namespace MagicCarpet.Native
         private Texture2D sceneBlendTable, exitBlendTable;
         private Texture2D spriteTables;
         private CampaignSpriteCompositor spriteCompositor;
+        private bool nativeSpritesComposited;
         private ulong pendingSceneGeneration, pendingSceneRevision;
         private ulong historyGeneration, historyRevision;
         private byte pendingSceneBlur;
@@ -247,12 +249,24 @@ namespace MagicCarpet.Native
                 composedCamera.enabled = !Application.isBatchMode;
                 frameCamera.targetTexture = sceneTarget;
                 entityCamera.targetTexture = sceneTarget;
-                spriteCompositor = new CampaignSpriteCompositor(entityCamera, sceneTarget);
                 // Finalize at the following camera's render boundary: both
                 // the terrain and sprite cameras have finished this target.
                 // Capturing inside the sprite callback can consume the
                 // native revision before its pixels reach the shared target.
                 composedCamera.gameObject.AddComponent<CampaignIndexedSceneCapture>().Captured = CompleteComposedScene;
+            }
+            nativeSpritesComposited = session.SceneSpritesComposited;
+            if (nativeSpritesComposited)
+            {
+                // Native source order includes reflected sprites before water
+                // and each shadow before its primary. Redrawing any of those
+                // indexed destination operations here would apply them twice.
+                spriteCompositor?.Dispose();
+                spriteCompositor = null;
+            }
+            else
+            {
+                spriteCompositor ??= new CampaignSpriteCompositor(entityCamera, sceneTarget);
             }
             if (session.SceneUseExitTables && exitBlendTable == null)
                 throw new InvalidOperationException("native GTD2 selection has no retained exit table");
@@ -482,14 +496,15 @@ namespace MagicCarpet.Native
         internal bool LiveMinimapReady { get; private set; }
         internal int EntitySurfaceCount => entities.Count;
         internal int RenderedEntitySurfaceCount => entities.Values.Count(row => row.SpriteReady);
+        internal bool NativeSceneComplete => nativeSpritesComposited && WorldReady;
         internal int HudBitmapSurfaceCount { get; private set; }
         internal int SpellTierSurfaceCount { get; private set; }
         internal int LiveSpellSurfaceCount { get; private set; }
         internal string CacheContentHash { get; private set; }
 
-        internal void PresentNight(NativeCampaignSession session, OwnerAssetCache cache, short cameraYaw)
+        internal void PresentNight(NativeCampaignSession session, OwnerAssetCache cache, short cameraYaw, bool fullMap = false)
         {
-            if (cache?.IsEnvironment == true) { PresentEnvironment(session, cache, cameraYaw); return; }
+            if (cache?.IsEnvironment == true) { PresentEnvironment(session, cache, cameraYaw, fullMap); return; }
             if (disposed) throw new ObjectDisposedException(nameof(CampaignPresentationSurface));
             if (session == null || cache == null || cache.IsDayAggregate ||
                 session.Selection.externalLevel != 1 || session.Selection.internalLevel != 0 ||
@@ -548,9 +563,9 @@ namespace MagicCarpet.Native
             CacheContentHash = cache.ContentHash;
         }
 
-        internal void Present(NativeCampaignSession session, OwnerAssetCache cache, short cameraYaw = 0)
+        internal void Present(NativeCampaignSession session, OwnerAssetCache cache, short cameraYaw = 0, bool fullMap = false)
         {
-            if (cache?.IsEnvironment == true) { PresentEnvironment(session, cache, cameraYaw); return; }
+            if (cache?.IsEnvironment == true) { PresentEnvironment(session, cache, cameraYaw, fullMap); return; }
             if (disposed) throw new ObjectDisposedException(nameof(CampaignPresentationSurface));
             if (session == null) throw new ArgumentNullException(nameof(session));
             if (cache == null || !cache.IsDayAggregate)
@@ -610,7 +625,7 @@ namespace MagicCarpet.Native
         /// Bind selected original materials to the live authority's indexed
         /// frame. A surface belongs to one package/generation; replacement is
         /// owned by its lifecycle caller and disposes these GPU resources.
-        internal void PresentEnvironment(NativeCampaignSession session, OwnerAssetCache cache, short cameraYaw = 0)
+        internal void PresentEnvironment(NativeCampaignSession session, OwnerAssetCache cache, short cameraYaw = 0, bool fullMap = false)
         {
             if (disposed) throw new ObjectDisposedException(nameof(CampaignPresentationSurface));
             if (session == null || cache?.EnvironmentMaterials == null)
@@ -629,12 +644,29 @@ namespace MagicCarpet.Native
             var tick = session.Tick;
             // Retrieve all authoritative inputs before changing the visible
             // surface. Native resource validation already happened on open.
-            var frame = session.CopyDayIndexedFrame(tick);
-            var entities = session.Entities();
-            var presentations = session.EntityPresentations(cameraYaw);
-            var minimap = session.MinimapState(tick);
-            var minimapEntities = session.MinimapEntities(tick, minimap);
-            var minimapMarks = session.MinimapMarks(tick, minimap);
+            var frame = fullMap ? new NativeSim.CampaignDayIndexedFrameInfo { generation = generation, tick = tick }
+                : session.CopyDayIndexedFrame(tick);
+            var entities = fullMap || session.SceneSpritesComposited ? null : session.Entities();
+            var presentations = fullMap || session.SceneSpritesComposited ? null : session.EntityPresentations(cameraYaw);
+            NativeSim.CampaignMinimapState minimap;
+            NativeSim.CampaignMinimapEntity[] minimapEntities;
+            NativeSim.CampaignMinimapMark[] minimapMarks;
+            byte[] palette;
+            if (fullMap)
+            {
+                var map = session.WorldMap(tick);
+                Buffer.BlockCopy(map.indices, 0, presentedIndices, 0, presentedIndices.Length);
+                minimap = map.state; minimapEntities = map.entities; minimapMarks = map.marks;
+                palette = map.palette;
+            }
+            else
+            {
+                minimap = session.MinimapState(tick);
+                minimapEntities = session.MinimapEntities(tick, minimap);
+                minimapMarks = session.MinimapMarks(tick, minimap);
+                Buffer.BlockCopy(session.CampaignFrameIndices, 0, presentedIndices, 0, presentedIndices.Length);
+                palette = session.DayIndexedFramePalette;
+            }
             if (frame.generation != generation || frame.tick != tick)
                 throw new InvalidOperationException("environment native frame identity differs");
             if (environmentCache == null)
@@ -646,6 +678,7 @@ namespace MagicCarpet.Native
                 environmentSessionHandle = session.Handle;
                 MaterializeWeb(cache);
                 minimapTables = cache.ReadOutput(descriptor.tables.path);
+                fullMapCrossColor = cache.ReadOutput(descriptor.colors.path)[4095];
                 foreach (var row in descriptor.tmaps.textures)
                     if (!row.source_empty) materialRows.Add(row.index, row);
                 var sprites = descriptor.bitmap_banks.Single(bank => bank.bank == profile.sprites);
@@ -655,19 +688,23 @@ namespace MagicCarpet.Native
                         Mask = cache.ReadOutput(row.mask_path)
                     });
             }
-            foreach (var row in presentations)
-                if (!materialRows.ContainsKey(row.selectedTmap))
-                    throw new InvalidOperationException($"selected environment TMAP {row.selectedTmap} is empty or absent");
-            Buffer.BlockCopy(session.CampaignFrameIndices, 0, presentedIndices, 0, presentedIndices.Length);
-            MaterializeMinimapPixels(presentedIndices, minimapEntities, minimapTables, generation, tick, minimapSymbols);
+            if (presentations != null)
+                foreach (var row in presentations)
+                    if (!materialRows.ContainsKey(row.selectedTmap))
+                        throw new InvalidOperationException($"selected environment TMAP {row.selectedTmap} is empty or absent");
+            MaterializeMinimapPixels(presentedIndices, minimapEntities, minimapTables, generation, tick, minimapSymbols, fullMap);
             if ((minimap.visibilityFlags & 8) != 0)
-                sourceMinimapLabels.Materialize(presentedIndices, session, cache, minimapTables, generation, tick);
+                sourceMinimapLabels.Materialize(presentedIndices, session, cache, minimapTables, generation, tick, fullMap);
             else sourceMinimapLabels.Clear();
-            MaterializeMinimapMarks(presentedIndices, minimapMarks, minimapTables, generation, tick);
-            var palette = session.DayIndexedFramePalette;
-            EnsureWorld(session.SceneFrameIndices, palette);
-            PrepareComposedScene(session, cache);
-            MaterializeCaveOcclusion(session);
+            if (fullMap) MaterializeMapCross(presentedIndices, minimapTables, fullMapCrossColor);
+            MaterializeMinimapMarks(presentedIndices, minimapMarks, minimapTables, generation, tick, fullMap);
+            EnsureWorld(fullMap ? presentedIndices : session.SceneFrameIndices, palette);
+            if (!fullMap)
+            {
+                PrepareComposedScene(session, cache);
+                if (!session.SceneSpritesComposited) MaterializeCaveOcclusion(session);
+            }
+            else nativeSpritesComposited = true;
             entityPaletteSource = palette;
             if (hudPalette != null)
             {
@@ -675,14 +712,15 @@ namespace MagicCarpet.Native
                 hudPalette.Apply(false, false);
             }
             minimapOverlay ??= root.gameObject.AddComponent<CampaignMinimapOverlay>();
-            minimapOverlay.Present(presentedIndices, palette, minimapTables, sourceMinimapLabels.Coverage);
+            minimapOverlay.Present(presentedIndices, palette, minimapTables, sourceMinimapLabels.Coverage, fullMap);
             RefreshWebPalette(palette);
             minimapOverlay.PresentWeb(webTexture, webVisible);
-            MaterializeEntities(entities, presentations, cache, generation, tick);
+            if (!fullMap && !session.SceneSpritesComposited)
+                MaterializeEntities(entities, presentations, cache, generation, tick);
             LiveMinimapReady = minimap.entityCount == (uint)minimapEntities.Length && minimap.markCount == (uint)minimapMarks.Length;
             Generation = generation;
             Tick = tick;
-            FrameHash = frame.indexHash;
+            FrameHash = fullMap ? IndexedHash(presentedIndices) : frame.indexHash;
             CacheContentHash = cache.ContentHash;
         }
 
@@ -692,11 +730,14 @@ namespace MagicCarpet.Native
         internal static int MaterializeMinimapPixels(
             byte[] frame, NativeSim.CampaignMinimapEntity[] commands,
             byte[] tables, ulong generation, ulong tick,
-            IReadOnlyDictionary<int, MinimapSymbolPixels> symbols = null)
+            IReadOnlyDictionary<int, MinimapSymbolPixels> symbols = null, bool fullMap = false)
         {
             if (frame.Length != 320 * 200 || tables.Length != 83456)
                 throw new InvalidOperationException("Campaign minimap pixel inputs have invalid extents");
             var written = 0;
+            var scale = fullMap ? 1 : 2;
+            var mapWidth = fullMap ? 191 : 64;
+            var mapHeight = fullMap ? 200 : 64;
             foreach (var command in commands)
             {
                 if (command.generation != generation || command.tick != tick)
@@ -706,9 +747,9 @@ namespace MagicCarpet.Native
                 if (command.kind == 2 && (symbols == null || !symbols.TryGetValue(command.selector, out symbol))) continue;
                 if (command.kind != 1 && command.kind != 2 && command.kind != 3)
                     throw new InvalidOperationException("Unknown campaign minimap pixel command");
-                var left = command.x / 2;
-                var top = command.y / 2;
-                var size = command.kind == 3 ? 1 : (Math.Max(1, (int)command.size) + 1) / 2;
+                var left = command.x / scale;
+                var top = command.y / scale;
+                var size = command.kind == 3 ? 1 : (Math.Max(1, (int)command.size) + scale - 1) / scale;
                 var width = symbol?.Width ?? size;
                 var height = symbol?.Height ?? size;
                 if (symbol != null)
@@ -725,11 +766,11 @@ namespace MagicCarpet.Native
                     if (symbol != null && symbol.Mask[source] == 0) continue;
                     var x = left + dx;
                     var y = top + dy;
-                    if (x < 0 || x >= 64 || y < 0 || y >= 64) continue;
+                    if (x < 0 || x >= mapWidth || y < 0 || y >= mapHeight) continue;
                     var sourceY = y * 2;
                     var phase = sourceY < 64 ? 63 - sourceY : sourceY - 64;
-                    var halfSpan = (64 * tables[0x14300 + phase * 4]) >> 8;
-                    if (x * 2 < 64 - halfSpan || x * 2 >= 64 + halfSpan) continue;
+                    var halfSpan = fullMap ? 0 : (64 * tables[0x14300 + phase * 4]) >> 8;
+                    if (!fullMap && (x * 2 < 64 - halfSpan || x * 2 >= 64 + halfSpan)) continue;
                     var offset = y * 320 + x;
                     frame[offset] = command.kind == 3
                         ? tables[0x4000 + (frame[offset] << 8) + command.paletteIndex]
@@ -741,11 +782,14 @@ namespace MagicCarpet.Native
         }
 
         internal static int MaterializeMinimapMarks(byte[] frame,
-            NativeSim.CampaignMinimapMark[] marks, byte[] tables, ulong generation, ulong tick)
+            NativeSim.CampaignMinimapMark[] marks, byte[] tables, ulong generation, ulong tick, bool fullMap = false)
         {
             if (frame.Length != 320 * 200 || tables.Length != 83456)
                 throw new InvalidOperationException("Campaign minimap mark inputs have invalid extents");
             var written = 0;
+            var scale = fullMap ? 1 : 2;
+            var mapWidth = fullMap ? 191 : 64;
+            var mapHeight = fullMap ? 200 : 64;
             for (var ordinal = 0; ordinal < marks.Length; ordinal++)
             {
                 var mark = marks[ordinal];
@@ -764,19 +808,19 @@ namespace MagicCarpet.Native
                     }
                     if (mark.visible != 0)
                     {
-                        var pixels = new byte[64 * 64];
-                        var mask = new bool[64 * 64];
+                        var pixels = new byte[mapWidth * mapHeight];
+                        var mask = new bool[mapWidth * mapHeight];
                         for (var vertex = 0; vertex < 7; vertex++)
                         {
                             var from = marks[ordinal + vertex];
                             var to = marks[ordinal + (vertex + 1) % 7];
-                            MagicCarpetRuntime.DrawOwnerMinimapLine(pixels, mask, 64,
-                                from.x / 2, from.y / 2, to.x / 2, to.y / 2, mark.paletteIndex);
+                            MagicCarpetRuntime.DrawOwnerMinimapLine(pixels, mask, mapWidth,
+                                from.x / scale, from.y / scale, to.x / scale, to.y / scale, mark.paletteIndex, mapHeight);
                         }
                         for (var pixel = 0; pixel < pixels.Length; pixel++)
                         {
                             if (!mask[pixel]) continue;
-                            frame[(pixel / 64) * 320 + pixel % 64] = pixels[pixel];
+                            frame[(pixel / mapWidth) * 320 + pixel % mapWidth] = pixels[pixel];
                             written++;
                         }
                     }
@@ -786,15 +830,15 @@ namespace MagicCarpet.Native
                 if (mark.visible == 0) continue; // Rust owns the original pulse cadence.
                 if (mark.kind != 2)
                     throw new InvalidOperationException("Unknown campaign minimap mark command");
-                var x = mark.x / 2;
-                var y = mark.y / 2;
+                var x = mark.x / scale;
+                var y = mark.y / scale;
                 // DrawObjectiveRectangle_64CE0: three-pixel interior margin,
                 // then a 3x3 outline (the center remains terrain/entity pixels).
-                if (y < 3 || y >= 61 || x < 3 || x >= 61) continue;
+                if (y < 3 || y >= mapHeight - 3 || x < 3 || x >= mapWidth - 3) continue;
                 var sourceY = y * 2;
                 var phase = sourceY < 64 ? 63 - sourceY : sourceY - 64;
-                var halfSpan = (32 * tables[0x14300 + phase * 4]) >> 8;
-                if (x < 32 - halfSpan + 3 || x >= 32 + halfSpan - 3) continue;
+                var halfSpan = fullMap ? 0 : (32 * tables[0x14300 + phase * 4]) >> 8;
+                if (!fullMap && (x < 32 - halfSpan + 3 || x >= 32 + halfSpan - 3)) continue;
                 for (var dy = -1; dy <= 1; dy++)
                 for (var dx = -1; dx <= 1; dx++)
                 {
@@ -804,6 +848,24 @@ namespace MagicCarpet.Native
                 }
             }
             return written;
+        }
+
+        private static void MaterializeMapCross(byte[] frame, byte[] tables, byte colour)
+        {
+            void Blend(int x, int y) { var offset = y * 320 + x; frame[offset] = tables[0x4000 + (colour << 8) + frame[offset]]; }
+            Blend(94, 100);
+            for (var arm = 1; arm <= 15; arm++)
+            {
+                Blend(94 - arm, 100); Blend(94 + arm, 100);
+                Blend(94, 100 - arm); Blend(94, 100 + arm);
+            }
+        }
+
+        private static ulong IndexedHash(byte[] bytes)
+        {
+            var hash = 14695981039346656037ul;
+            foreach (var value in bytes) hash = unchecked((hash ^ value) * 1099511628211ul);
+            return hash;
         }
 
         private void EnsureWorld(byte[] indices, byte[] palette)
@@ -1083,7 +1145,7 @@ namespace MagicCarpet.Native
                     texture,
                     worldMesh,
                     EnsureEntityMaterial(cache, texture),
-                    spriteCompositor != null);
+                    spriteCompositor != null || nativeSpritesComposited);
                 var caveOrder = caveCellOrders == null ? (ushort)0 :
                     caveCellOrders[(marker.SourceY >> 8) * 256 + (marker.SourceX >> 8)];
                 marker.BindCaveOcclusion(caveCellOrders == null ? null : caveOrdersTexture, caveOrder);

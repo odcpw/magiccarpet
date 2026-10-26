@@ -55,7 +55,7 @@ impl Palette {
                 }
                 true
             }
-            mode @ (3 | 6) => {
+            mode @ (2 | 3 | 4 | 6 | 7) => {
                 self.effect = mode;
                 self.weight = 4;
                 self.fading = false;
@@ -109,6 +109,7 @@ impl Palette {
             let blue = i32::from(color[2] >> 2);
             let modified = match self.effect {
                 5 => [0, 0, 0],
+                2 => [(red + 40).min(63), green, blue],
                 3 => {
                     let offset = (-56 * i32::from(self.count)) >> 8;
                     [
@@ -122,6 +123,11 @@ impl Palette {
                     (green + 32).clamp(0, 63),
                     (blue + 32).clamp(0, 63),
                 ],
+                4 => [red, green, 63],
+                7 => {
+                    let mean = (red + green + blue) / 3;
+                    [mean, mean, mean]
+                }
                 8 => [
                     (red + 48).clamp(0, 63),
                     (green + 48).clamp(0, 63),
@@ -164,6 +170,34 @@ mod tests {
         let mut hasher = Sha256::new();
         palette.hash(&mut hasher);
         hasher.finalize().to_vec()
+    }
+
+    #[test]
+    fn hit_blue_and_grey_requests_use_source_rgb6_then_release_the_base_palette() {
+        let mut original = [0_u8; 768];
+        original[..6].copy_from_slice(&[4, 8, 12, 120, 80, 40]);
+        for (mode, changed) in [(2, [252, 80, 40]), (4, [120, 80, 252]), (7, [80, 80, 80])] {
+            let mut palette = Palette::default();
+            palette.request(PaletteRequest { mode, count: 0 });
+            let mut colors = original;
+            palette.apply_rgb8(&mut colors);
+            assert_eq!(
+                colors, original,
+                "source request waits for frame palette phase"
+            );
+            assert!(palette.advance_frame());
+            colors = original;
+            palette.apply_rgb8(&mut colors);
+            assert_eq!(&colors[..3], &original[..3]);
+            assert_eq!(&colors[3..6], &changed);
+            for _ in 0..5 {
+                assert!(palette.advance_frame());
+            }
+            colors = original;
+            palette.apply_rgb8(&mut colors);
+            assert_eq!(colors, original);
+            assert_eq!(palette.mode(), 0);
+        }
     }
 
     #[test]

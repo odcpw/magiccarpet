@@ -19,13 +19,13 @@ namespace MagicCarpet.Native
             immobilized = visible;
         }
 
-        internal void Present(byte[] indices, byte[] palette, byte[] tables, bool[] labelCoverage = null)
+        internal void Present(byte[] indices, byte[] palette, byte[] tables, bool[] labelCoverage = null, bool fullMap = false)
         {
             if (indices.Length != 320 * 200 || palette.Length != 768 || tables.Length != 83456 ||
                 labelCoverage != null && labelCoverage.Length != indices.Length)
                 throw new InvalidOperationException("Campaign map overlay has invalid input extents");
-            var width = labelCoverage == null ? 64 : 320;
-            var height = labelCoverage == null ? 64 : 200;
+            var width = !fullMap && labelCoverage == null ? 64 : 320;
+            var height = !fullMap && labelCoverage == null ? 64 : 200;
             if (texture == null || texture.width != width || texture.height != height)
             {
                 if (texture != null)
@@ -38,7 +38,7 @@ namespace MagicCarpet.Native
                 };
             }
             var target = pixels;
-            if (labelCoverage != null)
+            if (fullMap || labelCoverage != null)
             {
                 labelPixels ??= new Color32[320 * 200];
                 target = labelPixels;
@@ -55,7 +55,7 @@ namespace MagicCarpet.Native
                 for (var x = 0; x < width; x++)
                 {
                     var color = indices[y * 320 + x] * 3;
-                    var visible = x < 64 && y < 64 && x * 2 >= 64 - halfSpan && x * 2 < 64 + halfSpan;
+                    var visible = fullMap || x < 64 && y < 64 && x * 2 >= 64 - halfSpan && x * 2 < 64 + halfSpan;
                     visible |= labelCoverage != null && labelCoverage[y * 320 + x];
                     target[(height - 1 - y) * width + x] = new Color32(palette[color], palette[color + 1],
                         palette[color + 2], visible ? (byte)255 : (byte)0);

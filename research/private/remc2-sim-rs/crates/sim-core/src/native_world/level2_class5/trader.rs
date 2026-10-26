@@ -540,13 +540,13 @@ pub(crate) fn bind_authored_route(
         .traders
         .entry(slot)
         .or_insert_with(|| AuthoredTraderBehavior::new(slot));
-    runtime::Route {
+    crate::native_world::creatures::stage_route::Route {
         model: TRADER_MODEL,
         position: source.position,
         action: &mut source.action,
         index: &mut state.index,
         mode: &mut state.mode,
-        links: &mut state.links,
+        relation: &mut state.links.relation,
     }
     .bind(runtime, index);
     publish_source(source, *state, &mut arena.entities[usize::from(slot)]);

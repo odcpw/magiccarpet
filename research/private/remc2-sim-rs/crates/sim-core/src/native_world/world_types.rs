@@ -3797,6 +3797,23 @@ impl RuntimeSnapshot {
         self.bytes[68] = 0;
     }
 
+    /// ProcessKeyboardPresses_17190 retains held O independently of the
+    /// UpdateEntities pause gate. PresentObjective decrements this once later
+    /// in the same outer frame, so holding shows one tick and release hides it.
+    pub(crate) fn apply_objective_input(&mut self, held: bool) {
+        if held {
+            self.objective_textbox_ticks = 2;
+            self.bytes[69] = 2;
+        }
+    }
+
+    /// PauseUnpauseGame_18BB0 and opening an options/confirmation menu hide
+    /// the current objective without changing its pending speech phase.
+    pub(crate) fn clear_objective_textbox(&mut self) {
+        self.objective_textbox_ticks = 0;
+        self.bytes[69] = 0;
+    }
+
     /// Service the source-visible objective presentation cadence that remains
     /// outside the paused `UpdateEntities` gate. This changes presentation
     /// carriers only; it never advances the gameplay turn or player input.
@@ -3891,7 +3908,7 @@ impl RuntimeSnapshot {
         self.set_level2_objective_text_selector_for(0, stage_index);
     }
 
-    pub(super) fn set_level2_objective_text_selector_for(
+    pub(crate) fn set_level2_objective_text_selector_for(
         &mut self,
         objective_index: usize,
         stage_index: usize,
@@ -4253,7 +4270,7 @@ impl NativeWorldInspection {
     /// fixture or stale Level 1 reset projection is consulted.
     pub fn level2_reset_session(&self) -> Result<Mc2Simulation> {
         let mission = self.mission_content_template()?.session();
-        self.build_level2_reset_session(mission)
+        self.build_level2_reset_session(mission, None)
     }
 
     /// Construct the Level 2 compatibility session beneath the neutral,
@@ -4277,10 +4294,18 @@ impl NativeWorldInspection {
         &self,
         definition: &ValidatedCampaignDefinition,
     ) -> Result<Mc2Simulation> {
+        self.campaign_reset_session_with_spell_entry(definition, None)
+    }
+
+    pub(crate) fn campaign_reset_session_with_spell_entry(
+        &self,
+        definition: &ValidatedCampaignDefinition,
+        learned_spells: Option<&[u8]>,
+    ) -> Result<Mc2Simulation> {
         let mission = self
             .mission_content_template_from_definition(definition)?
             .session();
-        let mut session = self.build_campaign_reset_session(definition, mission)?;
+        let mut session = self.build_campaign_reset_session(definition, mission, learned_spells)?;
         {
             let live = &mut session.session.state.live;
             super::level2_class5::firefly::adopt_imported_fireflies(
@@ -4397,11 +4422,12 @@ impl NativeWorldInspection {
         &self,
         definition: &ValidatedCampaignDefinition,
         mission: MissionContentSession,
+        learned_spells: Option<&[u8]>,
     ) -> Result<Mc2Simulation> {
         if self.has_qualified_level2_capability_bundle() {
-            return self.build_level2_reset_session(mission);
+            return self.build_level2_reset_session(mission, learned_spells);
         }
-        self.build_descriptor_reset_session(definition, mission)
+        self.build_descriptor_reset_session(definition, mission, learned_spells)
     }
 
     fn has_qualified_level2_capability_bundle(&self) -> bool {
@@ -4425,6 +4451,7 @@ impl NativeWorldInspection {
         &self,
         definition: &ValidatedCampaignDefinition,
         mission: MissionContentSession,
+        learned_spells: Option<&[u8]>,
     ) -> Result<Mc2Simulation> {
         let state = self
             .reset_state
@@ -4447,7 +4474,7 @@ impl NativeWorldInspection {
         {
             castle_stage_footprints.extend(campaign_castle_stage_footprints()?);
         }
-        let economy = Level2EconomyState::from_parts_with_castle_stage_footprints(
+        let mut economy = Level2EconomyState::from_parts_with_castle_stage_footprints(
             SessionTerrain::from_inspection(self),
             &self.entities,
             player_entity.mana,
@@ -4458,11 +4485,22 @@ impl NativeWorldInspection {
             castle_stage_footprints,
             self.runtime.constructor_counters(),
         )?;
-        let shared_spells = Level2SharedSpellResetSession::from_campaign_parts(
+        let mut shared_spells = Level2SharedSpellResetSession::from_campaign_parts(
             &self.entities,
             &self.players,
             &self.runtime,
         )?;
+        if let Some(learned_spells) = learned_spells {
+            let wizard = definition
+                .wizard_settings
+                .get(usize::from(player_entity.model))
+                .ok_or_else(|| NativeWorldError::new("local wizard map settings are absent"))?;
+            shared_spells.materialize_continuation_spell_entry(
+                &mut economy,
+                learned_spells,
+                &wizard.blocked_spells,
+            )?;
+        }
         let construction_inputs = definition
             .read_member("feature-construction-inputs.bin")
             .map_err(|error| NativeWorldError::new(error.to_string()))?;
@@ -4523,7 +4561,11 @@ impl NativeWorldInspection {
         ))
     }
 
-    fn build_level2_reset_session(&self, mission: MissionContentSession) -> Result<Mc2Simulation> {
+    fn build_level2_reset_session(
+        &self,
+        mission: MissionContentSession,
+        learned_spells: Option<&[u8]>,
+    ) -> Result<Mc2Simulation> {
         if !matches!(
             self.profile,
             OwnerPackageProfile::Level2 | OwnerPackageProfile::Campaign
@@ -4577,24 +4619,31 @@ impl NativeWorldInspection {
             .wizard_map_settings()
             .first()
             .ok_or_else(|| NativeWorldError::new("Level 2 Wizard 0 settings are absent"))?;
-        let shared_spells = Level2SharedSpellResetSession::from_parts_with_starting_spells(
+        let starting_spells = learned_spells.is_none().then_some((&mut economy, wizard));
+        let mut shared_spells = Level2SharedSpellResetSession::from_parts_with_starting_spells(
             SessionTerrain::from_inspection(self),
             &self.entities,
             &self.players,
             &self.presentation,
-            Some((&mut economy, wizard)),
+            starting_spells,
         )?;
+        if let Some(learned_spells) = learned_spells {
+            shared_spells.materialize_continuation_spell_entry(
+                &mut economy,
+                learned_spells,
+                &wizard.blocked_spells,
+            )?;
+        }
         let castle_holder = shared_spells
             .dynamic_pickups
             .iter()
-            .find(|holder| holder.model == CASTLE_SPELL_FAMILY)
-            .ok_or_else(|| NativeWorldError::new("Level 2 family-2 starting holder is absent"))?;
+            .find(|holder| holder.model == CASTLE_SPELL_FAMILY);
         economy.initialize_player_spell_cleanup_context(
             self.entities[usize::from(self.players[0].entity_index)].model,
             0,
-            castle_holder.index,
-            castle_holder.active_value.cast_unsigned(),
-            castle_holder.activation_value,
+            castle_holder.map_or(0, |holder| holder.index),
+            castle_holder.map_or(0, |holder| holder.active_value.cast_unsigned()),
+            castle_holder.map_or(0, |holder| holder.activation_value),
         );
         let ordinary = Level2OrdinaryResetSession::from_parts(
             SessionTerrain::from_inspection(self),

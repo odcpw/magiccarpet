@@ -276,7 +276,8 @@ typedef struct McCampaignEntityPresentationV2 {
     uint16_t brightness;
     uint32_t draw_order;
     uint32_t control_flags;
-    uint32_t reserved[1];
+    int16_t primary_depth_adjustment;
+    uint16_t reserved;
 } McCampaignEntityPresentationV2;
 
 int32_t mc_native_campaign_entity_presentations_copy(
@@ -777,12 +778,14 @@ int32_t mc_native_campaign_day_indexed_frame_copy(
 /* Source painter-order ranks for the committed terrain frame: 320*200 pixels
  * and 256*256 world tiles, indexed y*256+x. Capacities/counts are u16 elements.
  * Zero means no terrain/no submitted cell; equal ranks keep the sprite. */
-/* Retained raw scene, before sprites, temporal blend and HUD. Copy never renders.
+/* Retained source scene before temporal blend and HUD. Copy never renders.
+ * source_sprites_composited is 1 when all source sprite passes are included.
  * Output metadata/counts are zero on failure; buffers must not overlap. */
 int32_t mc_native_campaign_scene_frame_copy(
     uint64_t handle, uint64_t generation, uint64_t expected_tick,
     uint8_t *indices, uint32_t capacity, uint32_t *out_written,
-    uint64_t *out_revision, uint8_t *out_blur_mode, uint8_t *out_use_exit_tables);
+    uint64_t *out_revision, uint8_t *out_blur_mode, uint8_t *out_use_exit_tables,
+    uint8_t *out_source_sprites_composited);
 int32_t mc_native_campaign_cave_occlusion_copy(
     uint64_t handle, uint64_t generation, uint64_t expected_tick,
     uint16_t *terrain_orders, uint32_t terrain_capacity,
@@ -791,6 +794,18 @@ int32_t mc_native_campaign_cave_occlusion_copy(
 int32_t mc_native_campaign_minimap_state(
     uint64_t handle, uint64_t generation, uint64_t expected_tick,
     McCampaignMinimapStateV2 *out_state, uint32_t out_state_size);
+/* Original split map: opaque 320*200 scene, 191*200 map coordinates and a
+ * real 128*200 world viewport. Capacities are element counts. */
+int32_t mc_native_campaign_world_map_copy(
+    uint64_t handle, uint64_t generation, uint64_t expected_tick,
+    uint8_t *indices, uint32_t index_capacity,
+    uint8_t *palette, uint32_t palette_capacity,
+    McCampaignMinimapEntityV2 *entities, uint32_t entity_capacity,
+    McCampaignMinimapMarkV2 *marks, uint32_t mark_capacity,
+    McCampaignMinimapStateV2 *out_state, uint32_t out_state_size);
+int32_t mc_native_campaign_world_map_labels_json(
+    uint64_t handle, uint64_t generation, uint64_t expected_tick,
+    uint8_t *buffer, uint32_t capacity, uint32_t *out_length);
 /* UTF-8 mc2-campaign-minimap-labels/v1, from the same committed view. */
 int32_t mc_native_campaign_minimap_labels_json(
     uint64_t handle, uint64_t generation, uint64_t expected_tick,

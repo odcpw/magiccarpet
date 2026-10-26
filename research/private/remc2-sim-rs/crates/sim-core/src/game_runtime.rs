@@ -94,12 +94,15 @@ impl RuntimePresentationCue {
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(tag = "operation", rename_all = "snake_case")]
 pub(crate) enum ReplayOperation<C> {
+    Pause,
     Step {
         command: C,
     },
     PausedFrame {
         #[serde(default, skip_serializing_if = "is_zero")]
         elapsed_centiseconds: u32,
+        #[serde(default, skip_serializing_if = "is_false")]
+        show_objective: bool,
     },
     SpeechPreference {
         enabled: bool,
@@ -841,6 +844,10 @@ impl<B: GameSessionBackend> GameRuntime<B> {
                     set_speech(&mut candidate, enabled, show_foreign_text);
                     continue;
                 }
+                ReplayOperation::Pause => {
+                    candidate.backend_mut().enter_pause();
+                    continue;
+                }
                 ReplayOperation::Step { command } => {
                     candidate.step(guard, command).map_err(|error| {
                         RestorePlayingError::ReplayStep {
@@ -851,8 +858,9 @@ impl<B: GameSessionBackend> GameRuntime<B> {
                 }
                 ReplayOperation::PausedFrame {
                     elapsed_centiseconds,
+                    show_objective,
                 } => candidate
-                    .paused_frame_timed(guard, elapsed_centiseconds)
+                    .paused_frame_timed(guard, elapsed_centiseconds, show_objective)
                     .map_err(|error| RestorePlayingError::ReplayPausedFrame {
                         operation_index,
                         error,
@@ -1145,7 +1153,7 @@ impl<B: GameSessionBackend> GameRuntime<B> {
         guard: RuntimeGuard,
         session_guard: SessionGuard,
     ) -> Result<RuntimeIdentity, PausedFrameError<B::Error>> {
-        self.paused_frame_timed(guard, session_guard, 0)
+        self.paused_frame_timed(guard, session_guard, 0, false)
     }
 
     pub fn paused_frame_timed(
@@ -1153,6 +1161,7 @@ impl<B: GameSessionBackend> GameRuntime<B> {
         guard: RuntimeGuard,
         session_guard: SessionGuard,
         elapsed_centiseconds: u32,
+        show_objective: bool,
     ) -> Result<RuntimeIdentity, PausedFrameError<B::Error>> {
         self.validate_guard(guard)
             .map_err(Box::new)
@@ -1175,7 +1184,7 @@ impl<B: GameSessionBackend> GameRuntime<B> {
             unreachable!("validated Paused mode owns a paused gameplay session")
         };
         session
-            .paused_frame_timed(session_guard, elapsed_centiseconds)
+            .paused_frame_timed(session_guard, elapsed_centiseconds, show_objective)
             .map_err(PausedFrameError::Session)?;
         Ok(self.identity())
     }
@@ -1291,6 +1300,9 @@ impl<B: GameSessionBackend> GameRuntime<B> {
             .advance_lifecycle_generation(session_guard)
             .map_err(Box::new)
             .map_err(RuntimeTransitionError::SessionGuard)?;
+        if next_paused {
+            session.backend_mut().enter_pause();
+        }
         *paused = next_paused;
         self.generation = next_runtime_generation;
         Ok(self.identity())
@@ -1398,7 +1410,7 @@ impl GameRuntime<crate::campaign::backend::Mc2CampaignBackend> {
             <crate::campaign::backend::Mc2CampaignBackend as GameSessionBackend>::Error,
         >,
     > {
-        self.paused_campaign_frame_timed(guard, session_guard, 0)
+        self.paused_campaign_frame_timed(guard, session_guard, 0, false)
     }
 
     pub fn paused_campaign_frame_timed(
@@ -1406,6 +1418,7 @@ impl GameRuntime<crate::campaign::backend::Mc2CampaignBackend> {
         guard: RuntimeGuard,
         session_guard: SessionGuard,
         elapsed_centiseconds: u32,
+        show_objective: bool,
     ) -> Result<RuntimeIdentity, PausedFrameError<crate::campaign::backend::CampaignBackendError>>
     {
         self.validate_guard(guard)
@@ -1446,7 +1459,9 @@ impl GameRuntime<crate::campaign::backend::Mc2CampaignBackend> {
         session
             .backend_mut()
             .set_objective_presentation_preferences(enabled, show_foreign_text);
-        if let Err(error) = session.paused_frame_timed(session_guard, elapsed_centiseconds) {
+        if let Err(error) =
+            session.paused_frame_timed(session_guard, elapsed_centiseconds, show_objective)
+        {
             session
                 .backend_mut()
                 .restore_speech_preference_after_rejection(previous.0, previous.1, previous.2);
@@ -1497,7 +1512,8 @@ mod tests {
         assert_eq!(
             operation,
             ReplayOperation::PausedFrame {
-                elapsed_centiseconds: 0
+                elapsed_centiseconds: 0,
+                show_objective: false,
             }
         );
         assert_eq!(serde_json::to_string(&operation).unwrap(), legacy);
@@ -1507,7 +1523,8 @@ mod tests {
         assert_eq!(
             timed,
             ReplayOperation::PausedFrame {
-                elapsed_centiseconds: 125
+                elapsed_centiseconds: 125,
+                show_objective: false,
             }
         );
         assert_eq!(

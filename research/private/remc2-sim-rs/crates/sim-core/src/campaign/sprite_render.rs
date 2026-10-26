@@ -8,6 +8,38 @@ use crate::{SIN_16_16, goat_sprite_raster::Mode20SpriteProjectionLimits};
 const NEAR_PIXEL_MODES: [u8; 6] = [0, 0, 2, 3, 4, 5];
 const FOG_PIXEL_MODES: [u8; 6] = [1, 0, 6, 7, 4, 5];
 
+/// Type_D404C words16/18/20 used only by flagged primary body parts.
+const MULTIPART_DEPTHS: [[i16; 3]; 5] = [
+    [390, 289, 129],
+    [440, 326, 146],
+    [430, 319, 142],
+    [420, 311, 139],
+    [420, 311, 139],
+];
+
+/// DrawSprites_3E360's byte3&0x20 branch changes forward depth using the
+/// raw word32 parent's yaw. It does not move the source map position and
+/// must not change the earlier shadow or reflected sprite's projection.
+pub(crate) fn source_multipart_primary_depth_adjustment(
+    body_index: u8,
+    parent_yaw: u16,
+    camera_yaw: i16,
+) -> Result<i16, &'static str> {
+    let offsets = MULTIPART_DEPTHS
+        .get(usize::from(body_index))
+        .ok_or("source multipart body index exceeds Type_D404C")?;
+    let sector = ((parent_yaw.wrapping_sub(camera_yaw as u16) >> 3) & 0xf0) >> 4;
+    Ok(match sector {
+        0 | 15 => -offsets[0],
+        1 | 14 => -offsets[1],
+        2 | 13 => -offsets[2],
+        5 | 10 => offsets[2],
+        6 | 9 => offsets[1],
+        7 | 8 => offsets[0],
+        _ => 0,
+    })
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct SourceSpritePixelMetadata {
     pub(crate) pixel_mode: u8,
@@ -93,6 +125,41 @@ pub(crate) const fn source_sprite_pixel_mode(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn primary_multipart_depth_uses_raw_parent_sector_and_exact_source_words() {
+        let expected = [
+            -390, -289, -129, 0, 0, 129, 289, 390, 390, 289, 129, 0, 0, -129, -289, -390,
+        ];
+        for (sector, expected) in expected.into_iter().enumerate() {
+            assert_eq!(
+                source_multipart_primary_depth_adjustment(0, sector as u16 * 128, 0),
+                Ok(expected)
+            );
+            assert_eq!(
+                source_multipart_primary_depth_adjustment(
+                    0,
+                    (sector as u16 * 128).wrapping_add(2000),
+                    2000
+                ),
+                Ok(expected)
+            );
+        }
+        assert_eq!(source_multipart_primary_depth_adjustment(1, 0, 0), Ok(-440));
+        assert_eq!(
+            source_multipart_primary_depth_adjustment(2, 256, 0),
+            Ok(-142)
+        );
+        assert_eq!(
+            source_multipart_primary_depth_adjustment(3, 768, 0),
+            Ok(311)
+        );
+        assert_eq!(
+            source_multipart_primary_depth_adjustment(4, 1024, 0),
+            Ok(420)
+        );
+        assert!(source_multipart_primary_depth_adjustment(5, 0, 0).is_err());
+    }
 
     #[test]
     fn source_pixel_table_retains_unshaded_and_both_blend_directions() {
