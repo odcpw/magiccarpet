@@ -51,7 +51,7 @@ platform are separate. Do not restart planning or expand the scope.
 
 ## Coordination and prompts
 
-The current fleet uses Luna/max workers and Sol 6.1/medium integrators. Discover
+The current fleet uses Luna/max workers and Terra 6.1/high integrators. Discover
 live NTM panes rather than trusting old pane lists. GreenFinch coordinates
 acceptance, tracker and pushes. BrownCrane dispatches the sole Cargo/Unity build
 slot. Preserve dirty source, staged work, warm caches and current installations.
