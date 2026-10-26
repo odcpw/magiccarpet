@@ -227,6 +227,14 @@ namespace MagicCarpet.Native
 
         internal Texture2D StartupBitmap(int selector) => startupBitmaps.TryGetValue(selector, out var bitmap) ? bitmap :
             throw new InvalidDataException("unbound source title sprite " + selector);
+        internal string StartupHoverText(Vector2 sourcePosition)
+        {
+            if (Startup == null) return null;
+            foreach (var entry in Startup.buttons)
+                if (new Rect(entry.x, entry.y, entry.width, entry.height).Contains(sourcePosition))
+                    return LanguageText(entry.text_selector);
+            return null;
+        }
         internal Texture2D PortalBitmap(int selector) => portalFrames.TryGetValue(selector, out var bitmap) ? bitmap :
             throw new InvalidDataException("unbound source portal sprite " + selector);
         internal byte[] ReadPortalOpeningSound() => portalSound ??

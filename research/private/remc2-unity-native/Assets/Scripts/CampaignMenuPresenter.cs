@@ -20,6 +20,7 @@ namespace MagicCarpet.Native
         private GUIStyle heading;
         private GUIStyle button;
         private GUIStyle message;
+        private GUIStyle startupHint;
         private PlayerPreferencesPresenter preferences;
         private FrontendMediaPresenter media;
         private MainAnimation[] mainAnimations;
@@ -309,6 +310,17 @@ namespace MagicCarpet.Native
                     }
                 }
                 GUI.enabled = true;
+                var hoverText = campaignCache.StartupHoverText((Event.current.mousePosition - view.position) / scale);
+                if (hoverText != null && preferences?.Current.preferences.show_help != false)
+                {
+                    startupHint ??= new GUIStyle(GUI.skin.box) {
+                        alignment = TextAnchor.MiddleCenter, wordWrap = true,
+                        normal = { textColor = new Color(1f, 0.85f, 0.35f) }
+                    };
+                    startupHint.fontSize = Mathf.Max(14, Mathf.RoundToInt(16 * scale));
+                    GUI.Box(new Rect(view.x + 110 * scale, view.y + 350 * scale,
+                        420 * scale, 42 * scale), hoverText, startupHint);
+                }
                 if (status != null) GUI.Label(new Rect(view.x + 10 * scale, view.y + 440 * scale,
                     620 * scale, 38 * scale), status);
                 return Action.None;

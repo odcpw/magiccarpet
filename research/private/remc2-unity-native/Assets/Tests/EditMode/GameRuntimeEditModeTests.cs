@@ -499,6 +499,11 @@ namespace MagicCarpet.Native.Tests
                 Assert.That(cache.ForMission("level.magic_carpet_2.spider_cave").briefing, Is.EqualTo(language[26]));
                 Assert.That(cache.StartupBackground.width, Is.EqualTo(640));
                 Assert.That(cache.Startup.animations.Length, Is.EqualTo(4));
+                foreach (var entry in cache.Startup.buttons)
+                    Assert.That(cache.StartupHoverText(new Vector2(entry.x + entry.width / 2f,
+                        entry.y + entry.height / 2f)), Is.EqualTo(language[entry.text_selector]),
+                        "every title icon exposes its original language label, including unavailable actions");
+                Assert.That(cache.StartupHoverText(new Vector2(639, 479)), Is.Null);
                 Assert.That(cache.PortalBitmap(84), Is.Not.Null, "source opening overshoot is retained");
                 Assert.That(cache.ReadPortalOpeningSound().Length, Is.GreaterThan(44));
                 var first = "level.magic_carpet_2.night_spire";
