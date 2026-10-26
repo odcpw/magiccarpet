@@ -418,7 +418,7 @@ impl Level2NyphurCommonUpkeep {
             spell_enabled,
             spell_holder_indices,
             spell_levels,
-            owner_control_mode: player.record_bytes()[447],
+            owner_control_mode: player.visibility_mode,
             mana_regen: entity.mana_regen,
             mana: entity.mana,
             life: entity.life,

@@ -3,6 +3,164 @@ use crate::campaign::{CampaignSession, journal::CampaignEffect, spec::CampaignSe
 use std::path::PathBuf;
 
 #[test]
+fn castle_menu_cost_and_remove_command_use_authoritative_player_state() {
+    let package = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../../generated/mc-bhq8-level1-collision-v5-night");
+    let mut campaign = CampaignSession::open(package, CampaignSelection::LEVEL1).unwrap();
+    let simulation = campaign.simulation_mut();
+    // Retained learned-Castle fixture through the real carry constructor.
+    // The fresh Level1 package itself starts with Fireball/Possession only.
+    simulation
+        .apply_carried_spell_families(&[2], Some(2))
+        .unwrap();
+    let owner = simulation.state.entity_index;
+    let holder = simulation
+        .shared_spells()
+        .local_player()
+        .enabled_spell_holders[2];
+    assert_ne!(holder, 0, "ordinary carry constructor supplies Castle");
+    let compact_spells = simulation.shared_spells().local_player.record[398..450].to_vec();
+    // Controlled post-construction Castle fixture, isolating the actual menu
+    // and PlayerEvents commands without replaying the whole mission route.
+    let position = simulation.state.position;
+    let castle = simulation
+        .session
+        .state
+        .live
+        .economy
+        .economy
+        .build_castle_at(position, position, owner, false, false)
+        .unwrap();
+    let ui_index = SOURCE_SPELL_INDEX_MAP
+        .iter()
+        .position(|family| *family == 2)
+        .unwrap();
+    campaign.step(
+        PlayerCommand {
+            opcode: 31,
+            argument_1: ui_index as i8,
+            argument_2: 0,
+            ..PlayerCommand::default()
+        },
+        u8::MAX,
+    );
+    let simulation = campaign.simulation_mut();
+    let profile = simulation.shared_spells().pickup(holder).unwrap();
+    assert_eq!((profile.max_mana, profile.mana), (10_000, 10_000 / 101));
+    campaign.step(
+        PlayerCommand {
+            opcode: 42,
+            ..PlayerCommand::default()
+        },
+        u8::MAX,
+    );
+    let simulation = campaign.simulation_mut();
+    assert_eq!(
+        simulation.economy().castle().unwrap().source_entity_index,
+        castle
+    );
+    assert_eq!(simulation.economy().castle().unwrap().life, -1);
+    assert_eq!(simulation.entities()[usize::from(castle)].life, -1);
+    assert_eq!(
+        simulation.shared_spells().local_player().castle_destroyed,
+        1
+    );
+    assert_eq!(
+        simulation
+            .players()
+            .iter()
+            .find(|row| row.entity_index == owner)
+            .unwrap()
+            .castle_destroyed,
+        1
+    );
+    assert_eq!(
+        &simulation.shared_spells().local_player.record[398..450],
+        compact_spells
+    );
+    let changed = ResetReceipt::from_state(&simulation.session.state.live);
+    simulation
+        .session
+        .state
+        .live
+        .set_player_castle_destroyed(owner, 0);
+    assert_ne!(
+        changed,
+        ResetReceipt::from_state(&simulation.session.state.live)
+    );
+    campaign.reset();
+    assert_eq!(
+        campaign
+            .simulation()
+            .shared_spells()
+            .local_player()
+            .castle_destroyed,
+        0
+    );
+}
+
+#[test]
+fn spawn_guard_and_hit_hud_fields_keep_compact_spell_state_intact() {
+    let package = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../../generated/level3-day-block32-campaign-recipe-v2");
+    let mut campaign = CampaignSession::open(package, CampaignSelection::LEVEL3).unwrap();
+    let session = campaign.simulation_mut();
+    assert_eq!(session.session.state.live.player_protection_ticks, 100);
+    let initial = ResetReceipt::from_state(&session.session.state.live);
+    let spell_bytes = session.shared_spells().local_player().record_bytes()[398..450].to_vec();
+    let player = session.state.entity_index;
+    let attacker = session
+        .entities()
+        .iter()
+        .find(|row| row.active && row.class == 5 && row.model == 9)
+        .unwrap()
+        .index;
+    let life = session.session.state.live.player_life;
+    session.queue_level2_player_contact_damage(500, attacker);
+    campaign.step(PlayerCommand::default(), 0);
+    let session = campaign.simulation_mut();
+    assert_eq!(session.session.state.live.player_protection_ticks, 99);
+    assert_eq!(session.session.state.live.player_life, life);
+    assert_eq!(session.session.state.live.player_pending_attacker, 0);
+    assert_eq!(session.shared_spells().local_player().hit_frame_time, 0);
+
+    // Isolate the first unprotected visit without advancing a playthrough.
+    session.session.state.live.player_protection_ticks = 0;
+    session.queue_level2_player_contact_damage(500, attacker);
+    campaign.step(PlayerCommand::default(), 0);
+    let session = campaign.simulation_mut();
+    let shared = session.shared_spells().local_player();
+    let expected_timer = if level2_day_color_phases(shared.turn).0 == 0 {
+        4
+    } else {
+        3
+    };
+    assert_eq!(shared.hit_frame_time, expected_timer);
+    assert_eq!(&shared.record_bytes()[398..450], spell_bytes);
+    let canonical = session
+        .players()
+        .iter()
+        .find(|row| row.entity_index == player)
+        .unwrap();
+    assert_eq!(canonical.hit_frame_time, expected_timer);
+    assert_eq!(&canonical.record_bytes()[398..450], spell_bytes);
+    let with_guard_zero = ResetReceipt::from_state(&session.session.state.live);
+    session.session.state.live.player_protection_ticks = 1;
+    assert_ne!(
+        with_guard_zero,
+        ResetReceipt::from_state(&session.session.state.live)
+    );
+    campaign.reset();
+    let session = campaign.simulation();
+    assert_eq!(session.session.state.live.player_protection_ticks, 100);
+    assert_eq!(session.shared_spells().local_player().hit_frame_time, 0);
+    assert_eq!(
+        ResetReceipt::from_state(&session.session.state.live),
+        initial
+    );
+}
+
+#[test]
 fn acquired_shield_lethal_hit_publishes_death_once() {
     let package = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../../../generated/level3-day-block32-campaign-recipe-v2");

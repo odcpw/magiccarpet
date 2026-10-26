@@ -725,14 +725,15 @@ fn build_submission_plan(
                     );
             }
             if flags & TERRAIN_FEATURE_CULLED == 0 && all & PRIMARY_OUTSIDE_MASK == 0 {
-                let selector =
-                    if lower_left.feature_flags & TERRAIN_FEATURE_REFLECTIVE_MATERIAL != 0 {
-                        MODE26_REFLECTIVE_TERRAIN_SELECTOR
-                    } else if lower_left.feature_flags & TERRAIN_FEATURE_FLAT_SHADE != 0 {
-                        MODE7_FLAT_TERRAIN_SELECTOR
-                    } else {
-                        MODE5_TERRAIN_SELECTOR
-                    };
+                let selector = if camera.reflections
+                    && lower_left.feature_flags & TERRAIN_FEATURE_REFLECTIVE_MATERIAL != 0
+                {
+                    MODE26_REFLECTIVE_TERRAIN_SELECTOR
+                } else if lower_left.feature_flags & TERRAIN_FEATURE_FLAT_SHADE != 0 {
+                    MODE7_FLAT_TERRAIN_SELECTOR
+                } else {
+                    MODE5_TERRAIN_SELECTOR
+                };
                 let pairs = if parity_one {
                     [
                         [indices[0], indices[1], indices[3]],

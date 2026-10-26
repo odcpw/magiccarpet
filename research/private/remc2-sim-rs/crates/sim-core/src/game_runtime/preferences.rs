@@ -76,8 +76,8 @@ pub struct PlayerPreferences {
     /// None means the installed default; a filename prefix is not an identity.
     #[serde(default, deserialize_with = "optional_locale")]
     pub selected_locale: Option<String>,
-    /// Source slots: forward/back/left/right, spell menu, map, spell modifier,
-    /// spell-level modifier, hand spell modifier, alternate hand modifier.
+    /// Source slots: forward/back/left/right, map, spell menu, player info,
+    /// spell marking, next marked spell, previous marked spell.
     pub keys: [InputKey; 10],
     pub input_device: InputDevice,
     pub invert_mouse: bool,
@@ -93,6 +93,13 @@ pub struct PlayerPreferences {
     pub sound_volume: u8,
     pub music_volume: u8,
     pub show_help: bool,
+    /// Original graphics options; old profiles retain source enabled defaults.
+    #[serde(default = "source_graphics_enabled")]
+    pub reflections: bool,
+    #[serde(default = "source_graphics_enabled")]
+    pub sky: bool,
+    #[serde(default = "source_graphics_enabled")]
+    pub shadows: bool,
     pub brightness: [u8; 3],
     pub flight_assistance: bool,
     pub fullscreen: bool,
@@ -128,11 +135,18 @@ impl Default for PlayerPreferences {
             sound_volume: 127,
             music_volume: 127,
             show_help: true,
+            reflections: true,
+            sky: true,
+            shadows: true,
             brightness: [0; 3],
             flight_assistance: false,
             fullscreen: false,
         }
     }
+}
+
+const fn source_graphics_enabled() -> bool {
+    true
 }
 
 impl PlayerPreferences {
@@ -160,16 +174,10 @@ impl PlayerPreferences {
             return Err("preference value outside its supported range".into());
         }
         for i in 0..4 {
-            if matches!(
-                self.keys[i],
-                InputKey::C
-                    | InputKey::I
-                    | InputKey::J
-                    | InputKey::K
-                    | InputKey::L
-                    | InputKey::Space
-            ) {
-                return Err("flight key conflicts with steering, recenter or quick cast".into());
+            if matches!(self.keys[i], InputKey::C | InputKey::L | InputKey::Space) {
+                return Err(
+                    "flight key conflicts with castle removal, recenter or quick cast".into(),
+                );
             }
             if self.keys[i + 1..].contains(&self.keys[i]) {
                 return Err("flight keys must be distinct from other assignments".into());
@@ -658,6 +666,16 @@ mod tests {
     use super::*;
 
     #[test]
+    fn original_render_options_default_enabled_for_existing_profiles() {
+        let mut old = serde_json::to_value(PlayerPreferences::default()).unwrap();
+        for field in ["reflections", "sky", "shadows"] {
+            old.as_object_mut().unwrap().remove(field);
+        }
+        let restored: PlayerPreferences = serde_json::from_value(old).unwrap();
+        assert!(restored.reflections && restored.sky && restored.shadows);
+    }
+
+    #[test]
     fn foreign_objective_option_defaults_false_and_uses_bound_source_aliases() {
         let mut legacy = serde_json::to_value(PlayerPreferences::default()).unwrap();
         legacy
@@ -898,11 +916,25 @@ mod tests {
                 .starts_with("defaults:")
         );
         assert_eq!(fs::read(&path).unwrap(), b"invalid settings");
+        let mut remapped = PlayerPreferences::default();
+        remapped.keys[..3].copy_from_slice(&[InputKey::I, InputKey::J, InputKey::K]);
+        assert!(
+            remapped.validate().is_ok(),
+            "unreserved letters can be flight bindings"
+        );
+        remapped.keys[0] = InputKey::L;
+        assert!(
+            remapped.validate().is_err(),
+            "the original castle-removal key remains reserved"
+        );
         let mut prefs = PlayerPreferences::default();
         prefs.player_name = "Oliver".into();
         prefs.keys[0] = InputKey::W;
         prefs.sound_volume = 63;
         prefs.show_help = false;
+        prefs.reflections = false;
+        prefs.sky = false;
+        prefs.shadows = false;
         prefs.auto_show_objectives_for_foreign_languages = true;
         store
             .command(PreferencesCommand::Apply { preferences: prefs })

@@ -318,7 +318,12 @@ impl CampaignSession {
     /// Restore the mission baseline and invalidate derived presentation state.
     pub fn reset(&mut self) {
         self.generation = self.generation.wrapping_add(1);
+        let source_global = self.state.live.shared_spells.global_special_state();
         self.state.live.clone_from(&self.baseline);
+        self.state
+            .live
+            .shared_spells
+            .apply_source_global_context(source_global);
         self.state.scratch = self.state.live.reset_scratch(self.generation, false);
     }
 
@@ -714,6 +719,7 @@ fn digest_players_and_runtime(state: &CanonicalRuntimeState) -> CanonicalDigest 
         for player in &state.players {
             append_len(hasher, player.record_bytes().len());
             hasher.update(player.record_bytes());
+            player.append_omitted_state_hash(hasher);
             if player.projectile_attempts != 0 || player.projectile_hits != 0 {
                 hasher.update(b"source-projectile-accuracy-v1");
                 hasher.update(player.projectile_attempts.to_le_bytes());
@@ -944,6 +950,7 @@ fn digest_outer_reset_state(hasher: &mut Sha256, state: &ResetState) {
         hasher.update(&state.source_model45_building_selectors);
     }
     hasher.update(state.player_pending_damage.to_le_bytes());
+    hasher.update(state.player_protection_ticks.to_le_bytes());
     hasher.update(state.player_pending_attacker.to_le_bytes());
     hasher.update(state.player_life.to_le_bytes());
     hasher.update([state.player_menu_state]);

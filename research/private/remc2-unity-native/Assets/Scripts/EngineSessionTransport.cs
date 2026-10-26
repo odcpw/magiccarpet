@@ -337,6 +337,7 @@ namespace MagicCarpet.Native
             public bool recenter;
             public bool full_stop;
             public bool recover_player;
+            public bool remove_castle_stage;
             public uint elapsed_centiseconds;
             public bool show_objective;
             public int look_yaw;
@@ -558,7 +559,8 @@ namespace MagicCarpet.Native
             bool recoverPlayer = false,
             uint elapsedCentiseconds = 0,
             SpellAssignment assignment = null,
-            bool showObjective = false)
+            bool showObjective = false,
+            bool removeCastleStage = false)
         {
             ValidateIdentityForHandle(handle, identity);
             var bits = unchecked((byte)flags);
@@ -585,6 +587,7 @@ namespace MagicCarpet.Native
             command.recenter = recenter;
             command.full_stop = fullStop;
             command.recover_player = recoverPlayer;
+            command.remove_castle_stage = removeCastleStage;
             command.elapsed_centiseconds = elapsedCentiseconds;
             command.show_objective = showObjective;
             command.look_yaw = unchecked((short)lookYaw);

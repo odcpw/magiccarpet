@@ -170,10 +170,18 @@ namespace MagicCarpet.Native
             byte[] replaySave,
             params GameRuntimeTransport.InstalledPackageResource[] packages)
         {
+            return OpenGameRuntimeReplayFrom(null, replaySave, packages);
+        }
+
+        internal static NativeSession OpenGameRuntimeReplayFrom(
+            NativeSession source,
+            byte[] replaySave,
+            params GameRuntimeTransport.InstalledPackageResource[] packages)
+        {
             var runtime = new GameRuntimeTransport();
             try
             {
-                runtime.LoadReplay(replaySave, packages);
+                runtime.LoadReplayFrom(source?.GameRuntimeIdentity(), replaySave, packages);
                 return new NativeSession(runtime.Handle, gameRuntime: runtime);
             }
             catch
@@ -227,7 +235,8 @@ namespace MagicCarpet.Native
             bool recoverPlayer = false,
             uint elapsedCentiseconds = 0,
             EngineSessionTransport.SpellAssignment assignment = null,
-            bool showObjective = false)
+            bool showObjective = false,
+            bool removeCastleStage = false)
         {
             return gameRuntime?.CampaignStep(
                     roll,
@@ -235,7 +244,7 @@ namespace MagicCarpet.Native
                     flags,
                     lookYaw,
                     lookPitch,
-                    selectSpell, recenter, fullStop, recoverPlayer, elapsedCentiseconds, assignment, showObjective) ??
+                    selectSpell, recenter, fullStop, recoverPlayer, elapsedCentiseconds, assignment, showObjective, removeCastleStage) ??
                 throw new InvalidOperationException("session does not own a game runtime");
         }
 

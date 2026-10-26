@@ -194,7 +194,7 @@ def main(arguments):
         # The runtime owns missing-artwork recovery and retry for this selection.
         native.extend(('-mc-runtime-loading-assets', str(loading_assets)))
     if menu_cache is None and not explicit_resources:
-        menu_cache = GENERATED / 'mc-shared-source-campaign-20261026'
+        menu_cache = GENERATED / 'mc-shared-source-map-motion-20261026'
     if menu_cache is not None:
         directory(menu_cache, 'menu cache')
         native.extend(('-mc-runtime-menu-cache', str(menu_cache)))

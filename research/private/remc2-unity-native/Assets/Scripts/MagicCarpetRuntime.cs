@@ -841,6 +841,7 @@ namespace MagicCarpet.Native
         private bool rightSpellRequested;
         private bool selectedSpellRequested;
         private bool gameRuntimeRecoverPlayerRequested;
+        private bool gameRuntimeRemoveCastleStageRequested;
         private uint? gameRuntimeLastClock;
         private string gameRuntimeSpellSelectionRequested;
         private string gameRuntimeSpellInputStatus;
@@ -2817,7 +2818,7 @@ namespace MagicCarpet.Native
                 gameRuntimeCampaignSnapshot = session.GameRuntimeCampaignStep(
                     appliedRoll, appliedPitch, unchecked((sbyte)flags), 0, 0, selectSpell,
                     preferenceRecenterRequested, preferenceFullStopRequested, gameRuntimeRecoverPlayerRequested, elapsedCentiseconds,
-                    gameRuntimeSpellAssignmentRequested, Input.GetKey(KeyCode.O));
+                    gameRuntimeSpellAssignmentRequested, Input.GetKey(KeyCode.O), gameRuntimeRemoveCastleStageRequested);
                 if (selectSpell != null)
                 {
                     var selected = CampaignSpellPresenter.FindSpell(gameRuntimeCampaignSnapshot?.value, selectSpell);
@@ -2837,7 +2838,7 @@ namespace MagicCarpet.Native
                 gameRuntimeCampaignSnapshot = session.GameRuntimeCampaignStep(
                     appliedRoll, appliedPitch, unchecked((sbyte)(flags & ~0x40)), 0, 0, null,
                     preferenceRecenterRequested, preferenceFullStopRequested, gameRuntimeRecoverPlayerRequested, elapsedCentiseconds,
-                    showObjective: Input.GetKey(KeyCode.O));
+                    showObjective: Input.GetKey(KeyCode.O), removeCastleStage: gameRuntimeRemoveCastleStageRequested);
             }
             preferenceRecenterRequested = preferenceFullStopRequested = false;
             if (gameRuntimeRecoverPlayerRequested && gameRuntimeCampaignSnapshot.value.player_vitals.life >= 0)
@@ -2846,6 +2847,7 @@ namespace MagicCarpet.Native
                 playerPreferences?.Center();
             }
             gameRuntimeRecoverPlayerRequested = false;
+            gameRuntimeRemoveCastleStageRequested = false;
             gameRuntimeSpellSelectionRequested = null;
             gameRuntimeSpellAssignmentRequested = null;
             var afterStepIdentity = session.GameRuntimeIdentity();
@@ -3048,6 +3050,7 @@ namespace MagicCarpet.Native
                 gameRuntimeBriefingKey = null;
                 return;
             }
+            if (!gameRuntimeMenu.SourceBriefingReady) return;
             var enabled = identity.player_preferences.preferences.speech_enabled;
             var key = identity.runtime_id + "/" + menu.briefing_level_id;
             if (key != gameRuntimeBriefingKey)
@@ -3057,7 +3060,8 @@ namespace MagicCarpet.Native
                 gameRuntimeMenu.BeginBriefing(enabled);
             }
             if (gameRuntimeMenu.StepBriefing(Time.unscaledDeltaTime,
-                playerPreferences?.IsOpen != true && Input.GetKeyDown(KeyCode.O)))
+                playerPreferences?.IsOpen != true && !gameRuntimeMenu.IsSourceDialogOpen &&
+                Input.GetKeyDown(KeyCode.O)))
                 gameRuntimeBriefingPlayed = false;
             if (!enabled || gameRuntimeBriefingPlayed || menu.briefing_speech == null) return;
             EnsureGameRuntimeSpeech();
@@ -3502,6 +3506,8 @@ namespace MagicCarpet.Native
                     if (spellKey != 0) SubmitGameRuntimeSpellKey(spellKey);
                     if (!sourceSuppressCasting && (mapped?.CastSelected ?? Input.GetKeyDown(KeyCode.Space))) RequestGameRuntimeSelectedSpellCast();
                     ApplyGameRuntimeReplaySaveInput(Input.GetKeyDown(KeyCode.F5));
+                    if (runtimeIdentity.mode == GameRuntimeTransport.PlayingMode && Input.GetKeyDown(KeyCode.L))
+                        gameRuntimeRemoveCastleStageRequested = true;
                     if (session.GameRuntimeIdentity().mode ==
                             GameRuntimeTransport.PlayingMode &&
                         Cursor.lockState == CursorLockMode.Locked)
@@ -3525,10 +3531,7 @@ namespace MagicCarpet.Native
                             ApplyGameRuntimeSteeringInput(
                                 Input.GetAxisRaw("Mouse X"),
                                 Input.GetAxisRaw("Mouse Y"),
-                                Input.GetKey(KeyCode.J),
-                                Input.GetKey(KeyCode.L),
-                                Input.GetKey(KeyCode.I),
-                                Input.GetKey(KeyCode.K),
+                                false, false, false, false,
                                 Input.GetKeyDown(KeyCode.C) ||
                                     Input.GetMouseButtonDown(2),
                                 KeyboardDeflectionRate * Time.unscaledDeltaTime);
@@ -9909,6 +9912,7 @@ namespace MagicCarpet.Native
                     ? Path.Combine(Path.GetDirectoryName(gameRuntimeLoadingCachePath), "mc2-campaign-menu-cache")
                     : gameRuntimeMenuCachePath);
             if (playerPreferences != null) gameRuntimeMenu.AttachPreferences(playerPreferences);
+            gameRuntimeMenu.ConfigureSavePath(gameRuntimeReplaySavePath);
             gameRuntimeMenu.AttachMedia(frontendMedia);
         }
 
@@ -9989,8 +9993,10 @@ namespace MagicCarpet.Native
             if (session == null || !gameRuntimeMode) return false;
             var mode = session.GameRuntimeIdentity().mode;
             var canSave = !string.IsNullOrWhiteSpace(gameRuntimeReplaySavePath);
+            var saveSlot = action is CampaignMenuPresenter.Action.Save or CampaignMenuPresenter.Action.Load
+                ? gameRuntimeMenu?.TakeSaveSlot() : null;
             if (!CampaignMenuPresenter.Allows(mode, action, canSave,
-                    canSave && File.Exists(gameRuntimeReplaySavePath),
+                    canSave && (saveSlot != null || File.Exists(gameRuntimeReplaySavePath)),
                     gameRuntimeCampaignSnapshot?.value?.objective_progress?.all_objectives_satisfied == true))
                 return false;
             gameRuntimeMenuStatus = null;
@@ -10005,12 +10011,16 @@ namespace MagicCarpet.Native
                         ApplyGameRuntimeProductionInput(true, false, false);
                         break;
                     case CampaignMenuPresenter.Action.Save:
-                        QualificationSaveGameRuntimeProductionReplayToPath(gameRuntimeReplaySavePath);
+                        if (saveSlot != null)
+                            SourceCampaignSaveSlots.Write(gameRuntimeReplaySavePath, saveSlot.Index,
+                                saveSlot.Label, QualificationSaveGameRuntimeProductionReplay());
+                        else QualificationSaveGameRuntimeProductionReplayToPath(gameRuntimeReplaySavePath);
                         gameRuntimeMenuStatus = "Game saved.";
                         break;
                     case CampaignMenuPresenter.Action.Load:
-                        var opened = OpenGameRuntimeReplaySessionForPackages(
-                            ReadReplaySaveFromPath(gameRuntimeReplaySavePath), gameRuntimePackages);
+                        var opened = NativeSession.OpenGameRuntimeReplayFrom(session,
+                            saveSlot != null ? SourceCampaignSaveSlots.Read(gameRuntimeReplaySavePath, saveSlot.Index)
+                                : ReadReplaySaveFromPath(gameRuntimeReplaySavePath), gameRuntimePackages);
                         var titleOwner = session;
                         session = null;
                         try
@@ -10060,6 +10070,8 @@ namespace MagicCarpet.Native
                         if (mode == GameRuntimeTransport.CampaignMode)
                         {
                             session.GameRuntimeCampaignMenuAction("return_title");
+                            frontendMedia?.EndMenuSamples();
+                            campaignSpeech?.Stop();
                             gameRuntimeStartupReady = false;
                             gameRuntimeMenuStatus = null;
                         }
@@ -10067,6 +10079,10 @@ namespace MagicCarpet.Native
                         break;
                     case CampaignMenuPresenter.Action.DismissResults:
                         PresentGameRuntimeTransition(session.GameRuntimeCampaignMenuAction("dismiss_results"));
+                        break;
+                    case CampaignMenuPresenter.Action.ResetCampaign:
+                        PresentGameRuntimeTransition(session.GameRuntimeCampaignMenuAction("reset_campaign"));
+                        gameRuntimeBriefingKey = null;
                         break;
                     case CampaignMenuPresenter.Action.SelectMission:
                         PresentGameRuntimeTransition(session.GameRuntimeCampaignMenuAction("select_mission", gameRuntimeMenu.SelectedMission));
@@ -10143,6 +10159,7 @@ namespace MagicCarpet.Native
         {
             playerPreferences?.Center();
             gameRuntimeRecoverPlayerRequested = false;
+            gameRuntimeRemoveCastleStageRequested = false;
             CenterSteering();
             gameRuntimeLeftSpellHeld = gameRuntimeRightSpellHeld = false;
             preferenceRecenterRequested = preferenceFullStopRequested = false;
@@ -10617,7 +10634,7 @@ namespace MagicCarpet.Native
         {
             Require(
                 GameRuntimeProductionStartupReady ||
-                (gameRuntimeMode && session?.GameRuntimeIdentity().mode == GameRuntimeTransport.CampaignMode),
+                (gameRuntimeMode && session?.GameRuntimeIdentity().mode is GameRuntimeTransport.CampaignMode or GameRuntimeTransport.TitleMode),
                 "game runtime replay save requires a validated production owner");
             return session.GameRuntimeSaveReplay();
         }

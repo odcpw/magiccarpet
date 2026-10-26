@@ -2651,6 +2651,13 @@ namespace MagicCarpet.Native
             uint saveJsonLength);
 
         [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+        internal static extern int mc_game_runtime_load_replay_from_runtime_json_v1(
+            ulong handle, ulong generation,
+            ulong sourceHandle, ulong sourceGeneration,
+            byte[] packageSetJson, uint packageSetJsonLength,
+            byte[] saveJson, uint saveJsonLength);
+
+        [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
         internal static extern int mc_game_runtime_open_level_v1(
             ulong handle,
             ulong generation);

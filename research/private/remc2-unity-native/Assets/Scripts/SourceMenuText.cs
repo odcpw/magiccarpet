@@ -29,19 +29,21 @@ namespace MagicCarpet.Native
         private readonly Color background;
         private readonly bool gameplayFont;
         private readonly bool campaignFont;
+        private readonly bool dialogFont;
 
         internal SourceMenuText(FontBinding font, Texture2D atlas,
             Func<int, Texture2D> bitmap, Color background)
         {
             gameplayFont = font?.glyph_mapping == "mc2-byte-plus-one-controls/v1";
             campaignFont = font?.glyph_mapping == "mc2-hscreen-bank6-byte-plus-one/v1";
+            dialogFont = font?.glyph_mapping == "mc2-font1-byte-plus-one-controls/v1";
             var tall = gameplayFont || campaignFont;
-            var cellWidth = tall ? 10 : 8;
+            var cellWidth = dialogFont ? 5 : tall ? 10 : 8;
             var cellHeight = tall ? 14 : 7;
-            if (font == null || !tall && font.glyph_mapping != "mc2-hscreen-bank4-byte-controls/v1" ||
-                font.width != 16 * cellWidth || font.height != (tall ? 252 : 119) ||
-                font.advance_x != (gameplayFont ? 10 : campaignFont ? 8 : 7) || font.advance_y != cellHeight ||
-                font.glyphs?.Length != (tall ? 273 : 272) || atlas == null || bitmap == null)
+            if (font == null || !tall && !dialogFont && font.glyph_mapping != "mc2-hscreen-bank4-byte-controls/v1" ||
+                font.width != 16 * cellWidth || font.height != (dialogFont ? 126 : tall ? 252 : 119) ||
+                font.advance_x != (dialogFont ? 4 : gameplayFont ? 10 : campaignFont ? 8 : 7) || font.advance_y != cellHeight ||
+                font.glyphs?.Length != (tall || dialogFont ? 273 : 272) || atlas == null || bitmap == null)
                 throw new InvalidDataException("source title font is incomplete; refresh the campaign menu cache");
             for (var index = 0; index < font.glyphs.Length; index++)
             {
@@ -71,14 +73,14 @@ namespace MagicCarpet.Native
                     if (value > 255) throw new InvalidDataException("source menu text is not an owner byte string");
                     if (value == 13) continue;
                     if (value == 10) { x = start; y += font.advance_y; continue; }
-                    var glyph = font.glyphs[gameplayFont || campaignFont ? value + 1 : value];
+                    var glyph = font.glyphs[gameplayFont || campaignFont || dialogFont ? value + 1 : value];
                     if (value != 9 && value != 32 && glyph.width != 0)
                         GUI.DrawTextureWithTexCoords(new Rect(view.x + x * scale, view.y + y * scale,
                                 glyph.width * scale, glyph.height * scale), atlas,
                                 new Rect(glyph.x / (float)font.width,
                                     (font.height - glyph.y - glyph.height) / (float)font.height,
                                     glyph.width / (float)font.width, glyph.height / (float)font.height));
-                    x += gameplayFont ? (value == 9 || value == 32 ? font.glyphs[33].width : glyph.width) : font.advance_x;
+                    x += gameplayFont || dialogFont ? (value == 9 || value == 32 ? font.glyphs[33].width : glyph.width) : font.advance_x;
                 }
             }
             finally { GUI.color = oldColor; }
@@ -131,7 +133,7 @@ namespace MagicCarpet.Native
 
         // Basic.cpp sub_7FCB0: delimiters are retained on their preceding
         // word, and fitting reserves three fixed-width characters at right.
-        internal static string[] WrapFramedText(string text, int advance, int width)
+        internal static string[] WrapFramedText(string text, int advance, int width, bool punctuation = true)
         {
             var lines = new List<string>();
             var current = "";
@@ -140,7 +142,7 @@ namespace MagicCarpet.Native
             for (var index = 0; index <= text.Length; index++)
             {
                 var end = index == text.Length;
-                if (!end && text[index] != ' ' && text[index] != ',' && text[index] != '-' && text[index] != '.') continue;
+                if (!end && text[index] != ' ' && (!punctuation || text[index] != ',' && text[index] != '-' && text[index] != '.')) continue;
                 var segmentEnd = end ? index : index + 1;
                 if (previous == 0) current = text.Substring(0, segmentEnd);
                 else

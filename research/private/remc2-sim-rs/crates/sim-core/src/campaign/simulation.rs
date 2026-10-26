@@ -54,6 +54,9 @@ fn award_source_spell_experience(live: &mut Mc2LiveState, owner: u16, family: u8
     {
         return;
     }
+    if family == CASTLE_SPELL_FAMILY {
+        live.refresh_castle_spell_profile(owner, false, None);
+    }
     live.shared_spells.award_spell_experience(owner, family, 1);
     publish_spell_progression(live, owner, family);
 }
@@ -2690,6 +2693,11 @@ impl Mc2Simulation {
             })
             .unwrap_or_default();
         let parent_position = self.session.state.live.core.state.position;
+        let profile = self.session.state.live.source_spell_profile(
+            family,
+            physical_tier.cast_unsigned(),
+            self.session.state.live.core.state.entity_index,
+        );
         if let Some(holder) = self
             .session
             .state
@@ -2700,9 +2708,7 @@ impl Mc2Simulation {
             if active_word != 0 {
                 let queued_spell = u16::from(physical_tier.cast_unsigned()) + 1;
                 holder.record[48..50].copy_from_slice(&queued_spell.to_le_bytes());
-            } else if let Some(profile) =
-                level2_set_spell_profile(family, physical_tier.cast_unsigned())
-            {
+            } else if let Some(profile) = profile {
                 holder.level_gate = physical_tier;
                 holder.record[74] = physical_tier.cast_unsigned();
                 holder.subspell_index = profile.subspell_index;
@@ -3204,7 +3210,12 @@ impl Mc2Simulation {
             .unwrap_or_default();
         if queued_spell != 0 {
             let tier = queued_spell.saturating_sub(1).min(2) as u8;
-            if let Some(profile) = level2_direct_starting_spell_profile(CASTLE_SPELL_FAMILY, tier)
+            let owner = self.session.state.live.shared_spells.player_entity.index;
+            if let Some(profile) =
+                self.session
+                    .state
+                    .live
+                    .source_spell_profile(CASTLE_SPELL_FAMILY, tier, owner)
                 && let Some(holder) = self
                     .session
                     .state
@@ -4508,15 +4519,19 @@ impl Mc2Simulation {
                 player.selected_subspell_index = entry.selected_tier;
                 player.record[562] = entry.selected_tier.cast_unsigned();
             }
+            let profile = live
+                .source_spell_profile(
+                    entry.family,
+                    entry.selected_tier.cast_unsigned(),
+                    player.entity_index,
+                )
+                .ok_or_else(|| {
+                    NativeWorldError::new("carried progression has no physical profile")
+                })?;
             if let Some(holder) = live
                 .shared_spells
                 .pickup_mut(player.enabled_spell_holders[family])
             {
-                let profile =
-                    level2_set_spell_profile(entry.family, entry.selected_tier.cast_unsigned())
-                        .ok_or_else(|| {
-                            NativeWorldError::new("carried progression has no physical profile")
-                        })?;
                 holder.apply_nyphur_spell_profile(profile, entry.selected_tier.cast_unsigned());
                 let holder = holder.clone();
                 live.economy.entities[usize::from(holder.index)].clone_from(&holder);
@@ -5145,7 +5160,7 @@ impl Mc2Simulation {
             source_frame_timing_index: 0,
             source_model45_building_selectors,
             player_pending_damage: initial_player_pending_damage,
-            player_protection_ticks: 0,
+            player_protection_ticks: 100,
             elapsed_centiseconds: 0,
             player_pending_attacker: initial_player_pending_attacker,
             player_life: initial_player_life,
@@ -8133,7 +8148,7 @@ impl Mc2Simulation {
             .players
             .get(usize::from(participant.player_slot))
             .ok_or_else(|| NativeWorldError::new("Level 2 Nyphur visibility owner is absent"))?;
-        let owner_visibility_mode = owner.record_bytes()[447];
+        let owner_visibility_mode = owner.visibility_mode;
         let beyond_sight = self.session.state.live.shared_spells.beyond_sight;
         let local_entity_index = self
             .session
@@ -9799,6 +9814,15 @@ impl Mc2Simulation {
         let pending = events[start..].to_vec();
         self.session.state.scratch.economy_event_cursor = events.len();
         for event in pending {
+            if let Level2EconomyEvent::CastleStageDestroyed { next_level, .. } = event {
+                if let Some(castle) = self.session.state.live.economy.castle() {
+                    self.session.state.live.refresh_castle_spell_profile(
+                        castle.owner_entity_index,
+                        true,
+                        Some(i32::from(next_level)),
+                    );
+                }
+            }
             if let Level2EconomyEvent::CastleConstructionSound {
                 source_entity_index,
                 ..
@@ -9817,6 +9841,14 @@ impl Mc2Simulation {
                 // sub60480 reaches this receipt only after model42 NewEvent
                 // succeeds. The event cursor consumes it once, including a
                 // successful child with a partially allocated controller row.
+                self.session
+                    .state
+                    .live
+                    .set_player_castle_destroyed(owner, 0);
+                self.session
+                    .state
+                    .live
+                    .refresh_castle_spell_profile(owner, true, None);
                 award_source_spell_experience(
                     &mut self.session.state.live,
                     owner,
@@ -22551,7 +22583,7 @@ impl Mc2Simulation {
             .live
             .shared_spells
             .local_player
-            .record_bytes()[406];
+            .hit_frame_time;
         if let Some(player) = self
             .session
             .state
@@ -22563,7 +22595,7 @@ impl Mc2Simulation {
         {
             player.turn = turn;
             player.record[8..12].copy_from_slice(&turn.to_le_bytes());
-            player.record[406] = hit_frame_time;
+            player.hit_frame_time = hit_frame_time;
         }
     }
 
@@ -22596,7 +22628,7 @@ impl Mc2Simulation {
             .live
             .shared_spells
             .local_player
-            .record_bytes()[406];
+            .hit_frame_time;
         self.session
             .state
             .scratch
@@ -23881,6 +23913,9 @@ impl Mc2Simulation {
                     });
                 return Vec::new();
             }
+        }
+        if command.opcode == 42 {
+            self.session.state.live.request_castle_stage_removal();
         }
         self.session
             .state

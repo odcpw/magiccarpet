@@ -2389,16 +2389,14 @@ fn level_two_authored_bee_action18_contact_is_consumed_at_next_player_source_vis
     assert_eq!(second_hud.color_phase_1, 0);
     assert_eq!(second_hud.player_panel_selector, 41);
     assert_eq!(second_hud.hit_frame_time_pre_draw, 4);
-    let second_player_record = session.shared_spells().local_player.record_bytes();
-    assert_eq!(second_player_record[406], 4);
+    assert_eq!(session.shared_spells().local_player.hit_frame_time, 4);
 
     session.step_outer_turn(PlayerCommand::default(), 0);
     let third_hud = session.day_hud().expect("Day HUD during hit flash");
     assert_eq!(third_hud.color_phase_1, 1);
     assert_eq!(third_hud.player_panel_selector, 55);
     assert_eq!(third_hud.hit_frame_time_pre_draw, 4);
-    let third_player_record = session.shared_spells().local_player.record_bytes();
-    assert_eq!(third_player_record[406], 3);
+    assert_eq!(session.shared_spells().local_player.hit_frame_time, 3);
     assert_eq!(
         session.day_hud().expect("idempotent Day HUD read"),
         third_hud

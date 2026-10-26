@@ -522,6 +522,8 @@ mod level2_nyphur;
 mod lightning;
 mod night_cache;
 mod player_damage;
+mod player_spell_state;
+pub use player_spell_state::GlobalSpecialState;
 mod support_spells;
 pub(crate) mod terrain_strip;
 use creatures::worm::imported as campaign_multipart;
@@ -779,6 +781,7 @@ pub struct Level2SharedSpellResetSession {
     /// Reachable family-11 active lifecycle. AI visibility consumption remains
     /// explicitly outside this bounded slice.
     invisible: Option<InvisibleState>,
+    global_special_state: GlobalSpecialState,
     /// Reachable family-12 active lifecycle. The first-pulse effect allocation
     /// is intentionally not part of class-15/action-36; holder timing and
     /// cleanup are live.
@@ -2933,7 +2936,7 @@ impl Mc2LiveState {
     ) -> crate::campaign::state::ScratchState {
         let (color_phase_1, color_phase_2) =
             level2_day_color_phases(self.shared_spells.local_player.turn);
-        let hit_frame_time_pre_draw = self.shared_spells.local_player.record_bytes()[406];
+        let hit_frame_time_pre_draw = self.shared_spells.local_player.hit_frame_time;
         crate::campaign::state::ScratchState {
             validity_epoch: generation,
             valid,
@@ -7384,6 +7387,11 @@ fn parse_players(
             // begins at the ordinary runtime producer, not an imported save.
             projectile_attempts: 0,
             projectile_hits: 0,
+            // Source sub_53160 clears these omitted fields before the
+            // frame-zero actor constructors; runtime writes stay typed.
+            hit_frame_time: 0,
+            castle_destroyed: 0,
+            visibility_mode: 0,
             record: record.to_vec().into_boxed_slice(),
         });
     }

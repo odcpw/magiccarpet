@@ -364,7 +364,7 @@ impl RuntimeRecord {
         let mode = self.runtime.identity().mode;
         if !matches!(
             mode,
-            RuntimeMode::Playing | RuntimeMode::Paused | RuntimeMode::Campaign
+            RuntimeMode::Playing | RuntimeMode::Paused | RuntimeMode::Campaign | RuntimeMode::Title
         ) {
             return Err(map_transition_error(RuntimeTransitionError::InvalidMode {
                 expected: RuntimeMode::Playing,
@@ -372,7 +372,7 @@ impl RuntimeRecord {
             }));
         }
         self.validate_transition(handle, runtime_generation, mode)?;
-        if mode == RuntimeMode::Campaign {
+        if matches!(mode, RuntimeMode::Campaign | RuntimeMode::Title) {
             if session_generation != 0 || expected_tick != 0 || self.runtime.session().is_some() {
                 return Err(AbiError::new(
                     MC_STATUS_INVALID_ARGUMENT,
@@ -436,6 +436,25 @@ impl RuntimeRecord {
         package_set_json_len: u32,
         save_json: &[u8],
     ) -> AbiResult<()> {
+        self.load_replay_with_source_context(
+            handle,
+            generation,
+            package_set_json,
+            package_set_json_len,
+            save_json,
+            None,
+        )
+    }
+
+    fn load_replay_with_source_context(
+        &mut self,
+        handle: u64,
+        generation: u64,
+        package_set_json: String,
+        package_set_json_len: u32,
+        save_json: &[u8],
+        source_context: Option<sim_core::native_world::GlobalSpecialState>,
+    ) -> AbiResult<()> {
         self.validate_transition(handle, generation, RuntimeMode::Title)?;
         if self.resolver.is_some() {
             return Err(AbiError::new(
@@ -452,17 +471,21 @@ impl RuntimeRecord {
                         format!("cannot load replay package set: {error}"),
                     )
                 })?;
-        resolver
-            .load_replay(
+        let guard = RuntimeGuard {
+            runtime_id: handle,
+            generation,
+        };
+        match source_context {
+            Some(context) => resolver.load_replay_with_source_context(
                 &mut self.runtime,
-                RuntimeGuard {
-                    runtime_id: handle,
-                    generation,
-                },
+                guard,
                 handle,
                 save_json,
-            )
-            .map_err(map_replay_save_error)?;
+                context,
+            ),
+            None => resolver.load_replay(&mut self.runtime, guard, handle, save_json),
+        }
+        .map_err(map_replay_save_error)?;
         self.resolver = Some(resolver);
         self.installed_inputs = inputs;
         self.reset_audio();
@@ -472,6 +495,12 @@ impl RuntimeRecord {
     pub(super) fn take_campaign_presentation_record(
         &mut self,
     ) -> AbiResult<super::campaign_abi::CampaignSessionRecord> {
+        let preferences = &self.runtime.identity().player_preferences.preferences;
+        let render_options = sim_core::day_indexed_frame::WorldRenderOptions {
+            reflections: preferences.reflections,
+            sky: preferences.sky,
+            shadows: preferences.shadows,
+        };
         let generation = self.session()?.identity().generation;
         if !self.campaign_presentation_dirty
             && self
@@ -479,7 +508,14 @@ impl RuntimeRecord {
                 .as_ref()
                 .is_some_and(|record| record.generation == generation)
         {
-            return Ok(self.campaign_presentation.take().unwrap());
+            let mut record = self.campaign_presentation.take().unwrap();
+            if let super::campaign_abi::CampaignSessionKind::Campaign {
+                day_frame_state, ..
+            } = &mut record.kind
+            {
+                day_frame_state.set_render_options(render_options);
+            }
+            return Ok(record);
         }
         let (generation, campaign) = {
             let session = self.session()?;
@@ -526,7 +562,7 @@ impl RuntimeRecord {
             ))
         });
         let initializing = retained.is_none();
-        let (assets, state, mut music, mut effect_state_hashes) = match retained {
+        let (assets, mut state, mut music, mut effect_state_hashes) = match retained {
             Some(retained) => retained,
             None => (
                 load_optional_day_frame_assets(
@@ -548,6 +584,7 @@ impl RuntimeRecord {
                 BTreeMap::new(),
             ),
         };
+        state.set_render_options(render_options);
         if initializing
             && (self.runtime.identity().mode == RuntimeMode::Paused
                 || !self
@@ -807,8 +844,16 @@ impl RuntimeRecord {
         session_generation: u64,
         expected_tick: u64,
     ) -> AbiResult<()> {
-        self.runtime
-            .close(
+        self.resolver
+            .as_ref()
+            .ok_or_else(|| {
+                AbiError::new(
+                    MC_STATUS_INVALID_ARGUMENT,
+                    "campaign return needs its installed package resolver",
+                )
+            })?
+            .close_to_title(
+                &mut self.runtime,
                 RuntimeGuard {
                     runtime_id: handle,
                     generation: runtime_generation,
@@ -1172,6 +1217,7 @@ pub extern "C" fn mc_game_runtime_contract_json_v1(
                 "save_contract": MC2_CAMPAIGN_REPLAY_SAVE_CONTRACT,
                 "save_transport": "mc_game_runtime_save_replay_json_v1",
                 "load_transport": "mc_game_runtime_load_replay_json_v1",
+                "warm_load_transport": "mc_game_runtime_load_replay_from_runtime_json_v1",
                 "load_package_authority": "complete_unordered_resource_set",
                 "client_semantics": "opaque_utf8_json"
             },
@@ -1439,46 +1485,120 @@ pub extern "C" fn mc_game_runtime_load_replay_json_v1(
     save_json_len: u32,
 ) -> i32 {
     boundary(|| {
-        if package_set_json.is_null() && package_set_json_len != 0 {
-            return Err(AbiError::new(
-                MC_STATUS_NULL_POINTER,
-                "replay package-set JSON pointer is null",
-            ));
-        }
-        if save_json.is_null() && save_json_len != 0 {
-            return Err(AbiError::new(
-                MC_STATUS_NULL_POINTER,
-                "replay save JSON pointer is null",
-            ));
-        }
-        if package_set_json_len > MAX_INSTALLED_PACKAGE_SET_JSON_BYTES {
-            return Err(AbiError::new(
-                MC_STATUS_BOUNDS,
-                "replay package-set JSON exceeds the negotiated bound",
-            ));
-        }
-        if usize::try_from(save_json_len).unwrap_or(usize::MAX) > MAX_MC2_CAMPAIGN_REPLAY_SAVE_BYTES
-        {
-            return Err(AbiError::new(
-                MC_STATUS_BOUNDS,
-                "replay save JSON exceeds the negotiated bound",
-            ));
-        }
-        let package_set_json = utf8_input(
+        load_runtime_replay_input(
+            handle,
+            generation,
             package_set_json,
             package_set_json_len,
-            "replay package-set JSON",
-        )?;
-        let save_json = utf8_input(save_json, save_json_len, "replay save JSON")?;
-        with_runtime_mut(handle, |runtime| {
-            runtime.load_replay(
-                handle,
-                generation,
-                package_set_json,
-                package_set_json_len,
-                save_json.as_bytes(),
-            )
+            save_json,
+            save_json_len,
+            None,
+        )
+    })
+}
+
+/// The source's nonserialized process globals survive a menu Load. Capture
+/// them from the guarded old owner without destroying it before verification.
+#[unsafe(no_mangle)]
+pub extern "C" fn mc_game_runtime_load_replay_from_runtime_json_v1(
+    handle: u64,
+    generation: u64,
+    source_handle: u64,
+    source_generation: u64,
+    package_set_json: *const u8,
+    package_set_json_len: u32,
+    save_json: *const u8,
+    save_json_len: u32,
+) -> i32 {
+    boundary(|| {
+        load_runtime_replay_input(
+            handle,
+            generation,
+            package_set_json,
+            package_set_json_len,
+            save_json,
+            save_json_len,
+            Some((source_handle, source_generation)),
+        )
+    })
+}
+
+fn load_runtime_replay_input(
+    handle: u64,
+    generation: u64,
+    package_set_json: *const u8,
+    package_set_json_len: u32,
+    save_json: *const u8,
+    save_json_len: u32,
+    source_runtime: Option<(u64, u64)>,
+) -> AbiResult<()> {
+    if package_set_json.is_null() && package_set_json_len != 0 {
+        return Err(AbiError::new(
+            MC_STATUS_NULL_POINTER,
+            "replay package-set JSON pointer is null",
+        ));
+    }
+    if save_json.is_null() && save_json_len != 0 {
+        return Err(AbiError::new(
+            MC_STATUS_NULL_POINTER,
+            "replay save JSON pointer is null",
+        ));
+    }
+    if package_set_json_len > MAX_INSTALLED_PACKAGE_SET_JSON_BYTES {
+        return Err(AbiError::new(
+            MC_STATUS_BOUNDS,
+            "replay package-set JSON exceeds the negotiated bound",
+        ));
+    }
+    if usize::try_from(save_json_len).unwrap_or(usize::MAX) > MAX_MC2_CAMPAIGN_REPLAY_SAVE_BYTES {
+        return Err(AbiError::new(
+            MC_STATUS_BOUNDS,
+            "replay save JSON exceeds the negotiated bound",
+        ));
+    }
+    let package_set_json = utf8_input(
+        package_set_json,
+        package_set_json_len,
+        "replay package-set JSON",
+    )?;
+    let save_json = utf8_input(save_json, save_json_len, "replay save JSON")?;
+    let source_context = source_runtime
+        .map(|(source_handle, source_generation)| {
+            if source_handle == handle {
+                return Err(AbiError::new(
+                    MC_STATUS_INVALID_ARGUMENT,
+                    "warm replay load requires a distinct source runtime",
+                ));
+            }
+            with_runtime(source_handle, |record| {
+                record.validate_transition(
+                    source_handle,
+                    source_generation,
+                    record.runtime.identity().mode,
+                )?;
+                record
+                    .resolver
+                    .as_ref()
+                    .ok_or_else(|| {
+                        AbiError::new(
+                            MC_STATUS_INVALID_ARGUMENT,
+                            "warm replay source has no installed MC2 resolver",
+                        )
+                    })?
+                    .source_global_context(&record.runtime)
+                    .map_err(map_transition_error)
+            })
         })
+        .transpose()?;
+    with_runtime_mut(handle, |runtime| {
+        runtime.load_replay_with_source_context(
+            handle,
+            generation,
+            package_set_json,
+            package_set_json_len,
+            save_json.as_bytes(),
+            source_context,
+        )
     })
 }
 
@@ -1492,11 +1612,21 @@ pub extern "C" fn mc_game_runtime_show_new_game_map_v1(handle: u64, generation: 
     boundary(|| {
         with_runtime_mut(handle, |record| {
             record
-                .runtime
-                .show_new_game_map(RuntimeGuard {
-                    runtime_id: handle,
-                    generation,
-                })
+                .resolver
+                .as_ref()
+                .ok_or_else(|| {
+                    AbiError::new(
+                        MC_STATUS_INVALID_ARGUMENT,
+                        "campaign map needs its installed package resolver",
+                    )
+                })?
+                .show_new_game_map(
+                    &mut record.runtime,
+                    RuntimeGuard {
+                        runtime_id: handle,
+                        generation,
+                    },
+                )
                 .map(|_| ())
                 .map_err(map_transition_error)
         })
@@ -2441,6 +2571,48 @@ mod tests {
             level_two_package(),
             level_three_package(),
         ]);
+        let mut warm = 0;
+        assert_eq!(mc_game_runtime_create_v1(&raw mut warm), MC_STATUS_OK);
+        let warm_title = identity(warm);
+        assert_eq!(
+            mc_game_runtime_load_replay_from_runtime_json_v1(
+                warm,
+                1,
+                handle,
+                2,
+                packages.as_ptr(),
+                packages.len() as u32,
+                saved.as_ptr(),
+                saved.len() as u32,
+            ),
+            MC_STATUS_GENERATION_MISMATCH
+        );
+        assert_eq!(identity(warm), warm_title);
+        assert_eq!(
+            identity(handle),
+            map,
+            "rejected warm load cannot mutate its source owner"
+        );
+        assert_eq!(
+            mc_game_runtime_load_replay_from_runtime_json_v1(
+                warm,
+                1,
+                handle,
+                3,
+                packages.as_ptr(),
+                packages.len() as u32,
+                saved.as_ptr(),
+                saved.len() as u32,
+            ),
+            MC_STATUS_OK
+        );
+        assert_eq!(identity(warm)["campaign_menu"], map["campaign_menu"]);
+        assert_eq!(
+            identity(handle),
+            map,
+            "successful replacement leaves old owner alive until host attachment"
+        );
+        assert_eq!(mc_game_runtime_destroy_v1(warm), MC_STATUS_OK);
         assert_eq!(
             mc_game_runtime_load_replay_json_v1(
                 restored,

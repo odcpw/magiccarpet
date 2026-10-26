@@ -427,8 +427,8 @@ pub struct Level2SetSpellProfile {
 }
 
 /// Return the pinned `Spells.cpp` profile for a physical spell family/tier.
-/// `max_mana` is the `GetSpellManaCost_6D710` result; the source then derives
-/// the initial `mana` by dividing it by `word_0x30` when that word is nonzero.
+/// This is the table cost before GetSpellManaCost_6D710 follows the owner's
+/// Castle relation. The runtime resolves that dynamic cost at SetSpell.
 #[must_use]
 pub const fn level2_set_spell_profile(family: u8, tier: u8) -> Option<Level2SetSpellProfile> {
     if family == 9 && tier < 3 {
@@ -1300,11 +1300,6 @@ pub struct InvisibleState {
     pub parent_mana_regen: i32,
     pub parent_status_flags: u32,
     pub spell_status_flags: u32,
-    pub parent_visibility_mode: u8,
-    /// One-shot source write for `word_0x159_345` on the first sustained
-    /// Invisible pulse. The native projection consumes and clears this flag
-    /// after applying the raw player-record write.
-    pub owner_word_clear_pending: bool,
     pub countdown: i16,
     pub experience_awarded: i32,
     pub cleanup_requested: bool,
@@ -1335,8 +1330,6 @@ impl InvisibleState {
             parent_mana_regen: 0,
             parent_status_flags: 0,
             spell_status_flags: 0,
-            parent_visibility_mode: 0,
-            owner_word_clear_pending: false,
             // `sub_68FF0` installs the post-acquisition presentation cadence.
             countdown: 64,
             experience_awarded: 0,
@@ -1409,10 +1402,10 @@ impl InvisibleState {
         let active_before = self.active_value;
         let owner_flags_before = self.parent_status_flags;
         let spell_flags_before = self.spell_status_flags;
-        let visibility_before = self.parent_visibility_mode;
         let countdown_before = self.countdown;
         let mut sustained = false;
         let mut experience_awarded = 0;
+        let mut special_state_write = None;
 
         if self.active_value > 0 {
             if self.parent_entity_index != 0 {
@@ -1427,9 +1420,13 @@ impl InvisibleState {
                             .experience_awarded
                             .wrapping_add(profile.experience_award);
                         experience_awarded = profile.experience_award;
-                        self.parent_visibility_mode = profile.owner_visibility_mode;
                         self.spell_status_flags |= INVISIBLE_STATUS_BIT;
-                        self.owner_word_clear_pending = true;
+                        // NewEvent leaves this nonplayer holder's A4 pointing
+                        // at unk_F42B0x, not at its parent's player state.
+                        special_state_write = Some(InvisibleSpecialWrite {
+                            clear_protection: true,
+                            visibility_mode: profile.owner_visibility_mode,
+                        });
                     } else if self.spell_status_flags & INVISIBLE_STATUS_BIT == 0 {
                         // Source forces a one-tick cooldown if the spell entity
                         // never reached its initial visibility transition.
@@ -1454,12 +1451,16 @@ impl InvisibleState {
             self.active_value -= 1;
             if self.active_value == 0 {
                 // Preserve the source asymmetry: termination clears the owner
-                // bit and owner life mode; the spell entity bit is left as-is
+                // bit and holder A4 life mode; the spell entity bit is left as-is
                 // until the entity is removed by `sub_6D880`.
                 if self.parent_entity_index != 0 {
                     self.parent_status_flags &= !INVISIBLE_STATUS_BIT;
                 }
-                self.parent_visibility_mode = 0;
+                special_state_write = Some(InvisibleSpecialWrite {
+                    clear_protection: special_state_write
+                        .is_some_and(|write| write.clear_protection),
+                    visibility_mode: 0,
+                });
                 self.cleanup_requested = true;
             }
         }
@@ -1474,8 +1475,7 @@ impl InvisibleState {
             owner_flags_after: self.parent_status_flags,
             spell_flags_before,
             spell_flags_after: self.spell_status_flags,
-            visibility_before,
-            visibility_after: self.parent_visibility_mode,
+            special_state_write,
             countdown_before,
             countdown_after: self.countdown,
             experience_awarded,
@@ -1491,12 +1491,16 @@ impl InvisibleState {
         self.parent_mana_regen = 0;
         self.parent_status_flags = 0;
         self.spell_status_flags = 0;
-        self.parent_visibility_mode = 0;
-        self.owner_word_clear_pending = false;
         self.countdown = 64;
         self.experience_awarded = 0;
         self.cleanup_requested = false;
     }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct InvisibleSpecialWrite {
+    pub clear_protection: bool,
+    pub visibility_mode: u8,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1507,8 +1511,9 @@ pub struct InvisibleStep {
     pub owner_flags_after: u32,
     pub spell_flags_before: u32,
     pub spell_flags_after: u32,
-    pub visibility_before: u8,
-    pub visibility_after: u8,
+    /// Immediate write through the holder's A4. The caller resolves that
+    /// pointer; this result is not a second persistent visibility authority.
+    pub special_state_write: Option<InvisibleSpecialWrite>,
     pub countdown_before: i16,
     pub countdown_after: i16,
     pub experience_awarded: i32,
@@ -2663,7 +2668,7 @@ mod tests {
             first.spell_flags_after & INVISIBLE_STATUS_BIT,
             INVISIBLE_STATUS_BIT
         );
-        assert_eq!(first.visibility_after, 3);
+        assert_eq!(first.special_state_write.unwrap().visibility_mode, 3);
         assert_eq!(invisible.parent_mana_regen, -3_000);
         assert_eq!(invisible.countdown, 63);
 
@@ -2678,7 +2683,7 @@ mod tests {
             end.spell_flags_after & INVISIBLE_STATUS_BIT,
             INVISIBLE_STATUS_BIT
         );
-        assert_eq!(end.visibility_after, 0);
+        assert_eq!(end.special_state_write.unwrap().visibility_mode, 0);
     }
 
     #[test]
@@ -2748,7 +2753,6 @@ mod tests {
         assert_eq!(invisible.parent_mana_regen, 0);
         assert_eq!(invisible.parent_status_flags, 0);
         assert_eq!(invisible.spell_status_flags, 0);
-        assert_eq!(invisible.parent_visibility_mode, 0);
         assert_eq!(invisible.countdown, 64);
         assert_eq!(invisible.experience_awarded, 0);
         assert!(!invisible.cleanup_requested);

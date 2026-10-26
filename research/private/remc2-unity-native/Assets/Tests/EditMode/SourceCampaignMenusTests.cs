@@ -1,3 +1,4 @@
+using System;
 using NUnit.Framework;
 using UnityEngine;
 
@@ -5,6 +6,54 @@ namespace MagicCarpet.Native.Tests
 {
     public sealed class SourceCampaignMenusTests
     {
+        [Test]
+        public void SourceMapPathRetainsItsIntegerAsymmetryAndFollowingMoveArrival()
+        {
+            var path = new SourceMapMotion.Path(10, 3, 0, 0, 2);
+            var expected = new[] { (2, 0), (4, 0), (6, 2), (8, 2), (10, 2) };
+            foreach (var point in expected)
+            {
+                Assert.That(path.Move(), Is.False);
+                Assert.That(((int)path.X, (int)path.Y), Is.EqualTo(point));
+            }
+            Assert.That(path.Move(), Is.True,
+                "source arrival checks the dominant axis before moving, without inventing a final minor-axis step");
+            var reverse = new SourceMapMotion.Path(0, 0, 10, 3, 2);
+            for (var pass = 0; pass < 5; pass++) Assert.That(reverse.Move(), Is.False);
+            Assert.That(((int)reverse.X, (int)reverse.Y), Is.EqualTo((0, 1)));
+            Assert.That(reverse.Move(), Is.True);
+        }
+
+        [Test]
+        public void SourceMapEdgePanUsesPriorAccelerationAndExactSourceBounds()
+        {
+            var map = new SourceMapMotion(Array.ConvertAll(new int[15], _ => new SourceMapMotion.BackgroundBinding()),
+                Array.ConvertAll(new int[11], _ => new SourceMapMotion.DecorationBinding()));
+            map.Pan(638, 478);
+            Assert.That((map.X, map.Y), Is.EqualTo((0, 0)));
+            map.Pan(638, 478);
+            Assert.That((map.X, map.Y), Is.EqualTo((4, 4)));
+            map.Pan(638, 478);
+            Assert.That((map.X, map.Y), Is.EqualTo((12, 12)));
+            map.Pan(320, 240); map.Pan(638, 478);
+            Assert.That((map.X, map.Y), Is.EqualTo((12, 12)), "leaving the edge resets the next acceleration");
+            for (var pass = 0; pass < 40; pass++) map.Pan(638, 478);
+            Assert.That((map.X, map.Y), Is.EqualTo((638, 478)));
+        }
+
+        [Test]
+        public void SaveSlotNameUsesSourceReplacementUppercaseAndFifteenCharacterLimit()
+        {
+            var edited = false;
+            var label = SourceScrollDialog.EditName("OLD SLOT", ref edited, KeyCode.A, 'a');
+            Assert.That(label, Is.EqualTo("A"), "first printable key replaces the selected slot label");
+            foreach (var value in "bc 12345678901234567890")
+                label = SourceScrollDialog.EditName(label, ref edited, KeyCode.None, value);
+            Assert.That(label, Is.EqualTo("ABC 12345678901"));
+            Assert.That(SourceScrollDialog.EditName(label, ref edited, KeyCode.None, '!'), Is.EqualTo(label));
+            Assert.That(SourceScrollDialog.EditName(label, ref edited, KeyCode.Backspace, '\0'), Is.EqualTo("ABC 1234567890"));
+        }
+
         [Test]
         public void SourceConfirmationUsesBothButtonsAndReturnEscapeWithinItsExactHitRegions()
         {

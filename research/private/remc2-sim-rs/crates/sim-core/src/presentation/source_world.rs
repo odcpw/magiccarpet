@@ -63,6 +63,7 @@ impl<'a> SourceWorldSprites<'a> {
         cell_orders: &[u16],
         ground_heights: &[u8],
         previous_pixel_mode: u8,
+        shadows: bool,
     ) -> Result<Self, ClassicHdRasterError> {
         if cell_orders.len() != 65536 || ground_heights.len() != 65536 {
             return Err(ClassicHdRasterError(
@@ -139,7 +140,10 @@ impl<'a> SourceWorldSprites<'a> {
             };
             let primary_pixel_mode = pixel_mode(primary)?;
             let reflection_pixel_mode = pixel_mode(placement)?;
-            let shadow = if particle.byte_10 == 0 && (source.control_flags >> 16) & 0x0808 == 0 {
+            let shadow = if shadows
+                && particle.byte_10 == 0
+                && (source.control_flags >> 16) & 0x0808 == 0
+            {
                 placement.and_then(|placement| {
                     project_sprite_shadow(
                         placement,
@@ -346,6 +350,7 @@ mod tests {
             &cells,
             &ground,
             0,
+            true,
         )
         .unwrap();
         let mut indices = vec![77; 320 * 200];

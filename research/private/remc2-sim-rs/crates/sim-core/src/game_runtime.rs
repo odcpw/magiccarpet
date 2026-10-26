@@ -631,8 +631,6 @@ impl<B: GameSessionBackend> GameRuntime<B> {
             session_generation,
             origin: LoadingOrigin::Title { presentation_cue },
         };
-        self.completed_levels.clear();
-        self.level_statistics.clear();
         self.generation = next_generation;
         Ok(self.identity())
     }
@@ -643,6 +641,22 @@ impl<B: GameSessionBackend> GameRuntime<B> {
         &mut self,
         guard: RuntimeGuard,
     ) -> Result<RuntimeIdentity, RuntimeTransitionError> {
+        self.show_new_game_map_resolved(guard, |_| {
+            Err(RuntimeTransitionError::InvalidRuntimeFlow {
+                message: "retained campaign frontier requires its installed package resolver"
+                    .to_owned(),
+            })
+        })
+    }
+
+    pub(crate) fn show_new_game_map_resolved<F>(
+        &mut self,
+        guard: RuntimeGuard,
+        resolve: F,
+    ) -> Result<RuntimeIdentity, RuntimeTransitionError>
+    where
+        F: FnOnce(&SemanticLevelId) -> Result<Arc<GameDefinition>, RuntimeTransitionError>,
+    {
         self.validate_guard(guard)
             .map_err(Box::new)
             .map_err(RuntimeTransitionError::Guard)?;
@@ -657,9 +671,27 @@ impl<B: GameSessionBackend> GameRuntime<B> {
             });
         };
         let next_generation = self.next_generation()?;
+        let flow = definition
+            .runtime_flow()
+            .expect("Loading has a validated flow");
+        let selected_definition = match flow
+            .entries()
+            .iter()
+            .find(|entry| !self.completed_levels.contains(entry.level_id()))
+        {
+            Some(entry) if entry.level_id() == flow.bound_level_id() => {
+                Some(Arc::clone(definition))
+            }
+            Some(entry) => {
+                let selected = resolve(entry.level_id())?;
+                campaign_menu::validate_selected(definition, &selected, entry.level_id())?;
+                Some(selected)
+            }
+            None => None,
+        };
         self.state = RuntimeState::Campaign {
             definition: Arc::clone(definition),
-            selected_definition: Some(Arc::clone(definition)),
+            selected_definition,
             session_generation: *session_generation,
             phase: CampaignMenuPhase::MissionSelect,
             completed_level: None,
@@ -760,7 +792,7 @@ impl<B: GameSessionBackend> GameRuntime<B> {
     /// and the caller's exact receipt verifier all succeed before the runtime
     /// publishes the candidate. Observations borrow the private candidate;
     /// callers must discard them when final receipt verification fails.
-    pub(crate) fn restore_playing_resolved<A, F, P, V, I, O, S>(
+    pub(crate) fn restore_playing_resolved<A, F, P, V, I, O, S, X>(
         &mut self,
         guard: RuntimeGuard,
         definition: Arc<GameDefinition>,
@@ -772,6 +804,7 @@ impl<B: GameSessionBackend> GameRuntime<B> {
         level_statistics: Vec<CompletedLevelStatistics>,
         resolve_input: F,
         prepare: P,
+        mut before_operation: X,
         verify: V,
         mut set_speech: S,
         mut observe: O,
@@ -784,6 +817,7 @@ impl<B: GameSessionBackend> GameRuntime<B> {
         I: IntoIterator<Item = ReplayOperation<B::Command>>,
         O: FnMut(&GameSession<B>),
         S: FnMut(&mut GameSession<B>, bool, bool),
+        X: FnMut(&mut GameSession<B>, usize) -> Result<(), RuntimeTransitionError>,
     {
         self.validate_guard(guard)
             .map_err(Box::new)
@@ -833,8 +867,15 @@ impl<B: GameSessionBackend> GameRuntime<B> {
         )
         .map_err(RestorePlayingError::Session)?;
         prepare(&mut candidate).map_err(RestorePlayingError::Transition)?;
+        before_operation(&mut candidate, 0).map_err(RestorePlayingError::Transition)?;
         observe(&candidate);
+        let mut operation_count = 0;
         for (operation_index, operation) in operations.into_iter().enumerate() {
+            if operation_index != 0 {
+                before_operation(&mut candidate, operation_index)
+                    .map_err(RestorePlayingError::Transition)?;
+            }
+            operation_count = operation_index + 1;
             let guard = candidate.identity().guard();
             match operation {
                 ReplayOperation::SpeechPreference {
@@ -867,6 +908,10 @@ impl<B: GameSessionBackend> GameRuntime<B> {
                     })?,
             };
             observe(&candidate);
+        }
+        if operation_count != 0 {
+            before_operation(&mut candidate, operation_count)
+                .map_err(RestorePlayingError::Transition)?;
         }
         verify(&candidate).map_err(RestorePlayingError::Transition)?;
         self.state = RuntimeState::Playing {

@@ -233,9 +233,8 @@ pub struct SpellAssignment {
     pub hand: SpellAssignmentHand,
 }
 
-/// Transport-neutral command subset exercised by the fixed Level 1 corpus.
-/// Menu/editor actions are separate semantic operations; no remc2 opcode or
-/// bitfield crosses this boundary.
+/// Portable player commands. Game adapters own their admission and rules;
+/// no remc2 opcode or bitfield crosses this boundary.
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct GameCommand {
@@ -250,6 +249,10 @@ pub struct GameCommand {
     /// when the source player has a surviving linked Castle.
     #[serde(skip_serializing_if = "is_false")]
     pub recover_player: bool,
+    /// Remove one stage of the player's linked Castle through its ordinary
+    /// lifecycle. The game adapter owns admission and the source command.
+    #[serde(skip_serializing_if = "is_false")]
+    pub remove_castle_stage: bool,
     /// Monotonic elapsed source clock input, recorded with the command so
     /// completion time remains deterministic through replay and save/load.
     #[serde(skip_serializing_if = "is_zero_u32")]

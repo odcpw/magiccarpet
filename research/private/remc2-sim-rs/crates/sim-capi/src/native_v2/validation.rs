@@ -101,6 +101,7 @@ pub(super) fn campaign_shield_snapshot(
 pub(super) fn campaign_invisible_snapshot(
     generation: u64,
     state: Option<sim_core::spell_activation::InvisibleState>,
+    parent_visibility_mode: u8,
 ) -> McCampaignInvisibleSnapshotV2 {
     let mut snapshot = McCampaignInvisibleSnapshotV2 {
         abi_version: MC_NATIVE_ABI_VERSION,
@@ -112,7 +113,7 @@ pub(super) fn campaign_invisible_snapshot(
         snapshot.active = 1;
         snapshot.tier = state.tier;
         snapshot.action = state.action;
-        snapshot.parent_visibility_mode = state.parent_visibility_mode;
+        snapshot.parent_visibility_mode = parent_visibility_mode;
         snapshot.holder_entity_index = state.holder_entity_index;
         snapshot.parent_entity_index = state.parent_entity_index;
         snapshot.active_value = state.active_value;

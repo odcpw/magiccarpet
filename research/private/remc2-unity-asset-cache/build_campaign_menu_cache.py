@@ -10,6 +10,7 @@ import argparse
 import hashlib
 import json
 import re
+import struct
 import subprocess
 import sys
 import tempfile
@@ -92,6 +93,98 @@ def source_startup() -> dict:
         logo=dict(selector=66, x=185, y=232), buttons=buttons, help=help_bindings,
         animations=[dict(x=row[1], y=row[2], initial_selector=row[3],
             first_selector=row[4], last_selector=row[5], step_ticks=4) for row in rows])
+
+
+def source_campaign_controls() -> list[dict]:
+    source = subprocess.run(["git", "-C", str(cache.REMC2_GIT), "show",
+        f"{cache.PINNED_REMC2_COMMIT}:remc2/engine/MenusAndIntros.cpp"],
+        check=True, stdout=subprocess.PIPE, timeout=30).stdout.decode()
+    body = source.split("mapMenuButtons_E23E0[6] = {", 1)[1].split("};", 1)[0]
+    result = []
+    for row in re.findall(r"\{([^{}]+),\{[^{}]+\}\}", body):
+        values = [int(value.strip(), 0) for value in row.split(",")]
+        if len(values) != 14:
+            raise cache.CacheError("pinned campaign control table changed")
+        if not values[13]:
+            break
+        result.append(dict(source_action=values[0], x=values[3], y=values[4],
+            width=values[5], height=values[6], text_selector=values[7],
+            normal_selector=values[9], hover_selector=values[8], help_key=values[10]))
+    if len(result) != 4:
+        raise cache.CacheError("pinned campaign control count changed")
+    return result
+
+
+def source_map_motion() -> dict:
+    source = subprocess.run(["git", "-C", str(cache.REMC2_GIT), "show",
+        f"{cache.PINNED_REMC2_COMMIT}:remc2/engine/MenusAndIntros.cpp"],
+        check=True, stdout=subprocess.PIPE, timeout=30).stdout.decode()
+    body = source.split("x_BYTE_E26C8_str[16] = {", 1)[1].split("};", 1)[0]
+    rows = [[int(value.strip(), 0) for value in row.split(",")]
+            for row in re.findall(r"\{([^{}]+)\}", body)]
+    if len(rows) != 16 or any(len(row) != 14 for row in rows) or any(rows[-1]):
+        raise cache.CacheError("pinned campaign background animation table changed")
+    signed = lambda value: value if value < 32768 else value - 65536
+    background = [dict(x=row[2], y=row[3], first=row[4], last=row[5], selector=row[6],
+        delay_seconds=row[7], phase=row[8], restart=row[9], sound_delay=signed(row[10]),
+        sound=row[11], play_type=row[12], loops=signed(row[13])) for row in rows[:-1]]
+    body = source.split("str_WORD_E20A4[12] = {", 1)[1].split("};", 1)[0]
+    rows = re.findall(r"\{([^{}]+),\{([^{}]+)\},([^{}]+),\{([^{}]+)\}\}", body)
+    decorations = []
+    for header, movement, state, path in rows:
+        header, movement, state, path = [[int(value.strip(), 0) for value in group.split(",")]
+            for group in (header, movement, state, path)]
+        if (len(header), len(movement), len(state), len(path)) != (13, 12, 3, 12):
+            raise cache.CacheError("pinned dragon animation row changed")
+        if not movement[2]:
+            break
+        decorations.append(dict(x=movement[2], y=movement[3], target_x=movement[4], target_y=movement[5],
+            first=movement[6], last=movement[7], finish_first=movement[9], finish_last=movement[10],
+            delay_seconds=movement[11], kind=state[0], frontier=state[2],
+            start_sound=header[7], start_play_type=header[8], finish_sound=header[10], finish_play_type=header[11]))
+    if len(decorations) != 11:
+        raise cache.CacheError("pinned dragon animation table changed")
+    return dict(background=background, decorations=decorations, presentation_hz=30,
+        source_sha256=hashlib.sha256(source.encode()).hexdigest())
+
+
+def source_map_border(data: bytes) -> tuple[bytes, bytes]:
+    """Visible writes of sub_85CC3_draw_round_frame, including its source asymmetry."""
+    indices, mask = bytearray(640 * 480), bytearray(640 * 480)
+    cursor = 0
+    left, bottom, right, bottom_right = 0, 306560, 640, 307200
+    copied = skipped = 0
+    def write(target: int, value: int) -> None:
+        if 0 <= target < len(indices):
+            indices[target], mask[target] = value, 1
+    for remaining in range(240, 0, -1):
+        while True:
+            count = struct.unpack_from("<h", data, cursor)[0]
+            cursor += 2
+            if count > 0:
+                copied = count
+                pixels = data[cursor:cursor + count]
+                if len(pixels) != count:
+                    raise cache.CacheError("truncated source map border")
+                for index, value in enumerate(pixels):
+                    write(left + index, value); write(bottom + index, value)
+                    write(right - index, value); write(bottom_right - index, value)
+                cursor += count
+                left += count; bottom += count; right -= count; bottom_right -= count
+            elif count < 0:
+                count = -count
+                left += count; bottom += count; right -= count; bottom_right -= count
+                skipped += copied + count
+            else:
+                break
+        if remaining > 221:
+            write(left, data[cursor - 3]); write(bottom, data[cursor - 3])
+        left += -copied + 640 - skipped
+        bottom += -copied - 640 - skipped
+        right += skipped + copied + 640
+        bottom_right += skipped + copied - 640
+        skipped = 0
+    return bytes(indices), bytes(mask)
 
 
 def build(owner: Path, output: Path, *, rnc_decoder: Path | None = None) -> dict:
@@ -279,8 +372,14 @@ def build(owner: Path, output: Path, *, rnc_decoder: Path | None = None) -> dict
         campaign_colours = cache.decode_container_blob(decoder, source, 0x13B3B8,
             16384, work, "campaign-colours")
         write("campaign-colours.u8", campaign_colours)
+        motion = source_map_motion()
+        border = cache.decode_container_blob(decoder, source, 0x141E85, 24523, work, "campaign-border")
+        border_indices, border_mask = source_map_border(border)
+        write("map-border.indices.u8", border_indices)
+        write("map-border.mask.u8", border_mask)
+        motion.update(border_indices_path="map-border.indices.u8", border_mask_path="map-border.mask.u8")
         indexed_portals = []
-        for selector in (*range(33, 45), *range(70, 85)):
+        for selector in (*range(1, 152), *range(206, 212), *range(277, 285), *range(297, 305)):
             offset, width, height = portal_table[selector]
             indices, mask, _ = cache.materialize_indexed_rle(sprites, offset, width, height)
             indices_path, mask_path = f"map-{selector:03d}.indices.u8", f"map-{selector:03d}.mask.u8"
@@ -288,10 +387,31 @@ def build(owner: Path, output: Path, *, rnc_decoder: Path | None = None) -> dict
             write(mask_path, bytes(mask))
             indexed_portals.append(dict(selector=selector, width=width, height=height,
                 indices_path=indices_path, mask_path=mask_path))
-        campaign_presentation = dict(font=campaign_font, colours_path="campaign-colours.u8",
+        dialog_font_data = decoded_owner("DATA/FONT1.DAT")
+        dialog_font_table = cache.bitmap_records(decoded_owner("DATA/FONT1.TAB"))
+        if len(dialog_font_table) != 273 or dialog_font_table[33][1:] != (4, 7):
+            raise cache.CacheError("pinned campaign dialog font table changed")
+        dialog_rgba = bytearray(80 * 126 * 4)
+        dialog_glyphs = []
+        for index, (offset, width, height) in enumerate(dialog_font_table):
+            if width > 5 or height > 7:
+                raise cache.CacheError("campaign dialog font exceeds its source atlas cell")
+            _, mask, _ = cache.materialize_indexed_rle(dialog_font_data, offset, width, height)
+            x, y = index % 16 * 5, index // 16 * 7
+            dialog_glyphs.append(dict(index=index, x=x, y=y, width=width, height=height))
+            for local_y in range(height):
+                for local_x in range(width):
+                    if mask[local_y * width + local_x]:
+                        target = ((y + local_y) * 80 + x + local_x) * 4
+                        dialog_rgba[target:target + 4] = b"\xff\xff\xff\xff"
+        write("campaign-dialog-font.rgba8", bytes(dialog_rgba))
+        dialog_font = dict(path="campaign-dialog-font.rgba8", width=80, height=126,
+            advance_x=4, advance_y=7, glyph_mapping="mc2-font1-byte-plus-one-controls/v1", glyphs=dialog_glyphs)
+        campaign_presentation = dict(font=campaign_font, dialog_font=dialog_font, motion=motion,
+            controls=source_campaign_controls(), colours_path="campaign-colours.u8",
             english_statistics=any(alias.upper() == "LANGUAGE/D2.TXT" for alias in default_locale["aliases"]),
             bitmaps=[bitmap(sprites, portal_table, palette, selector, f"map-{selector:03d}.rgba8")
-                for selector in (274, 275)], indexed_portals=indexed_portals)
+                for selector in (*range(246, 259), 274, 275)], indexed_portals=indexed_portals)
         for kind, selector in [("completed", 37), ("available", 70)]:
             row = bitmap(sprites, portal_table, palette, selector, f"portal-{kind}.rgba8")
             bindings.append(dict(kind=kind, path=row["path"], width=row["width"], height=row["height"]))
@@ -317,6 +437,24 @@ def build(owner: Path, output: Path, *, rnc_decoder: Path | None = None) -> dict
         portal_animation["sound"] = dict(bank=0, id=41, path="portal-opening-041.wav", volume=127,
             pan=64, rate=100, if_not_playing=True, source_container_sha256=hashlib.sha256(sound).hexdigest(),
             source_record_sha256=record["payload_sha256"], source_filename=record["filename"], **properties)
+        record = records[13]
+        payload = audio[record["relative_data_offset"]:record["relative_data_offset"] + record["bytes"]]
+        write("menu-click-014.wav", payload)
+        click_sound = dict(bank=0, id=14, path="menu-click-014.wav", volume=127, pan=64, rate=100,
+            if_not_playing=False, source_record_sha256=record["payload_sha256"],
+            **cache.wav_properties(payload, "source menu click sample14"))
+        sample_ids = {19}
+        sample_ids.update(row["sound"] for row in motion["background"] if row["sound_delay"] != -1)
+        sample_ids.update(row[key] for row in motion["decorations"] for key in ("start_sound", "finish_sound"))
+        motion["sounds"] = []
+        for sample_id in sorted(sample_ids):
+            record = records[sample_id - 1]
+            payload = audio[record["relative_data_offset"]:record["relative_data_offset"] + record["bytes"]]
+            path = f"map-sample-{sample_id:03d}.wav"
+            write(path, payload)
+            motion["sounds"].append(dict(bank=0, id=sample_id, path=path, volume=127, pan=64, rate=100,
+                if_not_playing=True, source_record_sha256=record["payload_sha256"],
+                **cache.wav_properties(payload, f"source map sample{sample_id}")))
     manifest = dict(schema=SCHEMA, source_commit=cache.PINNED_REMC2_COMMIT,
                     source_hscreen_sha256=hashlib.sha256(source).hexdigest(),
                     source_language_sha256=hashlib.sha256(language).hexdigest(),
@@ -326,7 +464,7 @@ def build(owner: Path, output: Path, *, rnc_decoder: Path | None = None) -> dict
                     width=1280, height=960, view_width=640, view_height=480,
                     missions=source_missions(language), portals=bindings, outputs=outputs,
                     startup=startup, pause=pause, portal_animation=portal_animation,
-                    campaign=campaign_presentation,
+                    campaign=campaign_presentation, click_sound=click_sound,
                     decoder=provenance)
     (output / "manifest.json").write_text(json.dumps(manifest, indent=2, ensure_ascii=False) + "\n")
     return manifest

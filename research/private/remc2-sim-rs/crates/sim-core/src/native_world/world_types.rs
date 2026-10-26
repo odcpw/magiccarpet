@@ -1950,10 +1950,30 @@ pub struct PlayerSnapshot {
     /// offsets into the exporter's compact player record.
     pub projectile_attempts: u32,
     pub projectile_hits: u32,
+    /// Source A4 PlayerHitFrameTime_406. The compact exporter record's byte
+    /// 406 belongs to spell hand eligibility, not this omitted HUD field.
+    pub hit_frame_time: u8,
+    /// Source A4 byte_0x1BE_446, consulted by GetSpellManaCost after a
+    /// level-one Castle is abandoned. It is absent from compact players.bin.
+    pub castle_destroyed: u8,
+    /// Source player A4 byte_0x1BF_447; distinct from a nonplayer holder's
+    /// GlobalSpecialState and from compact spell-blocked byte 447.
+    pub visibility_mode: u8,
     pub(super) record: Box<[u8]>,
 }
 
 impl PlayerSnapshot {
+    pub(crate) fn append_omitted_state_hash(&self, hasher: &mut Sha256) {
+        if self.hit_frame_time != 0 || self.castle_destroyed != 0 || self.visibility_mode != 0 {
+            hasher.update(b"source-player-omitted-state-v1");
+            hasher.update([
+                self.hit_frame_time,
+                self.castle_destroyed,
+                self.visibility_mode,
+            ]);
+        }
+    }
+
     #[must_use]
     pub fn record_bytes(&self) -> &[u8] {
         &self.record

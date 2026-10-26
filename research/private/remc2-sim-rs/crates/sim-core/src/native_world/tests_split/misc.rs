@@ -1,3 +1,30 @@
+fn authored_invisible_reward_prerequisite(session: &mut Mc2Simulation) -> Level2SpellPickupSource {
+    let feature = session
+        .mission()
+        .authored_features()
+        .iter()
+        .copied()
+        .find(|feature| feature.kind == 15 && feature.subtype == 11)
+        .expect("current Level2 authored ordinary Invisibility row");
+    assert_eq!(feature.stage_tag, 1, "the source is an ordinary pickup");
+    // Completing the objective creates BUILD21 vaults; it does not instantly
+    // deliver their rewards. Isolate this spell lifecycle at the real vault
+    // reward-group boundary, retaining the authored constructor and normal
+    // collision acquisition rather than gifting a held/starting spell.
+    session
+        .activate_authored_group_prerequisite_for_test(
+            u16::try_from(feature.activation_group).expect("authored reward group"),
+        )
+        .expect("real authored reward group constructor");
+    session
+        .economy()
+        .spell_pickups()
+        .iter()
+        .find(|source| source.authored_index == feature.index)
+        .copied()
+        .expect("ordinary Invisibility source from authored reward")
+}
+
 #[test]
 fn level_two_qualified_area_exit_hides_after_inverse_overlap_success() {
     let mut session = level_two_campaign_session();
@@ -2321,11 +2348,7 @@ fn level_two_shield_expiry_replays_queued_setspell_word() {
 
 #[test]
 fn level_two_ordinary_invisible_acquisition_reconciles_command_latch_and_reset() {
-    let inspection =
-        NativeWorld::inspect_level2(level_two_fixture_path()).expect("qualified Level 2 package");
-    let mut session = inspection
-        .level2_reset_session()
-        .expect("Level 2 Invisible command session");
+    let mut session = level_two_campaign_session();
     let baseline_hash = session.campaign_state_hash();
     let selected_invisible = PlayerCommand {
         opcode: 6,
@@ -2348,20 +2371,9 @@ fn level_two_ordinary_invisible_acquisition_reconciles_command_latch_and_reset()
     session.reset();
     assert_eq!(session.campaign_state_hash(), baseline_hash);
 
-    // Group-8's ordinary objective route materializes authored row 156;
-    // collision with the local flight body executes SetSpell_6D5E0 and
-    // installs the dynamic family-11 holder.
-    session
-        .set_level2_selected_objective_stage_state(2)
-        .expect("source objective completion sentinel");
-    session.step_outer_turn(PlayerCommand::default(), 0);
-    let source = session
-        .economy()
-        .spell_pickups()
-        .iter()
-        .find(|source| source.authored_index == 156)
-        .copied()
-        .expect("authored family-11 source");
+    // The real reward constructor supplies a world jar. Normal local
+    // overlap still executes SetSpell and installs its held lifecycle.
+    let source = authored_invisible_reward_prerequisite(&mut session);
     session.state.position = source.position;
     let outcome = (0..4).find_map(|_| {
         session.step_outer_turn(PlayerCommand::default(), 0);
@@ -2498,7 +2510,14 @@ fn level_two_ordinary_invisible_acquisition_reconciles_command_latch_and_reset()
         .invisible_state()
         .expect("family-11 remains authoritative on its following source pass");
     assert_eq!(second_pulse.active_value, armed.active_value - 1);
-    assert_eq!(second_pulse.parent_visibility_mode, 1);
+    assert_eq!(
+        session
+            .shared_spells()
+            .global_special_state()
+            .visibility_mode,
+        1
+    );
+    assert_eq!(session.shared_spells().local_player().visibility_mode, 0);
     assert_ne!(second_pulse.spell_status_flags & INVISIBLE_STATUS_BIT, 0);
     assert!(
         session
@@ -2507,25 +2526,17 @@ fn level_two_ordinary_invisible_acquisition_reconciles_command_latch_and_reset()
             .is_some_and(|castle| castle.source_entity_index == castle_slot)
     );
     assert_ne!(session.campaign_state_hash(), baseline_hash);
+    let mut reset_state = session.session.baseline.as_ref().clone();
+    reset_state.shared_spells.global_special_state = session.shared_spells().global_special_state();
     session.reset();
-    assert_eq!(session.campaign_state_hash(), baseline_hash);
+    assert_eq!(session.session.state.live, reset_state);
 }
 
 #[test]
 fn level_two_invisible_active_holder_ticks_through_outer_turn_and_reset() {
     let mut session = level_two_campaign_session();
-    session
-        .set_level2_selected_objective_stage_state(2)
-        .expect("source objective completion sentinel");
     let baseline_hash = session.shared_spells().reset_hash();
-    session.step_outer_turn(PlayerCommand::default(), 0);
-    let source = session
-        .economy()
-        .spell_pickups()
-        .iter()
-        .find(|source| source.authored_index == 156)
-        .copied()
-        .expect("authored family-11 source");
+    let source = authored_invisible_reward_prerequisite(&mut session);
     session
         .set_level2_entity_position(session.state.entity_index, source.position)
         .expect("fixture player position updates the authoritative row and map link");
@@ -2581,9 +2592,8 @@ fn level_two_invisible_active_holder_ticks_through_outer_turn_and_reset() {
         shared.player_entity.record[148..152].copy_from_slice(&5_000_i32.to_le_bytes());
         shared.player_entities[0].mana = 5_000;
         shared.player_entities[0].record[148..152].copy_from_slice(&5_000_i32.to_le_bytes());
-        // Distinguish the source first-pulse write from the qualified
-        // frame-zero value, which is already zero in the owner package.
-        shared.players[0].record[345..347].copy_from_slice(&0x1234_u16.to_le_bytes());
+        // The holder's A4 resolves to unk_F42B0x, not the player A4.
+        shared.global_special_state.protection_ticks = 0x1234;
         shared
             .invisible
             .as_mut()
@@ -2593,9 +2603,7 @@ fn level_two_invisible_active_holder_ticks_through_outer_turn_and_reset() {
     // The player callback refreshes the typed holder's parent from this
     // numeric source row. Seed the same declared unit-fixture mana there.
     session.economy.entities[usize::from(parent_entity_index)].set_mana(5_000);
-    session.shared_spells_mut().local_player.record[345..347]
-        .copy_from_slice(&0x1234_u16.to_le_bytes());
-    session.players[0].record[345..347].copy_from_slice(&0x1234_u16.to_le_bytes());
+    let compact_spell_state = session.shared_spells().local_player.record[320..450].to_vec();
     assert!(session.shared_spells_mut().activate_invisible(256, false));
     let active = session
         .shared_spells()
@@ -2610,12 +2618,34 @@ fn level_two_invisible_active_holder_ticks_through_outer_turn_and_reset() {
         .invisible_state()
         .expect("Invisible state after outer source turn");
     assert_eq!(stepped.active_value, active.active_value - 1);
-    assert_eq!(stepped.parent_visibility_mode, 1);
+    assert_eq!(
+        session
+            .shared_spells()
+            .global_special_state()
+            .visibility_mode,
+        1
+    );
+    assert_eq!(session.shared_spells().local_player.visibility_mode, 0);
     assert_eq!(stepped.experience_awarded, 1);
     assert_ne!(stepped.spell_status_flags & INVISIBLE_STATUS_BIT, 0);
     assert_eq!(
-        session.shared_spells().players[0].record_bytes()[345..347],
-        [0, 0]
+        session
+            .shared_spells()
+            .global_special_state()
+            .protection_ticks,
+        0
+    );
+    assert_eq!(
+        &session.shared_spells().players[0].record_bytes()[320..450],
+        compact_spell_state
+    );
+    assert_eq!(
+        &session.shared_spells().local_player.record_bytes()[320..450],
+        compact_spell_state
+    );
+    assert_eq!(
+        &session.players[0].record_bytes()[320..450],
+        compact_spell_state
     );
     assert_eq!(stepped.countdown, active.countdown - 1);
     assert!(
@@ -2625,47 +2655,40 @@ fn level_two_invisible_active_holder_ticks_through_outer_turn_and_reset() {
             .is_some_and(|castle| castle.source_entity_index == castle_slot)
     );
 
-    // The Invisible source write is one-shot. A later writer to word
-    // 0x159 is not erased by subsequent Invisible projection sync, but
-    // the ordinary player-upkeep countdown still decrements it once per
-    // unpaused source pass.
-    session.shared_spells_mut().players[0].record[345..347]
-        .copy_from_slice(&0x5678_u16.to_le_bytes());
-    session.shared_spells_mut().local_player.record[345..347]
-        .copy_from_slice(&0x5678_u16.to_le_bytes());
-    session.players[0].record[345..347].copy_from_slice(&0x5678_u16.to_le_bytes());
+    // The first-pulse global write is one-shot. Player upkeep decrements
+    // the player's separate protection counter, never this nonplayer A4.
+    session
+        .shared_spells_mut()
+        .global_special_state
+        .protection_ticks = 0x5678;
+    let player_protection = session.session.state.live.player_protection_ticks;
     session.step_outer_turn(PlayerCommand::default(), 0);
     assert_eq!(
-        session.shared_spells().players[0].record_bytes()[345..347],
-        0x5677_u16.to_le_bytes()
+        session
+            .shared_spells()
+            .global_special_state()
+            .protection_ticks,
+        0x5678
+    );
+    assert_eq!(
+        session.session.state.live.player_protection_ticks,
+        player_protection - 1
     );
 
+    let mut reset_spells = session.session.baseline.shared_spells.clone();
+    reset_spells.global_special_state = session.shared_spells().global_special_state();
     session.reset();
     assert!(session.shared_spells().invisible_state().is_none());
-    assert_eq!(session.shared_spells().reset_hash(), baseline_hash);
+    assert_eq!(session.shared_spells(), &reset_spells);
 }
 
 #[test]
 fn level_two_remote_invisible_owner_does_not_overwrite_local_projection() {
-    let inspection =
-        NativeWorld::inspect_level2(level_two_fixture_path()).expect("qualified Level 2 package");
-    let mut session = inspection
-        .level2_reset_session()
-        .expect("Level 2 remote Invisible session");
-    session
-        .set_level2_selected_objective_stage_state(2)
-        .expect("source objective completion sentinel");
-    session.step_outer_turn(PlayerCommand::default(), 0);
-    let source = session
-        .economy()
-        .spell_pickups()
-        .iter()
-        .find(|source| source.authored_index == 156)
-        .copied()
-        .expect("authored family-11 source");
+    let mut session = level_two_campaign_session();
+    let source = authored_invisible_reward_prerequisite(&mut session);
     let source_position = source.position;
     let local_mana = session.shared_spells().player_mana();
-    let local_visibility = session.shared_spells().local_player.record[447];
+    let local_visibility = session.shared_spells().local_player.visibility_mode;
     let remote_mana = local_mana.wrapping_add(7_777);
     {
         let mut shared = session.shared_spells_mut();
@@ -2708,7 +2731,7 @@ fn level_two_remote_invisible_owner_does_not_overwrite_local_projection() {
     assert_eq!(invisible.parent_mana, remote_mana);
     assert_eq!(session.shared_spells().player_mana(), local_mana);
     assert_eq!(
-        session.shared_spells().local_player.record[447],
+        session.shared_spells().local_player.visibility_mode,
         local_visibility
     );
 
@@ -2750,24 +2773,9 @@ fn level_two_remote_invisible_owner_does_not_overwrite_local_projection() {
 }
 
 #[test]
-fn level_two_nyphur_visibility_consumes_invisible_owner_and_beyond_sight_tier() {
-    let inspection =
-        NativeWorld::inspect_level2(level_two_fixture_path()).expect("qualified Level 2 package");
-    let mut session = inspection
-        .level2_reset_session()
-        .expect("Level 2 visibility session");
-    session
-        .set_level2_selected_objective_stage_state(2)
-        .expect("source objective completion sentinel");
-    session.step_outer_turn(PlayerCommand::default(), 0);
-
-    let invisible_source = session
-        .economy()
-        .spell_pickups()
-        .iter()
-        .find(|source| source.authored_index == 156)
-        .copied()
-        .expect("authored family-11 source");
+fn nyphur_visibility_reads_player_a4_separately_from_invisible_holder_a4() {
+    let mut session = level_two_campaign_session();
+    let invisible_source = authored_invisible_reward_prerequisite(&mut session);
     let invisible_position = invisible_source.position;
     let remote_mana = session.shared_spells().player_mana().wrapping_add(7_777);
     {
@@ -2819,9 +2827,16 @@ fn level_two_nyphur_visibility_consumes_invisible_owner_and_beyond_sight_tier() 
     let hidden = session
         .nyphur_visibility()
         .expect("remote Invisible visibility projection");
-    assert_eq!(hidden.owner_visibility_mode, 1);
+    assert_eq!(
+        session
+            .shared_spells()
+            .global_special_state()
+            .visibility_mode,
+        1
+    );
+    assert_eq!(hidden.owner_visibility_mode, 0);
     assert!(!hidden.beyond_sight_holder_present);
-    assert!(!hidden.visible_to_local_player);
+    assert!(hidden.visible_to_local_player);
 
     let beyond_position = session.shared_spells().pickups()[0].position;
     {
@@ -2872,7 +2887,7 @@ fn level_two_nyphur_visibility_consumes_invisible_owner_and_beyond_sight_tier() 
     let revealed = session
         .nyphur_visibility()
         .expect("Beyond Sight visibility projection");
-    assert_eq!(revealed.owner_visibility_mode, 1);
+    assert_eq!(revealed.owner_visibility_mode, 0);
     assert!(revealed.beyond_sight_holder_present);
     assert!(revealed.beyond_sight_active);
     assert_eq!(revealed.beyond_sight_tier, Some(1));
@@ -2882,22 +2897,8 @@ fn level_two_nyphur_visibility_consumes_invisible_owner_and_beyond_sight_tier() 
 
 #[test]
 fn level_two_invisible_expiry_replays_queued_setspell_word() {
-    let inspection =
-        NativeWorld::inspect_level2(level_two_fixture_path()).expect("qualified Level 2 package");
-    let mut session = inspection
-        .level2_reset_session()
-        .expect("Level 2 Invisible cleanup session");
-    session
-        .set_level2_selected_objective_stage_state(2)
-        .expect("source objective completion sentinel");
-    session.step_outer_turn(PlayerCommand::default(), 0);
-    let source = session
-        .economy()
-        .spell_pickups()
-        .iter()
-        .find(|source| source.authored_index == 156)
-        .copied()
-        .expect("authored family-11 source");
+    let mut session = level_two_campaign_session();
+    let source = authored_invisible_reward_prerequisite(&mut session);
     session.state.position = source.position;
     let acquired = (0..4).find_map(|_| {
         session.step_outer_turn(PlayerCommand::default(), 0);
@@ -2950,7 +2951,13 @@ fn level_two_invisible_expiry_replays_queued_setspell_word() {
         .expect("Invisible state retained after expiry");
     assert_eq!(invisible.active_value, 0);
     assert_eq!(invisible.tier, 1);
-    assert_eq!(invisible.parent_visibility_mode, 0);
+    assert_eq!(
+        session
+            .shared_spells()
+            .global_special_state()
+            .visibility_mode,
+        0
+    );
 }
 
 #[test]

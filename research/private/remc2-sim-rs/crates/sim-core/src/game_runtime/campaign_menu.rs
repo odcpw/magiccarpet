@@ -19,6 +19,7 @@ pub enum CampaignMenuCommand {
     DismissResults,
     SelectMission { level_id: SemanticLevelId },
     StartMission,
+    ResetCampaign,
     ReturnTitle,
 }
 
@@ -344,6 +345,16 @@ impl<B: GameSessionBackend> GameRuntime<B> {
             unreachable!()
         };
         match command {
+            CampaignMenuCommand::ResetCampaign if *phase == CampaignMenuPhase::MissionSelect => {
+                let entry = definition.runtime_flow().unwrap().entry_level_id().clone();
+                let selected = resolve(&entry)?;
+                validate_selected(definition, &selected, &entry)?;
+                *definition = Arc::clone(&selected);
+                *selected_definition = Some(selected);
+                *completed_level = None;
+                self.completed_levels.clear();
+                self.level_statistics.clear();
+            }
             CampaignMenuCommand::DismissResults if *phase == CampaignMenuPhase::Results => {
                 // The map focuses its first unfinished portal, independently
                 // of which completed portal the results were showing.
@@ -446,7 +457,7 @@ pub(super) fn valid_percentages(stats: &GameCompletionStatistics) -> bool {
     .all(|value| (0..=100).contains(value))
 }
 
-fn validate_selected(
+pub(super) fn validate_selected(
     definition: &GameDefinition,
     selected: &GameDefinition,
     level_id: &SemanticLevelId,

@@ -84,6 +84,7 @@ namespace MagicCarpet.Native
             public string save_contract;
             public string save_transport;
             public string load_transport;
+            public string warm_load_transport;
             public string load_package_authority;
             public string client_semantics;
         }
@@ -520,16 +521,16 @@ namespace MagicCarpet.Native
 
         internal byte[] SaveReplay()
         {
-            var campaign = Current?.mode == CampaignMode;
-            if (!campaign) RequireSessionMode(allowPaused: true, "save replay");
+            var frontend = Current?.mode is CampaignMode or TitleMode;
+            if (!frontend) RequireSessionMode(allowPaused: true, "save replay");
             var before = Current;
             var bytes = ReadBytes(
                 (IntPtr buffer, uint capacity, out uint length) =>
                     NativeSim.mc_game_runtime_save_replay_json_v1(
                         RequireHandle(),
                         ParseCounter(before.generation, "generation"),
-                        campaign ? 0 : ParseCounter(before.session.generation, "session_generation"),
-                        campaign ? 0 : ParseCounter(before.session.tick, "tick"),
+                        frontend ? 0 : ParseCounter(before.session.generation, "session_generation"),
+                        frontend ? 0 : ParseCounter(before.session.tick, "tick"),
                         buffer,
                         capacity,
                         out length),
@@ -537,8 +538,8 @@ namespace MagicCarpet.Native
                 "save game replay");
             var after = IdentitySnapshot();
             if (after.mode != before.mode || after.generation != before.generation ||
-                (campaign ? HasSessionIdentityData(after.session) ||
-                    JsonUtility.ToJson(after.campaign_menu) != JsonUtility.ToJson(before.campaign_menu) :
+                (frontend ? HasSessionIdentityData(after.session) ||
+                    before.mode == CampaignMode && JsonUtility.ToJson(after.campaign_menu) != JsonUtility.ToJson(before.campaign_menu) :
                     after.session.generation != before.session.generation ||
                     after.session.tick != before.session.tick ||
                     !PreservesSessionBinding(before.session, after.session)) ||
@@ -550,6 +551,14 @@ namespace MagicCarpet.Native
         }
 
         internal Identity LoadReplay(
+            byte[] saveJson,
+            params InstalledPackageResource[] packages)
+        {
+            return LoadReplayFrom(null, saveJson, packages);
+        }
+
+        internal Identity LoadReplayFrom(
+            Identity source,
             byte[] saveJson,
             params InstalledPackageResource[] packages)
         {
@@ -567,15 +576,20 @@ namespace MagicCarpet.Native
             }
             var packageSet = EncodePackageSet(packages);
             var beforeGeneration = ParseCounter(Current.generation, "generation");
-            Check(
-                NativeSim.mc_game_runtime_load_replay_json_v1(
+            var status = source == null
+                ? NativeSim.mc_game_runtime_load_replay_json_v1(
                     RequireHandle(),
                     beforeGeneration,
                     packageSet,
                     checked((uint)packageSet.Length),
                     saveJson,
-                    checked((uint)saveJson.Length)),
-                "load game replay");
+                    checked((uint)saveJson.Length))
+                : NativeSim.mc_game_runtime_load_replay_from_runtime_json_v1(
+                    RequireHandle(), beforeGeneration,
+                    ParseCounter(source.runtime_id, "source runtime_id"),
+                    ParseCounter(source.generation, "source generation"),
+                    packageSet, checked((uint)packageSet.Length), saveJson, checked((uint)saveJson.Length));
+            Check(status, "load game replay");
             var identity = IdentitySnapshot();
             var loadedCampaign = identity.mode == CampaignMode;
             if ((!loadedCampaign && identity.mode != PlayingMode && identity.mode != PausedMode) ||
@@ -825,7 +839,8 @@ namespace MagicCarpet.Native
             bool recoverPlayer = false,
             uint elapsedCentiseconds = 0,
             EngineSessionTransport.SpellAssignment assignment = null,
-            bool showObjective = false)
+            bool showObjective = false,
+            bool removeCastleStage = false)
         {
             RequireSessionMode(allowPaused: false, "campaign step");
             var before = Current;
@@ -842,7 +857,7 @@ namespace MagicCarpet.Native
                 lookYaw,
                 lookPitch,
                 NegotiatedSessionContract.limits.maximum_command_json_bytes,
-                selectSpell, recenter, fullStop, recoverPlayer, elapsedCentiseconds, assignment, showObjective);
+                selectSpell, recenter, fullStop, recoverPlayer, elapsedCentiseconds, assignment, showObjective, removeCastleStage);
             var identity = IdentitySnapshot();
             if (identity.mode != PlayingMode ||
                 ParseCounter(identity.generation, "generation") != beforeRuntimeGeneration ||
@@ -961,6 +976,8 @@ namespace MagicCarpet.Native
                     "mc_game_runtime_save_replay_json_v1" ||
                 contract.replay_save.load_transport !=
                     "mc_game_runtime_load_replay_json_v1" ||
+                contract.replay_save.warm_load_transport !=
+                    "mc_game_runtime_load_replay_from_runtime_json_v1" ||
                 contract.replay_save.load_package_authority !=
                     "complete_unordered_resource_set" ||
                 contract.replay_save.client_semantics != "opaque_utf8_json" ||

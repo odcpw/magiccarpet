@@ -896,6 +896,7 @@ mod tests {
             cast_right: false,
             cast_selected: true,
             recover_player: false,
+            remove_castle_stage: false,
             elapsed_centiseconds: 0,
             select_spell: None,
             recenter: false,

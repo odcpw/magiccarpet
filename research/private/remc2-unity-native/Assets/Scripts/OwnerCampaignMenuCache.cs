@@ -71,6 +71,7 @@ namespace MagicCarpet.Native
             public PortalAnimationBinding portal_animation;
             public SourcePauseMenu.Binding pause;
             public SourceCampaignMap.Binding campaign;
+            public PortalSound click_sound;
         }
 
         private readonly Dictionary<string, Mission> missions;
@@ -78,7 +79,9 @@ namespace MagicCarpet.Native
         private readonly Dictionary<int, Texture2D> startupBitmaps = new();
         private readonly Dictionary<int, Texture2D> portalFrames = new();
         private byte[] portalSound;
+        private byte[] clickSound;
         private string[] languageRecords;
+        private byte[] startupPalette;
         internal Texture2D World { get; private set; }
         internal Texture2D StartupBackground { get; private set; }
         internal StartupBinding Startup { get; private set; }
@@ -86,6 +89,7 @@ namespace MagicCarpet.Native
         internal SourceMenuText StartupText { get; private set; }
         internal SourcePauseMenu PauseMenu { get; private set; }
         internal SourceCampaignMap Campaign { get; private set; }
+        internal PortalSound ClickSound { get; private set; }
 
         internal OwnerCampaignMenuCache(string path)
         {
@@ -159,6 +163,7 @@ namespace MagicCarpet.Native
                         throw new InvalidDataException("unsupported source title artwork binding");
                     var title = Read(Startup.background_path, 640 * 480);
                     var titlePalette = Read(Startup.palette_path, 768);
+                    startupPalette = titlePalette;
                     if (titlePalette.Any(channel => channel > 63))
                         throw new InvalidDataException("title palette is not RGB6");
                     var titleRgba = new byte[title.Length * 4];
@@ -238,7 +243,20 @@ namespace MagicCarpet.Native
                 }
                 if (manifest.pause != null) PauseMenu = new SourcePauseMenu(manifest.pause, Read, LanguageText);
                 if (manifest.campaign != null)
+                {
                     Campaign = new SourceCampaignMap(manifest.campaign, Read, indices, palette);
+                    foreach (var sample in manifest.campaign.motion?.sounds ?? Array.Empty<PortalSound>())
+                        Campaign.BindMotionSound(sample.id,
+                            Read(sample.path, manifest.outputs.Single(row => row.path == sample.path).bytes));
+                }
+                ClickSound = manifest.click_sound;
+                if (ClickSound != null)
+                {
+                    if (ClickSound.bank != 0 || ClickSound.id != 14 || ClickSound.volume != 127 || ClickSound.pan != 64 ||
+                        ClickSound.rate != 100 || ClickSound.if_not_playing)
+                        throw new InvalidDataException("source menu click sound is unbound");
+                    clickSound = Read(ClickSound.path, manifest.outputs.Single(row => row.path == ClickSound.path).bytes);
+                }
                 if (consumedOutputs.Count != manifest.outputs.Length)
                     throw new InvalidDataException("campaign cache contains unbound output receipts");
             }
@@ -263,6 +281,8 @@ namespace MagicCarpet.Native
 
         internal Texture2D StartupBitmap(int selector) => startupBitmaps.TryGetValue(selector, out var bitmap) ? bitmap :
             throw new InvalidDataException("unbound source title sprite " + selector);
+        internal Color StartupColor(int red, int green, int blue) =>
+            SourceCampaignMap.PaletteColor(startupPalette, red, green, blue);
         internal string StartupHoverText(Vector2 sourcePosition)
         {
             var help = StartupHoverHelp(sourcePosition);
@@ -280,6 +300,7 @@ namespace MagicCarpet.Native
             throw new InvalidDataException("unbound source portal sprite " + selector);
         internal byte[] ReadPortalOpeningSound() => portalSound ??
             throw new InvalidDataException("unbound source portal opening sound");
+        internal byte[] ReadClickSound() => clickSound ?? throw new InvalidDataException("source menu click sound is unbound");
         internal string LanguageText(int selector) => languageRecords != null &&
             selector >= 0 && selector < languageRecords.Length ? languageRecords[selector] :
             throw new InvalidDataException("unbound source menu language record " + selector);
@@ -363,7 +384,7 @@ namespace MagicCarpet.Native
             }
         }
 
-        private Mission MapFocus(GameRuntimeTransport.CampaignMenuSnapshot menu) =>
+        internal Mission MapFocus(GameRuntimeTransport.CampaignMenuSnapshot menu) =>
             ForMission(menu.phase == "results" ? menu.completed_level_id :
                 menu.selected_level_id ?? menu.briefing_level_id ?? menu.completed_level_id);
 
@@ -377,13 +398,15 @@ namespace MagicCarpet.Native
         {
             if (menu.phase == "results") return null;
             var focus = MapFocus(menu);
+            var viewportX = Campaign?.Motion?.X ?? focus.viewport_x;
+            var viewportY = Campaign?.Motion?.Y ?? focus.viewport_y;
             var view = SourceView(menu);
             if (!view.Contains(screen)) return null;
             var source = (screen - view.position) * (640f / view.width);
             foreach (var level in menu.available_levels)
             {
                 var mission = ForMission(level);
-                if (new Rect(mission.portal_x - focus.viewport_x, mission.portal_y - focus.viewport_y,
+                if (new Rect(mission.portal_x - viewportX, mission.portal_y - viewportY,
                     mission.portal_width, mission.portal_height).Contains(source)) return level;
             }
             return null;
@@ -395,6 +418,11 @@ namespace MagicCarpet.Native
         {
             var focus = MapFocus(menu);
             var view = SourceView(menu);
+            if (Campaign?.Motion != null)
+            {
+                Campaign.DrawMap(menu, view, ForMission, selector);
+                return;
+            }
             var scale = view.width / 640f;
             GUI.DrawTextureWithTexCoords(view, World,
                 new Rect(focus.viewport_x / 1280f, (960 - focus.viewport_y - 480) / 960f, .5f, .5f));

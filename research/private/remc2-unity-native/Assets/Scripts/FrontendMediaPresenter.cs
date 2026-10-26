@@ -37,6 +37,7 @@ namespace MagicCarpet.Native
         private readonly Dictionary<string, AudioClip> clips = new();
         private readonly Dictionary<int, AudioSource> samples = new();
         private readonly Dictionary<int, int> sampleUnits = new();
+        private readonly HashSet<int> speechSamples = new();
         private float soundGain = 1, musicGain = 1, musicUnits = 127;
         private bool speechEnabled = true;
         private Catalog catalog;
@@ -318,6 +319,8 @@ namespace MagicCarpet.Native
                 }
                 if (source.isPlaying) return;
                 source.clip = clip; source.loop = op != "S";
+                if (action.value is 3 or 4 or 5 or 6 or 7 or 8 or 15) speechSamples.Add(action.value);
+                else speechSamples.Remove(action.value);
                 sampleUnits[action.value] = op == "H" ? 0 : 127;
                 source.volume = SampleGain(action.value);
                 source.Play();
@@ -337,9 +340,10 @@ namespace MagicCarpet.Native
 
         /// Menu samples share the media device/lifetime, so entering the map
         /// keeps track 4 playing and the real loading boundary stops both.
-        internal void PlayMenuSample(int id, byte[] wave, int volume, int pan, int rate, bool ifNotPlaying)
+        internal void PlayMenuSample(int id, byte[] wave, int volume, int pan, int rate, bool ifNotPlaying, int loops = 0)
         {
-            if (id <= 0 || volume < 0 || volume > 127 || pan < 0 || pan > 127 || rate <= 0 || rate > 400)
+            if (id <= 0 || volume < 0 || volume > 127 || pan < 0 || pan > 127 || rate <= 0 || rate > 400 ||
+                loops < -1 || loops > 0)
                 throw new ArgumentOutOfRangeException(nameof(id), "invalid source menu sample command");
             if (ifNotPlaying && samples.TryGetValue(id, out var active) && active.isPlaying) return;
             EnsureAudioRoot();
@@ -359,7 +363,10 @@ namespace MagicCarpet.Native
             }
             source.Stop();
             source.clip = clip;
-            source.loop = false;
+            // PlaySample_8F100 map/menu calls are sound effects, even when a
+            // sample number also names speech in the intro's media catalogue.
+            speechSamples.Remove(id);
+            source.loop = loops == -1;
             source.panStereo = (pan - 64) / 64f;
             source.pitch = rate / 100f;
             sampleUnits[id] = volume;
@@ -369,7 +376,7 @@ namespace MagicCarpet.Native
         }
         private float SampleGain(int id)
         {
-            var speech = id == 3 || id == 4 || id == 5 || id == 6 || id == 7 || id == 8 || id == 15;
+            var speech = speechSamples.Contains(id);
             return speech && !speechEnabled ? 0 : sampleUnits.GetValueOrDefault(id, 127) / 127f * soundGain;
         }
         internal void ApplyPreferences(PlayerPreferences preferences)
@@ -415,12 +422,17 @@ namespace MagicCarpet.Native
             }
             pixels = null; palette = null; colors = null; frameIndex = -1;
         }
-        internal void StopAudio()
+        internal void EndMenuSamples()
         {
-            // The outer runtime owns the listener across frontend/gameplay.
             foreach (var source in samples.Values) { source.Stop(); ReleaseObject(source); }
             samples.Clear();
             sampleUnits.Clear();
+            speechSamples.Clear();
+        }
+        internal void StopAudio()
+        {
+            // The outer runtime owns the listener across frontend/gameplay.
+            EndMenuSamples();
             if (music != null) { music.Stop(); music.clip = null; }
             foreach (var clip in clips.Values) ReleaseObject(clip);
             clips.Clear();

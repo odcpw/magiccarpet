@@ -306,10 +306,46 @@ fn level2_campaign_public_tier0_possession_claims_group1_mana_from_strict_target
 
 #[test]
 fn level2_campaign_public_invisible_casts_after_castle_reaches_live_mana_gate() {
-    let handle = open_level2_campaign_handle_with_asset_cache(&qualified_level2_day_owner_cache());
+    // Use the package/cache pair installed by the current player. The old
+    // aggregate cache has a stale audio receipt and cannot open even under
+    // the pre-change native library.
+    let open = || {
+        let generated = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../generated");
+        let package = generated
+            .join("mc-level2-vault-successor-closure-20261025")
+            .to_string_lossy()
+            .into_owned();
+        let cache = generated
+            .join("mc-level2-vault-successor-environment-20261025")
+            .to_string_lossy()
+            .into_owned();
+        let selection = McCampaignSelectionV2 {
+            abi_version: MC_NATIVE_ABI_VERSION,
+            struct_size: struct_size::<McCampaignSelectionV2>(),
+            external_level: 2,
+            internal_level: 1,
+            map_type: 0,
+            ..McCampaignSelectionV2::default()
+        };
+        let mut handle = 0;
+        assert_eq!(
+            mc_native_campaign_session_open_with_asset_cache(
+                package.as_ptr(),
+                package.len() as u32,
+                std::ptr::null(),
+                0,
+                cache.as_ptr(),
+                cache.len() as u32,
+                &raw const selection,
+                &raw mut handle
+            ),
+            MC_STATUS_OK
+        );
+        handle
+    };
+    let handle = open();
     let (castle_launch_position, _) = level2_source_valid_castle_route(handle);
-    let isolated_handle =
-        open_level2_campaign_handle_with_asset_cache(&qualified_level2_day_owner_cache());
+    let isolated_handle = open();
     let initial_hash = campaign_world_hash_public(handle);
     assert_eq!(campaign_world_hash_public(isolated_handle), initial_hash);
     let mut world_info = McCampaignWorldInfoV2::default();
@@ -413,8 +449,69 @@ fn level2_campaign_public_invisible_casts_after_castle_reaches_live_mana_gate() 
     input.player_y = castle_launch_position.y;
     input.player_z = castle_launch_position.z;
     input.command = valid_command();
-    while latest_snapshot.revision < 27 {
-        let (snapshot, _) = step_level2_campaign_public(handle, input);
+    let castle_launch_state = || {
+        with_campaign_session(handle, |session| {
+            let CampaignSessionKind::Campaign { reset, .. } = &session.kind else {
+                unreachable!("campaign Castle diagnostics")
+            };
+            let shared = reset.shared_spells();
+            let slot = shared.local_player().enabled_spell_holders[2];
+            let holder = shared
+                .dynamic_pickups()
+                .iter()
+                .chain(shared.holders())
+                .chain(shared.pickups())
+                .find(|holder| holder.index == slot)
+                .map(|holder| {
+                    (
+                        holder.index,
+                        holder.action,
+                        holder.active_value,
+                        holder.activation_value,
+                        holder.max_mana,
+                        holder.mana,
+                        holder.mana_regen,
+                        holder.level_gate,
+                    )
+                });
+            Ok((
+                shared.player_entity().index,
+                shared.player_entity().life,
+                shared.player_entity().mana,
+                shared.player_entity().mana_regen,
+                slot,
+                holder,
+                reset
+                    .economy()
+                    .castle_projectiles()
+                    .iter()
+                    .map(|flyer| {
+                        (
+                            flyer.source_entity_index,
+                            flyer.holder_entity_index,
+                            flyer.active,
+                            flyer.life,
+                            flyer.position,
+                            flyer.site_rejected,
+                        )
+                    })
+                    .collect::<Vec<_>>(),
+            ))
+        })
+        .expect("read authoritative Castle admission/slot state")
+    };
+    let castle_can_arm = || {
+        let state = castle_launch_state();
+        state.5.is_some_and(|holder| {
+            holder.2 == 0 && holder.3 > 0 && state.1 >= 0 && state.2 >= holder.4 && state.3 >= 0
+        })
+    };
+    for _ in 0..source_pass_bound {
+        if castle_can_arm() {
+            break;
+        }
+        let (snapshot, events) = step_level2_campaign_public(handle, input);
+        assert_no_level2_dispatch_error(handle, &events, "Castle holder charge/admission");
         latest_snapshot = snapshot;
         let economy_events = campaign_economy_events_with_mana_lineage(
             handle,
@@ -423,11 +520,10 @@ fn level2_campaign_public_invisible_casts_after_castle_reaches_live_mana_gate() 
         );
         retain_castle_defender_receipts(&economy_events, &mut defender_events);
     }
-    let recovered_hud =
-        campaign_day_hud_public(handle, latest_snapshot.generation, latest_snapshot.revision);
+    let castle_before = castle_launch_state();
     assert!(
-        recovered_hud.local_player_mana >= 1_000,
-        "ordinary idle turns recover enough Day mana for the Castle request"
+        castle_can_arm(),
+        "ordinary source upkeep admits the actual cold Castle holder: {castle_before:?}"
     );
     input.command = McCommandV2 {
         abi_version: MC_NATIVE_ABI_VERSION,
@@ -443,13 +539,46 @@ fn level2_campaign_public_invisible_casts_after_castle_reaches_live_mana_gate() 
         &mut castle_collected_sphere_ids,
     );
     retain_castle_defender_receipts(&economy_events, &mut defender_events);
+    let castle_after = castle_launch_state();
+    let births = castle_after
+        .6
+        .iter()
+        .filter(|flyer| flyer.1 == castle_before.4 && flyer.2)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        births.len(),
+        1,
+        "accepted Castle request allocates one real flyer; before={castle_before:?}; after={castle_after:?}"
+    );
+    let flyer_slot = births[0].0;
+    let casting_holder_slot = births[0].1;
+    assert_eq!(casting_holder_slot, castle_before.4);
+    assert_eq!(
+        castle_after.5.unwrap().2,
+        castle_before.5.unwrap().3.cast_signed() - 1
+    );
+    assert!(
+        !births[0].5,
+        "the real flyer was admitted by the source site predicate"
+    );
     assert_eq!(
         castle_arm_events
             .iter()
             .filter(|event| event.pass == 0 && event.kind == 8 && event.family == 38)
             .count(),
-        1,
-        "the public Castle request dispatches its live flyer in the same source pass"
+        usize::from(flyer_slot > casting_holder_slot),
+        "ascending source dispatch visits a newborn only when its slot follows the CASTING HOLDER; before={castle_before:?}; after={castle_after:?}; revision={}; events={:?}",
+        castle_armed_snapshot.revision,
+        castle_arm_events
+            .iter()
+            .map(|event| (
+                event.kind,
+                event.pass,
+                event.source_slot,
+                event.family,
+                event.flags
+            ))
+            .collect::<Vec<_>>()
     );
     assert!(
         castle_arm_events
@@ -458,6 +587,27 @@ fn level2_campaign_public_invisible_casts_after_castle_reaches_live_mana_gate() 
     );
     input.command = valid_command();
     let mut castle_snapshot = castle_armed_snapshot;
+    if flyer_slot < casting_holder_slot {
+        let (snapshot, events) = step_level2_campaign_public(handle, input);
+        castle_snapshot = snapshot;
+        assert_no_level2_dispatch_error(handle, &events, "deferred Castle flyer visit");
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| {
+                    event.kind == 8 && event.family == 38 && event.source_slot == flyer_slot
+                })
+                .count(),
+            1,
+            "the exact lower-slot newborn receives its first callback on the following source pass"
+        );
+        let economy_events = campaign_economy_events_with_mana_lineage(
+            handle,
+            &mut merge_lineage,
+            &mut castle_collected_sphere_ids,
+        );
+        retain_castle_defender_receipts(&economy_events, &mut defender_events);
+    }
     let mut castle_construction_started = false;
     for _ in 0..source_pass_bound {
         let (snapshot, _) = step_level2_campaign_public(handle, input);
@@ -967,7 +1117,7 @@ fn level2_campaign_public_invisible_casts_after_castle_reaches_live_mana_gate() 
             invisible_armed.mana_regen_requirement,
             invisible_armed.parent_visibility_mode,
         ),
-        (1, 0, 33, 180, 181, 2_000, 2_000, 1),
+        (1, 0, 33, 180, 181, 2_000, 2_000, 0),
         "selected spell 11 arms and first-pulses the existing tier-0 Invisible holder without a helper"
     );
     assert!(
@@ -985,7 +1135,18 @@ fn level2_campaign_public_invisible_casts_after_castle_reaches_live_mana_gate() 
         invisible_first.activation_value - 2,
         "the following ordinary source pass executes the second Invisible pulse"
     );
-    assert_eq!(invisible_first.parent_visibility_mode, 1);
+    assert_eq!(invisible_first.parent_visibility_mode, 0);
+    let global_visibility = with_campaign_session(handle, |session| {
+        let CampaignSessionKind::Campaign { reset, .. } = &session.kind else {
+            unreachable!("campaign fixture opened as a campaign")
+        };
+        Ok(reset.shared_spells().global_special_state().visibility_mode)
+    })
+    .expect("read the source Invisible holder's global A4 recipient");
+    assert_eq!(
+        global_visibility, 1,
+        "NewEvent binds the holder A4 to GlobalSpecialState; its first pulse does not rewrite the parent player's A4"
+    );
     assert_eq!(
         invisible_first.parent_mana_regen, 0,
         "the nonfresh higher-slot pulse clears the positive upkeep selected earlier in the pass"

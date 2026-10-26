@@ -227,6 +227,41 @@ impl CampaignSession {
         self.simulation.reset();
     }
 
+    pub(crate) fn source_global_context(&self) -> crate::native_world::GlobalSpecialState {
+        self.simulation.shared_spells().global_special_state()
+    }
+
+    pub(crate) fn install_initial_source_global_context(
+        &mut self,
+        context: crate::native_world::GlobalSpecialState,
+    ) -> Result<(), NativeWorldError> {
+        if self.tick() != 0 {
+            return Err(NativeWorldError::new(
+                "initial source context requires an unpublished mission",
+            ));
+        }
+        self.simulation
+            .session
+            .state
+            .live
+            .shared_spells
+            .apply_source_global_context(context);
+        self.simulation.session.rebase();
+        Ok(())
+    }
+
+    pub(crate) fn apply_warm_source_global_context(
+        &mut self,
+        context: crate::native_world::GlobalSpecialState,
+    ) {
+        self.simulation
+            .session
+            .state
+            .live
+            .shared_spells
+            .apply_source_global_context(context);
+    }
+
     /// Reconstruct an unpublished continuation from the imported source
     /// arena, before destination direct-start spells consume slots or RNG.
     pub(crate) fn rebuild_for_spell_carry(
@@ -250,6 +285,7 @@ impl CampaignSession {
             .campaign_reset_session_with_spell_entry(&self.definition, Some(learned))?;
         let mut candidate = self.clone();
         candidate.simulation = simulation;
+        candidate.install_initial_source_global_context(self.source_global_context())?;
         for (player_index, objective) in self.simulation.runtime().objectives.iter().enumerate() {
             candidate
                 .simulation
@@ -3163,7 +3199,7 @@ mod tests {
             .iter()
             .find(|player| player.entity_index == contact_player.entity_index)
             .expect("the shared local-player record survives Firefly contact");
-        assert_eq!(contacted_player_record.record_bytes()[406], 4);
+        assert_eq!(contacted_player_record.hit_frame_time, 4);
         assert_eq!(
             u16::from_le_bytes(
                 contacted_player.record_bytes()[102..104]

@@ -10,7 +10,7 @@ namespace MagicCarpet.Native
     // every campaign choice still passes through the existing Rust command.
     internal sealed class CampaignMenuPresenter : IDisposable
     {
-        internal enum Action { None, NewGame, Resume, Save, Load, Restart, Continue, Title, Quit, DismissResults, SelectMission, StartMission }
+        internal enum Action { None, NewGame, Resume, Save, Load, Restart, Continue, Title, Quit, DismissResults, SelectMission, StartMission, ResetCampaign }
         internal string SelectedMission { get; private set; }
         private readonly Texture2D background;
         private readonly OwnerAssetCache ownerCache;
@@ -28,6 +28,19 @@ namespace MagicCarpet.Native
         private int lastAnimationFrame = -1;
         private bool briefingVisible;
         private float briefingElapsed;
+        private SourceScrollDialog scrollDialog;
+        private SourceCampaignSaveSlots.Selection saveSlot;
+        private string configuredSavePath;
+        private string lastLaunchedMission, lastRuntimeId;
+        private bool sourceLeftHeld;
+        internal bool IsSourceDialogOpen => scrollDialog != null ||
+            lastMode == GameRuntimeTransport.CampaignMode && campaignCache?.Campaign?.Motion is { } motion &&
+            (!motion.Ready || motion.Travelling);
+        internal bool SourceBriefingReady => lastMode == GameRuntimeTransport.CampaignMode &&
+            campaignCache?.Campaign?.Motion is { Ready: true, Travelling: false } && statisticsLevel == null;
+        internal void ConfigureSavePath(string path) { configuredSavePath = path; }
+        internal SourceCampaignSaveSlots.Selection TakeSaveSlot()
+        { var result = saveSlot; saveSlot = null; return result; }
 
         internal void BeginBriefing(bool speechEnabled)
         {
@@ -135,11 +148,13 @@ namespace MagicCarpet.Native
             {
                 Action.NewGame => mode == GameRuntimeTransport.TitleMode,
                 Action.Resume => mode == GameRuntimeTransport.PausedMode,
-                Action.Save => (mode == GameRuntimeTransport.PausedMode || mode == GameRuntimeTransport.CampaignMode) && canSave,
-                Action.Load => (mode == GameRuntimeTransport.TitleMode || mode == GameRuntimeTransport.PausedMode) && canLoad,
+                Action.Save => (mode == GameRuntimeTransport.TitleMode || mode == GameRuntimeTransport.PausedMode ||
+                    mode == GameRuntimeTransport.CampaignMode) && canSave,
+                Action.Load => (mode == GameRuntimeTransport.TitleMode || mode == GameRuntimeTransport.PausedMode || mode == GameRuntimeTransport.CampaignMode) && canLoad,
                 Action.Restart => mode == GameRuntimeTransport.PausedMode,
                 Action.Title => mode == GameRuntimeTransport.PausedMode || mode == GameRuntimeTransport.CampaignMode,
                 Action.DismissResults or Action.SelectMission or Action.StartMission => mode == GameRuntimeTransport.CampaignMode,
+                Action.ResetCampaign => mode == GameRuntimeTransport.CampaignMode,
                 Action.Continue => mode == GameRuntimeTransport.PausedMode && objectivesSatisfied,
                 Action.Quit => mode == GameRuntimeTransport.TitleMode || mode == GameRuntimeTransport.PausedMode,
                 _ => false
@@ -154,11 +169,24 @@ namespace MagicCarpet.Native
             if (campaignCache == null && (campaignCachePath != null || mode == GameRuntimeTransport.CampaignMode))
                 campaignCache = new OwnerCampaignMenuCache(campaignCachePath ??
                     throw new InvalidOperationException("campaign map requires its decoded owner cache"));
+            if (identity.runtime_id != lastRuntimeId)
+            {
+                lastRuntimeId = identity.runtime_id;
+                lastLaunchedMission = identity.campaign_menu?.completed_level_id;
+                lastMode = null;
+            }
             if (mode != lastMode || mode == GameRuntimeTransport.CampaignMode && identity.campaign_menu.phase != lastCampaignPhase)
             {
-                if (mode == GameRuntimeTransport.CampaignMode) portalStates.Clear();
+                if (mode == GameRuntimeTransport.CampaignMode)
+                {
+                    portalStates.Clear();
+                    sourceLeftHeld = false;
+                    lastLaunchedMission ??= identity.campaign_menu.completed_level_id;
+                    campaignCache.Campaign.Enter(identity.campaign_menu, campaignCache.ForMission, lastLaunchedMission);
+                }
                 campaignCache?.PauseMenu?.Reset();
                 statisticsLevel = null;
+                scrollDialog = null;
                 lastMode = mode;
                 lastCampaignPhase = identity.campaign_menu?.phase;
             }
@@ -171,7 +199,8 @@ namespace MagicCarpet.Native
             }
             if (mode == GameRuntimeTransport.TitleMode && campaignCache?.Startup != null)
             {
-                var result = DrawStartup(now, repaint, canLoad, status);
+                var result = DrawStartup(now, repaint, canSave, canLoad, status);
+                if (scrollDialog != null) result = DrawScrollDialog(identity.campaign_menu, repaint, now);
                 if (repaint) lastAnimationFrame = Time.frameCount;
                 return result;
             }
@@ -202,9 +231,34 @@ namespace MagicCarpet.Native
                 GUI.color = Color.white;
                 if (mode == GameRuntimeTransport.CampaignMode)
                 {
-                    UpdatePortals(identity.campaign_menu, now, repaint);
+                    var sourceMap = campaignCache.Campaign;
+                    var sourceView = campaignCache.SourceView(identity.campaign_menu);
+                    if (Event.current.type == EventType.MouseDown && Event.current.button == 0) sourceLeftHeld = true;
+                    if (Event.current.type == EventType.MouseUp && Event.current.button == 0) sourceLeftHeld = false;
+                    string arrival = null;
+                    if (repaint)
+                    {
+                        var mouse = (Event.current.mousePosition - sourceView.position) * (640f / sourceView.width);
+                        mouse.x = Mathf.Clamp(mouse.x, 0, 638); mouse.y = Mathf.Clamp(mouse.y, 0, 478);
+                        arrival = sourceMap.Step(identity.campaign_menu, campaignCache.ForMission, now,
+                            unchecked((uint)(Time.realtimeSinceStartupAsDouble * 30)), mouse, sourceLeftHeld,
+                            identity.campaign_menu.phase != "results" && statisticsLevel == null, media);
+                    }
+                    UpdatePortals(identity.campaign_menu, now, repaint && sourceMap.SourcePassAdvanced);
                     campaignCache.DrawMap(identity.campaign_menu, PortalSelector);
                     if (repaint) lastAnimationFrame = Time.frameCount;
+                    if (arrival != null)
+                    {
+                        DrawMapCommands(identity.campaign_menu, status, false, false);
+                        portalTarget = arrival; SelectedMission = arrival; lastLaunchedMission = arrival;
+                        lastMode = null; // The retained UI is re-entered after mission/abandon.
+                        return Action.StartMission;
+                    }
+                    if (scrollDialog != null)
+                    {
+                        DrawMapCommands(identity.campaign_menu, status, false, false);
+                        return DrawScrollDialog(identity.campaign_menu, repaint, now);
+                    }
                     var showingResults = identity.campaign_menu.phase == "results";
                     if (showingResults || statisticsLevel != null)
                     {
@@ -220,6 +274,7 @@ namespace MagicCarpet.Native
                         campaignCache.Campaign.DrawStatistics(menu, focus, campaignCache.ForMission(level),
                             stats, campaignCache.SourceView(menu), campaignCache.ForMission,
                             PortalSelector, SourceText);
+                        DrawMapCommands(menu, status, false, false);
                         // NewGameDraw states4/5 consume any key or mouse
                         // button, with the map itself retained behind the sheet.
                         if (Event.current.type == EventType.KeyDown || Event.current.type == EventType.MouseDown)
@@ -230,15 +285,18 @@ namespace MagicCarpet.Native
                         }
                         return Action.None;
                     }
-                    if (identity.campaign_menu.phase != "results" && Event.current.type == EventType.MouseDown)
+                    var controlAction = DrawMapCommands(identity.campaign_menu, status, canSave);
+                    if (controlAction != Action.None || scrollDialog != null) return controlAction;
+                    if (sourceMap.Motion.Ready && !sourceMap.Motion.Travelling &&
+                        identity.campaign_menu.phase != "results" && Event.current.type == EventType.MouseDown)
                     {
                         var target = campaignCache.HitTestPortal(identity.campaign_menu, Event.current.mousePosition);
                         if (target != null && Event.current.button == 0)
                         {
-                            portalTarget = target;
                             SelectedMission = target;
+                            sourceMap.BeginTravel(target, identity.campaign_menu, campaignCache.ForMission, media);
                             Event.current.Use();
-                            return Action.StartMission;
+                            return Action.None;
                         }
                         if (target != null && Event.current.button == 1 &&
                             Array.IndexOf(identity.campaign_menu.completed_levels, target) >= 0)
@@ -247,7 +305,7 @@ namespace MagicCarpet.Native
                             Event.current.Use();
                         }
                     }
-                    return DrawMapCommands(identity.campaign_menu, status, canSave);
+                    return Action.None;
                 }
                 else GUI.DrawTexture(new Rect(0, 0, Screen.width, Screen.height), background, ScaleMode.ScaleToFit);
                 var width = Mathf.Min(360, Screen.width - 32);
@@ -286,7 +344,7 @@ namespace MagicCarpet.Native
             finally { GUI.color = oldColor; GUI.enabled = oldEnabled; }
         }
 
-        private Action DrawStartup(uint now, bool advance, bool canLoad, string status)
+        private Action DrawStartup(uint now, bool advance, bool canSave, bool canLoad, string status)
         {
             var startup = campaignCache.Startup;
             if (mainAnimations == null)
@@ -329,25 +387,34 @@ namespace MagicCarpet.Native
                 {
                     var action = entry.source_action switch {
                         0x258350 => Action.NewGame,
+                        0x259730 => Action.Save,
                         0x2590f0 => Action.Load,
                         0x258980 => Action.Quit,
                         _ => Action.None,
                     };
                     var settings = entry.source_action == 0x259e00 || entry.source_action == 0x25a610;
-                    GUI.enabled = action != Action.None || settings && preferences != null;
-                    if (action == Action.Load) GUI.enabled = canLoad;
+                    GUI.enabled = action != Action.None && (action != Action.Save || canSave) ||
+                        settings && preferences != null;
                     var hit = new Rect(view.x + entry.x * scale, view.y + entry.y * scale,
                         entry.width * scale, entry.height * scale);
                     if (GUI.enabled && hit.Contains(Event.current.mousePosition))
                         DrawBitmap(entry.hover_selector, entry.x, entry.y);
+                    if (scrollDialog != null) continue;
                     if (GUI.Button(hit, GUIContent.none, GUIStyle.none))
                     {
+                        PlayClick();
                         if (settings) { preferences.Open(); return Action.None; }
+                        if (action == Action.Load || action == Action.Save)
+                        {
+                            scrollDialog = new SourceScrollDialog(action == Action.Load ? SourceScrollDialog.Kind.Load :
+                                SourceScrollDialog.Kind.Save, true, configuredSavePath);
+                            return Action.None;
+                        }
                         return action;
                     }
                 }
                 GUI.enabled = true;
-                var help = campaignCache.StartupHoverHelp((Event.current.mousePosition - view.position) / scale);
+                var help = scrollDialog == null ? campaignCache.StartupHoverHelp((Event.current.mousePosition - view.position) / scale) : null;
                 if (help != null && preferences?.Current.preferences.show_help != false)
                     campaignCache.StartupText.DrawHelp(help, campaignCache.LanguageText(help.text_selector), view);
                 if (status != null) campaignCache.StartupText.DrawText(status, 10, 440, view);
@@ -372,7 +439,7 @@ namespace MagicCarpet.Native
                 if (!advance) continue;
                 if (completed)
                     state.Advance(now, animation.completed_first, animation.completed_last, animation.step_ticks);
-                else if (menu.phase != "results")
+                else if (menu.phase != "results" && campaignCache.Campaign.Motion.Ready)
                 {
                     if (state.Phase == 0)
                     {
@@ -437,27 +504,74 @@ namespace MagicCarpet.Native
             throw new ArgumentOutOfRangeException(nameof(selector));
         }
 
-        private Action DrawMapCommands(GameRuntimeTransport.CampaignMenuSnapshot menu, string status, bool canSave)
+        private Action DrawMapCommands(GameRuntimeTransport.CampaignMenuSnapshot menu, string status, bool canSave,
+            bool acceptInput = true)
         {
             var view = campaignCache.SourceView(menu);
             var scale = view.width / 640f;
-            Rect At(float x, float y, float width, float height) =>
-                new(view.x + x * scale, view.y + y * scale, width * scale, height * scale);
-            if (GUI.Button(At(8, 438, 100, 34), "Main menu", button)) return Action.Title;
-            if (preferences != null && GUI.Button(At(118, 438, 150, 34), "Preferences", button)) preferences.Open();
-            GUI.enabled = canSave;
-            if (GUI.Button(At(278, 438, 100, 34), "Save game", button)) return Action.Save;
-            GUI.enabled = true;
-            if (!string.IsNullOrEmpty(menu.selected_level_id) &&
-                GUI.Button(At(388, 438, 240, 34), "Enter " + campaignCache.ForMission(menu.selected_level_id).name, button))
-                return Action.StartMission;
-            if (briefingVisible && !string.IsNullOrEmpty(menu.briefing_level_id))
+            var source = campaignCache.Campaign;
+            if (source?.Controls == null) throw new InvalidOperationException("campaign controls require the original source artwork cache");
+            foreach (var control in source.Controls)
+            {
+                var hover = source.Bitmap(control.hover_selector);
+                var hit = new Rect(view.x + control.x * scale, view.y + control.y * scale,
+                    hover.width * scale, hover.height * scale);
+                var interactive = acceptInput && !source.Motion.Travelling;
+                source.DrawBitmap(interactive && hit.Contains(Event.current.mousePosition) ? control.hover_selector : control.normal_selector,
+                    control.x, control.y, view);
+                if (!interactive) continue;
+                if (Event.current.type != EventType.MouseDown || Event.current.button != 0 ||
+                    !view.Contains(Event.current.mousePosition) || !hit.Contains(Event.current.mousePosition)) continue;
+                Event.current.Use();
+                PlayClick();
+                switch (control.source_action)
+                {
+                    case 0x25f620: return Action.Title;
+                    case 0x25f640:
+                        scrollDialog = new SourceScrollDialog(SourceScrollDialog.Kind.Reset, false, configuredSavePath);
+                        return Action.None;
+                    case 0x25f800:
+                        if (canSave) scrollDialog = new SourceScrollDialog(SourceScrollDialog.Kind.Save, false, configuredSavePath);
+                        return Action.None;
+                    case 0x25f820:
+                        scrollDialog = new SourceScrollDialog(SourceScrollDialog.Kind.Load, false, configuredSavePath);
+                        return Action.None;
+                    default: throw new InvalidOperationException("unbound source campaign control action");
+                }
+            }
+            if (acceptInput && briefingVisible && source.Motion.Ready && !source.Motion.Travelling && !string.IsNullOrEmpty(menu.briefing_level_id))
             {
                 var mission = campaignCache.ForMission(menu.briefing_level_id);
-                GUI.Label(At(130, mission.viewport_y < 478 ? 280 : 60, 380, 110), mission.briefing, message);
+                source.DrawBriefing(menu, campaignCache.MapFocus(menu), mission.briefing, view, campaignCache.ForMission, PortalSelector);
             }
-            if (!string.IsNullOrEmpty(status)) GUI.Label(At(130, 10, 380, 45), status, message);
+            if (!string.IsNullOrEmpty(status)) source.DialogText.DrawText(status, 130, 10, view, source.NearestColor(63, 63, 63));
             return Action.None;
+        }
+
+        private Action DrawScrollDialog(GameRuntimeTransport.CampaignMenuSnapshot menu, bool advance, uint now)
+        {
+            var scale = Mathf.Min(Screen.width / 640f, Screen.height / 480f);
+            var view = menu == null ? new Rect((Screen.width - 640 * scale) / 2, (Screen.height - 480 * scale) / 2,
+                640 * scale, 480 * scale) : campaignCache.SourceView(menu);
+            var result = scrollDialog.Draw(campaignCache, view, advance, now, PlayClick);
+            if (result == null) return Action.None;
+            scrollDialog = null;
+            if (!result.Confirmed) return Action.None;
+            saveSlot = result.Slot;
+            return result.Operation switch {
+                SourceScrollDialog.Kind.Save => Action.Save,
+                SourceScrollDialog.Kind.Load => Action.Load,
+                SourceScrollDialog.Kind.Reset => Action.ResetCampaign,
+                _ => throw new InvalidOperationException("unbound source scroll result")
+            };
+        }
+
+        private void PlayClick()
+        {
+            var sound = campaignCache.ClickSound ??
+                throw new InvalidOperationException("source menu controls require their original click sample");
+            if (media == null) throw new InvalidOperationException("source menu controls require the frontend audio owner");
+            media.PlayMenuSample(sound.id, campaignCache.ReadClickSound(), sound.volume, sound.pan, sound.rate, sound.if_not_playing);
         }
 
         public void Dispose()

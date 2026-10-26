@@ -621,10 +621,44 @@ namespace MagicCarpet.Native.Tests
                 Assert.That(media.active, Is.True, "actual startup producer remains decodable");
             }
             using var frontend = NativeSession.OpenGameRuntimeFrontend(packages);
+            var titleBeforeSave = frontend.GameRuntimeIdentity();
+            var titleSave = frontend.GameRuntimeSaveReplay();
+            Assert.That(frontend.GameRuntimeIdentity().mode, Is.EqualTo(GameRuntimeTransport.TitleMode));
+            Assert.That(frontend.GameRuntimeIdentity().generation, Is.EqualTo(titleBeforeSave.generation));
+            using (var titleLoad = NativeSession.OpenGameRuntimeReplayFrom(frontend, titleSave, packages))
+            {
+                Assert.That(titleLoad.GameRuntimeIdentity().mode, Is.EqualTo(GameRuntimeTransport.CampaignMode),
+                    "the original title Save stores the retained campaign and loads at its map");
+                Assert.That(titleLoad.GameRuntimeIdentity().session, Is.Null);
+            }
             var map = frontend.GameRuntimeBeginNewGame();
             Assert.That(map.mode, Is.EqualTo(GameRuntimeTransport.CampaignMode));
             var saved = frontend.GameRuntimeSaveReplay();
-            var loaded = NativeSession.OpenGameRuntimeReplay(saved, packages);
+            var slotDirectory = Path.Combine(Path.GetTempPath(), "mc-source-slots-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(slotDirectory);
+            byte[] slotReplay;
+            try
+            {
+                var quicksave = Path.Combine(slotDirectory, "quicksave.json");
+                File.WriteAllBytes(quicksave, saved);
+                for (var index = 1; index <= SourceCampaignSaveSlots.Count; index++)
+                {
+                    SourceCampaignSaveSlots.Write(quicksave, index, "SLOT " + index, saved);
+                    CollectionAssert.AreEqual(saved, SourceCampaignSaveSlots.Read(quicksave, index),
+                        "slot metadata must not change Rust's receipt-qualified replay");
+                }
+                SourceCampaignSaveSlots.Write(quicksave, 8, "REPLACED", saved);
+                var entries = SourceCampaignSaveSlots.Scan(quicksave);
+                Assert.That(entries, Has.Length.EqualTo(8));
+                Assert.That(Array.TrueForAll(entries, entry => entry.Present), Is.True);
+                Assert.That(entries[7].Label, Is.EqualTo("REPLACED"));
+                CollectionAssert.AreEqual(saved, File.ReadAllBytes(quicksave), "named slots cannot overwrite the F5 file");
+                Assert.Throws<InvalidDataException>(() => SourceCampaignSaveSlots.Write(quicksave, 1, "INVALID!", saved));
+                Assert.Throws<ArgumentOutOfRangeException>(() => SourceCampaignSaveSlots.Read(quicksave, 9));
+                slotReplay = SourceCampaignSaveSlots.Read(quicksave, 8);
+            }
+            finally { Directory.Delete(slotDirectory, true); }
+            var loaded = NativeSession.OpenGameRuntimeReplayFrom(frontend, slotReplay, packages);
             var root = new GameObject("campaign map save attachment");
             root.SetActive(false);
             var runtime = root.AddComponent<MagicCarpetRuntime>();

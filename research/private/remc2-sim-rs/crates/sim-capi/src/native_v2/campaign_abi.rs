@@ -1059,6 +1059,7 @@ pub extern "C" fn mc_native_campaign_invisible_state(
             Ok(campaign_invisible_snapshot(
                 generation,
                 reset.shared_spells().invisible_state(),
+                reset.shared_spells().local_player().visibility_mode,
             ))
         })
     })
@@ -1108,6 +1109,7 @@ pub extern "C" fn mc_native_campaign_invisible_activate(
             Ok(campaign_invisible_snapshot(
                 generation,
                 reset.shared_spells().invisible_state(),
+                reset.shared_spells().local_player().visibility_mode,
             ))
         })
     })

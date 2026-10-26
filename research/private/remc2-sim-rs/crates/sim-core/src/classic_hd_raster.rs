@@ -225,11 +225,11 @@ fn rasterize_classic_hd_mode5_triangle_streaming(
         source_pixels,
         written_pixels,
         clipped_pixels,
-        // The complete terrain pass computes its receipt from the final
-        // profile plane. This streaming stage deliberately avoids allocating
-        // a second per-pixel hash buffer.
+        // Only the complete terrain pass consumes these private stage
+        // counters. It hashes the final planes once after every triangle and
+        // sprite bucket; intermediate full-frame hashes are discarded.
         output_hash: 0,
-        provenance_hash: writer_provenance_hash(writer),
+        provenance_hash: 0,
     })
 }
 
@@ -360,10 +360,10 @@ fn rasterize_classic_hd_mode26_triangle_streaming(
         source_pixels,
         written_pixels,
         clipped_pixels,
-        // The complete terrain pass computes its receipt from the final
-        // profile plane, so the streaming helper avoids a second sample hash.
+        // Final plane hashes belong to the complete terrain receipt, not to
+        // each private streaming stage.
         output_hash: 0,
-        provenance_hash: writer_provenance_hash(writer),
+        provenance_hash: 0,
     })
 }
 
@@ -1176,6 +1176,11 @@ mod tests {
             streaming_receipt.clipped_pixels,
             vector_receipt.clipped_pixels
         );
+        assert_eq!(streaming_receipt.provenance_hash, 0);
+        assert_eq!(
+            writer_provenance_hash(&streaming_frame),
+            vector_receipt.provenance_hash
+        );
     }
 
     #[test]
@@ -1296,9 +1301,94 @@ mod tests {
             streaming_receipt,
             ClassicHdRasterReceipt {
                 output_hash: 0,
-                provenance_hash: vector_receipt.provenance_hash,
+                provenance_hash: 0,
                 ..vector_receipt
             }
+        );
+        assert_eq!(
+            writer_provenance_hash(&streaming_frame),
+            vector_receipt.provenance_hash
+        );
+    }
+
+    #[test]
+    fn streaming_terrain_preserves_complete_receipt_and_final_plane_hashes() {
+        use crate::{
+            classic_hd_terrain::{
+                ClassicHdSkyBank, ClassicHdTerrainResources, build_classic_hd_terrain,
+            },
+            terrain_frame::Level1TerrainFrameCamera,
+        };
+        let profile = ClassicHdRenderProfile::compatibility_320x200();
+        let camera = Level1TerrainFrameCamera {
+            render_x: 0x1234,
+            render_y: 0x56ab,
+            eye_z: 1_024,
+            yaw: 173,
+            pitch: 29,
+            roll: 11,
+            fov: 256,
+            source_turn: 7,
+            reflections: true,
+        };
+        let types = vec![1; 256 * 256];
+        let heights = vec![20; 256 * 256];
+        let shading = vec![40; 256 * 256];
+        let angles = vec![0; 256 * 256];
+        let sky = vec![3; 256 * 256];
+        let terrain = build_classic_hd_terrain(
+            &profile,
+            camera,
+            ClassicHdTerrainResources {
+                terrain_types: &types,
+                ground_heights: &heights,
+                shading: &shading,
+                angles: &angles,
+                sky: &sky,
+            },
+            ClassicHdSkyBank::Base256,
+        )
+        .unwrap();
+        let (texture, tablesn) = tables();
+        let mut atlas = vec![0; CLASSIC_HD_TERRAIN_ATLAS_BYTES];
+        for (offset, index) in atlas.iter_mut().enumerate() {
+            *index = texture[offset % texture.len()];
+        }
+        let mut vector_buffers = ClassicHdFrameBuffers::new(profile.clone(), 4).unwrap();
+        let mut vector_frame = vector_buffers
+            .begin_frame(4, 0, profile.profile_revision, 9)
+            .unwrap();
+        let vector_receipt =
+            rasterize_classic_hd_terrain(&mut vector_frame, &terrain, &atlas, &tablesn, 0x20)
+                .unwrap();
+        assert!(vector_receipt.mode5_triangles > 1);
+        assert!(vector_receipt.written_pixels > 0);
+        let mut streaming_buffers = ClassicHdFrameBuffers::new(profile.clone(), 4).unwrap();
+        let mut streaming_frame = streaming_buffers
+            .begin_frame(4, 0, profile.profile_revision, 9)
+            .unwrap();
+        let (owner_orders, _) = terrain.source_painter_orders(camera.yaw);
+        let mut pixel_orders = vec![0; profile.extent()];
+        let streaming_receipt = rasterize_classic_hd_terrain_with_occlusion(
+            &mut streaming_frame,
+            &terrain,
+            &atlas,
+            &tablesn,
+            0x20,
+            &owner_orders,
+            &mut pixel_orders,
+        )
+        .unwrap();
+        assert_eq!(streaming_frame.indices(), vector_frame.indices());
+        assert_eq!(streaming_frame.provenance(), vector_frame.provenance());
+        assert_eq!(streaming_receipt, vector_receipt);
+        assert_eq!(
+            streaming_receipt.output_hash,
+            writer_output_hash(&streaming_frame)
+        );
+        assert_eq!(
+            streaming_receipt.provenance_hash,
+            writer_provenance_hash(&streaming_frame)
         );
     }
 

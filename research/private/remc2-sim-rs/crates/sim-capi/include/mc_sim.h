@@ -1343,6 +1343,13 @@ int32_t mc_game_runtime_load_replay_json_v1(
     uint64_t handle, uint64_t generation,
     const uint8_t *package_set_json, uint32_t package_set_json_len,
     const uint8_t *save_json, uint32_t save_json_len);
+/* Menu Load preserves the guarded old runtime's nonserialized MC2 process
+ * context. The old owner remains untouched if verification/loading fails. */
+int32_t mc_game_runtime_load_replay_from_runtime_json_v1(
+    uint64_t handle, uint64_t generation,
+    uint64_t source_handle, uint64_t source_generation,
+    const uint8_t *package_set_json, uint32_t package_set_json_len,
+    const uint8_t *save_json, uint32_t save_json_len);
 int32_t mc_game_runtime_open_level_v1(
     uint64_t handle, uint64_t generation);
 /* Observes the exact pending installed definition; never opens a level.

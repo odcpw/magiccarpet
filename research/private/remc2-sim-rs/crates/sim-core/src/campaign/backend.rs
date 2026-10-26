@@ -9,7 +9,11 @@
 //! number, and no source slot or class/model/action value crosses the
 //! neutral contract.
 
+#[cfg(test)]
+#[path = "global_context_tests.rs"]
+mod global_context_tests;
 mod spells;
+use crate::native_world::GlobalSpecialState;
 use spells::{mc2_spell_family, mc2_spell_kind_for_family, semantic_spell_kind};
 
 use std::{
@@ -765,6 +769,10 @@ struct Mc2CampaignReplaySave {
     paused: bool,
     definition: GameDefinition,
     semantic_spell_carry: Mc2SemanticSpellCarry,
+    #[serde(default, skip_serializing_if = "GlobalSpecialState::is_default")]
+    initial_global_context: GlobalSpecialState,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    global_context_changes: Vec<Mc2GlobalContextChange>,
     // v5 did not retain the campaign frontier. Omission must remain omission
     // when checking its original receipt; it cannot imply earned completions.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -786,6 +794,10 @@ struct Mc2CampaignReplaySavePayload<'a> {
     paused: bool,
     definition: &'a GameDefinition,
     semantic_spell_carry: &'a Mc2SemanticSpellCarry,
+    #[serde(skip_serializing_if = "GlobalSpecialState::is_default")]
+    initial_global_context: &'a GlobalSpecialState,
+    #[serde(skip_serializing_if = "<[Mc2GlobalContextChange]>::is_empty")]
+    global_context_changes: &'a [Mc2GlobalContextChange],
     #[serde(skip_serializing_if = "Option::is_none")]
     completed_levels: Option<&'a [SemanticLevelId]>,
     #[serde(skip_serializing_if = "<[crate::game_runtime::CompletedLevelStatistics]>::is_empty")]
@@ -812,6 +824,8 @@ impl Mc2CampaignReplaySave {
             paused,
             definition,
             semantic_spell_carry,
+            initial_global_context: GlobalSpecialState::default(),
+            global_context_changes: Vec::new(),
             completed_levels: Some(completed_levels),
             level_statistics: Vec::new(),
             operations,
@@ -832,6 +846,8 @@ impl Mc2CampaignReplaySave {
             paused: self.paused,
             definition: &self.definition,
             semantic_spell_carry: &self.semantic_spell_carry,
+            initial_global_context: &self.initial_global_context,
+            global_context_changes: &self.global_context_changes,
             completed_levels: self.completed_levels.as_deref(),
             level_statistics: &self.level_statistics,
             operations: &self.operations,
@@ -965,6 +981,15 @@ pub struct Mc2RuntimePackageResolver {
     flow: RuntimeFlowDefinition,
     by_level: BTreeMap<SemanticLevelId, ResolvedMc2RuntimePackage>,
     pending_spell_carries: Arc<Mutex<BTreeMap<u64, Mc2PendingSpellCarry>>>,
+    /// Occupied only while this runtime has no attached gameplay authority.
+    detached_source_contexts: Arc<Mutex<BTreeMap<u64, GlobalSpecialState>>>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+struct Mc2GlobalContextChange {
+    before_operation: usize,
+    context: GlobalSpecialState,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -994,6 +1019,26 @@ struct Mc2PendingSpellCarry {
 }
 
 impl Mc2RuntimePackageResolver {
+    /// The attached campaign is authoritative. Only detached runtimes consult
+    /// the retained process context; resolver clones never share live globals.
+    pub fn source_global_context(
+        &self,
+        runtime: &crate::game_runtime::GameRuntime<Mc2CampaignBackend>,
+    ) -> Result<GlobalSpecialState, crate::game_runtime::RuntimeTransitionError> {
+        if let Some(session) = runtime.session() {
+            return Ok(session.backend().campaign.source_global_context());
+        }
+        let contexts = self.detached_source_contexts.lock().map_err(|_| {
+            crate::game_runtime::RuntimeTransitionError::InvalidRuntimeFlow {
+                message: "source context owner is unavailable".to_owned(),
+            }
+        })?;
+        Ok(contexts
+            .get(&runtime.identity().runtime_id)
+            .copied()
+            .unwrap_or_default())
+    }
+
     // The opening release's three-mission definitions are immutable save
     // identities. Reconstruct that exact base for verification, never rewrite
     // a saved definition or its replay receipts to adopt an installed suffix.
@@ -1223,6 +1268,7 @@ impl Mc2RuntimePackageResolver {
             flow,
             by_level,
             pending_spell_carries: Arc::new(Mutex::new(BTreeMap::new())),
+            detached_source_contexts: Arc::new(Mutex::new(BTreeMap::new())),
         })
     }
 
@@ -1247,6 +1293,43 @@ impl Mc2RuntimePackageResolver {
             .package(self.flow.entry_level_id())
             .expect("closed installed package set contains its entry level");
         runtime.new_game(guard, Arc::clone(&package.definition))
+    }
+
+    /// NewGameDialog reopens the retained frontier; only the map's explicit
+    /// reset command clears progress and learned spell carry.
+    pub fn show_new_game_map(
+        &self,
+        runtime: &mut crate::game_runtime::GameRuntime<Mc2CampaignBackend>,
+        guard: crate::game_runtime::RuntimeGuard,
+    ) -> Result<crate::game_runtime::RuntimeIdentity, crate::game_runtime::RuntimeTransitionError>
+    {
+        let mut pending = self.pending_spell_carries.lock().map_err(|_| {
+            crate::game_runtime::RuntimeTransitionError::InvalidRuntimeFlow {
+                message: "resolver spell-carry state is unavailable".to_owned(),
+            }
+        })?;
+        let identity = runtime.show_new_game_map_resolved(guard, |level_id| {
+            self.package(level_id)
+                .map(|package| Arc::clone(&package.definition))
+                .ok_or_else(
+                    || crate::game_runtime::RuntimeTransitionError::InvalidRuntimeFlow {
+                        message: "retained campaign frontier is not installed".to_owned(),
+                    },
+                )
+        })?;
+        if let Some(carry) = pending.get_mut(&guard.runtime_id) {
+            if let Some(selected) = identity
+                .campaign_menu
+                .as_ref()
+                .and_then(|map| map.selected_level_id.as_ref())
+            {
+                carry.destination_level.clone_from(selected);
+            }
+            carry.session_generation = runtime
+                .campaign_session_generation()
+                .expect("map owns its generation");
+        }
+        Ok(identity)
     }
 
     /// Observe the current Loading destination without opening or mutating it.
@@ -1351,15 +1434,73 @@ impl Mc2RuntimePackageResolver {
             .validate_guard(guard)
             .map_err(Box::new)
             .map_err(crate::game_runtime::RuntimeTransitionError::Guard)?;
-        let mut pending = self.pending_spell_carries.lock().map_err(|_| {
+        let _pending = self.pending_spell_carries.lock().map_err(|_| {
             crate::game_runtime::RuntimeTransitionError::InvalidRuntimeFlow {
                 message: "resolver spell-carry state is unavailable".to_owned(),
             }
         })?;
         let identity = runtime.cancel_loading(guard)?;
-        if identity.mode == crate::game_runtime::RuntimeMode::Title {
-            pending.remove(&guard.runtime_id);
-        }
+        Ok(identity)
+    }
+
+    /// Abandon returns to the retained campaign with entry spells/experience.
+    /// Only the successful-completion path promotes new jars and runtime XP.
+    pub fn close_to_title(
+        &self,
+        runtime: &mut crate::game_runtime::GameRuntime<Mc2CampaignBackend>,
+        guard: crate::game_runtime::RuntimeGuard,
+        session_guard: crate::game_session::SessionGuard,
+    ) -> Result<crate::game_runtime::RuntimeIdentity, crate::game_runtime::RuntimeTransitionError>
+    {
+        use crate::game_runtime::RuntimeTransitionError;
+        runtime
+            .validate_guard(guard)
+            .map_err(Box::new)
+            .map_err(RuntimeTransitionError::Guard)?;
+        let session = runtime
+            .session()
+            .ok_or_else(|| RuntimeTransitionError::InvalidMode {
+                expected: crate::game_runtime::RuntimeMode::Playing,
+                actual: runtime.identity().mode,
+            })?;
+        session
+            .completion_status(session_guard)
+            .map_err(Box::new)
+            .map_err(RuntimeTransitionError::SessionGuard)?;
+        self.exact_package_for_definition(session.definition())?;
+        let carry = session.backend().initial_semantic_spell_carry()?;
+        let source_context = session.backend().campaign.source_global_context();
+        let destination_level = session
+            .definition()
+            .runtime_flow()
+            .expect("campaign owns a flow")
+            .bound_level_id()
+            .clone();
+        let session_generation = session
+            .identity()
+            .generation
+            .checked_add(1)
+            .ok_or(RuntimeTransitionError::GenerationExhausted)?;
+        let mut pending = self.pending_spell_carries.lock().map_err(|_| {
+            RuntimeTransitionError::InvalidRuntimeFlow {
+                message: "resolver spell-carry state is unavailable".to_owned(),
+            }
+        })?;
+        let mut contexts = self.detached_source_contexts.lock().map_err(|_| {
+            RuntimeTransitionError::InvalidRuntimeFlow {
+                message: "source context owner is unavailable".to_owned(),
+            }
+        })?;
+        let identity = runtime.close(guard, session_guard)?;
+        contexts.insert(guard.runtime_id, source_context);
+        pending.insert(
+            guard.runtime_id,
+            Mc2PendingSpellCarry {
+                session_generation,
+                destination_level,
+                carry,
+            },
+        );
         Ok(identity)
     }
 
@@ -1382,6 +1523,14 @@ impl Mc2RuntimePackageResolver {
             )
         })?;
         let carry = pending.get(&guard.runtime_id).cloned();
+        let mut contexts = self.detached_source_contexts.lock().map_err(|_| {
+            crate::game_runtime::OpenLevelError::Transition(
+                crate::game_runtime::RuntimeTransitionError::InvalidRuntimeFlow {
+                    message: "source context owner is unavailable".to_owned(),
+                },
+            )
+        })?;
+        let source_context = contexts.get(&guard.runtime_id).copied();
         let opened = runtime.open_level_resolved_with_candidate(
             guard,
             &Mc2CampaignAdapter,
@@ -1391,31 +1540,39 @@ impl Mc2RuntimePackageResolver {
                     .map(|package| package.inputs.clone())
             },
             |candidate| {
-                let Some(pending) = &carry else {
-                    return Ok(());
-                };
-                let destination = candidate
-                    .definition()
-                    .runtime_flow()
-                    .map(RuntimeFlowDefinition::bound_level_id);
-                if pending.session_generation != candidate.identity().generation
-                    || destination != Some(&pending.destination_level)
-                {
-                    return Err(
+                if let Some(pending) = &carry {
+                    let destination = candidate
+                        .definition()
+                        .runtime_flow()
+                        .map(RuntimeFlowDefinition::bound_level_id);
+                    if pending.session_generation != candidate.identity().generation
+                        || destination != Some(&pending.destination_level)
+                    {
+                        return Err(
                         crate::game_runtime::RuntimeTransitionError::InvalidRuntimeFlow {
                             message:
                                 "pending spell carry does not bind this exact Loading transition"
                                     .to_owned(),
                         },
                     );
+                    }
+                    candidate
+                        .backend_mut()
+                        .apply_semantic_spell_carry(&pending.carry)?;
                 }
-                candidate
-                    .backend_mut()
-                    .apply_semantic_spell_carry(&pending.carry)
+                if let Some(context) = source_context {
+                    candidate
+                        .backend_mut()
+                        .install_initial_source_context(context)?;
+                }
+                Ok(())
             },
         );
         if opened.is_ok() && carry.is_some() {
             pending.remove(&guard.runtime_id);
+        }
+        if opened.is_ok() {
+            contexts.remove(&guard.runtime_id);
         }
         opened
     }
@@ -1427,10 +1584,36 @@ impl Mc2RuntimePackageResolver {
         runtime: &crate::game_runtime::GameRuntime<Mc2CampaignBackend>,
     ) -> Result<Vec<u8>, Mc2CampaignReplaySaveError> {
         let mode = runtime.identity().mode;
-        if mode == crate::game_runtime::RuntimeMode::Campaign {
-            let state = runtime
-                .campaign_save_state()
-                .ok_or(Mc2CampaignReplaySaveError::InvalidMode)?;
+        if matches!(
+            mode,
+            crate::game_runtime::RuntimeMode::Campaign | crate::game_runtime::RuntimeMode::Title
+        ) {
+            let state = if mode == crate::game_runtime::RuntimeMode::Title {
+                // SaveGameDialog on Title writes the retained campaign, not
+                // a fabricated gameplay session. Loading it opens the map.
+                crate::game_runtime::CampaignSaveState {
+                    definition: self
+                        .package(self.flow.entry_level_id())
+                        .expect("closed installed entry")
+                        .definition
+                        .as_ref()
+                        .clone(),
+                    phase: crate::game_runtime::CampaignMenuPhase::MissionSelect,
+                    completed_level_id: None,
+                    selected_level_id: self
+                        .flow
+                        .entries()
+                        .iter()
+                        .find(|entry| !runtime.completed_levels().contains(entry.level_id()))
+                        .map(|entry| entry.level_id().clone()),
+                    completed_levels: runtime.completed_levels().to_vec(),
+                    level_statistics: runtime.completed_level_statistics().to_vec(),
+                }
+            } else {
+                runtime
+                    .campaign_save_state()
+                    .ok_or(Mc2CampaignReplaySaveError::InvalidMode)?
+            };
             self.exact_package_for_definition(&state.definition)
                 .map_err(Mc2CampaignReplaySaveError::Runtime)?;
             let pending = self.pending_spell_carries.lock().map_err(|_| {
@@ -1449,6 +1632,15 @@ impl Mc2RuntimePackageResolver {
                     .map(|pending| pending.destination_level.clone()),
                 receipt_sha256: String::new(),
             };
+            if mode == crate::game_runtime::RuntimeMode::Title
+                && save.semantic_spell_carry.is_some()
+            {
+                save.carry_destination_level = save
+                    .state
+                    .selected_level_id
+                    .clone()
+                    .or_else(|| save.state.completed_levels.last().cloned());
+            }
             save.receipt_sha256 = save.compute_receipt_sha256();
             let bytes = serde_json::to_vec(&save).map_err(|error| {
                 Mc2CampaignReplaySaveError::InvalidSave {
@@ -1517,6 +1709,8 @@ impl Mc2RuntimePackageResolver {
             &snapshot,
         );
         save.level_statistics = runtime.completed_level_statistics().to_vec();
+        save.initial_global_context = session.backend().package_campaign.source_global_context();
+        save.global_context_changes = session.backend().global_context_changes.clone();
         save.receipt_sha256 = save.compute_receipt_sha256();
         let bytes =
             serde_json::to_vec(&save).map_err(|error| Mc2CampaignReplaySaveError::InvalidSave {
@@ -1546,12 +1740,52 @@ impl Mc2RuntimePackageResolver {
         self.load_replay_observed(runtime, guard, session_id, bytes, |_| {})
     }
 
+    /// SLEV-style warm load: verify the saved replay under its own context,
+    /// then retain the receiving game's current nonserialized source global.
+    pub fn load_replay_with_source_context(
+        &self,
+        runtime: &mut crate::game_runtime::GameRuntime<Mc2CampaignBackend>,
+        guard: crate::game_runtime::RuntimeGuard,
+        session_id: u64,
+        bytes: &[u8],
+        context: GlobalSpecialState,
+    ) -> Result<crate::game_runtime::RuntimeIdentity, Mc2CampaignReplaySaveError> {
+        self.load_replay_observed_with_context(
+            runtime,
+            guard,
+            session_id,
+            bytes,
+            Some(context),
+            |_| {},
+        )
+    }
+
     fn load_replay_observed(
         &self,
         runtime: &mut crate::game_runtime::GameRuntime<Mc2CampaignBackend>,
         guard: crate::game_runtime::RuntimeGuard,
         session_id: u64,
         bytes: &[u8],
+        observe: impl FnMut(&crate::game_session::GameSession<Mc2CampaignBackend>),
+    ) -> Result<crate::game_runtime::RuntimeIdentity, Mc2CampaignReplaySaveError> {
+        let context = self
+            .detached_source_contexts
+            .lock()
+            .map_err(|_| Mc2CampaignReplaySaveError::InvalidSave {
+                message: "source context owner is unavailable".to_owned(),
+            })?
+            .get(&guard.runtime_id)
+            .copied();
+        self.load_replay_observed_with_context(runtime, guard, session_id, bytes, context, observe)
+    }
+
+    fn load_replay_observed_with_context(
+        &self,
+        runtime: &mut crate::game_runtime::GameRuntime<Mc2CampaignBackend>,
+        guard: crate::game_runtime::RuntimeGuard,
+        session_id: u64,
+        bytes: &[u8],
+        warm_context: Option<GlobalSpecialState>,
         observe: impl FnMut(&crate::game_session::GameSession<Mc2CampaignBackend>),
     ) -> Result<crate::game_runtime::RuntimeIdentity, Mc2CampaignReplaySaveError> {
         runtime
@@ -1594,16 +1828,29 @@ impl Mc2RuntimePackageResolver {
                 });
             }
             if let Some(destination) = destination.as_ref() {
-                if self.package(destination).is_none() || save.state.completed_level_id.is_none() {
+                let expected_destination = save
+                    .state
+                    .selected_level_id
+                    .as_ref()
+                    .or(save.state.completed_level_id.as_ref())
+                    .or_else(|| save.state.completed_levels.last());
+                if self.package(destination).is_none() || expected_destination != Some(destination)
+                {
                     return Err(Mc2CampaignReplaySaveError::InvalidSave {
-                        message: "campaign carry destination or completed source is not installed"
-                            .to_owned(),
+                        message:
+                            "campaign carry destination is not the retained installed selection"
+                                .to_owned(),
                     });
                 }
             }
             let mut pending = self.pending_spell_carries.lock().map_err(|_| {
                 Mc2CampaignReplaySaveError::InvalidSave {
                     message: "resolver spell-carry state is unavailable".to_owned(),
+                }
+            })?;
+            let mut contexts = self.detached_source_contexts.lock().map_err(|_| {
+                Mc2CampaignReplaySaveError::InvalidSave {
+                    message: "source context owner is unavailable".to_owned(),
                 }
             })?;
             let identity = runtime
@@ -1632,6 +1879,9 @@ impl Mc2RuntimePackageResolver {
             } else {
                 pending.remove(&guard.runtime_id);
             }
+            if let Some(context) = warm_context {
+                contexts.insert(guard.runtime_id, context);
+            }
             return Ok(identity);
         }
         let save: Mc2CampaignReplaySave = serde_json::from_slice(bytes).map_err(|error| {
@@ -1650,6 +1900,20 @@ impl Mc2RuntimePackageResolver {
                     "save has {} replay operations, exceeding the {MAX_MC2_CAMPAIGN_REPLAY_OPERATIONS}-operation bound",
                     save.operations.len()
                 ),
+            });
+        }
+        if save.global_context_changes.len() > MAX_MC2_CAMPAIGN_REPLAY_OPERATIONS + 1
+            || save
+                .global_context_changes
+                .iter()
+                .any(|change| change.before_operation > save.operations.len())
+            || save
+                .global_context_changes
+                .windows(2)
+                .any(|pair| pair[0].before_operation >= pair[1].before_operation)
+        {
+            return Err(Mc2CampaignReplaySaveError::InvalidSave {
+                message: "source context changes have an invalid replay boundary".to_owned(),
             });
         }
         save.definition
@@ -1680,6 +1944,8 @@ impl Mc2RuntimePackageResolver {
             .map_err(Mc2CampaignReplaySaveError::Definition)?;
         let definition = Arc::new(save.definition);
         let semantic_spell_carry = save.semantic_spell_carry;
+        let initial_global_context = save.initial_global_context;
+        let mut global_context_changes = save.global_context_changes.into_iter().peekable();
         let completed_levels = save.completed_levels.unwrap_or_default();
         let level_statistics = save.level_statistics;
         let operations = save.operations;
@@ -1689,7 +1955,17 @@ impl Mc2RuntimePackageResolver {
         let expected_effect_head = save.expected_effect_head;
         let expected_effect_journal_sha256 = save.expected_effect_journal_sha256;
         let paused = save.paused;
-        runtime
+        let mut pending = self.pending_spell_carries.lock().map_err(|_| {
+            Mc2CampaignReplaySaveError::InvalidSave {
+                message: "resolver spell-carry state is unavailable".to_owned(),
+            }
+        })?;
+        let mut contexts = self.detached_source_contexts.lock().map_err(|_| {
+            Mc2CampaignReplaySaveError::InvalidSave {
+                message: "source context owner is unavailable".to_owned(),
+            }
+        })?;
+        let identity = runtime
             .restore_playing_resolved(
                 guard,
                 definition,
@@ -1703,7 +1979,24 @@ impl Mc2RuntimePackageResolver {
                 move |candidate| {
                     candidate
                         .backend_mut()
-                        .apply_semantic_spell_carry(&semantic_spell_carry)
+                        .apply_semantic_spell_carry(&semantic_spell_carry)?;
+                    candidate
+                        .backend_mut()
+                        .install_initial_source_context(initial_global_context)
+                },
+                move |candidate, operation_index| {
+                    if global_context_changes
+                        .peek()
+                        .is_some_and(|change| change.before_operation == operation_index)
+                    {
+                        let change = global_context_changes
+                            .next()
+                            .expect("matched replay context boundary");
+                        candidate
+                            .backend_mut()
+                            .apply_source_context_change(change.context);
+                    }
+                    Ok(())
                 },
                 move |candidate| {
                     let actual = candidate.backend().snapshot();
@@ -1727,7 +2020,17 @@ impl Mc2RuntimePackageResolver {
                 },
                 observe,
             )
-            .map_err(Mc2CampaignReplaySaveError::Restore)
+            .map_err(Mc2CampaignReplaySaveError::Restore)?;
+        if let Some(context) = warm_context {
+            runtime
+                .session_mut()
+                .expect("verified replay owns a session")
+                .backend_mut()
+                .apply_source_context_change(context);
+        }
+        pending.remove(&guard.runtime_id);
+        contexts.remove(&guard.runtime_id);
+        Ok(identity)
     }
 
     /// Test-route history is returned only after the authoritative loader has
@@ -1857,7 +2160,12 @@ impl Mc2RuntimePackageResolver {
                 },
             );
         }
-        let (receipt, carry) = runtime.accept_transition_resolved_with_source(
+        let mut contexts = self.detached_source_contexts.lock().map_err(|_| {
+            crate::game_runtime::RuntimeTransitionError::InvalidRuntimeFlow {
+                message: "source context owner is unavailable".to_owned(),
+            }
+        })?;
+        let (receipt, (carry, source_context)) = runtime.accept_transition_resolved_with_source(
             guard,
             session_guard,
             |source_definition, destination| {
@@ -1883,8 +2191,14 @@ impl Mc2RuntimePackageResolver {
                     }
                 }
             },
-            |session| session.backend().transition_spell_carry(),
+            |session| {
+                session
+                    .backend()
+                    .transition_spell_carry()
+                    .map(|carry| (carry, session.backend().campaign.source_global_context()))
+            },
         )?;
+        contexts.insert(guard.runtime_id, source_context);
         let destination_level = match &receipt.completion_destination {
             RuntimeFlowDestination::Level { level_id } => level_id.clone(),
             RuntimeFlowDestination::Title { .. } => receipt.completed_level_id.clone(),
@@ -1915,6 +2229,10 @@ impl Mc2RuntimePackageResolver {
                 message: "resolver spell-carry state is unavailable".to_owned(),
             }
         })?;
+        let reset = matches!(
+            command,
+            crate::game_runtime::CampaignMenuCommand::ResetCampaign
+        );
         let identity = runtime.campaign_menu_command_resolved(guard, command, |level_id| {
             self.package(level_id)
                 .map(|package| Arc::clone(&package.definition))
@@ -1924,7 +2242,7 @@ impl Mc2RuntimePackageResolver {
                     },
                 )
         })?;
-        if identity.mode == crate::game_runtime::RuntimeMode::Title {
+        if reset {
             pending.remove(&guard.runtime_id);
         } else if let Some(carry) = pending.get_mut(&guard.runtime_id) {
             let selected = identity
@@ -1961,9 +2279,54 @@ pub struct Mc2CampaignBackend {
     package_graph_hash: String,
     artifact_graph_hash: String,
     replay_operations: Vec<crate::game_runtime::ReplayOperation<GameCommand>>,
+    global_context_changes: Vec<Mc2GlobalContextChange>,
 }
 
 impl Mc2CampaignBackend {
+    fn install_initial_source_context(
+        &mut self,
+        context: GlobalSpecialState,
+    ) -> Result<(), crate::game_runtime::RuntimeTransitionError> {
+        self.campaign
+            .install_initial_source_global_context(context)
+            .map_err(
+                |error| crate::game_runtime::RuntimeTransitionError::InvalidRuntimeFlow {
+                    message: error.to_string(),
+                },
+            )?;
+        self.package_campaign
+            .install_initial_source_global_context(context)
+            .map_err(
+                |error| crate::game_runtime::RuntimeTransitionError::InvalidRuntimeFlow {
+                    message: error.to_string(),
+                },
+            )?;
+        Ok(())
+    }
+
+    fn apply_source_context_change(&mut self, context: GlobalSpecialState) {
+        if self.campaign.source_global_context() == context {
+            return;
+        }
+        self.campaign.apply_warm_source_global_context(context);
+        let change = Mc2GlobalContextChange {
+            before_operation: self.replay_operations.len(),
+            context,
+        };
+        if self
+            .global_context_changes
+            .last()
+            .is_some_and(|previous| previous.before_operation == change.before_operation)
+        {
+            *self
+                .global_context_changes
+                .last_mut()
+                .expect("matched context boundary") = change;
+        } else {
+            self.global_context_changes.push(change);
+        }
+    }
+
     pub fn speech_enabled(&self) -> bool {
         self.campaign.speech_enabled()
     }
@@ -2127,6 +2490,7 @@ impl GameAdapter for Mc2CampaignAdapter {
             package_graph_hash: definition.package_graph_hash().to_owned(),
             artifact_graph_hash: definition.artifact_graph_hash().to_owned(),
             replay_operations: Vec::new(),
+            global_context_changes: Vec::new(),
             package_base,
         })
     }
@@ -2529,6 +2893,7 @@ impl GameSessionBackend for Mc2CampaignBackend {
         let fireball_launch_sound_id =
             selected_fireball_launch_sound(definition, &self.fireball_launch_sound_choices)?;
         let next_generation = self.campaign.generation().wrapping_add(1);
+        let source_context = self.campaign.source_global_context();
         let mut campaign = self.package_campaign.clone();
         campaign
             .apply_semantic_level_variant(
@@ -2553,12 +2918,23 @@ impl GameSessionBackend for Mc2CampaignBackend {
             campaign.apply_fireball_launch_sound(source_sound_id);
         }
         campaign.set_runtime_generation(next_generation);
+        campaign
+            .install_initial_source_global_context(source_context)
+            .map_err(|error| {
+                CampaignBackendError::Open(CampaignOpenError::Materialization(error))
+            })?;
+        self.package_campaign
+            .install_initial_source_global_context(source_context)
+            .map_err(|error| {
+                CampaignBackendError::Open(CampaignOpenError::Materialization(error))
+            })?;
         self.campaign = campaign;
         self.flight_binding = flight_binding;
         self.fireball_binding = fireball_binding;
         self.fireball_projectile_asset = fireball_projectile_asset;
         self.goat_policy_binding = goat_policy_binding;
         self.replay_operations.clear();
+        self.global_context_changes.clear();
         Ok(())
     }
 }
@@ -2981,7 +3357,11 @@ impl Mc2CampaignBackend {
         command: &GameCommand,
     ) -> Result<PlayerCommand, CampaignBackendError> {
         let mut player_command = campaign_player_command(command);
-        if command.recover_player || command.recenter || command.full_stop {
+        if command.recover_player
+            || command.remove_castle_stage
+            || command.recenter
+            || command.full_stop
+        {
             return Ok(player_command);
         }
         if let Some(assignment) = &command.assign_spell {
@@ -3052,6 +3432,8 @@ fn campaign_player_command(command: &GameCommand) -> PlayerCommand {
     PlayerCommand {
         opcode: if command.recover_player {
             0x0f
+        } else if command.remove_castle_stage {
+            42
         } else if command.recenter || command.full_stop {
             0x27
         } else {
@@ -3651,6 +4033,81 @@ pub(crate) mod tests {
         resolver
             .campaign_menu_command(&mut restored, guard, CampaignMenuCommand::DismissResults)
             .unwrap();
+        let mut retained_map = restored.campaign_menu_snapshot().unwrap();
+        // Re-entering from Title has no active results sheet. Its completed
+        // missions, frontier, spell carry and retained statistics remain.
+        retained_map.completed_level_id = None;
+        let guard = restored.identity().guard();
+        resolver
+            .campaign_menu_command(
+                &mut restored,
+                guard,
+                CampaignMenuCommand::SelectMission {
+                    level_id: resolver.flow.entry_level_id().clone(),
+                },
+            )
+            .unwrap();
+        let guard = restored.identity().guard();
+        let title = resolver
+            .campaign_menu_command(&mut restored, guard, CampaignMenuCommand::ReturnTitle)
+            .unwrap();
+        let title_save = resolver.save_replay(&restored).unwrap();
+        assert_eq!(restored.identity(), title, "Title Save is observational");
+        let mut title_restored = GameRuntime::<Mc2CampaignBackend>::title(7115).unwrap();
+        let title_guard = title_restored.identity().guard();
+        resolver
+            .load_replay(&mut title_restored, title_guard, 7115, &title_save)
+            .unwrap();
+        assert_eq!(title_restored.identity().mode, RuntimeMode::Campaign);
+        assert_eq!(
+            title_restored.campaign_menu_snapshot().unwrap(),
+            retained_map,
+            "the original title Save loads its retained campaign at the unfinished map frontier"
+        );
+        let loading = resolver.new_game(&mut restored, title.guard()).unwrap();
+        let map = resolver
+            .show_new_game_map(&mut restored, loading.guard())
+            .unwrap();
+        assert_eq!(
+            restored.campaign_menu_snapshot().unwrap(),
+            retained_map,
+            "Title New Game returns to the unfinished frontier without clearing retained progress"
+        );
+        assert_eq!(
+            resolver
+                .pending_spell_carries
+                .lock()
+                .unwrap()
+                .get(&7113)
+                .unwrap()
+                .carry,
+            carry
+        );
+        let reopened_map_save = resolver.save_replay(&restored).unwrap();
+        let mut reopened_map = GameRuntime::<Mc2CampaignBackend>::title(7114).unwrap();
+        let reopened_guard = reopened_map.identity().guard();
+        resolver
+            .load_replay(&mut reopened_map, reopened_guard, 7114, &reopened_map_save)
+            .unwrap();
+        assert_eq!(
+            reopened_map.campaign_menu_snapshot().unwrap(),
+            retained_map,
+            "saving after Title preserves carry even though the map is no longer showing a completed results row"
+        );
+        assert!(
+            resolver
+                .campaign_menu_command(
+                    &mut restored,
+                    title.guard(),
+                    CampaignMenuCommand::ResetCampaign
+                )
+                .is_err()
+        );
+        assert_eq!(
+            restored.identity(),
+            map,
+            "stale reset leaves the campaign and carry intact"
+        );
         let guard = restored.identity().guard();
         let loading = resolver
             .campaign_menu_command(&mut restored, guard, CampaignMenuCommand::StartMission)
@@ -3669,6 +4126,57 @@ pub(crate) mod tests {
                 .acquired
                 .iter()
                 .all(|spell| installed.acquired.contains(spell))
+        );
+        assert!(
+            !resolver
+                .pending_spell_carries
+                .lock()
+                .unwrap()
+                .contains_key(&7113)
+        );
+        let playing = restored.identity();
+        let baseline = restored
+            .session()
+            .unwrap()
+            .backend()
+            .initial_semantic_spell_carry()
+            .unwrap();
+        let title = resolver
+            .close_to_title(
+                &mut restored,
+                playing.guard(),
+                playing.session.unwrap().guard(),
+            )
+            .unwrap();
+        let loading = resolver.new_game(&mut restored, title.guard()).unwrap();
+        let map = resolver
+            .show_new_game_map(&mut restored, loading.guard())
+            .unwrap();
+        assert_eq!(restored.campaign_menu_snapshot().unwrap(), retained_map);
+        assert_eq!(
+            resolver
+                .pending_spell_carries
+                .lock()
+                .unwrap()
+                .get(&7113)
+                .unwrap()
+                .carry,
+            baseline,
+            "abandon retains entry progression rather than promoting in-level pickups or runtime XP"
+        );
+        let reset = resolver
+            .campaign_menu_command(
+                &mut restored,
+                map.guard(),
+                CampaignMenuCommand::ResetCampaign,
+            )
+            .unwrap();
+        let cleared = reset.campaign_menu.unwrap();
+        assert!(cleared.completed_levels.is_empty());
+        assert!(cleared.level_statistics.is_empty());
+        assert_eq!(
+            cleared.selected_level_id.as_ref(),
+            Some(resolver.flow.entry_level_id())
         );
         assert!(
             !resolver
@@ -36302,6 +36810,7 @@ pub(crate) mod tests {
             look_yaw: -17,
             look_pitch: 23,
             recover_player: false,
+            remove_castle_stage: false,
             elapsed_centiseconds: 0,
         });
         assert_eq!(mapped.opcode, 0);
@@ -36312,6 +36821,14 @@ pub(crate) mod tests {
         assert_eq!(mapped.pitch, 24);
         assert_eq!(mapped.argument_6.cast_signed(), -17);
         assert_eq!(mapped.argument_8.cast_signed(), 23);
+        assert_eq!(
+            campaign_player_command(&GameCommand {
+                remove_castle_stage: true,
+                ..GameCommand::default()
+            })
+            .opcode,
+            42
+        );
         assert_eq!(
             campaign_player_command(&GameCommand::default()),
             PlayerCommand::default()

@@ -18,6 +18,7 @@ namespace MagicCarpet.Native
         public bool sound_enabled, music_enabled, speech_enabled;
         public int sound_volume, music_volume;
         public bool show_help;
+        public bool reflections = true, sky = true, shadows = true;
         public bool auto_show_objectives_for_foreign_languages;
         public int[] brightness;
         public bool flight_assistance, fullscreen;
@@ -189,11 +190,9 @@ namespace MagicCarpet.Native
                 roll = Mathf.Clamp(roll + Input.GetAxisRaw("Mouse X") * 4.5f * gain, -128, 127);
                 pitch = Mathf.Clamp(pitch + Input.GetAxisRaw("Mouse Y") * (prefs.invert_mouse ? 4.5f : -4.5f) * gain, -128, 127);
             }
-            // J/L and I/K remain keyboard steering alongside source flight keys.
-            var turn = (Input.GetKey(KeyCode.L) ? 1 : 0) - (Input.GetKey(KeyCode.J) ? 1 : 0);
-            var tilt = (Input.GetKey(KeyCode.K) ? 1 : 0) - (Input.GetKey(KeyCode.I) ? 1 : 0);
-            roll += turn * 110f * deltaTime;
-            pitch += tilt * 110f * deltaTime;
+            // Source mouse/keyboard input (EventsFunctions mode7) reads the
+            // configured flight slots independently of mouse steering. The
+            // letter shortcuts are gameplay commands, not another turn axis.
             if (prefs.input_device == "joystick" && joystick)
             {
                 // The installed Unity axes use the first joystick's X/Y axes.
@@ -241,9 +240,11 @@ namespace MagicCarpet.Native
             Slider("Mouse sensitivity (%)", ref draft.mouse_sensitivity, 10, 400);
             Slider("Joystick dead zone (%)", ref draft.joystick_dead_zone, 0, 75);
             draft.flight_assistance = GUILayout.Toggle(draft.flight_assistance, "Flight assistance (idle recenter)");
-            // Present only current operational consumers. All ten source
-            // assignments remain retained in Rust for original-screen owners.
-            var labels = new[] { "Forward", "Backward", "Strafe left", "Strafe right", "Spell menu" };
+            // SetKeysDialog_79610: LANG444..453 index the same ten slots as
+            // sub_5BCC0 defaults and the authoritative Rust preference array.
+            var labels = new[] { "Move player forwards", "Move player backwards", "Move player left", "Move player right",
+                "Map screen", "Spell menu", "Player information", "Spell menu: mark spells",
+                "Marked spells: toggle forwards", "Marked spells: toggle backwards" };
             for (var i = 0; i < labels.Length; i++)
             {
                 GUILayout.BeginHorizontal();
@@ -274,7 +275,7 @@ namespace MagicCarpet.Native
             Slider("Night brightness", ref draft.brightness[1], 0, 4);
             Slider("Cave brightness", ref draft.brightness[2], 0, 4);
             draft.fullscreen = GUILayout.Toggle(draft.fullscreen, "Fullscreen");
-            GUILayout.Label("Escape/P: pause · F5: save · R: restart · F10: quit\nC/middle mouse: recenter · Backspace: full stop\nJ/L, I/K: steer · Space: cast selected spell");
+            GUILayout.Label("P: pause · Esc: abandon mission · F5: save · R: restart · F10: quit\nC/middle mouse: recenter · Backspace: full stop\nMouse/joystick: steer · Space: cast selected spell");
             if (!string.IsNullOrEmpty(status)) GUILayout.Label(status);
             GUILayout.EndScrollView();
             GUILayout.EndArea();
@@ -295,7 +296,7 @@ namespace MagicCarpet.Native
             if (Current == null) return;
             if (playing && Current.preferences.show_help)
                 GUI.Label(new Rect(12, Screen.height - 44, Screen.width - 24, 40),
-                    $"{Current.preferences.player_name} · {Current.preferences.keys[0]}/{Current.preferences.keys[1]} fly · {Current.preferences.keys[2]}/{Current.preferences.keys[3]} strafe · Mouse steer · Esc pause · Backspace stop");
+                    $"{Current.preferences.player_name} · {Current.preferences.keys[0]}/{Current.preferences.keys[1]} fly · {Current.preferences.keys[2]}/{Current.preferences.keys[3]} strafe · Mouse steer · P pause · Esc abandon · Backspace stop");
         }
 
         /// sub_47650: each six-bit VGA component gains 6*setting and

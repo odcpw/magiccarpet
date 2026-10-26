@@ -523,6 +523,7 @@ impl Level2SharedSpellResetSession {
             speed,
             shield: None,
             invisible: None,
+            global_special_state: GlobalSpecialState::default(),
             beyond_sight: None,
             shield_damage_mailbox: None,
             beyond_sight_auxiliary: Level2PlayerEventAuxiliary {
@@ -745,6 +746,7 @@ impl Level2SharedSpellResetSession {
             shield: None,
 
             invisible: None,
+            global_special_state: GlobalSpecialState::default(),
 
             beyond_sight: None,
 
@@ -817,7 +819,10 @@ impl Level2SharedSpellResetSession {
                 )));
             }
             let tier = tier.min(2);
-            let Some(profile) = level2_direct_starting_spell_profile(family, tier) else {
+            let stage = Self::castle_stage_for_owner(economy, player_entity_index);
+            let Some(profile) =
+                self.physical_spell_profile(family, tier, player_entity_index, stage)
+            else {
                 *economy = economy_before;
                 return Err(NativeWorldError::new(format!(
                     "Level 2 direct starting family {family} has no bounded source profile"
@@ -1045,7 +1050,9 @@ impl Level2SharedSpellResetSession {
                 self.set_enabled_spell_holder_index(family, 0);
                 continue;
             };
-            let profile = level2_set_spell_profile(family_id, 0)
+            let stage = Self::castle_stage_for_owner(economy, actor.index);
+            let profile = self
+                .physical_spell_profile(family_id, 0, actor.index, stage)
                 .expect("the source holder allocator validated its base profile");
             let holder = Self::starting_spell_holder(source, actor.index, 0, profile);
             self.set_enabled_spell_holder_index(family, holder.index);
@@ -1081,7 +1088,9 @@ impl Level2SharedSpellResetSession {
         let player = self.local_player.clone();
         for holder in &mut holders {
             let tier = player.family_selected_tiers[usize::from(holder.model)].cast_unsigned();
-            let profile = level2_set_spell_profile(holder.model, tier)
+            let stage = Self::castle_stage_for_owner(economy, actor.index);
+            let profile = self
+                .physical_spell_profile(holder.model, tier, actor.index, stage)
                 .expect("recomputed selected tier has a source SetSpell profile");
             holder.apply_nyphur_spell_profile(profile, tier);
             holder.set_map_links(
@@ -1415,7 +1424,6 @@ impl Level2SharedSpellResetSession {
         let Some(invisible) = self.invisible else {
             return;
         };
-        let owner_word_clear_pending = invisible.owner_word_clear_pending;
 
         if let Some(holder) = self.pickup_mut(invisible.holder_entity_index) {
             holder.action = invisible.action;
@@ -1446,30 +1454,6 @@ impl Level2SharedSpellResetSession {
         sync_parent(&mut self.player_entity);
         for entity in &mut self.player_entities {
             sync_parent(entity);
-        }
-        let mut local_player_projection = None;
-        for player in &mut self.players {
-            if player.entity_index == invisible.parent_entity_index {
-                // `sub_6B1C0` clears the owner state word at offset 345 on
-                // the first sustained pulse before publishing the tier's
-                // visibility byte at offset 447. Keep the raw player record
-                // write separate from the status-bit asymmetry above.
-                if owner_word_clear_pending {
-                    player.record[345..347].fill(0);
-                }
-                player.record[447] = invisible.parent_visibility_mode;
-                if player.slot == 0 {
-                    local_player_projection = Some(player.clone());
-                }
-            }
-        }
-        if let Some(player) = local_player_projection {
-            self.local_player = player;
-        }
-        if owner_word_clear_pending {
-            if let Some(invisible) = self.invisible.as_mut() {
-                invisible.owner_word_clear_pending = false;
-            }
         }
         if invisible.parent_entity_index == self.player_entity.index {
             self.player_mana = invisible.parent_mana;
@@ -1690,6 +1674,12 @@ impl Level2SharedSpellResetSession {
                 invisible.step(parent_castle_mana),
             )
         }) {
+            if let Some(write) = step.special_state_write {
+                if write.clear_protection {
+                    self.global_special_state.protection_ticks = 0;
+                }
+                self.global_special_state.visibility_mode = write.visibility_mode;
+            }
             if step.experience_awarded != 0 {
                 self.award_spell_experience(parent, 11, step.experience_awarded);
             }
@@ -2395,13 +2385,13 @@ impl Level2SharedSpellResetSession {
     /// phase, never by a snapshot read.
     pub(super) fn set_player_hit_frame_time(&mut self, value: u8) {
         let local_player_slot = self.local_player.slot;
-        self.local_player.record[406] = value;
+        self.local_player.hit_frame_time = value;
         if let Some(player) = self
             .players
             .iter_mut()
             .find(|player| player.slot == local_player_slot)
         {
-            player.record[406] = value;
+            player.hit_frame_time = value;
         }
     }
 
@@ -3500,6 +3490,7 @@ impl Level2SharedSpellResetSession {
         let Some(outcome) = result else {
             return Ok(None);
         };
+        self.reprice_acquired_castle_holder(economy, outcome);
         if outcome.replacement_action.is_none() {
             return Ok(Some(outcome));
         }
@@ -3605,6 +3596,9 @@ impl Level2SharedSpellResetSession {
             None,
             source_player_order,
         );
+        if let Ok(Some(outcome)) = result.as_ref() {
+            self.reprice_acquired_castle_holder(economy, *outcome);
+        }
         let result_state = self.acquisitions[family_index];
         self.acquisitions[family_index] = base_state;
         let outcome = match result {
@@ -3874,16 +3868,19 @@ impl Level2SharedSpellResetSession {
         hasher.update(self.player_entity.record_bytes());
         for player in &self.players {
             hasher.update(player.record_bytes());
+            player.append_omitted_state_hash(&mut hasher);
         }
         for entity in &self.player_entities {
             hasher.update(entity.record_bytes());
         }
         hasher.update(self.local_player.record_bytes());
+        self.local_player.append_omitted_state_hash(&mut hasher);
         hasher.update(self.player_entity_sha256.as_bytes());
         hasher.update(terrain.deterministic_hash().to_le_bytes());
         hasher.update(self.player_mana.to_le_bytes());
         hasher.update(self.player_life_regen.to_le_bytes());
         hasher.update(self.player_life_regen_cooldown.to_le_bytes());
+        self.global_special_state.append_hash(&mut hasher);
         for experience in self.persistent_spell_experience {
             hasher.update(experience.to_le_bytes());
         }
@@ -3935,8 +3932,6 @@ impl Level2SharedSpellResetSession {
             hasher.update(invisible.parent_mana_regen.to_le_bytes());
             hasher.update(invisible.parent_status_flags.to_le_bytes());
             hasher.update(invisible.spell_status_flags.to_le_bytes());
-            hasher.update([invisible.parent_visibility_mode]);
-            hasher.update([u8::from(invisible.owner_word_clear_pending)]);
             hasher.update(invisible.countdown.to_le_bytes());
             hasher.update(invisible.experience_awarded.to_le_bytes());
             hasher.update([u8::from(invisible.cleanup_requested)]);
@@ -4032,15 +4027,18 @@ impl Level2SharedSpellResetSession {
         hasher.update(self.player_entity.record_bytes());
         for player in &self.players {
             hasher.update(player.record_bytes());
+            player.append_omitted_state_hash(&mut hasher);
         }
         for entity in &self.player_entities {
             hasher.update(entity.record_bytes());
         }
         hasher.update(self.local_player.record_bytes());
+        self.local_player.append_omitted_state_hash(&mut hasher);
         hasher.update(self.player_entity_sha256.as_bytes());
         hasher.update(self.player_mana.to_le_bytes());
         hasher.update(self.player_life_regen.to_le_bytes());
         hasher.update(self.player_life_regen_cooldown.to_le_bytes());
+        self.global_special_state.append_hash(&mut hasher);
         for experience in self.persistent_spell_experience {
             hasher.update(experience.to_le_bytes());
         }
@@ -4092,8 +4090,6 @@ impl Level2SharedSpellResetSession {
             hasher.update(invisible.parent_mana_regen.to_le_bytes());
             hasher.update(invisible.parent_status_flags.to_le_bytes());
             hasher.update(invisible.spell_status_flags.to_le_bytes());
-            hasher.update([invisible.parent_visibility_mode]);
-            hasher.update([u8::from(invisible.owner_word_clear_pending)]);
             hasher.update(invisible.countdown.to_le_bytes());
             hasher.update(invisible.experience_awarded.to_le_bytes());
             hasher.update([u8::from(invisible.cleanup_requested)]);
