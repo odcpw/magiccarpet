@@ -213,6 +213,35 @@ pub struct ClassicHdTerrainRender {
     pub command_hash: u64,
 }
 
+impl ClassicHdTerrainRender {
+    /// Source painter ranks for terrain anchors and their billboard buckets.
+    /// A bucket follows its own cell, even when that cell's material is clipped.
+    pub fn source_painter_orders(&self, yaw: i16) -> (Vec<u16>, Vec<u16>) {
+        let mut owners = vec![0; self.lattice.vertices.len()];
+        let mut cells = vec![0; 256 * 256];
+        let mut rank = 0_u16;
+        let quadrant = ((i32::from(yaw) & 2047) + 256) >> 9 & 3;
+        for row in (1..self.lattice.rows).rev() {
+            for owner in row_anchor_order(&self.lattice, row) {
+                rank += 1;
+                owners[owner] = rank;
+                if self.projected[owner].is_none() {
+                    continue;
+                }
+                let point = self.lattice.vertices[owner];
+                // GameRenderOriginal.h unk_D4328x texture offset [2,3]
+                // followed by billboard offset [4,5], after quadrant rotation.
+                let x = point.tile_x.wrapping_sub(u8::from(quadrant >= 2));
+                let y = point
+                    .tile_y
+                    .wrapping_sub(u8::from(quadrant == 0 || quadrant == 3));
+                cells[usize::from(y) * 256 + usize::from(x)] = rank;
+            }
+        }
+        (owners, cells)
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ClassicHdTerrainError(pub String);
 
@@ -590,6 +619,19 @@ fn project_vertex(
     })
 }
 
+fn row_anchor_order(lattice: &ClassicHdTerrainLattice, row: usize) -> Vec<usize> {
+    let row_start = row * lattice.columns;
+    let split = (0..lattice.columns.saturating_sub(1))
+        .find(|column| {
+            lattice.vertices[row_start + column + 1].feature_flags & TERRAIN_FEATURE_SEAM_SIDE != 0
+        })
+        .unwrap_or(lattice.columns.saturating_sub(1));
+    (0..split)
+        .chain((split..lattice.columns.saturating_sub(1)).rev())
+        .map(|column| row_start + column)
+        .collect()
+}
+
 fn build_submission_plan(
     camera: Level1TerrainFrameCamera,
     lattice: &ClassicHdTerrainLattice,
@@ -597,21 +639,7 @@ fn build_submission_plan(
 ) -> ClassicHdTerrainSubmissionPlan {
     let mut plan = ClassicHdTerrainSubmissionPlan::default();
     for row in (1..lattice.rows).rev() {
-        let row_start = row * lattice.columns;
-        let split = (0..lattice.columns.saturating_sub(1))
-            .find(|column| {
-                lattice.vertices[row_start + column + 1].feature_flags & TERRAIN_FEATURE_SEAM_SIDE
-                    != 0
-            })
-            .unwrap_or(lattice.columns.saturating_sub(1));
-        let mut order = Vec::with_capacity(lattice.columns.saturating_sub(1));
-        order.extend((0..split).map(|column| row_start + column));
-        order.extend(
-            (split..lattice.columns.saturating_sub(1))
-                .rev()
-                .map(|column| row_start + column),
-        );
-        for anchor in order {
+        for anchor in row_anchor_order(lattice, row) {
             let upper_left = anchor - lattice.columns;
             let upper_right = upper_left + 1;
             let indices = [anchor, anchor + 1, upper_right, upper_left];

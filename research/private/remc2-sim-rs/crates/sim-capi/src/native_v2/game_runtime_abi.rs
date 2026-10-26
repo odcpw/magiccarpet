@@ -50,6 +50,9 @@ pub(super) struct RuntimeRecord {
     resolver: Option<Mc2RuntimePackageResolver>,
     installed_inputs: Vec<InstalledCampaignInput>,
     campaign_presentation: Option<super::campaign_abi::CampaignSessionRecord>,
+    // A presentation read borrows a snapshot. Rebuild it after authoritative
+    // mutation, not once per frame-plane, palette, entity and HUD query.
+    campaign_presentation_dirty: bool,
     audio: super::campaign_audio_state::CampaignRuntimeAudio,
     completion_transition_receipt: Option<CompletionTransitionReceipt>,
     closed: bool,
@@ -63,6 +66,7 @@ impl RuntimeRecord {
             resolver: None,
             installed_inputs: Vec::new(),
             campaign_presentation: None,
+            campaign_presentation_dirty: true,
             audio: super::campaign_audio_state::CampaignRuntimeAudio::default(),
             completion_transition_receipt: None,
             closed: false,
@@ -94,6 +98,7 @@ impl RuntimeRecord {
 
     pub(super) fn session_mut(&mut self) -> AbiResult<&mut GameSession<Mc2CampaignBackend>> {
         self.ensure_open()?;
+        self.campaign_presentation_dirty = true;
         let mode = self.runtime.identity().mode;
         self.runtime.session_mut().ok_or_else(|| {
             AbiError::new(
@@ -174,6 +179,7 @@ impl RuntimeRecord {
     }
 
     fn reset_audio(&mut self) {
+        self.campaign_presentation_dirty = true;
         if let Some(session) = self.runtime.session() {
             self.audio.reset(
                 session.backend().campaign_presentation_source(),
@@ -207,6 +213,7 @@ impl RuntimeRecord {
     }
 
     fn rebind_audio_generation(&mut self) {
+        self.campaign_presentation_dirty = true;
         if let Some(session) = self.runtime.session() {
             let generation = session.identity().generation;
             self.audio.generation = generation;
@@ -465,6 +472,15 @@ impl RuntimeRecord {
     pub(super) fn take_campaign_presentation_record(
         &mut self,
     ) -> AbiResult<super::campaign_abi::CampaignSessionRecord> {
+        let generation = self.session()?.identity().generation;
+        if !self.campaign_presentation_dirty
+            && self
+                .campaign_presentation
+                .as_ref()
+                .is_some_and(|record| record.generation == generation)
+        {
+            return Ok(self.campaign_presentation.take().unwrap());
+        }
         let (generation, campaign) = {
             let session = self.session()?;
             (
@@ -538,6 +554,7 @@ impl RuntimeRecord {
         while effect_state_hashes.len() > 16_384 {
             effect_state_hashes.pop_first();
         }
+        self.campaign_presentation_dirty = false;
         Ok(super::campaign_abi::CampaignSessionRecord {
             kind: super::campaign_abi::CampaignSessionKind::Level2 {
                 inspection,
@@ -595,6 +612,7 @@ impl RuntimeRecord {
         elapsed_centiseconds: u32,
     ) -> AbiResult<()> {
         self.validate_transition(handle, runtime_generation, RuntimeMode::Paused)?;
+        self.campaign_presentation_dirty = true;
         let guard = SessionGuard {
             session_id: handle,
             generation: session_generation,
@@ -848,6 +866,7 @@ fn with_runtime_mut<T>(
     match &mut *guard {
         super::game_session_abi::NeutralSession::Runtime(runtime) => {
             runtime.ensure_open()?;
+            runtime.campaign_presentation_dirty = true;
             operation(runtime)
         }
         _ => Err(AbiError::new(
@@ -2181,6 +2200,7 @@ mod tests {
             resolver: Some(installed_resolver),
             installed_inputs: Vec::new(),
             campaign_presentation: None,
+            campaign_presentation_dirty: true,
             audio: super::super::campaign_audio_state::CampaignRuntimeAudio::default(),
             completion_transition_receipt: None,
             closed: false,
@@ -3424,6 +3444,24 @@ mod tests {
         );
         assert_eq!(generic_indices, day_indices);
         assert_eq!((index_written, palette_written), (64_000, 768));
+        // An unchanged source may be borrowed by all frame/HUD consumers.
+        // A full refresh must yield precisely the same frame and palette.
+        with_runtime_mut(handle, |_| Ok(())).unwrap();
+        assert_eq!(
+            mc_native_campaign_presentation_frame_copy(
+                handle,
+                &raw const query,
+                day_indices.as_mut_ptr(),
+                day_indices.len() as u32,
+                std::ptr::null_mut(),
+                0,
+                &raw mut generic,
+                struct_size::<McPresentationFrameInfoV2>(),
+            ),
+            MC_STATUS_OK
+        );
+        assert_eq!(generic_indices, day_indices);
+        assert_eq!(generic.index_hash, day.index_hash);
         assert_eq!(
             mc_native_campaign_day_indexed_frame_render(
                 handle,

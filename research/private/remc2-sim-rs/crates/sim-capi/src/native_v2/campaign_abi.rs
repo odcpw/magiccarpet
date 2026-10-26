@@ -2673,7 +2673,8 @@ pub extern "C" fn mc_native_campaign_scene_frame_copy(
     })
 }
 
-/// Copy source painter-order planes from the same committed Cave frame.
+/// Copy source painter-order planes from the same committed terrain frame.
+/// The historical symbol is also used for outdoor terrain.
 /// Counts/capacities are u16 elements; no frame is rendered by a copy request.
 #[unsafe(no_mangle)]
 pub extern "C" fn mc_native_campaign_cave_occlusion_copy(
@@ -2700,7 +2701,7 @@ pub extern "C" fn mc_native_campaign_cave_occlusion_copy(
                 ) else {
                     return Err(AbiError::new(
                         MC_STATUS_INVALID_ARGUMENT,
-                        "occlusion orders require a committed Cave frame",
+                        "occlusion orders require a committed terrain frame",
                     ));
                 };
                 if terrain.len() != 320 * 200 || cells.len() != 256 * 256 {

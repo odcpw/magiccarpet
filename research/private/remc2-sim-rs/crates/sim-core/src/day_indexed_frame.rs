@@ -17,7 +17,7 @@ use sha2::{Digest, Sha256};
 use crate::{
     FlightState,
     classic_hd::{ClassicHdFrameWriter, ClassicHdRenderProfile, byte_hash},
-    classic_hd_raster::rasterize_classic_hd_terrain,
+    classic_hd_raster::rasterize_classic_hd_terrain_with_occlusion,
     classic_hd_terrain::{
         ClassicHdSkyBank, ClassicHdTerrainRender, ClassicHdTerrainResources,
         build_classic_hd_terrain,
@@ -888,7 +888,13 @@ fn render_environment_indexed_frame(
         )));
     }
     let mut provenance = vec![0_u8; extent];
-    let mut cave_terrain_orders = matches!(&terrain, Terrain::Cave(_)).then(|| vec![0_u16; extent]);
+    // Retain the exact terrain write ranks on every map. The legacy field
+    // names predate outdoor sprite occlusion; their ABI extents are unchanged.
+    let mut cave_terrain_orders = Some(vec![0_u16; extent]);
+    let (outdoor_owner_orders, outdoor_cell_orders) = match &terrain {
+        Terrain::Outdoor(plan) => plan.source_painter_orders(camera.yaw),
+        Terrain::Cave(_) => (Vec::new(), Vec::new()),
+    };
     let cave_cell_orders = match &terrain {
         Terrain::Cave(plan) => {
             let orders = plan.cell_orders();
@@ -899,7 +905,7 @@ fn render_environment_indexed_frame(
             }
             Some(orders.to_vec())
         }
-        Terrain::Outdoor(_) => None,
+        Terrain::Outdoor(_) => Some(outdoor_cell_orders),
     };
     let identity = {
         let mut writer = ClassicHdFrameWriter::from_planes(
@@ -915,12 +921,16 @@ fn render_environment_indexed_frame(
             DayIndexedFrameError::new(format!("Day frame allocation failed: {error}"))
         })?;
         match &terrain {
-            Terrain::Outdoor(plan) => rasterize_classic_hd_terrain(
+            Terrain::Outdoor(plan) => rasterize_classic_hd_terrain_with_occlusion(
                 &mut writer,
                 plan,
                 assets.terrain_atlas(),
                 tables,
                 DAY_TERRAIN_PROVENANCE,
+                &outdoor_owner_orders,
+                cave_terrain_orders.as_deref_mut().ok_or_else(|| {
+                    DayIndexedFrameError::new("Outdoor terrain order plane is absent")
+                })?,
             )
             .map(|_| ()),
             Terrain::Cave(plan) => {
@@ -948,7 +958,8 @@ fn render_environment_indexed_frame(
         ));
     }
     let scene_indices = indices.clone();
-    let scene_revision = prior.map_or(Some(1), |frame| frame.scene_revision.checked_add(1))
+    let scene_revision = prior
+        .map_or(Some(1), |frame| frame.scene_revision.checked_add(1))
         .ok_or_else(|| DayIndexedFrameError::new("composed scene revision overflow"))?;
     if let Some(prior) = prior {
         assets
@@ -983,7 +994,8 @@ fn render_environment_indexed_frame(
         scene_indices,
         scene_revision,
         scene_blur_mode: exit.blur_mode,
-        scene_use_exit_tables: exit.end_sequence && exit.phase >= 6
+        scene_use_exit_tables: exit.end_sequence
+            && exit.phase >= 6
             && assets.materials.day_exit_tables().is_some(),
         palette_rgb8,
         cave_terrain_orders,
@@ -1874,6 +1886,18 @@ mod tests {
                 )
                 .expect("actual runtime frame");
             assert!(first.indices.iter().any(|&pixel| pixel != 0));
+            let orders = first
+                .cave_terrain_orders
+                .as_ref()
+                .expect("outdoor pixel ranks");
+            let cells = first
+                .cave_cell_orders
+                .as_ref()
+                .expect("outdoor sprite buckets");
+            assert_eq!(orders.len(), first.scene_indices.len());
+            assert_eq!(cells.len(), TERRAIN_PLANE_BYTES);
+            assert!(orders.iter().any(|&rank| rank != 0));
+            assert!(cells.iter().any(|&rank| rank != 0));
             campaign.step(
                 crate::PlayerCommand {
                     roll: 24,

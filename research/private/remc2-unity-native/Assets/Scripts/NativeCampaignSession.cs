@@ -705,16 +705,17 @@ namespace MagicCarpet.Native
             SceneFrameRevision = sceneRevision;
             SceneBlurMode = blurMode;
             SceneUseExitTables = useExitTables != 0;
-            if (Selection.mapType == 2)
             {
+                // The retained ABI name is historical; outdoor and Cave
+                // frames both supply source painter-order coverage.
                 CaveTerrainOrders ??= new ushort[320 * 200];
                 CaveCellOrders ??= new ushort[256 * 256];
                 NativeSession.Check(NativeSim.mc_native_campaign_cave_occlusion_copy(
                     Handle, generation, expectedTick, CaveTerrainOrders, (uint)CaveTerrainOrders.Length,
                     CaveCellOrders, (uint)CaveCellOrders.Length, out var terrainWritten, out var cellWritten),
-                    "copy source Cave occlusion order");
+                    "copy source terrain occlusion order");
                 if (terrainWritten != CaveTerrainOrders.Length || cellWritten != CaveCellOrders.Length)
-                    throw new InvalidOperationException("Cave occlusion copy returned incomplete planes");
+                    throw new InvalidOperationException("Terrain occlusion copy returned incomplete planes");
             }
             return info;
         }

@@ -285,17 +285,12 @@ namespace MagicCarpet.Native
 
         private void MaterializeCaveOcclusion(NativeCampaignSession session)
         {
-            if (session.Selection.mapType != 2)
-            {
-                caveCellOrders = null;
-                return;
-            }
             var orders = session.CaveTerrainOrders;
             var cells = session.CaveCellOrders;
             if (orders == null || orders.Length != 320 * 200 || cells == null || cells.Length != 65536)
-                throw new InvalidOperationException("Cave source-cell occlusion planes are incomplete");
+                throw new InvalidOperationException("Terrain source-cell occlusion planes are incomplete");
             caveOrdersTexture ??= new Texture2D(320, 200, TextureFormat.RGBA32, false, true) {
-                name = "MC2 Cave terrain source-cell order", filterMode = FilterMode.Point,
+                name = "MC2 terrain source-cell order", filterMode = FilterMode.Point,
                 wrapMode = TextureWrapMode.Clamp
             };
             for (var i = 0; i < orders.Length; i++)

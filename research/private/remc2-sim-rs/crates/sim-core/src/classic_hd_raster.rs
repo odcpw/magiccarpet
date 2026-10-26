@@ -176,6 +176,7 @@ fn rasterize_classic_hd_mode5_triangle_streaming(
     texture_base: usize,
     tablesn: &[u8],
     provenance: u8,
+    mut orders: Option<(&mut [u16], u16)>,
 ) -> Result<ClassicHdRasterReceipt, ClassicHdRasterError> {
     validate_writer(writer)?;
     validate_texture(texture_atlas, texture_base)?;
@@ -190,6 +191,7 @@ fn rasterize_classic_hd_mode5_triangle_streaming(
     let height = i32::try_from(writer.height()).map_err(|_| {
         ClassicHdRasterError("Classic HD mode-5 height does not fit i32".to_owned())
     })?;
+    let stride = writer.stride() as usize;
     let mut source_pixels = 0_u64;
     let mut written_pixels = 0_u64;
     let mut clipped_pixels = 0_u64;
@@ -208,6 +210,9 @@ fn rasterize_classic_hd_mode5_triangle_streaming(
                 pixel.sample.output_index,
                 provenance,
             ) {
+                if let Some((plane, rank)) = orders.as_mut() {
+                    plane[pixel.y as usize * stride + pixel.sample.x as usize] = *rank;
+                }
                 written_pixels = written_pixels.wrapping_add(1);
             } else {
                 clipped_pixels = clipped_pixels.wrapping_add(1);
@@ -291,6 +296,7 @@ fn rasterize_classic_hd_mode26_triangle_streaming(
     texture_base: usize,
     tablesn: &[u8],
     provenance: u8,
+    mut orders: Option<(&mut [u16], u16)>,
 ) -> Result<ClassicHdRasterReceipt, ClassicHdRasterError> {
     validate_writer(writer)?;
     validate_texture(texture_atlas, texture_base)?;
@@ -341,6 +347,9 @@ fn rasterize_classic_hd_mode26_triangle_streaming(
                     return;
                 }
                 provenance_plane[offset] = provenance;
+                if let Some((plane, rank)) = orders.as_mut() {
+                    plane[offset] = *rank;
+                }
                 written_pixels = written_pixels.wrapping_add(1);
             },
         );
@@ -369,6 +378,46 @@ pub fn rasterize_classic_hd_terrain(
     tablesn: &[u8],
     provenance: u8,
 ) -> Result<ClassicHdRasterReceipt, ClassicHdRasterError> {
+    rasterize_terrain_inner(writer, terrain, terrain_atlas, tablesn, provenance, None)
+}
+
+/// Stamp the source painter rank for every pixel actually written by terrain.
+/// The same exact raster kernels produce both the indexed image and coverage.
+pub fn rasterize_classic_hd_terrain_with_occlusion(
+    writer: &mut ClassicHdFrameWriter<'_>,
+    terrain: &ClassicHdTerrainRender,
+    terrain_atlas: &[u8],
+    tablesn: &[u8],
+    provenance: u8,
+    owner_orders: &[u16],
+    pixel_orders: &mut [u16],
+) -> Result<ClassicHdRasterReceipt, ClassicHdRasterError> {
+    if owner_orders.len() != terrain.lattice.vertices.len()
+        || pixel_orders.len() != writer.profile().extent()
+    {
+        return Err(ClassicHdRasterError(
+            "outdoor source order plane extent is invalid".into(),
+        ));
+    }
+    pixel_orders.fill(0);
+    rasterize_terrain_inner(
+        writer,
+        terrain,
+        terrain_atlas,
+        tablesn,
+        provenance,
+        Some((owner_orders, pixel_orders)),
+    )
+}
+
+fn rasterize_terrain_inner(
+    writer: &mut ClassicHdFrameWriter<'_>,
+    terrain: &ClassicHdTerrainRender,
+    terrain_atlas: &[u8],
+    tablesn: &[u8],
+    provenance: u8,
+    mut orders: Option<(&[u16], &mut [u16])>,
+) -> Result<ClassicHdRasterReceipt, ClassicHdRasterError> {
     validate_writer(writer)?;
     if writer.profile().profile_revision != terrain.profile_revision {
         return Err(ClassicHdRasterError(
@@ -393,14 +442,23 @@ pub fn rasterize_classic_hd_terrain(
     {
         let vertices = triangle_vertices(triangle, terrain)?;
         let texture_base = terrain_texture_base(triangle.texture_index)?;
+        let stamp = orders.as_mut().map(|(owners, plane)| {
+            let rank = if triangle.pass == TerrainPass::Primary {
+                owners[triangle.owner_index]
+            } else {
+                0
+            };
+            (&mut **plane, rank)
+        });
         let stage = match triangle.raster_selector {
-            5 if stream_mode5 => rasterize_classic_hd_mode5_triangle_streaming(
+            5 if stream_mode5 || stamp.is_some() => rasterize_classic_hd_mode5_triangle_streaming(
                 writer,
                 vertices,
                 terrain_atlas,
                 texture_base,
                 &tablesn[..CLASSIC_HD_TABLESN_BYTES],
                 provenance_for(triangle.pass, provenance),
+                stamp,
             )?,
             5 => rasterize_classic_hd_mode5_triangle(
                 writer,
@@ -418,6 +476,7 @@ pub fn rasterize_classic_hd_terrain(
                     texture_base,
                     tablesn,
                     provenance_for(triangle.pass, provenance),
+                    stamp,
                 )?
             }
             selector => {
@@ -978,6 +1037,7 @@ mod tests {
         let mut streaming_frame = streaming_buffers
             .begin_frame(4, 0, profile.profile_revision, 9)
             .unwrap();
+        let mut orders = vec![0; profile.extent()];
         let streaming_receipt = rasterize_classic_hd_mode5_triangle_streaming(
             &mut streaming_frame,
             vertices(),
@@ -985,11 +1045,16 @@ mod tests {
             0,
             &tablesn[..CLASSIC_HD_TABLESN_BYTES],
             0x20,
+            Some((&mut orders, 42)),
         )
         .unwrap();
 
         assert_eq!(streaming_frame.indices(), vector_indices);
         assert_eq!(streaming_frame.provenance(), vector_provenance);
+        assert!(orders.iter().any(|&rank| rank == 42));
+        for (&rank, &provenance) in orders.iter().zip(streaming_frame.provenance()) {
+            assert_eq!(rank, if provenance == 0x20 { 42 } else { 0 });
+        }
         assert_eq!(
             streaming_receipt.source_pixels,
             vector_receipt.source_pixels
@@ -1100,6 +1165,7 @@ mod tests {
         let mut streaming_frame = streaming_buffers
             .begin_frame(4, 0, profile.profile_revision, 9)
             .unwrap();
+        let mut orders = vec![0; profile.extent()];
         let streaming_receipt = rasterize_classic_hd_mode26_triangle_streaming(
             &mut streaming_frame,
             vertices,
@@ -1107,11 +1173,16 @@ mod tests {
             0,
             &tablesn,
             0x40,
+            Some((&mut orders, 42)),
         )
         .unwrap();
 
         assert_eq!(streaming_frame.indices(), vector_indices);
         assert_eq!(streaming_frame.provenance(), vector_provenance);
+        assert!(orders.iter().any(|&rank| rank == 42));
+        for (&rank, &provenance) in orders.iter().zip(streaming_frame.provenance()) {
+            assert_eq!(rank, if provenance == 0x40 { 42 } else { 0 });
+        }
         assert_eq!(
             streaming_receipt,
             ClassicHdRasterReceipt {
