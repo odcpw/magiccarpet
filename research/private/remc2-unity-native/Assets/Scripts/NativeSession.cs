@@ -225,7 +225,8 @@ namespace MagicCarpet.Native
             bool recenter = false,
             bool fullStop = false,
             bool recoverPlayer = false,
-            uint elapsedCentiseconds = 0)
+            uint elapsedCentiseconds = 0,
+            EngineSessionTransport.SpellAssignment assignment = null)
         {
             return gameRuntime?.CampaignStep(
                     roll,
@@ -233,7 +234,7 @@ namespace MagicCarpet.Native
                     flags,
                     lookYaw,
                     lookPitch,
-                    selectSpell, recenter, fullStop, recoverPlayer, elapsedCentiseconds) ??
+                    selectSpell, recenter, fullStop, recoverPlayer, elapsedCentiseconds, assignment) ??
                 throw new InvalidOperationException("session does not own a game runtime");
         }
 

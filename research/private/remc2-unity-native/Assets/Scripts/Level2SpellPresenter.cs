@@ -73,34 +73,6 @@ namespace MagicCarpet.Native
     /// </summary>
     internal sealed class Level2SpellPresenter
     {
-        private Vector2 spellMenuScroll;
-
-        internal string DrawSpellMenu(EngineSessionTransport.CampaignSnapshotValue snapshot)
-        {
-            if (snapshot?.player_spells == null) return null;
-            var width = Mathf.Min(620f, Screen.width - 32f);
-            var height = Mathf.Min(570f, Screen.height - 48f);
-            GUILayout.BeginArea(new Rect((Screen.width - width) / 2f,
-                (Screen.height - height) / 2f, width, height), GUI.skin.window);
-            GUILayout.Label("Acquired spells");
-            GUILayout.Label("Choose a spell, then press Space to cast.");
-            spellMenuScroll = GUILayout.BeginScrollView(spellMenuScroll);
-            string selection = null;
-            var count = 0;
-            for (var index = 0; index < snapshot.player_spells.Length; index++)
-            {
-                var spell = snapshot.player_spells[index];
-                if (!spell.acquired) continue;
-                count++;
-                if (GUILayout.Button(SpellLabel(spell, index), GUILayout.MinHeight(44f)))
-                    selection = spell.id;
-            }
-            if (count == 0) GUILayout.Label("No spells acquired.");
-            GUILayout.EndScrollView();
-            GUILayout.EndArea();
-            return selection;
-        }
-
         // Semantic inventory belongs to the native session snapshot. These
         // helpers read the supplied observation every time, so reset/transition
         // cannot leave cached selections or readiness from an old generation.

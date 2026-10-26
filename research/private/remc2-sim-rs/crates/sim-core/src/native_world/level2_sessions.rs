@@ -1644,6 +1644,60 @@ impl Level2SharedSpellResetSession {
             .find(|holder| holder.entity_index == holder_entity_index && holder.model == family)
     }
 
+    /// Mirror the physical SetSpell payload, including cold menu assignments.
+    /// An active assignment changes only the queued word, so reading the
+    /// physical tier here preserves the running spell until cleanup.
+    pub(super) fn sync_typed_spell_profile_from_holder(&mut self, holder_index: u16) {
+        let Some(holder) = self.pickup(holder_index) else {
+            return;
+        };
+        let Ok(tier @ 0..=2) = u8::try_from(holder.level_gate) else {
+            return;
+        };
+        let family = holder.model;
+        let activation_value = holder.activation_value.cast_signed();
+        let mana_cost = holder.max_mana;
+        let mana_regen_requirement = holder.mana_regen;
+        match family {
+            SHIELD_FAMILY => {
+                if let Some(state) = self
+                    .shield
+                    .as_mut()
+                    .filter(|state| state.holder_entity_index == holder_index)
+                {
+                    state.tier = tier;
+                    state.activation_value = activation_value;
+                    state.mana_cost = mana_cost;
+                }
+            }
+            INVISIBLE_FAMILY => {
+                if let Some(state) = self
+                    .invisible
+                    .as_mut()
+                    .filter(|state| state.holder_entity_index == holder_index)
+                {
+                    state.tier = tier;
+                    state.activation_value = activation_value;
+                    state.mana_cost = mana_cost;
+                    state.mana_regen_requirement = mana_regen_requirement;
+                }
+            }
+            BEYOND_SIGHT_FAMILY => {
+                if let Some(state) = self
+                    .beyond_sight
+                    .as_mut()
+                    .filter(|state| state.holder_entity_index == holder_index)
+                {
+                    state.tier = tier;
+                    state.activation_value = activation_value;
+                    state.mana_cost = mana_cost;
+                    state.mana_regen_requirement = mana_regen_requirement;
+                }
+            }
+            _ => {}
+        }
+    }
+
     /// `sub_5F660` mutates the shared command holder after the typed source
     /// callback. Reconcile the matching family-6 alias so the next ordinary
     /// `sub_6A480` visit sees the same active state; remote holders never
@@ -1665,6 +1719,7 @@ impl Level2SharedSpellResetSession {
         ) else {
             return;
         };
+        self.sync_typed_spell_profile_from_holder(holder.entity_index);
         let shield = self.shield.as_mut().expect("Shield state remains present");
         shield.active_value = holder.active_value;
         shield.activation_value = holder.activation_value.cast_signed();
@@ -1687,7 +1742,7 @@ impl Level2SharedSpellResetSession {
         caster: SpellCasterState,
         holders: &[SpellActivationHolder],
     ) {
-        let Some(invisible) = self.invisible.as_mut() else {
+        let Some(invisible) = self.invisible else {
             return;
         };
         let Some(holder) = Self::matching_typed_spell_fire_holder(
@@ -1700,6 +1755,11 @@ impl Level2SharedSpellResetSession {
             return;
         };
 
+        self.sync_typed_spell_profile_from_holder(holder.entity_index);
+        let invisible = self
+            .invisible
+            .as_mut()
+            .expect("Invisible state remains present");
         invisible.active_value = holder.active_value;
         invisible.activation_value = holder.activation_value.cast_signed();
         invisible.parent_mana = caster.mana;
@@ -1772,8 +1832,15 @@ impl Level2SharedSpellResetSession {
         {
             return;
         }
-        if let Some(invisible) = self.invisible.as_mut() {
-            let _step: InvisibleStep = invisible.step(parent_castle_mana);
+        if let Some((parent, step)) = self.invisible.as_mut().map(|invisible| {
+            (
+                invisible.parent_entity_index,
+                invisible.step(parent_castle_mana),
+            )
+        }) {
+            if step.experience_awarded != 0 {
+                self.award_spell_experience(parent, 11, step.experience_awarded);
+            }
         }
         self.sync_invisible_projection();
         if self

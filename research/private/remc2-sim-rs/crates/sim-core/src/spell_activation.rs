@@ -4,7 +4,6 @@
 #[cfg(test)]
 use crate::MissionAudioSite;
 use crate::{FlightEvent, SourceAudioCallTag, mark_source_audio_call};
-use crate::{level_definition::CreatureKind, native_world::MapType};
 
 const DIRECTION_BITS: u32 = 0x0300;
 const POINTER_ACTION_BIT: u32 = 0x0020;
@@ -178,18 +177,6 @@ pub const fn step_speed_trail(life: i32) -> SpeedTrailStepOutcome {
     SpeedTrailStepOutcome {
         life,
         disable_drawing: life < -1,
-    }
-}
-
-/// Resolve Morph's tier-0 creature through the map rules installed by
-/// `LevelInit_56C00`. Higher tiers remain fail-closed until their package
-/// content and constructors join the shared creature arena.
-#[must_use]
-pub const fn morph_product(map_type: MapType, tier: u8) -> Option<CreatureKind> {
-    match (map_type, tier) {
-        (MapType::Day, 0) => Some(CreatureKind::Bee),
-        (MapType::Night | MapType::Cave, 0) => Some(CreatureKind::Firefly),
-        _ => None,
     }
 }
 
@@ -1136,8 +1123,11 @@ impl ShieldState {
                 } else if self.active_value == self.activation_value {
                     self.parent_status_flags |= SHIELD_INVULNERABLE_STATUS_BIT;
                 }
-                self.active_value -= 1;
-                // Preserve the post-decrement comparison/order of sub_68DE0.
+                // sub_6A480 charges life-mode 0 before its decrement. Only
+                // life-mode 1 decrements before calling sub_68DE0.
+                if profile.life_mode == 1 {
+                    self.active_value -= 1;
+                }
                 if self.active_value == self.activation_value {
                     self.parent_mana_regen = if self.parent_mana_regen >= 0 {
                         self.mana_cost.wrapping_neg()
@@ -1146,6 +1136,9 @@ impl ShieldState {
                     };
                 } else if self.active_value != 0 && self.parent_mana_regen > 0 {
                     self.parent_mana_regen = 0;
+                }
+                if profile.life_mode == 0 {
+                    self.active_value -= 1;
                 }
             } else {
                 self.active_value = 0;
@@ -1824,13 +1817,6 @@ mod tests {
 
     #[test]
     fn morph_first_pulse_requests_day_bee_and_preserves_allocation_failure_asymmetry() {
-        assert_eq!(morph_product(MapType::Day, 0), Some(CreatureKind::Bee));
-        assert_eq!(
-            morph_product(MapType::Night, 0),
-            Some(CreatureKind::Firefly)
-        );
-        assert_eq!(morph_product(MapType::Day, 1), None);
-
         let outcome = step_morph_spell(MorphSpellStepInput {
             active_value: 201,
             activation_value: 201,
@@ -2309,6 +2295,32 @@ mod tests {
         assert_eq!(reduced.applied_damage, 25);
         assert_eq!(reduced.mana_drained, 25);
         assert_eq!(shield.parent_life, 75);
+    }
+
+    #[test]
+    fn shield_charge_order_preserves_each_source_life_mode() {
+        for (tier, cost) in [(0, 1_000), (1, 1_500)] {
+            for old_regen in [100, -250] {
+                let mut shield = ShieldState::new(tier, 113, 2, 20_000, 100).unwrap();
+                shield.active_value = shield.activation_value;
+                shield.parent_mana_regen = old_regen;
+                let first = shield.step();
+                assert!(first.sustained);
+                assert_eq!(first.active_after, shield.activation_value - 1);
+                assert_eq!(shield.parent_mana_regen, old_regen.min(0) - cost);
+                shield.parent_mana_regen = 100;
+                shield.step();
+                assert_eq!(shield.parent_mana_regen, 0);
+            }
+        }
+
+        // The source's invulnerability branch calls sub_68DE0 after W--,
+        // so changing the ordinary branches must retain its no-charge result.
+        let mut shield = ShieldState::new(2, 113, 2, 20_000, 100).unwrap();
+        shield.active_value = shield.activation_value;
+        shield.parent_mana_regen = 100;
+        shield.step();
+        assert_eq!(shield.parent_mana_regen, 0);
     }
 
     #[test]

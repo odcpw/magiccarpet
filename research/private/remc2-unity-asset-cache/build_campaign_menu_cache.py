@@ -45,6 +45,7 @@ def source_missions(language: bytes) -> list[dict]:
         raise cache.CacheError("pinned campaign name/portal tables changed")
     # PresentLevelDescription_80C30 selects 23 + zero-based level index.
     return [dict(level_id=level_id, name=names[index], name_source_bytes=names[index].encode("ascii").hex(),
+                 pause_profile=("night", "day", "day", "cave")[index],
                  briefing=records[23 + index].decode("ascii") if records[23 + index].isascii() else None,
                  briefing_text_id=f"text.mc2.record.{23 + index}",
                  viewport_x=portals[index][1], viewport_y=portals[index][2],
@@ -75,12 +76,20 @@ def source_startup() -> dict:
             break
         buttons.append(dict(source_action=values[0], x=values[3], y=values[4],
             width=values[5], height=values[6], text_selector=values[7],
-            normal_selector=values[8], hover_selector=values[9]))
+            normal_selector=values[8], hover_selector=values[9], help_key=values[10]))
     if len(buttons) != 9:
         raise cache.CacheError("pinned startup button count changed")
+    help_body = source.split("textBoxStr_E25DC[10] = {", 1)[1].split("};", 1)[0]
+    help_rows = [[int(value.strip(), 0) for value in row.split(",")]
+                 for row in re.findall(r"\{([^{}]+)\}", help_body)]
+    if len(help_rows) != 10 or any(len(row) != 10 for row in help_rows) or any(help_rows[-1]):
+        raise cache.CacheError("pinned startup help table changed")
+    help_bindings = [dict(text_selector=row[0], x=row[1], y=row[2],
+        line_x=row[3], line_y=row[4], line_end_x=row[6], line_end_y=row[7],
+        help_key=row[9], border_selector=80, line_selector=89) for row in help_rows[:-1]]
     return dict(width=640, height=480, clock_hz=100, source_sha256=hashlib.sha256(source_blob).hexdigest(),
         background_path="startup-background.indices.u8", palette_path="startup-palette.rgb6",
-        logo=dict(selector=66, x=185, y=232), buttons=buttons,
+        logo=dict(selector=66, x=185, y=232), buttons=buttons, help=help_bindings,
         animations=[dict(x=row[1], y=row[2], initial_selector=row[3],
             first_selector=row[4], last_selector=row[5], step_ticks=4) for row in rows])
 
@@ -134,6 +143,96 @@ def build(owner: Path, output: Path, *, rnc_decoder: Path | None = None) -> dict
         startup["bitmaps"] = [bitmap(startup_sprites, startup_table, startup_palette, selector,
             f"startup-{selector:03d}.rgba8") for selector, (_, width, height) in enumerate(startup_table)
             if width and height]
+        # sub_7A110_load_hscreen(8,4) loads its own coloured 7px font.
+        # DrawText_7FB90 indexes this table by the original byte directly;
+        # DATA/FONT1's byte+1 monochrome mapping is a different draw path.
+        font_data = cache.decode_container_blob(decoder, source, 0x13ACCA, 6613, work, "startup-font")
+        font_table_bytes = cache.decode_container_blob(decoder, source, 0x13B194, 1632,
+            work, "startup-font-table")
+        font_table = cache.bitmap_records(font_table_bytes)
+        if len(font_table) != 272 or font_table[65][1:] != (7, 7):
+            raise cache.CacheError("pinned startup font table changed")
+        font_width, font_height = 16 * 8, 17 * 7
+        font_rgba = bytearray(font_width * font_height * 4)
+        glyphs = []
+        for index, (offset, width, height) in enumerate(font_table):
+            if width > 8 or height > 7:
+                raise cache.CacheError("startup font exceeds its source atlas cell")
+            indices, mask, _ = cache.materialize_indexed_rle(font_data, offset, width, height)
+            x, y = index % 16 * 8, index // 16 * 7
+            glyphs.append(dict(index=index, x=x, y=y, width=width, height=height))
+            for local_y in range(height):
+                for local_x in range(width):
+                    pixel = local_y * width + local_x
+                    if not mask[pixel]:
+                        continue
+                    palette_offset = indices[pixel] * 3
+                    target = ((y + local_y) * font_width + x + local_x) * 4
+                    font_rgba[target:target + 4] = bytes((*[channel * 4 for channel in
+                        startup_palette[palette_offset:palette_offset + 3]], 255))
+        font_path = "startup-font.rgba8"
+        write(font_path, bytes(font_rgba))
+        startup["font"] = dict(path=font_path, width=font_width, height=font_height,
+            advance_x=7, advance_y=7, glyph_mapping="mc2-hscreen-bank4-byte-controls/v1", glyphs=glyphs,
+            decoded_dat_sha256=hashlib.sha256(font_data).hexdigest(),
+            decoded_tab_sha256=hashlib.sha256(font_table_bytes).hexdigest())
+        def decoded_owner(relative: str) -> bytes:
+            raw = cache.confined_source(owner, relative).read_bytes()
+            return cache.decode_container_blob(decoder, raw, 0, int.from_bytes(raw[4:8], "big"),
+                work, "pause-" + Path(relative).name.lower()) if raw.startswith(b"RNC\x01") else raw
+
+        # The gameplay UI selects HFONT3 at its high-resolution draw boundary.
+        # Retain white owner masks so each source CLRx colour remains selectable.
+        pause_font_data = decoded_owner("DATA/HFONT3.DAT")
+        pause_font_table = cache.bitmap_records(decoded_owner("DATA/HFONT3.TAB"))
+        pause_font_width, pause_font_height = 160, 252
+        pause_font_rgba = bytearray(pause_font_width * pause_font_height * 4)
+        pause_glyphs = []
+        for index, (offset, width, height) in enumerate(pause_font_table):
+            if width > 10 or height > 14:
+                raise cache.CacheError("source pause font exceeds its atlas cell")
+            _, mask, _ = cache.materialize_indexed_rle(pause_font_data, offset, width, height)
+            x, y = index % 16 * 10, index // 16 * 14
+            pause_glyphs.append(dict(index=index, x=x, y=y, width=width, height=height))
+            for local_y in range(height):
+                for local_x in range(width):
+                    if mask[local_y * width + local_x]:
+                        target = ((y + local_y) * pause_font_width + x + local_x) * 4
+                        pause_font_rgba[target:target + 4] = b"\xff\xff\xff\xff"
+        pause_font_path = "pause-font.rgba8"
+        write(pause_font_path, bytes(pause_font_rgba))
+        pause = dict(font=dict(path=pause_font_path, width=pause_font_width, height=pause_font_height,
+            advance_x=10, advance_y=14, glyph_mapping="mc2-byte-plus-one-controls/v1", glyphs=pause_glyphs),
+            profiles=[])
+        for profile, letter, building in (("night", "N", [51, 17, 59]),
+                ("day", "D", [170, 99, 13]), ("cave", "C", [51, 136, 59])):
+            pause_data = decoded_owner(f"DATA/HSPR{letter}0-0.DAT")
+            pause_table = cache.bitmap_records(decoded_owner(f"DATA/HSPR{letter}0-0.TAB"))
+            pause_palette = decoded_owner(f"DATA/PAL{letter}-0.DAT")
+            pause_colours = decoded_owner(f"DATA/CLR{letter}-0.DAT")
+            pause_tables = decoded_owner(f"DATA/TABLES{letter}.DAT")
+            palette_path = f"pause-{profile}-palette.rgb6"
+            write(palette_path, pause_palette)
+            entries = []
+            for selector in (*range(168, 171), *range(174, 179), 257, 258):
+                entry = bitmap(pause_data, pause_table, pause_palette, selector,
+                    f"pause-{profile}-{selector:03d}.rgba8")
+                offset, width, height = pause_table[selector]
+                if 174 <= selector <= 178:
+                    indices, mask, _ = cache.materialize_indexed_rle(pause_data, offset, width, height)
+                    shade = 0x4000 + 256 * pause_colours[0]
+                    rgba = bytearray(width * height * 4)
+                    for pixel, (index, visible) in enumerate(zip(indices, mask, strict=True)):
+                        # ColorizeScreen runs twice over these opaque icons.
+                        index = pause_tables[shade + pause_tables[shade + index]]
+                        rgba[pixel * 4:pixel * 4 + 4] = bytes((*[channel * 4 for channel in
+                            pause_palette[index * 3:index * 3 + 3]], 255 if visible else 0))
+                    entry["disabled_path"] = f"pause-{profile}-{selector:03d}-disabled.rgba8"
+                    write(entry["disabled_path"], bytes(rgba))
+                entries.append(entry)
+            pause["profiles"].append(dict(id=profile, palette_path=palette_path,
+                colour_indices=[pause_colours[index] for index in (0, 240, 3840, 4095, 0x888)],
+                building_colours=building, bitmaps=entries))
         # sub_7A110_load_hscreen(8, 6). Packed lengths are source reads;
         # decoded extents are the next heap offsets and the RNC headers.
         world = cache.decode_container_blob(decoder, source, 0xB2C47, 1280 * 960, work, "campaign-world")
@@ -179,7 +278,7 @@ def build(owner: Path, output: Path, *, rnc_decoder: Path | None = None) -> dict
                     source_calls=["sub_7A110_load_hscreen(8,6)", "DrawNetGameMapBackground_85C8B", "PresentLevelDescription_80C30"],
                     width=1280, height=960, view_width=640, view_height=480,
                     missions=source_missions(language), portals=bindings, outputs=outputs,
-                    startup=startup, portal_animation=portal_animation,
+                    startup=startup, pause=pause, portal_animation=portal_animation,
                     decoder=provenance)
     (output / "manifest.json").write_text(json.dumps(manifest, indent=2, ensure_ascii=False) + "\n")
     return manifest

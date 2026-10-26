@@ -1625,7 +1625,9 @@ fn level2_campaign_minimap_is_source_ordered_visibility_bound_and_replay_safe() 
         ),
         MC_STATUS_OK
     );
-    assert_eq!(initial_state.visibility_flags, 2);
+    // sub_63570 admits the opponent without a Beyond Sight holder;
+    // the separate active-spell map gate still suppresses its player dot.
+    assert_eq!(initial_state.visibility_flags, 3);
     assert!(initial_state.entity_count > 0);
     // Approved native arrow contract: one objective outline plus seven vertices.
     assert_eq!(initial_state.mark_count, 8);
@@ -2536,7 +2538,7 @@ fn level2_campaign_opponent_state_is_cabi_reachable_and_generation_bound() {
     assert_eq!(opponent.possession_action, 3);
     assert_eq!(opponent.objective_relation_domain, 2);
     assert_eq!(opponent.objective_relation_value, 112);
-    assert_eq!(opponent.visibility_flags, 2);
+    assert_eq!(opponent.visibility_flags, 3);
 
     let unchanged = opponent;
     assert_eq!(

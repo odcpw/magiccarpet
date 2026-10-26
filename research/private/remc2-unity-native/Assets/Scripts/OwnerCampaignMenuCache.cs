@@ -14,17 +14,17 @@ namespace MagicCarpet.Native
     {
         [Serializable] internal sealed class Mission
         {
-            public string level_id, name, briefing, briefing_text_id, name_source_bytes;
+            public string level_id, name, briefing, briefing_text_id, name_source_bytes, pause_profile;
             public int viewport_x, viewport_y, portal_x, portal_y, portal_width, portal_height;
         }
         [Serializable] private sealed class Output { public string path, sha256; public int bytes; }
         [Serializable] private sealed class Portal { public string kind, path; public int width, height; }
-        [Serializable] internal sealed class BitmapBinding { public int selector, width, height; public string path; }
+        [Serializable] internal sealed class BitmapBinding { public int selector, width, height; public string path, disabled_path; }
         [Serializable] internal sealed class PositionedBitmap { public int selector, x, y; }
         [Serializable] internal sealed class StartupAnimation
         { public int x, y, initial_selector, first_selector, last_selector, step_ticks; }
         [Serializable] internal sealed class StartupButton
-        { public int source_action, x, y, width, height, text_selector, normal_selector, hover_selector; }
+        { public int source_action, x, y, width, height, text_selector, normal_selector, hover_selector, help_key; }
         [Serializable] internal sealed class StartupBinding
         {
             public int width, height, clock_hz;
@@ -33,6 +33,8 @@ namespace MagicCarpet.Native
             public StartupAnimation[] animations;
             public StartupButton[] buttons;
             public BitmapBinding[] bitmaps;
+            public SourceMenuText.FontBinding font;
+            public SourceMenuText.HelpBinding[] help;
         }
         [Serializable] internal sealed class PortalSound
         { public int bank, id, volume, pan, rate; public string path; public bool if_not_playing; }
@@ -67,6 +69,7 @@ namespace MagicCarpet.Native
             public Output[] outputs;
             public StartupBinding startup;
             public PortalAnimationBinding portal_animation;
+            public SourcePauseMenu.Binding pause;
         }
 
         private readonly Dictionary<string, Mission> missions;
@@ -79,6 +82,8 @@ namespace MagicCarpet.Native
         internal Texture2D StartupBackground { get; private set; }
         internal StartupBinding Startup { get; private set; }
         internal PortalAnimationBinding PortalAnimation { get; private set; }
+        internal SourceMenuText StartupText { get; private set; }
+        internal SourcePauseMenu PauseMenu { get; private set; }
 
         internal OwnerCampaignMenuCache(string path)
         {
@@ -164,6 +169,29 @@ namespace MagicCarpet.Native
                     }
                     StartupBackground = Texture(titleRgba, 640, 480, "MC2 source main menu bank4");
                     LoadBitmaps(Startup.bitmaps, startupBitmaps, Read);
+                    if (Startup.font == null || Startup.help?.Length != 9)
+                        throw new InvalidDataException("source title text is unbound; refresh the campaign menu cache");
+                    var fontTexture = Texture(Read(Startup.font.path,
+                        checked(Startup.font.width * Startup.font.height * 4)),
+                        Startup.font.width, Startup.font.height, "MC2 HSCREEN bank4 original coloured font");
+                    var blackIndex = Enumerable.Range(0, 256).OrderBy(index =>
+                        titlePalette[index * 3] * titlePalette[index * 3] +
+                        titlePalette[index * 3 + 1] * titlePalette[index * 3 + 1] +
+                        titlePalette[index * 3 + 2] * titlePalette[index * 3 + 2]).First() * 3;
+                    try
+                    {
+                        StartupText = new SourceMenuText(Startup.font, fontTexture, StartupBitmap,
+                            new Color32((byte)(titlePalette[blackIndex] * 4),
+                                (byte)(titlePalette[blackIndex + 1] * 4), (byte)(titlePalette[blackIndex + 2] * 4), 255));
+                    }
+                    catch { Destroy(fontTexture); throw; }
+                    if (Startup.help.Select(help => help.help_key).Distinct().Count() != Startup.help.Length ||
+                        Startup.help.Any(help => help.border_selector != 80 || help.line_selector != 89 ||
+                            help.x < 0 || help.x + 192 > 640 || help.y < 0 || help.y > 440 ||
+                            help.text_selector < 0 || help.text_selector >= 471 ||
+                            !startupBitmaps.ContainsKey(help.border_selector) ||
+                            !startupBitmaps.ContainsKey(help.border_selector - 1)))
+                        throw new InvalidDataException("source title help layout is invalid");
                     if (!startupBitmaps.ContainsKey(Startup.logo.selector))
                         throw new InvalidDataException("source title logo is unbound");
                     foreach (var button in Startup.buttons)
@@ -171,6 +199,9 @@ namespace MagicCarpet.Native
                             button.x + button.width > 640 || button.y + button.height > 480 ||
                             !startupBitmaps.ContainsKey(button.normal_selector) || !startupBitmaps.ContainsKey(button.hover_selector))
                             throw new InvalidDataException("source title button is unbound");
+                    foreach (var entry in Startup.buttons)
+                        if (!Startup.help.Any(help => help.help_key == entry.help_key))
+                            throw new InvalidDataException("source title button help is unbound");
                     foreach (var animation in Startup.animations)
                     {
                         if (animation.step_ticks != 4 || animation.first_selector > animation.last_selector ||
@@ -203,6 +234,7 @@ namespace MagicCarpet.Native
                         throw new InvalidDataException("source portal opening sound is unbound");
                     portalSound = Read(sound.path, manifest.outputs.Single(row => row.path == sound.path).bytes);
                 }
+                if (manifest.pause != null) PauseMenu = new SourcePauseMenu(manifest.pause, Read, LanguageText);
                 if (consumedOutputs.Count != manifest.outputs.Length)
                     throw new InvalidDataException("campaign cache contains unbound output receipts");
             }
@@ -229,10 +261,15 @@ namespace MagicCarpet.Native
             throw new InvalidDataException("unbound source title sprite " + selector);
         internal string StartupHoverText(Vector2 sourcePosition)
         {
+            var help = StartupHoverHelp(sourcePosition);
+            return help == null ? null : LanguageText(help.text_selector);
+        }
+        internal SourceMenuText.HelpBinding StartupHoverHelp(Vector2 sourcePosition)
+        {
             if (Startup == null) return null;
             foreach (var entry in Startup.buttons)
                 if (new Rect(entry.x, entry.y, entry.width, entry.height).Contains(sourcePosition))
-                    return LanguageText(entry.text_selector);
+                    return Array.Find(Startup.help, help => help.help_key == entry.help_key);
             return null;
         }
         internal Texture2D PortalBitmap(int selector) => portalFrames.TryGetValue(selector, out var bitmap) ? bitmap :
@@ -371,7 +408,7 @@ namespace MagicCarpet.Native
             }
         }
 
-        private static Texture2D Texture(byte[] topDown, int width, int height, string name)
+        internal static Texture2D Texture(byte[] topDown, int width, int height, string name)
         {
             var bottomUp = new byte[topDown.Length];
             for (var y = 0; y < height; y++) Buffer.BlockCopy(topDown, y * width * 4, bottomUp, (height - 1 - y) * width * 4, width * 4);
@@ -383,6 +420,10 @@ namespace MagicCarpet.Native
 
         public void Dispose()
         {
+            StartupText?.Dispose();
+            StartupText = null;
+            PauseMenu?.Dispose();
+            PauseMenu = null;
             foreach (var texture in portals.Values) Destroy(texture);
             portals.Clear();
             foreach (var texture in startupBitmaps.Values) Destroy(texture);

@@ -710,6 +710,15 @@ pub(crate) fn step_villager_state_with_stage<W: FlightWorld>(
             if villager.reset_counter != 0 {
                 disable_villager(villager, &mut effects);
             } else {
+                // KillTownie_23680 marks the credited player before PreKill.
+                let attacker = villager.kill_credit_entity.cast_unsigned();
+                if source_view(source_views, attacker)
+                    .is_some_and(|target| matches!(target.model, 0 | 1))
+                {
+                    effects.push(VillagerStepEffect::TargetPlayer {
+                        player_source_entity_index: attacker,
+                    });
+                }
                 // `PreKillEntity_1C890(entity, 104)`: model 13 is excluded
                 // from the player creature-kill counter, then enters 109.
                 villager.action = VILLAGER_REMOVAL_ACTION;
@@ -731,7 +740,10 @@ pub(crate) fn step_villager_state_with_stage<W: FlightWorld>(
             }
         }
         VILLAGER_HIT_ACTION => {
-            step_hit_villager(villager, world, source_views, config, &mut effects);
+            let peers = stage
+                .as_ref()
+                .map(|context| context.models[usize::from(villager.model)].as_slice());
+            step_hit_villager(villager, world, source_views, peers, config, &mut effects);
         }
         VILLAGER_STAGED_ACTION => {
             if let Some(context) = stage {
@@ -846,6 +858,7 @@ fn step_hit_villager<W: FlightWorld>(
     villager: &mut VillagerState,
     world: &W,
     source_views: &[Level1SourceEntityView],
+    frozen_peers: Option<&[u16]>,
     config: VillagerBehaviorConfig,
     effects: &mut Vec<VillagerStepEffect>,
 ) {
@@ -886,16 +899,20 @@ fn step_hit_villager<W: FlightWorld>(
                     .expect("11-bit heading fits i16");
                     for peer in source_views.iter().copied().filter(|peer| {
                         peer.active
-                            && peer.class == VILLAGER_CLASS
-                            && peer.model == VILLAGER_MODEL
+                            && frozen_peers.map_or(
+                                peer.class == VILLAGER_CLASS
+                                    && peer.model == villager.model
+                                    && peer.life >= 0,
+                                |members| members.contains(&peer.source_entity_index),
+                            )
                             && peer.source_id != villager.source_id
                     }) {
                         let dx =
                             (i32::from(villager.position.x) - i32::from(peer.position.x)).abs();
                         let dy =
                             (i32::from(villager.position.y) - i32::from(peer.position.y)).abs();
-                        if dx < i32::from(config.separation_radius)
-                            && dy < i32::from(config.separation_radius)
+                        if dx < i32::from(villager.collision_half_width)
+                            && dy < i32::from(villager.collision_half_width)
                         {
                             villager.roll = i16::try_from(heading_for_positions(
                                 peer.position,
@@ -1035,6 +1052,12 @@ pub(crate) fn move_villager<W: FlightWorld>(
     world: &W,
     config: VillagerBehaviorConfig,
 ) -> bool {
+    // sub_1B8C0 consumes the forced-motion latch before any terrain probe,
+    // translation or turn. Wind has already moved this actor for the visit.
+    if villager.control_flags & 0x800 != 0 {
+        villager.control_flags &= !0x800;
+        return false;
+    }
     let original = villager.position;
     let original_yaw = villager.yaw;
     let headings = [
@@ -1294,6 +1317,143 @@ mod tests {
     }
 
     #[test]
+    fn forced_motion_latch_skips_one_villager_move_without_terrain_probes() {
+        let world = load_world();
+        let mut actor = VillagerState::from_snapshot(&world.entities()[51]).unwrap();
+        actor.actual_speed = 1024;
+        let before = actor.position;
+        actor.control_flags |= 0x800;
+        assert!(!move_villager(
+            &mut actor,
+            &BlockedWorld,
+            VillagerBehaviorConfig::LEVEL_ONE
+        ));
+        assert_eq!(actor.position, before);
+        assert_eq!(actor.control_flags & 0x800, 0);
+        assert!(
+            actor.life >= 0,
+            "the skipped visit must not drown on blocked terrain"
+        );
+        assert!(move_villager(
+            &mut actor,
+            &BlockedWorld,
+            VillagerBehaviorConfig::LEVEL_ONE
+        ));
+        assert_eq!(
+            actor.life, -1,
+            "the next visit resumes ordinary terrain checks"
+        );
+    }
+
+    #[test]
+    fn hit_villager_separates_by_own_model_and_body_width() {
+        let world = load_world();
+        for model in [12, 13] {
+            let mut actor = VillagerState::from_snapshot(&world.entities()[51]).unwrap();
+            actor.model = model;
+            actor.action = VILLAGER_HIT_ACTION;
+            actor.phase = 4;
+            actor.actual_speed = 0;
+            actor.position = Position {
+                x: 2000,
+                y: 2000,
+                z: 0,
+            };
+            actor.target_entity_index = Some(10);
+            let target_position = Position {
+                x: 2000,
+                y: 3000,
+                z: 0,
+            };
+            let target = source_view(10, 10, target_position, 3, 0, 1000, false);
+            let mut peer = source_view(
+                20,
+                20,
+                Position {
+                    x: 2256,
+                    y: 2000,
+                    z: 0,
+                },
+                5,
+                model,
+                1000,
+                false,
+            );
+            let mut effects = Vec::new();
+            step_hit_villager(
+                &mut actor,
+                &FlatWorld,
+                &[target, peer],
+                None,
+                VillagerBehaviorConfig::LEVEL_ONE,
+                &mut effects,
+            );
+            assert_eq!(
+                actor.roll,
+                ((heading_for_positions(actor.position, target_position) + 1024) & 2047) as i16,
+                "a peer outside the 128-unit body width must not redirect model {model}"
+            );
+            peer.position.x = 2064;
+            step_hit_villager(
+                &mut actor,
+                &FlatWorld,
+                &[target, peer],
+                None,
+                VillagerBehaviorConfig::LEVEL_ONE,
+                &mut effects,
+            );
+            assert_eq!(
+                actor.roll,
+                heading_for_positions(peer.position, actor.position) as i16,
+                "a touching same-model peer redirects model {model}, including post-build Builders"
+            );
+            let mut models = std::array::from_fn(|_| Vec::new());
+            // This touching peer was born after the pass began, so it is not
+            // in the frozen list despite appearing in the current views.
+            let mut stage = crate::native_world::creatures::settlements::stage::StageContext {
+                runtime: None,
+                targets: &[],
+                models: &models,
+                players: &[],
+                effects: Vec::new(),
+            };
+            step_villager_state_with_stage(
+                &mut actor,
+                &FlatWorld,
+                &[target, peer],
+                VillagerBehaviorConfig::LEVEL_ONE,
+                Some(&mut stage),
+            );
+            assert_eq!(
+                actor.roll,
+                ((heading_for_positions(actor.position, target_position) + 1024) & 2047) as i16,
+                "same-pass birth must not join the frozen peer list"
+            );
+            models[usize::from(model)].push(peer.source_entity_index);
+            peer.life = -1;
+            let mut stage = crate::native_world::creatures::settlements::stage::StageContext {
+                runtime: None,
+                targets: &[],
+                models: &models,
+                players: &[],
+                effects: Vec::new(),
+            };
+            step_villager_state_with_stage(
+                &mut actor,
+                &FlatWorld,
+                &[target, peer],
+                VillagerBehaviorConfig::LEVEL_ONE,
+                Some(&mut stage),
+            );
+            assert_eq!(
+                actor.roll,
+                heading_for_positions(peer.position, actor.position) as i16,
+                "a pass-start member killed earlier this pass still separates"
+            );
+        }
+    }
+
+    #[test]
     fn exact_level_one_reset_decodes_all_twenty_eight_villagers() {
         let world = load_world();
         let family =
@@ -1413,6 +1573,39 @@ mod tests {
                 source_entity_index: blocked.entity_index
             }]
         );
+    }
+
+    #[test]
+    fn combat_death_marks_credited_player_but_house_entry_does_not() {
+        let world = load_world();
+        let family =
+            VillagerFamily::from_entities(world.entities(), VillagerBehaviorConfig::LEVEL_ONE)
+                .unwrap();
+        for (model, reset_counter, expected) in
+            [(0, 0, true), (1, 0, true), (2, 0, false), (0, 1, false)]
+        {
+            let mut actor = family.villagers()[0].clone();
+            actor.action = VILLAGER_DEATH_ACTION;
+            actor.reset_counter = reset_counter;
+            actor.kill_credit_entity = 152;
+            actor.current_attacker = 0;
+            let target = source_view(152, 152, actor.position, 3, model, 1000, false);
+            let effects = step_villager_state(
+                &mut actor,
+                &FlatWorld,
+                &[target],
+                VillagerBehaviorConfig::LEVEL_ONE,
+            );
+            assert_eq!(
+                effects.contains(&VillagerStepEffect::TargetPlayer {
+                    player_source_entity_index: 152,
+                }),
+                expected,
+                "model {model}, reset counter {reset_counter}"
+            );
+            assert_eq!(actor.action, if reset_counter == 0 { 109 } else { 108 });
+            assert_eq!(actor.active, reset_counter == 0);
+        }
     }
 
     #[test]

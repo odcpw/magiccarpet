@@ -8,6 +8,7 @@ mod campaign_abi;
 mod campaign_audio;
 mod campaign_audio_state;
 mod campaign_facade;
+mod campaign_minimap_labels;
 mod events_audio_abi;
 mod game_runtime_abi;
 mod game_session_abi;

@@ -49,6 +49,8 @@ pub(crate) fn step_projectile(
     } else {
         let kind = if birth == FireballBirth::Ash {
             crate::level_definition::EffectKind::Ash
+        } else if projectile.source_model == 28 {
+            crate::level_definition::EffectKind::FireSpheres
         } else {
             crate::level_definition::EffectKind::Impact
         };
@@ -59,7 +61,42 @@ pub(crate) fn step_projectile(
             projectile.position,
             particles,
         )?;
-        if let Some(id) = child {
+        if let Some(id) = child
+            && kind == crate::level_definition::EffectKind::FireSpheres
+        {
+            // sub_65B50 specializes the successful sub_65C20 result. The
+            // constructor's 80-tick children keep their own life; only the
+            // root receives the 30-tick lifetime and projectile payload.
+            let root = arena
+                .economy
+                .effect_sphere_roots_mut()
+                .iter_mut()
+                .find(|row| row.source_entity_index == id)
+                .expect("Fire Spheres constructor retains its root");
+            root.entity_id = projectile.owner_entity_index;
+            root.subspell_index = projectile.source_subspell_index;
+            root.yaw = projectile.yaw;
+            root.pitch = projectile.pitch;
+            root.max_life = 30;
+            root.life = 30;
+            root.target_entity_index = if step.direct_hit_owner.is_some() {
+                projectile.target_source_entity_index
+            } else {
+                0
+            };
+            arena
+                .economy
+                .source_owner
+                .insert(id, projectile.owner_entity_index);
+            for child in arena
+                .economy
+                .effect_sphere_children_mut()
+                .iter_mut()
+                .filter(|row| row.parent_entity_index == id)
+            {
+                child.entity_id = projectile.owner_entity_index;
+            }
+        } else if let Some(id) = child {
             let row = &mut arena.entities[usize::from(id)];
             row.source_id = projectile.owner_entity_index;
             row.record[30..32].copy_from_slice(&row.source_id.to_le_bytes());
@@ -82,6 +119,11 @@ pub(crate) fn step_projectile(
             parent.drawing_disabled = true;
         }
         step.live = false;
+    }
+    // sub_6D8B0 belongs to the successful actor-impact allocation branch,
+    // not to terrain/lifetime termination or a failed NewEvent attempt.
+    if child.is_none() {
+        step.direct_hit_owner = None;
     }
     step.impact_slot = child;
     Ok(step)

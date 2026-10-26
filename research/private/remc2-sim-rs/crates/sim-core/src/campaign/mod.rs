@@ -2464,6 +2464,8 @@ mod tests {
             .find(|root| root.source_entity_index == roam_slot)
             .expect("the staged real Firefly root remains live");
         let motion_config = crate::ground_creature_motion::GroundCreatureMotionConfig {
+            half_width: staged_roam.shift_rot_x,
+            half_height: staged_roam.shift_rot_y,
             ground_clearance: 51,
             descent: -8,
             turn_limit: 113,

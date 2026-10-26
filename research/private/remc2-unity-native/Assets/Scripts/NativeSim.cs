@@ -2333,6 +2333,11 @@ namespace MagicCarpet.Native
             uint stateSize);
 
         [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+        internal static extern int mc_native_campaign_minimap_labels_json(
+            ulong handle, ulong generation, ulong expectedTick,
+            IntPtr buffer, uint capacity, out uint written);
+
+        [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
         internal static extern int mc_native_campaign_minimap_entities_copy(
             ulong handle,
             ulong generation,

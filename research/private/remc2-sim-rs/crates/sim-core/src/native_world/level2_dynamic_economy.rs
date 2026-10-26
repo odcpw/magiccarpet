@@ -1,5 +1,124 @@
 use super::*;
 
+impl crate::campaign::source_arena::SourceArena {
+    /// Terminal NewEvent competes with raw and typed arena occupants through
+    /// the same allocator as the ordinary source constructors.
+    pub(super) fn step_possession_projectile_source(
+        &mut self,
+        terrain: &mut SessionTerrain,
+        houses: &[HouseState],
+        house_slots: &[u16],
+        slot: u16,
+    ) -> Level2PossessionStep {
+        let mut step = self.economy.advance_possession_projectile_slot(
+            slot,
+            terrain,
+            houses,
+            house_slots,
+            &self.entities,
+            true,
+        );
+        if !step.pending_basic && !step.pending_splash && step.wizard_contact.is_none() {
+            return step;
+        }
+        let Some(projectile) = self
+            .economy
+            .possession_projectiles
+            .iter()
+            .find(|row| row.source_entity_index == slot)
+            .copied()
+        else {
+            return step;
+        };
+        let Some(child) = self.allocate_source_slot_with_terrain(terrain) else {
+            step.wizard_contact = None;
+            return step;
+        };
+        if step.pending_splash {
+            if let Some(splash) = self.economy.initialize_authored_model5_water_splash(
+                child,
+                projectile.position,
+                terrain,
+            ) && let Some(row) = self
+                .economy
+                .authored_model5_water_splashes
+                .iter_mut()
+                .find(|row| row.source_entity_index == splash.source_entity_index)
+            {
+                row.entity_id = projectile.source_id_entity_index;
+            }
+        } else if step.pending_basic {
+            if self
+                .economy
+                .initialize_possession_effect(child, projectile)
+                .is_none()
+            {
+                return step;
+            }
+            let id = |slot: u16| {
+                self.entities
+                    .get(usize::from(slot))
+                    .filter(|row| slot != 0 && row.active)
+                    .map(|row| row.source_id)
+                    .or_else(|| {
+                        self.economy
+                            .spheres
+                            .iter()
+                            .find(|row| slot != 0 && row.active && row.source_entity_index == slot)
+                            .map(|row| row.source_entity_index)
+                    })
+            };
+            step.accuracy = Some((
+                projectile.source_id_entity_index,
+                step.pending_contact
+                    .and_then(id)
+                    .zip(id(projectile.target_source_entity_index))
+                    .is_some_and(|(hit, prior)| hit == prior),
+            ));
+            if step.pending_contact.is_some() {
+                step.direct_hit_owner = Some(projectile.source_id_entity_index);
+            }
+        } else {
+            self.economy
+                .initialize_possession_attraction(child, projectile);
+            let (_, target) = step.wizard_contact.expect("pending wizard constructor");
+            let hit = self
+                .entities
+                .get(usize::from(target))
+                .zip(
+                    self.entities
+                        .get(usize::from(projectile.target_source_entity_index)),
+                )
+                .is_some_and(|(target, previous)| target.source_id == previous.source_id);
+            step.accuracy = Some((projectile.source_id_entity_index, hit));
+        }
+        if let Some(flyer) = self
+            .economy
+            .possession_projectiles
+            .iter_mut()
+            .find(|row| row.source_entity_index == slot)
+        {
+            flyer.active = false;
+        }
+        if step.pending_basic || step.pending_splash {
+            let position = if step.pending_splash {
+                Position {
+                    z: terrain.ground_height(projectile.position),
+                    ..projectile.position
+                }
+            } else {
+                projectile.position
+            };
+            crate::world::effects::sync_position(self, terrain, child, position, true, false)
+                .expect("allocated Possession terminal effect has a valid fixed map slot");
+        }
+        step.live = false;
+        step.pending_basic = false;
+        step.pending_splash = false;
+        step
+    }
+}
+
 impl crate::world::fields::wind::Arena for Level2EconomyState {
     fn available(&self) -> usize {
         self.free_slots.len()
@@ -31,6 +150,20 @@ impl crate::world::fields::wind::Arena for Level2EconomyState {
 }
 
 impl Level2EconomyState {
+    /// `sub_6DCA0` applies `sub_4D380` after the common Fireball constructor.
+    /// Its only differences are model28 and action29 for physical tier2.
+    pub(super) fn apply_fireball_tier_constructor(&mut self, slot: u16, tier: i8) {
+        if tier >= 2
+            && let Some(projectile) = self
+                .fireball_projectiles
+                .iter_mut()
+                .find(|projectile| projectile.active && projectile.source_entity_index == slot)
+        {
+            projectile.source_model = 28;
+            projectile.action = 29;
+        }
+    }
+
     /// sub_33710's Castle lane always adds the payload, independently of
     /// sub_11900's Contact replacement policy. The root's existing damage
     /// callback consumes these same pending words on its source visit.
@@ -248,7 +381,7 @@ const LEVEL2_CASTLE_MODEL41_MSPRD_RECTS: [(u8, u8); 8] = [
 const LEVEL2_CASTLE_CONSTRUCTION_INITIALIZED_BIT: u32 = 0x2;
 /// `sub_65580` adds the model-39 source yaw (28 in the pinned Level 2
 /// package) while a Possession flyer copies its collision contact.
-const POSSESSION_TARGET_Z_SHIFT: i16 = 28;
+pub(super) const POSSESSION_TARGET_Z_SHIFT: i16 = 28;
 /// Source `sub_69640`'s tiered Possession constructor values. The direct
 /// source profile supplies the physical tier; this arena helper only carries
 /// the constructor identity and its `byte_0x44` selector into the live row.
@@ -449,12 +582,38 @@ pub(super) struct Level2FireballStep {
     pub impact_slot: Option<u16>,
     pub reflection: Option<super::support_spells::ReboundReflection>,
     pub pending_birth: Option<FireballBirth>,
+    pub direct_hit_owner: Option<u16>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum FireballBirth {
     Impact,
     Ash,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(super) struct Level2PossessionStep {
+    pub live: bool,
+    pending_basic: bool,
+    pending_splash: bool,
+    pending_contact: Option<u16>,
+    pub direct_hit_owner: Option<u16>,
+    pub accuracy: Option<(u16, bool)>,
+    pub wizard_contact: Option<(u16, u16)>,
+}
+
+impl Level2PossessionStep {
+    const fn live(live: bool) -> Self {
+        Self {
+            live,
+            pending_basic: false,
+            pending_splash: false,
+            pending_contact: None,
+            direct_hit_owner: None,
+            accuracy: None,
+            wizard_contact: None,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -773,6 +932,7 @@ impl Level2EconomyState {
                 impact_slot: None,
                 reflection: None,
                 pending_birth: None,
+                direct_hit_owner: None,
             };
         };
         let mut projectile = self.fireball_projectiles[projectile_index];
@@ -947,6 +1107,7 @@ impl Level2EconomyState {
                     live: true,
                     impact_slot: None,
                     pending_birth: None,
+                    direct_hit_owner: None,
                     reflection: Some(super::support_spells::ReboundReflection {
                         target_slot: target.index,
                         mana_after,
@@ -978,6 +1139,7 @@ impl Level2EconomyState {
                             impact_slot: None,
                             reflection: None,
                             pending_birth: Some(FireballBirth::Ash),
+                            direct_hit_owner: None,
                         };
                     }
                     if let Some(splash) =
@@ -1001,6 +1163,7 @@ impl Level2EconomyState {
                         impact_slot: None,
                         reflection: None,
                         pending_birth: None,
+                        direct_hit_owner: None,
                     };
                 }
                 terminal = true;
@@ -1023,6 +1186,7 @@ impl Level2EconomyState {
                 impact_slot: None,
                 reflection: None,
                 pending_birth: None,
+                direct_hit_owner: None,
             };
         }
 
@@ -1032,6 +1196,7 @@ impl Level2EconomyState {
                 impact_slot: None,
                 reflection: None,
                 pending_birth: Some(FireballBirth::Impact),
+                direct_hit_owner: collision_slot.map(|_| projectile.owner_entity_index),
             };
         }
         let impact_slot = if projectile.origin == FireballProjectileOrigin::Eruption {
@@ -1073,6 +1238,9 @@ impl Level2EconomyState {
             impact_slot,
             reflection: None,
             pending_birth: None,
+            direct_hit_owner: impact_slot
+                .and(collision_slot)
+                .map(|_| projectile.owner_entity_index),
         }
     }
 
@@ -1384,6 +1552,14 @@ impl Level2EconomyState {
         projectile: Level2PossessionProjectile,
     ) -> Option<u16> {
         let source_entity_index = self.allocate_slot()?;
+        self.initialize_possession_effect(source_entity_index, projectile)
+    }
+
+    fn initialize_possession_effect(
+        &mut self,
+        source_entity_index: u16,
+        projectile: Level2PossessionProjectile,
+    ) -> Option<u16> {
         let entity_rng = self.new_event_rng(source_entity_index);
         let effect = Level2PossessionEffect {
             source_entity_index,
@@ -1426,15 +1602,37 @@ impl Level2EconomyState {
     /// allocation failure preserves that shifted flyer and its unchanged life
     /// for the next callback. On a miss, only a boundary still violated after
     /// the scan or signed lifetime expiry attempts model 12.
-    pub fn step_possession_projectile_slot(
+    pub(super) fn step_possession_projectile_slot(
         &mut self,
         source_slot: u16,
         terrain: &SessionTerrain,
-    ) -> bool {
+        houses: &[HouseState],
+        house_guidance_slots: &[u16],
+        entities: &[EntitySnapshot],
+    ) -> Level2PossessionStep {
+        self.advance_possession_projectile_slot(
+            source_slot,
+            terrain,
+            houses,
+            house_guidance_slots,
+            entities,
+            false,
+        )
+    }
+
+    fn advance_possession_projectile_slot(
+        &mut self,
+        source_slot: u16,
+        terrain: &SessionTerrain,
+        houses: &[HouseState],
+        house_guidance_slots: &[u16],
+        entities: &[EntitySnapshot],
+        defer_birth: bool,
+    ) -> Level2PossessionStep {
         let Some(projectile_index) = self.possession_projectiles.iter().position(|projectile| {
             projectile.active && projectile.source_entity_index == source_slot
         }) else {
-            return false;
+            return Level2PossessionStep::live(false);
         };
         let mut moved = self.possession_projectiles[projectile_index];
 
@@ -1450,6 +1648,9 @@ impl Level2EconomyState {
                     level2_possession_guidance_target(
                         &self.spheres,
                         &self.possession_guidance_source_slots,
+                        houses,
+                        house_guidance_slots,
+                        entities,
                         moved,
                     )
                 {
@@ -1462,6 +1663,7 @@ impl Level2EconomyState {
             }
         } else if let Some(target_top) = level2_possession_guidance_relation(
             &self.spheres,
+            houses,
             &self.possession_projectiles,
             &self.possession_guidance_stale_records,
             moved.target_source_entity_index,
@@ -1498,6 +1700,10 @@ impl Level2EconomyState {
         );
         moved.phase = moved.phase.wrapping_add(1);
 
+        if moved.source_model == POSSESSION_TIERED_PROJECTILE_MODEL {
+            return self.finish_tiered_possession_move(projectile_index, moved, terrain, entities);
+        }
+
         // `CastPosses_65F60` strictly clamps the flyer before its `sub_108B0`
         // scan. These constraints only choose the scan position: an ordinary
         // initial clamp is not a model-12 impact and equality is not contact.
@@ -1516,17 +1722,9 @@ impl Level2EconomyState {
             }
         }
 
-        let target =
-            level2_first_possession_target_sphere_slot(&self.map_chains, &self.spheres, moved);
-        if let Some(target_sphere_slot) = target {
-            if let Some(target) = self
-                .spheres
-                .iter()
-                .find(|sphere| sphere.active && sphere.source_entity_index == target_sphere_slot)
-            {
-                moved.position = target.position;
-                moved.position.z = moved.position.z.wrapping_add(POSSESSION_TARGET_Z_SHIFT);
-            }
+        let target = level2_first_possession_target(&self.map_chains, &self.spheres, houses, moved);
+        if let Some((target_slot, target_top)) = target {
+            moved.position = target_top;
             self.possession_projectiles[projectile_index] = moved;
             let _ = self.map_chains.sync_entity(RenderableMapSeed {
                 entity_index: source_slot,
@@ -1534,12 +1732,19 @@ impl Level2EconomyState {
                 x: moved.position.x,
                 y: moved.position.y,
             });
+            if defer_birth {
+                return Level2PossessionStep {
+                    pending_basic: true,
+                    pending_contact: Some(target_slot),
+                    ..Level2PossessionStep::live(true)
+                };
+            }
             if self.allocate_possession_effect(moved).is_some() {
                 let projectile = &mut self.possession_projectiles[projectile_index];
                 projectile.active = false;
-                return false;
+                return Level2PossessionStep::live(false);
             }
-            return true;
+            return Level2PossessionStep::live(true);
         }
 
         // A source-ordered clamp normally makes both strict comparisons false.
@@ -1561,18 +1766,171 @@ impl Level2EconomyState {
             x: moved.position.x,
             y: moved.position.y,
         });
+        if terminal && defer_birth {
+            return Level2PossessionStep {
+                pending_basic: true,
+                ..Level2PossessionStep::live(true)
+            };
+        }
         if terminal && self.allocate_possession_effect(moved).is_some() {
             self.possession_projectiles[projectile_index].active = false;
-            return false;
+            return Level2PossessionStep::live(false);
         }
-        true
+        Level2PossessionStep::live(true)
+    }
+
+    /// sub_662E0. Its 54/69 selectors both call AddAuxiliary_50500
+    /// (Events.cpp constructor table), never the model12 possession pulse.
+    fn finish_tiered_possession_move(
+        &mut self,
+        projectile_index: usize,
+        mut moved: Level2PossessionProjectile,
+        terrain: &SessionTerrain,
+        entities: &[EntitySnapshot],
+    ) -> Level2PossessionStep {
+        const HALF_HEIGHT: i16 = 2 * POSSESSION_PROJECTILE_COLLISION_VERTICAL_OFFSET;
+        let mut targets = self.fireball_collision_targets(entities);
+        targets.extend(
+            self.spheres
+                .iter()
+                .filter(|sphere| {
+                    sphere.active
+                        && !sphere.pending_delete
+                        && sphere.control_flags & 8 != 0
+                        && self.map_chains.is_linked(sphere.source_entity_index)
+                })
+                .map(|sphere| Level2FireballCollisionTarget {
+                    source_slot: sphere.source_entity_index,
+                    source_id: sphere.source_entity_index,
+                    position: sphere.position,
+                    half_width: sphere.collision_pitch,
+                    vertical_offset: sphere.collision_yaw,
+                    half_height: sphere.collision_fov,
+                }),
+        );
+        let contact =
+            source_map_search_slots(&self.map_chains, moved.position, &source_search_offsets(1))
+                .into_iter()
+                .find_map(|slot| {
+                    targets
+                        .iter()
+                        .find(|target| {
+                            target.source_slot == slot
+                                && target.source_id != moved.source_id_entity_index
+                                && crate::level1_mission::source_entities_overlap(
+                                    moved.position,
+                                    POSSESSION_PROJECTILE_COLLISION_HALF_WIDTH,
+                                    POSSESSION_PROJECTILE_COLLISION_VERTICAL_OFFSET,
+                                    HALF_HEIGHT,
+                                    target.position,
+                                    target.half_width,
+                                    target.vertical_offset,
+                                    target.half_height,
+                                )
+                        })
+                        .copied()
+                });
+        let mut terminal = contact.is_some();
+        if let Some(contact) = contact {
+            moved.position = contact.position;
+            if entities
+                .get(usize::from(contact.source_slot))
+                .is_none_or(|row| row.model != 2)
+            {
+                moved.position.z = moved.position.z.wrapping_add(contact.vertical_offset);
+            }
+        } else {
+            let ground = terrain.ground_height(moved.position);
+            let ceiling = terrain
+                .ceiling_height(moved.position)
+                .map(|z| z.wrapping_sub(HALF_HEIGHT));
+            let boundary = if ground > moved.position.z {
+                Some(ground)
+            } else {
+                ceiling.filter(|z| moved.position.z > *z)
+            };
+            if let Some(boundary) = boundary {
+                moved.position.z = boundary;
+                if terrain.material_mask(moved.position) == 1 {
+                    moved.active = false;
+                    self.possession_projectiles[projectile_index] = moved;
+                    return Level2PossessionStep {
+                        pending_splash: true,
+                        ..Level2PossessionStep::live(false)
+                    };
+                }
+                terminal = true;
+            } else {
+                moved.life = moved.life.wrapping_sub(1);
+                terminal = moved.life < 0;
+            }
+        }
+        let wizard = contact
+            .and_then(|contact| entities.get(usize::from(contact.source_slot)))
+            .filter(|row| row.active && row.class == 3 && matches!(row.model, 0 | 1));
+        let mut step = Level2PossessionStep::live(true);
+        if terminal {
+            if let Some(wizard) = wizard {
+                step.wizard_contact = Some((moved.source_id_entity_index, wizard.index));
+            } else {
+                moved.active = false;
+            }
+            if !moved.active {
+                let previous_target = entities.get(usize::from(moved.target_source_entity_index));
+                step.accuracy = Some((
+                    moved.source_id_entity_index,
+                    contact
+                        .zip(previous_target)
+                        .is_some_and(|(contact, target)| contact.source_id == target.source_id),
+                ));
+            }
+        }
+        step.live = moved.active;
+        self.possession_projectiles[projectile_index] = moved;
+        let _ = self.map_chains.sync_entity(RenderableMapSeed {
+            entity_index: moved.source_entity_index,
+            active: true,
+            x: moved.position.x,
+            y: moved.position.y,
+        });
+        step
+    }
+
+    fn initialize_possession_attraction(
+        &mut self,
+        slot: u16,
+        projectile: Level2PossessionProjectile,
+    ) {
+        let rng = self
+            .new_event_rng(slot)
+            .wrapping_mul(9_377)
+            .wrapping_add(9_439);
+        self.mana_attraction_fields.push(Level2ManaAttractionField {
+            source_entity_index: slot,
+            entity_rng: rng,
+            authored_index: u16::MAX,
+            position: projectile.position,
+            radius_squared: 12_845_056,
+            max_life: 128,
+            life: 128,
+            action: MANA_ATTRACTION_ACTION,
+            active: true,
+        });
+        self.source_phase_sidecars.insert(slot, slot as u8);
+        self.source_rng.insert(slot, rng);
+        self.source_owner
+            .insert(slot, projectile.source_id_entity_index);
     }
 
     /// Source `PossesHitMana_320E0`: every live model-12 callback walks its
-    /// complete map-search square and writes every qualifying model-39
+    /// complete map-search square and writes every qualifying mana/House
     /// mailbox through strict overlap, then advances phase and applies the
     /// signed `life-- < 0` terminal test.
-    pub fn step_possession_effect_slot(&mut self, source_slot: u16) -> bool {
+    pub fn step_possession_effect_slot(
+        &mut self,
+        source_slot: u16,
+        houses: &mut HouseFamily,
+    ) -> bool {
         let Some(effect_index) = self
             .possession_effects
             .iter()
@@ -1589,6 +1947,25 @@ impl Level2EconomyState {
                 effect.position,
                 &POSSESSION_IMPACT_SEARCH_OFFSETS,
             ) {
+                // `sub_112D0(..., 0)` writes the source possession mailbox;
+                // action52 consumes it on its own ordinary cursor visit.
+                if let Some(house) = houses.houses().iter().find(|house| {
+                    house.entity_index == candidate_slot
+                        && house.active
+                        && house.control_flags & 8 != 0
+                        && !house.parameter.possession_blocked()
+                        && house.source_id != effect.source_id_entity_index
+                }) && possession_house_overlap(
+                    house,
+                    effect.position,
+                    POSSESSION_IMPACT_COLLISION_HALF_WIDTH,
+                    POSSESSION_IMPACT_COLLISION_VERTICAL_OFFSET,
+                    POSSESSION_IMPACT_COLLISION_HALF_HEIGHT,
+                ) {
+                    houses
+                        .submit_possession(candidate_slot, effect.source_id_entity_index, 0)
+                        .expect("eligible live House accepts ordinary Possession mailbox");
+                }
                 let Some(sphere_index) = self.spheres.iter().position(|sphere| {
                     sphere.active
                         && !sphere.pending_delete

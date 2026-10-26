@@ -43,6 +43,13 @@ impl<W: FlightWorld> sim_ground_motion::GroundMotionWorld<Position> for GroundWo
         self.0.material_mask(position)
     }
 
+    fn clearance_blocked(&self, position: Position, required_height: i32) -> bool {
+        self.0.cave_collision_blocked(position)
+            || self.0.ceiling_height(position).is_some_and(|ceiling| {
+                i32::from(self.0.ground_height(position)) + required_height > i32::from(ceiling)
+            })
+    }
+
     fn move_entity(&self, position: &mut Position, yaw: i16, pitch: i16, speed: i16) {
         crate::move_entity(position, yaw, pitch, speed);
     }
@@ -113,4 +120,68 @@ pub(crate) fn opposite_heading(original: i16) -> i16 {
 #[cfg(test)]
 pub(crate) fn tile_slope_metric<W: FlightWorld>(world: &W, position: Position) -> i32 {
     sim_ground_motion::tile_slope_metric(&GroundWorldAdapter(world), position)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sim_ground_motion::GroundMotionWorld;
+
+    struct CaveWorld {
+        ceiling: Option<i16>,
+        angle: u8,
+    }
+
+    impl FlightWorld for CaveWorld {
+        fn ground_height(&self, _position: Position) -> i16 {
+            100
+        }
+        fn ceiling_height(&self, _position: Position) -> Option<i16> {
+            self.ceiling
+        }
+        fn material_mask(&self, _position: Position) -> u32 {
+            0
+        }
+        fn angle_flags(&self, _tile: crate::Tile) -> u8 {
+            self.angle
+        }
+    }
+
+    #[test]
+    fn cave_probe_uses_angle_bit_and_exact_ground_relative_body_clearance() {
+        let position = Position {
+            x: 0x1000,
+            y: 0x2000,
+            z: 999,
+        };
+        // The source predicate uses terrain height, not current flight Z.
+        assert!(
+            !GroundWorldAdapter(&CaveWorld {
+                ceiling: Some(202),
+                angle: 0
+            })
+            .clearance_blocked(position, 102)
+        );
+        assert!(
+            GroundWorldAdapter(&CaveWorld {
+                ceiling: Some(201),
+                angle: 0
+            })
+            .clearance_blocked(position, 102)
+        );
+        assert!(
+            GroundWorldAdapter(&CaveWorld {
+                ceiling: Some(2000),
+                angle: 8
+            })
+            .clearance_blocked(position, 102)
+        );
+        assert!(
+            !GroundWorldAdapter(&CaveWorld {
+                ceiling: None,
+                angle: 8
+            })
+            .clearance_blocked(position, 102)
+        );
+    }
 }

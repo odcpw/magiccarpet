@@ -62,11 +62,29 @@ pub(crate) struct Level2MinimapMark {
     pub visible: u8,
 }
 
+/// Original FONT1 text belonging to a Beyond Sight player dot.
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
+pub(crate) struct Level2MinimapLabel {
+    pub source_order: u16,
+    pub subject_entity_index: u16,
+    pub x: i16,
+    pub y: i16,
+    pub palette_index: u8,
+    pub text: &'static str,
+}
+
+// GameUI.h::WizardsNames_D93A0; EventsFunctions.cpp:38195 assigns the
+// single-player AI name using GetTrueWizardNumber (identity outside MP).
+const SOURCE_WIZARD_NAMES: [&str; 8] = [
+    "Zanzamar", "Nyphur", "Rahn", "Belix", "Jark", "Elyssia", "Yragore", "Prish",
+];
+
 /// Immutable minimap plan for one generation/tick of the Level 2 campaign.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(crate) struct Level2MinimapPlan {
     pub entities: Vec<Level2MinimapEntity>,
     pub marks: Vec<Level2MinimapMark>,
+    pub labels: Vec<Level2MinimapLabel>,
     pub visibility_flags: u32,
 }
 
@@ -480,11 +498,13 @@ pub(crate) fn campaign_minimap_plan(
     } else {
         &DAY_MINIMAP_PALETTE
     };
-    let family12_enabled = session
-        .players()
-        .get(local_player_slot)
-        .and_then(|player| player.enabled_spell_holders.get(12))
-        .is_some_and(|holder| *holder != 0);
+    // GameUI's v83 is holder.word_2E, not possession of a family-12 holder.
+    let family12_enabled = local_player.enabled_spell_holders[12] != 0
+        && session.entities().iter().any(|entity| {
+            entity.index == local_player.enabled_spell_holders[12]
+                && entity.active
+                && entity.active_value != 0
+        });
 
     let mut entities = Vec::new();
     for entity in session.entities() {
@@ -533,6 +553,54 @@ pub(crate) fn campaign_minimap_plan(
             help_selector: command.help_selector,
             visible: 1,
         });
+    }
+
+    // DrawMinimapEntities' separate Beyond Sight player pass follows the
+    // ordinary entity pass. The opening campaigns have one nonlocal player,
+    // represented by the canonical opponent and sub_63570 visibility helper.
+    let mut labels = Vec::new();
+    if family12_enabled && visibility.visible_to_local_player {
+        if let Some((player, entity)) = session
+            .players()
+            .get(usize::from(nyphur.player_slot))
+            .filter(|player| player.is_ai && player.entity_index != local_entity_index)
+            .and_then(|player| {
+                session
+                    .entities()
+                    .iter()
+                    .find(|entity| {
+                        entity.index == player.entity_index && entity.active && entity.life >= 0
+                    })
+                    .map(|entity| (player, entity))
+            })
+        {
+            let (x, y) = level1_minimap_project(&session.state, entity.position, 128, 256);
+            let palette_index = level2_day_player_colour(session, entity.index, false, palette)
+                .ok_or_else(|| "Beyond Sight player colour is unavailable".to_owned())?;
+            let source_order = entities
+                .last()
+                .map_or(Some(0), |row| row.source_order.checked_add(1))
+                .ok_or_else(|| "Beyond Sight source order exceeds u16".to_owned())?;
+            entities.push(Level2MinimapEntity {
+                source_order,
+                subject_entity_index: entity.index,
+                x,
+                y,
+                palette_index,
+                kind: LEVEL1_MINIMAP_COMMAND_DOT,
+                size: 1,
+                visible: 1,
+                ..Level2MinimapEntity::default()
+            });
+            labels.push(Level2MinimapLabel {
+                source_order,
+                subject_entity_index: entity.index,
+                x,
+                y,
+                palette_index,
+                text: SOURCE_WIZARD_NAMES[usize::from(player.player_color_index())],
+            });
+        }
     }
 
     let objective = session
@@ -693,6 +761,7 @@ pub(crate) fn campaign_minimap_plan(
     Ok(Level2MinimapPlan {
         entities,
         marks,
+        labels,
         visibility_flags,
     })
 }

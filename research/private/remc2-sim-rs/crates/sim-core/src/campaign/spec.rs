@@ -617,6 +617,7 @@ pub struct CampaignDefinition {
     item_by_authored_record: BTreeMap<u16, ItemKind>,
     item_entity_by_authored_record: BTreeMap<u16, LevelEntityId>,
     switch_by_authored_record: BTreeMap<u16, SwitchKind>,
+    switch_entity_by_authored_record: BTreeMap<u16, LevelEntityId>,
     switch_by_initial_source_slot: BTreeMap<u16, SwitchKind>,
     switch_entity_by_initial_source_slot: BTreeMap<u16, LevelEntityId>,
     mechanic_by_authored_record: BTreeMap<u16, MechanicKind>,
@@ -2094,6 +2095,7 @@ impl CampaignDefinition {
             item_by_authored_record: semantic_level.item_by_authored_record,
             item_entity_by_authored_record: semantic_level.item_entity_by_authored_record,
             switch_by_authored_record: semantic_level.switch_by_authored_record,
+            switch_entity_by_authored_record: semantic_level.switch_entity_by_authored_record,
             switch_by_initial_source_slot,
             switch_entity_by_initial_source_slot,
             mechanic_by_authored_record: semantic_level.mechanic_by_authored_record,
@@ -2216,16 +2218,9 @@ impl CampaignDefinition {
     }
 
     pub(crate) fn authored_switch_entity_bindings(&self) -> BTreeMap<u16, LevelEntityId> {
-        self.movable_entity_bindings
-            .iter()
-            .filter_map(|(entity_id, binding)| match binding {
-                Mc2EntityRuntimeBinding::AuthoredFeature {
-                    authored_record,
-                    kind: LevelEntityKind::Switch(_),
-                } => Some((*authored_record, entity_id.clone())),
-                _ => None,
-            })
-            .collect()
+        // Countdown/overlap configuration belongs to every authored switch,
+        // including switches whose position cannot be changed at reset.
+        self.switch_entity_by_authored_record.clone()
     }
 
     pub(crate) fn initial_switch_bindings(&self) -> &BTreeMap<u16, SwitchKind> {
@@ -4823,6 +4818,43 @@ mod tests {
         );
         assert!(
             error.to_string().contains("capability") || error.to_string().contains("unsupported")
+        );
+    }
+
+    #[test]
+    fn cave_authored_countdown_bindings_do_not_depend_on_position_editability() {
+        use crate::level_definition::{LevelEntityKind, SwitchKind};
+
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../generated/mc-bhq6-ordinary-20261025-zclu5fjj/level4");
+        let definition = CampaignDefinition::preflight(
+            root,
+            CampaignSelection::ordinary(4).unwrap(),
+            &|_: &super::BehaviorKey| true,
+        )
+        .unwrap();
+        let bindings = definition.authored_switch_entity_bindings();
+        assert_eq!(bindings.len(), definition.switch_by_authored_record.len());
+        let mut non_movable_countdowns = 0;
+        for (&record, &kind) in &definition.switch_by_authored_record {
+            let id = bindings
+                .get(&record)
+                .expect("every authored switch has its semantic identity");
+            let entity = definition.level_definition.entity(id).unwrap();
+            assert_eq!(entity.kind(), LevelEntityKind::Switch(kind));
+            if matches!(
+                kind,
+                SwitchKind::CreatureAbsenceTrigger | SwitchKind::PopulationAbsenceTrigger
+            ) {
+                assert_eq!(entity.absence_countdown().unwrap().arming_ticks(), 16);
+                if !definition.movable_entity_bindings.contains_key(id) {
+                    non_movable_countdowns += 1;
+                }
+            }
+        }
+        assert!(
+            non_movable_countdowns > 0,
+            "actual cave package exercises fixed-position countdowns"
         );
     }
 

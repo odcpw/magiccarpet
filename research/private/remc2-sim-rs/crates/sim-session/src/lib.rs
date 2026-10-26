@@ -40,6 +40,18 @@ pub struct PlayerPose {
     pub roll: i16,
 }
 
+/// Renderer view after the game adapter applies its view transform. It is
+/// distinct from movement angles and never feeds back into player physics.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize)]
+pub struct CameraPose {
+    pub x: u16,
+    pub y: u16,
+    pub z: i16,
+    pub yaw: i16,
+    pub pitch: i16,
+    pub roll: i16,
+}
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize)]
 pub struct PlayerMotion {
     pub target_speed: i16,
@@ -91,6 +103,8 @@ pub struct SpellObservation {
     pub acquired: bool,
     pub selected: bool,
     pub tier: i8,
+    pub unlocked_tier: u8,
+    pub menu_slot: u8,
     pub mana_cost: i32,
     pub hand: SpellHand,
     pub availability: SpellAvailability,
@@ -176,6 +190,7 @@ pub struct CampaignSnapshot {
     pub player_vitals: PlayerVitals,
     /// Source Spider immobilization countdown; presentation must not invent one.
     pub player_immobilized_ticks: u16,
+    pub source_camera_pose: CameraPose,
     pub source_camera_fov: i16,
     pub player_spells: Vec<SpellObservation>,
     pub objective_progress: ObjectiveProgress,
@@ -203,6 +218,21 @@ pub enum LateralControl {
     Positive,
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SpellAssignmentHand {
+    Left,
+    Right,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct SpellAssignment {
+    pub spell_id: SemanticId,
+    pub tier: u8,
+    pub hand: SpellAssignmentHand,
+}
+
 /// Transport-neutral command subset exercised by the fixed Level 1 corpus.
 /// Menu/editor actions are separate semantic operations; no remc2 opcode or
 /// bitfield crosses this boundary.
@@ -227,6 +257,10 @@ pub struct GameCommand {
     /// Select one acquired spell through its package-neutral semantic ID
     /// before this command's cast flags are consumed.
     pub select_spell: Option<SemanticId>,
+    /// Configure an acquired spell's unlocked tier and casting hand. The
+    /// adapter validates the choice before executing the ordinary game turn.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub assign_spell: Option<SpellAssignment>,
     #[serde(skip_serializing_if = "is_false")]
     pub recenter: bool,
     #[serde(skip_serializing_if = "is_false")]

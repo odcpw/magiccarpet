@@ -125,6 +125,7 @@ namespace MagicCarpet.Native
         private byte[] minimapTables;
         private CampaignMinimapOverlay minimapOverlay;
         private readonly byte[] presentedIndices = new byte[320 * 200];
+        private readonly SourceMinimapLabels sourceMinimapLabels = new();
         private readonly Dictionary<int, MinimapSymbolPixels> minimapSymbols = new();
         internal sealed class MinimapSymbolPixels
         {
@@ -617,6 +618,9 @@ namespace MagicCarpet.Native
                     throw new InvalidOperationException($"selected environment TMAP {row.selectedTmap} is empty or absent");
             Buffer.BlockCopy(session.CampaignFrameIndices, 0, presentedIndices, 0, presentedIndices.Length);
             MaterializeMinimapPixels(presentedIndices, minimapEntities, minimapTables, generation, tick, minimapSymbols);
+            if ((minimap.visibilityFlags & 8) != 0)
+                sourceMinimapLabels.Materialize(presentedIndices, session, cache, minimapTables, generation, tick);
+            else sourceMinimapLabels.Clear();
             MaterializeMinimapMarks(presentedIndices, minimapMarks, minimapTables, generation, tick);
             var palette = session.DayIndexedFramePalette;
             EnsureWorld(session.SceneFrameIndices, palette);
@@ -629,7 +633,7 @@ namespace MagicCarpet.Native
                 hudPalette.Apply(false, false);
             }
             minimapOverlay ??= root.gameObject.AddComponent<CampaignMinimapOverlay>();
-            minimapOverlay.Present(presentedIndices, palette, minimapTables);
+            minimapOverlay.Present(presentedIndices, palette, minimapTables, sourceMinimapLabels.Coverage);
             RefreshWebPalette(palette);
             minimapOverlay.PresentWeb(webTexture, webVisible);
             MaterializeEntities(entities, presentations, cache, generation, tick);
@@ -845,6 +849,15 @@ namespace MagicCarpet.Native
             worldPalette.LoadRawTextureData(TransformPalette(palette));
             worldPalette.Apply(false, false);
             worldObject.GetComponent<MeshRenderer>().enabled = true;
+        }
+
+        internal void PresentView(EngineSessionTransport.CameraPose pose, short sourceCameraFov = 128)
+        {
+            if (pose == null) throw new InvalidOperationException("campaign source view is absent");
+            PresentView(new EngineSessionTransport.Pose {
+                x = pose.x, y = pose.y, z = pose.z, yaw = pose.yaw,
+                display_pitch = pose.pitch, roll = pose.roll
+            }, sourceCameraFov);
         }
 
         internal void PresentView(EngineSessionTransport.Pose pose, short sourceCameraFov = 128)

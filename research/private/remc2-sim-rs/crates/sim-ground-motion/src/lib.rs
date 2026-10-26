@@ -26,6 +26,9 @@ pub trait GroundMotionWorld<P: GroundPosition> {
 
     fn material_mask(&self, position: P) -> u32;
 
+    /// Source cave topology and ground-relative body clearance at one probe.
+    fn clearance_blocked(&self, position: P, required_height: i32) -> bool;
+
     fn move_entity(&self, position: &mut P, yaw: i16, pitch: i16, speed: i16);
 
     fn turn_toward(&self, from: i16, to: i16, maximum: i16) -> i16;
@@ -53,6 +56,10 @@ pub struct GroundCreatureMotion<P> {
 /// Package-bound constants used by the shared motion packet.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct GroundCreatureMotionConfig {
+    /// Maximum horizontal half extent (`max(array.pitch, array.roll)`).
+    pub half_width: i16,
+    /// Vertical half extent (`array.fov`).
+    pub half_height: i16,
     pub ground_clearance: i16,
     pub descent: i16,
     pub turn_limit: i16,
@@ -94,13 +101,8 @@ where
 
         let changed_tile =
             (position.x() >> 8, position.y() >> 8) != (predicted.x() >> 8, predicted.y() >> 8);
-        if changed_tile
-            && !candidate_is_valid(
-                world,
-                predicted,
-                config.terrain_mask,
-                config.maximum_tile_slope,
-            )
+        if (attempt != 0 || changed_tile)
+            && !body_candidate_is_valid(world, predicted, heading, config)
         {
             continue;
         }
@@ -131,6 +133,33 @@ where
         killed: true,
         result: GroundCreatureMoveResult::Blocked,
     }
+}
+
+fn body_candidate_is_valid<P: GroundPosition, W: GroundMotionWorld<P>>(
+    world: &W,
+    position: P,
+    heading: i16,
+    config: GroundCreatureMotionConfig,
+) -> bool {
+    // sub_102D0(..., 1) checks each forward extent probe before the caller's
+    // slope test. Retry candidates are checked even inside the original tile.
+    let mut probe = position;
+    let mut advance = 0;
+    while advance <= i32::from(config.half_width) {
+        if world.material_mask(probe) & !config.terrain_mask != 0
+            || world.clearance_blocked(
+                probe,
+                i32::from(config.half_height) + i32::from(config.ground_clearance),
+            )
+        {
+            return false;
+        }
+        advance += 256;
+        if advance <= i32::from(config.half_width) {
+            world.move_entity(&mut probe, heading, 0, 256);
+        }
+    }
+    tile_slope_metric(world, position) < config.maximum_tile_slope
 }
 
 pub fn relax_to_terrain<P, W>(
@@ -255,6 +284,10 @@ mod tests {
             u32::from(attempt <= self.reject_cross_tile_until)
         }
 
+        fn clearance_blocked(&self, _position: TestPosition, _required_height: i32) -> bool {
+            false
+        }
+
         fn move_entity(&self, position: &mut TestPosition, yaw: i16, _pitch: i16, _speed: i16) {
             self.headings.borrow_mut().push(yaw);
             position.x = position.x.wrapping_add(0x0100);
@@ -267,6 +300,8 @@ mod tests {
 
     fn config() -> GroundCreatureMotionConfig {
         GroundCreatureMotionConfig {
+            half_width: 0,
+            half_height: 0,
             ground_clearance: 128,
             descent: -128,
             turn_limit: 7,
@@ -322,5 +357,89 @@ mod tests {
         assert_eq!(motion.result, GroundCreatureMoveResult::Blocked);
         assert!(motion.movement_blocked);
         assert!(motion.killed);
+    }
+
+    struct BodyProbeWorld {
+        retry_stays_in_tile: bool,
+        materials: RefCell<Vec<TestPosition>>,
+        clearances: RefCell<Vec<(TestPosition, i32)>>,
+    }
+
+    impl GroundMotionWorld<TestPosition> for BodyProbeWorld {
+        fn ground_height(&self, _position: TestPosition) -> i16 {
+            0
+        }
+
+        fn material_mask(&self, position: TestPosition) -> u32 {
+            self.materials.borrow_mut().push(position);
+            u32::from(self.retry_stays_in_tile)
+        }
+
+        fn clearance_blocked(&self, position: TestPosition, required_height: i32) -> bool {
+            self.clearances
+                .borrow_mut()
+                .push((position, required_height));
+            position.x == 0x1200
+        }
+
+        fn move_entity(&self, position: &mut TestPosition, yaw: i16, _pitch: i16, speed: i16) {
+            let speed = if self.retry_stays_in_tile && yaw != 100 {
+                -speed
+            } else {
+                speed
+            };
+            position.x = position.x.wrapping_add(speed as u16);
+        }
+
+        fn turn_toward(&self, _from: i16, _to: i16, _maximum: i16) -> i16 {
+            0
+        }
+    }
+
+    #[test]
+    fn same_tile_retries_still_probe_after_first_cross_tile_rejection() {
+        let world = BodyProbeWorld {
+            retry_stays_in_tile: true,
+            materials: RefCell::default(),
+            clearances: RefCell::default(),
+        };
+        let origin = TestPosition {
+            x: 0x10f0,
+            y: 0x2000,
+            z: 256,
+        };
+        let motion = step_ground_creature_motion(origin, 100, 100, 32, &world, config());
+        assert_eq!(motion.result, GroundCreatureMoveResult::Blocked);
+        assert_eq!(motion.position, origin);
+        let probes = world.materials.borrow();
+        assert_eq!(probes.len(), 4);
+        assert_eq!(probes[0].x, 0x1110);
+        assert!(probes[1..].iter().all(|probe| probe.x == 0x10d0));
+    }
+
+    #[test]
+    fn forward_body_extent_checks_cave_clearance_before_accepting_motion() {
+        let world = BodyProbeWorld {
+            retry_stays_in_tile: false,
+            materials: RefCell::default(),
+            clearances: RefCell::default(),
+        };
+        let origin = TestPosition {
+            x: 0x1000,
+            y: 0x2000,
+            z: 256,
+        };
+        let mut config = config();
+        config.half_width = 256;
+        config.half_height = 74;
+        let motion = step_ground_creature_motion(origin, 100, 100, 256, &world, config);
+        assert_eq!(motion.result, GroundCreatureMoveResult::Blocked);
+        assert_eq!(motion.position, origin);
+        let probes = world.clearances.borrow();
+        assert_eq!(probes.len(), 8);
+        for pair in probes.chunks_exact(2) {
+            assert_eq!((pair[0].0.x, pair[1].0.x), (0x1100, 0x1200));
+            assert_eq!((pair[0].1, pair[1].1), (202, 202));
+        }
     }
 }

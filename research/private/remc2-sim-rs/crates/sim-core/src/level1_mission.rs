@@ -21435,6 +21435,8 @@ fn move_resident_archer<W: FlightWorld>(
 }
 
 trait GroundActorMotion {
+    fn half_width(&self) -> i16;
+    fn half_height(&self) -> i16;
     fn position(&self) -> Position;
     fn set_position(&mut self, position: Position);
     fn yaw(&self) -> i16;
@@ -21446,6 +21448,14 @@ trait GroundActorMotion {
 }
 
 impl GroundActorMotion for Level1Actor {
+    fn half_width(&self) -> i16 {
+        self.collision_half_width
+    }
+
+    fn half_height(&self) -> i16 {
+        self.collision_half_height
+    }
+
     fn position(&self) -> Position {
         self.position
     }
@@ -21480,6 +21490,14 @@ impl GroundActorMotion for Level1Actor {
 }
 
 impl GroundActorMotion for DynamicResidentState {
+    fn half_width(&self) -> i16 {
+        self.collision_half_width
+    }
+
+    fn half_height(&self) -> i16 {
+        self.collision_half_height
+    }
+
     fn position(&self) -> Position {
         self.position
     }
@@ -21529,6 +21547,8 @@ fn move_ground_actor<W: FlightWorld, A: GroundActorMotion>(
         actor.actual_speed(),
         world,
         crate::ground_creature_motion::GroundCreatureMotionConfig {
+            half_width: actor.half_width(),
+            half_height: actor.half_height(),
             ground_clearance,
             descent,
             turn_limit,

@@ -11,6 +11,7 @@ namespace MagicCarpet.Native
         private Texture2D web;
         private bool immobilized;
         private readonly Color32[] pixels = new Color32[64 * 64];
+        private Color32[] labelPixels;
 
         internal void PresentWeb(Texture2D retainedWeb, bool visible)
         {
@@ -18,28 +19,49 @@ namespace MagicCarpet.Native
             immobilized = visible;
         }
 
-        internal void Present(byte[] indices, byte[] palette, byte[] tables)
+        internal void Present(byte[] indices, byte[] palette, byte[] tables, bool[] labelCoverage = null)
         {
-            if (indices.Length != 320 * 200 || palette.Length != 768 || tables.Length != 83456)
+            if (indices.Length != 320 * 200 || palette.Length != 768 || tables.Length != 83456 ||
+                labelCoverage != null && labelCoverage.Length != indices.Length)
                 throw new InvalidOperationException("Campaign map overlay has invalid input extents");
-            if (texture == null)
-                texture = new Texture2D(64, 64, TextureFormat.RGBA32, false, false) {
+            var width = labelCoverage == null ? 64 : 320;
+            var height = labelCoverage == null ? 64 : 200;
+            if (texture == null || texture.width != width || texture.height != height)
+            {
+                if (texture != null)
+                {
+                    if (Application.isPlaying) Destroy(texture);
+                    else DestroyImmediate(texture);
+                }
+                texture = new Texture2D(width, height, TextureFormat.RGBA32, false, false) {
                     filterMode = FilterMode.Point, wrapMode = TextureWrapMode.Clamp
                 };
-            for (var y = 0; y < 64; y++)
+            }
+            var target = pixels;
+            if (labelCoverage != null)
             {
-                var sourceY = y * 2;
-                var phase = sourceY < 64 ? 63 - sourceY : sourceY - 64;
-                var halfSpan = (64 * tables[0x14300 + phase * 4]) >> 8;
-                for (var x = 0; x < 64; x++)
+                labelPixels ??= new Color32[320 * 200];
+                target = labelPixels;
+            }
+            for (var y = 0; y < height; y++)
+            {
+                var halfSpan = 0;
+                if (y < 64)
+                {
+                    var sourceY = y * 2;
+                    var phase = sourceY < 64 ? 63 - sourceY : sourceY - 64;
+                    halfSpan = (64 * tables[0x14300 + phase * 4]) >> 8;
+                }
+                for (var x = 0; x < width; x++)
                 {
                     var color = indices[y * 320 + x] * 3;
-                    var visible = x * 2 >= 64 - halfSpan && x * 2 < 64 + halfSpan;
-                    pixels[(63 - y) * 64 + x] = new Color32(palette[color], palette[color + 1],
+                    var visible = x < 64 && y < 64 && x * 2 >= 64 - halfSpan && x * 2 < 64 + halfSpan;
+                    visible |= labelCoverage != null && labelCoverage[y * 320 + x];
+                    target[(height - 1 - y) * width + x] = new Color32(palette[color], palette[color + 1],
                         palette[color + 2], visible ? (byte)255 : (byte)0);
                 }
             }
-            texture.SetPixels32(pixels);
+            texture.SetPixels32(target);
             texture.Apply(false, false);
         }
 
@@ -48,7 +70,7 @@ namespace MagicCarpet.Native
             if (texture == null || Event.current.type != EventType.Repaint) return;
             var view = Level1ExitPresentationMath.SourceDisplayRect(Screen.width, Screen.height);
             var rectangle = new Rect(view.x * Screen.width, (1f - view.yMax) * Screen.height,
-                view.width * Screen.width * (64f / 320f), view.height * Screen.height * (64f / 200f));
+                view.width * Screen.width * (texture.width / 320f), view.height * Screen.height * (texture.height / 200f));
             var previousDepth = GUI.depth;
             var previousColor = GUI.color;
             if (immobilized && web != null)

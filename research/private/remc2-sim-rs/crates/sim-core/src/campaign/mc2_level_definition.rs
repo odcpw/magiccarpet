@@ -62,6 +62,7 @@ pub(crate) struct Mc2LevelDefinition {
     pub(crate) item_by_authored_record: BTreeMap<u16, ItemKind>,
     pub(crate) item_entity_by_authored_record: BTreeMap<u16, LevelEntityId>,
     pub(crate) switch_by_authored_record: BTreeMap<u16, SwitchKind>,
+    pub(crate) switch_entity_by_authored_record: BTreeMap<u16, LevelEntityId>,
     pub(crate) mechanic_by_authored_record: BTreeMap<u16, MechanicKind>,
     pub(crate) mechanic_entity_by_authored_record: BTreeMap<u16, LevelEntityId>,
     pub(crate) movable_runtime_hint_by_entity_id: BTreeMap<LevelEntityId, Mc2MovableRuntimeHint>,
@@ -1288,6 +1289,11 @@ impl Mc2LevelDefinition {
         }
 
         Ok(Self {
+            switch_entity_by_authored_record: authored_record_by_entity_id
+                .iter()
+                .filter(|(_, record)| switch_by_authored_record.contains_key(*record))
+                .map(|(id, record)| (*record, id.clone()))
+                .collect(),
             creature_entity_by_authored_record: authored_record_by_entity_id
                 .into_iter()
                 .filter(|(_, record)| creature_by_authored_record.contains_key(record))

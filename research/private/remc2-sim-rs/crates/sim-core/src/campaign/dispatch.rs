@@ -97,6 +97,7 @@ pub enum ExistingHandler {
     Spider = 38,
     SpiderWeb = 39,
     LightningProjectile = 40,
+    MorphBody = 41,
 }
 
 impl ExistingHandler {
@@ -148,6 +149,7 @@ impl ExistingHandler {
             Self::Spider => "authored Spider constructor and live web attack",
             Self::SpiderWeb => "Spider ranged web projectile and status impact",
             Self::LightningProjectile => "Lightning holder projectile and Meteor impact",
+            Self::MorphBody => "Morph constructor and controlled StageVar2 selector12 body",
         }
     }
 
@@ -193,6 +195,7 @@ impl ExistingHandler {
             Self::Spider => "spider-family",
             Self::SpiderWeb => "spider-web-projectile",
             Self::LightningProjectile => "lightning-projectile",
+            Self::MorphBody => "morph-body",
             Self::Mushrooms => "mushrooms",
         }
     }
@@ -365,6 +368,7 @@ compiled_registry! {
         (TraderFamily, 5, [112, 113, 114, 115, 116, 117, 118, 119]);
         (CastleAuxiliary, 5, [120, 121, 122, 123, 124, 125, 127]);
         (FireflyFamily, 5, [153, 154, 155, 156, 157, 159]);
+        (MorphBody, 5, [135, 207]);
         (Spider, 5, [160, 161, 162, 163, 164, 165, 167]);
         (Creature22, 5, [176, 177, 178, 179, 180, 181, 183]);
         (Creature24, 5, [192, 193, 194, 195, 196, 197, 198, 199]);
@@ -372,7 +376,7 @@ compiled_registry! {
         (ProjectileFamily, 9, [0, 1, 10, 13]);
         (LightningProjectile, 9, [3]);
         (Model6ProjectileChild, 9, [15]);
-        (ProjectileFamily, 9, [18]);
+        (ProjectileFamily, 9, [18, 29]);
         (SpiderWeb, 9, [22]);
         (CaveSpell, 9, [31]);
         (TerrainDisasters, 10, [11]);
@@ -422,7 +426,7 @@ compiled_registry! {
         (ProjectileFamily, 9, [0, 1, 10, 13]);
         (LightningProjectile, 9, [3]);
         (Model6ProjectileChild, 9, [14]);
-        (ProjectileFamily, 9, [17]);
+        (ProjectileFamily, 9, [17, 28]);
         (SpiderWeb, 9, [21]);
         (CaveSpell, 9, [30]);
         (Class10Effects, 10, [0, 1, 2, 3, 4, 5, 6, 7, 12, 13, 14, 16, 17, 18, 19, 22, 39, 40, 41, 42, 43, 45, 53, 54, 59, 60, 70, 76, 79, 87, 88, 90, 91]);

@@ -224,7 +224,7 @@ impl Level2EconomyState {
             roll: heading,
             fov: 0,
             shift_rot_x: DRAGON_RENDER_SPEED / 2,
-            shift_rot_y: DRAGON_RENDER_SPEED / 2,
+            shift_rot_y: DRAGON_RENDER_ROTATION / 2,
             position,
             phase: 0,
             drawing_enabled: true,
@@ -397,7 +397,9 @@ impl Level2EconomyState {
             &self.authored_dragon_parts,
             terrain,
         ) {
-            step_dragon_motion(&mut source, &mut state, terrain);
+            if step_dragon_motion(&mut source, &mut state, terrain) {
+                self.decrement_source_creature_population();
+            }
 
             if source.source_byte_3e % DRAGON_DESCRIPTOR_CADENCE == 0 {
                 apply_dragon_wander(&mut source);
@@ -482,7 +484,9 @@ impl Level2EconomyState {
             &self.authored_dragon_parts,
             terrain,
         ) {
-            step_dragon_motion(&mut source, &mut state, terrain);
+            if step_dragon_motion(&mut source, &mut state, terrain) {
+                self.decrement_source_creature_population();
+            }
 
             let target = target.filter(|target| {
                 target.entity_index == source.word_0x96_150
@@ -628,7 +632,9 @@ impl Level2EconomyState {
             }
             state.linked_entity_index = 0;
         } else {
-            step_dragon_motion(&mut source, &mut state, terrain);
+            if step_dragon_motion(&mut source, &mut state, terrain) {
+                self.decrement_source_creature_population();
+            }
             if let Some(peer) = peer {
                 if source.source_byte_3e % DRAGON_DESCRIPTOR_CADENCE == 0 {
                     match peer.action {
@@ -950,7 +956,7 @@ fn step_dragon_motion(
     source: &mut Level2AuthoredClass5Source,
     state: &mut AuthoredDragonRuntime,
     terrain: &SessionTerrain,
-) {
+) -> bool {
     let transition = crate::ground_creature_motion::step_ground_creature_motion(
         source.position,
         source.yaw,
@@ -958,6 +964,8 @@ fn step_dragon_motion(
         source.actual_speed,
         terrain,
         crate::ground_creature_motion::GroundCreatureMotionConfig {
+            half_width: state.render_pitch.max(state.render_roll),
+            half_height: state.render_fov,
             ground_clearance: DRAGON_GROUND_CLEARANCE,
             descent: DRAGON_DESCENT,
             turn_limit: DRAGON_TURN_LIMIT,
@@ -971,6 +979,7 @@ fn step_dragon_motion(
     if transition.killed {
         source.life = -1;
     }
+    transition.killed
 }
 
 /// Consume the common creature mailbox/child-chain prefix shared by Dragon

@@ -127,6 +127,23 @@ namespace MagicCarpet.Native
             catch (Exception error) { status = error.Message; return false; }
         }
 
+        internal bool ApplySource(Action<PlayerPreferences> change)
+        {
+            if (change == null) throw new ArgumentNullException(nameof(change));
+            try
+            {
+                var next = JsonUtility.FromJson<PlayerPreferences>(JsonUtility.ToJson(Current.preferences));
+                change(next);
+                Synchronize(command(JsonUtility.ToJson(new ApplyCommand { preferences = next })));
+                return true;
+            }
+            catch (Exception error)
+            {
+                Debug.LogWarning("MC_PREFERENCES_REJECTED " + error.Message);
+                return false;
+            }
+        }
+
         internal void Center() { roll = 0; pitch = 0; }
 
         internal void BeginKeyCapture(int slot)

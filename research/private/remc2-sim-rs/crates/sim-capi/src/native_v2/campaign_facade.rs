@@ -886,6 +886,7 @@ mod tests {
     #[test]
     fn neutral_flight_command_maps_inside_the_mc2_owned_adapter() {
         let command = GameCommand {
+            assign_spell: None,
             longitudinal: LongitudinalControl::Decelerate,
             lateral: LateralControl::Positive,
             roll_axis: -32,

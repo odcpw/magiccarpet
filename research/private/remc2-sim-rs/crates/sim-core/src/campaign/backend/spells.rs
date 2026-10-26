@@ -227,12 +227,53 @@ pub(super) fn observe(shared: &Level2SharedSpellResetSession) -> Vec<SpellObserv
                 acquired,
                 selected: acquired && selected == Some(binding.family),
                 tier: holder.map_or(0, |holder| holder.level_gate),
+                unlocked_tier: player.spell_unlocked_levels[usize::from(binding.family)].clamp(0, 2)
+                    as u8,
+                menu_slot: SOURCE_SPELL_INDEX_MAP
+                    .iter()
+                    .position(|&family| family == binding.family)
+                    .expect("bound spell has a menu slot") as u8,
                 mana_cost: holder.map_or(0, |holder| holder.mana_cost),
                 hand,
                 availability,
             }
         })
         .collect()
+}
+
+pub(super) fn assigned_player_command(
+    shared: &Level2SharedSpellResetSession,
+    assignment: &sim_session::SpellAssignment,
+    mut command: crate::PlayerCommand,
+) -> Result<crate::PlayerCommand, String> {
+    let kind = semantic_spell_kind(&assignment.spell_id)
+        .ok_or_else(|| format!("unknown spell {}", assignment.spell_id.as_str()))?;
+    let family = mc2_spell_family(kind).ok_or_else(|| "unbound spell family".to_owned())?;
+    if acquired_holder(shared, family).is_none() {
+        return Err(format!(
+            "spell {} has not been acquired",
+            assignment.spell_id.as_str()
+        ));
+    }
+    let unlocked =
+        shared.local_player().spell_unlocked_levels[usize::from(family)].clamp(0, 2) as u8;
+    if assignment.tier > unlocked {
+        return Err(format!(
+            "spell tier {} is locked (maximum {})",
+            assignment.tier, unlocked
+        ));
+    }
+    command.opcode = match assignment.hand {
+        sim_session::SpellAssignmentHand::Left => 31,
+        sim_session::SpellAssignmentHand::Right => 32,
+    };
+    command.argument_1 = SOURCE_SPELL_INDEX_MAP
+        .iter()
+        .position(|&candidate| candidate == family)
+        .ok_or_else(|| "spell has no source menu binding".to_owned())?
+        as i8;
+    command.argument_2 = assignment.tier as i8;
+    Ok(command)
 }
 
 #[cfg(test)]

@@ -108,10 +108,10 @@ use crate::{
     },
     spell_activation::{
         BEYOND_SIGHT_ACTIVE_ACTION, BEYOND_SIGHT_FAMILY, BeyondSightState, INVISIBLE_ACTIVE_ACTION,
-        INVISIBLE_FAMILY, INVISIBLE_STATUS_BIT, InvisibleState, InvisibleStep,
-        Level2SetSpellProfile, PhysicalSpellActionRole, SHIELD_ACTIVE_ACTION, SHIELD_FAMILY,
-        ShieldDamage, ShieldState, ShieldStep, SpellActivationHolder, SpellCasterState,
-        SpellHolderAcquisitionOutcome, SpellHolderAcquisitionResult, SpellHolderAcquisitionState,
+        INVISIBLE_FAMILY, INVISIBLE_STATUS_BIT, InvisibleState, Level2SetSpellProfile,
+        PhysicalSpellActionRole, SHIELD_ACTIVE_ACTION, SHIELD_FAMILY, ShieldDamage, ShieldState,
+        ShieldStep, SpellActivationHolder, SpellCasterState, SpellHolderAcquisitionOutcome,
+        SpellHolderAcquisitionResult, SpellHolderAcquisitionState,
         acquire_level2_spell_holder_with_return_side, activate_spell, beyond_sight_unlocked_tier,
         level2_applied_tier, level2_set_spell_profile, physical_spell_action,
     },
@@ -2602,6 +2602,8 @@ pub struct Level2EconomyState {
 
     bee_model2_constructor_phase: u8,
 
+    morph: creatures::morph::State,
+
     authored_bee_kill_census: BTreeMap<u16, u32>,
     /// Source `str_0x364D2.dword_0x364D2`: the campaign creature-total
     /// denominator. Ordinary kills do not lower it; only a constructor/AI
@@ -2926,6 +2928,7 @@ impl Level2LiveState {
             valid,
             dispatch_receipt: self.core.effect_journal.receipt(),
             dispatch_events: Vec::new(),
+            source_camera_pose: None,
             economy_event_cursor: self.economy.events().len(),
             nyphur_dispatch_traces: Vec::new(),
             level2_day_hud_color_phase_1: color_phase_1,

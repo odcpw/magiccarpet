@@ -574,6 +574,8 @@ namespace MagicCarpet.Native
         private PlayerPreferencesPresenter playerPreferences;
         private bool preferenceRecenterRequested, preferenceFullStopRequested;
         private bool gameRuntimeSpellMenuOpen;
+        private readonly SourceSpellMenu gameRuntimeSourceSpellMenu = new();
+        private EngineSessionTransport.SpellAssignment gameRuntimeSpellAssignmentRequested;
         private CampaignMenuPresenter.Action gameRuntimeMenuAction;
         private string gameRuntimeMenuStatus;
         private ushort gameRuntimePriorPlayerX;
@@ -2810,7 +2812,8 @@ namespace MagicCarpet.Native
             {
                 gameRuntimeCampaignSnapshot = session.GameRuntimeCampaignStep(
                     appliedRoll, appliedPitch, unchecked((sbyte)flags), 0, 0, selectSpell,
-                    preferenceRecenterRequested, preferenceFullStopRequested, gameRuntimeRecoverPlayerRequested, elapsedCentiseconds);
+                    preferenceRecenterRequested, preferenceFullStopRequested, gameRuntimeRecoverPlayerRequested, elapsedCentiseconds,
+                    gameRuntimeSpellAssignmentRequested);
                 if (selectSpell != null)
                 {
                     var selected = Level2SpellPresenter.FindSpell(gameRuntimeCampaignSnapshot?.value, selectSpell);
@@ -2820,12 +2823,12 @@ namespace MagicCarpet.Native
                 }
             }
             catch (EngineSessionTransport.CommandException exception)
-                when (selectSpell != null && exception.Status == NativeSim.ValidationFailed)
+                when ((selectSpell != null || gameRuntimeSpellAssignmentRequested != null) && exception.Status == NativeSim.ValidationFailed)
             {
                 // Rust rejects an unacquired selection before changing the
                 // session. Keep the ordinary flight turn, but cancel the
                 // selected cast so an unavailable key cannot cast the old spell.
-                gameRuntimeSpellInputStatus = "That spell has not been acquired.";
+                gameRuntimeSpellInputStatus = "That spell or tier is not available.";
                 gameRuntimeSpellInputStatusUntil = Time.unscaledTime + 3f;
                 gameRuntimeCampaignSnapshot = session.GameRuntimeCampaignStep(
                     appliedRoll, appliedPitch, unchecked((sbyte)(flags & ~0x40)), 0, 0, null,
@@ -2839,6 +2842,7 @@ namespace MagicCarpet.Native
             }
             gameRuntimeRecoverPlayerRequested = false;
             gameRuntimeSpellSelectionRequested = null;
+            gameRuntimeSpellAssignmentRequested = null;
             var afterStepIdentity = session.GameRuntimeIdentity();
             DrainGameRuntimeSemanticEvents();
             if (level2Mode)
@@ -3459,6 +3463,9 @@ namespace MagicCarpet.Native
                     ApplyGameRuntimeHeldSpellInput(
                         mapped?.CastLeft ?? (Cursor.lockState == CursorLockMode.Locked && Input.GetMouseButton(0)),
                         mapped?.CastRight ?? (Cursor.lockState == CursorLockMode.Locked && Input.GetMouseButton(1)));
+                    if (runtimeIdentity.mode == GameRuntimeTransport.PausedMode &&
+                        Input.GetKeyDown(KeyCode.Escape) && gameRuntimeMenu?.DismissPauseSubmenu() == true)
+                        return;
                     ApplyGameRuntimeProductionInput(
                         Input.GetKeyDown(KeyCode.P) || Input.GetKeyDown(KeyCode.Escape),
                         false,
@@ -3674,6 +3681,7 @@ namespace MagicCarpet.Native
         {
             if (pausePressed)
             {
+                gameRuntimeSpellAssignmentRequested = null;
                 nativePresentationGamePaused = !nativePresentationGamePaused;
                 session.SetLevel1GamePaused(nativePresentationGamePaused);
                 nativePresentationMenuState = 0;
@@ -8286,8 +8294,9 @@ namespace MagicCarpet.Native
             Require(environment != null, "campaign HUD has package-selected environment assets");
             ownerHudPaletteRgb8 = ownerAssetCache.ReadOutput(environment.palette.rgb8_path);
             var bank = environment.bitmap_banks.Single(row => row.bank == environment.profile.sprites);
-            foreach (var row in bank.bitmaps.Where(row =>
-                OwnerAssetCache.IsQualifiedDayHudSpriteSelector(row.selector)))
+            var requestedBitmaps = bank.bitmaps.Where(row =>
+                OwnerAssetCache.IsQualifiedDayHudSpriteSelector(row.selector) || SourceSpellMenu.UsesBitmap(row.selector)).ToArray();
+            foreach (var row in requestedBitmaps)
             {
                 Require(!row.source_empty, $"environment HUD selector {row.selector} is present");
                 var indices = ownerAssetCache.ReadOutput(row.indices_path);
@@ -8347,7 +8356,7 @@ namespace MagicCarpet.Native
                 ownerSpellTierTextures.Add(tier, CreateTopDownRgbaTexture(
                     $"Owner {environment.profile.palette} spell tier {tiers[tier]}", rgba, width, height));
             }
-            Require(hudBitmapDescriptors.Count == 34 && level2DayHudTierRows.Count == 5,
+            Require(hudBitmapDescriptors.Count == requestedBitmaps.Length && level2DayHudTierRows.Count == 5,
                 "complete environment HUD materialization");
         }
 
@@ -9426,6 +9435,7 @@ namespace MagicCarpet.Native
             }
             if (identity.mode == GameRuntimeTransport.PausedMode)
             {
+                gameRuntimeSpellAssignmentRequested = null;
                 CenterSteering();
                 gameRuntimeMovementFlags = 0;
                 gameRuntimeLeftSpellHeld = gameRuntimeRightSpellHeld = false;
@@ -9548,6 +9558,7 @@ namespace MagicCarpet.Native
         private void CloseGameRuntimeSpellMenu()
         {
             gameRuntimeSpellMenuOpen = false;
+            gameRuntimeSourceSpellMenu.Close();
             if (session?.GameRuntimeIdentity().mode == GameRuntimeTransport.PausedMode)
                 session.GameRuntimeResume();
             playerPreferences?.Center();
@@ -9557,6 +9568,14 @@ namespace MagicCarpet.Native
         internal bool QualificationSelectGameRuntimeProductionSpell(string semanticId)
         {
             return SubmitGameRuntimeSpellSelection(semanticId);
+        }
+
+        internal void QualificationAssignGameRuntimeProductionSpell(string semanticId, byte tier, bool rightHand)
+        {
+            gameRuntimeSpellSelectionRequested = null;
+            gameRuntimeSpellAssignmentRequested = new EngineSessionTransport.SpellAssignment {
+                spell_id = semanticId, tier = tier, hand = rightHand ? "right" : "left"
+            };
         }
 
         internal bool SubmitGameRuntimeSpellKey(int key)
@@ -10067,6 +10086,8 @@ namespace MagicCarpet.Native
 
         private void FreezeGameRuntimeInput()
         {
+            gameRuntimeSpellAssignmentRequested = null;
+            gameRuntimeSourceSpellMenu.Close();
             gameRuntimeRecoverPlayerRequested = false;
             CenterSteering();
             gameRuntimeLeftSpellHeld = gameRuntimeRightSpellHeld = false;
@@ -10150,8 +10171,8 @@ namespace MagicCarpet.Native
             if (gameRuntimeNightSurface == null) return;
             campaignSession.SynchronizeGameRuntimeIdentity(identity);
             gameRuntimeNightSurface.PresentNight(campaignSession, gameRuntimeEnvironmentCache ?? ownerAssetCache,
-                observation.value.player_pose.yaw);
-            gameRuntimeNightSurface.PresentView(observation.value.player_pose, observation.value.source_camera_fov);
+                observation.value.source_camera_pose.yaw);
+            gameRuntimeNightSurface.PresentView(observation.value.source_camera_pose, observation.value.source_camera_fov);
             gameRuntimeNightSurface.PresentImmobilization(observation.value.player_immobilized_ticks,
                 observation.value.player_vitals.life >= 0);
             var hud = campaignSession.DayHudState(campaignSession.Tick);
@@ -10251,8 +10272,8 @@ namespace MagicCarpet.Native
                 observation.identity.tick == campaignSession.Tick.ToString(),
                 "Level 3 presentation is bound to the current game runtime frame");
             level3PresentationSurface.Present(campaignSession, gameRuntimeEnvironmentCache ?? ownerAssetCache,
-                observation.value.player_pose.yaw);
-            level3PresentationSurface.PresentView(observation.value.player_pose, observation.value.source_camera_fov);
+                observation.value.source_camera_pose.yaw);
+            level3PresentationSurface.PresentView(observation.value.source_camera_pose, observation.value.source_camera_fov);
             level3PresentationSurface.PresentImmobilization(observation.value.player_immobilized_ticks,
                 observation.value.player_vitals.life >= 0);
             PresentLevel2DayHud(campaignSession.DayHudState(campaignSession.Tick));
@@ -10352,8 +10373,8 @@ namespace MagicCarpet.Native
             if (level2DayPresentationSurface != null)
             {
                 level2DayPresentationSurface.Present(campaignSession, gameRuntimeEnvironmentCache ?? ownerAssetCache,
-                    observation.value.player_pose.yaw);
-                level2DayPresentationSurface.PresentView(observation.value.player_pose, observation.value.source_camera_fov);
+                    observation.value.source_camera_pose.yaw);
+                level2DayPresentationSurface.PresentView(observation.value.source_camera_pose, observation.value.source_camera_fov);
                 level2DayPresentationSurface.PresentImmobilization(observation.value.player_immobilized_ticks,
                     observation.value.player_vitals.life >= 0);
                 level2MinimapProjectionReady = level2DayPresentationSurface.LiveMinimapReady;
@@ -13714,11 +13735,15 @@ namespace MagicCarpet.Native
             if (frontendMedia?.Visible == true) { frontendMedia.Draw(); return; }
             if (gameRuntimeSpellMenuOpen)
             {
-                var selection = Level2Spells.DrawSpellMenu(gameRuntimeCampaignSnapshot?.value);
-                if (selection != null)
+                DrawLevel2DayHud();
+                var assignment = gameRuntimeSourceSpellMenu.Draw(gameRuntimeCampaignSnapshot?.value,
+                    selector => hudBitmapTextures[selector],
+                    selector => new Vector2Int(hudBitmapDescriptors[selector].runtime_width, hudBitmapDescriptors[selector].runtime_height));
+                if (assignment != null)
                 {
                     CloseGameRuntimeSpellMenu();
-                    SubmitGameRuntimeSpellSelection(selection);
+                    gameRuntimeSpellSelectionRequested = null;
+                    gameRuntimeSpellAssignmentRequested = assignment;
                 }
                 return;
             }
@@ -15252,6 +15277,8 @@ namespace MagicCarpet.Native
             gameRuntimeMode = false;
             gameRuntimeStartupReady = false;
             gameRuntimeCampaignSnapshot = null;
+            gameRuntimeSpellAssignmentRequested = null;
+            gameRuntimeSourceSpellMenu.Close();
             gameRuntimeLastCompletionTransitionReceipt = null;
             gameRuntimeSemanticEventCursor = "0";
             gameRuntimeRecentSemanticEvents.Clear();

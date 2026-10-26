@@ -4,6 +4,192 @@ use crate::{FlightWorld, Position, Tile, WATER_AMBIENCE_MASK};
 
 use super::super::*;
 
+impl crate::campaign::source_arena::SourceArena {
+    /// Complete the ordinary 68BF0 prepass for the opening families which
+    /// retain multipart projections. Other families run their own adapter.
+    /// Membership is frozen before callbacks; child links read live occupants.
+    pub(crate) fn step_opening_creature_proximity(
+        &mut self,
+        models: &[Vec<u16>; 29],
+        player: Position,
+    ) {
+        for model in [0, 3, 9, 19] {
+            for &slot in &models[model] {
+                let Some(index) = self.economy.authored_class5.iter().position(|row| {
+                    row.active && row.source_entity_index == slot && usize::from(row.model) == model
+                }) else {
+                    self.step_raw_creature_proximity(&[slot], player);
+                    continue;
+                };
+                let (flags, mut child) = match model {
+                    0 => (
+                        self.economy
+                            .authored_dragons
+                            .iter()
+                            .find(|row| row.source_entity_index == slot)
+                            .map_or(0, |row| row.control_flags),
+                        self.economy
+                            .authored_class5_runtime
+                            .iter()
+                            .find(|row| row.source_entity_index == slot)
+                            .map_or(0, |row| row.linked_head),
+                    ),
+                    3 => self
+                        .economy
+                        .authored_class5_model3
+                        .iter()
+                        .find(|row| row.source_entity_index == slot)
+                        .map_or((0, 0), |row| (row.control_flags, row.word_0x34)),
+                    19 => (
+                        self.economy
+                            .authored_fireflies
+                            .iter()
+                            .find(|row| row.source_entity_index == slot)
+                            .map_or(0, |row| row.control_flags),
+                        0,
+                    ),
+                    _ => (0, 0),
+                };
+                let root = &mut self.economy.authored_class5[index];
+                let inherited = if root.life < 0 {
+                    root.source_byte_39 = 250;
+                    None
+                } else if root.source_byte_39 != 0 {
+                    let prior = root.source_byte_39;
+                    root.source_byte_39 = prior.wrapping_sub(1);
+                    Some(prior)
+                } else if flags & 1 != 0 {
+                    None
+                } else {
+                    // These constructors initialize byte3A to zero; none of
+                    // their source callbacks writes a proximity delay.
+                    let dx = i32::from(root.position.x.wrapping_sub(player.x) as i16);
+                    let dy = i32::from(root.position.y.wrapping_sub(player.y) as i16);
+                    let distance = dx.wrapping_mul(dx).wrapping_add(dy.wrapping_mul(dy)) as u32;
+                    if distance < 0x0240_0000 {
+                        root.source_byte_39 = 16;
+                        Some(18)
+                    } else {
+                        None
+                    }
+                };
+                let Some(value) = inherited else { continue };
+                for _ in 0..self.entities.len() {
+                    if child == 0 {
+                        break;
+                    }
+                    if let Some(part) = self
+                        .economy
+                        .authored_dragon_parts
+                        .iter_mut()
+                        .find(|part| part.source_entity_index == child && part.active)
+                    {
+                        part.source_byte_39 = value;
+                        child = part.next_entity_index;
+                    } else if let Some(part) = self
+                        .economy
+                        .authored_class5_model3_children
+                        .iter_mut()
+                        .find(|part| part.source_entity_index == child && part.active)
+                    {
+                        part.source_byte_39 = value;
+                        child = part.word_0x34;
+                    } else if let Some(part) = self.entities.get_mut(usize::from(child)) {
+                        part.record[61] = value;
+                        child = part.word_34();
+                    } else {
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    /// Authored `sub_4A310 -> sub_4BBB0` uses the same lossless carrier and
+    /// action family as reset-imported and converted Skeletons.
+    pub(crate) fn allocate_authored_skeleton_raw(
+        &mut self,
+        authored_record: u16,
+        mut position: Position,
+        max_life: i32,
+        stage_index: Option<u8>,
+        terrain: &mut SessionTerrain,
+        particles: &[ParticleParameter],
+        descriptor: &[u8],
+    ) -> std::result::Result<Option<u16>, String> {
+        use crate::campaign::source_arena::CreatureRootOrigin;
+        use crate::level_definition::CreatureKind;
+        if max_life <= 0 || descriptor.len() < 34 {
+            return Err("Skeleton requires positive life and descriptor 80".into());
+        }
+        let scan_period = u16::from_le_bytes([descriptor[26], descriptor[27]]);
+        if scan_period == 0 {
+            return Err("Skeleton descriptor scan period is zero".into());
+        }
+        let particle = particles
+            .get(220)
+            .ok_or_else(|| "Skeleton requires particle 220".to_owned())?;
+        let pose = campaign_shared_families::ParticlePose {
+            animation_limit: particle
+                .animation_limit()
+                .ok_or_else(|| "Skeleton particle 220 has invalid animation mode".to_owned())?,
+            array_yaw: (particle.rotation_speed / 2) as i16,
+            array_pitch: (particle.speed / 2) as i16,
+            array_roll: (particle.speed / 2) as i16,
+            array_fov: (particle.rotation_speed / 2) as i16,
+        };
+        let Some(slot) = self.allocate_source_slot_with_terrain(terrain) else {
+            return Ok(None);
+        };
+        let seed = self.economy.new_event_rng(slot);
+        let phase = self.economy.class5_model9_constructor_phase;
+        self.economy.class5_model9_constructor_phase = phase.wrapping_add(1);
+        position.z = terrain.ground_height(position);
+        let mut row = campaign_shared_families::construct_skeleton_source(
+            slot,
+            seed,
+            position,
+            phase,
+            scan_period,
+            pose,
+        );
+        row.bind_frame_zero_max_life(max_life);
+        // Skeleton defers sub_12330 until its emergence countdown finishes.
+        row.record[78..80].copy_from_slice(&u16::from(stage_index.unwrap_or(0)).to_le_bytes());
+        let rng = row.entity_rng;
+        self.entities[usize::from(slot)] = row;
+        self.economy.source_rng.insert(slot, rng);
+        crate::world::effects::sync_position(self, terrain, slot, position, true, false)?;
+        let material_mask =
+            u32::from_le_bytes(descriptor[20..24].try_into().expect("descriptor width"));
+        let clearance = i16::from_le_bytes([descriptor[12], descriptor[13]]);
+        if campaign_shared_families::skeleton_placement_blocked(
+            terrain,
+            position,
+            material_mask,
+            clearance,
+        ) {
+            crate::world::effects::sync_position(self, terrain, slot, position, false, false)?;
+            self.entities[usize::from(slot)].reclaim_source_row();
+            self.economy.release_slot(slot, Some(rng));
+            return Ok(None);
+        }
+        let handle = self
+            .handle(slot)
+            .ok_or_else(|| format!("Skeleton constructor lost slot {slot}"))?;
+        if !self.bind_raw_creature_origin(
+            handle,
+            CreatureKind::Skeleton,
+            CreatureRootOrigin::AuthoredRecord { authored_record },
+        ) {
+            return Err(format!(
+                "Skeleton constructor lost identity for slot {slot}"
+            ));
+        }
+        Ok(Some(slot))
+    }
+}
+
 /// `str_D7BD6[80]`, the descriptor installed by `sub_4BBB0` for model 9.
 /// The row's `dword_0x14` is `0xffff_ffff`, so the source material mask is
 /// empty: model-9 movement rejects cave/terrain geometry, not a material

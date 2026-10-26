@@ -2359,6 +2359,7 @@ impl GameSessionBackend for Mc2CampaignBackend {
                 effective_pitch: flight.effective_pitch,
                 roll: flight.roll_accumulator,
             },
+            source_camera_pose: compatibility.source_camera_pose(),
             player_motion: PlayerMotion {
                 target_speed: flight.target_speed,
                 actual_speed: flight.actual_speed,
@@ -2960,6 +2961,19 @@ impl Mc2CampaignBackend {
         if command.recover_player || command.recenter || command.full_stop {
             return Ok(player_command);
         }
+        if let Some(assignment) = &command.assign_spell {
+            if command.select_spell.is_some() {
+                return Err(CampaignBackendError::StepRejected {
+                    message: "spell assignment and selection require separate commands".to_owned(),
+                });
+            }
+            return spells::assigned_player_command(
+                self.campaign.level2_compatibility().shared_spells(),
+                assignment,
+                player_command,
+            )
+            .map_err(|message| CampaignBackendError::StepRejected { message });
+        }
         let Some(selection) = command.select_spell.as_ref() else {
             return Ok(player_command);
         };
@@ -3420,7 +3434,10 @@ pub(crate) mod tests {
     fn campaign_elapsed_clock_repair_replays_step_and_pause_without_tick_guessing() {
         use crate::game_runtime::GameRuntime;
         let resolver = Mc2RuntimePackageResolver::load([
-            Mc2CampaignInputs::new(level_one_descriptor_fixture_path()),
+            Mc2CampaignInputs::new(
+                PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../../generated/mc-bhq8-level1-collision-v5-night"),
+            ),
             Mc2CampaignInputs::new(descriptor_fixture_path()),
             Mc2CampaignInputs::new(level_three_descriptor_fixture_path()),
         ])
@@ -3442,6 +3459,21 @@ pub(crate) mod tests {
             )
             .unwrap();
         let tick = runtime.session().unwrap().identity().tick;
+        let source_turn = runtime
+            .session()
+            .unwrap()
+            .backend()
+            .campaign
+            .level2_compatibility()
+            .shared_spells()
+            .local_player()
+            .turn;
+        let source_camera_pose = runtime
+            .session()
+            .unwrap()
+            .snapshot()
+            .value
+            .source_camera_pose;
         let guard = runtime.identity().guard();
         let paused = runtime.pause(guard).unwrap();
         let session_guard = runtime.session().unwrap().identity().guard();
@@ -3449,6 +3481,28 @@ pub(crate) mod tests {
             .paused_campaign_frame_timed(paused.guard(), session_guard, 177)
             .unwrap();
         assert_eq!(runtime.session().unwrap().identity().tick, tick);
+        assert_eq!(
+            runtime
+                .session()
+                .unwrap()
+                .backend()
+                .campaign
+                .level2_compatibility()
+                .shared_spells()
+                .local_player()
+                .turn,
+            source_turn.wrapping_add(1)
+        );
+        assert_eq!(
+            runtime
+                .session()
+                .unwrap()
+                .snapshot()
+                .value
+                .source_camera_pose,
+            source_camera_pose,
+            "paused PlayerEvents must preserve the captured source view"
+        );
         assert_eq!(
             runtime
                 .session()
@@ -31065,8 +31119,172 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn campaign_backend_real_level_one_public_possession_claims_house_and_exposes_owner_marker() {
+        use crate::Position;
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../generated/mc-bhq8-level1-collision-v5-night");
+        let definition = load_mc2_campaign(&root, &default_catalog().unwrap()).unwrap();
+        let mut session = GameSession::open(
+            &Mc2CampaignAdapter,
+            Arc::new(definition),
+            77,
+            Mc2CampaignInputs::new(&root),
+        )
+        .unwrap();
+        let (house, player, color) = {
+            let state = session.backend().campaign.level2_compatibility();
+            let house = *state
+                .ordinary()
+                .houses()
+                .iter()
+                .find(|house| {
+                    house.active
+                        && house.action == 52
+                        && !house.parameter.possession_blocked()
+                        && house.owner_entity_index == 0
+                })
+                .expect("actual Level1 contains an eligible neutral live House");
+            let player = state.state.entity_index;
+            let color = state
+                .players()
+                .iter()
+                .find(|row| row.entity_index == player)
+                .unwrap()
+                .player_color_index();
+            assert!(
+                state
+                    .campaign_entity_presentations(0)
+                    .unwrap()
+                    .iter()
+                    .all(|row| row.entity_index != house.entity_index),
+                "the neutral House marker starts source-hidden"
+            );
+            (house, player, color)
+        };
+        // Isolate firing geometry only. Ownership, holder activation, flyer,
+        // effect allocation, mailbox and action52 all use the public step.
+        let position = Position {
+            y: house.position.y.wrapping_add(1_024),
+            z: house.position.z.wrapping_add(512),
+            ..house.position
+        };
+        session
+            .backend_mut()
+            .campaign
+            .level2_compatibility_mut()
+            .set_level2_entity_position(player, position)
+            .unwrap();
+        session
+            .step(
+                guard(&session),
+                GameCommand {
+                    select_spell: Some(SemanticId::parse("spell.possession").unwrap()),
+                    ..GameCommand::default()
+                },
+            )
+            .unwrap();
+        let (yaw, pitch) = {
+            let state = session.backend().campaign.level2_compatibility();
+            let mut launch = state.state.position;
+            launch.z = launch.z.wrapping_add(state.state.entity_fov);
+            let target = Position {
+                z: house
+                    .position
+                    .z
+                    .wrapping_add(house.collision_vertical_offset),
+                ..house.position
+            };
+            crate::level1_mission::projectile_guidance_angles(launch, target)
+        };
+        session
+            .backend_mut()
+            .campaign
+            .level2_compatibility_mut()
+            .set_level2_player_aim_for_test(yaw, pitch);
+        session
+            .step(
+                guard(&session),
+                GameCommand {
+                    cast_selected: true,
+                    ..GameCommand::default()
+                },
+            )
+            .unwrap();
+        let mut saw_flyer = false;
+        let mut saw_effect = false;
+        let mut saw_house_callback = false;
+        for _ in 0..32 {
+            let state = session.backend().campaign.level2_compatibility();
+            saw_flyer |= state
+                .economy()
+                .possession_projectiles()
+                .iter()
+                .any(|row| row.source_id_entity_index == player);
+            saw_effect |= state
+                .economy()
+                .possession_effects()
+                .iter()
+                .any(|row| row.source_id_entity_index == player);
+            saw_house_callback |= state.dispatch_events().iter().any(|event| match event {
+                Level2DispatchEvent::House { events, .. } => events.iter().any(|event| {
+                    matches!(event,
+                    crate::house::HouseStepEvent::Possessed {
+                        entity_index, owner_entity_index, payload: 0, .. }
+                        if *entity_index == house.entity_index && *owner_entity_index == player)
+                }),
+                _ => false,
+            });
+            if state.ordinary().houses().iter().any(|row| {
+                row.entity_index == house.entity_index && row.owner_entity_index == player
+            }) && !state
+                .economy()
+                .possession_effects()
+                .iter()
+                .any(|row| row.active)
+            {
+                // Source model12 writes on every live callback. Its higher
+                // slot may rewrite an already consumed House mailbox later
+                // in the pass; assert cleanup only once that pulse expires.
+                break;
+            }
+            session
+                .step(guard(&session), GameCommand::default())
+                .unwrap();
+        }
+        let state = session.backend().campaign.level2_compatibility();
+        let owned = state
+            .ordinary()
+            .houses()
+            .iter()
+            .find(|row| row.entity_index == house.entity_index)
+            .unwrap();
+        assert_eq!(
+            owned.owner_entity_index, player,
+            "public Possession must reach the actual House callback: flyer={saw_flyer}, effect={saw_effect}, house={owned:?}"
+        );
+        assert!(saw_flyer && saw_effect && saw_house_callback);
+        assert_eq!(
+            (
+                owned.pending_possession_owner,
+                owned.pending_possession_payload
+            ),
+            (0, 0)
+        );
+        assert_eq!(owned.control_flags & 1, 0);
+        assert_eq!(state.economy().source_owner(house.entity_index), player);
+        let marker = state
+            .campaign_entity_presentations(0)
+            .unwrap()
+            .into_iter()
+            .find(|row| row.entity_index == house.entity_index)
+            .expect("claimed House exposes its marker");
+        assert_eq!(marker.render_parameter_index, 177 + u16::from(color));
+    }
+
+    #[test]
     fn campaign_backend_real_level_one_possession_claim_feeds_stage_one_castle_carrier() {
-        let root = level_one_descriptor_fixture_path();
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../generated/mc-bhq8-level1-collision-v5-night");
         let definition = load_mc2_campaign(&root, &default_catalog().unwrap()).unwrap();
         let possession_id = SemanticId::parse("spell.possession").unwrap();
         let mut session = GameSession::open(
@@ -31342,6 +31560,12 @@ pub(crate) mod tests {
                     .find(|sphere| sphere.source_entity_index == target_slot)
             )
         });
+        let claimed_generation = session
+            .backend()
+            .campaign
+            .level2_compatibility()
+            .economy()
+            .slot_generation(claimed_slot);
         assert!(
             session
                 .backend()
@@ -31543,17 +31767,36 @@ pub(crate) mod tests {
                 .collect::<Vec<_>>()
         );
         assert!(saw_balloon_sprite);
+        let compatibility = session.backend().campaign.level2_compatibility();
         assert!(
-            session
-                .backend()
-                .campaign
-                .level2_compatibility()
-                .campaign_entity_presentations(0)
-                .unwrap()
+            compatibility
+                .economy()
+                .spheres()
                 .iter()
-                .all(|row| row.entity_index != claimed_slot),
-            "a collected/reclaimed sphere cannot remain visible"
+                .all(|sphere| sphere.source_entity_index != claimed_slot),
+            "the collected sphere must be reclaimed"
         );
+        if let Some(reused) = compatibility
+            .campaign_entity_presentations(0)
+            .unwrap()
+            .into_iter()
+            .find(|row| row.entity_index == claimed_slot)
+        {
+            // NewEvent reuses reclaimed fixed addresses. A later effect at
+            // this slot is valid, but the old sphere binding must be gone.
+            assert_ne!(
+                compatibility.economy().slot_generation(claimed_slot),
+                claimed_generation
+            );
+            let current = &compatibility.entities()[usize::from(claimed_slot)];
+            assert_ne!((current.class, current.model), (5, 39));
+            assert_ne!((reused.render_parameter_index, reused.base_tmap), (106, 67));
+            assert_eq!(
+                current.particle_parameter_index,
+                Some(reused.render_parameter_index)
+            );
+            assert_eq!(current.source_id, reused.source_id);
+        }
         assert!(
             deposited > 0,
             "the loaded carrier must return mana to the Castle"
@@ -36527,6 +36770,7 @@ pub(crate) mod tests {
             cast_right: false,
             cast_selected: true,
             select_spell: None,
+            assign_spell: None,
             recenter: false,
             full_stop: false,
             look_yaw: -17,

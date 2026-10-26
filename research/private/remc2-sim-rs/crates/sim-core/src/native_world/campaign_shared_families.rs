@@ -486,6 +486,7 @@ pub(super) fn step_model9_action72(
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(super) struct Model9Action79Outcome {
+    pub population_decrement: bool,
     pub moved: bool,
     pub movement_attempts: u8,
     pub steered: bool,
@@ -518,6 +519,7 @@ pub(super) struct Model9DamageTarget {
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(super) struct Model9ReactionOutcome {
+    pub population_decrement: bool,
     pub prey_to_consume: Option<u16>,
     pub inherit_identity: bool,
 }
@@ -527,7 +529,6 @@ pub(super) enum Model9Action79Error {
     Selector(CampaignSharedFamilyError),
     InvalidChildChain { source_slot: u16, child_slot: u16 },
     InvalidDamageTarget { source_slot: u16, target_slot: u16 },
-    UnsupportedAllCandidatesBlocked { source_slot: u16 },
 }
 
 impl fmt::Display for Model9Action79Error {
@@ -547,10 +548,6 @@ impl fmt::Display for Model9Action79Error {
             } => write!(
                 formatter,
                 "model-9 source slot {source_slot} has invalid damage target slot {target_slot}"
-            ),
-            Self::UnsupportedAllCandidatesBlocked { source_slot } => write!(
-                formatter,
-                "model-9 source slot {source_slot} exhausted all remc2 movement candidates; the global live-count write is not admitted"
             ),
         }
     }
@@ -737,10 +734,10 @@ fn model9_candidate_blocked<W: FlightWorld>(
 fn step_model9_source_movement<W: FlightWorld>(
     entity: &mut EntitySnapshot,
     world: &W,
-) -> std::result::Result<(bool, u8), Model9Action79Error> {
+) -> std::result::Result<(bool, u8, bool), Model9Action79Error> {
     if entity.control_flags & MODEL9_SKIP_MOVEMENT_BIT != 0 {
         entity.set_control_flags(entity.control_flags & !MODEL9_SKIP_MOVEMENT_BIT);
-        return Ok((false, 0));
+        return Ok((false, 0, false));
     }
 
     let before = entity.position;
@@ -757,7 +754,7 @@ fn step_model9_source_movement<W: FlightWorld>(
         }
         crate::move_entity(&mut candidate, heading, 0, entity.actual_speed);
         let crossed_tile = before.x >> 8 != candidate.x >> 8 || before.y >> 8 != candidate.y >> 8;
-        if !crossed_tile || !model9_candidate_blocked(entity, candidate, world) {
+        if (attempt == 0 && !crossed_tile) || !model9_candidate_blocked(entity, candidate, world) {
             entity.set_position(candidate);
             let yaw = (i32::from(heading)
                 + i32::from(crate::turn_toward(
@@ -773,6 +770,7 @@ fn step_model9_source_movement<W: FlightWorld>(
             return Ok((
                 true,
                 u8::try_from(attempt + 1).expect("four movement attempts"),
+                false,
             ));
         }
         if attempt == 0 {
@@ -781,9 +779,9 @@ fn step_model9_source_movement<W: FlightWorld>(
     }
 
     entity.set_life(-1);
-    Err(Model9Action79Error::UnsupportedAllCandidatesBlocked {
-        source_slot: entity.index,
-    })
+    // Descriptor80 has the fatal-blockage bit. sub_1B8C0 decrements the
+    // population and returns normally; the next callback sees negative life.
+    Ok((false, 4, true))
 }
 
 /// Port the ordinary StageVar-kind-1 path of remc2
@@ -792,8 +790,8 @@ fn step_model9_source_movement<W: FlightWorld>(
 /// `entities` is the immutable callback-start snapshot. It supplies the
 /// source child chain and the ascending model list used by the peer-avoidance
 /// overwrite. The numeric scheduler still owns the phase epilogue. Damage
-/// enters the real reaction/pre-kill selector before movement; only the
-/// all-candidates-blocked global bookkeeping remains fail-closed.
+/// enters the real reaction/pre-kill selector before movement. The caller
+/// applies the population write returned by fatal terrain blockage.
 pub(super) fn step_model9_action79<W: FlightWorld>(
     entity: &mut EntitySnapshot,
     world: &W,
@@ -816,8 +814,10 @@ pub(super) fn step_model9_action79<W: FlightWorld>(
         });
     }
 
-    let (moved, movement_attempts) = step_model9_source_movement(entity, world)?;
+    let (moved, movement_attempts, population_decrement) =
+        step_model9_source_movement(entity, world)?;
     let mut outcome = Model9Action79Outcome {
+        population_decrement,
         moved,
         movement_attempts,
         ..Model9Action79Outcome::default()
@@ -947,9 +947,12 @@ pub(super) fn step_model9_action73<W: FlightWorld>(
     if consume_model9_damage(entity, world, entities, dynamic_targets, reaction_pose)?.is_some() {
         return Ok(Model9ReactionOutcome::default());
     }
-    step_model9_source_movement(entity, world)?;
+    let (_, _, population_decrement) = step_model9_source_movement(entity, world)?;
     if u16::from(entity.phase) % scan_period != 0 {
-        return Ok(Model9ReactionOutcome::default());
+        return Ok(Model9ReactionOutcome {
+            population_decrement,
+            ..Default::default()
+        });
     }
     let distance2 = |position: Position| {
         let dx = i32::from(position.x.wrapping_sub(entity.position.x) as i16);
@@ -1020,9 +1023,13 @@ pub(super) fn step_model9_action73<W: FlightWorld>(
         entity.record[154..156].copy_from_slice(&target.identity.source_slot.to_le_bytes());
         entity.set_source_action(74);
         apply_model9_reaction_pose(entity, target.identity, reaction_pose);
-        return Ok(Model9ReactionOutcome::default());
+        return Ok(Model9ReactionOutcome {
+            population_decrement,
+            ..Default::default()
+        });
     }
     Ok(Model9ReactionOutcome {
+        population_decrement,
         prey_to_consume: prey_in_reach.map(|target| target.identity.source_slot),
         inherit_identity: false,
     })
@@ -1104,6 +1111,7 @@ pub(super) fn step_model9_action74<W: FlightWorld>(
     Ok(Model9ReactionOutcome {
         prey_to_consume,
         inherit_identity: true,
+        population_decrement: false,
     })
 }
 
@@ -1397,6 +1405,60 @@ mod tests {
     }
 
     #[test]
+    fn skeleton_blocked_movement_returns_population_effect_then_pre_kill() {
+        struct Blocked;
+        impl FlightWorld for Blocked {
+            fn ground_height(&self, _: Position) -> i16 {
+                256
+            }
+            fn ceiling_height(&self, _: Position) -> Option<i16> {
+                None
+            }
+            fn material_mask(&self, _: Position) -> u32 {
+                u32::MAX
+            }
+            fn angle_flags(&self, _: Tile) -> u8 {
+                0
+            }
+            fn cave_collision_blocked(&self, _: Position) -> bool {
+                true
+            }
+        }
+        let pose = ParticlePose {
+            animation_limit: 1,
+            array_yaw: 0,
+            array_pitch: 128,
+            array_roll: 128,
+            array_fov: 128,
+        };
+        let mut source = entity(5, 9, 79);
+        source.set_position(Position {
+            x: 0x12ff,
+            y: 0x34ff,
+            z: 256,
+        });
+        source.set_actual_speed(512);
+        let phase = source.phase;
+        let result =
+            step_model9_action79(&mut source, &Blocked, Position::default(), &[], &[], pose)
+                .unwrap();
+        assert_eq!(
+            (
+                result.moved,
+                result.movement_attempts,
+                result.population_decrement
+            ),
+            (false, 4, true)
+        );
+        assert_eq!((source.life, source.action, source.phase), (-1, 79, phase));
+        let result =
+            step_model9_action79(&mut source, &Blocked, Position::default(), &[], &[], pose)
+                .unwrap();
+        assert_eq!(source.action, 76);
+        assert!(!result.population_decrement);
+    }
+
+    #[test]
     fn skeleton_constructor_enters_player_scan_without_confusing_bees_with_players() {
         let pose = ParticlePose {
             animation_limit: 9,
@@ -1566,6 +1628,7 @@ mod tests {
         assert_eq!(
             outcome,
             Model9Action79Outcome {
+                population_decrement: false,
                 moved: true,
                 movement_attempts: 1,
                 steered: true,

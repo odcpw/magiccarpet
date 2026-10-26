@@ -325,8 +325,15 @@ impl SettlementContext<'_, '_> {
                         resident.desired_heading = heading.wrapping_add(0x0400) & 0x07ff;
                         if let Some(peer) = source_views.iter().copied().find(|candidate| {
                             candidate.active
-                                && candidate.class == resident.class
-                                && candidate.model == resident.model
+                                && self.stage.as_ref().map_or(
+                                    candidate.class == resident.class
+                                        && candidate.model == resident.model
+                                        && candidate.life >= 0,
+                                    |context| {
+                                        context.models[usize::from(resident.model)]
+                                            .contains(&candidate.source_entity_index)
+                                    },
+                                )
                                 && candidate.source_id != resident.source_id
                                 && (i32::from(resident.position.x)
                                     - i32::from(candidate.position.x))
@@ -823,9 +830,15 @@ impl SettlementContext<'_, '_> {
                         resident.desired_heading = heading.wrapping_add(0x0400) & 0x07ff;
                         if let Some(peer) = source_views.iter().copied().find(|candidate| {
                             candidate.active
-                                && candidate.life >= 0
-                                && candidate.class == resident.class
-                                && candidate.model == resident.model
+                                && self.stage.as_ref().map_or(
+                                    candidate.class == resident.class
+                                        && candidate.model == resident.model
+                                        && candidate.life >= 0,
+                                    |context| {
+                                        context.models[usize::from(resident.model)]
+                                            .contains(&candidate.source_entity_index)
+                                    },
+                                )
                                 && candidate.source_id != resident.source_id
                                 && (i32::from(resident.position.x)
                                     - i32::from(candidate.position.x))
@@ -881,6 +894,10 @@ impl SettlementContext<'_, '_> {
         world: &W,
         resident: &mut DynamicResidentState,
     ) {
+        if *self.source_control_flags & 0x800 != 0 {
+            *self.source_control_flags &= !0x800;
+            return;
+        }
         let was_alive = resident.life >= 0;
         let transition = crate::ground_creature_motion::step_ground_creature_motion(
             resident.position,
@@ -889,6 +906,8 @@ impl SettlementContext<'_, '_> {
             resident.actual_speed,
             world,
             crate::ground_creature_motion::GroundCreatureMotionConfig {
+                half_width: resident.collision_half_width,
+                half_height: resident.collision_half_height,
                 ground_clearance: BUILDER_GROUND_CLEARANCE,
                 descent: BUILDER_DESCENT,
                 turn_limit: BUILDER_TURN_LIMIT,
@@ -2652,11 +2671,13 @@ impl crate::campaign::source_arena::SourceArena {
         let spell_awards =
             self::runtime::apply_effects(self, villagers, terrain, particles, stage_effects)?;
         Ok(Some(SettlementPopulationStep {
-            feedback_entity: (feedback != 0).then_some(if matches!(source.action, 101 | 117) {
-                source.kill_credit_entity
-            } else {
-                source.current_attacker
-            }),
+            feedback_entity: (feedback != 0).then_some(
+                if matches!(source.action, 101 | 109 | 117) {
+                    source.kill_credit_entity
+                } else {
+                    source.current_attacker
+                },
+            ),
             spell_awards,
         }))
     }
@@ -2798,6 +2819,125 @@ mod production_tests {
             .expect("actual ordinary Level7 package")
             .level2_compatibility()
             .clone()
+    }
+
+    #[test]
+    fn house_born_villager_death_feedback_uses_kill_credit() {
+        let mut session = ordinary_level_two();
+        let player = session.state.entity_index;
+        let live = &mut session.session.state.live;
+        let house = live.ordinary.houses.houses()[0];
+        let slot = live
+            .economy
+            .allocate_house_resident(
+                house.entity_index,
+                0,
+                crate::level1_mission::HouseResidentRequest {
+                    position: house.position,
+                    model: 13,
+                    action: 105,
+                    attacker_entity_index: 0,
+                },
+                &mut live.terrain,
+            )
+            .unwrap();
+        let resident = live
+            .economy
+            .house_residents
+            .iter_mut()
+            .find(|row| row.source_entity_index == slot)
+            .unwrap();
+        // The combat mailbox has already selected action108 and kill credit.
+        // Current attacker deliberately differs to check the returned consumer key.
+        resident.action = 108;
+        resident.reset_counter = 0;
+        resident.kill_credit_entity = player;
+        resident.current_attacker = 0;
+        let resident = *resident;
+        resident.publish_source(&mut live.economy.entities[usize::from(slot)]);
+        let models = std::array::from_fn(|_| Vec::new());
+        let step = live
+            .ordinary
+            .step_settlement_source(
+                &mut live.economy,
+                &mut live.terrain,
+                slot,
+                &[],
+                &mut live.core.runtime,
+                &models,
+                &[player],
+                &session.session.definition.presentation.particles,
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(step.feedback_entity, Some(player));
+        assert_eq!(live.economy.entities[usize::from(slot)].action, 109);
+    }
+
+    #[test]
+    fn house_born_settlements_consume_forced_motion_latch_once() {
+        let mut session = ordinary_level_two();
+        let live = &mut session.session.state.live;
+        let house = live.ordinary.houses.houses()[0];
+        let models = std::array::from_fn(|_| Vec::new());
+        for (model, action) in [(12, 97), (13, 105), (14, 113)] {
+            let slot = live
+                .economy
+                .allocate_house_resident(
+                    house.entity_index,
+                    0,
+                    crate::level1_mission::HouseResidentRequest {
+                        position: house.position,
+                        model,
+                        action,
+                        attacker_entity_index: 0,
+                    },
+                    &mut live.terrain,
+                )
+                .unwrap();
+            let resident = live
+                .economy
+                .house_residents
+                .iter_mut()
+                .find(|row| row.source_entity_index == slot)
+                .unwrap();
+            resident.phase = 1;
+            // Controlled output of sub_33340: the wind has already supplied
+            // this position/yaw and requests skipping one ground move.
+            resident.control_flags |= 0x800;
+            let before = *resident;
+            before.publish_source(&mut live.economy.entities[usize::from(slot)]);
+            live.ordinary
+                .step_settlement_source(
+                    &mut live.economy,
+                    &mut live.terrain,
+                    slot,
+                    &[],
+                    &mut live.core.runtime,
+                    &models,
+                    &[],
+                    &session.session.definition.presentation.particles,
+                )
+                .unwrap()
+                .expect("ordinary settlement callback");
+            let after = live
+                .economy
+                .house_residents
+                .iter()
+                .find(|row| row.source_entity_index == slot)
+                .unwrap();
+            assert_eq!(
+                (after.position, after.yaw),
+                (before.position, before.yaw),
+                "model {model}"
+            );
+            assert_eq!(after.control_flags & 0x800, 0, "model {model}");
+            assert_eq!(after.phase, 2, "the callback epilogue still advances");
+            assert_eq!(
+                live.economy.entities[usize::from(slot)].control_flags & 0x800,
+                0
+            );
+        }
     }
 
     #[test]

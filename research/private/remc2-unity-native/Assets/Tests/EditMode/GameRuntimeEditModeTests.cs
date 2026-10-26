@@ -9,6 +9,175 @@ namespace MagicCarpet.Native.Tests
 {
     public sealed class GameRuntimeEditModeTests
     {
+        private static string[] InstalledOpeningArguments()
+        {
+            var generated = Path.Combine(PrivateRoot, "generated");
+            return new[] {
+                "-mc-game-runtime", "-mc-runtime-loading-cache", Path.Combine(generated, "mc2-level1-night-cache-v2"),
+                "-mc-runtime-package", Path.Combine(generated, "mc-bhq8-level1-collision-v5-night"),
+                "-mc-runtime-owner-cache", Path.Combine(generated, "mc-oi62-environment-level1-v2"),
+                "-mc-runtime-presentation-cache", Path.Combine(generated, "mc2-level1-night-cache-v2"),
+                "-mc-runtime-package", Path.Combine(generated, "mc-level2-vault-successor-closure-20261025"),
+                "-mc-runtime-owner-cache", Path.Combine(generated, "mc-level2-vault-successor-environment-20261025"),
+                "-mc-runtime-presentation-cache", Path.Combine(generated, "level2-vault-successor-owner-cache-20261025"),
+                "-mc-runtime-package", Path.Combine(generated, "level3-day-block32-campaign-recipe-v2"),
+                "-mc-runtime-owner-cache", Path.Combine(generated, "mc-level3-environment-exit-20261025"),
+                "-mc-runtime-presentation-cache", Path.Combine(generated, "level3-day-spell-owner-cache-audio-v4"),
+                "-mc-runtime-package", Path.Combine(generated, "mc-bhq6-ordinary-20261025-zclu5fjj/level4"),
+                "-mc-runtime-owner-cache", Path.Combine(generated, "mc-oi62-environment-level4-audio-v3"),
+                "-mc-runtime-presentation-cache", Path.Combine(generated, "mc-oi62-environment-level4-audio-v3")
+            };
+        }
+
+        [Test]
+        public void InstalledNightSpawnAndSteeringUseProductionFramePath()
+        {
+            var root = new GameObject("installed Night spawn frame path");
+            root.SetActive(false);
+            var runtime = root.AddComponent<MagicCarpetRuntime>();
+            try
+            {
+                runtime.QualificationInitializeGameRuntimeProductionFromArguments(InstalledOpeningArguments());
+                Assert.That(runtime.GameRuntimeNightPresentationReady, Is.True);
+                var total = System.Diagnostics.Stopwatch.StartNew();
+                for (var i = 0; i < 32; i++)
+                {
+                    var previousPose = runtime.GameRuntimeProductionCampaignSnapshot.value.player_pose;
+                    runtime.QualificationApplyGameRuntimeProductionSteering(i < 8 ? 0 : 16, i < 16 ? 0 : -8);
+                    runtime.QualificationDriveGameRuntimeFrames(1);
+                    var snapshot = runtime.GameRuntimeProductionCampaignSnapshot.value;
+                    var pose = snapshot.player_pose;
+                    Assert.That(snapshot.source_camera_pose.pitch, Is.EqualTo(SignedAngle11(previousPose.display_pitch) / 2),
+                        "source view captures signed pitch/2 before the entity update");
+                    Assert.That(snapshot.source_camera_pose.yaw, Is.EqualTo(previousPose.yaw));
+                    Assert.That(snapshot.source_camera_pose.z, Is.EqualTo(previousPose.z + 128));
+                    var native = (NativeCampaignSession)typeof(MagicCarpetRuntime).GetField("campaignSession",
+                        System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic).GetValue(runtime);
+                    var litPixels = 0;
+                    foreach (var index in native.SceneFrameIndices)
+                    {
+                        var palette = native.DayIndexedFramePalette;
+                        if (palette[index * 3] != 0 || palette[index * 3 + 1] != 0 || palette[index * 3 + 2] != 0) litPixels++;
+                    }
+                    Debug.Log($"MC_SPAWN_POSE frame={i} yaw={pose.yaw} pitch={pose.display_pitch} source_pitch={snapshot.source_camera_pose.pitch} z={pose.z} lit_pixels={litPixels}");
+                    Assert.That(runtime.GameRuntimeNightPresentationHash, Is.Not.Zero);
+                }
+                Debug.Log($"MC_SPAWN_PROFILE frames=32 elapsed_ms={total.Elapsed.TotalMilliseconds:F3}");
+            }
+            finally
+            {
+                runtime.QualificationDisposeGameRuntimeProduction();
+                UnityEngine.Object.DestroyImmediate(root);
+            }
+        }
+
+        [Test]
+        public void InstalledOpeningAssignsSpellHandsAndRejectsLockedTierBeforeCasting()
+        {
+            var root = new GameObject("installed spell hand and tier producer");
+            root.SetActive(false);
+            var runtime = root.AddComponent<MagicCarpetRuntime>();
+            try
+            {
+                runtime.QualificationInitializeGameRuntimeProductionFromArguments(InstalledOpeningArguments());
+                Assert.That(Level2SpellPresenter.FindSpell(runtime.GameRuntimeProductionCampaignSnapshot.value,
+                    "spell.possession").hand, Is.EqualTo("right"));
+                runtime.QualificationAssignGameRuntimeProductionSpell("spell.possession", 0, false);
+                runtime.QualificationDriveGameRuntimeFrames(1);
+                Assert.That(Level2SpellPresenter.FindSpell(runtime.GameRuntimeProductionCampaignSnapshot.value,
+                    "spell.possession").hand, Is.EqualTo("both"),
+                    "source left-hand assignment preserves the existing right hand");
+                runtime.QualificationAssignGameRuntimeProductionSpell("spell.fireball", 0, true);
+                runtime.QualificationDriveGameRuntimeFrames(1);
+                Assert.That(Level2SpellPresenter.FindSpell(runtime.GameRuntimeProductionCampaignSnapshot.value,
+                    "spell.fireball").hand, Is.EqualTo("right"));
+                Assert.That(Level2SpellPresenter.FindSpell(runtime.GameRuntimeProductionCampaignSnapshot.value,
+                    "spell.possession").hand, Is.EqualTo("left"));
+                runtime.QualificationAssignGameRuntimeProductionSpell("spell.possession", 2, false);
+                runtime.QualificationDriveGameRuntimeFrames(1);
+                Assert.That(Level2SpellPresenter.FindSpell(runtime.GameRuntimeProductionCampaignSnapshot.value,
+                    "spell.possession").tier, Is.Zero, "a locked choice never mutates its source holder");
+                runtime.ApplyGameRuntimeHeldSpellInput(true, false);
+                runtime.QualificationDriveGameRuntimeFrames(2);
+                runtime.ApplyGameRuntimeHeldSpellInput(false, false);
+                var native = (NativeCampaignSession)typeof(MagicCarpetRuntime).GetField("campaignSession",
+                    System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic).GetValue(runtime);
+                Assert.That(Array.Exists(native.Entities(), row => row.active != 0 &&
+                    (row.classId == 9 && row.model == 1 || row.classId == 10 && row.model == 12)), Is.True,
+                    "the assigned left hand reaches the actual Possession projectile/effect producer");
+            }
+            finally
+            {
+                runtime.QualificationDisposeGameRuntimeProduction();
+                UnityEngine.Object.DestroyImmediate(root);
+            }
+        }
+
+        [Test]
+        public void NightSteeringKeepsSourceTerrainThroughGpuComposition()
+        {
+            Assert.That(SystemInfo.graphicsDeviceType, Is.Not.EqualTo(UnityEngine.Rendering.GraphicsDeviceType.Null));
+            var generated = Path.Combine(PrivateRoot, "generated");
+            var package = Path.Combine(generated, "mc-bhq8-level1-collision-v5-night");
+            var cachePath = Path.Combine(generated, "mc-oi62-environment-level1-v2");
+            var cache = OwnerAssetCache.OpenAndValidateEnvironment(cachePath, package);
+            using var native = NativeCampaignSession.Open(package, NativeSim.CampaignSelection.Create(1, 0, 1), cachePath);
+            using var surface = new CampaignPresentationSurface();
+            var output = new RenderTexture(320, 200, 0, RenderTextureFormat.ARGB32, RenderTextureReadWrite.Linear);
+            var pixels = new Texture2D(320, 200, TextureFormat.RGBA32, false, true);
+            var previous = RenderTexture.active;
+            try
+            {
+                for (var frame = 0; frame < 64; frame++)
+                {
+                    var player = native.Entities()[native.Players()[0].entityIndex];
+                    if (frame != 0) native.Step(player.x, player.y, player.z, roll: 127, pitch: (sbyte)(frame < 32 ? 8 : -8));
+                    player = native.Entities()[native.Players()[0].entityIndex];
+                    surface.PresentEnvironment(native, cache, player.yaw);
+                    surface.PresentView(new EngineSessionTransport.Pose {
+                        x = player.x, y = player.y, z = player.z, yaw = player.yaw, display_pitch = player.pitch
+                    });
+                    var cameras = surface.FrameCamera.transform.parent.GetComponentsInChildren<Camera>();
+                    Array.Sort(cameras, (left, right) => left.depth.CompareTo(right.depth));
+                    foreach (var camera in cameras)
+                    {
+                        if (camera.targetTexture == null) camera.targetTexture = output;
+                        camera.Render();
+                        if (camera.depth != -100f) continue;
+                        RenderTexture.active = camera.targetTexture;
+                        pixels.ReadPixels(new Rect(0, 0, 320, 200), 0, 0); pixels.Apply();
+                        var raw = pixels.GetPixels32();
+                        var different = 0;
+                        for (var y = 0; y < 200; y++)
+                            for (var x = 0; x < 320; x++)
+                                if (raw[y * 320 + x].r != native.SceneFrameIndices[(199-y)*320+x]) different++;
+                        Assert.That(different, Is.Zero, $"source terrain frame={frame} yaw={player.yaw}");
+                    }
+                    RenderTexture.active = output;
+                    pixels.ReadPixels(new Rect(0, 0, 320, 200), 0, 0); pixels.Apply();
+                    var lit = Array.FindAll(pixels.GetPixels32(), pixel => pixel.r != 0 || pixel.g != 0 || pixel.b != 0).Length;
+                    var sourceLit = Array.FindAll(native.SceneFrameIndices, index =>
+                        native.DayIndexedFramePalette[index * 3] != 0 || native.DayIndexedFramePalette[index * 3 + 1] != 0 ||
+                        native.DayIndexedFramePalette[index * 3 + 2] != 0).Length;
+                    Debug.Log($"MC_NIGHT_GPU frame={frame} yaw={player.yaw} pitch={player.pitch} lit_pixels={lit} source_lit_pixels={sourceLit}");
+                    var captureDir = Environment.GetEnvironmentVariable("MC_RENDER_CAPTURE_DIR");
+                    if (!string.IsNullOrEmpty(captureDir) && (frame == 0 || frame == 32 || frame == 34 || frame == 40 || frame == 48))
+                    {
+                        Directory.CreateDirectory(captureDir);
+                        File.WriteAllBytes(Path.Combine(captureDir, $"night-{frame:D2}.png"), pixels.EncodeToPNG());
+                    }
+                    Assert.That(lit, Is.GreaterThan(0), "composed steering view must retain visible world pixels");
+                }
+            }
+            finally
+            {
+                RenderTexture.active = previous;
+                output.Release();
+                UnityEngine.Object.DestroyImmediate(output);
+                UnityEngine.Object.DestroyImmediate(pixels);
+            }
+        }
+
         [Test]
         public void CaveOwnerHudAndWorldUseActualPackagePaletteAndSprites()
         {
@@ -488,7 +657,7 @@ namespace MagicCarpet.Native.Tests
         public void FreshMenuV2BindsOwnerBriefingAndRejectsAlteredLanguage()
         {
             var source = Environment.GetEnvironmentVariable("MC_MENU_CACHE_V2") ??
-                Path.Combine(PrivateRoot, "generated/mc-a3-startup-review-cache-v2");
+                Path.Combine(PrivateRoot, "generated/mc-zdo5-source-title-pause-20261026");
             Assert.That(File.ReadAllText(Path.Combine(source, "manifest.json")),
                 Does.Contain("mc2-owner-campaign-menu-cache/v2"));
             using (var cache = new OwnerCampaignMenuCache(source))
@@ -499,10 +668,17 @@ namespace MagicCarpet.Native.Tests
                 Assert.That(cache.ForMission("level.magic_carpet_2.spider_cave").briefing, Is.EqualTo(language[26]));
                 Assert.That(cache.StartupBackground.width, Is.EqualTo(640));
                 Assert.That(cache.Startup.animations.Length, Is.EqualTo(4));
+                Assert.That(cache.Startup.font.glyph_mapping, Is.EqualTo("mc2-hscreen-bank4-byte-controls/v1"));
+                Assert.That(cache.Startup.font.glyphs[65].width, Is.EqualTo(7));
+                Assert.That(cache.Startup.font.glyphs[65].height, Is.EqualTo(7));
+                Assert.That(cache.Startup.help.Length, Is.EqualTo(9));
                 foreach (var entry in cache.Startup.buttons)
+                {
+                    var help = Array.Find(cache.Startup.help, row => row.help_key == entry.help_key);
                     Assert.That(cache.StartupHoverText(new Vector2(entry.x + entry.width / 2f,
-                        entry.y + entry.height / 2f)), Is.EqualTo(language[entry.text_selector]),
-                        "every title icon exposes its original language label, including unavailable actions");
+                        entry.y + entry.height / 2f)), Is.EqualTo(language[help.text_selector]),
+                        "every title icon uses its original source callout record");
+                }
                 Assert.That(cache.StartupHoverText(new Vector2(639, 479)), Is.Null);
                 Assert.That(cache.PortalBitmap(84), Is.Not.Null, "source opening overshoot is retained");
                 Assert.That(cache.ReadPortalOpeningSound().Length, Is.GreaterThan(44));

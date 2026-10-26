@@ -1311,36 +1311,104 @@ pub(super) fn level2_first_colliding_mana_sphere_slot(
     None
 }
 
-/// Pinned `sub_108B0` map-chain walk for the ordinary tier-0 Possession
-/// flyer. The source returns the first eligible strict-overlap model-39 row;
-/// allocation order never substitutes for the chain order.
+/// Sphere-only fixture adapter for the shared `sub_108B0` map-chain walk.
+#[cfg(test)]
 pub(super) fn level2_first_possession_target_sphere_slot(
     map_chains: &RenderableMapChains,
     spheres: &[ManaSphere],
     projectile: Level2PossessionProjectile,
 ) -> Option<u16> {
+    level2_first_possession_target(map_chains, spheres, &[], projectile).map(|(slot, _)| slot)
+}
+
+fn possession_house_target_top(house: &HouseState) -> Position {
+    Position {
+        z: house
+            .position
+            .z
+            .wrapping_add(house.collision_vertical_offset),
+        ..house.position
+    }
+}
+
+fn possession_house_eligible(house: &HouseState, owner: u16) -> bool {
+    house.source_retained()
+        && house.control_flags & 8 != 0
+        && !house.parameter.possession_blocked()
+        && house.source_id != owner
+        && house.owner_entity_index != owner
+}
+
+pub(super) fn possession_house_overlap(
+    house: &HouseState,
+    position: Position,
+    half_width: i16,
+    vertical_offset: i16,
+    half_height: i16,
+) -> bool {
+    crate::level1_mission::source_entities_overlap_xy(
+        position,
+        half_width,
+        half_width,
+        house.position,
+        house.collision_half_width,
+        house.collision_half_depth,
+    ) && (i32::from(position.z) + i32::from(vertical_offset)
+        - i32::from(house.position.z)
+        - i32::from(house.collision_vertical_offset))
+    .abs()
+        < i32::from(half_height) + i32::from(house.collision_half_height)
+}
+
+/// Source `sub_108B0` returns the first eligible strict overlap in map-chain
+/// order. Houses share this scan with mana; a nearest-target or separate House
+/// pass would change which row absorbs a flyer.
+pub(super) fn level2_first_possession_target(
+    map_chains: &RenderableMapChains,
+    spheres: &[ManaSphere],
+    houses: &[HouseState],
+    projectile: Level2PossessionProjectile,
+) -> Option<(u16, Position)> {
     for candidate_slot in source_map_search_slots(
         map_chains,
         projectile.position,
         &LEVEL2_POSSESSION_PROJECTILE_SEARCH_OFFSETS,
     ) {
-        let Some(candidate) = spheres.iter().find(|candidate| {
+        if let Some(candidate) = spheres.iter().find(|candidate| {
             candidate.active
                 && !candidate.pending_delete
                 && candidate.source_entity_index == candidate_slot
                 && u16::try_from(candidate.id).ok() != Some(projectile.source_id_entity_index)
                 && candidate.player_entity_index != projectile.source_id_entity_index
-        }) else {
-            continue;
-        };
-        if candidate.overlaps_source_axes(
+        }) && candidate.overlaps_source_axes(
             projectile.position,
             POSSESSION_PROJECTILE_COLLISION_HALF_WIDTH,
             POSSESSION_PROJECTILE_COLLISION_HALF_WIDTH,
             POSSESSION_PROJECTILE_COLLISION_VERTICAL_OFFSET,
             POSSESSION_PROJECTILE_COLLISION_HALF_HEIGHT,
         ) {
-            return Some(candidate_slot);
+            return Some((
+                candidate_slot,
+                Position {
+                    z: candidate
+                        .position
+                        .z
+                        .wrapping_add(super::level2_dynamic_economy::POSSESSION_TARGET_Z_SHIFT),
+                    ..candidate.position
+                },
+            ));
+        }
+        if let Some(house) = houses.iter().find(|house| {
+            house.entity_index == candidate_slot
+                && possession_house_eligible(house, projectile.source_id_entity_index)
+        }) && possession_house_overlap(
+            house,
+            projectile.position,
+            POSSESSION_PROJECTILE_COLLISION_HALF_WIDTH,
+            POSSESSION_PROJECTILE_COLLISION_VERTICAL_OFFSET,
+            POSSESSION_PROJECTILE_COLLISION_HALF_HEIGHT,
+        ) {
+            return Some((candidate_slot, possession_house_target_top(house)));
         }
     }
     None
@@ -1353,13 +1421,14 @@ pub(super) fn level2_possession_guidance_target_top(sphere: &ManaSphere) -> Posi
     }
 }
 
-/// Qualified Level-2 subset of `sub_67CB0`'s model-1/0x11 acquisition list.
-/// The represented arena currently carries model-39 rows; source rebuilds
-/// their special list in ascending arena-slot order and strict-lower score
-/// replacement preserves the earlier row on ties.
+/// `sub_67CB0`'s model-1/0x11 acquisition visits mana, then the frozen House
+/// list. Strict-lower replacement preserves earlier candidates on ties.
 pub(super) fn level2_possession_guidance_target(
     spheres: &[ManaSphere],
     source_slots: &[u16],
+    houses: &[HouseState],
+    house_slots: &[u16],
+    entities: &[EntitySnapshot],
     projectile: Level2PossessionProjectile,
 ) -> Option<(u16, Position)> {
     let mut selected = None;
@@ -1386,6 +1455,28 @@ pub(super) fn level2_possession_guidance_target(
             selected_score = score;
         }
     }
+    for slot in house_slots {
+        let Some(house) = houses.iter().find(|house| {
+            house.entity_index == *slot
+                && possession_house_eligible(house, projectile.source_id_entity_index)
+                && entities
+                    .get(usize::from(*slot))
+                    .is_some_and(|row| row.record[61] != 0)
+        }) else {
+            continue;
+        };
+        let target_top = possession_house_target_top(house);
+        if let Some(score) = projectile_target_score(
+            projectile.position,
+            projectile.yaw,
+            projectile.pitch,
+            target_top,
+        ) && score < selected_score
+        {
+            selected = Some((house.entity_index, target_top));
+            selected_score = score;
+        }
+    }
     selected
 }
 
@@ -1394,6 +1485,7 @@ pub(super) fn level2_possession_guidance_target(
 /// slot is absent, the one-shot acquisition bit prevents retargeting.
 pub(super) fn level2_possession_guidance_relation(
     spheres: &[ManaSphere],
+    houses: &[HouseState],
     possession_projectiles: &[Level2PossessionProjectile],
     stale_source_records: &BTreeMap<u16, Position>,
     target_source_entity_index: u16,
@@ -1402,6 +1494,12 @@ pub(super) fn level2_possession_guidance_relation(
         .iter()
         .find(|sphere| sphere.source_entity_index == target_source_entity_index)
         .map(level2_possession_guidance_target_top)
+        .or_else(|| {
+            houses
+                .iter()
+                .find(|house| house.entity_index == target_source_entity_index)
+                .map(possession_house_target_top)
+        })
         .or_else(|| {
             possession_projectiles
                 .iter()

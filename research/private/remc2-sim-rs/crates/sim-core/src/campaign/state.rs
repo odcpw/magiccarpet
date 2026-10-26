@@ -183,6 +183,7 @@ pub struct ScratchState {
     pub(crate) level2_day_hud_color_phase_2: u8,
     pub(crate) level2_day_hud_hit_frame_time_pre_draw: u8,
     pub(crate) level2_day_hud_player_panel_selector: u16,
+    pub(crate) source_camera_pose: Option<sim_session::CameraPose>,
 }
 
 impl ScratchState {
@@ -199,6 +200,7 @@ impl ScratchState {
             level2_day_hud_color_phase_2: 0,
             level2_day_hud_hit_frame_time_pre_draw: 0,
             level2_day_hud_player_panel_selector: 0,
+            source_camera_pose: None,
         }
     }
 

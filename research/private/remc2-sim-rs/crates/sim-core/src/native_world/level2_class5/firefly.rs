@@ -459,7 +459,13 @@ impl Level2EconomyState {
             });
         }
 
-        if source.life < 0 && source.action < FIREFLY_PRE_KILL_ACTION {
+        if source.life < 0
+            && !matches!(source.action, FIREFLY_PRE_KILL_ACTION | FIREFLY_KILL_ACTION)
+        {
+            // Stage action159 also consumes terrain-written negative life.
+            // With no new mailbox, sub_1DDA0/sub_1E1C0 clears the attacker.
+            source.word_0x26 = 0;
+            source.word_0x24 = 0;
             source.action = FIREFLY_PRE_KILL_ACTION;
             self.authored_class5[source_index] = source;
             return Ok(FireflyLifecycleStep {
@@ -680,7 +686,9 @@ impl Level2EconomyState {
                 - i32::from(source.position.y.cast_signed()))
             .abs()
                 <= FIREFLY_GUARD_REACH;
-        step_firefly_motion(&mut source, &mut state, terrain);
+        if step_firefly_motion(&mut source, &mut state, terrain) {
+            self.decrement_source_creature_population();
+        }
 
         if at_guard_point {
             // Firefly descriptor88 has source byte32=1: sub_1E1C0 admits
@@ -781,7 +789,9 @@ impl Level2EconomyState {
         };
         let mut source = self.authored_class5[source_index];
         let mut state = self.authored_fireflies[state_index];
-        step_firefly_motion(&mut source, &mut state, terrain);
+        if step_firefly_motion(&mut source, &mut state, terrain) {
+            self.decrement_source_creature_population();
+        }
 
         if source.source_byte_3e % FIREFLY_DESCRIPTOR_CADENCE == 0 {
             apply_firefly_wander(&mut source);
@@ -867,7 +877,9 @@ impl Level2EconomyState {
                 && peer.life >= 0
                 && peer.model == FIREFLY_MODEL
         });
-        step_firefly_motion(&mut source, &mut state, terrain);
+        if step_firefly_motion(&mut source, &mut state, terrain) {
+            self.decrement_source_creature_population();
+        }
         if let Some(peer) = peer {
             if source.source_byte_3e % FIREFLY_DESCRIPTOR_CADENCE == 0 {
                 match peer.action.wrapping_sub(152) {
@@ -956,7 +968,9 @@ impl Level2EconomyState {
 
         let mut source = self.authored_class5[source_index];
         let mut state = self.authored_fireflies[state_index];
-        step_firefly_motion(&mut source, &mut state, terrain);
+        if step_firefly_motion(&mut source, &mut state, terrain) {
+            self.decrement_source_creature_population();
+        }
 
         let Some(target) = target.filter(|target| {
             target.live && target.entity_index != 0 && target.entity_index == source.word_0x96_150
@@ -1511,7 +1525,7 @@ fn step_firefly_motion(
     source: &mut Level2AuthoredClass5Source,
     state: &mut AuthoredFireflyRuntime,
     terrain: &SessionTerrain,
-) {
+) -> bool {
     let transition = crate::ground_creature_motion::step_ground_creature_motion(
         source.position,
         source.yaw,
@@ -1519,6 +1533,8 @@ fn step_firefly_motion(
         source.actual_speed,
         terrain,
         crate::ground_creature_motion::GroundCreatureMotionConfig {
+            half_width: source.shift_rot_x,
+            half_height: source.shift_rot_y,
             ground_clearance: FIREFLY_GROUND_CLEARANCE,
             descent: FIREFLY_DESCENT,
             turn_limit: FIREFLY_TURN_LIMIT,
@@ -1532,6 +1548,9 @@ fn step_firefly_motion(
     if transition.killed {
         source.life = -1;
     }
+    // Descriptor88 has byte32 bit0: a fatal four-candidate blockage also
+    // decrements source364D2, independently of the later death callback.
+    transition.killed
 }
 
 fn apply_firefly_wander(source: &mut Level2AuthoredClass5Source) {
@@ -1679,6 +1698,90 @@ mod tests {
         // regression below concerns later pre-dispatch arrivals only.
         assert!(runtime.advance_level2_stage_variable_counter(8));
         (economy, runtime, source.source_entity_index)
+    }
+
+    #[test]
+    fn cave_guard_negative_life_runs_death_tail_and_next_pass_reclaim() {
+        let package = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../generated/mc-bhq6-ordinary-20261025-zclu5fjj/level4");
+        let campaign =
+            CampaignSession::open(package, CampaignSelection::ordinary(4).unwrap()).unwrap();
+        let mut session = campaign.level2_compatibility().clone();
+        let source = session
+            .session
+            .state
+            .live
+            .economy
+            .economy
+            .authored_class5
+            .iter_mut()
+            .find(|row| {
+                row.active && row.model == FIREFLY_MODEL && row.action == FIREFLY_STAGE_ACTION
+            })
+            .expect("actual Cave guard begins in action159");
+        let slot = source.source_entity_index;
+        // Stage the direct life write produced by fatal movement; the normal
+        // scheduler must consume it even though no fresh damage mailbox exists.
+        source.life = -1;
+        source.word_0x26 = 7;
+        source.word_0x24 = 7;
+        session.step_outer_turn(crate::PlayerCommand::default(), 0);
+        let source = session
+            .economy()
+            .authored_class5()
+            .iter()
+            .find(|row| row.source_entity_index == slot)
+            .unwrap();
+        assert_eq!(
+            (source.action, source.word_0x26, source.word_0x24),
+            (156, 0, 0)
+        );
+        session.step_outer_turn(crate::PlayerCommand::default(), 0);
+        assert_eq!(
+            session
+                .economy()
+                .authored_class5()
+                .iter()
+                .find(|row| row.source_entity_index == slot)
+                .unwrap()
+                .action,
+            157
+        );
+        for _ in 0..8 {
+            session.step_outer_turn(crate::PlayerCommand::default(), 0);
+            if session
+                .economy()
+                .authored_class5()
+                .iter()
+                .find(|row| row.source_entity_index == slot)
+                .is_some_and(|row| !row.drawing_enabled)
+            {
+                break;
+            }
+        }
+        assert!(
+            session
+                .economy()
+                .authored_class5()
+                .iter()
+                .any(|row| row.source_entity_index == slot && !row.drawing_enabled)
+        );
+        assert!(
+            session
+                .economy()
+                .death_bursts()
+                .iter()
+                .any(|row| row.parent_entity_index == slot)
+        );
+        session.step_outer_turn(crate::PlayerCommand::default(), 0);
+        assert!(
+            !session
+                .economy()
+                .authored_class5()
+                .iter()
+                .any(|row| row.source_entity_index == slot && row.active)
+        );
+        assert!(!session.economy().map_chains().is_linked(slot));
     }
 
     #[test]

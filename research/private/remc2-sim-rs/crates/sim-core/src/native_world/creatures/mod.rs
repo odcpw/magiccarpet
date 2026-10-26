@@ -9,5 +9,6 @@ pub(crate) mod bee;
 pub(crate) mod creature_15;
 pub(crate) mod creature_22;
 pub(crate) mod creature_24;
+pub(crate) mod morph;
 pub(crate) mod settlements;
 pub(crate) mod spider;

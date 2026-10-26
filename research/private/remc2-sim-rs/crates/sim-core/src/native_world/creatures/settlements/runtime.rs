@@ -211,6 +211,92 @@ pub(crate) fn prepare_source_pass(
     }
 }
 
+/// sub_68BF0/sub_68C70 runs after route preparation and before actor visits.
+/// Use the published raw links for child propagation, then commit the cadence
+/// byte back to each typed owner so its callback cannot restore an old value.
+pub(crate) fn proximity_prepass(
+    arena: &mut SourceArena,
+    ordinary: &mut Level2OrdinaryResetSession,
+    models: &[Vec<u16>; 29],
+    player: Position,
+) {
+    for model in 12..=14 {
+        arena.step_raw_creature_proximity(&models[model], player);
+    }
+    for actor in ordinary.villagers.villagers_mut() {
+        if let Some(raw) = arena.entities.get(usize::from(actor.entity_index)) {
+            actor.source_byte_39 = raw.record[61];
+        }
+    }
+    for actor in arena.economy.house_residents.iter_mut() {
+        if let Some(raw) = arena.entities.get(usize::from(actor.source_entity_index)) {
+            actor.source_byte_39 = raw.record[61];
+        }
+    }
+    for actor in arena
+        .economy
+        .authored_class5
+        .iter_mut()
+        .filter(|row| row.model == 14)
+    {
+        if let Some(raw) = arena.entities.get(usize::from(actor.source_entity_index)) {
+            actor.source_byte_39 = raw.record[61];
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn level_one_proximity_cadence_survives_the_typed_actor_publication() {
+        let package = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../generated/mc-bhq8-level1-collision-v5-night");
+        let mut campaign = crate::campaign::CampaignSession::open(
+            package,
+            crate::campaign::spec::CampaignSelection::LEVEL1,
+        )
+        .unwrap();
+        let live = &mut campaign.level2_compatibility_mut().session.state.live;
+        let position = live.core.state.position;
+        let actor = live
+            .ordinary
+            .villagers
+            .villagers_mut()
+            .first_mut()
+            .expect("Level1 reset contains ordinary Villagers");
+        actor.source_byte_39 = 2;
+        actor.position = position;
+        actor.control_flags &= !1;
+        let slot = actor.entity_index;
+        let phase = actor.phase;
+        actor.publish_source(&mut live.economy.entities[usize::from(slot)]);
+        let mut models: [Vec<u16>; 29] = std::array::from_fn(|_| Vec::new());
+        models[13].push(slot);
+        for expected in [1, 0, 16] {
+            proximity_prepass(&mut live.economy, &mut live.ordinary, &models, position);
+            let actor = live
+                .ordinary
+                .villagers
+                .villagers()
+                .iter()
+                .find(|actor| actor.entity_index == slot)
+                .unwrap();
+            assert_eq!(actor.source_byte_39, expected);
+            assert_eq!(
+                actor.phase, phase,
+                "a prepass is not an additional actor visit"
+            );
+            actor.publish_source(&mut live.economy.entities[usize::from(slot)]);
+            assert_eq!(
+                live.economy.entities[usize::from(slot)].record[61],
+                expected
+            );
+        }
+    }
+}
+
 pub(crate) fn apply_effects(
     arena: &mut SourceArena,
     villagers: &mut VillagerFamily,

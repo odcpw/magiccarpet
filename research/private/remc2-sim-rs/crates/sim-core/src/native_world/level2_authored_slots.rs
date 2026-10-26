@@ -271,6 +271,10 @@ impl Level2EconomyState {
 
             class5_model19_constructor_phase: counters[19],
 
+            morph: creatures::morph::State {
+                phases: [counters[16], counters[25]],
+            },
+
             castle_auxiliary_constructor_phase: counters[15],
 
             class14_model3_handle: 0,
@@ -2289,6 +2293,15 @@ impl Level2EconomyState {
         terrain: &SessionTerrain,
     ) -> Option<Level2AuthoredModel5WaterSplashSource> {
         let source_entity_index = self.allocate_slot()?;
+        self.initialize_authored_model5_water_splash(source_entity_index, position, terrain)
+    }
+
+    pub(super) fn initialize_authored_model5_water_splash(
+        &mut self,
+        source_entity_index: u16,
+        position: Position,
+        terrain: &SessionTerrain,
+    ) -> Option<Level2AuthoredModel5WaterSplashSource> {
         let entity_rng = self.new_event_rng(source_entity_index);
         let mut grounded_position = position;
         grounded_position.z = terrain.ground_height(position);
@@ -7199,6 +7212,10 @@ impl Level2EconomyState {
             self.class5_model19_constructor_phase,
         ]);
         hasher.update(b"castle-auxiliary-constructor-phase-v1");
+        if self.morph != creatures::morph::State::default() {
+            hasher.update(b"morph-body-constructor-phases-v1");
+            hasher.update(self.morph.phases);
+        }
         hasher.update([self.castle_auxiliary_constructor_phase]);
         for source in &self.authored_class5 {
             hasher.update(source.source_entity_index.to_le_bytes());

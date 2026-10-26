@@ -823,7 +823,8 @@ namespace MagicCarpet.Native
             bool recenter = false,
             bool fullStop = false,
             bool recoverPlayer = false,
-            uint elapsedCentiseconds = 0)
+            uint elapsedCentiseconds = 0,
+            EngineSessionTransport.SpellAssignment assignment = null)
         {
             RequireSessionMode(allowPaused: false, "campaign step");
             var before = Current;
@@ -840,7 +841,7 @@ namespace MagicCarpet.Native
                 lookYaw,
                 lookPitch,
                 NegotiatedSessionContract.limits.maximum_command_json_bytes,
-                selectSpell, recenter, fullStop, recoverPlayer, elapsedCentiseconds);
+                selectSpell, recenter, fullStop, recoverPlayer, elapsedCentiseconds, assignment);
             var identity = IdentitySnapshot();
             if (identity.mode != PlayingMode ||
                 ParseCounter(identity.generation, "generation") != beforeRuntimeGeneration ||

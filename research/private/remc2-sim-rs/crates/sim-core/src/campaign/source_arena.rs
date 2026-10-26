@@ -185,6 +185,7 @@ impl SourceArena {
         origin: CreatureRootOrigin,
     ) -> bool {
         let expected_model = match kind {
+            CreatureKind::Skeleton => 9,
             CreatureKind::Spider => 20,
             CreatureKind::Creature22 => 22,
             CreatureKind::Creature24 => 24,
@@ -209,7 +210,7 @@ impl SourceArena {
         source: &EntitySnapshot,
         initial: &BTreeMap<u16, CreatureKind>,
     ) -> Option<CreatureRuntimeIdentity> {
-        if !source.active || source.class != 5 || !matches!(source.model, 20 | 22 | 24) {
+        if !source.active || source.class != 5 || !matches!(source.model, 9 | 20 | 22 | 24) {
             return None;
         }
         let part = source.model == 22 && source.action == 180;
@@ -232,6 +233,7 @@ impl SourceArena {
             return None;
         }
         let expected = match source.model {
+            9 => CreatureKind::Skeleton,
             20 => CreatureKind::Spider,
             22 => CreatureKind::Creature22,
             24 => CreatureKind::Creature24,
@@ -711,7 +713,9 @@ impl SourceArena {
         if !source.active || source.class != 5 {
             return None;
         }
-        if matches!(source.model, 20 | 22 | 24) {
+        if matches!(source.model, 20 | 22 | 24)
+            || self.raw_creature_origins.contains_key(&source_slot)
+        {
             return self.raw_creature_identity(source, initial_bindings);
         }
         let handle = SourceEntityHandle {
@@ -928,7 +932,9 @@ impl SourceArena {
         {
             return None;
         }
-        if matches!(source.model, 20 | 22 | 24) {
+        if matches!(source.model, 20 | 22 | 24)
+            || self.raw_creature_origins.contains_key(&source_slot)
+        {
             return self.raw_creature_identity(source, initial_bindings);
         }
         if source.class == 5
@@ -1268,10 +1274,19 @@ impl DerefMut for SourceArena {
 mod tests {
     use super::*;
     use crate::{
-        PlayerCommand,
+        FlightWorld, PlayerCommand,
         campaign::{CampaignSession, spec::CampaignSelection},
     };
     use std::path::PathBuf;
+
+    fn step_opening_source_turn(session: &mut crate::native_world::Level2ResetSession) {
+        let evidence = session.step_outer_turn(PlayerCommand::default(), 0);
+        assert!(
+            !evidence.is_empty(),
+            "opening source turn must commit, events: {:?}",
+            session.dispatch_events()
+        );
+    }
 
     fn level_two_session() -> crate::native_world::Level2ResetSession {
         let package = std::env::var_os("MC_CAMPAIGN_PACKAGE").map_or_else(
@@ -1285,6 +1300,246 @@ mod tests {
             .expect("qualified Level 2 semantic source arena package")
             .level2_compatibility()
             .clone()
+    }
+
+    #[test]
+    fn level_four_group12_constructs_direct_and_subtype_routed_fireflies() {
+        let package = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../generated/mc-bhq6-ordinary-20261025-zclu5fjj/level4");
+        let campaign =
+            CampaignSession::open(package, CampaignSelection::ordinary(4).unwrap()).unwrap();
+        let mut session = campaign.level2_compatibility().clone();
+        let expected = session
+            .session
+            .state
+            .live
+            .mission
+            .authored_features()
+            .iter()
+            .filter(|feature| {
+                feature.kind == 5 && feature.subtype == 19 && feature.activation_group == 12
+            })
+            .map(|feature| feature.index)
+            .collect::<BTreeSet<_>>();
+        assert_eq!(expected.len(), 20);
+        session
+            .activate_authored_group_prerequisite_for_test(12)
+            .unwrap();
+        let actual = session
+            .source_arena()
+            .economy
+            .authored_class5()
+            .iter()
+            .filter(|row| row.active && row.model == 19 && expected.contains(&row.authored_index))
+            .map(|row| row.authored_index)
+            .collect::<BTreeSet<_>>();
+        assert_eq!(
+            actual, expected,
+            "direct routes must not silently omit three Fireflies"
+        );
+        let slots = session
+            .source_arena()
+            .economy
+            .authored_class5()
+            .iter()
+            .filter(|row| [260, 263, 309].contains(&row.authored_index))
+            .map(|row| (row.source_entity_index, row.source_byte_3e))
+            .collect::<Vec<_>>();
+        assert_eq!(slots.len(), 3);
+        step_opening_source_turn(&mut session);
+        for (slot, phase) in slots {
+            let row = session
+                .source_arena()
+                .economy
+                .authored_class5()
+                .iter()
+                .find(|row| row.source_entity_index == slot)
+                .unwrap();
+            assert!(row.active);
+            assert_eq!(
+                row.source_byte_3e,
+                phase.wrapping_add(1),
+                "direct-route birth reaches normal callback epilogue"
+            );
+        }
+    }
+
+    #[test]
+    fn opening_authored_skeleton_groups_use_full_damage_death_and_reclaim_path() {
+        for (level, package, group) in [
+            (2, "mc-level2-vault-successor-closure-20261025", 22),
+            (4, "mc-bhq6-ordinary-20261025-zclu5fjj/level4", 9),
+        ] {
+            let package = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../../generated")
+                .join(package);
+            let campaign =
+                CampaignSession::open(package, CampaignSelection::ordinary(level).unwrap())
+                    .expect("actual opening campaign package");
+            let mut session = campaign.level2_compatibility().clone();
+            let authored = session
+                .session
+                .state
+                .live
+                .mission
+                .authored_features()
+                .iter()
+                .filter(|row| {
+                    row.kind == 5 && row.subtype == 9 && row.activation_group == group as i16
+                })
+                .map(|row| row.index)
+                .collect::<BTreeSet<_>>();
+            assert!(!authored.is_empty());
+            session
+                .activate_authored_group_prerequisite_for_test(group)
+                .unwrap();
+            let slot = session
+                .source_arena()
+                .entities
+                .iter()
+                .filter_map(|row| session.creature_identity_for_source_slot(row.index))
+                .find_map(|identity| match identity.origin {
+                    CreatureRootOrigin::AuthoredRecord { authored_record }
+                        if identity.kind == CreatureKind::Skeleton
+                            && authored.contains(&authored_record) =>
+                    {
+                        Some(identity.root_slot)
+                    }
+                    _ => None,
+                })
+                .expect("real authored group constructs a Skeleton");
+            assert_eq!(
+                session.source_arena().entities[usize::from(slot)].action,
+                72
+            );
+            for _ in 0..17 {
+                step_opening_source_turn(&mut session);
+            }
+            let row = &session.source_arena().entities[usize::from(slot)];
+            assert_eq!(
+                row.action, 73,
+                "Level {level} emergence reaches full ordinary handler"
+            );
+            let phase = row.phase;
+            let player = session.session.state.live.core.state.entity_index;
+            session
+                .stage_imported_skeleton_fireball_damage_for_test(slot, player, 500)
+                .unwrap();
+            step_opening_source_turn(&mut session);
+            let row = &session.source_arena().entities[usize::from(slot)];
+            assert_eq!(
+                (row.life, row.action, row.word_26(), row.source_word_96()),
+                (500, 74, player, player)
+            );
+            assert_eq!(row.phase, phase.wrapping_add(1));
+            assert_eq!(u16::from_le_bytes([row.record[102], row.record[103]]), 0);
+            assert_eq!(row.particle_parameter_index, Some(202));
+            let spheres = session.source_arena().economy.spheres().len();
+            let bursts = session.source_arena().economy.death_bursts().len();
+            session
+                .stage_imported_skeleton_fireball_damage_for_test(slot, player, 1000)
+                .unwrap();
+            step_opening_source_turn(&mut session);
+            let row = &session.source_arena().entities[usize::from(slot)];
+            assert_eq!((row.life, row.action, row.word_24()), (-500, 76, player));
+            step_opening_source_turn(&mut session);
+            assert_eq!(
+                session.source_arena().entities[usize::from(slot)].action,
+                77
+            );
+            for _ in 0..8 {
+                step_opening_source_turn(&mut session);
+                if session.source_arena().entities[usize::from(slot)].drawing_disabled() {
+                    break;
+                }
+            }
+            let row = &session.source_arena().entities[usize::from(slot)];
+            assert!(
+                row.active && row.drawing_disabled(),
+                "death stays allocated through its epilogue"
+            );
+            let economy = &session.source_arena().economy;
+            assert!(economy.spheres().len() > spheres);
+            assert!(
+                economy.death_bursts()[bursts..]
+                    .iter()
+                    .any(|burst| burst.parent_entity_index == slot)
+            );
+            step_opening_source_turn(&mut session);
+            let row = &session.source_arena().entities[usize::from(slot)];
+            assert!(
+                !row.active && row.class == 0,
+                "next pass reclaims the raw authored carrier"
+            );
+            assert!(session.creature_identity_for_source_slot(slot).is_none());
+            assert!(
+                !session
+                    .source_arena()
+                    .economy
+                    .map_chains()
+                    .linked_entity_indices()
+                    .contains(&slot)
+            );
+        }
+    }
+
+    #[test]
+    fn authored_skeleton_constructor_binds_raw_identity_and_proximity() {
+        let package = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../generated/mc-level2-vault-successor-closure-20261025");
+        let campaign = CampaignSession::open(package, CampaignSelection::LEVEL2).unwrap();
+        let session = campaign.level2_compatibility();
+        let mut arena = session.source_arena().clone();
+        let mut terrain = session.session.state.live.terrain.clone();
+        let definition = &session.session.definition;
+        let feature = session
+            .session
+            .state
+            .live
+            .mission
+            .authored_features()
+            .iter()
+            .find(|feature| feature.index == 239)
+            .unwrap();
+        let position = feature.world_position(terrain.ground_height(feature.world_position(0)));
+        let slot = arena
+            .allocate_authored_skeleton_raw(
+                239,
+                position,
+                1000,
+                Some(7),
+                &mut terrain,
+                &definition.presentation.particles,
+                &definition.presentation.entity_parameters[80],
+            )
+            .unwrap()
+            .expect("actual Level 2 authored Skeleton placement is admissible");
+        let identity = arena
+            .creature_runtime_identity(slot, &BTreeMap::new(), &BTreeMap::new())
+            .expect("dynamic raw Skeleton has its own semantic origin");
+        assert_eq!(identity.kind, CreatureKind::Skeleton);
+        assert_eq!(
+            identity.origin,
+            CreatureRootOrigin::AuthoredRecord {
+                authored_record: 239
+            }
+        );
+        let row = &mut arena.entities[usize::from(slot)];
+        assert_eq!((row.class, row.model, row.action), (5, 9, 72));
+        assert_eq!(row.source_dword_10(), 16);
+        assert_eq!(u16::from_le_bytes([row.record[78], row.record[79]]), 7);
+        assert_ne!(row.record[61], 0);
+        let before = row.record[61];
+        let mut models: [Vec<u16>; 29] = std::array::from_fn(|_| Vec::new());
+        models[9].push(slot);
+        arena.step_opening_creature_proximity(&models, position);
+        assert_eq!(arena.entities[usize::from(slot)].record[61], before - 1);
+        arena.entities[usize::from(slot)].record[61] = 0;
+        arena.step_opening_creature_proximity(&models, position);
+        assert_eq!(arena.entities[usize::from(slot)].record[61], 16);
+        arena.entities[usize::from(slot)].set_life(-1);
+        arena.step_opening_creature_proximity(&models, position);
+        assert_eq!(arena.entities[usize::from(slot)].record[61], 250);
     }
 
     #[test]

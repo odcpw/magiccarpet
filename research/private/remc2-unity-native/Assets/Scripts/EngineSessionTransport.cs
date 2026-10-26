@@ -91,6 +91,17 @@ namespace MagicCarpet.Native
         }
 
         [Serializable]
+        internal sealed class CameraPose
+        {
+            public ushort x;
+            public ushort y;
+            public short z;
+            public short yaw;
+            public short pitch;
+            public short roll;
+        }
+
+        [Serializable]
         internal sealed class Motion
         {
             public short target_speed;
@@ -124,6 +135,8 @@ namespace MagicCarpet.Native
             public bool acquired;
             public bool selected;
             public sbyte tier;
+            public byte unlocked_tier;
+            public byte menu_slot;
             public int mana_cost;
             public string hand;
             public string availability;
@@ -163,6 +176,7 @@ namespace MagicCarpet.Native
             public PlayerVitals player_vitals;
             public SpellObservation[] player_spells;
             public ushort player_immobilized_ticks;
+            public CameraPose source_camera_pose;
             public short source_camera_fov;
             public ObjectiveProgress objective_progress;
             public byte objective_textbox_ticks;
@@ -332,6 +346,20 @@ namespace MagicCarpet.Native
         private sealed class SpellSelectionCommand : Command
         {
             public string select_spell;
+        }
+
+        [Serializable]
+        internal sealed class SpellAssignment
+        {
+            public string spell_id;
+            public byte tier;
+            public string hand;
+        }
+
+        [Serializable]
+        private sealed class SpellAssignmentCommand : Command
+        {
+            public SpellAssignment assign_spell;
         }
 
         internal ulong Handle { get; }
@@ -527,7 +555,8 @@ namespace MagicCarpet.Native
             bool recenter = false,
             bool fullStop = false,
             bool recoverPlayer = false,
-            uint elapsedCentiseconds = 0)
+            uint elapsedCentiseconds = 0,
+            SpellAssignment assignment = null)
         {
             ValidateIdentityForHandle(handle, identity);
             var bits = unchecked((byte)flags);
@@ -535,7 +564,9 @@ namespace MagicCarpet.Native
             {
                 throw new ArgumentException("movement flags are outside the neutral command contract");
             }
-            Command command = selectSpell == null
+            if (assignment != null && selectSpell != null)
+                throw new ArgumentException("spell selection and assignment are separate commands");
+            Command command = assignment != null ? new SpellAssignmentCommand { assign_spell = assignment } : selectSpell == null
                 ? new Command()
                 : new SpellSelectionCommand { select_spell = selectSpell };
             command.longitudinal = (bits & 0x01) != 0
@@ -912,6 +943,7 @@ namespace MagicCarpet.Native
         internal static void ValidateCampaignSnapshot(CampaignSnapshotValue value, Identity identity)
         {
             if (value == null || value.player_pose == null || value.player_motion == null ||
+                value.source_camera_pose == null ||
                 value.player_vitals == null ||
                 value.player_spells == null ||
                 value.objective_progress == null ||

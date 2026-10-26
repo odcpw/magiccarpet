@@ -15,7 +15,6 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
 use crate::{
-    FlightState,
     classic_hd::{ClassicHdFrameWriter, ClassicHdRenderProfile, byte_hash},
     classic_hd_raster::rasterize_classic_hd_terrain_with_occlusion,
     classic_hd_terrain::{
@@ -1127,7 +1126,10 @@ fn validate_terrain_planes(
 fn camera_from_session(
     session: &Level2ResetSession,
 ) -> Result<Level1TerrainFrameCamera, DayIndexedFrameError> {
-    let mut camera = camera_from_state(&session.state)?;
+    let mut camera = camera_from_view(
+        session.source_camera_pose(),
+        session.shared_spells().local_player().turn,
+    )?;
     let exit = session.level_exit_sequence();
     if exit.active || exit.complete {
         camera.fov = exit.camera_fov;
@@ -1135,18 +1137,17 @@ fn camera_from_session(
     Ok(camera)
 }
 
-fn camera_from_state(
-    state: &FlightState,
+fn camera_from_view(
+    view: sim_session::CameraPose,
+    source_turn: i32,
 ) -> Result<Level1TerrainFrameCamera, DayIndexedFrameError> {
-    let source_turn = i32::try_from(state.tick)
-        .map_err(|_| DayIndexedFrameError::new("Level 2 Day source tick does not fit i32"))?;
     Ok(Level1TerrainFrameCamera {
-        render_x: state.position.x,
-        render_y: state.position.y,
-        eye_z: i32::from(state.position.z),
-        yaw: state.yaw,
-        pitch: state.display_pitch,
-        roll: state.roll_accumulator,
+        render_x: view.x,
+        render_y: view.y,
+        eye_z: i32::from(view.z),
+        yaw: view.yaw,
+        pitch: view.pitch,
+        roll: view.roll,
         fov: DAY_SOURCE_FOV,
         source_turn,
         reflections: true,
@@ -1778,7 +1779,7 @@ mod tests {
         tables[7] = 99;
         let terrain = vec![0; TERRAIN_PLANE_BYTES];
         let shading = vec![0; TERRAIN_PLANE_BYTES];
-        let camera = camera_from_state(&FlightState::default()).unwrap();
+        let camera = camera_from_view(sim_session::CameraPose::default(), 0).unwrap();
         for (cave, angle, expected) in [(true, 8, 0), (true, 0, 99), (false, 8, 99)] {
             let angles = vec![angle; TERRAIN_PLANE_BYTES];
             let mut indices =
@@ -1916,6 +1917,7 @@ mod tests {
                 .expect("following runtime frame");
             assert_eq!(moved.tick, first.tick + 1);
             assert_ne!(moved.index_hash, first.index_hash);
+            let moved_camera = camera_from_session(campaign.level2_compatibility()).unwrap();
             // Objective speech/flash progresses through real paused outer
             // frames while the terrain/image tick remains fixed.
             for _ in 0..8 {
@@ -1930,7 +1932,15 @@ mod tests {
                 )
                 .expect("paused objective flash observes the current palette");
             assert_eq!(paused.tick, moved.tick);
-            assert_eq!(paused.indices, moved.indices);
+            // PlayerEvents advances the outer turn while paused. The stored
+            // view stays fixed, while source water/sky animation may change.
+            let mut expected_camera = moved_camera;
+            expected_camera.source_turn += 8;
+            assert_eq!(
+                camera_from_session(campaign.level2_compatibility()).unwrap(),
+                expected_camera
+            );
+            assert_ne!(paused.terrain_input_hash, moved.terrain_input_hash);
             assert_ne!(paused.palette_rgb8, moved.palette_rgb8);
             let mut expected_palette = assets.palette_rgb8().to_vec();
             campaign
@@ -1973,7 +1983,7 @@ mod tests {
         let planes = reset.canonical_terrain().planes();
         let plan = build_cave_terrain(
             &profile,
-            camera_from_state(&reset.state).unwrap(),
+            camera_from_session(reset).unwrap(),
             CaveTerrainResources {
                 terrain_types: &planes.terrain_types,
                 ground_heights: &planes.ground_heights,
@@ -2009,7 +2019,7 @@ mod tests {
         let ceiling = provenance.iter().filter(|&&value| value == 5).count();
         eprintln!(
             "genuine Cave12 reset: visible_floor_pixels={floor}, visible_ceiling_pixels={ceiling}, writes={receipt:?}, camera={:?}, frame_hash={:016x}",
-            camera_from_state(&reset.state).unwrap(),
+            camera_from_session(reset).unwrap(),
             frame.index_hash
         );
         assert!(floor > 0, "actual reset must write floor pixels");

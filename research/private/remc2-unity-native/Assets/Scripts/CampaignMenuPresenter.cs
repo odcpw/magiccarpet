@@ -20,7 +20,6 @@ namespace MagicCarpet.Native
         private GUIStyle heading;
         private GUIStyle button;
         private GUIStyle message;
-        private GUIStyle startupHint;
         private PlayerPreferencesPresenter preferences;
         private FrontendMediaPresenter media;
         private MainAnimation[] mainAnimations;
@@ -56,6 +55,7 @@ namespace MagicCarpet.Native
 
         internal void AttachPreferences(PlayerPreferencesPresenter owner) { preferences = owner; }
         internal void AttachMedia(FrontendMediaPresenter owner) { media = owner; }
+        internal bool DismissPauseSubmenu() => campaignCache?.PauseMenu?.DismissSubmenu() == true;
         internal string TakePortalMission()
         {
             var target = portalTarget;
@@ -122,7 +122,7 @@ namespace MagicCarpet.Native
                 Action.NewGame => mode == GameRuntimeTransport.TitleMode,
                 Action.Resume => mode == GameRuntimeTransport.PausedMode,
                 Action.Save => (mode == GameRuntimeTransport.PausedMode || mode == GameRuntimeTransport.CampaignMode) && canSave,
-                Action.Load => mode == GameRuntimeTransport.TitleMode && canLoad,
+                Action.Load => (mode == GameRuntimeTransport.TitleMode || mode == GameRuntimeTransport.PausedMode) && canLoad,
                 Action.Restart => mode == GameRuntimeTransport.PausedMode,
                 Action.Title => mode == GameRuntimeTransport.PausedMode || mode == GameRuntimeTransport.CampaignMode,
                 Action.DismissResults or Action.SelectMission or Action.StartMission => mode == GameRuntimeTransport.CampaignMode,
@@ -143,6 +143,7 @@ namespace MagicCarpet.Native
             if (mode != lastMode || mode == GameRuntimeTransport.CampaignMode && identity.campaign_menu.phase != lastCampaignPhase)
             {
                 if (mode == GameRuntimeTransport.CampaignMode) portalStates.Clear();
+                campaignCache?.PauseMenu?.Reset();
                 statisticsLevel = null;
                 lastMode = mode;
                 lastCampaignPhase = identity.campaign_menu?.phase;
@@ -159,6 +160,23 @@ namespace MagicCarpet.Native
                 var result = DrawStartup(now, repaint, canLoad, status);
                 if (repaint) lastAnimationFrame = Time.frameCount;
                 return result;
+            }
+            if (mode == GameRuntimeTransport.PausedMode)
+            {
+                if (campaignCache?.PauseMenu == null)
+                    throw new InvalidOperationException("pause menu requires its decoded source sprite cache");
+                var level = identity.active_runtime_flow?.bound_level_id;
+                if (string.IsNullOrEmpty(level)) throw new InvalidOperationException("paused runtime has no bound mission");
+                var previousColor = GUI.color;
+                var previousEnabled = GUI.enabled;
+                try
+                {
+                    GUI.color = Color.white;
+                    GUI.enabled = true;
+                    return campaignCache.PauseMenu.Draw(campaignCache.ForMission(level).pause_profile,
+                        preferences, canSave, canLoad);
+                }
+                finally { GUI.color = previousColor; GUI.enabled = previousEnabled; }
             }
             heading ??= new GUIStyle(GUI.skin.label) { alignment = TextAnchor.MiddleCenter, fontSize = 28 };
             button ??= new GUIStyle(GUI.skin.button) { fontSize = 19 };
@@ -310,19 +328,10 @@ namespace MagicCarpet.Native
                     }
                 }
                 GUI.enabled = true;
-                var hoverText = campaignCache.StartupHoverText((Event.current.mousePosition - view.position) / scale);
-                if (hoverText != null && preferences?.Current.preferences.show_help != false)
-                {
-                    startupHint ??= new GUIStyle(GUI.skin.box) {
-                        alignment = TextAnchor.MiddleCenter, wordWrap = true,
-                        normal = { textColor = new Color(1f, 0.85f, 0.35f) }
-                    };
-                    startupHint.fontSize = Mathf.Max(14, Mathf.RoundToInt(16 * scale));
-                    GUI.Box(new Rect(view.x + 110 * scale, view.y + 350 * scale,
-                        420 * scale, 42 * scale), hoverText, startupHint);
-                }
-                if (status != null) GUI.Label(new Rect(view.x + 10 * scale, view.y + 440 * scale,
-                    620 * scale, 38 * scale), status);
+                var help = campaignCache.StartupHoverHelp((Event.current.mousePosition - view.position) / scale);
+                if (help != null && preferences?.Current.preferences.show_help != false)
+                    campaignCache.StartupText.DrawHelp(help, campaignCache.LanguageText(help.text_selector), view);
+                if (status != null) campaignCache.StartupText.DrawText(status, 10, 440, view);
                 return Action.None;
             }
             finally { GUI.color = oldColor; GUI.enabled = oldEnabled; }
