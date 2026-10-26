@@ -6,6 +6,7 @@
 /.ntm/pids/
 /.ntm/human_inbox/
 /.ntm/rate_limits.json
+/.ntm/summaries/
 /.repo_janitor_workspace/
 /log.txt
 __pycache__/
