@@ -143,7 +143,9 @@ def main():
         'Use --native-only for Rust-only changes; quit the player before installing. '
         'Logs and previous full builds remain under Builds/.')
     parser.add_argument('--native-only', action='store_true', help='reuse a compatible Unity player')
-    parser.add_argument('--release', action='store_true', help='use Cargo release artifacts (default: dev)')
+    native_profile = parser.add_mutually_exclusive_group()
+    native_profile.add_argument('--release', action='store_true', help='use optimized Cargo artifacts (the default)')
+    native_profile.add_argument('--dev', action='store_true', help='use unoptimized native artifacts for debugging')
     parser.add_argument('--native-artifact', type=Path,
                         help='reuse an already verified native artifact instead of invoking Cargo')
     parser.add_argument('--expected-native-sha256',
@@ -160,8 +162,8 @@ def main():
     if bool(options.native_artifact) != bool(options.expected_native_sha256):
         parser.error('--native-artifact and --expected-native-sha256 must be supplied together')
     if options.native_artifact:
-        if options.release or options.launch or options.check_installed:
-            parser.error('--native-artifact is only for a build/install, without --release')
+        if options.release or options.dev or options.launch or options.check_installed:
+            parser.error('--native-artifact is only for a build/install, without a Cargo profile option')
         options.native_artifact = options.native_artifact.resolve(strict=True)
         if (not options.native_artifact.is_file() or
                 len(options.expected_native_sha256) != 64 or
@@ -200,7 +202,7 @@ def main():
         cargo_log = logs / 'cargo.log'
         cargo = ['cargo', '+1.98.0', 'build', '-p', 'sim-capi', '--locked',
                  '--message-format=json-render-diagnostics']
-        if options.release:
+        if not options.dev:
             cargo.append('--release')
         if options.native_artifact:
             artifact = options.native_artifact
