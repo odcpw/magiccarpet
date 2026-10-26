@@ -2,6 +2,10 @@
 
 Follow `/home/oliver/.codex/AGENTS.md` for machine-wide guidance.
 
+Read [WORK_PLAN.md](WORK_PLAN.md) before every assignment, follow-up, resumed
+session or orchestration tick, and before a completion handoff. It is the
+canonical current delivery plan; keep prompts short and refer to it.
+
 ## Purpose
 
 Port the full Magic Carpet 2 game from remc2 into the existing Rust engine.
@@ -19,8 +23,10 @@ capabilities, not prerequisites for the complete MC2 single-player release.
 Oliver can playtest. An AI player is optional tooling.
 
 Select implementation work with `br ready --json --label worker-ready` and
-`bv --robot-next --label worker-ready`. These beads target `gpt-6.1-sol` at
-`xhigh`. Epics retain the full outcomes; deferred `needs-scope` items are not
+`bv --robot-next --label worker-ready`. Oliver's current fleet choice is
+`gpt-6-luna` at `max` for workers and `gpt-6.1-sol` at `medium` for integrators;
+this supersedes older model text in beads. Epics retain the full outcomes;
+deferred `needs-scope` items are not
 worker assignments. Each implementation bead names its positive runtime result
 and direct self-verification.
 
