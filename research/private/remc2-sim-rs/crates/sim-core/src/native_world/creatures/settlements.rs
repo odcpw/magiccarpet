@@ -2788,7 +2788,7 @@ mod production_tests {
     use crate::campaign::{CampaignSession, spec::CampaignSelection};
     use std::{collections::BTreeMap, path::PathBuf};
 
-    fn ordinary_level_two() -> crate::native_world::Level2ResetSession {
+    fn ordinary_level_two() -> crate::native_world::Mc2Simulation {
         let private = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../..");
         let package = std::env::var_os("MC_CAMPAIGN_PACKAGE")
             .map(PathBuf::from)
@@ -2808,16 +2808,16 @@ mod production_tests {
         };
         session
             .expect("actual Level2 package with its retained owner BUILD bank")
-            .level2_compatibility()
+            .simulation()
             .clone()
     }
 
-    fn ordinary_level_seven() -> crate::native_world::Level2ResetSession {
+    fn ordinary_level_seven() -> crate::native_world::Mc2Simulation {
         let package = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../../../generated/mc-bhq6-ordinary-20261024-b/level7");
         CampaignSession::open(package, CampaignSelection::ordinary(7).unwrap())
             .expect("actual ordinary Level7 package")
-            .level2_compatibility()
+            .simulation()
             .clone()
     }
 
@@ -2992,10 +2992,10 @@ mod production_tests {
         }
         session.step_level2_source_pass(0);
         assert!(
-            !session.dispatch_events().iter().any(|event| matches!(
-                event,
-                crate::native_world::Level2DispatchEvent::Error { .. }
-            )),
+            !session
+                .dispatch_events()
+                .iter()
+                .any(|event| matches!(event, crate::native_world::Mc2DispatchEvent::Error { .. })),
             "ordinary Level7 source dispatch failed: {:?}",
             session.dispatch_events()
         );
@@ -3022,7 +3022,7 @@ mod production_tests {
         }
     }
 
-    fn village_placement_through_authoring() -> crate::native_world::Level2ResetSession {
+    fn village_placement_through_authoring() -> crate::native_world::Mc2Simulation {
         use crate::campaign::backend::load_mc2_campaign;
         use crate::game_definition::{
             ChangeSetBuilder, PublicationFault, RequestedTiming, WorkspaceStore, default_catalog,
@@ -3080,12 +3080,10 @@ mod production_tests {
             "actual Level2 typed placement workspace {}",
             workspace.display()
         );
-        session.level2_compatibility().clone()
+        session.simulation().clone()
     }
 
-    fn ordinary_group_three_through_controls(
-        session: &mut crate::native_world::Level2ResetSession,
-    ) {
+    fn ordinary_group_three_through_controls(session: &mut crate::native_world::Mc2Simulation) {
         session.select_level2_campaign_entry_stage();
         let features = session.mission().authored_features().to_vec();
         let point = |index| {
@@ -3096,7 +3094,7 @@ mod production_tests {
                 .world_position(0)
         };
         let player = session.state.entity_index;
-        let step_at = |session: &mut crate::native_world::Level2ResetSession, position, turns| {
+        let step_at = |session: &mut crate::native_world::Mc2Simulation, position, turns| {
             for _ in 0..turns {
                 session
                     .set_level2_entity_position(player, position)
@@ -3134,7 +3132,7 @@ mod production_tests {
         );
     }
 
-    fn household_counts(session: &crate::native_world::Level2ResetSession) -> BTreeMap<u16, i32> {
+    fn household_counts(session: &crate::native_world::Mc2Simulation) -> BTreeMap<u16, i32> {
         let live = &session.session.state.live;
         live.economy
             .settlement_source_views(

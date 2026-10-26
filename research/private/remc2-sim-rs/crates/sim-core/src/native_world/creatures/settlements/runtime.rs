@@ -258,7 +258,7 @@ mod tests {
             crate::campaign::spec::CampaignSelection::LEVEL1,
         )
         .unwrap();
-        let live = &mut campaign.level2_compatibility_mut().session.state.live;
+        let live = &mut campaign.simulation_mut().session.state.live;
         let position = live.core.state.position;
         let actor = live
             .ordinary

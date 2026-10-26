@@ -1279,7 +1279,7 @@ mod tests {
     };
     use std::path::PathBuf;
 
-    fn step_opening_source_turn(session: &mut crate::native_world::Level2ResetSession) {
+    fn step_opening_source_turn(session: &mut crate::native_world::Mc2Simulation) {
         let evidence = session.step_outer_turn(PlayerCommand::default(), 0);
         assert!(
             !evidence.is_empty(),
@@ -1288,7 +1288,7 @@ mod tests {
         );
     }
 
-    fn level_two_session() -> crate::native_world::Level2ResetSession {
+    fn level_two_session() -> crate::native_world::Mc2Simulation {
         let package = std::env::var_os("MC_CAMPAIGN_PACKAGE").map_or_else(
             || {
                 PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -1298,7 +1298,7 @@ mod tests {
         );
         CampaignSession::open(package, CampaignSelection::LEVEL2)
             .expect("qualified Level 2 semantic source arena package")
-            .level2_compatibility()
+            .simulation()
             .clone()
     }
 
@@ -1308,7 +1308,7 @@ mod tests {
             .join("../../../generated/mc-bhq6-ordinary-20261025-zclu5fjj/level4");
         let campaign =
             CampaignSession::open(package, CampaignSelection::ordinary(4).unwrap()).unwrap();
-        let mut session = campaign.level2_compatibility().clone();
+        let mut session = campaign.simulation().clone();
         let expected = session
             .session
             .state
@@ -1376,7 +1376,7 @@ mod tests {
             let campaign =
                 CampaignSession::open(package, CampaignSelection::ordinary(level).unwrap())
                     .expect("actual opening campaign package");
-            let mut session = campaign.level2_compatibility().clone();
+            let mut session = campaign.simulation().clone();
             let authored = session
                 .session
                 .state
@@ -1488,7 +1488,7 @@ mod tests {
         let package = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../../../generated/mc-level2-vault-successor-closure-20261025");
         let campaign = CampaignSession::open(package, CampaignSelection::LEVEL2).unwrap();
-        let session = campaign.level2_compatibility();
+        let session = campaign.simulation();
         let mut arena = session.source_arena().clone();
         let mut terrain = session.session.state.live.terrain.clone();
         let definition = &session.session.definition;
@@ -1782,7 +1782,7 @@ mod tests {
         for (package, selection, expected_roots) in cases {
             let campaign = CampaignSession::open(package, selection)
                 .expect("qualified campaign opens through the shared engine");
-            let census = campaign.level2_compatibility().creature_runtime_census();
+            let census = campaign.simulation().creature_runtime_census();
             assert!(
                 census
                     .entries()
@@ -1909,7 +1909,7 @@ mod tests {
         let projections = session
             .dispatch_events()
             .iter()
-            .map(crate::native_world::Level2DispatchEvent::campaign_projection)
+            .map(crate::native_world::Mc2DispatchEvent::campaign_projection)
             .collect::<Vec<_>>();
         assert!(
             projections

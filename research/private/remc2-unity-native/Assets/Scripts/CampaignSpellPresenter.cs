@@ -9,9 +9,9 @@ namespace MagicCarpet.Native
     /// campaign stream. These fields are identifiers and timeline bindings,
     /// not a managed spell simulation.
     /// </summary>
-    internal readonly struct Level2SpellPresentation
+    internal readonly struct CampaignSpellPresentation
     {
-        internal Level2SpellPresentation(
+        internal CampaignSpellPresentation(
             byte family,
             ulong generation,
             ulong tick,
@@ -42,9 +42,9 @@ namespace MagicCarpet.Native
     /// A successful Rust spell-acquisition event retained to bind later
     /// active snapshots back to their source slot and event ordinal.
     /// </summary>
-    internal readonly struct Level2SpellPresentationReceipt
+    internal readonly struct CampaignSpellPresentationReceipt
     {
-        internal Level2SpellPresentationReceipt(
+        internal CampaignSpellPresentationReceipt(
             byte family,
             ulong generation,
             ulong tick,
@@ -71,7 +71,7 @@ namespace MagicCarpet.Native
     /// activation, mana, visibility, expiry, and cleanup; this class merely
     /// rejects mismatched records before Unity draws a current effect label.
     /// </summary>
-    internal sealed class Level2SpellPresenter
+    internal sealed class CampaignSpellPresenter
     {
         // Semantic inventory belongs to the native session snapshot. These
         // helpers read the supplied observation every time, so reset/transition
@@ -119,25 +119,25 @@ namespace MagicCarpet.Native
         private const byte InvisibleAction = 33;
         private const byte BeyondSightAction = 36;
 
-        private readonly Dictionary<byte, Level2SpellPresentationReceipt> receipts =
+        private readonly Dictionary<byte, CampaignSpellPresentationReceipt> receipts =
             new();
-        private readonly Level2EffectPresenter rootedEffectPresenter =
+        private readonly CampaignEffectPresenter rootedEffectPresenter =
             new();
-        private Level2SpellPresentation[] activeEffects =
-            Array.Empty<Level2SpellPresentation>();
+        private CampaignSpellPresentation[] activeEffects =
+            Array.Empty<CampaignSpellPresentation>();
         private ulong observedGeneration = ulong.MaxValue;
         private ulong observedTick;
 
-        internal Level2SpellPresentation[] ActiveEffects => activeEffects;
+        internal CampaignSpellPresentation[] ActiveEffects => activeEffects;
 
-        internal Level2EffectPresentation[] RootedEffects =>
+        internal CampaignEffectPresentation[] RootedEffects =>
             rootedEffectPresenter.ActiveEffects;
 
-        internal Level2SpellPresentationReceipt[] Receipts
+        internal CampaignSpellPresentationReceipt[] Receipts
         {
             get
             {
-                var ordered = new List<Level2SpellPresentationReceipt>(3);
+                var ordered = new List<CampaignSpellPresentationReceipt>(3);
                 AppendReceipt(ordered, ShieldFamily);
                 AppendReceipt(ordered, InvisibleFamily);
                 AppendReceipt(ordered, BeyondSightFamily);
@@ -155,7 +155,7 @@ namespace MagicCarpet.Native
         {
             // Every call starts with no visible effect. A malformed or stale
             // record therefore cannot leave a prior frame's Unity effect live.
-            activeEffects = Array.Empty<Level2SpellPresentation>();
+            activeEffects = Array.Empty<CampaignSpellPresentation>();
             rootedEffectPresenter.Present(step, events);
             if (!FrameIsBound(step, events, hud, shield, invisible, beyondSight))
             {
@@ -183,7 +183,7 @@ namespace MagicCarpet.Native
 
             observedGeneration = step.generation;
             observedTick = step.revision;
-            var admitted = new List<Level2SpellPresentation>(3);
+            var admitted = new List<CampaignSpellPresentation>(3);
             TryPresentShield(admitted, step, hud, shield);
             TryPresentInvisible(admitted, step, hud, invisible);
             TryPresentBeyondSight(admitted, step, hud, beyondSight);
@@ -193,7 +193,7 @@ namespace MagicCarpet.Native
         internal void Reset(ulong generation)
         {
             receipts.Clear();
-            activeEffects = Array.Empty<Level2SpellPresentation>();
+            activeEffects = Array.Empty<CampaignSpellPresentation>();
             rootedEffectPresenter.Reset(generation);
             observedGeneration = generation;
             observedTick = 0;
@@ -202,14 +202,14 @@ namespace MagicCarpet.Native
         internal void Dispose()
         {
             receipts.Clear();
-            activeEffects = Array.Empty<Level2SpellPresentation>();
+            activeEffects = Array.Empty<CampaignSpellPresentation>();
             rootedEffectPresenter.Dispose();
             observedGeneration = ulong.MaxValue;
             observedTick = 0;
         }
 
         private void AppendReceipt(
-            List<Level2SpellPresentationReceipt> ordered,
+            List<CampaignSpellPresentationReceipt> ordered,
             byte family)
         {
             if (receipts.TryGetValue(family, out var receipt))
@@ -275,7 +275,7 @@ namespace MagicCarpet.Native
             NativeSim.CampaignStepSnapshot step,
             NativeSim.CampaignEvent[] events)
         {
-            var pending = new Dictionary<byte, Level2SpellPresentationReceipt>();
+            var pending = new Dictionary<byte, CampaignSpellPresentationReceipt>();
             foreach (var eventRow in events)
             {
                 if (eventRow.kind != NativeSim.CampaignEventSpellAcquisition ||
@@ -292,7 +292,7 @@ namespace MagicCarpet.Native
                 }
                 if (!pending.TryAdd(
                         eventRow.family,
-                        new Level2SpellPresentationReceipt(
+                        new CampaignSpellPresentationReceipt(
                             eventRow.family,
                             step.generation,
                             step.revision,
@@ -313,7 +313,7 @@ namespace MagicCarpet.Native
         }
 
         private void TryPresentShield(
-            List<Level2SpellPresentation> admitted,
+            List<CampaignSpellPresentation> admitted,
             NativeSim.CampaignStepSnapshot step,
             NativeSim.CampaignDayHudSnapshot hud,
             NativeSim.CampaignShieldSnapshot state)
@@ -335,7 +335,7 @@ namespace MagicCarpet.Native
         }
 
         private void TryPresentInvisible(
-            List<Level2SpellPresentation> admitted,
+            List<CampaignSpellPresentation> admitted,
             NativeSim.CampaignStepSnapshot step,
             NativeSim.CampaignDayHudSnapshot hud,
             NativeSim.CampaignInvisibleSnapshot state)
@@ -357,7 +357,7 @@ namespace MagicCarpet.Native
         }
 
         private void TryPresentBeyondSight(
-            List<Level2SpellPresentation> admitted,
+            List<CampaignSpellPresentation> admitted,
             NativeSim.CampaignStepSnapshot step,
             NativeSim.CampaignDayHudSnapshot hud,
             NativeSim.CampaignBeyondSightSnapshot state)
@@ -379,7 +379,7 @@ namespace MagicCarpet.Native
         }
 
         private void TryPresent(
-            List<Level2SpellPresentation> admitted,
+            List<CampaignSpellPresentation> admitted,
             NativeSim.CampaignStepSnapshot step,
             NativeSim.CampaignDayHudSnapshot hud,
             byte family,
@@ -425,7 +425,7 @@ namespace MagicCarpet.Native
                 return;
             }
 
-            admitted.Add(new Level2SpellPresentation(
+            admitted.Add(new CampaignSpellPresentation(
                 family,
                 step.generation,
                 step.revision,

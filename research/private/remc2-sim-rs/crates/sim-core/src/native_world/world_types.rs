@@ -4251,7 +4251,7 @@ impl NativeWorldInspection {
     /// Build the profile-specific Level 2 frame-zero session. All mutable
     /// state is cloned from this validated inspection; no implementation
     /// fixture or stale Level 1 reset projection is consulted.
-    pub fn level2_reset_session(&self) -> Result<Level2ResetSession> {
+    pub fn level2_reset_session(&self) -> Result<Mc2Simulation> {
         let mission = self.mission_content_template()?.session();
         self.build_level2_reset_session(mission)
     }
@@ -4261,7 +4261,7 @@ impl NativeWorldInspection {
     pub(crate) fn level2_reset_session_from_definition(
         &self,
         definition: &ValidatedCampaignDefinition,
-    ) -> Result<Level2ResetSession> {
+    ) -> Result<Mc2Simulation> {
         if definition.identity != CampaignSelection::LEVEL2 {
             return Err(NativeWorldError::new(
                 "Level 2 compatibility session requested for a different campaign identity",
@@ -4276,7 +4276,7 @@ impl NativeWorldInspection {
     pub(crate) fn campaign_reset_session_from_definition(
         &self,
         definition: &ValidatedCampaignDefinition,
-    ) -> Result<Level2ResetSession> {
+    ) -> Result<Mc2Simulation> {
         let mission = self
             .mission_content_template_from_definition(definition)?
             .session();
@@ -4397,7 +4397,7 @@ impl NativeWorldInspection {
         &self,
         definition: &ValidatedCampaignDefinition,
         mission: MissionContentSession,
-    ) -> Result<Level2ResetSession> {
+    ) -> Result<Mc2Simulation> {
         if self.has_qualified_level2_capability_bundle() {
             return self.build_level2_reset_session(mission);
         }
@@ -4425,7 +4425,7 @@ impl NativeWorldInspection {
         &self,
         definition: &ValidatedCampaignDefinition,
         mission: MissionContentSession,
-    ) -> Result<Level2ResetSession> {
+    ) -> Result<Mc2Simulation> {
         let state = self
             .reset_state
             .ok_or_else(|| NativeWorldError::new("validated campaign has no reset state"))?;
@@ -4503,7 +4503,7 @@ impl NativeWorldInspection {
                     GoatBehaviorConfig::LEVEL_ONE,
                 )
             };
-        Ok(Level2ResetSession::new(
+        Ok(Mc2Simulation::new(
             self.metadata.map_type.profile(),
             self.package_sha256.clone(),
             state,
@@ -4523,10 +4523,7 @@ impl NativeWorldInspection {
         ))
     }
 
-    fn build_level2_reset_session(
-        &self,
-        mission: MissionContentSession,
-    ) -> Result<Level2ResetSession> {
+    fn build_level2_reset_session(&self, mission: MissionContentSession) -> Result<Mc2Simulation> {
         if !matches!(
             self.profile,
             OwnerPackageProfile::Level2 | OwnerPackageProfile::Campaign
@@ -4616,7 +4613,7 @@ impl NativeWorldInspection {
         let goats =
             GoatFamily::from_level_two_entities(&self.entities, GOAT_STAGE_POINT, goat_config)
                 .map_err(NativeWorldError::new)?;
-        Ok(Level2ResetSession::new(
+        Ok(Mc2Simulation::new(
             self.metadata.map_type.profile(),
             self.package_sha256.clone(),
             state,

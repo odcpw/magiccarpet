@@ -22,7 +22,7 @@ use crate::{
         build_classic_hd_terrain,
     },
     mission_content::REMC2_SPEC_COMMIT,
-    native_world::{Level2ResetSession, MapType, NativeWorldInspection},
+    native_world::{MapType, Mc2Simulation, NativeWorldInspection},
     presentation::{
         cave_terrain::{CaveTerrainPlan, CaveTerrainResources, build_cave_terrain},
         environment_materials::{CACHE_SCHEMA, EnvironmentResources},
@@ -634,7 +634,7 @@ struct FrameView {
 }
 
 impl FrameView {
-    fn current(session: &Level2ResetSession) -> Result<Self, DayIndexedFrameError> {
+    fn current(session: &Mc2Simulation) -> Result<Self, DayIndexedFrameError> {
         let exit = session.level_exit_sequence();
         Ok(Self {
             camera: camera_from_session(session)?,
@@ -672,10 +672,7 @@ impl DayIndexedFrameState {
         self.current_frame.as_ref()
     }
 
-    pub fn is_current_view(
-        &self,
-        session: &Level2ResetSession,
-    ) -> Result<bool, DayIndexedFrameError> {
+    pub fn is_current_view(&self, session: &Mc2Simulation) -> Result<bool, DayIndexedFrameError> {
         Ok(self.current_frame.is_some()
             && self.current_tick == Some(session.state.tick)
             && self.current_view == Some(FrameView::current(session)?))
@@ -693,7 +690,7 @@ impl DayIndexedFrameState {
     pub fn render(
         &mut self,
         inspection: &NativeWorldInspection,
-        session: &Level2ResetSession,
+        session: &Mc2Simulation,
         assets: &DayIndexedFrameAssets,
         generation: u64,
     ) -> Result<DayIndexedFrame, DayIndexedFrameError> {
@@ -738,7 +735,7 @@ impl DayIndexedFrameState {
     pub fn render_current(
         &mut self,
         inspection: &NativeWorldInspection,
-        session: &Level2ResetSession,
+        session: &Mc2Simulation,
         assets: &DayIndexedFrameAssets,
         generation: u64,
     ) -> Result<DayIndexedFrame, DayIndexedFrameError> {
@@ -789,7 +786,7 @@ impl DayIndexedFrameState {
 /// Render one ordinary Level 2 frame from the public package/session route.
 pub fn render_level2_day_indexed_frame(
     inspection: &NativeWorldInspection,
-    session: &Level2ResetSession,
+    session: &Mc2Simulation,
     assets: &DayIndexedFrameAssets,
     generation: u64,
 ) -> Result<DayIndexedFrame, DayIndexedFrameError> {
@@ -798,7 +795,7 @@ pub fn render_level2_day_indexed_frame(
 
 fn render_environment_indexed_frame(
     inspection: &NativeWorldInspection,
-    session: &Level2ResetSession,
+    session: &Mc2Simulation,
     assets: &DayIndexedFrameAssets,
     generation: u64,
     prior: Option<&DayIndexedFrame>,
@@ -1055,7 +1052,7 @@ fn draw_minimap_terrain(
 
 fn validate_day_route(
     inspection: &NativeWorldInspection,
-    session: &Level2ResetSession,
+    session: &Mc2Simulation,
     assets: &DayIndexedFrameAssets,
 ) -> Result<(), DayIndexedFrameError> {
     let metadata = inspection.metadata();
@@ -1124,7 +1121,7 @@ fn validate_terrain_planes(
 }
 
 fn camera_from_session(
-    session: &Level2ResetSession,
+    session: &Mc2Simulation,
 ) -> Result<Level1TerrainFrameCamera, DayIndexedFrameError> {
     let mut camera = camera_from_view(
         session.source_camera_pose(),
@@ -1679,7 +1676,7 @@ mod tests {
         let initial = carrier
             .render_current(
                 campaign.inspection(),
-                campaign.level2_compatibility(),
+                campaign.simulation(),
                 &assets,
                 campaign.generation(),
             )
@@ -1687,7 +1684,7 @@ mod tests {
         // Diagnose the action12 camera consumer directly. This neither earns
         // an exit trigger nor advances gameplay or campaign progression.
         {
-            let session = campaign.level2_compatibility_mut();
+            let session = campaign.simulation_mut();
             let profile = session.profile();
             let live = &mut session.session.state.live;
             live.level_exit = crate::level_exit::LevelExitSequence {
@@ -1704,16 +1701,11 @@ mod tests {
                 None,
             );
         }
-        assert_eq!(
-            camera_from_session(campaign.level2_compatibility())
-                .unwrap()
-                .fov,
-            127
-        );
+        assert_eq!(camera_from_session(campaign.simulation()).unwrap().fov, 127);
         let zoomed = carrier
             .render_current(
                 campaign.inspection(),
-                campaign.level2_compatibility(),
+                campaign.simulation(),
                 &assets,
                 campaign.generation(),
             )
@@ -1723,7 +1715,7 @@ mod tests {
         assert_ne!(zoomed.index_hash, initial.index_hash);
         for request in [6, 5] {
             {
-                let live = &mut campaign.level2_compatibility_mut().session.state.live;
+                let live = &mut campaign.simulation_mut().session.state.live;
                 let palette = &mut live.economy.fields.palette;
                 palette.request(crate::world::fields::PaletteRequest {
                     mode: request,
@@ -1740,7 +1732,7 @@ mod tests {
             let frame = carrier
                 .render_current(
                     campaign.inspection(),
-                    campaign.level2_compatibility(),
+                    campaign.simulation(),
                     &assets,
                     campaign.generation(),
                 )
@@ -1750,7 +1742,7 @@ mod tests {
             assert_ne!(frame.palette_rgb8, zoomed.palette_rgb8);
             let mut expected = assets.palette_rgb8().to_vec();
             campaign
-                .level2_compatibility()
+                .simulation()
                 .field_palette()
                 .apply_rgb8(&mut expected);
             assert_eq!(frame.palette_rgb8, expected);
@@ -1758,7 +1750,7 @@ mod tests {
                 carrier
                     .render_current(
                         campaign.inspection(),
-                        campaign.level2_compatibility(),
+                        campaign.simulation(),
                         &assets,
                         campaign.generation(),
                     )
@@ -1818,7 +1810,7 @@ mod tests {
         let frame = carrier
             .render_current(
                 campaign.inspection(),
-                campaign.level2_compatibility(),
+                campaign.simulation(),
                 &assets,
                 campaign.generation(),
             )
@@ -1833,7 +1825,7 @@ mod tests {
             carrier
                 .render_current(
                     campaign.inspection(),
-                    campaign.level2_compatibility(),
+                    campaign.simulation(),
                     &assets,
                     campaign.generation(),
                 )
@@ -1881,7 +1873,7 @@ mod tests {
             let first = state
                 .render_current(
                     campaign.inspection(),
-                    campaign.level2_compatibility(),
+                    campaign.simulation(),
                     &assets,
                     campaign.generation(),
                 )
@@ -1910,14 +1902,14 @@ mod tests {
             let moved = state
                 .render_current(
                     campaign.inspection(),
-                    campaign.level2_compatibility(),
+                    campaign.simulation(),
                     &assets,
                     campaign.generation(),
                 )
                 .expect("following runtime frame");
             assert_eq!(moved.tick, first.tick + 1);
             assert_ne!(moved.index_hash, first.index_hash);
-            let moved_camera = camera_from_session(campaign.level2_compatibility()).unwrap();
+            let moved_camera = camera_from_session(campaign.simulation()).unwrap();
             // Objective speech/flash progresses through real paused outer
             // frames while the terrain/image tick remains fixed.
             for _ in 0..8 {
@@ -1926,7 +1918,7 @@ mod tests {
             let paused = state
                 .render_current(
                     campaign.inspection(),
-                    campaign.level2_compatibility(),
+                    campaign.simulation(),
                     &assets,
                     campaign.generation(),
                 )
@@ -1937,14 +1929,14 @@ mod tests {
             let mut expected_camera = moved_camera;
             expected_camera.source_turn += 8;
             assert_eq!(
-                camera_from_session(campaign.level2_compatibility()).unwrap(),
+                camera_from_session(campaign.simulation()).unwrap(),
                 expected_camera
             );
             assert_ne!(paused.terrain_input_hash, moved.terrain_input_hash);
             assert_ne!(paused.palette_rgb8, moved.palette_rgb8);
             let mut expected_palette = assets.palette_rgb8().to_vec();
             campaign
-                .level2_compatibility()
+                .simulation()
                 .field_palette()
                 .apply_rgb8(&mut expected_palette);
             assert_eq!(paused.palette_rgb8, expected_palette);
@@ -1968,7 +1960,7 @@ mod tests {
             },
         )
         .expect("genuine ordinary Cave12 opens at reset");
-        let reset = campaign.level2_compatibility();
+        let reset = campaign.simulation();
         assert!(reset.profile().cave_mode);
         assert_eq!(reset.state.tick, 0);
         let assets = DayIndexedFrameAssets::load(&cache).expect("actual Cave12 materials");
@@ -2172,7 +2164,7 @@ mod tests {
         let render = |campaign: &crate::campaign::CampaignSession| {
             render_level2_day_indexed_frame(
                 campaign.inspection(),
-                campaign.level2_compatibility(),
+                campaign.simulation(),
                 &assets,
                 campaign.generation(),
             )
@@ -2205,13 +2197,8 @@ mod tests {
         )
         .unwrap();
         assert!(
-            render_level2_day_indexed_frame(
-                day.inspection(),
-                day.level2_compatibility(),
-                &assets,
-                0
-            )
-            .is_err()
+            render_level2_day_indexed_frame(day.inspection(), day.simulation(), &assets, 0)
+                .is_err()
         );
         campaign.reset();
         let reset = render(&campaign);
@@ -2245,7 +2232,7 @@ mod tests {
         );
         let frame = render_level2_day_indexed_frame(
             campaign.inspection(),
-            campaign.level2_compatibility(),
+            campaign.simulation(),
             &assets,
             0,
         )
@@ -2269,13 +2256,8 @@ mod tests {
         .expect("real corrected Day campaign");
         let before = campaign.state_hash();
         let render = |assets| {
-            render_level2_day_indexed_frame(
-                campaign.inspection(),
-                campaign.level2_compatibility(),
-                assets,
-                0,
-            )
-            .unwrap()
+            render_level2_day_indexed_frame(campaign.inspection(), campaign.simulation(), assets, 0)
+                .unwrap()
         };
         let old_frame = render(&previous);
         let frame = render(&current);
@@ -2301,14 +2283,14 @@ mod tests {
         let before = campaign.state_hash();
         let frame = render_level2_day_indexed_frame(
             campaign.inspection(),
-            campaign.level2_compatibility(),
+            campaign.simulation(),
             &assets,
             0,
         )
         .expect("corrected Day assets render the real campaign terrain");
         assert_eq!(frame.indices.len(), 320 * 200);
         assert!(frame.indices.iter().any(|index| *index != 0));
-        let session = campaign.level2_compatibility();
+        let session = campaign.simulation();
         let planes = session.canonical_terrain().planes();
         let position = session.state.position;
         let tile = usize::from(position.y >> 8) * 256 + usize::from(position.x >> 8);

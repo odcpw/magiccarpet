@@ -1693,7 +1693,7 @@ mod tests {
                 .unwrap()
                 .backend()
                 .compatibility_campaign()
-                .level2_compatibility()
+                .simulation()
                 .runtime()
                 .objectives[0]
                 .stage_selectors[0],
@@ -1705,7 +1705,7 @@ mod tests {
             .unwrap()
             .backend()
             .compatibility_campaign()
-            .level2_compatibility()
+            .simulation()
             .runtime()
             .objectives[0]
             .stage_selectors[1]
@@ -1728,7 +1728,7 @@ mod tests {
             .unwrap()
             .backend()
             .compatibility_campaign()
-            .level2_compatibility()
+            .simulation()
             .runtime()
             .objectives[0]
             .stage_selectors[2]
@@ -1775,7 +1775,7 @@ mod tests {
                 .unwrap()
                 .backend()
                 .compatibility_campaign()
-                .level2_compatibility()
+                .simulation()
                 .runtime()
                 .objectives[0]
                 .is_level_end,
@@ -1873,7 +1873,7 @@ mod tests {
             .unwrap()
             .backend()
             .compatibility_campaign()
-            .level2_compatibility();
+            .simulation();
         (
             campaign.source_global_rng(),
             campaign.runtime().objective_presentation_phase,
@@ -2003,10 +2003,7 @@ mod tests {
         // An exit uses an XY overlap box. Brake inside the box so its ordinary
         // eight-pass cadence can observe overlap; never publish a player pose.
         for _ in 0..2_048 {
-            let compatibility = session
-                .backend()
-                .compatibility_campaign()
-                .level2_compatibility();
+            let compatibility = session.backend().compatibility_campaign().simulation();
             if compatibility.level_exit_sequence().active {
                 return;
             }
@@ -2065,7 +2062,7 @@ mod tests {
             session
                 .backend()
                 .compatibility_campaign()
-                .level2_compatibility()
+                .simulation()
                 .state
         );
     }
@@ -2099,7 +2096,7 @@ mod tests {
             let compatibility = session
                 .backend_mut()
                 .compatibility_campaign_mut_for_test()
-                .level2_compatibility_mut();
+                .simulation_mut();
             compatibility
                 .activate_authored_group_prerequisite_for_test(group)
                 .unwrap();
@@ -2128,7 +2125,7 @@ mod tests {
             let exit = session
                 .backend()
                 .compatibility_campaign()
-                .level2_compatibility()
+                .simulation()
                 .level_exit_sequence();
             assert!(
                 exit.active,
@@ -2152,7 +2149,7 @@ mod tests {
                 .unwrap()
                 .backend()
                 .compatibility_campaign()
-                .level2_compatibility();
+                .simulation();
             if compatibility.runtime().objectives[0].stage_selectors[4] == 2
                 && compatibility.runtime().objectives[0].is_level_end == 1
             {
@@ -2171,7 +2168,7 @@ mod tests {
                 .unwrap()
                 .backend()
                 .compatibility_campaign()
-                .level2_compatibility();
+                .simulation();
             assert_eq!(compatibility.runtime().objectives[0].stage_selectors[4], 2);
             assert_eq!(compatibility.runtime().objectives[0].is_level_end, 1);
         }
@@ -2187,7 +2184,7 @@ mod tests {
                 .unwrap()
                 .backend()
                 .compatibility_campaign()
-                .level2_compatibility();
+                .simulation();
             let trigger = compatibility
                 .economy()
                 .authored_switch_producers()
@@ -2204,7 +2201,7 @@ mod tests {
                 .unwrap()
                 .backend()
                 .compatibility_campaign()
-                .level2_compatibility()
+                .simulation()
                 .level_exit_sequence()
                 .active
             {
@@ -2223,7 +2220,7 @@ mod tests {
                 .unwrap()
                 .backend()
                 .compatibility_campaign()
-                .level2_compatibility()
+                .simulation()
                 .level_exit_sequence()
                 .active
         );
@@ -3268,7 +3265,7 @@ mod tests {
                 .unwrap()
                 .backend()
                 .compatibility_campaign()
-                .level2_compatibility()
+                .simulation()
                 .economy()
                 .fireball_projectiles()
                 .iter()
@@ -3572,7 +3569,7 @@ mod tests {
                 .unwrap()
                 .backend()
                 .compatibility_campaign()
-                .level2_compatibility()
+                .simulation()
                 .economy()
                 .authored_switch_producers()
                 .iter()
@@ -3589,10 +3586,7 @@ mod tests {
         }
         {
             let session = runtime.session_mut().unwrap();
-            let compatibility = session
-                .backend()
-                .compatibility_campaign()
-                .level2_compatibility();
+            let compatibility = session.backend().compatibility_campaign().simulation();
             let trigger = compatibility
                 .economy()
                 .authored_switch_producers()
@@ -3615,7 +3609,7 @@ mod tests {
                 .unwrap()
                 .backend()
                 .compatibility_campaign()
-                .level2_compatibility()
+                .simulation()
                 .level_exit_sequence()
                 .active
             {
@@ -3628,7 +3622,7 @@ mod tests {
                 .unwrap()
                 .backend()
                 .compatibility_campaign()
-                .level2_compatibility()
+                .simulation()
                 .level_exit_sequence()
                 .active
         );
@@ -3909,7 +3903,7 @@ mod tests {
             .unwrap()
             .backend()
             .compatibility_campaign()
-            .level2_compatibility();
+            .simulation();
         assert_eq!(
             compatibility.runtime().objectives[0].stage_selectors[..5],
             [2, 2, 1, 1, 1]
@@ -3980,10 +3974,7 @@ mod tests {
                 session,
                 false,
             );
-            let compatibility = session
-                .backend()
-                .compatibility_campaign()
-                .level2_compatibility();
+            let compatibility = session.backend().compatibility_campaign().simulation();
             let trigger = compatibility
                 .economy()
                 .authored_switch_producers()
@@ -4021,7 +4012,7 @@ mod tests {
                 .unwrap()
                 .backend()
                 .compatibility_campaign()
-                .level2_compatibility()
+                .simulation()
                 .level_exit_sequence()
                 .active
             {
@@ -4033,7 +4024,7 @@ mod tests {
             .unwrap()
             .backend()
             .compatibility_campaign()
-            .level2_compatibility()
+            .simulation()
             .level_exit_sequence();
         assert!(started.active);
         assert!(!started.complete);
@@ -4144,7 +4135,7 @@ mod tests {
                 .unwrap()
                 .backend_mut()
                 .compatibility_campaign_mut_for_test()
-                .level2_compatibility_mut()
+                .simulation_mut()
                 .corrupt_completed_exit_result_for_test(9);
         }
         let invalid_identity = runtime.identity();
@@ -4165,7 +4156,7 @@ mod tests {
             .unwrap()
             .backend_mut()
             .compatibility_campaign_mut_for_test()
-            .level2_compatibility_mut()
+            .simulation_mut()
             .corrupt_completed_exit_result_for_test(10);
         assert_eq!(runtime.identity(), completed_identity);
         assert_eq!(runtime.session().unwrap().snapshot(), completed_snapshot);
@@ -4502,7 +4493,7 @@ mod tests {
                 .unwrap()
                 .backend()
                 .compatibility_campaign()
-                .level2_compatibility();
+                .simulation();
             assert!(
                 session.economy().authored_model45().is_empty(),
                 "organic L2 progression must reach following-pass reclaim for both group-8 vault rows"
@@ -4510,7 +4501,7 @@ mod tests {
             assert_eq!(session.runtime().objectives[0].stage_selectors[4], 1);
             assert!(session.dispatch_events().iter().all(|event| !matches!(
                 event,
-                crate::native_world::Level2DispatchEvent::AuthoredGroupActivated { group: 31, .. }
+                crate::native_world::Mc2DispatchEvent::AuthoredGroupActivated { group: 31, .. }
             )));
         }
 
@@ -4527,16 +4518,13 @@ mod tests {
                 .unwrap()
                 .backend()
                 .compatibility_campaign()
-                .level2_compatibility();
+                .simulation();
             if session.runtime().objectives[0].stage_selectors[4] == 2
                 && session.runtime().objectives[0].is_level_end == 1
             {
                 assert!(session.dispatch_events().iter().all(|event| !matches!(
                     event,
-                    crate::native_world::Level2DispatchEvent::AuthoredGroupActivated {
-                        group: 31,
-                        ..
-                    }
+                    crate::native_world::Mc2DispatchEvent::AuthoredGroupActivated { group: 31, .. }
                 )));
                 objective_completed = true;
                 break;
@@ -4578,10 +4566,10 @@ mod tests {
             .unwrap()
             .backend()
             .compatibility_campaign()
-            .level2_compatibility();
+            .simulation();
         assert!(session.dispatch_events().iter().any(|event| matches!(
             event,
-            crate::native_world::Level2DispatchEvent::AuthoredGroupActivated {
+            crate::native_world::Mc2DispatchEvent::AuthoredGroupActivated {
                 source_slot: 37,
                 group: 31,
                 authored_indices,
@@ -4612,7 +4600,7 @@ mod tests {
                 .unwrap()
                 .backend()
                 .compatibility_campaign()
-                .level2_compatibility()
+                .simulation()
                 .level_exit_sequence()
                 .active
             {
@@ -4630,7 +4618,7 @@ mod tests {
             .unwrap()
             .backend()
             .compatibility_campaign()
-            .level2_compatibility()
+            .simulation()
             .level_exit_sequence();
         assert!(active_exit.active);
         assert!(!active_exit.complete);
@@ -4855,7 +4843,7 @@ mod tests {
             .unwrap()
             .backend_mut()
             .compatibility_campaign_mut_for_test()
-            .level2_compatibility_mut()
+            .simulation_mut()
             .apply_carried_spell_families(&[0], Some(0))
             .unwrap();
 
@@ -4900,7 +4888,7 @@ mod tests {
             .unwrap()
             .backend_mut()
             .compatibility_campaign_mut_for_test()
-            .level2_compatibility_mut()
+            .simulation_mut()
             .apply_carried_spell_families(&[0, 2], Some(0))
             .unwrap();
 
@@ -4947,10 +4935,10 @@ mod tests {
             .unwrap()
             .backend()
             .compatibility_campaign()
-            .level2_compatibility();
+            .simulation();
         assert!(session.dispatch_events().iter().any(|event| matches!(
             event,
-            crate::native_world::Level2DispatchEvent::AuthoredGroupActivated {
+            crate::native_world::Mc2DispatchEvent::AuthoredGroupActivated {
                 source_slot: 219,
                 group: 6,
                 authored_indices,
@@ -4981,7 +4969,7 @@ mod tests {
                 .unwrap()
                 .backend()
                 .compatibility_campaign()
-                .level2_compatibility()
+                .simulation()
                 .level_exit_sequence()
                 .active
             {
@@ -4999,7 +4987,7 @@ mod tests {
             .unwrap()
             .backend()
             .compatibility_campaign()
-            .level2_compatibility()
+            .simulation()
             .level_exit_sequence();
         assert!(active_exit.active);
         assert!(!active_exit.complete);
@@ -5099,7 +5087,7 @@ mod tests {
                 .unwrap()
                 .backend()
                 .compatibility_campaign()
-                .level2_compatibility();
+                .simulation();
             assert!(
                 session
                     .economy()
@@ -5111,7 +5099,7 @@ mod tests {
             assert_eq!(session.runtime().objectives[0].is_level_end, 1);
             assert!(session.dispatch_events().iter().all(|event| !matches!(
                 event,
-                crate::native_world::Level2DispatchEvent::AuthoredGroupActivated { group: 6, .. }
+                crate::native_world::Mc2DispatchEvent::AuthoredGroupActivated { group: 6, .. }
             )));
         }
         let completed_objective_identity = runtime.identity();

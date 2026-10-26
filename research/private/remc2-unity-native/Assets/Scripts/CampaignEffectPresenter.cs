@@ -9,9 +9,9 @@ namespace MagicCarpet.Native
     /// event ordinal; the current frame position is the only transform carried
     /// by that page, so no managed position or lifetime is invented here.
     /// </summary>
-    internal readonly struct Level2EffectPresentation
+    internal readonly struct CampaignEffectPresentation
     {
-        internal Level2EffectPresentation(
+        internal CampaignEffectPresentation(
             byte family,
             byte classId,
             byte model,
@@ -24,7 +24,7 @@ namespace MagicCarpet.Native
             ushort x,
             ushort y,
             short z,
-            Level2EffectRecipe recipe)
+            CampaignEffectRecipe recipe)
         {
             Family = family;
             ClassId = classId;
@@ -53,8 +53,8 @@ namespace MagicCarpet.Native
         internal ushort X { get; }
         internal ushort Y { get; }
         internal short Z { get; }
-        internal Level2EffectRecipe Recipe { get; }
-        internal bool UsesMsprd => Recipe == Level2EffectRecipe.Msprd;
+        internal CampaignEffectRecipe Recipe { get; }
+        internal bool UsesMsprd => Recipe == CampaignEffectRecipe.Msprd;
     }
 
     /// <summary>
@@ -62,7 +62,7 @@ namespace MagicCarpet.Native
     /// not load or synthesize assets; the owner cache remains the authority
     /// consumed by the eventual Unity visual delegate.
     /// </summary>
-    internal enum Level2EffectRecipe : byte
+    internal enum CampaignEffectRecipe : byte
     {
         None = 0,
         Msprd = 1
@@ -75,7 +75,7 @@ namespace MagicCarpet.Native
     /// drops the current view when the following projection no longer carries
     /// the source event.
     /// </summary>
-    internal sealed class Level2EffectPresenter
+    internal sealed class CampaignEffectPresenter
     {
         private const byte TerrainModificationFamily = 11;
         private const byte MeteorFamily = 17;
@@ -84,12 +84,12 @@ namespace MagicCarpet.Native
         private const byte FireSpheresFamily = 23;
         private const byte RootClass = 10;
 
-        private Level2EffectPresentation[] activeEffects =
-            Array.Empty<Level2EffectPresentation>();
+        private CampaignEffectPresentation[] activeEffects =
+            Array.Empty<CampaignEffectPresentation>();
         private ulong observedGeneration = ulong.MaxValue;
         private ulong observedTick;
 
-        internal Level2EffectPresentation[] ActiveEffects => activeEffects;
+        internal CampaignEffectPresentation[] ActiveEffects => activeEffects;
 
         internal void Present(
             NativeSim.CampaignStepSnapshot step,
@@ -98,7 +98,7 @@ namespace MagicCarpet.Native
             // A projection is replace-only. Expiry, malformed pages, stale
             // cursors, reset, and disposal therefore cannot leave an older
             // effect view live.
-            activeEffects = Array.Empty<Level2EffectPresentation>();
+            activeEffects = Array.Empty<CampaignEffectPresentation>();
             if (!FrameIsBound(step, events))
             {
                 return;
@@ -115,7 +115,7 @@ namespace MagicCarpet.Native
             }
 
             var seenSourceSlots = new HashSet<ushort>();
-            var admitted = new List<Level2EffectPresentation>();
+            var admitted = new List<CampaignEffectPresentation>();
             foreach (var eventRow in events)
             {
                 if (eventRow.kind != NativeSim.CampaignEventDynamicArena ||
@@ -133,11 +133,11 @@ namespace MagicCarpet.Native
                     // A known root with no successful source slot, or two
                     // views claiming one source slot in one ordered page, is
                     // ambiguous. Fail closed instead of duplicating a view.
-                    activeEffects = Array.Empty<Level2EffectPresentation>();
+                    activeEffects = Array.Empty<CampaignEffectPresentation>();
                     return;
                 }
 
-                admitted.Add(new Level2EffectPresentation(
+                admitted.Add(new CampaignEffectPresentation(
                     eventRow.family,
                     RootClass,
                     model,
@@ -160,14 +160,14 @@ namespace MagicCarpet.Native
 
         internal void Reset(ulong generation)
         {
-            activeEffects = Array.Empty<Level2EffectPresentation>();
+            activeEffects = Array.Empty<CampaignEffectPresentation>();
             observedGeneration = generation;
             observedTick = 0;
         }
 
         internal void Dispose()
         {
-            activeEffects = Array.Empty<Level2EffectPresentation>();
+            activeEffects = Array.Empty<CampaignEffectPresentation>();
             observedGeneration = ulong.MaxValue;
             observedTick = 0;
         }
@@ -208,39 +208,39 @@ namespace MagicCarpet.Native
             byte family,
             out byte model,
             out byte action,
-            out Level2EffectRecipe recipe)
+            out CampaignEffectRecipe recipe)
         {
             switch (family)
             {
                 case TerrainModificationFamily:
                     model = 45;
                     action = 51;
-                    recipe = Level2EffectRecipe.None;
+                    recipe = CampaignEffectRecipe.None;
                     return true;
                 case MeteorFamily:
                     model = 17;
                     action = 17;
-                    recipe = Level2EffectRecipe.None;
+                    recipe = CampaignEffectRecipe.None;
                     return true;
                 case WindFamily:
                     model = 22;
                     action = 22;
-                    recipe = Level2EffectRecipe.None;
+                    recipe = CampaignEffectRecipe.None;
                     return true;
                 case Model13Family:
                     model = 19;
                     action = 19;
-                    recipe = Level2EffectRecipe.None;
+                    recipe = CampaignEffectRecipe.None;
                     return true;
                 case FireSpheresFamily:
                     model = 76;
                     action = 83;
-                    recipe = Level2EffectRecipe.Msprd;
+                    recipe = CampaignEffectRecipe.Msprd;
                     return true;
                 default:
                     model = 0;
                     action = 0;
-                    recipe = Level2EffectRecipe.None;
+                    recipe = CampaignEffectRecipe.None;
                     return false;
             }
         }

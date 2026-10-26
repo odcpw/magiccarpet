@@ -139,12 +139,12 @@ pub const MC_EVENT_LEVEL1_EXIT_SEQUENCE_COMPLETED: u32 = 36;
 pub const MC_EVENT_LEVEL1_WATER_SPLASHED: u32 = 37;
 pub const MC_EVENT_LEVEL1_ABILITY_IMPROVED: u32 = 38;
 
-/// Additive Level 2 campaign event kinds (`mc_sim_level2.h`).
+/// Campaign event kinds (`mc_sim_campaign.h`).
 pub const MC_CAMPAIGN_EVENT_SPELL_ACQUISITION: u8 = 2;
 pub const MC_CAMPAIGN_EVENT_GOAT: u8 = 9;
-/// Additive Level 2 campaign economy events (`mc_sim_level2.h`, kind 10).
+/// Campaign economy events (`mc_sim_campaign.h`, kind 10).
 pub const MC_CAMPAIGN_EVENT_ECONOMY: u8 = 10;
-/// Additive authored-group activation events (`mc_sim_level2.h`, kind 11).
+/// Authored-group activation events (`mc_sim_campaign.h`, kind 11).
 pub const MC_CAMPAIGN_EVENT_AUTHORED_GROUP: u8 = 11;
 
 pub const MC_CAMPAIGN_GOAT_BLEAT: u8 = 1;
@@ -736,7 +736,12 @@ pub struct McCampaignEntityPresentationV2 {
     pub y: u16,
     pub z: i16,
     pub yaw: i16,
-    pub reserved: [u32; 4],
+    pub pixel_mode: u8,
+    pub owner_color: u8,
+    pub brightness: u16,
+    pub draw_order: u32,
+    pub control_flags: u32,
+    pub reserved: [u32; 1],
 }
 
 /// Additive family-6 Shield state projection.  The row is generation-bound

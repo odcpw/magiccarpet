@@ -61,7 +61,7 @@ fn definition(kind: FieldKind) -> FieldDefinition {
     sim_definition::adapter::mc2_field_definition(kind, TilePosition { x: 0, y: 0 })
 }
 
-fn campaign() -> crate::native_world::Level2ResetSession {
+fn campaign() -> crate::native_world::Mc2Simulation {
     let package = std::env::var_os("MC_CAMPAIGN_PACKAGE").map_or_else(
         || {
             std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -74,11 +74,11 @@ fn campaign() -> crate::native_world::Level2ResetSession {
         crate::campaign::spec::CampaignSelection::LEVEL2,
     )
     .unwrap()
-    .level2_compatibility()
+    .simulation()
     .clone()
 }
 
-fn scheduled_impact(session: &mut crate::native_world::Level2ResetSession, kind: FieldKind) -> u16 {
+fn scheduled_impact(session: &mut crate::native_world::Mc2Simulation, kind: FieldKind) -> u16 {
     let live = &mut session.session.state.live;
     let player = live.core.state.entity_index;
     let slot = status::construct(
@@ -97,7 +97,7 @@ fn scheduled_impact(session: &mut crate::native_world::Level2ResetSession, kind:
     slot
 }
 
-fn campaign_step(session: &mut crate::native_world::Level2ResetSession) {
+fn campaign_step(session: &mut crate::native_world::Mc2Simulation) {
     assert!(
         !session
             .step_outer_turn(PlayerCommand::default(), 0)

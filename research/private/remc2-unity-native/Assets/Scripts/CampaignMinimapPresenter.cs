@@ -2,11 +2,11 @@ namespace MagicCarpet.Native
 {
     public sealed partial class MagicCarpetRuntime
     {
-        private sealed class Level2MinimapPresenter
+        private sealed class CampaignMinimapPresenter
         {
             private readonly MagicCarpetRuntime owner;
 
-            internal Level2MinimapPresenter(MagicCarpetRuntime owner)
+            internal CampaignMinimapPresenter(MagicCarpetRuntime owner)
             {
                 this.owner = owner;
             }

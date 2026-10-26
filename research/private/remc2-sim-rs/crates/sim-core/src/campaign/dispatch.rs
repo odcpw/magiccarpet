@@ -638,7 +638,7 @@ mod tests {
     use super::*;
     use crate::{
         PlayerCommand,
-        native_world::{Level2ResetSession, NativeWorld},
+        native_world::{Mc2Simulation, NativeWorld},
     };
     use serde_json::Value;
     use std::{collections::BTreeMap, path::PathBuf};
@@ -1017,7 +1017,7 @@ mod tests {
     fn existing_handlers_preserve_campaign_observations() {
         let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
             .expect("qualified Level 2 Omega fixture loads");
-        let mut session: Level2ResetSession = inspection
+        let mut session: Mc2Simulation = inspection
             .level2_reset_session()
             .expect("qualified Level 2 Omega session opens");
         let initial_hash = session.campaign_state_hash();

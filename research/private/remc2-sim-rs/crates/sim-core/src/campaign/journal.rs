@@ -10,7 +10,7 @@ use std::sync::OnceLock;
 
 use crate::{
     FlightEvent,
-    native_world::{Level2DispatchEvent, Level2SharedSpellEvent},
+    native_world::{Level2SharedSpellEvent, Mc2DispatchEvent},
 };
 
 use super::state::CanonicalDigest;
@@ -19,7 +19,7 @@ const MAX_RETAINED_EFFECTS: usize = 16_384;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum CampaignEffect {
-    Dispatch(Level2DispatchEvent),
+    Dispatch(Mc2DispatchEvent),
     SharedSpell(Level2SharedSpellEvent),
     Flight(FlightEvent),
     SceneChange { scene: u8 },
@@ -117,7 +117,7 @@ impl EffectJournal {
         &self.records
     }
 
-    pub(crate) fn append_dispatch(&mut self, turn: u32, event: Level2DispatchEvent) {
+    pub(crate) fn append_dispatch(&mut self, turn: u32, event: Mc2DispatchEvent) {
         self.append(turn, CampaignEffect::Dispatch(event));
     }
 
@@ -392,7 +392,7 @@ mod tests {
 
     use crate::{PlayerCommand, Position, native_world::NativeWorld};
 
-    fn level_two_session() -> crate::native_world::Level2ResetSession {
+    fn level_two_session() -> crate::native_world::Mc2Simulation {
         let package = std::env::var_os("MC_LEVEL2_PACKAGE_V5").map_or_else(
             || {
                 PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -444,12 +444,10 @@ mod tests {
         ));
         assert!(matches!(
             effects.get(collected + 2).map(|record| &record.effect),
-            Some(CampaignEffect::Dispatch(
-                Level2DispatchEvent::SharedPickup {
-                    source_slot: 75,
-                    ..
-                }
-            ))
+            Some(CampaignEffect::Dispatch(Mc2DispatchEvent::SharedPickup {
+                source_slot: 75,
+                ..
+            }))
         ));
         assert!(
             effects

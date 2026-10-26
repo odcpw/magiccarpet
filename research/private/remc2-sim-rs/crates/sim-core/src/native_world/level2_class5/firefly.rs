@@ -1677,7 +1677,7 @@ mod tests {
         );
         let campaign = CampaignSession::open(package, CampaignSelection::LEVEL1)
             .expect("real Level-1 patrol owner data");
-        let session = campaign.level2_compatibility();
+        let session = campaign.simulation();
         let mut economy = session.economy().clone();
         let mut runtime = session.runtime().clone();
         let target = patrol_point(&runtime, 8);
@@ -1706,7 +1706,7 @@ mod tests {
             .join("../../../generated/mc-bhq6-ordinary-20261025-zclu5fjj/level4");
         let campaign =
             CampaignSession::open(package, CampaignSelection::ordinary(4).unwrap()).unwrap();
-        let mut session = campaign.level2_compatibility().clone();
+        let mut session = campaign.simulation().clone();
         let source = session
             .session
             .state
@@ -1790,7 +1790,7 @@ mod tests {
             .join("../../../generated/mc-bhq6-ordinary-20261025-zclu5fjj/level4");
         let campaign = CampaignSession::open(package, CampaignSelection::ordinary(4).unwrap())
             .expect("actual Cave campaign package");
-        let session = campaign.level2_compatibility();
+        let session = campaign.simulation();
         let live = &session.session.state.live;
         let feature = *live
             .mission
@@ -1895,14 +1895,14 @@ mod tests {
             dispatched
                 .events()
                 .iter()
-                .all(|event| !matches!(event, Level2DispatchEvent::Error { .. })),
+                .all(|event| !matches!(event, Mc2DispatchEvent::Error { .. })),
             "{:?}",
             dispatched.events()
         );
         assert!(
             dispatched.events().iter().any(|event| matches!(
                 event,
-                Level2DispatchEvent::DynamicArena {
+                Mc2DispatchEvent::DynamicArena {
                     source_slot: 132,
                     kind: Level2DynamicArenaKind::AuthoredClass5,
                     ..

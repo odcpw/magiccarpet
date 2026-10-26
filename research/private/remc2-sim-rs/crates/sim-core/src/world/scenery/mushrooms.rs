@@ -209,7 +209,7 @@ mod tests {
                 .cloned()
                 .collect::<Vec<_>>()
         };
-        let initial = mushrooms(game.level2_compatibility().entities());
+        let initial = mushrooms(game.simulation().entities());
         assert_eq!(initial.len(), 56);
         for row in &initial {
             let mut rebound = row.clone();
@@ -221,19 +221,19 @@ mod tests {
             .events()
             .iter()
             .filter_map(|event| match event {
-                crate::native_world::Level2DispatchEvent::Error { message, .. } => {
+                crate::native_world::Mc2DispatchEvent::Error { message, .. } => {
                     Some(message.as_str())
                 }
                 _ => None,
             })
             .collect::<Vec<_>>();
         assert!(errors.is_empty(), "ordinary Cave step rejected: {errors:?}");
-        assert!(game.level2_compatibility().campaign_tick() > 0);
-        let live = mushrooms(game.level2_compatibility().entities());
+        assert!(game.simulation().campaign_tick() > 0);
+        let live = mushrooms(game.simulation().entities());
         assert!(!live.is_empty(), "ordinary Cave step retains dry mushrooms");
         assert!(live.iter().all(|row| matches!(row.action, 18 | 19)));
         game.reset();
-        assert_eq!(mushrooms(game.level2_compatibility().entities()), initial);
+        assert_eq!(mushrooms(game.simulation().entities()), initial);
     }
 
     #[test]

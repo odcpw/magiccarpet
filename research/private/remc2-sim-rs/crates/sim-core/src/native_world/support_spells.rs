@@ -347,7 +347,7 @@ pub(super) fn step_source_slot(
 mod tests {
     use crate::PlayerCommand;
     use crate::level1_mission::parse_authored_features;
-    use crate::native_world::{Level2DispatchEvent, NativeWorld};
+    use crate::native_world::{Mc2DispatchEvent, NativeWorld};
     use std::path::PathBuf;
 
     #[test]
@@ -466,7 +466,7 @@ mod tests {
                     session
                         .dispatch_events()
                         .iter()
-                        .all(|e| !matches!(e, Level2DispatchEvent::Error { .. })),
+                        .all(|e| !matches!(e, Mc2DispatchEvent::Error { .. })),
                     "{:?}",
                     session.dispatch_events()
                 );
@@ -511,7 +511,7 @@ mod tests {
                 session
                     .dispatch_events()
                     .iter()
-                    .all(|e| !matches!(e, Level2DispatchEvent::Error { .. })),
+                    .all(|e| !matches!(e, Mc2DispatchEvent::Error { .. })),
                 "{:?}",
                 session.dispatch_events()
             );
@@ -598,7 +598,7 @@ mod tests {
                     session
                         .dispatch_events()
                         .iter()
-                        .all(|event| !matches!(event, Level2DispatchEvent::Error { .. })),
+                        .all(|event| !matches!(event, Mc2DispatchEvent::Error { .. })),
                     "{:?}",
                     session.dispatch_events()
                 );

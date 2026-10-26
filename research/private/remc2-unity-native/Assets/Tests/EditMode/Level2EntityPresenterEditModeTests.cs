@@ -44,7 +44,7 @@ namespace MagicCarpet.Native.Tests
                     Level2Package,
                     Level2DayCache);
                 var cache = OwnerAssetCache.OpenAndValidateLevel2(Level2DayCache);
-                using var presenter = new Level2EntityPresenter(root.transform);
+                using var presenter = new CampaignEntityPresenter(root.transform);
 
                 Assert.That(
                     presenter.Present(session, cache, 0),
@@ -54,11 +54,11 @@ namespace MagicCarpet.Native.Tests
                 Assert.That(presenter.LiveViewCount, Is.EqualTo(65));
                 Assert.That(
                     presenter.Presentations.Count(row =>
-                        row.Family == Level2EntityFamily.Goat),
+                        row.Family == CampaignEntityFamily.Goat),
                     Is.EqualTo(36));
                 Assert.That(
                     presenter.Presentations.Count(row =>
-                        row.Family == Level2EntityFamily.Villager),
+                        row.Family == CampaignEntityFamily.Villager),
                     Is.EqualTo(29));
                 Assert.That(
                     presenter.Presentations.All(row =>
@@ -69,7 +69,7 @@ namespace MagicCarpet.Native.Tests
 
                 var goat = presenter.Presentations.Single(row =>
                     row.EntityIndex == 39);
-                Assert.That(goat.Family, Is.EqualTo(Level2EntityFamily.Goat));
+                Assert.That(goat.Family, Is.EqualTo(CampaignEntityFamily.Goat));
                 Assert.That(goat.RenderParameterIndex, Is.EqualTo(238));
                 Assert.That(goat.BaseTmap, Is.EqualTo(152));
                 Assert.That(goat.Selector, Is.EqualTo(152));
@@ -81,7 +81,7 @@ namespace MagicCarpet.Native.Tests
 
                 var villager = presenter.Presentations.Single(row =>
                     row.EntityIndex == 77);
-                Assert.That(villager.Family, Is.EqualTo(Level2EntityFamily.Villager));
+                Assert.That(villager.Family, Is.EqualTo(CampaignEntityFamily.Villager));
                 Assert.That(villager.RenderParameterIndex, Is.EqualTo(271));
                 Assert.That(villager.BaseTmap, Is.EqualTo(199));
                 Assert.That(villager.Selector, Is.EqualTo(201));
@@ -124,7 +124,7 @@ namespace MagicCarpet.Native.Tests
                     Level2Package,
                     Level2DayCache);
                 var cache = OwnerAssetCache.OpenAndValidateLevel2(Level2DayCache);
-                using var presenter = new Level2EntityPresenter(root.transform);
+                using var presenter = new CampaignEntityPresenter(root.transform);
 
                 Assert.That(presenter.Present(session, cache, 0), Is.True);
                 var originalGoat = presenter.Presentations.Single(row =>
@@ -188,13 +188,13 @@ namespace MagicCarpet.Native.Tests
                     Level2Package,
                     Level2DayCache);
                 var cache = OwnerAssetCache.OpenAndValidateLevel2(Level2DayCache);
-                using var presenter = new Level2EntityPresenter(root.transform);
+                using var presenter = new CampaignEntityPresenter(root.transform);
 
                 var bee = DriveProductionBeeToAction17(session);
                 Assert.That(presenter.Present(session, cache, 0), Is.True);
                 var before = presenter.Presentations.Single(row =>
                     row.EntityIndex == bee.entityIndex);
-                Assert.That(before.Family, Is.EqualTo(Level2EntityFamily.Bee));
+                Assert.That(before.Family, Is.EqualTo(CampaignEntityFamily.Bee));
                 Assert.That(before.RenderParameterIndex, Is.EqualTo(3));
                 Assert.That(before.BaseTmap, Is.EqualTo(14));
                 Assert.That(before.Selector, Is.EqualTo(
@@ -257,7 +257,7 @@ namespace MagicCarpet.Native.Tests
                     Level2Package,
                     Level2DayCache);
                 var cache = OwnerAssetCache.OpenAndValidateLevel2(Level2DayCache);
-                using var presenter = new Level2EntityPresenter(root.transform);
+                using var presenter = new CampaignEntityPresenter(root.transform);
                 var baseline = session.Entities();
                 var goats = session.Goats();
                 var rows = Copy(baseline);
@@ -276,32 +276,32 @@ namespace MagicCarpet.Native.Tests
                         cache,
                         0),
                     Is.True);
-                AssertClass5Presentation(presenter, 990, Level2EntityFamily.Bee, 3, 14, 150);
+                AssertClass5Presentation(presenter, 990, CampaignEntityFamily.Bee, 3, 14, 150);
                 AssertClass5Presentation(
                     presenter,
                     991,
-                    Level2EntityFamily.Multipart,
+                    CampaignEntityFamily.Multipart,
                     88,
                     30,
                     180);
                 AssertClass5Presentation(
                     presenter,
                     992,
-                    Level2EntityFamily.Archer,
+                    CampaignEntityFamily.Archer,
                     0,
                     8,
                     250);
                 AssertClass5Presentation(
                     presenter,
                     993,
-                    Level2EntityFamily.Model9,
+                    CampaignEntityFamily.Model9,
                     220,
                     158,
                     125);
                 AssertClass5Presentation(
                     presenter,
                     994,
-                    Level2EntityFamily.Trader,
+                    CampaignEntityFamily.Trader,
                     219,
                     138,
                     250);
@@ -357,7 +357,7 @@ namespace MagicCarpet.Native.Tests
                     Level2Package,
                     Level2DayCache);
                 var cache = OwnerAssetCache.OpenAndValidateLevel2(Level2DayCache);
-                using var presenter = new Level2EntityPresenter(root.transform);
+                using var presenter = new CampaignEntityPresenter(root.transform);
                 var entities = session.Entities();
                 var goats = session.Goats();
 
@@ -462,11 +462,11 @@ namespace MagicCarpet.Native.Tests
                     Has.Length.EqualTo(65));
                 Assert.That(
                     runtime.QualificationLevel2EntityPresentations.Count(row =>
-                        row.Family == Level2EntityFamily.Goat),
+                        row.Family == CampaignEntityFamily.Goat),
                     Is.EqualTo(36));
                 Assert.That(
                     runtime.QualificationLevel2EntityPresentations.Count(row =>
-                        row.Family == Level2EntityFamily.Villager),
+                        row.Family == CampaignEntityFamily.Villager),
                     Is.EqualTo(29));
                 runtime.QualificationDisposeNativeOwners();
                 Assert.That(runtime.QualificationLevel2EntityPresentations, Is.Empty);
@@ -565,9 +565,9 @@ namespace MagicCarpet.Native.Tests
         }
 
         private static void AssertClass5Presentation(
-            Level2EntityPresenter presenter,
+            CampaignEntityPresenter presenter,
             ushort entityIndex,
-            Level2EntityFamily family,
+            CampaignEntityFamily family,
             ushort renderParameter,
             int baseTmap,
             int logicalHeight)

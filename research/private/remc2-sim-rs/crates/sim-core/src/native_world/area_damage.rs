@@ -1223,7 +1223,7 @@ mod tests {
             crate::campaign::spec::CampaignSelection::LEVEL3,
         )
         .expect("qualified Level-3 land boundary")
-        .level2_compatibility()
+        .simulation()
         .clone();
         let player = session.state.entity_index;
         let position = session.state.position;

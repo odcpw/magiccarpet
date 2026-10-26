@@ -13,7 +13,7 @@ namespace MagicCarpet.Native
         private void OnPreRender() => Captured?.Invoke();
     }
 
-    internal sealed class Level3EntitySurfaceMarker : MonoBehaviour
+    internal sealed class CampaignEntitySurfaceMarker : MonoBehaviour
     {
         internal ushort EntityIndex { get; private set; }
         internal ushort SourceId { get; private set; }
@@ -27,6 +27,11 @@ namespace MagicCarpet.Native
         internal ushort SourceX { get; private set; }
         internal ushort SourceY { get; private set; }
         internal short SourceZ { get; private set; }
+        internal uint SourceDrawOrder { get; private set; }
+        internal uint SourceControlFlags { get; private set; }
+        internal byte SourcePixelMode { get; private set; }
+        private byte sourceOwnerColor;
+        private ushort sourceBrightness;
         private MaterialPropertyBlock occlusionProperties;
 
         internal void Bind(
@@ -62,7 +67,8 @@ namespace MagicCarpet.Native
             NativeSim.CampaignEntityPresentation row,
             OwnerAssetCache.Level3Texture texture,
             Mesh quad,
-            Material material)
+            Material material,
+            bool sourceComposited = false)
         {
             var visual = transform.Find("package sprite");
             if (visual == null)
@@ -79,9 +85,16 @@ namespace MagicCarpet.Native
             visual.GetComponent<MeshFilter>().sharedMesh = quad;
             var renderer = visual.GetComponent<MeshRenderer>();
             renderer.sharedMaterial = material;
-            renderer.enabled = true;
+            // The ordered compositor explicitly submits source sprites. A
+            // second automatic camera draw would apply destination blends twice.
+            renderer.enabled = !sourceComposited;
             AssetSelector = row.selectedTmap;
             SpriteReady = true;
+            SourceDrawOrder = row.drawOrder;
+            SourceControlFlags = row.controlFlags;
+            SourcePixelMode = row.pixelMode;
+            sourceOwnerColor = row.ownerColor;
+            sourceBrightness = row.brightness;
         }
 
         internal void BindCaveOcclusion(Texture2D terrainOrders, ushort cellOrder)
@@ -95,6 +108,19 @@ namespace MagicCarpet.Native
             occlusionProperties.SetTexture("_CaveOrders", terrainOrders == null ? Texture2D.blackTexture : terrainOrders);
             visual.GetComponent<MeshRenderer>().SetPropertyBlock(occlusionProperties);
         }
+
+        internal void DrawSourceSprite(CommandBuffer commands, byte pixelMode)
+        {
+            var visual = transform.Find("package sprite");
+            if (!SpriteReady || visual == null) return;
+            occlusionProperties ??= new MaterialPropertyBlock();
+            occlusionProperties.SetFloat("_SourcePixelMode", pixelMode);
+            occlusionProperties.SetFloat("_SourceBrightness", sourceBrightness);
+            occlusionProperties.SetFloat("_SourceOwnerColor", sourceOwnerColor);
+            commands.DrawMesh(visual.GetComponent<MeshFilter>().sharedMesh,
+                visual.localToWorldMatrix, visual.GetComponent<MeshRenderer>().sharedMaterial,
+                0, 0, occlusionProperties);
+        }
     }
 
     /// <summary>
@@ -106,7 +132,7 @@ namespace MagicCarpet.Native
     internal sealed class CampaignPresentationSurface : IDisposable
     {
         private readonly Transform root;
-        private readonly Dictionary<ushort, Level3EntitySurfaceMarker> entities = new();
+        private readonly Dictionary<ushort, CampaignEntitySurfaceMarker> entities = new();
         private readonly List<Texture2D> hudTextures = new();
         private readonly Dictionary<int, OwnerAssetCache.Level3Texture> materialRows = new();
         private readonly Dictionary<int, Texture2D> entityTextures = new();
@@ -143,6 +169,7 @@ namespace MagicCarpet.Native
         private byte[] entityPaletteSource;
         private Texture2D webTexture;
         private byte[] webIndices, webMask;
+        private byte[] webPaletteRgb8;
         private Color32[] webPixels;
         private bool webVisible;
         private Texture2D caveOrdersTexture;
@@ -153,6 +180,8 @@ namespace MagicCarpet.Native
         private Material composedMaterial, historyMaterial;
         private Mesh composedMesh;
         private Texture2D sceneBlendTable, exitBlendTable;
+        private Texture2D spriteTables;
+        private CampaignSpriteCompositor spriteCompositor;
         private ulong pendingSceneGeneration, pendingSceneRevision;
         private ulong historyGeneration, historyRevision;
         private byte pendingSceneBlur;
@@ -175,6 +204,12 @@ namespace MagicCarpet.Native
                 var blend = new byte[65536];
                 Buffer.BlockCopy(tables, 0x4000, blend, 0, blend.Length);
                 sceneBlendTable = CreateBlendTable(blend);
+                spriteTables = new Texture2D(256, 326, TextureFormat.R8, false, true) {
+                    name = "MC2 indexed sprite TABLES", filterMode = FilterMode.Point,
+                    wrapMode = TextureWrapMode.Clamp
+                };
+                spriteTables.LoadRawTextureData(tables);
+                spriteTables.Apply(false, true);
                 var exitTablePath = descriptor.day_exit_tables?.path;
                 if (descriptor.profile.map_type.id == 0 && !string.IsNullOrEmpty(exitTablePath))
                     exitBlendTable = CreateBlendTable(cache.ReadOutput(exitTablePath));
@@ -212,6 +247,7 @@ namespace MagicCarpet.Native
                 composedCamera.enabled = !Application.isBatchMode;
                 frameCamera.targetTexture = sceneTarget;
                 entityCamera.targetTexture = sceneTarget;
+                spriteCompositor = new CampaignSpriteCompositor(entityCamera, sceneTarget);
                 // Finalize at the following camera's render boundary: both
                 // the terrain and sprite cameras have finished this target.
                 // Capturing inside the sprite callback can consume the
@@ -361,6 +397,12 @@ namespace MagicCarpet.Native
         {
             if (webTexture == null) return;
             var colors = TransformPalette(palette);
+            // Ordinary preference polling and world presentation can visit
+            // twice in one turn. Recolor/upload the 64,000-pixel WEB only when
+            // its actual transformed palette changes.
+            if (webPaletteRgb8 != null && colors.SequenceEqual(webPaletteRgb8)) return;
+            webPaletteRgb8 ??= new byte[colors.Length];
+            Buffer.BlockCopy(colors, 0, webPaletteRgb8, 0, colors.Length);
             for (var y = 0; y < webTexture.height; y++)
                 for (var x = 0; x < webTexture.width; x++)
                 {
@@ -894,6 +936,7 @@ namespace MagicCarpet.Native
                 marker.transform.localPosition = new Vector3(x / 64f, marker.SourceZ / 64f, -y / 64f);
                 marker.transform.localRotation = rotation;
             }
+            spriteCompositor?.PrepareView();
             entityCamera.enabled = !Application.isBatchMode;
         }
 
@@ -1017,7 +1060,7 @@ namespace MagicCarpet.Native
                     var node = new GameObject($"Level 3 entity {row.entityIndex:D3}");
                     node.layer = EntityLayer;
                     node.transform.SetParent(root, false);
-                    marker = node.AddComponent<Level3EntitySurfaceMarker>();
+                    marker = node.AddComponent<CampaignEntitySurfaceMarker>();
                     entities.Add(row.entityIndex, marker);
                 }
                 marker.Bind(row, generation, tick);
@@ -1039,7 +1082,8 @@ namespace MagicCarpet.Native
                     presentation,
                     texture,
                     worldMesh,
-                    EnsureEntityMaterial(cache, texture));
+                    EnsureEntityMaterial(cache, texture),
+                    spriteCompositor != null);
                 var caveOrder = caveCellOrders == null ? (ushort)0 :
                     caveCellOrders[(marker.SourceY >> 8) * 256 + (marker.SourceX >> 8)];
                 marker.BindCaveOcclusion(caveCellOrders == null ? null : caveOrdersTexture, caveOrder);
@@ -1052,6 +1096,7 @@ namespace MagicCarpet.Native
                 DestroyObject(entities[stale].gameObject);
                 entities.Remove(stale);
             }
+            spriteCompositor?.SetSprites(entities.Values, caveCellOrders);
         }
 
         private Material EnsureEntityMaterial(
@@ -1073,6 +1118,12 @@ namespace MagicCarpet.Native
             if (shader == null) throw new InvalidOperationException("entity sprite shader is missing");
             material = new Material(shader);
             material.SetFloat("_OutputIndices", sceneTarget == null ? 0f : 1f);
+            if (spriteCompositor != null)
+            {
+                material.SetTexture("_SpriteTables", spriteTables);
+                material.SetFloat("_ZWrite", 0f);
+                material.SetFloat("_ZTest", (float)CompareFunction.Always);
+            }
             material.SetTexture("_Indices", texture);
             material.SetTexture("_Palette", EnsureEntityPalette(cache));
             entityTextures.Add(row.index, texture);
@@ -1103,6 +1154,8 @@ namespace MagicCarpet.Native
         {
             if (disposed) return;
             disposed = true;
+            spriteCompositor?.Dispose();
+            spriteCompositor = null;
             if (frameCamera != null) frameCamera.targetTexture = null;
             if (entityCamera != null) entityCamera.targetTexture = null;
             foreach (var target in new[] { sceneTarget, composedHistory, nextHistory })
@@ -1111,6 +1164,7 @@ namespace MagicCarpet.Native
             DestroyObject(historyMaterial);
             DestroyObject(composedMesh);
             DestroyObject(sceneBlendTable);
+            DestroyObject(spriteTables);
             DestroyObject(exitBlendTable);
             DestroyObject(worldMaterial);
             DestroyObject(worldIndices);

@@ -426,7 +426,7 @@ mod tests {
                 (0xE0, 0x58, 0x7B)
             );
             with_campaign_session(handle, |record| {
-                let CampaignSessionKind::Level2 { reset, .. } = &record.kind else {
+                let CampaignSessionKind::Campaign { reset, .. } = &record.kind else {
                     panic!("Cave must retain descriptor-backed authority");
                 };
                 for wrong in [

@@ -502,10 +502,22 @@ fn level_two_shared_day_flight_uses_level2_profile() {
         .expect("Level 2 Day terrain oracle");
     let plane =
         |index: usize| &oracle_frame[index * LEGACY_MAP_CELLS..(index + 1) * LEGACY_MAP_CELLS];
-    assert_eq!(session.canonical_terrain().planes().terrain_types.as_ref(), plane(0));
-    assert_eq!(session.canonical_terrain().planes().ground_heights.as_ref(), plane(1));
-    assert_eq!(session.canonical_terrain().planes().shading.as_ref(), plane(2));
-    assert_eq!(session.canonical_terrain().planes().angles.as_ref(), plane(3));
+    assert_eq!(
+        session.canonical_terrain().planes().terrain_types.as_ref(),
+        plane(0)
+    );
+    assert_eq!(
+        session.canonical_terrain().planes().ground_heights.as_ref(),
+        plane(1)
+    );
+    assert_eq!(
+        session.canonical_terrain().planes().shading.as_ref(),
+        plane(2)
+    );
+    assert_eq!(
+        session.canonical_terrain().planes().angles.as_ref(),
+        plane(3)
+    );
     // Day does not query the cave ceiling. The authored six-plane reset
     // preserves its secondary-height plane, but that plane is not part of
     // the Day frame-0 comparison (the preserved sequence's plane 4 is not
@@ -520,13 +532,33 @@ fn level_two_shared_day_flight_uses_level2_profile() {
     );
     assert_eq!(inspection.metadata().map_type, MapType::Day);
     assert_eq!(session.profile(), FlightProfile::OUTDOOR);
-    assert_eq!(session.canonical_terrain().planes().terrain_types.len(), 256 * 256);
-    assert_eq!(session.canonical_terrain().planes().ground_heights.len(), 256 * 256);
-    assert_eq!(session.canonical_terrain().planes().shading.len(), 256 * 256);
+    assert_eq!(
+        session.canonical_terrain().planes().terrain_types.len(),
+        256 * 256
+    );
+    assert_eq!(
+        session.canonical_terrain().planes().ground_heights.len(),
+        256 * 256
+    );
+    assert_eq!(
+        session.canonical_terrain().planes().shading.len(),
+        256 * 256
+    );
     assert_eq!(session.canonical_terrain().planes().angles.len(), 256 * 256);
-    assert_eq!(session.canonical_terrain().planes().secondary_heights.len(), 256 * 256);
-    assert_eq!(session.canonical_terrain().planes().entity_indices.len(), 256 * 256);
-    assert_eq!(session.canonical_terrain().ceiling_height(session.state.position), None);
+    assert_eq!(
+        session.canonical_terrain().planes().secondary_heights.len(),
+        256 * 256
+    );
+    assert_eq!(
+        session.canonical_terrain().planes().entity_indices.len(),
+        256 * 256
+    );
+    assert_eq!(
+        session
+            .canonical_terrain()
+            .ceiling_height(session.state.position),
+        None
+    );
 
     // Day uses the same shared terrain queries as Level 1; compare the
     // immutable package terrain against the mutable session projection at
@@ -569,7 +601,10 @@ fn level_two_shared_day_flight_uses_level2_profile() {
         }),
         69
     );
-    assert_eq!(session.canonical_terrain().planes().ground_heights[0 + 128 * 256], 2);
+    assert_eq!(
+        session.canonical_terrain().planes().ground_heights[0 + 128 * 256],
+        2
+    );
 
     let mut camera = TerrainSlopeCamera::default();
     let mut oracle_camera = TerrainSlopeCamera::default();
@@ -806,7 +841,7 @@ fn level_two_goat_pool_is_production_wired_and_reset_isolated() {
         .dispatch_events()
         .iter()
         .filter_map(|event| match event {
-            Level2DispatchEvent::Goat { source_slot, .. } => Some(*source_slot),
+            Mc2DispatchEvent::Goat { source_slot, .. } => Some(*source_slot),
             _ => None,
         })
         .collect::<Vec<_>>();
@@ -817,28 +852,28 @@ fn level_two_goat_pool_is_production_wired_and_reset_isolated() {
         .dispatch_events()
         .iter()
         .filter_map(|event| match event {
-            Level2DispatchEvent::SharedPickup { source_slot, .. }
-            | Level2DispatchEvent::SpellAcquisition { source_slot, .. }
-            | Level2DispatchEvent::House { source_slot, .. }
-            | Level2DispatchEvent::Villager { source_slot, .. }
-            | Level2DispatchEvent::Castle { source_slot, .. }
-            | Level2DispatchEvent::Error { source_slot, .. }
-            | Level2DispatchEvent::DynamicArena { source_slot, .. }
-            | Level2DispatchEvent::Economy { source_slot, .. }
-            | Level2DispatchEvent::Goat { source_slot, .. }
-            | Level2DispatchEvent::LevelExitSequenceStarted {
+            Mc2DispatchEvent::SharedPickup { source_slot, .. }
+            | Mc2DispatchEvent::SpellAcquisition { source_slot, .. }
+            | Mc2DispatchEvent::House { source_slot, .. }
+            | Mc2DispatchEvent::Villager { source_slot, .. }
+            | Mc2DispatchEvent::Castle { source_slot, .. }
+            | Mc2DispatchEvent::Error { source_slot, .. }
+            | Mc2DispatchEvent::DynamicArena { source_slot, .. }
+            | Mc2DispatchEvent::Economy { source_slot, .. }
+            | Mc2DispatchEvent::Goat { source_slot, .. }
+            | Mc2DispatchEvent::LevelExitSequenceStarted {
                 trigger_entity_index: source_slot,
                 ..
             }
-            | Level2DispatchEvent::LevelExitSequenceCompleted {
+            | Mc2DispatchEvent::LevelExitSequenceCompleted {
                 player_entity_index: source_slot,
                 ..
             } => Some(*source_slot),
             // This is constructor metadata emitted at the producer
             // boundary; the live source rows below carry cursor order.
-            Level2DispatchEvent::AuthoredGroupActivated { .. } => return None,
-            Level2DispatchEvent::BadStone { step, .. } => Some(step.source_slot),
-            Level2DispatchEvent::Dolmen { step, .. } => Some(step.source_slot),
+            Mc2DispatchEvent::AuthoredGroupActivated { .. } => return None,
+            Mc2DispatchEvent::BadStone { step, .. } => Some(step.source_slot),
+            Mc2DispatchEvent::Dolmen { step, .. } => Some(step.source_slot),
         })
         .collect::<Vec<_>>();
     // A same-pass source callback may reclaim and reuse a lower slot; the
@@ -912,11 +947,13 @@ fn level_two_death_burst_dynamic_row_dispatches_reclaims_and_resets() {
     );
 
     session.step_outer_turn(PlayerCommand::default(), 0);
-    assert!(session
-        .economy()
-        .death_bursts()
-        .iter()
-        .any(|burst| burst.source_entity_index == burst_slot && !burst.active));
+    assert!(
+        session
+            .economy()
+            .death_bursts()
+            .iter()
+            .any(|burst| burst.source_entity_index == burst_slot && !burst.active)
+    );
     assert!(!session.economy().free_slots.contains(&burst_slot));
     assert!(
         !session
@@ -931,7 +968,7 @@ fn level_two_death_burst_dynamic_row_dispatches_reclaims_and_resets() {
             .iter()
             .filter(|event| matches!(
                 event,
-                Level2DispatchEvent::DynamicArena {
+                Mc2DispatchEvent::DynamicArena {
                     source_slot,
                     kind: Level2DynamicArenaKind::DeathBurst,
                     ..
@@ -944,7 +981,7 @@ fn level_two_death_burst_dynamic_row_dispatches_reclaims_and_resets() {
     assert!(session.dispatch_events().iter().any(|event| {
         matches!(
             event,
-            Level2DispatchEvent::DynamicArena {
+            Mc2DispatchEvent::DynamicArena {
                 source_slot,
                 kind: Level2DynamicArenaKind::DeathBurst,
                 ..

@@ -21,9 +21,9 @@ fn sphere_has_source_ancestor(
     source_ids: &BTreeSet<u32>,
     merge_lineage: &BTreeSet<(u32, u32)>,
 ) -> bool {
-    source_ids.iter().any(|source_id| {
-        sphere_lineage_descendants(*source_id, merge_lineage).contains(&sphere_id)
-    })
+    source_ids
+        .iter()
+        .any(|source_id| sphere_lineage_descendants(*source_id, merge_lineage).contains(&sphere_id))
 }
 
 fn campaign_economy_events_with_mana_lineage(
@@ -55,26 +55,19 @@ fn retain_castle_defender_receipts(
     }));
 }
 
-fn assert_no_level2_dispatch_error(
-    handle: u64,
-    events: &[McCampaignEventV2],
-    context: &str,
-) {
-    if !events
-        .iter()
-        .any(|event| event.kind == 255)
-    {
+fn assert_no_level2_dispatch_error(handle: u64, events: &[McCampaignEventV2], context: &str) {
+    if !events.iter().any(|event| event.kind == 255) {
         return;
     }
     let diagnostic = with_campaign_session(handle, |session| {
-        let CampaignSessionKind::Level2 { reset, .. } = &session.kind else {
+        let CampaignSessionKind::Campaign { reset, .. } = &session.kind else {
             unreachable!("campaign fixture opened as Level 2")
         };
         let error_slots = reset
             .dispatch_events()
             .iter()
             .filter_map(|event| match event {
-                Level2DispatchEvent::Error { source_slot, .. } => Some(*source_slot),
+                Mc2DispatchEvent::Error { source_slot, .. } => Some(*source_slot),
                 _ => None,
             })
             .collect::<BTreeSet<_>>();
@@ -95,7 +88,7 @@ fn assert_no_level2_dispatch_error(
 
 fn level2_source_valid_castle_route(handle: u64) -> (Position, (u16, u16)) {
     with_campaign_session(handle, |session| {
-        let CampaignSessionKind::Level2 { reset, .. } = &session.kind else {
+        let CampaignSessionKind::Campaign { reset, .. } = &session.kind else {
             return Err(AbiError::new(
                 MC_STATUS_INVALID_ARGUMENT,
                 "Castle-site selection requires a Level 2 campaign session",
@@ -138,12 +131,10 @@ fn level2_source_valid_castle_route(handle: u64) -> (Position, (u16, u16)) {
                 let record = entity.record_bytes();
                 let half_x = i16::from_le_bytes([record[88], record[89]]);
                 let half_y = i16::from_le_bytes([record[90], record[91]]);
-                let dx = i16::from_ne_bytes(
-                    entity.position.x.wrapping_sub(position.x).to_ne_bytes(),
-                );
-                let dy = i16::from_ne_bytes(
-                    entity.position.y.wrapping_sub(position.y).to_ne_bytes(),
-                );
+                let dx =
+                    i16::from_ne_bytes(entity.position.x.wrapping_sub(position.x).to_ne_bytes());
+                let dy =
+                    i16::from_ne_bytes(entity.position.y.wrapping_sub(position.y).to_ne_bytes());
                 i32::from(dx).abs() > i32::from(half_x) + 2_560
                     || i32::from(dy).abs() > i32::from(half_y) + 2_560
             });
@@ -173,9 +164,7 @@ fn level2_source_valid_castle_route(handle: u64) -> (Position, (u16, u16)) {
                 if terrain.ground_height(flyer_position) > flyer_position.z {
                     flyer_position = launch_position;
                 }
-                if !site_is_source_valid(flyer_position)
-                    || !site_is_source_valid(target_position)
-                {
+                if !site_is_source_valid(flyer_position) || !site_is_source_valid(target_position) {
                     return None;
                 }
                 let mut root_x = u16::from(tile_x) << 8;
@@ -186,12 +175,8 @@ fn level2_source_valid_castle_route(handle: u64) -> (Position, (u16, u16)) {
                 Some((launch_position, (root_x, root_y)))
             })
             .min_by_key(|(_, (root_x, root_y))| {
-                let dx = i16::from_ne_bytes(
-                    root_x.wrapping_sub(group1_center.x).to_ne_bytes(),
-                );
-                let dy = i16::from_ne_bytes(
-                    root_y.wrapping_sub(group1_center.y).to_ne_bytes(),
-                );
+                let dx = i16::from_ne_bytes(root_x.wrapping_sub(group1_center.x).to_ne_bytes());
+                let dy = i16::from_ne_bytes(root_y.wrapping_sub(group1_center.y).to_ne_bytes());
                 (
                     i64::from(dx) * i64::from(dx) + i64::from(dy) * i64::from(dy),
                     *root_y,
@@ -212,7 +197,7 @@ fn level2_source_valid_castle_route(handle: u64) -> (Position, (u16, u16)) {
 fn level2_campaign_public_tier0_possession_claims_group1_mana_from_strict_target_flight() {
     let handle = open_level2_campaign_handle_with_asset_cache(&qualified_level2_day_owner_cache());
     let row11_position = with_campaign_session(handle, |session| {
-        let CampaignSessionKind::Level2 { reset, .. } = &session.kind else {
+        let CampaignSessionKind::Campaign { reset, .. } = &session.kind else {
             return Err(AbiError::new(
                 MC_STATUS_INVALID_ARGUMENT,
                 "Possession proof requires a Level 2 campaign session",
@@ -342,7 +327,7 @@ fn level2_campaign_public_invisible_casts_after_castle_reaches_live_mana_gate() 
     assert!(source_pass_bound > 0);
 
     let row11_position = with_campaign_session(handle, |session| {
-        let CampaignSessionKind::Level2 { reset, .. } = &session.kind else {
+        let CampaignSessionKind::Campaign { reset, .. } = &session.kind else {
             return Err(AbiError::new(
                 MC_STATUS_INVALID_ARGUMENT,
                 "Invisible proof requires a Level 2 campaign session",
@@ -436,10 +421,7 @@ fn level2_campaign_public_invisible_casts_after_castle_reaches_live_mana_gate() 
             &mut merge_lineage,
             &mut castle_collected_sphere_ids,
         );
-        retain_castle_defender_receipts(
-            &economy_events,
-            &mut defender_events,
-        );
+        retain_castle_defender_receipts(&economy_events, &mut defender_events);
     }
     let recovered_hud =
         campaign_day_hud_public(handle, latest_snapshot.generation, latest_snapshot.revision);
@@ -460,10 +442,7 @@ fn level2_campaign_public_invisible_casts_after_castle_reaches_live_mana_gate() 
         &mut merge_lineage,
         &mut castle_collected_sphere_ids,
     );
-    retain_castle_defender_receipts(
-        &economy_events,
-        &mut defender_events,
-    );
+    retain_castle_defender_receipts(&economy_events, &mut defender_events);
     assert_eq!(
         castle_arm_events
             .iter()
@@ -488,12 +467,9 @@ fn level2_campaign_public_invisible_casts_after_castle_reaches_live_mana_gate() 
             &mut merge_lineage,
             &mut castle_collected_sphere_ids,
         );
-        retain_castle_defender_receipts(
-            &economy_events,
-            &mut defender_events,
-        );
+        retain_castle_defender_receipts(&economy_events, &mut defender_events);
         castle_construction_started = with_campaign_session(handle, |session| {
-            let CampaignSessionKind::Level2 { reset, .. } = &session.kind else {
+            let CampaignSessionKind::Campaign { reset, .. } = &session.kind else {
                 unreachable!("campaign fixture opened as Level 2")
             };
             Ok(reset
@@ -524,12 +500,9 @@ fn level2_campaign_public_invisible_casts_after_castle_reaches_live_mana_gate() 
             &mut merge_lineage,
             &mut castle_collected_sphere_ids,
         );
-        retain_castle_defender_receipts(
-            &economy_events,
-            &mut defender_events,
-        );
+        retain_castle_defender_receipts(&economy_events, &mut defender_events);
         castle_defender_ready = with_campaign_session(handle, |session| {
-            let CampaignSessionKind::Level2 { reset, .. } = &session.kind else {
+            let CampaignSessionKind::Campaign { reset, .. } = &session.kind else {
                 unreachable!("campaign fixture opened as Level 2")
             };
             let Some(castle) = reset.economy().castle() else {
@@ -550,21 +523,18 @@ fn level2_campaign_public_invisible_casts_after_castle_reaches_live_mana_gate() 
         }
     }
     let castle_readiness_state = with_campaign_session(handle, |session| {
-        let CampaignSessionKind::Level2 { reset, .. } = &session.kind else {
+        let CampaignSessionKind::Campaign { reset, .. } = &session.kind else {
             unreachable!("campaign fixture opened as Level 2")
         };
         Ok((
-            reset
-                .economy()
-                .castle()
-                .map(|castle| {
-                    (
-                        castle.action,
-                        castle.build_state,
-                        castle.phase,
-                        castle.defender_slots,
-                    )
-                }),
+            reset.economy().castle().map(|castle| {
+                (
+                    castle.action,
+                    castle.build_state,
+                    castle.phase,
+                    castle.defender_slots,
+                )
+            }),
             reset
                 .economy()
                 .castle_children()
@@ -603,20 +573,14 @@ fn level2_campaign_public_invisible_casts_after_castle_reaches_live_mana_gate() 
         &mut merge_lineage,
         &mut castle_collected_sphere_ids,
     );
-    retain_castle_defender_receipts(
-        &economy_events,
-        &mut defender_events,
-    );
+    retain_castle_defender_receipts(&economy_events, &mut defender_events);
     let (pickup_snapshot, _) = step_level2_campaign_public(handle, input);
     let economy_events = campaign_economy_events_with_mana_lineage(
         handle,
         &mut merge_lineage,
         &mut castle_collected_sphere_ids,
     );
-    retain_castle_defender_receipts(
-        &economy_events,
-        &mut defender_events,
-    );
+    retain_castle_defender_receipts(&economy_events, &mut defender_events);
     let invisible_source = campaign_spell_pickups_public(handle, pickup_snapshot.generation)
         .into_iter()
         .find(|source| source.authored_index == 156)
@@ -642,10 +606,7 @@ fn level2_campaign_public_invisible_casts_after_castle_reaches_live_mana_gate() 
             &mut merge_lineage,
             &mut castle_collected_sphere_ids,
         );
-        retain_castle_defender_receipts(
-            &economy_events,
-            &mut defender_events,
-        );
+        retain_castle_defender_receipts(&economy_events, &mut defender_events);
         invisible_acquired |= events.iter().any(|event| {
             event.kind == MC_CAMPAIGN_EVENT_SPELL_ACQUISITION
                 && event.family == 11
@@ -674,7 +635,7 @@ fn level2_campaign_public_invisible_casts_after_castle_reaches_live_mana_gate() 
     );
 
     let castle_mana_before_funding = with_campaign_session(handle, |session| {
-        let CampaignSessionKind::Level2 { reset, .. } = &session.kind else {
+        let CampaignSessionKind::Campaign { reset, .. } = &session.kind else {
             unreachable!("campaign fixture opened as Level 2")
         };
         Ok(reset.economy().castle().map_or(0, |castle| castle.mana))
@@ -693,7 +654,7 @@ fn level2_campaign_public_invisible_casts_after_castle_reaches_live_mana_gate() 
     };
     let (rejected_snapshot, _) = step_level2_campaign_public(handle, input);
     let castle_mana_after_rejection = with_campaign_session(handle, |session| {
-        let CampaignSessionKind::Level2 { reset, .. } = &session.kind else {
+        let CampaignSessionKind::Campaign { reset, .. } = &session.kind else {
             unreachable!("campaign fixture opened as Level 2")
         };
         Ok(reset.economy().castle().map_or(0, |castle| castle.mana))
@@ -725,7 +686,7 @@ fn level2_campaign_public_invisible_casts_after_castle_reaches_live_mana_gate() 
     let mut attempted_funding_targets = BTreeSet::new();
     loop {
         let (castle_mana, eligible_owned_mana) = with_campaign_session(handle, |session| {
-            let CampaignSessionKind::Level2 { reset, .. } = &session.kind else {
+            let CampaignSessionKind::Campaign { reset, .. } = &session.kind else {
                 unreachable!("campaign fixture opened as Level 2")
             };
             let castle_mana = reset.economy().castle().map_or(0, |castle| castle.mana);
@@ -793,12 +754,9 @@ fn level2_campaign_public_invisible_casts_after_castle_reaches_live_mana_gate() 
             &mut merge_lineage,
             &mut castle_collected_sphere_ids,
         );
-        retain_castle_defender_receipts(
-            &economy_events,
-            &mut defender_events,
-        );
+        retain_castle_defender_receipts(&economy_events, &mut defender_events);
         let (castle_mana, stable_return) = with_campaign_session(handle, |session| {
-            let CampaignSessionKind::Level2 { reset, .. } = &session.kind else {
+            let CampaignSessionKind::Campaign { reset, .. } = &session.kind else {
                 unreachable!("campaign fixture opened as Level 2")
             };
             let Some(castle) = reset.economy().castle() else {
@@ -889,7 +847,7 @@ fn level2_campaign_public_invisible_casts_after_castle_reaches_live_mana_gate() 
             }
             retain_castle_defender_receipts(&economy_events, &mut defender_events);
             live_castle_mana = with_campaign_session(handle, |session| {
-                let CampaignSessionKind::Level2 { reset, .. } = &session.kind else {
+                let CampaignSessionKind::Campaign { reset, .. } = &session.kind else {
                     unreachable!("campaign fixture opened as Level 2")
                 };
                 Ok(reset.economy().castle().map_or(0, |castle| castle.mana))
@@ -902,7 +860,7 @@ fn level2_campaign_public_invisible_casts_after_castle_reaches_live_mana_gate() 
     }
     input.speed_index = 0;
     let castle_funding_state = with_campaign_session(handle, |session| {
-        let CampaignSessionKind::Level2 { reset, .. } = &session.kind else {
+        let CampaignSessionKind::Campaign { reset, .. } = &session.kind else {
             unreachable!("campaign fixture opened as Level 2")
         };
         Ok((
@@ -1285,7 +1243,7 @@ fn level2_campaign_step_projects_family12_source_slot38() {
         MC_STATUS_OK
     );
     let pickup_position = with_campaign_session(handle, |session| {
-        let CampaignSessionKind::Level2 { reset, .. } = &session.kind else {
+        let CampaignSessionKind::Campaign { reset, .. } = &session.kind else {
             unreachable!("campaign fixture opened as Level 2")
         };
         let pickup = reset
@@ -1634,7 +1592,7 @@ fn level2_campaign_minimap_is_source_ordered_visibility_bound_and_replay_safe() 
 
     let (local_player_slot, local_objective, live_player) =
         with_campaign_session(handle, |session| {
-            let CampaignSessionKind::Level2 { reset, .. } = &session.kind else {
+            let CampaignSessionKind::Campaign { reset, .. } = &session.kind else {
                 unreachable!("campaign fixture opened as Level 2")
             };
             let local_player_slot = reset.runtime().local_player_slot;
@@ -1836,7 +1794,7 @@ fn level2_campaign_minimap_is_source_ordered_visibility_bound_and_replay_safe() 
     assert_eq!(stale_entity, unchanged_entity);
 
     let family12_position = with_campaign_session(handle, |session| {
-        let CampaignSessionKind::Level2 { reset, .. } = &session.kind else {
+        let CampaignSessionKind::Campaign { reset, .. } = &session.kind else {
             unreachable!("campaign fixture opened as Level 2")
         };
         Ok(reset
@@ -1933,7 +1891,7 @@ fn level2_campaign_minimap_is_source_ordered_visibility_bound_and_replay_safe() 
     );
     assert_eq!(acquired_entity_count, acquired_state.entity_count);
     let acquired_live_player = with_campaign_session(handle, |session| {
-        let CampaignSessionKind::Level2 { reset, .. } = &session.kind else {
+        let CampaignSessionKind::Campaign { reset, .. } = &session.kind else {
             unreachable!("campaign fixture opened as Level 2")
         };
         Ok(reset.state)
@@ -1994,7 +1952,11 @@ fn level2_campaign_minimap_is_source_ordered_visibility_bound_and_replay_safe() 
         MC_STATUS_OK
     );
     assert_eq!(acquired_mark_count, acquired_state.mark_count);
-    assert!(acquired_marks[1..].iter().all(|mark| mark.kind == 3 && mark.visible == 0));
+    assert!(
+        acquired_marks[1..]
+            .iter()
+            .all(|mark| mark.kind == 3 && mark.visible == 0)
+    );
     assert_eq!(acquired_marks[0].subject_entity_index, 0);
     assert_eq!(acquired_marks[0].kind, 2);
     assert_eq!(
@@ -2178,7 +2140,7 @@ fn level2_campaign_invisible_state_and_activation_guard_are_cabi_reachable() {
         MC_STATUS_OK
     );
     let initial_position = with_campaign_session(handle, |session| {
-        let CampaignSessionKind::Level2 { reset, .. } = &session.kind else {
+        let CampaignSessionKind::Campaign { reset, .. } = &session.kind else {
             unreachable!("campaign fixture opened as Level 2")
         };
         Ok(reset.state.position)
@@ -2234,7 +2196,7 @@ fn level2_campaign_invisible_state_and_activation_guard_are_cabi_reachable() {
         MC_STATUS_OK
     );
     let source = with_campaign_session(handle, |session| {
-        let CampaignSessionKind::Level2 { reset, .. } = &session.kind else {
+        let CampaignSessionKind::Campaign { reset, .. } = &session.kind else {
             unreachable!("campaign fixture opened as Level 2")
         };
         Ok(reset
@@ -2353,7 +2315,7 @@ fn level2_campaign_beyond_sight_state_and_activation_guard_are_cabi_reachable() 
         MC_STATUS_OK
     );
     let initial_position = with_campaign_session(handle, |session| {
-        let CampaignSessionKind::Level2 { reset, .. } = &session.kind else {
+        let CampaignSessionKind::Campaign { reset, .. } = &session.kind else {
             unreachable!("campaign fixture opened as Level 2")
         };
         Ok(reset.state.position)
@@ -2394,7 +2356,7 @@ fn level2_campaign_beyond_sight_state_and_activation_guard_are_cabi_reachable() 
         MC_STATUS_OK
     );
     let source_position = with_campaign_session(handle, |session| {
-        let CampaignSessionKind::Level2 { reset, .. } = &session.kind else {
+        let CampaignSessionKind::Campaign { reset, .. } = &session.kind else {
             unreachable!("campaign fixture opened as Level 2")
         };
         Ok(reset
@@ -2604,7 +2566,7 @@ fn level2_campaign_shield_state_activation_and_damage_are_cabi_reachable() {
         MC_STATUS_OK
     );
     let initial_position = with_campaign_session(handle, |session| {
-        let CampaignSessionKind::Level2 { reset, .. } = &session.kind else {
+        let CampaignSessionKind::Campaign { reset, .. } = &session.kind else {
             unreachable!("campaign fixture opened as Level 2")
         };
         Ok(reset.state.position)
@@ -2653,7 +2615,7 @@ fn level2_campaign_shield_state_activation_and_damage_are_cabi_reachable() {
         MC_STATUS_OK
     );
     let pickup_position = with_campaign_session(handle, |session| {
-        let CampaignSessionKind::Level2 { reset, .. } = &session.kind else {
+        let CampaignSessionKind::Campaign { reset, .. } = &session.kind else {
             unreachable!("campaign fixture opened as Level 2")
         };
         Ok(reset
@@ -2853,7 +2815,7 @@ fn level2_campaign_step_projects_persistent_replacement_success_and_no_free_slot
     let success_handle = open_level2();
     let (success_source_slot, success_position, success_player_slot) =
         with_campaign_session_mut(success_handle, |session| {
-            let CampaignSessionKind::Level2 { reset, .. } = &mut session.kind else {
+            let CampaignSessionKind::Campaign { reset, .. } = &mut session.kind else {
                 unreachable!("campaign fixture opened as Level 2")
             };
             let player_entity_index = reset.state.entity_index;
@@ -2873,7 +2835,7 @@ fn level2_campaign_step_projects_persistent_replacement_success_and_no_free_slot
         })
         .expect("install success-vector replacement");
     let success_count_before = with_campaign_session(success_handle, |session| {
-        let CampaignSessionKind::Level2 { reset, .. } = &session.kind else {
+        let CampaignSessionKind::Campaign { reset, .. } = &session.kind else {
             unreachable!("campaign fixture opened as Level 2")
         };
         Ok(reset.economy().spell_replacements().len())
@@ -2922,7 +2884,7 @@ fn level2_campaign_step_projects_persistent_replacement_success_and_no_free_slot
     }
     assert!(success_acquired);
     let success_count_after = with_campaign_session(success_handle, |session| {
-        let CampaignSessionKind::Level2 { reset, .. } = &session.kind else {
+        let CampaignSessionKind::Campaign { reset, .. } = &session.kind else {
             unreachable!("campaign fixture opened as Level 2")
         };
         Ok(reset.economy().spell_replacements().len())
@@ -2937,7 +2899,7 @@ fn level2_campaign_step_projects_persistent_replacement_success_and_no_free_slot
     let failure_handle = open_level2();
     let (failure_source_slot, failure_position, failure_player_slot, allocated_count) =
         with_campaign_session_mut(failure_handle, |session| {
-            let CampaignSessionKind::Level2 { reset, .. } = &mut session.kind else {
+            let CampaignSessionKind::Campaign { reset, .. } = &mut session.kind else {
                 unreachable!("campaign fixture opened as Level 2")
             };
             let player_entity_index = reset.state.entity_index;
@@ -3001,7 +2963,7 @@ fn level2_campaign_step_projects_persistent_replacement_success_and_no_free_slot
     }
     assert!(failure_acquired);
     with_campaign_session(failure_handle, |session| {
-        let CampaignSessionKind::Level2 { reset, .. } = &session.kind else {
+        let CampaignSessionKind::Campaign { reset, .. } = &session.kind else {
             unreachable!("campaign fixture opened as Level 2")
         };
         assert_eq!(reset.economy().free_slot_count(), 0);
@@ -3051,21 +3013,13 @@ fn level2_campaign_economy_sidecar_copies_typed_payload_without_touching_legacy_
         MC_STATUS_OK
     );
     let (sphere_id, carrier_slot) = with_campaign_session_mut(handle, |session| {
-        let CampaignSessionKind::Level2 { reset, .. } = &mut session.kind else {
+        let CampaignSessionKind::Campaign { reset, .. } = &mut session.kind else {
             unreachable!("campaign fixture opened as Level 2")
         };
         let terrain = reset.canonical_terrain().clone();
         let sphere_id = reset
             .economy_mut()
-            .spawn_mana_sphere_from_death(
-                901,
-                Position::default(),
-                0,
-                0x3456,
-                111,
-                222,
-                &terrain,
-            )
+            .spawn_mana_sphere_from_death(901, Position::default(), 0, 0x3456, 111, 222, &terrain)
             .expect("test sphere allocation");
         let carrier_slot = reset
             .economy_mut()

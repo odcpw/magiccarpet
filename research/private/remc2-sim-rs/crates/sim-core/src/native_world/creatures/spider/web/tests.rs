@@ -278,7 +278,7 @@ fn mission_four_ordinary_scheduler_carries_web_to_actual_player_damage_and_recla
         crate::campaign::spec::CampaignSelection::ordinary(4).unwrap(),
     )
     .unwrap()
-    .level2_compatibility()
+    .simulation()
     .clone();
     let (_, _, _, _, _, feature) = super::super::tests::mission_four();
     let particles = session.session.definition.presentation.particles.clone();

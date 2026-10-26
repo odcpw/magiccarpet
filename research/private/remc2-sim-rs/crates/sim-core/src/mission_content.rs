@@ -956,7 +956,7 @@ mod tests {
         // Exercise a direct route to an actual group-5 Goat using the real
         // producer. The original row is a model route to another family.
         let authored_index = 166;
-        let live = &mut campaign.level2_compatibility_mut().session.state.live;
+        let live = &mut campaign.simulation_mut().session.state.live;
         let authored = live
             .mission
             .level2_authored_stage_variables
@@ -970,10 +970,10 @@ mod tests {
         let original_counter = runtime.stage_variables[1].word_2;
         runtime.stage_variables[1].flags = (runtime.stage_variables[1].flags & !2) | 4;
         campaign
-            .level2_compatibility_mut()
+            .simulation_mut()
             .activate_authored_group_prerequisite_for_test(5)
             .unwrap();
-        let session = campaign.level2_compatibility();
+        let session = campaign.simulation();
         let source = session
             .economy()
             .authored_class5()

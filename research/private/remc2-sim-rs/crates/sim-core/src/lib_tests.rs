@@ -59,7 +59,7 @@ fn mission_audio_census_is_unique_complete_and_compiler_bound() {
         include_str!("goat.rs"),
         include_str!("native_world/creatures/goat.rs"),
         include_str!("native_world/creatures/archer.rs"),
-        include_str!("campaign/level2.rs"),
+        include_str!("campaign/simulation.rs"),
         include_str!("native_world/support_spells.rs"),
         include_str!("native_world/cave_spells.rs"),
         include_str!("world/terrain/disasters/mc2.rs"),

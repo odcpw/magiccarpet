@@ -18,7 +18,7 @@ namespace MagicCarpet.Native.Tests
             var snapshots = campaign.Entities();
             var yaw = runtime.GameRuntimeProductionCampaignSnapshot.value.player_pose.yaw;
             var draws = campaign.EntityPresentations(yaw);
-            var markers = surface.Root.GetComponentsInChildren<Level3EntitySurfaceMarker>();
+            var markers = surface.Root.GetComponentsInChildren<CampaignEntitySurfaceMarker>();
             var admitted = new HashSet<ushort>();
             foreach (var draw in draws)
             {
@@ -95,7 +95,7 @@ namespace MagicCarpet.Native.Tests
                 if (checkpointTick == 326)
                 {
                     Assert.That(surface.Tick, Is.EqualTo(326ul));
-                    var marker = Array.Find(surface.Root.GetComponentsInChildren<Level3EntitySurfaceMarker>(),
+                    var marker = Array.Find(surface.Root.GetComponentsInChildren<CampaignEntitySurfaceMarker>(),
                         row => row.EntityIndex == 122);
                     Assert.That(marker, Is.Not.Null, "the actual earned beacon draw must have its live snapshot");
                     Assert.That(marker.SpriteReady, Is.True);
@@ -106,7 +106,7 @@ namespace MagicCarpet.Native.Tests
                     Assert.That(surface.Tick, Is.EqualTo(2418ul));
                     runtime.QualificationDriveGameRuntimeFrames(1);
                     Assert.That(surface.Tick, Is.EqualTo(2419ul), "ordinary first turn after the real restore");
-                    var marker = Array.Find(surface.Root.GetComponentsInChildren<Level3EntitySurfaceMarker>(),
+                    var marker = Array.Find(surface.Root.GetComponentsInChildren<CampaignEntitySurfaceMarker>(),
                         row => row.EntityIndex == 151);
                     Assert.That(marker, Is.Not.Null, "actual saved actor must reach the ordinary presentation consumer");
                     // The exact native probe establishes a class11 trigger at

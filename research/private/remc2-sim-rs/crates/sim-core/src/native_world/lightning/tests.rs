@@ -3,7 +3,7 @@ use crate::native_world::ENTITY_DRAW_DISABLED_BIT;
 
 /// Reuse the existing spell-owner fixture for boundary cases. The separate
 /// ordinary Mission4 group/pickup regression owns the authored reward proof.
-fn ready_holder() -> (super::super::Level2ResetSession, u16, u16) {
+fn ready_holder() -> (super::super::Mc2Simulation, u16, u16) {
     let mut session = super::super::tests::level_two_campaign_session();
     let live = &mut session.session.state.live;
     let parent = live.core.state.entity_index;

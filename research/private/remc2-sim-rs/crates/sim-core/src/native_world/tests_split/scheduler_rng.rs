@@ -28,7 +28,7 @@ fn level_two_outer_turn_dispatches_typed_source_rows() {
     assert!(session.dispatch_events().iter().any(|event| {
         matches!(
             event,
-            Level2DispatchEvent::SharedPickup {
+            Mc2DispatchEvent::SharedPickup {
                 pass: 0,
                 source_slot: 75,
                 result: Some(Level2SpeedPickupStep {
@@ -70,8 +70,11 @@ fn level_two_group31_tree_constructor_preserves_source_order_and_draws() {
             .copied()
             .find(|feature| feature.index == tree.authored_index)
             .expect("qualified group-31 tree feature");
-        let base_position =
-            feature.world_position(session.canonical_terrain().ground_height(feature.world_position(0)));
+        let base_position = feature.world_position(
+            session
+                .canonical_terrain()
+                .ground_height(feature.world_position(0)),
+        );
         let initial_rng = tree.source_entity_index.wrapping_add(pass_global as u16);
         let life_rng = level2_next_rng16(initial_rng);
         let x_rng = level2_next_rng16(life_rng);
@@ -222,7 +225,7 @@ fn level_two_group31_tree_callback_consumes_rng_after_following_pass_gate() {
     );
     assert!(session.dispatch_events().iter().any(|event| matches!(
         event,
-        Level2DispatchEvent::DynamicArena {
+        Mc2DispatchEvent::DynamicArena {
             pass: 0,
             source_slot,
             kind: Level2DynamicArenaKind::AuthoredTree,
@@ -230,7 +233,7 @@ fn level_two_group31_tree_callback_consumes_rng_after_following_pass_gate() {
     )));
     assert!(session.dispatch_events().iter().any(|event| matches!(
         event,
-        Level2DispatchEvent::Economy {
+        Mc2DispatchEvent::Economy {
             pass: 0,
             source_slot,
             event: Level2EconomyEvent::ManaSphereSpawned { .. },
@@ -243,7 +246,9 @@ fn level_two_group31_tree_callback_consumes_rng_after_following_pass_gate() {
         .find(|sphere| sphere.source_entity_index == tree_after.last_sphere_source_entity_index)
         .copied()
         .expect("tree callback sphere remains in the following pass");
-    let owner_id = session.economy.entities
+    let owner_id = session
+        .economy
+        .entities
         .get(usize::from(owner_entity_index))
         .map_or(owner_entity_index, |entity| entity.source_id);
     assert_eq!(sphere.id, u32::from(owner_id));
@@ -300,13 +305,22 @@ fn level_two_group31_tree_callback_rejects_nonlethal_and_failed_sphere_without_r
     // failed-allocation prestate; clearing a free stack cannot occupy a row
     // that the next source prologue will lawfully release.
     allocation_failure.step_outer_turn(PlayerCommand::default(), 0);
-    allocation_failure.economy_mut().replacement_cursor_exclusions = (1_u16..1_000).collect();
+    allocation_failure
+        .economy_mut()
+        .replacement_cursor_exclusions = (1_u16..1_000).collect();
     for _ in 1_u16..1_000 {
-        if allocation_failure.allocate_level2_authored_class14(244).is_none() {
+        if allocation_failure
+            .allocate_level2_authored_class14(244)
+            .is_none()
+        {
             break;
         }
     }
-    assert!(allocation_failure.allocate_level2_authored_class14(244).is_none());
+    assert!(
+        allocation_failure
+            .allocate_level2_authored_class14(244)
+            .is_none()
+    );
     assert!(allocation_failure.economy().free_slots.is_empty());
     let allocation_before = allocation_failure
         .economy()
@@ -394,7 +408,7 @@ fn level_two_group31_reclaimed_lower_slot_defers_until_next_pass() {
     assert!(!session.economy().free_slots.contains(&reclaimed_slot));
     assert!(!session.dispatch_events().iter().any(|event| matches!(
         event,
-        Level2DispatchEvent::AuthoredGroupActivated { group: 28, .. }
+        Mc2DispatchEvent::AuthoredGroupActivated { group: 28, .. }
     )));
     let runtime_switch_slot = session
         .economy()
@@ -421,9 +435,19 @@ fn level_two_group31_reclaimed_lower_slot_defers_until_next_pass() {
     // occupy only those actual candidates through the qualified protected
     // portal constructor so this fixture isolates reuse of its own scroll.
     session.economy_mut().rebuild_free_arena(&reset_free_slots);
-    while session.economy().free_slots.last().is_some_and(|slot| *slot < reclaimed_slot) {
-        let expected_slot = *session.economy().free_slots.last().expect("lower free source row");
-        let occupied = session.allocate_level2_authored_class14(244)
+    while session
+        .economy()
+        .free_slots
+        .last()
+        .is_some_and(|slot| *slot < reclaimed_slot)
+    {
+        let expected_slot = *session
+            .economy()
+            .free_slots
+            .last()
+            .expect("lower free source row");
+        let occupied = session
+            .allocate_level2_authored_class14(244)
             .expect("real protected carrier occupies the lower free neighbor");
         assert_eq!(occupied.source_entity_index, expected_slot);
     }
@@ -437,7 +461,7 @@ fn level_two_group31_reclaimed_lower_slot_defers_until_next_pass() {
     }
     assert!(!session.dispatch_events().iter().any(|event| matches!(
         event,
-        Level2DispatchEvent::AuthoredGroupActivated { group: 28, .. }
+        Mc2DispatchEvent::AuthoredGroupActivated { group: 28, .. }
     )));
     session.step_outer_turn(PlayerCommand::default(), 0);
 
@@ -449,12 +473,15 @@ fn level_two_group31_reclaimed_lower_slot_defers_until_next_pass() {
         .copied()
         .expect("reclaimed lower-slot child remains for the next cursor pass");
     assert_eq!(deferred_row.source_entity_index, reclaimed_slot);
-    assert_eq!(session.economy().slot_generation(reclaimed_slot),
-        reclaimed_generation.wrapping_add(1), "NewEvent advances the real reclaimed occurrence exactly once");
+    assert_eq!(
+        session.economy().slot_generation(reclaimed_slot),
+        reclaimed_generation.wrapping_add(1),
+        "NewEvent advances the real reclaimed occurrence exactly once"
+    );
     assert!(deferred_row.source_entity_index < runtime_switch_slot);
     assert!(!session.dispatch_events().iter().any(|event| matches!(
         event,
-        Level2DispatchEvent::DynamicArena { source_slot, .. }
+        Mc2DispatchEvent::DynamicArena { source_slot, .. }
             if *source_slot == reclaimed_slot
     )));
     session.step_outer_turn(PlayerCommand::default(), 0);
@@ -468,11 +495,13 @@ fn level_two_group31_reclaimed_lower_slot_defers_until_next_pass() {
     assert!(session.economy().map_chains().is_linked(reclaimed_slot));
     assert!(!session.economy().free_slots.contains(&reclaimed_slot));
     session.step_outer_turn(PlayerCommand::default(), 0);
-    assert!(!session
-        .economy()
-        .authored_class14()
-        .iter()
-        .any(|source| source.authored_index == 275));
+    assert!(
+        !session
+            .economy()
+            .authored_class14()
+            .iter()
+            .any(|source| source.authored_index == 275)
+    );
     assert!(session.economy().free_slots.contains(&reclaimed_slot));
 }
 
@@ -1084,7 +1113,7 @@ fn level_two_model53_action58_runs_through_production_cursor() {
     assert!(session.dispatch_events().iter().any(|event| {
         matches!(
             event,
-            Level2DispatchEvent::DynamicArena {
+            Mc2DispatchEvent::DynamicArena {
                 source_slot,
                 kind: Level2DynamicArenaKind::AuthoredModel53,
                 ..
@@ -1151,7 +1180,7 @@ fn level_two_outer_turn_reaches_family12_pickup_at_source_slot38() {
     assert_eq!(session.economy.entities()[38].phase, 40);
     assert!(!session.dispatch_events().iter().any(|event| matches!(
         event,
-        Level2DispatchEvent::SpellAcquisition {
+        Mc2DispatchEvent::SpellAcquisition {
             source_slot: 38,
             result: Some(_),
             ..
@@ -1163,7 +1192,7 @@ fn level_two_outer_turn_reaches_family12_pickup_at_source_slot38() {
     assert!(session.dispatch_events().iter().any(|event| {
         matches!(
             event,
-            Level2DispatchEvent::SpellAcquisition {
+            Mc2DispatchEvent::SpellAcquisition {
                 pass: 0,
                 source_slot: 38,
                 family: 12,
@@ -1188,7 +1217,7 @@ fn level_two_outer_turn_reaches_family12_pickup_at_source_slot38() {
     assert!(session.dispatch_events().iter().any(|event| {
         matches!(
             event,
-            Level2DispatchEvent::SpellAcquisition {
+            Mc2DispatchEvent::SpellAcquisition {
                 source_slot: 38,
                 family: 12,
                 result: Some(_),
@@ -1215,20 +1244,20 @@ fn level_two_outer_turn_dispatches_each_source_pass_in_order() {
             .dispatch_events()
             .iter()
             .map(|event| match event {
-                Level2DispatchEvent::SharedPickup { pass, .. }
-                | Level2DispatchEvent::SpellAcquisition { pass, .. }
-                | Level2DispatchEvent::BadStone { pass, .. }
-                | Level2DispatchEvent::House { pass, .. }
-                | Level2DispatchEvent::Villager { pass, .. }
-                | Level2DispatchEvent::Dolmen { pass, .. }
-                | Level2DispatchEvent::Castle { pass, .. }
-                | Level2DispatchEvent::DynamicArena { pass, .. }
-                | Level2DispatchEvent::Economy { pass, .. }
-                | Level2DispatchEvent::Goat { pass, .. }
-                | Level2DispatchEvent::Error { pass, .. }
-                | Level2DispatchEvent::AuthoredGroupActivated { pass, .. }
-                | Level2DispatchEvent::LevelExitSequenceStarted { pass, .. }
-                | Level2DispatchEvent::LevelExitSequenceCompleted { pass, .. } => *pass,
+                Mc2DispatchEvent::SharedPickup { pass, .. }
+                | Mc2DispatchEvent::SpellAcquisition { pass, .. }
+                | Mc2DispatchEvent::BadStone { pass, .. }
+                | Mc2DispatchEvent::House { pass, .. }
+                | Mc2DispatchEvent::Villager { pass, .. }
+                | Mc2DispatchEvent::Dolmen { pass, .. }
+                | Mc2DispatchEvent::Castle { pass, .. }
+                | Mc2DispatchEvent::DynamicArena { pass, .. }
+                | Mc2DispatchEvent::Economy { pass, .. }
+                | Mc2DispatchEvent::Goat { pass, .. }
+                | Mc2DispatchEvent::Error { pass, .. }
+                | Mc2DispatchEvent::AuthoredGroupActivated { pass, .. }
+                | Mc2DispatchEvent::LevelExitSequenceStarted { pass, .. }
+                | Mc2DispatchEvent::LevelExitSequenceCompleted { pass, .. } => *pass,
             })
             .collect::<Vec<_>>();
         assert!(!passes.is_empty(), "source pass {speed_index} was empty");
@@ -1278,7 +1307,7 @@ fn level_two_outer_turn_records_source_dispatch_errors_and_continues() {
     assert!(session.dispatch_events().iter().any(|event| {
         matches!(
             event,
-            Level2DispatchEvent::Error {
+            Mc2DispatchEvent::Error {
                 pass: 0,
                 source_slot: 38,
                 ..
@@ -1288,10 +1317,10 @@ fn level_two_outer_turn_records_source_dispatch_errors_and_continues() {
     assert!(session.dispatch_events().iter().any(|event| {
         matches!(
             event,
-            Level2DispatchEvent::BadStone { pass: 0, .. }
-                | Level2DispatchEvent::House { pass: 0, .. }
-                | Level2DispatchEvent::Villager { pass: 0, .. }
-                | Level2DispatchEvent::Dolmen { pass: 0, .. }
+            Mc2DispatchEvent::BadStone { pass: 0, .. }
+                | Mc2DispatchEvent::House { pass: 0, .. }
+                | Mc2DispatchEvent::Villager { pass: 0, .. }
+                | Mc2DispatchEvent::Dolmen { pass: 0, .. }
         )
     }));
 }
@@ -1319,7 +1348,7 @@ fn level_two_outer_turn_scans_live_dynamic_arena_rows() {
         .dispatch_events()
         .iter()
         .filter_map(|event| match event {
-            Level2DispatchEvent::DynamicArena {
+            Mc2DispatchEvent::DynamicArena {
                 pass: 0,
                 source_slot,
                 kind,
@@ -1353,7 +1382,7 @@ fn level_two_outer_turn_scans_live_dynamic_arena_rows() {
     assert!(!session.dispatch_events().iter().any(|event| {
         matches!(
             event,
-            Level2DispatchEvent::DynamicArena {
+            Mc2DispatchEvent::DynamicArena {
                 source_slot,
                 kind: Level2DynamicArenaKind::ManaSphere,
                 ..
@@ -1363,7 +1392,7 @@ fn level_two_outer_turn_scans_live_dynamic_arena_rows() {
     assert!(session.dispatch_events().iter().any(|event| {
         matches!(
             event,
-            Level2DispatchEvent::DynamicArena {
+            Mc2DispatchEvent::DynamicArena {
                 source_slot,
                 kind: Level2DynamicArenaKind::ManaCarrier,
                 ..
@@ -1515,7 +1544,7 @@ fn level_two_scheduler_global_rng_draws_follow_source_boundaries() {
         .dispatch_events()
         .iter()
         .filter_map(|event| match event {
-            Level2DispatchEvent::DynamicArena {
+            Mc2DispatchEvent::DynamicArena {
                 pass: 0,
                 source_slot,
                 kind: Level2DynamicArenaKind::ManaCarrier | Level2DynamicArenaKind::ManaSphere,
@@ -1551,7 +1580,7 @@ fn level_two_scheduler_global_rng_draws_follow_source_boundaries() {
     assert!(!session.dispatch_events().iter().any(|event| {
         matches!(
             event,
-            Level2DispatchEvent::DynamicArena {
+            Mc2DispatchEvent::DynamicArena {
                 source_slot: slot,
                 kind: Level2DynamicArenaKind::ManaSphere,
                 ..
@@ -1617,7 +1646,7 @@ fn level_two_scheduler_global_rng_draws_follow_source_boundaries() {
     )));
     assert!(session.dispatch_events().iter().any(|event| matches!(
         event,
-        Level2DispatchEvent::AuthoredGroupActivated {
+        Mc2DispatchEvent::AuthoredGroupActivated {
             pass: 0,
             group: 31,
             authored_indices,
@@ -1661,7 +1690,7 @@ fn level_two_scheduler_global_rng_draws_follow_source_boundaries() {
     assert_eq!(tree_after.owner_entity_index, 0);
     assert!(session.dispatch_events().iter().any(|event| matches!(
         event,
-        Level2DispatchEvent::DynamicArena {
+        Mc2DispatchEvent::DynamicArena {
             pass: 0,
             source_slot,
             kind: Level2DynamicArenaKind::AuthoredTree,
@@ -1669,7 +1698,7 @@ fn level_two_scheduler_global_rng_draws_follow_source_boundaries() {
     )));
     assert!(session.dispatch_events().iter().any(|event| matches!(
         event,
-        Level2DispatchEvent::Economy {
+        Mc2DispatchEvent::Economy {
             pass: 0,
             source_slot,
             event: Level2EconomyEvent::ManaSphereSpawned { .. },
@@ -1703,7 +1732,7 @@ fn level_two_scheduler_global_rng_draws_follow_source_boundaries() {
             .dispatch_events()
             .iter()
             .filter_map(|event| match event {
-                Level2DispatchEvent::Goat {
+                Mc2DispatchEvent::Goat {
                     source_slot,
                     events,
                     ..
@@ -1948,7 +1977,7 @@ fn level_two_same_slot_replacement_defers_until_following_ascending_pass() {
 
     assert!(session.dispatch_events().iter().any(|event| matches!(
         event,
-        Level2DispatchEvent::DynamicArena {
+        Mc2DispatchEvent::DynamicArena {
             source_slot,
             kind: Level2DynamicArenaKind::ManaSphere,
             ..
@@ -1956,7 +1985,7 @@ fn level_two_same_slot_replacement_defers_until_following_ascending_pass() {
     )));
     assert!(session.dispatch_events().iter().any(|event| matches!(
         event,
-        Level2DispatchEvent::SpellAcquisition {
+        Mc2DispatchEvent::SpellAcquisition {
             family: 11,
             source_slot,
             result: Some(_),
@@ -1969,7 +1998,7 @@ fn level_two_same_slot_replacement_defers_until_following_ascending_pass() {
             .iter()
             .filter(|event| matches!(
                 event,
-                Level2DispatchEvent::DynamicArena {
+                Mc2DispatchEvent::DynamicArena {
                     source_slot,
                     kind: Level2DynamicArenaKind::SpellReplacement,
                     ..
@@ -2009,7 +2038,7 @@ fn level_two_same_slot_replacement_defers_until_following_ascending_pass() {
             .iter()
             .filter(|event| matches!(
                 event,
-                Level2DispatchEvent::DynamicArena {
+                Mc2DispatchEvent::DynamicArena {
                     source_slot,
                     kind: Level2DynamicArenaKind::SpellReplacement,
                     ..

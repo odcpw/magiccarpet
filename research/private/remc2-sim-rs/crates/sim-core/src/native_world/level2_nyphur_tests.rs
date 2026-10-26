@@ -1,7 +1,7 @@
 use super::super::tests::{level_two_campaign_session, level_two_fixture_path};
 use super::*;
 use crate::native_world::{
-    LEVEL2_NYPHUR_ENTITY_INDEX, Level2ResetSession, POSSESSION_PROJECTILE_MODEL,
+    LEVEL2_NYPHUR_ENTITY_INDEX, Mc2Simulation, POSSESSION_PROJECTILE_MODEL,
     level2_possession_guidance_target_top, projectile_guidance_angles,
 };
 
@@ -10,12 +10,12 @@ use crate::native_world::{
 // selects before sub_14530. Wait for the real class-5 relation without
 // changing actor state or selector priority. This bounded prelude is separate
 // from the existing 300-turn family-0 pursuit/cast window below.
-fn advance_to_class5_target(session: &mut Level2ResetSession) -> (usize, usize) {
+fn advance_to_class5_target(session: &mut Mc2Simulation) -> (usize, usize) {
     for turn in 1..=4096 {
         session.step_outer_turn(PlayerCommand::default(), 0);
         assert!(session.dispatch_events().iter().all(|event| !matches!(
             event,
-            Level2DispatchEvent::Error {
+            Mc2DispatchEvent::Error {
                 source_slot: 112,
                 ..
             }
@@ -656,7 +656,7 @@ fn level_two_nyphur_mode14_ordinary_route_fails_closed_without_family4_holder() 
     );
     assert!(session.dispatch_events().iter().all(|event| !matches!(
         event,
-        Level2DispatchEvent::Error {
+        Mc2DispatchEvent::Error {
             source_slot: 112,
             ..
         }
@@ -818,7 +818,7 @@ fn level_two_ai_modes_0_1_2_are_exact() {
             .iter()
             .all(|event| !matches!(
                 event,
-                Level2DispatchEvent::Error {
+                Mc2DispatchEvent::Error {
                     source_slot: 112,
                     ..
                 }
@@ -960,7 +960,7 @@ fn level_two_ai_modes_0_1_2_are_exact() {
             .iter()
             .all(|event| !matches!(
                 event,
-                Level2DispatchEvent::Error {
+                Mc2DispatchEvent::Error {
                     source_slot: 112,
                     ..
                 }
@@ -1118,7 +1118,7 @@ fn level_two_ai_modes_8_9_13_and_mode5_nocall_are_exact() {
         );
         assert!(candidate.dispatch_events().iter().all(|event| !matches!(
             event,
-            Level2DispatchEvent::Error {
+            Mc2DispatchEvent::Error {
                 source_slot: 112,
                 ..
             }
@@ -1294,7 +1294,7 @@ fn level_two_ai_modes_8_9_13_and_mode5_nocall_are_exact() {
     );
     assert!(mode5.dispatch_events().iter().all(|event| !matches!(
         event,
-        Level2DispatchEvent::Error {
+        Mc2DispatchEvent::Error {
             source_slot: 112,
             ..
         }
@@ -1642,7 +1642,7 @@ fn level_two_nyphur_authored_target_crosses_3328_from_ordinary_state6_route() {
         group23_activated |= session.dispatch_events().iter().any(|event| {
             matches!(
                 event,
-                Level2DispatchEvent::AuthoredGroupActivated {
+                Mc2DispatchEvent::AuthoredGroupActivated {
                     group: 23,
                     authored_indices,
                     ..
@@ -1666,7 +1666,7 @@ fn level_two_nyphur_authored_target_crosses_3328_from_ordinary_state6_route() {
     let mut group24_activated = session.dispatch_events().iter().any(|event| {
         matches!(
             event,
-            Level2DispatchEvent::AuthoredGroupActivated {
+            Mc2DispatchEvent::AuthoredGroupActivated {
                 group: 24,
                 authored_indices,
                 ..
@@ -1697,7 +1697,7 @@ fn level_two_nyphur_authored_target_crosses_3328_from_ordinary_state6_route() {
         group24_activated |= session.dispatch_events().iter().any(|event| {
             matches!(
                 event,
-                Level2DispatchEvent::AuthoredGroupActivated {
+                Mc2DispatchEvent::AuthoredGroupActivated {
                     group: 24,
                     authored_indices,
                     ..
@@ -2181,7 +2181,7 @@ fn level_two_nyphur_terminal_holder_epilogue_reads_the_raw_phase_authority() {
         assert_eq!(raw_holder.record[66], 118);
         assert!(session.dispatch_events().iter().all(|event| !matches!(
             event,
-            Level2DispatchEvent::Error { source_slot, .. } if *source_slot == holder_slot
+            Mc2DispatchEvent::Error { source_slot, .. } if *source_slot == holder_slot
         )));
         assert!(
             session
@@ -2397,7 +2397,7 @@ fn level_two_nyphur_state6_family1_gate_pitch_counter_and_relation_boundaries_ar
         "sub_135C0 must use the decoded one-based source parameter row"
     );
 
-    let prepare_family1 = |candidate: &mut super::super::Level2ResetSession| {
+    let prepare_family1 = |candidate: &mut super::super::Mc2Simulation| {
         let target = candidate.session.state.live.economy.entities[70].clone();
         let source = &mut candidate.session.state.live.economy.entities[112];
         source.set_source_relation(&target);
@@ -2999,7 +2999,7 @@ fn level_two_ai_modes_3_4_11_12_are_exact() {
     );
     assert!(mode3.dispatch_events().iter().all(|event| !matches!(
         event,
-        Level2DispatchEvent::Error {
+        Mc2DispatchEvent::Error {
             source_slot: 112,
             ..
         }
@@ -3056,7 +3056,7 @@ fn level_two_ai_modes_3_4_11_12_are_exact() {
     );
     assert!(mode4.dispatch_events().iter().all(|event| !matches!(
         event,
-        Level2DispatchEvent::Error {
+        Mc2DispatchEvent::Error {
             source_slot: 112,
             ..
         }
@@ -3115,7 +3115,7 @@ fn level_two_ai_modes_3_4_11_12_are_exact() {
             .iter()
             .all(|event| !matches!(
                 event,
-                Level2DispatchEvent::Error {
+                Mc2DispatchEvent::Error {
                     source_slot: 112,
                     ..
                 }
@@ -3154,7 +3154,7 @@ fn level_two_ai_modes_3_4_11_12_are_exact() {
     );
     assert!(mode11.dispatch_events().iter().all(|event| !matches!(
         event,
-        Level2DispatchEvent::Error {
+        Mc2DispatchEvent::Error {
             source_slot: 112,
             ..
         }
@@ -3204,7 +3204,7 @@ fn level_two_ai_modes_3_4_11_12_are_exact() {
     mode11_order.step_outer_turn(PlayerCommand::default(), 0);
     assert!(mode11_order.dispatch_events().iter().all(|event| !matches!(
         event,
-        Level2DispatchEvent::Error {
+        Mc2DispatchEvent::Error {
             source_slot: 112,
             ..
         }
@@ -3258,7 +3258,7 @@ fn level_two_ai_modes_3_4_11_12_are_exact() {
     );
     assert!(mode12.dispatch_events().iter().all(|event| !matches!(
         event,
-        Level2DispatchEvent::Error {
+        Mc2DispatchEvent::Error {
             source_slot: 112,
             ..
         }
@@ -3655,7 +3655,7 @@ fn level_two_ai_shared_tail_owned_rows_are_exact() {
     assert_eq!(first_trace.tail_call_count(), 2);
     assert!(session.dispatch_events().iter().all(|event| !matches!(
         event,
-        Level2DispatchEvent::Error {
+        Mc2DispatchEvent::Error {
             source_slot: 112,
             ..
         }
@@ -3716,7 +3716,7 @@ fn level_two_ai_shared_tail_owned_rows_are_exact() {
     );
     assert!(session.dispatch_events().iter().all(|event| !matches!(
         event,
-        Level2DispatchEvent::Error {
+        Mc2DispatchEvent::Error {
             source_slot: 112,
             ..
         }
@@ -3751,7 +3751,7 @@ fn level_two_ai_shared_tail_owned_rows_are_exact() {
     );
     assert!(session.dispatch_events().iter().all(|event| !matches!(
         event,
-        Level2DispatchEvent::Error {
+        Mc2DispatchEvent::Error {
             source_slot: 112,
             ..
         }
@@ -4609,7 +4609,7 @@ fn level_two_nyphur_family0_activation_reaches_projectile_consumer_ordinarily() 
         );
         assert!(session.dispatch_events().iter().all(|event| !matches!(
             event,
-            Level2DispatchEvent::Error {
+            Mc2DispatchEvent::Error {
                 source_slot: 112,
                 ..
             }
@@ -4926,7 +4926,7 @@ fn level_two_nyphur_mode7_cadence_gate_and_family0_cast_are_exact() {
         )));
         assert!(session.dispatch_events().iter().all(|event| !matches!(
             event,
-            Level2DispatchEvent::Error {
+            Mc2DispatchEvent::Error {
                 source_slot: 112,
                 ..
             }
@@ -5323,7 +5323,7 @@ fn level_two_nyphur_sub_13e40_castle_selection_boundaries_are_exact() {
     );
     assert!(refusal.dispatch_events().iter().all(|event| !matches!(
         event,
-        Level2DispatchEvent::Error {
+        Mc2DispatchEvent::Error {
             source_slot: 112,
             ..
         }
@@ -5347,7 +5347,7 @@ fn level_two_nyphur_sub_13e40_castle_selection_boundaries_are_exact() {
     collided.step_outer_turn(PlayerCommand::default(), 0);
     assert!(collided.dispatch_events().iter().any(|event| matches!(
         event,
-        Level2DispatchEvent::Error {
+        Mc2DispatchEvent::Error {
             source_slot: 112,
             ..
         }

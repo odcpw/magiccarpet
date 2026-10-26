@@ -1,6 +1,6 @@
 use crate::{PlayerCommand, Position};
 
-use super::super::super::{Level2DispatchEvent, NativeWorld, tests::level_two_fixture_path};
+use super::super::super::{Mc2DispatchEvent, NativeWorld, tests::level_two_fixture_path};
 
 #[test]
 fn model3_constructor_retains_allocated_prefix_on_partial_exhaustion() {
@@ -206,7 +206,7 @@ fn model3_action27_uses_original_peer_speed_and_sentinel_chain_target() {
         session
             .dispatch_events()
             .iter()
-            .all(|event| !matches!(event, Level2DispatchEvent::Error { .. }))
+            .all(|event| !matches!(event, Mc2DispatchEvent::Error { .. }))
     );
 
     session.reset();

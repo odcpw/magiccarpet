@@ -1,7 +1,6 @@
 //! Descriptor-backed campaign session facade.
 //!
-//! The sealed Level 1 route and legacy Level 2 inspection API remain
-//! compatibility adapters. New campaign sessions validate a complete
+//! Campaign sessions validate a complete
 //! [`spec::CampaignDefinition`] before any mutable inspection/session state is
 //! constructed, then delegate the package-present behavior to the shared Rust
 //! authority.
@@ -11,7 +10,7 @@ use std::{fmt, path::Path, sync::Arc};
 use crate::{
     PlayerCommand, Position, StepEvidence,
     level_definition::{LevelDefinition, LevelEntityPositionAccess},
-    native_world::{Level2DispatchEvent, NativeWorld, NativeWorldError, NativeWorldInspection},
+    native_world::{Mc2DispatchEvent, NativeWorld, NativeWorldError, NativeWorldInspection},
 };
 
 pub mod backend;
@@ -26,9 +25,10 @@ pub mod schedule;
 pub mod source_arena;
 pub mod source_facts;
 pub mod spec;
+pub(crate) mod sprite_render;
 pub mod state;
 
-pub use crate::native_world::Level2ResetSession;
+pub use crate::native_world::Mc2Simulation;
 
 use dispatch::CAMPAIGN_BEHAVIOR_REGISTRY;
 use journal::{EffectCursor, EffectPage, EffectPageError};
@@ -54,15 +54,12 @@ impl fmt::Display for CampaignOpenError {
 
 impl std::error::Error for CampaignOpenError {}
 
-/// Neutral owner for a validated campaign definition and its one live Rust
-/// authority. The retained `Level2ResetSession` name is a private compatibility
-/// detail around the shared descriptor-backed engine; CF-12 projects the
-/// common operations without adding a per-level ABI.
+/// A validated mission definition and its one live MC2 simulation.
 #[derive(Clone, Debug)]
 pub struct CampaignSession {
     definition: Arc<CampaignDefinition>,
     inspection: Arc<NativeWorldInspection>,
-    level2: Level2ResetSession,
+    simulation: Mc2Simulation,
     speech_enabled: bool,
     show_foreign_objective_text: bool,
 }
@@ -81,8 +78,8 @@ impl CampaignSession {
     ) -> Result<Self, CampaignOpenError> {
         Self::open_with_materializer(package_root.as_ref(), selection, |definition| {
             let inspection = NativeWorld::inspect_campaign_definition(definition)?;
-            let level2 = inspection.campaign_reset_session_from_definition(definition)?;
-            Ok((inspection, level2))
+            let simulation = inspection.campaign_reset_session_from_definition(definition)?;
+            Ok((inspection, simulation))
         })
     }
 
@@ -132,8 +129,8 @@ impl CampaignSession {
             } else {
                 NativeWorld::inspect_campaign_definition_with_owner_cache(definition, owner_cache)?
             };
-            let level2 = inspection.campaign_reset_session_from_definition(definition)?;
-            Ok((inspection, level2))
+            let simulation = inspection.campaign_reset_session_from_definition(definition)?;
+            Ok((inspection, simulation))
         })
     }
 
@@ -142,20 +139,18 @@ impl CampaignSession {
         selection: CampaignSelection,
         materialize: impl FnOnce(
             &CampaignDefinition,
-        ) -> Result<
-            (NativeWorldInspection, Level2ResetSession),
-            NativeWorldError,
-        >,
+        )
+            -> Result<(NativeWorldInspection, Mc2Simulation), NativeWorldError>,
     ) -> Result<Self, CampaignOpenError> {
         let definition =
             CampaignDefinition::preflight(package_root, selection, &CAMPAIGN_BEHAVIOR_REGISTRY)
                 .map_err(CampaignOpenError::Preflight)?;
-        let (inspection, level2) =
+        let (inspection, simulation) =
             materialize(&definition).map_err(CampaignOpenError::Materialization)?;
         Ok(Self {
             definition: Arc::new(definition),
             inspection: Arc::new(inspection),
-            level2,
+            simulation,
             speech_enabled: true,
             show_foreign_objective_text: false,
         })
@@ -199,16 +194,16 @@ impl CampaignSession {
         tuning: crate::FlightTuning,
     ) -> Vec<StepEvidence> {
         let evidence = self
-            .level2
+            .simulation
             .step_outer_turn_with_tuning(command, speed_index, tuning);
         if self.definition.identity.internal_level < 4
             && !self
-                .level2
+                .simulation
                 .dispatch_events()
                 .iter()
-                .any(|event| matches!(event, Level2DispatchEvent::Error { .. }))
+                .any(|event| matches!(event, Mc2DispatchEvent::Error { .. }))
         {
-            self.level2.service_campaign_objective_presentation(
+            self.simulation.service_campaign_objective_presentation(
                 self.definition.identity.internal_level,
                 self.speech_enabled,
                 self.show_foreign_objective_text,
@@ -220,8 +215,8 @@ impl CampaignSession {
     /// Service exactly one source-authorized paused frame without advancing
     /// the gameplay command path or tick.
     pub(crate) fn paused_frame(&mut self) {
-        self.level2.service_paused_outer_frame();
-        self.level2.service_campaign_objective_presentation(
+        self.simulation.service_paused_outer_frame();
+        self.simulation.service_campaign_objective_presentation(
             self.definition.identity.internal_level,
             self.speech_enabled,
             self.show_foreign_objective_text,
@@ -229,7 +224,7 @@ impl CampaignSession {
     }
 
     pub fn reset(&mut self) {
-        self.level2.reset();
+        self.simulation.reset();
     }
 
     pub(crate) fn apply_semantic_level_variant(
@@ -287,7 +282,7 @@ impl CampaignSession {
                         )));
                     }
                     let source = self
-                        .level2
+                        .simulation
                         .entities()
                         .get(usize::from(*initial_source_slot))
                         .filter(|source| {
@@ -313,7 +308,7 @@ impl CampaignSession {
                     }
                     if position_changed {
                         let position = entity.position();
-                        self.level2.set_level2_entity_position(
+                        self.simulation.set_level2_entity_position(
                             *initial_source_slot,
                             Position {
                                 x: position.x.wrapping_shl(8) | (source.position.x & 0xff),
@@ -349,7 +344,7 @@ impl CampaignSession {
                                 entity.id().as_str()
                             )));
                         }
-                        let source = &mut self.level2.session.state.live.economy.entities
+                        let source = &mut self.simulation.session.state.live.economy.entities
                             [usize::from(*initial_source_slot)];
                         source.bind_frame_zero_max_life(authored_max_life);
                     }
@@ -372,7 +367,7 @@ impl CampaignSession {
                                     entity.id().as_str()
                                 ))
                             })?;
-                        self.level2.bind_frame_zero_switch_overlap_variant(
+                        self.simulation.bind_frame_zero_switch_overlap_variant(
                             *initial_source_slot,
                             package_extent,
                             authored_extent,
@@ -401,10 +396,10 @@ impl CampaignSession {
                                     entity.id().as_str()
                                 ))
                             })?;
-                        let authored_position = self.level2.session.state.live.economy.entities
+                        let authored_position = self.simulation.session.state.live.economy.entities
                             [usize::from(*initial_source_slot)]
                         .position;
-                        self.level2
+                        self.simulation
                             .session
                             .state
                             .live
@@ -423,7 +418,7 @@ impl CampaignSession {
                             crate::level_definition::CreatureKind::Villager,
                         )
                     {
-                        let authored_position = self.level2.session.state.live.economy.entities
+                        let authored_position = self.simulation.session.state.live.economy.entities
                             [usize::from(*initial_source_slot)]
                         .position;
                         let package_max_life = original
@@ -444,7 +439,7 @@ impl CampaignSession {
                                     entity.id().as_str()
                                 ))
                             })?;
-                        self.level2
+                        self.simulation
                             .session
                             .state
                             .live
@@ -462,10 +457,10 @@ impl CampaignSession {
                             crate::level_definition::BuildingKind::House,
                         )
                     {
-                        let authored_position = self.level2.session.state.live.economy.entities
+                        let authored_position = self.simulation.session.state.live.economy.entities
                             [usize::from(*initial_source_slot)]
                         .position;
-                        self.level2
+                        self.simulation
                             .session
                             .state
                             .live
@@ -490,7 +485,7 @@ impl CampaignSession {
                         )));
                     }
                     let source = self
-                        .level2
+                        .simulation
                         .entities()
                         .get(usize::from(*root_source_slot))
                         .filter(|source| {
@@ -532,7 +527,7 @@ impl CampaignSession {
                                     entity.id().as_str()
                                 ))
                             })?;
-                        self.level2.bind_level2_imported_multipart_variant(
+                        self.simulation.bind_level2_imported_multipart_variant(
                             *root_source_slot,
                             body_source_slots,
                             original_tile,
@@ -554,7 +549,7 @@ impl CampaignSession {
                     }
                     if position_changed {
                         let position = entity.position();
-                        self.level2
+                        self.simulation
                             .session
                             .state
                             .live
@@ -569,11 +564,11 @@ impl CampaignSession {
             .definition
             .with_level_definition_variant(level.clone())
             .map_err(NativeWorldError::new)?;
-        self.level2
+        self.simulation
             .replace_semantic_level_definition(level.clone())
             .map_err(NativeWorldError::new)?;
         self.definition = Arc::new(active_definition);
-        self.level2.session.rebase();
+        self.simulation.session.rebase();
         Ok(())
     }
 
@@ -581,24 +576,25 @@ impl CampaignSession {
         &mut self,
         mana_cost: i32,
     ) -> Result<(), NativeWorldError> {
-        self.level2.bind_local_player_fireball_mana_cost(mana_cost)
+        self.simulation
+            .bind_local_player_fireball_mana_cost(mana_cost)
     }
 
     pub(crate) fn apply_fireball_launch_sound(&mut self, source_sound_id: u16) {
-        self.level2.bind_fireball_launch_sound(source_sound_id);
+        self.simulation.bind_fireball_launch_sound(source_sound_id);
     }
 
     pub(crate) fn apply_enemy_goat_policy(
         &mut self,
         binding: crate::game_definition::DefinitionGoatPolicyBinding,
     ) {
-        self.level2.bind_enemy_goat_policy(binding);
+        self.simulation.bind_enemy_goat_policy(binding);
     }
 
     pub(crate) fn set_runtime_generation(&mut self, generation: u64) {
-        self.level2.session.generation = generation;
-        self.level2.session.state.scratch = self
-            .level2
+        self.simulation.session.generation = generation;
+        self.simulation.session.state.scratch = self
+            .simulation
             .session
             .state
             .live
@@ -608,19 +604,19 @@ impl CampaignSession {
     /// Current runtime generation of the one folded session authority.
     #[must_use]
     pub fn generation(&self) -> u64 {
-        self.level2.session.generation
+        self.simulation.session.generation
     }
 
     /// Current source tick of the one folded session authority.
     #[must_use]
     pub fn tick(&self) -> u64 {
-        self.level2.state.tick
+        self.simulation.state.tick
     }
 
     /// Cursor immediately after the last retained production effect.
     #[must_use]
     pub fn effect_cursor(&self) -> EffectCursor {
-        self.level2.effect_journal().cursor(self.generation())
+        self.simulation.effect_journal().cursor(self.generation())
     }
 
     /// Page the canonical ordered production journal without exposing a
@@ -630,47 +626,43 @@ impl CampaignSession {
         cursor: EffectCursor,
         capacity: usize,
     ) -> Result<EffectPage, EffectPageError> {
-        self.level2
+        self.simulation
             .effect_journal()
             .page(self.generation(), cursor, capacity)
     }
 
     #[must_use]
     pub fn state_hash(&self) -> u64 {
-        self.level2.campaign_state_hash()
+        self.simulation.campaign_state_hash()
     }
 
     #[must_use]
     pub fn terrain_hash(&self) -> u64 {
-        self.level2.terrain_hash()
+        self.simulation.terrain_hash()
     }
 
     #[must_use]
-    pub fn events(&self) -> &[Level2DispatchEvent] {
-        self.level2.dispatch_events()
+    pub fn events(&self) -> &[Mc2DispatchEvent] {
+        self.simulation.dispatch_events()
     }
 
-    /// Borrow the folded Level 2 state for the already-shipped named ABI
-    /// projections. This is a compatibility view of this session's sole live
-    /// authority, not a second session or a level-selection API. Generic
-    /// clients must use the neutral lifecycle and journal/frame projections.
+    /// Borrow the simulation shared by every campaign mission.
     #[doc(hidden)]
     #[must_use]
-    pub fn level2_compatibility(&self) -> &Level2ResetSession {
-        &self.level2
+    pub fn simulation(&self) -> &Mc2Simulation {
+        &self.simulation
     }
 
-    /// Mutable counterpart used only by the existing Level 2 ABI adapters.
-    /// All mutations still target this session's one authoritative state.
+    /// Mutate this campaign session's sole simulation authority.
     #[doc(hidden)]
-    pub fn level2_compatibility_mut(&mut self) -> &mut Level2ResetSession {
-        &mut self.level2
+    pub fn simulation_mut(&mut self) -> &mut Mc2Simulation {
+        &mut self.simulation
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{CampaignOpenError, CampaignSelection, CampaignSession, Level2ResetSession};
+    use super::{CampaignOpenError, CampaignSelection, CampaignSession, Mc2Simulation};
     use crate::{
         FlightEvent, FlightWorld, PlayerCommand,
         campaign::{
@@ -680,7 +672,7 @@ mod tests {
         },
         native_world::{
             EntitySpecialRelation, FireballProjectileOrigin, Level2AuthoredClass5Source,
-            Level2DispatchEvent, Level2EconomyEvent, Level2NyphurDispatchCall, NativeWorld,
+            Level2EconomyEvent, Level2NyphurDispatchCall, Mc2DispatchEvent, NativeWorld,
         },
     };
     use std::{
@@ -744,16 +736,16 @@ mod tests {
             ),
         ] {
             let mut session = CampaignSession::open(root, selection).unwrap();
-            let local = usize::from(session.level2.runtime().local_player_slot);
-            let owner = usize::from(session.level2.players()[local].player_color_index());
-            let objective = session.level2.runtime().objectives[owner].text_selector;
+            let local = usize::from(session.simulation.runtime().local_player_slot);
+            let owner = usize::from(session.simulation.players()[local].player_color_index());
+            let objective = session.simulation.runtime().objectives[owner].text_selector;
             let expected =
                 ordinary_speech_segment(selection.internal_level as u8, objective + 1).unwrap();
             for _ in 0..10 {
                 session.step(PlayerCommand::default(), 0);
             }
             let speech: Vec<_> = session
-                .level2
+                .simulation
                 .effect_journal()
                 .records()
                 .iter()
@@ -769,7 +761,7 @@ mod tests {
             );
             let palette_sample = |session: &CampaignSession| {
                 let mut colors = [0_u8, 0, 0, 4, 8, 12];
-                session.level2.field_palette().apply_rgb8(&mut colors);
+                session.simulation.field_palette().apply_rgb8(&mut colors);
                 colors
             };
             assert_eq!(
@@ -777,12 +769,12 @@ mod tests {
                 [0, 0, 0, 196, 200, 204],
                 "real objective request reaches the indexed RGB6 palette consumer"
             );
-            let tick = session.level2.state.tick;
-            let phase = session.level2.runtime().objective_presentation_phase;
+            let tick = session.simulation.state.tick;
+            let phase = session.simulation.runtime().objective_presentation_phase;
             session.paused_frame();
-            assert_eq!(session.level2.state.tick, tick);
+            assert_eq!(session.simulation.state.tick, tick);
             assert_eq!(
-                session.level2.runtime().objective_presentation_phase,
+                session.simulation.runtime().objective_presentation_phase,
                 phase.wrapping_add(1)
             );
             assert_eq!(
@@ -791,7 +783,7 @@ mod tests {
                 "the first case9 call installs the fade's source palette"
             );
             session.paused_frame();
-            assert_eq!(session.level2.state.tick, tick);
+            assert_eq!(session.simulation.state.tick, tick);
             assert_eq!(
                 palette_sample(&session),
                 [0, 0, 0, 184, 188, 192],
@@ -813,7 +805,7 @@ mod tests {
             for paused in [false, true] {
                 let mut session = baseline.clone();
                 session.set_show_foreign_objective_text(show_foreign_text);
-                let start_tick = session.level2.state.tick;
+                let start_tick = session.simulation.state.tick;
                 for _ in 0..10 {
                     if paused {
                         session.paused_frame();
@@ -822,7 +814,7 @@ mod tests {
                     }
                 }
                 let speech_textboxes = session
-                    .level2
+                    .simulation
                     .effect_journal()
                     .records()
                     .iter()
@@ -837,7 +829,7 @@ mod tests {
                     .collect::<Vec<_>>();
                 assert_eq!(speech_textboxes, [show_foreign_text.then_some(200)]);
                 if paused {
-                    assert_eq!(session.level2.state.tick, start_tick);
+                    assert_eq!(session.simulation.state.tick, start_tick);
                 }
                 session.reset();
                 assert_eq!(session.show_foreign_objective_text(), show_foreign_text);
@@ -905,7 +897,7 @@ mod tests {
             assert!(legacy.economy().has_castle_stage_footprint(stage));
             assert!(
                 campaign
-                    .level2_compatibility()
+                    .simulation()
                     .economy()
                     .has_castle_stage_footprint(stage)
             );
@@ -984,7 +976,7 @@ mod tests {
         let package = level_one_descriptor_fixture_path();
         let mut campaign = CampaignSession::open(&package, CampaignSelection::LEVEL1)
             .expect("real Level 1 descriptor opens through the shared engine");
-        let session = campaign.level2_compatibility();
+        let session = campaign.simulation();
 
         let raw_slots = |class: u8, model: u8, action: u8| {
             session
@@ -1063,9 +1055,7 @@ mod tests {
         hydrated_slots.sort_unstable();
 
         let _ = campaign.step(PlayerCommand::default(), 0);
-        let receipts = campaign
-            .level2_compatibility()
-            .cf10_production_schedule_receipts();
+        let receipts = campaign.simulation().cf10_production_schedule_receipts();
         for source_slot in hydrated_slots {
             assert!(
                 receipts.iter().any(|receipt| matches!(
@@ -1107,12 +1097,12 @@ mod tests {
             assert!(
                 campaign.events().iter().all(|event| !matches!(
                     event,
-                    Level2DispatchEvent::Error { source_slot: slot, .. } if *slot == source_slot
+                    Mc2DispatchEvent::Error { source_slot: slot, .. } if *slot == source_slot
                 )),
                 "hydrated Level 1 slot {source_slot} emitted a dispatch error"
             );
         }
-        let session = campaign.level2_compatibility();
+        let session = campaign.simulation();
         for (slot, phase) in goat_phases {
             assert_eq!(
                 session
@@ -1149,23 +1139,10 @@ mod tests {
 
         campaign.reset();
         assert_eq!(campaign.state_hash(), initial_hash);
-        assert_eq!(campaign.level2_compatibility().goats().len(), 33);
-        assert_eq!(
-            campaign.level2_compatibility().ordinary().villagers().len(),
-            28
-        );
-        assert_eq!(
-            campaign.level2_compatibility().ordinary().dolmens().len(),
-            3
-        );
-        assert_eq!(
-            campaign
-                .level2_compatibility()
-                .shared_spells()
-                .holders()
-                .len(),
-            2
-        );
+        assert_eq!(campaign.simulation().goats().len(), 33);
+        assert_eq!(campaign.simulation().ordinary().villagers().len(), 28);
+        assert_eq!(campaign.simulation().ordinary().dolmens().len(), 3);
+        assert_eq!(campaign.simulation().shared_spells().holders().len(), 2);
     }
 
     #[test]
@@ -1186,7 +1163,7 @@ mod tests {
         let mut campaign = CampaignSession::open(&package, CampaignSelection::LEVEL1)
             .expect("real Level 1 descriptor opens through the shared engine");
         let initial_hash = campaign.state_hash();
-        let session = campaign.level2_compatibility();
+        let session = campaign.simulation();
         let producer = &session.entities()[usize::from(PRODUCER_SLOT)];
         assert_eq!(
             (
@@ -1253,35 +1230,23 @@ mod tests {
         let mut inside_evidence = Vec::new();
         for _ in 0..7 {
             inside_evidence.push(campaign.step(PlayerCommand::default(), 0));
-            assert!(
-                campaign
-                    .level2_compatibility()
-                    .economy()
-                    .authored_trees()
-                    .is_empty()
-            );
+            assert!(campaign.simulation().economy().authored_trees().is_empty());
         }
         assert_eq!(
-            campaign.level2_compatibility().entities()[usize::from(PRODUCER_SLOT)].phase,
+            campaign.simulation().entities()[usize::from(PRODUCER_SLOT)].phase,
             56
         );
         let inside_due_evidence = campaign.step(PlayerCommand::default(), 0);
-        assert!(
-            campaign
-                .level2_compatibility()
-                .economy()
-                .authored_trees()
-                .is_empty()
-        );
+        assert!(campaign.simulation().economy().authored_trees().is_empty());
         assert!(campaign.events().iter().all(|event| !matches!(
             event,
-            Level2DispatchEvent::AuthoredGroupActivated { group: 1, .. }
+            Mc2DispatchEvent::AuthoredGroupActivated { group: 1, .. }
         )));
         assert!(crate::level1_mission::source_entities_overlap_xy(
             producer_position,
             producer_half_width,
             producer_half_depth,
-            campaign.level2_compatibility().state.position,
+            campaign.simulation().state.position,
             player_half_width,
             player_half_depth,
         ));
@@ -1294,12 +1259,12 @@ mod tests {
         let mut global_before_producer = None;
         let mut producer_evidence = None;
         for _ in 0..256 {
-            let global_before = campaign.level2_compatibility().source_global_rng();
+            let global_before = campaign.simulation().source_global_rng();
             let evidence = campaign.step(travel_command, 0);
             let fired = campaign.events().iter().any(|event| {
                 matches!(
                     event,
-                    Level2DispatchEvent::AuthoredGroupActivated {
+                    Mc2DispatchEvent::AuthoredGroupActivated {
                         source_slot: PRODUCER_SLOT,
                         group: 1,
                         ..
@@ -1320,7 +1285,7 @@ mod tests {
             producer_position,
             producer_half_width,
             producer_half_depth,
-            campaign.level2_compatibility().state.position,
+            campaign.simulation().state.position,
             player_half_width,
             player_half_depth,
         ));
@@ -1328,11 +1293,11 @@ mod tests {
             campaign
                 .events()
                 .iter()
-                .all(|event| !matches!(event, Level2DispatchEvent::Error { .. }))
+                .all(|event| !matches!(event, Mc2DispatchEvent::Error { .. }))
         );
         assert!(campaign.events().iter().any(|event| matches!(
             event,
-            Level2DispatchEvent::AuthoredGroupActivated {
+            Mc2DispatchEvent::AuthoredGroupActivated {
                 pass: 0,
                 source_slot: PRODUCER_SLOT,
                 group: 1,
@@ -1341,7 +1306,7 @@ mod tests {
         )));
         assert!(campaign.events().iter().any(|event| matches!(
             event,
-            Level2DispatchEvent::SpellAcquisition {
+            Mc2DispatchEvent::SpellAcquisition {
                 pass: 0,
                 source_slot: SPELL_SLOT,
                 family: 2,
@@ -1349,7 +1314,7 @@ mod tests {
             }
         )));
 
-        let session = campaign.level2_compatibility();
+        let session = campaign.simulation();
         let spell_source = session
             .economy()
             .spell_pickups()
@@ -1560,7 +1525,7 @@ mod tests {
         let producer_events = campaign.events().to_vec();
         let pickup_position = spell_source.position;
         campaign
-            .level2_compatibility_mut()
+            .simulation_mut()
             .set_level2_entity_position(player_entity_index, pickup_position)
             .expect("move the real local player through the production position carrier");
         let mut acquisition_evidence = Vec::new();
@@ -1571,11 +1536,11 @@ mod tests {
                 campaign
                     .events()
                     .iter()
-                    .all(|event| !matches!(event, Level2DispatchEvent::Error { .. }))
+                    .all(|event| !matches!(event, Mc2DispatchEvent::Error { .. }))
             );
             if attempt == 0 {
                 let reclaimed_producer =
-                    &campaign.level2_compatibility().entities()[usize::from(PRODUCER_SLOT)];
+                    &campaign.simulation().entities()[usize::from(PRODUCER_SLOT)];
                 assert_eq!(
                     (reclaimed_producer.active, reclaimed_producer.class),
                     (false, 0),
@@ -1583,11 +1548,11 @@ mod tests {
                 );
                 assert!(campaign.events().iter().all(|event| !matches!(
                     event,
-                    Level2DispatchEvent::AuthoredGroupActivated { group: 1, .. }
+                    Mc2DispatchEvent::AuthoredGroupActivated { group: 1, .. }
                 )));
             }
             acquired = campaign.events().iter().find_map(|event| match event {
-                Level2DispatchEvent::SpellAcquisition {
+                Mc2DispatchEvent::SpellAcquisition {
                     source_slot: SPELL_SLOT,
                     family: 2,
                     result: Some(outcome),
@@ -1610,7 +1575,7 @@ mod tests {
             ),
             (2, SPELL_SLOT, 6, player_entity_index, 64)
         );
-        let session = campaign.level2_compatibility();
+        let session = campaign.simulation();
         let acquired_projection = session
             .shared_spells()
             .dynamic_pickups()
@@ -1651,28 +1616,18 @@ mod tests {
 
         let first_final_hash = campaign.state_hash();
         let first_events = campaign.events().to_vec();
-        let first_trees = campaign
-            .level2_compatibility()
-            .economy()
-            .authored_trees()
-            .to_vec();
+        let first_trees = campaign.simulation().economy().authored_trees().to_vec();
         let first_spell_projection = campaign
-            .level2_compatibility()
+            .simulation()
             .shared_spells()
             .dynamic_pickups()
             .to_vec();
         campaign.reset();
         assert_eq!(campaign.state_hash(), initial_hash);
+        assert!(campaign.simulation().economy().authored_trees().is_empty());
         assert!(
             campaign
-                .level2_compatibility()
-                .economy()
-                .authored_trees()
-                .is_empty()
-        );
-        assert!(
-            campaign
-                .level2_compatibility()
+                .simulation()
                 .shared_spells()
                 .dynamic_pickups()
                 .is_empty()
@@ -1697,7 +1652,7 @@ mod tests {
         );
         assert_eq!(campaign.events(), producer_events);
         campaign
-            .level2_compatibility_mut()
+            .simulation_mut()
             .set_level2_entity_position(player_entity_index, pickup_position)
             .expect("replay uses the same production position carrier");
         let mut replay_acquisition_evidence = Vec::new();
@@ -1708,14 +1663,11 @@ mod tests {
         assert_eq!(campaign.events(), first_events);
         assert_eq!(campaign.state_hash(), first_final_hash);
         assert_eq!(
-            campaign.level2_compatibility().economy().authored_trees(),
+            campaign.simulation().economy().authored_trees(),
             first_trees
         );
         assert_eq!(
-            campaign
-                .level2_compatibility()
-                .shared_spells()
-                .dynamic_pickups(),
+            campaign.simulation().shared_spells().dynamic_pickups(),
             first_spell_projection
         );
     }
@@ -1741,7 +1693,7 @@ mod tests {
         let reset_hash = campaign.state_hash();
         assert_eq!(
             campaign
-                .level2_compatibility()
+                .simulation()
                 .mission()
                 .authored_features()
                 .iter()
@@ -1752,7 +1704,7 @@ mod tests {
         );
 
         let step_toward = |campaign: &mut CampaignSession, target: crate::Position| {
-            let state = campaign.level2_compatibility().state;
+            let state = campaign.simulation().state;
             let desired = i16::try_from(crate::heading_for_positions(state.position, target))
                 .expect("source heading is 11-bit");
             let correction = crate::turn_toward(state.yaw, desired, 127);
@@ -1771,25 +1723,25 @@ mod tests {
             )
         };
         let stage_position = |campaign: &CampaignSession, stage_index: usize| {
-            let stage = &campaign.level2_compatibility().runtime().stages[stage_index];
+            let stage = &campaign.simulation().runtime().stages[stage_index];
             crate::Position {
                 x: stage.axis_x.cast_unsigned(),
                 y: stage.axis_y.cast_unsigned(),
-                z: campaign.level2_compatibility().state.position.z,
+                z: campaign.simulation().state.position.z,
             }
         };
 
         let first_waypoint = stage_position(&campaign, 0);
         let mut saw_group13_model5 = false;
         for _ in 0..512 {
-            if campaign.level2_compatibility().runtime().objectives[0].stage_selectors[0] == 2 {
+            if campaign.simulation().runtime().objectives[0].stage_selectors[0] == 2 {
                 break;
             }
             let _ = step_toward(&mut campaign, first_waypoint);
             let activated_group13 = campaign.events().iter().any(|event| {
                 matches!(
                     event,
-                    Level2DispatchEvent::AuthoredGroupActivated {
+                    Mc2DispatchEvent::AuthoredGroupActivated {
                         group: 13,
                         authored_indices,
                         ..
@@ -1799,7 +1751,7 @@ mod tests {
             });
             if activated_group13 {
                 let splashes = campaign
-                    .level2_compatibility()
+                    .simulation()
                     .economy()
                     .authored_model5_water_splashes();
                 assert_eq!(splashes.len(), GROUP13_MODEL5_ROWS.len());
@@ -1820,7 +1772,7 @@ mod tests {
             }
         }
         assert_eq!(
-            campaign.level2_compatibility().runtime().objectives[0].stage_selectors[0],
+            campaign.simulation().runtime().objectives[0].stage_selectors[0],
             2,
             "public flight must reach the real first waypoint"
         );
@@ -1832,14 +1784,14 @@ mod tests {
             if evidence.is_empty() {
                 panic!(
                     "public flight source turn failed at {:?}: {:?}",
-                    campaign.level2_compatibility().state.position,
+                    campaign.simulation().state.position,
                     campaign.events()
                 );
             }
             let activated_group13 = campaign.events().iter().any(|event| {
                 matches!(
                     event,
-                    Level2DispatchEvent::AuthoredGroupActivated {
+                    Mc2DispatchEvent::AuthoredGroupActivated {
                         group: 13,
                         authored_indices,
                         ..
@@ -1849,7 +1801,7 @@ mod tests {
             });
             if activated_group13 {
                 let splashes = campaign
-                    .level2_compatibility()
+                    .simulation()
                     .economy()
                     .authored_model5_water_splashes();
                 assert_eq!(splashes.len(), GROUP13_MODEL5_ROWS.len());
@@ -1871,7 +1823,7 @@ mod tests {
             if campaign.events().iter().any(|event| {
                 matches!(
                     event,
-                    Level2DispatchEvent::AuthoredGroupActivated {
+                    Mc2DispatchEvent::AuthoredGroupActivated {
                         group: 3,
                         authored_indices,
                         ..
@@ -1883,16 +1835,16 @@ mod tests {
             }
         }
         assert_eq!(
-            campaign.level2_compatibility().runtime().objectives[0].stage_selectors[1],
+            campaign.simulation().runtime().objectives[0].stage_selectors[1],
             2,
             "public flight ended at {:?} yaw {} speed {}/{} pitch {} without completing the second real waypoint; live model-32 rows {:?}",
-            campaign.level2_compatibility().state.position,
-            campaign.level2_compatibility().state.yaw,
-            campaign.level2_compatibility().state.actual_speed,
-            campaign.level2_compatibility().state.target_speed,
-            campaign.level2_compatibility().state.effective_pitch,
+            campaign.simulation().state.position,
+            campaign.simulation().state.yaw,
+            campaign.simulation().state.actual_speed,
+            campaign.simulation().state.target_speed,
+            campaign.simulation().state.effective_pitch,
             campaign
-                .level2_compatibility()
+                .simulation()
                 .economy()
                 .authored_model32()
                 .iter()
@@ -1905,11 +1857,11 @@ mod tests {
             campaign
                 .events()
                 .iter()
-                .all(|event| !matches!(event, Level2DispatchEvent::Error { .. }))
+                .all(|event| !matches!(event, Mc2DispatchEvent::Error { .. }))
         );
         assert!(saw_group13_model5);
 
-        let session = campaign.level2_compatibility();
+        let session = campaign.simulation();
         let archers = session
             .economy()
             .authored_class5()
@@ -2002,7 +1954,7 @@ mod tests {
 
         let _ = campaign.step(PlayerCommand::default(), 0);
         let frozen = campaign
-            .level2_compatibility()
+            .simulation()
             .economy()
             .authored_switch_producers()
             .iter()
@@ -2011,7 +1963,7 @@ mod tests {
         assert_eq!(frozen.dword_0x10, 16);
         assert!(campaign.events().iter().all(|event| !matches!(
             event,
-            Level2DispatchEvent::AuthoredGroupActivated { group: 11, .. }
+            Mc2DispatchEvent::AuthoredGroupActivated { group: 11, .. }
         )));
 
         // Archer damage and death are not under test here. The real-package
@@ -2021,7 +1973,7 @@ mod tests {
         // epilogue, and reclaim to the ordinary production scheduler.
         assert_eq!(
             campaign
-                .level2_compatibility_mut()
+                .simulation_mut()
                 .economy_mut()
                 .hide_authored_class5_rows_for_test(&ARCHER_ROWS),
             ARCHER_ROWS.len()
@@ -2035,7 +1987,7 @@ mod tests {
         for expected_timer in (1..=15).rev() {
             let evidence = campaign.step(PlayerCommand::default(), 0);
             assert!(!evidence.is_empty());
-            let session = campaign.level2_compatibility();
+            let session = campaign.simulation();
             let countdown = session
                 .economy()
                 .authored_switch_producers()
@@ -2052,7 +2004,7 @@ mod tests {
             );
             assert!(campaign.events().iter().all(|event| !matches!(
                 event,
-                Level2DispatchEvent::AuthoredGroupActivated { group: 11, .. }
+                Mc2DispatchEvent::AuthoredGroupActivated { group: 11, .. }
             )));
             match expected_timer {
                 15 => {
@@ -2068,7 +2020,7 @@ mod tests {
                     archer_objective_switch_phase_before_fire = Some(row153.source_byte_3e);
                     assert!(campaign.events().iter().all(|event| !matches!(
                         event,
-                        Level2DispatchEvent::AuthoredGroupActivated { group: 5, .. }
+                        Mc2DispatchEvent::AuthoredGroupActivated { group: 5, .. }
                     )));
                     assert!(
                         session
@@ -2081,7 +2033,7 @@ mod tests {
                 14 => {
                     assert!(campaign.events().iter().any(|event| matches!(
                         event,
-                        Level2DispatchEvent::AuthoredGroupActivated {
+                        Mc2DispatchEvent::AuthoredGroupActivated {
                             source_slot,
                             group: 5,
                             authored_indices,
@@ -2154,7 +2106,7 @@ mod tests {
                     ));
                     assert!(campaign.events().iter().all(|event| !matches!(
                         event,
-                        Level2DispatchEvent::AuthoredGroupActivated { group: 6, .. }
+                        Mc2DispatchEvent::AuthoredGroupActivated { group: 6, .. }
                     )));
                     castle_objective_switch_slot = Some(row190.source_entity_index);
                 }
@@ -2188,7 +2140,7 @@ mod tests {
                     assert_eq!(row190.source_byte_3e, (row190_slot as u8).wrapping_add(1));
                     assert!(campaign.events().iter().all(|event| !matches!(
                         event,
-                        Level2DispatchEvent::AuthoredGroupActivated { group: 6, .. }
+                        Mc2DispatchEvent::AuthoredGroupActivated { group: 6, .. }
                     )));
                     firefly_constructor_route = Some(campaign.clone());
                 }
@@ -2206,49 +2158,49 @@ mod tests {
         let mut missing_castle = firefly_route.clone();
         let _ = missing_castle.step(PlayerCommand::default(), 0);
         assert_eq!(
-            missing_castle.level2_compatibility().runtime().objectives[0].stage_selectors[3],
+            missing_castle.simulation().runtime().objectives[0].stage_selectors[3],
             1,
             "secured mana cannot satisfy the package objective without a Castle relation"
         );
         assert!(missing_castle.events().iter().all(|event| !matches!(
             event,
-            Level2DispatchEvent::AuthoredGroupActivated { group: 6, .. }
+            Mc2DispatchEvent::AuthoredGroupActivated { group: 6, .. }
         )));
 
-        let player_entity_index = firefly_route.level2_compatibility().state.entity_index;
-        let player_position = firefly_route.level2_compatibility().state.position;
+        let player_entity_index = firefly_route.simulation().state.entity_index;
+        let player_position = firefly_route.simulation().state.position;
         let castle_slot = firefly_route
-            .level2_compatibility_mut()
+            .simulation_mut()
             .economy_mut()
             .build_castle(player_position, player_entity_index)
             .expect("the package arena can stage the Castle objective prerequisite");
         assert!(
             firefly_route
-                .level2_compatibility_mut()
+                .simulation_mut()
                 .economy_mut()
                 .set_castle_mana_prerequisite_for_test(castle_slot, 4_000)
         );
 
         let _ = firefly_route.step(PlayerCommand::default(), 0);
         assert_eq!(
-            firefly_route.level2_compatibility().runtime().objectives[0].stage_selectors[3],
+            firefly_route.simulation().runtime().objectives[0].stage_selectors[3],
             2,
             "kind-0 Castle/mana completion is a post-entity objective phase"
         );
         assert!(firefly_route.events().iter().all(|event| !matches!(
             event,
-            Level2DispatchEvent::AuthoredGroupActivated { group: 6, .. }
+            Mc2DispatchEvent::AuthoredGroupActivated { group: 6, .. }
         )));
         assert!(
             firefly_route
-                .level2_compatibility()
+                .simulation()
                 .economy()
                 .authored_fireflies()
                 .is_empty()
         );
 
         let row190_slot = firefly_route
-            .level2_compatibility()
+            .simulation()
             .economy()
             .authored_model32()
             .iter()
@@ -2256,11 +2208,11 @@ mod tests {
             .expect("the package group-6 producer remains live")
             .source_entity_index;
         let firefly_birth_evidence = firefly_route.step(PlayerCommand::default(), 0);
-        let firefly_session = firefly_route.level2_compatibility();
+        let firefly_session = firefly_route.simulation();
         assert!(
             firefly_route.events().iter().any(|event| matches!(
                 event,
-                Level2DispatchEvent::AuthoredGroupActivated {
+                Mc2DispatchEvent::AuthoredGroupActivated {
                     source_slot,
                     group: 6,
                     authored_indices,
@@ -2414,7 +2366,7 @@ mod tests {
             .map(|row| (row.source_entity_index, row.source_byte_3e))
             .collect::<Vec<_>>();
         let _ = firefly_route.step(PlayerCommand::default(), 0);
-        let firefly_session = firefly_route.level2_compatibility();
+        let firefly_session = firefly_route.simulation();
         assert_eq!(
             firefly_session.runtime().objectives[0].stage_selectors[4],
             1
@@ -2452,12 +2404,12 @@ mod tests {
         assert!(roam_slot < peer_slot);
         assert!(
             firefly_route
-                .level2_compatibility_mut()
+                .simulation_mut()
                 .economy_mut()
                 .stage_authored_firefly_peer_roam_prerequisite_for_test(roam_slot, peer_slot,)
         );
         let staged_roam = *firefly_route
-            .level2_compatibility()
+            .simulation()
             .economy()
             .authored_class5()
             .iter()
@@ -2477,12 +2429,7 @@ mod tests {
             staged_roam.yaw,
             staged_roam.roll,
             staged_roam.actual_speed,
-            &firefly_route
-                .level2_compatibility()
-                .session
-                .state
-                .live
-                .terrain,
+            &firefly_route.simulation().session.state.live.terrain,
             motion_config,
         );
         let next_rng16 = |seed: u16| seed.wrapping_mul(9_377).wrapping_add(9_439);
@@ -2494,7 +2441,7 @@ mod tests {
         let expected_roam_roll = staged_roam.roll.wrapping_add(wander_sign * wander_delta) & 0x07ff;
 
         let _ = firefly_route.step(PlayerCommand::default(), 0);
-        let firefly_session = firefly_route.level2_compatibility();
+        let firefly_session = firefly_route.simulation();
         let roam = firefly_session
             .economy()
             .authored_class5()
@@ -2564,7 +2511,7 @@ mod tests {
             firefly_route
                 .events()
                 .iter()
-                .all(|event| !matches!(event, Level2DispatchEvent::Error { .. }))
+                .all(|event| !matches!(event, Mc2DispatchEvent::Error { .. }))
         );
 
         // Action 155 moves on intervening visits but consumes the link only
@@ -2576,17 +2523,12 @@ mod tests {
             linked_before.yaw,
             linked_before.roll,
             linked_before.actual_speed,
-            &firefly_route
-                .level2_compatibility()
-                .session
-                .state
-                .live
-                .terrain,
+            &firefly_route.simulation().session.state.live.terrain,
             motion_config,
         );
         let mut invalid_link = firefly_route.clone();
         let peer_authored_index = invalid_link
-            .level2_compatibility()
+            .simulation()
             .economy()
             .authored_class5()
             .iter()
@@ -2595,21 +2537,21 @@ mod tests {
             .authored_index;
         assert_eq!(
             invalid_link
-                .level2_compatibility_mut()
+                .simulation_mut()
                 .economy_mut()
                 .hide_authored_class5_rows_for_test(&[peer_authored_index]),
             1
         );
         let _ = invalid_link.step(PlayerCommand::default(), 0);
         let invalid_root = invalid_link
-            .level2_compatibility()
+            .simulation()
             .economy()
             .authored_class5()
             .iter()
             .find(|root| root.source_entity_index == roam_slot)
             .expect("an invalid peer does not remove the following Firefly");
         let invalid_state = invalid_link
-            .level2_compatibility()
+            .simulation()
             .economy()
             .authored_fireflies()
             .iter()
@@ -2635,7 +2577,7 @@ mod tests {
 
         let _ = firefly_route.step(PlayerCommand::default(), 0);
         let off_cadence = firefly_route
-            .level2_compatibility()
+            .simulation()
             .economy()
             .authored_class5()
             .iter()
@@ -2661,7 +2603,7 @@ mod tests {
         );
         let decision_root_before = *off_cadence;
         let peer_position_before = firefly_route
-            .level2_compatibility()
+            .simulation()
             .economy()
             .authored_class5()
             .iter()
@@ -2673,12 +2615,7 @@ mod tests {
             decision_root_before.yaw,
             decision_root_before.roll,
             decision_root_before.actual_speed,
-            &firefly_route
-                .level2_compatibility()
-                .session
-                .state
-                .live
-                .terrain,
+            &firefly_route.simulation().session.state.live.terrain,
             motion_config,
         );
         let expected_linked_roll = i16::try_from(crate::heading_for_positions(
@@ -2688,12 +2625,12 @@ mod tests {
         .expect("Firefly linked heading fits i16");
         assert!(
             firefly_route
-                .level2_compatibility_mut()
+                .simulation_mut()
                 .economy_mut()
                 .stage_authored_firefly_phase_prerequisite_for_test(roam_slot, 105)
         );
         let _ = firefly_route.step(PlayerCommand::default(), 0);
-        let firefly_session = firefly_route.level2_compatibility();
+        let firefly_session = firefly_route.simulation();
         let roam = firefly_session
             .economy()
             .authored_class5()
@@ -2746,7 +2683,7 @@ mod tests {
             firefly_route
                 .events()
                 .iter()
-                .all(|event| !matches!(event, Level2DispatchEvent::Error { .. }))
+                .all(|event| !matches!(event, Mc2DispatchEvent::Error { .. }))
         );
 
         // Stop the real player through its public command, then stage only a
@@ -2762,7 +2699,7 @@ mod tests {
             },
             0,
         );
-        let attack_player = charge_route.level2_compatibility().state;
+        let attack_player = charge_route.simulation().state;
         assert_eq!(
             (attack_player.actual_speed, attack_player.target_speed),
             (0, 0)
@@ -2770,7 +2707,7 @@ mod tests {
         let attack_slot = firefly_slots[0];
         assert!(
             charge_route
-                .level2_compatibility_mut()
+                .simulation_mut()
                 .economy_mut()
                 .stage_authored_firefly_charge_prerequisite_for_test(
                     attack_slot,
@@ -2785,13 +2722,13 @@ mod tests {
                 root.yaw,
                 root.roll,
                 root.actual_speed,
-                &route.level2_compatibility().session.state.live.terrain,
+                &route.simulation().session.state.live.terrain,
                 motion_config,
             )
         };
 
         let staged_attack = *charge_route
-            .level2_compatibility()
+            .simulation()
             .economy()
             .authored_class5()
             .iter()
@@ -2800,7 +2737,7 @@ mod tests {
         let acquisition_motion = expected_motion(&charge_route, &staged_attack);
         let _ = charge_route.step(PlayerCommand::default(), 0);
         let acquired = *charge_route
-            .level2_compatibility()
+            .simulation()
             .economy()
             .authored_class5()
             .iter()
@@ -2831,7 +2768,7 @@ mod tests {
         let orbit_motion = expected_motion(&charge_route, &acquired);
         let _ = charge_route.step(PlayerCommand::default(), 0);
         let orbit = *charge_route
-            .level2_compatibility()
+            .simulation()
             .economy()
             .authored_class5()
             .iter()
@@ -2861,9 +2798,9 @@ mod tests {
 
         let maneuver_motion = expected_motion(&charge_route, &orbit);
         let _ = charge_route.step(PlayerCommand::default(), 0);
-        let maneuver_target = charge_route.level2_compatibility().state;
+        let maneuver_target = charge_route.simulation().state;
         let maneuver = *charge_route
-            .level2_compatibility()
+            .simulation()
             .economy()
             .authored_class5()
             .iter()
@@ -2912,15 +2849,15 @@ mod tests {
             })
         )));
 
-        let player_record_before_charge = charge_route.level2_compatibility().entities()
+        let player_record_before_charge = charge_route.simulation().entities()
             [usize::from(attack_player.entity_index)]
         .record_bytes()[98..104]
             .to_vec();
         let charge_motion = expected_motion(&charge_route, &maneuver);
         let _ = charge_route.step(PlayerCommand::default(), 0);
-        let charge_target = charge_route.level2_compatibility().state;
+        let charge_target = charge_route.simulation().state;
         let charged = *charge_route
-            .level2_compatibility()
+            .simulation()
             .economy()
             .authored_class5()
             .iter()
@@ -2997,7 +2934,7 @@ mod tests {
             "the charge visit emits exactly one RNG-selected Firefly sound"
         );
         assert_eq!(
-            charge_route.level2_compatibility().entities()[usize::from(attack_player.entity_index)]
+            charge_route.simulation().entities()[usize::from(attack_player.entity_index)]
                 .record_bytes()[98..104],
             player_record_before_charge,
             "the staged geometry remains outside the strict contact radius, so this slice does not counterfeit damage"
@@ -3006,7 +2943,7 @@ mod tests {
             charge_route
                 .events()
                 .iter()
-                .all(|event| !matches!(event, Level2DispatchEvent::Error { .. }))
+                .all(|event| !matches!(event, Mc2DispatchEvent::Error { .. }))
         );
 
         // Continue the same real package root from its proven charge state.
@@ -3014,16 +2951,11 @@ mod tests {
         // mailbox publication, player consumption, and source order remain
         // production-owned.
         let mut contact_route = charge_route.clone();
-        let contact_player = contact_route.level2_compatibility().state;
-        let player_life_before_contact = contact_route
-            .level2_compatibility()
-            .session
-            .state
-            .live
-            .player_life;
+        let contact_player = contact_route.simulation().state;
+        let player_life_before_contact = contact_route.simulation().session.state.live.player_life;
         assert!(
             contact_route
-                .level2_compatibility_mut()
+                .simulation_mut()
                 .economy_mut()
                 .stage_authored_firefly_contact_geometry_for_test(
                     attack_slot,
@@ -3031,7 +2963,7 @@ mod tests {
                 )
         );
         let staged_contact = *contact_route
-            .level2_compatibility()
+            .simulation()
             .economy()
             .authored_class5()
             .iter()
@@ -3072,7 +3004,7 @@ mod tests {
         );
         let contact_cursor = contact_route.effect_cursor();
         let _ = contact_route.step(PlayerCommand::default(), 0);
-        let contacted_player_state = contact_route.level2_compatibility().state;
+        let contacted_player_state = contact_route.simulation().state;
         let contact_altitude = i32::from(contacted_player_state.position.z)
             .wrapping_sub(i32::from(contact_motion.position.z))
             .clamp(-64, 64);
@@ -3081,7 +3013,7 @@ mod tests {
             .z
             .wrapping_add(contact_altitude as i16);
         let contacted = *contact_route
-            .level2_compatibility()
+            .simulation()
             .economy()
             .authored_class5()
             .iter()
@@ -3116,16 +3048,11 @@ mod tests {
             "contact consumes no private RNG and emits no second charge sound"
         );
         if attack_slot > contact_player.entity_index {
-            let player_row = &contact_route.level2_compatibility().entities()
-                [usize::from(contact_player.entity_index)];
+            let player_row =
+                &contact_route.simulation().entities()[usize::from(contact_player.entity_index)];
             assert_eq!(
                 (
-                    contact_route
-                        .level2_compatibility()
-                        .session
-                        .state
-                        .live
-                        .player_life,
+                    contact_route.simulation().session.state.live.player_life,
                     i32::from_le_bytes(
                         player_row.record_bytes()[98..102]
                             .try_into()
@@ -3142,14 +3069,14 @@ mod tests {
             );
             let _ = contact_route.step(PlayerCommand::default(), 0);
         }
-        let contact_session = contact_route.level2_compatibility();
+        let contact_session = contact_route.simulation();
         let damage_events = contact_route
             .events()
             .iter()
             .filter(|event| {
                 matches!(
                     event,
-                    Level2DispatchEvent::Economy {
+                    Mc2DispatchEvent::Economy {
                         event: Level2EconomyEvent::DamageApplied {
                             target_entity_index,
                             attacker_entity_index,
@@ -3192,10 +3119,10 @@ mod tests {
         // scheduling, guidance, and impact handling stay on the production
         // arena path rather than a Firefly-only test path.
         let mut fireball_route = charge_route.clone();
-        let fireball_player = fireball_route.level2_compatibility().state;
+        let fireball_player = fireball_route.simulation().state;
         assert!(
             fireball_route
-                .level2_compatibility_mut()
+                .simulation_mut()
                 .economy_mut()
                 .stage_authored_firefly_fireball_prerequisite_for_test(
                     attack_slot,
@@ -3203,7 +3130,7 @@ mod tests {
                 )
         );
         let staged_firing = *fireball_route
-            .level2_compatibility()
+            .simulation()
             .economy()
             .authored_class5()
             .iter()
@@ -3212,19 +3139,19 @@ mod tests {
         let firing_motion = expected_motion(&fireball_route, &staged_firing);
 
         let mut fireball_failure = fireball_route.clone();
-        let target_word36_before = fireball_failure.level2_compatibility().entities()
+        let target_word36_before = fireball_failure.simulation().entities()
             [usize::from(fireball_player.entity_index)]
         .record_bytes()[58..60]
             .to_vec();
         let _ = fireball_failure
-            .level2_compatibility_mut()
+            .simulation_mut()
             .economy_mut()
             .exhaust_new_event_capacity_for_test()
             .expect("the shared arena has capacity to exhaust for the Firefly negative");
         let _ = fireball_failure.step(PlayerCommand::default(), 0);
         assert!(
             fireball_failure
-                .level2_compatibility()
+                .simulation()
                 .economy()
                 .fireball_projectiles()
                 .iter()
@@ -3232,15 +3159,14 @@ mod tests {
                     != crate::native_world::FireballProjectileOrigin::Firefly)
         );
         assert_eq!(
-            fireball_failure.level2_compatibility().entities()
-                [usize::from(fireball_player.entity_index)]
-            .record_bytes()[58..60]
+            fireball_failure.simulation().entities()[usize::from(fireball_player.entity_index)]
+                .record_bytes()[58..60]
                 .to_vec(),
             target_word36_before,
             "failed NewEvent allocation cannot publish Firefly target feedback"
         );
         let failed_firing = fireball_failure
-            .level2_compatibility()
+            .simulation()
             .economy()
             .authored_class5()
             .iter()
@@ -3253,9 +3179,9 @@ mod tests {
         );
 
         let _ = fireball_route.step(PlayerCommand::default(), 0);
-        let fired_player = fireball_route.level2_compatibility().state;
+        let fired_player = fireball_route.simulation().state;
         let fired_root = *fireball_route
-            .level2_compatibility()
+            .simulation()
             .economy()
             .authored_class5()
             .iter()
@@ -3272,7 +3198,7 @@ mod tests {
             "state 5 moves, allocates, and takes one common source epilogue"
         );
         let projectile = *fireball_route
-            .level2_compatibility()
+            .simulation()
             .economy()
             .fireball_projectiles()
             .iter()
@@ -3312,9 +3238,8 @@ mod tests {
         assert_eq!(projectile.yaw, staged_firing.yaw);
         assert_eq!(
             i16::from_le_bytes(
-                fireball_route.level2_compatibility().entities()
-                    [usize::from(fireball_player.entity_index)]
-                .record_bytes()[58..60]
+                fireball_route.simulation().entities()[usize::from(fireball_player.entity_index)]
+                    .record_bytes()[58..60]
                     .try_into()
                     .expect("Firefly target feedback bytes"),
             ),
@@ -3323,7 +3248,7 @@ mod tests {
         );
         let projectile_callback_on_birth = projectile.source_entity_index > attack_slot;
         let fireball_receipts = fireball_route
-            .level2_compatibility()
+            .simulation()
             .cf10_production_schedule_receipts();
         assert_eq!(
             fireball_receipts.iter().any(|receipt| matches!(
@@ -3378,21 +3303,21 @@ mod tests {
         let mut death_route = fireball_route.clone();
         let dying_slot = firefly_slots[1];
         let dying_before = *death_route
-            .level2_compatibility()
+            .simulation()
             .economy()
             .authored_class5()
             .iter()
             .find(|root| root.source_entity_index == dying_slot)
             .expect("the real package Firefly is available for damage");
         death_route
-            .level2_compatibility_mut()
+            .simulation_mut()
             .apply_fireball_impact_to_firefly_for_test(
                 dying_before.position,
                 projectile.owner_entity_index,
                 500,
             );
         death_route
-            .level2_compatibility_mut()
+            .simulation_mut()
             .apply_fireball_impact_to_firefly_for_test(
                 dying_before.position,
                 projectile.owner_entity_index,
@@ -3400,7 +3325,7 @@ mod tests {
             );
         let _ = death_route.step(PlayerCommand::default(), 0);
         let pre_kill = *death_route
-            .level2_compatibility()
+            .simulation()
             .economy()
             .authored_class5()
             .iter()
@@ -3426,7 +3351,7 @@ mod tests {
         );
         assert!(death_route.events().iter().any(|event| matches!(
             event,
-            Level2DispatchEvent::Economy {
+            Mc2DispatchEvent::Economy {
                 event: Level2EconomyEvent::DamageApplied {
                     target_entity_index,
                     attacker_entity_index,
@@ -3440,7 +3365,7 @@ mod tests {
 
         let _ = death_route.step(PlayerCommand::default(), 0);
         let mut kill_phase = death_route
-            .level2_compatibility()
+            .simulation()
             .economy()
             .authored_class5()
             .iter()
@@ -3449,7 +3374,7 @@ mod tests {
             .source_byte_3e;
         assert_eq!(
             death_route
-                .level2_compatibility()
+                .simulation()
                 .economy()
                 .authored_class5()
                 .iter()
@@ -3461,7 +3386,7 @@ mod tests {
         while kill_phase & 7 != 0 {
             let _ = death_route.step(PlayerCommand::default(), 0);
             kill_phase = death_route
-                .level2_compatibility()
+                .simulation()
                 .economy()
                 .authored_class5()
                 .iter()
@@ -3470,7 +3395,7 @@ mod tests {
                 .source_byte_3e;
         }
         let death_rng_before = death_route
-            .level2_compatibility()
+            .simulation()
             .economy()
             .authored_class5()
             .iter()
@@ -3479,7 +3404,7 @@ mod tests {
             .entity_rng;
         let _ = death_route.step(PlayerCommand::default(), 0);
         let killed = *death_route
-            .level2_compatibility()
+            .simulation()
             .economy()
             .authored_class5()
             .iter()
@@ -3495,7 +3420,7 @@ mod tests {
         );
         assert!(
             death_route
-                .level2_compatibility()
+                .simulation()
                 .economy()
                 .spheres()
                 .iter()
@@ -3503,7 +3428,7 @@ mod tests {
         );
         assert!(
             death_route
-                .level2_compatibility()
+                .simulation()
                 .economy()
                 .death_bursts()
                 .iter()
@@ -3513,7 +3438,7 @@ mod tests {
         let _ = death_route.step(PlayerCommand::default(), 0);
         assert!(
             death_route
-                .level2_compatibility()
+                .simulation()
                 .economy()
                 .authored_class5()
                 .iter()
@@ -3522,7 +3447,7 @@ mod tests {
 
         let mut allocation_failure = campaign.clone();
         let restored_slot = allocation_failure
-            .level2_compatibility_mut()
+            .simulation_mut()
             .economy_mut()
             .exhaust_new_event_capacity_for_test()
             .expect("the real Level 1 source arena has ordinary NewEvent capacity");
@@ -3530,10 +3455,10 @@ mod tests {
         let before_fire_cursor = campaign.effect_cursor();
         let fire_evidence = campaign.step(PlayerCommand::default(), 0);
         assert!(!fire_evidence.is_empty());
-        let session = campaign.level2_compatibility();
+        let session = campaign.simulation();
         assert!(campaign.events().iter().any(|event| matches!(
             event,
-            Level2DispatchEvent::AuthoredGroupActivated {
+            Mc2DispatchEvent::AuthoredGroupActivated {
                 source_slot,
                 group: 11,
                 authored_indices,
@@ -3642,7 +3567,7 @@ mod tests {
             campaign
                 .events()
                 .iter()
-                .all(|event| !matches!(event, Level2DispatchEvent::Error { .. }))
+                .all(|event| !matches!(event, Mc2DispatchEvent::Error { .. }))
         );
         assert_eq!(
             campaign
@@ -3650,7 +3575,7 @@ mod tests {
                 .iter()
                 .filter(|event| matches!(
                     event,
-                    Level2DispatchEvent::SpellAcquisition {
+                    Mc2DispatchEvent::SpellAcquisition {
                         source_slot,
                         family: 3,
                         result: None,
@@ -3682,7 +3607,7 @@ mod tests {
             .iter()
             .find_map(|record| match &record.effect {
                 crate::campaign::journal::CampaignEffect::Dispatch(
-                    Level2DispatchEvent::AuthoredGroupActivated {
+                    Mc2DispatchEvent::AuthoredGroupActivated {
                         source_slot,
                         group: 11,
                         authored_indices,
@@ -3697,12 +3622,12 @@ mod tests {
         assert!(sound_sequence < activation_sequence);
 
         let _ = campaign.step(PlayerCommand::default(), 0);
-        let session = campaign.level2_compatibility();
+        let session = campaign.simulation();
         assert!(
             campaign
                 .events()
                 .iter()
-                .all(|event| !matches!(event, Level2DispatchEvent::Error { .. }))
+                .all(|event| !matches!(event, Mc2DispatchEvent::Error { .. }))
         );
         assert_eq!(
             campaign
@@ -3710,7 +3635,7 @@ mod tests {
                 .iter()
                 .filter(|event| matches!(
                     event,
-                    Level2DispatchEvent::SpellAcquisition {
+                    Mc2DispatchEvent::SpellAcquisition {
                         source_slot,
                         family: 3,
                         result: None,
@@ -3760,16 +3685,16 @@ mod tests {
 
         let failure_evidence = allocation_failure.step(PlayerCommand::default(), 0);
         assert!(!failure_evidence.is_empty());
-        let failure_session = allocation_failure.level2_compatibility();
+        let failure_session = allocation_failure.simulation();
         assert!(
             allocation_failure
                 .events()
                 .iter()
-                .all(|event| !matches!(event, Level2DispatchEvent::Error { .. }))
+                .all(|event| !matches!(event, Mc2DispatchEvent::Error { .. }))
         );
         assert!(allocation_failure.events().iter().any(|event| matches!(
             event,
-            Level2DispatchEvent::AuthoredGroupActivated {
+            Mc2DispatchEvent::AuthoredGroupActivated {
                 source_slot,
                 group: 11,
                 authored_indices,
@@ -3800,18 +3725,18 @@ mod tests {
         );
         assert!(
             allocation_failure
-                .level2_compatibility_mut()
+                .simulation_mut()
                 .economy_mut()
                 .restore_new_event_slot_for_test(restored_slot),
             "the retry discriminator restores one real NewEvent slot after the failed group scan"
         );
 
         let _ = allocation_failure.step(PlayerCommand::default(), 0);
-        let failure_session = allocation_failure.level2_compatibility();
+        let failure_session = allocation_failure.simulation();
         assert!(allocation_failure.events().iter().all(|event| !matches!(
             event,
-            Level2DispatchEvent::Error { .. }
-                | Level2DispatchEvent::AuthoredGroupActivated { group: 11, .. }
+            Mc2DispatchEvent::Error { .. }
+                | Mc2DispatchEvent::AuthoredGroupActivated { group: 11, .. }
         )));
         assert!(
             failure_session
@@ -3850,12 +3775,12 @@ mod tests {
                 campaign
                     .events()
                     .iter()
-                    .all(|event| !matches!(event, Level2DispatchEvent::Error { .. }))
+                    .all(|event| !matches!(event, Mc2DispatchEvent::Error { .. }))
             );
             let unacquired_callback = campaign.events().iter().any(|event| {
                 matches!(
                     event,
-                    Level2DispatchEvent::SpellAcquisition {
+                    Mc2DispatchEvent::SpellAcquisition {
                         source_slot,
                         family: 3,
                         result: None,
@@ -3864,7 +3789,7 @@ mod tests {
                 )
             });
             acquired = campaign.events().iter().find_map(|event| match event {
-                Level2DispatchEvent::SpellAcquisition {
+                Mc2DispatchEvent::SpellAcquisition {
                     source_slot,
                     family: 3,
                     result: Some(outcome),
@@ -3876,7 +3801,7 @@ mod tests {
                 break;
             }
 
-            let session = campaign.level2_compatibility();
+            let session = campaign.simulation();
             let jar = session
                 .shared_spells()
                 .dynamic_pickups()
@@ -3921,7 +3846,7 @@ mod tests {
             "an overlapping off-cadence callback must leave the real jar unowned"
         );
         let acquired = acquired.expect("public flight reaches the real row-100 Speed jar");
-        let player_entity_index = campaign.level2_compatibility().state.entity_index;
+        let player_entity_index = campaign.simulation().state.entity_index;
         assert_eq!(
             (
                 acquired.family,
@@ -3933,7 +3858,7 @@ mod tests {
             (3, jar_slot, 9, player_entity_index, 64)
         );
 
-        let session = campaign.level2_compatibility();
+        let session = campaign.simulation();
         let holder = session
             .shared_spells()
             .dynamic_pickups()
@@ -4013,18 +3938,18 @@ mod tests {
             campaign
                 .events()
                 .iter()
-                .all(|event| !matches!(event, Level2DispatchEvent::Error { .. }))
+                .all(|event| !matches!(event, Mc2DispatchEvent::Error { .. }))
         );
         assert!(campaign.events().iter().all(|event| !matches!(
             event,
-            Level2DispatchEvent::SpellAcquisition {
+            Mc2DispatchEvent::SpellAcquisition {
                 source_slot,
                 family: 3,
                 result: Some(_),
                 ..
             } if *source_slot == jar_slot
         )));
-        let session = campaign.level2_compatibility();
+        let session = campaign.simulation();
         assert!(
             session
                 .cf10_production_schedule_receipts()
@@ -4105,7 +4030,7 @@ mod tests {
         let no_cast_experience = session.shared_spells().spell_experience()[3];
         let no_cast_trail_count = session.economy().speed_trails().len();
         let _ = campaign.step(PlayerCommand::default(), 0);
-        let session = campaign.level2_compatibility();
+        let session = campaign.simulation();
         let holder = session
             .shared_spells()
             .dynamic_pickups()
@@ -4138,7 +4063,7 @@ mod tests {
         let desired_precast_phase = if jar_slot > player_entity_index { 0 } else { 3 };
         for _ in 0..3 {
             let phase = campaign
-                .level2_compatibility()
+                .simulation()
                 .shared_spells()
                 .dynamic_pickups()
                 .iter()
@@ -4148,17 +4073,10 @@ mod tests {
             if phase & 3 == desired_precast_phase {
                 break;
             }
-            let before_trails = campaign
-                .level2_compatibility()
-                .economy()
-                .speed_trails()
-                .len();
-            let before_experience = campaign
-                .level2_compatibility()
-                .shared_spells()
-                .spell_experience()[3];
+            let before_trails = campaign.simulation().economy().speed_trails().len();
+            let before_experience = campaign.simulation().shared_spells().spell_experience()[3];
             let _ = campaign.step(PlayerCommand::default(), 0);
-            let session = campaign.level2_compatibility();
+            let session = campaign.simulation();
             assert_eq!(
                 session
                     .shared_spells()
@@ -4176,7 +4094,7 @@ mod tests {
             );
         }
 
-        let session = campaign.level2_compatibility();
+        let session = campaign.simulation();
         let pre_cast_holder = session
             .shared_spells()
             .dynamic_pickups()
@@ -4218,7 +4136,7 @@ mod tests {
 
         let holder_runs_on_cast_turn = jar_slot > player_entity_index;
         if !holder_runs_on_cast_turn {
-            let session = campaign.level2_compatibility();
+            let session = campaign.simulation();
             let armed = session
                 .shared_spells()
                 .dynamic_pickups()
@@ -4238,7 +4156,7 @@ mod tests {
             );
             assert!(campaign.events().iter().all(|event| !matches!(
                 event,
-                Level2DispatchEvent::DynamicArena {
+                Mc2DispatchEvent::DynamicArena {
                     source_slot,
                     kind: crate::native_world::Level2DynamicArenaKind::SpeedTrail,
                     ..
@@ -4247,12 +4165,12 @@ mod tests {
             let _ = campaign.step(PlayerCommand::default(), 0);
         }
 
-        let session = campaign.level2_compatibility();
+        let session = campaign.simulation();
         assert!(
             campaign
                 .events()
                 .iter()
-                .all(|event| !matches!(event, Level2DispatchEvent::Error { .. }))
+                .all(|event| !matches!(event, Mc2DispatchEvent::Error { .. }))
         );
         let holder = session
             .shared_spells()
@@ -4350,7 +4268,7 @@ mod tests {
             .iter()
             .find_map(|record| match record.effect {
                 crate::campaign::journal::CampaignEffect::Dispatch(
-                    Level2DispatchEvent::DynamicArena {
+                    Mc2DispatchEvent::DynamicArena {
                         source_slot,
                         kind: crate::native_world::Level2DynamicArenaKind::SpellPickup,
                         ..
@@ -4387,7 +4305,7 @@ mod tests {
         // cursor its allocated slot occupied.
         let trail_life_after_launch = trail.life;
         let _ = campaign.step(PlayerCommand::default(), 0);
-        let session = campaign.level2_compatibility();
+        let session = campaign.simulation();
         let trail = session
             .economy()
             .speed_trails()
@@ -4435,23 +4353,17 @@ mod tests {
         campaign.reset();
         assert_eq!(campaign.state_hash(), reset_hash);
         assert_eq!(
-            campaign.level2_compatibility().players()[0].enabled_spell_holders[3],
+            campaign.simulation().players()[0].enabled_spell_holders[3],
             0
         );
         assert!(
             campaign
-                .level2_compatibility()
+                .simulation()
                 .shared_spells()
                 .dynamic_pickups()
                 .is_empty()
         );
-        assert!(
-            campaign
-                .level2_compatibility()
-                .economy()
-                .speed_trails()
-                .is_empty()
-        );
+        assert!(campaign.simulation().economy().speed_trails().is_empty());
     }
 
     #[test]
@@ -4464,7 +4376,7 @@ mod tests {
         let mut campaign = CampaignSession::open(&package, CampaignSelection::LEVEL1)
             .expect("real Level 1 descriptor opens through the shared engine");
         let reset_hash = campaign.state_hash();
-        let session = campaign.level2_compatibility_mut();
+        let session = campaign.simulation_mut();
 
         // The preceding castle objective and row-190 gate are already proven
         // by the real package progression test. Stage only that exact group-6
@@ -4475,7 +4387,7 @@ mod tests {
             .expect("real package group 6 materializes through the shared arena");
         assert!(session.dispatch_events().iter().any(|event| matches!(
             event,
-            Level2DispatchEvent::AuthoredGroupActivated {
+            Mc2DispatchEvent::AuthoredGroupActivated {
                 group: 6,
                 authored_indices,
                 ..
@@ -4514,7 +4426,7 @@ mod tests {
         assert_eq!(session.runtime().objectives[0].is_level_end, 0);
         assert!(session.dispatch_events().iter().all(|event| !matches!(
             event,
-            Level2DispatchEvent::AuthoredGroupActivated { group: 4, .. }
+            Mc2DispatchEvent::AuthoredGroupActivated { group: 4, .. }
         )));
 
         // Queue source-sized damage into each real package root. The ordinary
@@ -4546,14 +4458,14 @@ mod tests {
         assert!(!session.entities()[usize::from(exit_gate)].drawing_disabled());
         assert!(session.dispatch_events().iter().all(|event| !matches!(
             event,
-            Level2DispatchEvent::AuthoredGroupActivated { group: 4, .. }
+            Mc2DispatchEvent::AuthoredGroupActivated { group: 4, .. }
         )));
 
         // Only the following ordinary numeric visit may consume group 4.
         session.step_outer_turn(PlayerCommand::default(), 0);
         assert!(session.dispatch_events().iter().any(|event| matches!(
             event,
-            Level2DispatchEvent::AuthoredGroupActivated {
+            Mc2DispatchEvent::AuthoredGroupActivated {
                 source_slot,
                 group: 4,
                 authored_indices,
@@ -4565,7 +4477,7 @@ mod tests {
             session
                 .dispatch_events()
                 .iter()
-                .all(|event| !matches!(event, Level2DispatchEvent::Error { .. }))
+                .all(|event| !matches!(event, Mc2DispatchEvent::Error { .. }))
         );
         assert!(
             session
@@ -4601,7 +4513,7 @@ mod tests {
         let mut campaign = CampaignSession::open(&package, CampaignSelection::LEVEL1)
             .expect("real Level 1 descriptor opens through the shared engine");
         let reset_hash = campaign.state_hash();
-        let session = campaign.level2_compatibility_mut();
+        let session = campaign.simulation_mut();
 
         // The level-end objective and gate are proven separately. Stage only
         // their real group-4 boundary; the row-305 trigger and row-306
@@ -4637,7 +4549,7 @@ mod tests {
             session.step_outer_turn(PlayerCommand::default(), 0);
             assert!(session.dispatch_events().iter().all(|event| !matches!(
                 event,
-                Level2DispatchEvent::AuthoredGroupActivated { group: 33, .. }
+                Mc2DispatchEvent::AuthoredGroupActivated { group: 33, .. }
             )));
         }
 
@@ -4645,7 +4557,7 @@ mod tests {
         session.step_outer_turn(PlayerCommand::default(), 0);
         assert!(session.dispatch_events().iter().any(|event| matches!(
             event,
-            Level2DispatchEvent::AuthoredGroupActivated {
+            Mc2DispatchEvent::AuthoredGroupActivated {
                 source_slot,
                 group: 33,
                 authored_indices,
@@ -4675,7 +4587,7 @@ mod tests {
             session
                 .dispatch_events()
                 .iter()
-                .all(|event| !matches!(event, Level2DispatchEvent::Error { .. }))
+                .all(|event| !matches!(event, Mc2DispatchEvent::Error { .. }))
         );
 
         session.step_outer_turn(PlayerCommand::default(), 0);
@@ -4699,11 +4611,11 @@ mod tests {
             .expect("real Level 1 descriptor opens through the shared engine");
         let reset_hash = campaign.state_hash();
         campaign
-            .level2_compatibility_mut()
+            .simulation_mut()
             .activate_authored_group_prerequisite_for_test(4)
             .expect("real package group 4 materializes through the shared arena");
         let mut allocation_failure = campaign.clone();
-        let session = campaign.level2_compatibility_mut();
+        let session = campaign.simulation_mut();
 
         let first_worm = session
             .economy()
@@ -4764,7 +4676,7 @@ mod tests {
         // emits feedback/sound even when NewEvent has no row. Prove failure is
         // silent and retryable on a clone of this exact package state.
         {
-            let failure = allocation_failure.level2_compatibility_mut();
+            let failure = allocation_failure.simulation_mut();
             assert_eq!(
                 failure
                     .economy_mut()
@@ -4802,7 +4714,7 @@ mod tests {
             );
             assert!(failure.dispatch_events().iter().all(|event| !matches!(
                 event,
-                Level2DispatchEvent::Economy {
+                Mc2DispatchEvent::Economy {
                     event: Level2EconomyEvent::AuthoredClass5Model3Sound { .. },
                     ..
                 }
@@ -4839,7 +4751,7 @@ mod tests {
         );
         assert!(session.dispatch_events().iter().any(|event| matches!(
             event,
-            Level2DispatchEvent::Economy {
+            Mc2DispatchEvent::Economy {
                 source_slot,
                 event: Level2EconomyEvent::AuthoredClass5Model3Sound {
                     source_entity_index,
@@ -5018,13 +4930,13 @@ mod tests {
                     session
                         .dispatch_events()
                         .iter()
-                        .all(|event| !matches!(event, Level2DispatchEvent::Error { .. })),
+                        .all(|event| !matches!(event, Mc2DispatchEvent::Error { .. })),
                     "countdown pass rolled back: {:?}",
                     session.dispatch_events()
                 );
                 assert!(session.dispatch_events().iter().all(|event| !matches!(
                     event,
-                    Level2DispatchEvent::AuthoredGroupActivated { group: 34, .. }
+                    Mc2DispatchEvent::AuthoredGroupActivated { group: 34, .. }
                 )));
                 let timer = session
                     .economy()
@@ -5069,7 +4981,7 @@ mod tests {
                 matches!(
                     &record.effect,
                     crate::campaign::journal::CampaignEffect::Dispatch(
-                        Level2DispatchEvent::AuthoredGroupActivated {
+                        Mc2DispatchEvent::AuthoredGroupActivated {
                             source_slot,
                             group: 34,
                             authored_indices,
@@ -5108,7 +5020,7 @@ mod tests {
             session
                 .dispatch_events()
                 .iter()
-                .all(|event| !matches!(event, Level2DispatchEvent::Error { .. }))
+                .all(|event| !matches!(event, Mc2DispatchEvent::Error { .. }))
         );
 
         session.step_outer_turn(PlayerCommand::default(), 0);
@@ -5215,14 +5127,8 @@ mod tests {
                 .count(),
             252
         );
-        assert_eq!(campaign.level2_compatibility().state.entity_index, 252);
-        let controller = &campaign
-            .level2_compatibility()
-            .session
-            .state
-            .live
-            .economy
-            .entities[94];
+        assert_eq!(campaign.simulation().state.entity_index, 252);
+        let controller = &campaign.simulation().session.state.live.economy.entities[94];
         assert_eq!(
             (
                 controller.class,
@@ -5239,7 +5145,7 @@ mod tests {
         let reset_state_hash = campaign.state_hash();
         let reset_terrain_hash = campaign.terrain_hash();
         let reset_rows = campaign
-            .level2_compatibility()
+            .simulation()
             .session
             .state
             .live
@@ -5250,7 +5156,7 @@ mod tests {
             .map(|row| (row.index, (row.class, row.action)))
             .collect::<BTreeMap<_, _>>();
         let imported_family_before = campaign
-            .level2_compatibility()
+            .simulation()
             .session
             .state
             .live
@@ -5299,9 +5205,7 @@ mod tests {
             "the production proof must cover every imported Level 3 model-9 row"
         );
         let _ = campaign.step(PlayerCommand::default(), 0);
-        let receipts = campaign
-            .level2_compatibility()
-            .cf10_production_schedule_receipts();
+        let receipts = campaign.simulation().cf10_production_schedule_receipts();
         let resolved = receipts
             .iter()
             .filter_map(|receipt| match receipt {
@@ -5385,13 +5289,7 @@ mod tests {
             763,
             "five phases + scan bounds + 252 resolve/callback/epilogue triples"
         );
-        let controller = &campaign
-            .level2_compatibility()
-            .session
-            .state
-            .live
-            .economy
-            .entities[94];
+        let controller = &campaign.simulation().session.state.live.economy.entities[94];
         assert_eq!(
             (
                 controller.life,
@@ -5403,13 +5301,7 @@ mod tests {
             "the inert controller callback still receives exactly one UpdateEntities epilogue"
         );
         for (slot, class, model, phase_before, countdown_before) in imported_family_before {
-            let row = &campaign
-                .level2_compatibility()
-                .session
-                .state
-                .live
-                .economy
-                .entities[usize::from(slot)];
+            let row = &campaign.simulation().session.state.live.economy.entities[usize::from(slot)];
             assert_eq!(
                 row.phase,
                 phase_before.wrapping_add(1),
@@ -5431,10 +5323,12 @@ mod tests {
                 _ => unreachable!(),
             }
         }
-        assert!(campaign.events().iter().all(|event| !matches!(
-            event,
-            crate::native_world::Level2DispatchEvent::Error { .. }
-        )));
+        assert!(
+            campaign
+                .events()
+                .iter()
+                .all(|event| !matches!(event, crate::native_world::Mc2DispatchEvent::Error { .. }))
+        );
         campaign.reset();
         assert_eq!(campaign.state_hash(), reset_state_hash);
         assert_eq!(campaign.terrain_hash(), reset_terrain_hash);
@@ -5484,21 +5378,14 @@ mod tests {
             CampaignSelection::LEVEL3,
         )
         .expect("qualified Level 3 descriptor opens");
-        let before = campaign
-            .level2_compatibility()
-            .session
-            .state
-            .live
-            .economy
-            .entities[93]
-            .clone();
+        let before = campaign.simulation().session.state.live.economy.entities[93].clone();
         let countdown = i32::from_le_bytes(before.record_bytes()[20..24].try_into().unwrap());
         assert_eq!(
             countdown, 15,
             "the qualified descriptor preserves the captured source pre-decrement clock"
         );
         let stage_before = campaign
-            .level2_compatibility()
+            .simulation()
             .session
             .state
             .live
@@ -5514,13 +5401,7 @@ mod tests {
             let _ = campaign.step(PlayerCommand::default(), 0);
         }
 
-        let after = &campaign
-            .level2_compatibility()
-            .session
-            .state
-            .live
-            .economy
-            .entities[93];
+        let after = &campaign.simulation().session.state.live.economy.entities[93];
         assert_eq!(
             after.action, 79,
             "sub_12330 must replace intermediate action 73"
@@ -5548,7 +5429,7 @@ mod tests {
         assert_eq!(after.phase, before.phase.wrapping_add(countdown as u8 + 1));
         assert_eq!(
             campaign
-                .level2_compatibility()
+                .simulation()
                 .session
                 .state
                 .live
@@ -5559,13 +5440,15 @@ mod tests {
             0x0b00,
             "all eleven source-ordered model-9 rows advance the shared StageVar once"
         );
-        assert!(campaign.events().iter().all(|event| !matches!(
-            event,
-            crate::native_world::Level2DispatchEvent::Error { .. }
-        )));
+        assert!(
+            campaign
+                .events()
+                .iter()
+                .all(|event| !matches!(event, crate::native_world::Mc2DispatchEvent::Error { .. }))
+        );
 
         let before_action79 = campaign
-            .level2_compatibility()
+            .simulation()
             .session
             .state
             .live
@@ -5586,13 +5469,7 @@ mod tests {
             "the captured phases make slot 248 the only first-pass steering row"
         );
         let _ = campaign.step(PlayerCommand::default(), 0);
-        let action79_rows = &campaign
-            .level2_compatibility()
-            .session
-            .state
-            .live
-            .economy
-            .entities;
+        let action79_rows = &campaign.simulation().session.state.live.economy.entities;
         for (slot, phase, entity_rng, _) in &before_action79 {
             let row = &action79_rows[usize::from(*slot)];
             assert_eq!(row.action, 79);
@@ -5600,7 +5477,7 @@ mod tests {
             assert_eq!(row.entity_rng, *entity_rng);
         }
         let packed_target = match campaign
-            .level2_compatibility()
+            .simulation()
             .session
             .state
             .live
@@ -5625,10 +5502,12 @@ mod tests {
             ),
             crate::heading_for_positions(action79_rows[248].position, target) as i16
         );
-        assert!(campaign.events().iter().all(|event| !matches!(
-            event,
-            crate::native_world::Level2DispatchEvent::Error { .. }
-        )));
+        assert!(
+            campaign
+                .events()
+                .iter()
+                .all(|event| !matches!(event, crate::native_world::Mc2DispatchEvent::Error { .. }))
+        );
     }
 
     #[test]
@@ -5641,13 +5520,7 @@ mod tests {
         )
         .expect("qualified Level 3 descriptor opens");
         let reset_hash = campaign.state_hash();
-        let entities = &campaign
-            .level2_compatibility()
-            .session
-            .state
-            .live
-            .economy
-            .entities;
+        let entities = &campaign.simulation().session.state.live.economy.entities;
         assert_eq!(entities[201].phase, 5);
         assert_eq!(&entities[201].record_bytes()[78..80], &[0, 0]);
         assert_eq!(
@@ -5659,33 +5532,14 @@ mod tests {
         for _ in 0..3 {
             let _ = campaign.step(PlayerCommand::default(), 0);
         }
-        let before = campaign
-            .level2_compatibility()
-            .session
-            .state
-            .live
-            .economy
-            .entities[201]
-            .clone();
-        let target_position = campaign
-            .level2_compatibility()
-            .session
-            .state
-            .live
-            .economy
-            .entities[93]
-            .position;
+        let before = campaign.simulation().session.state.live.economy.entities[201].clone();
+        let target_position =
+            campaign.simulation().session.state.live.economy.entities[93].position;
         assert_eq!(before.phase, 8);
         assert_eq!(&before.record_bytes()[78..80], &[0, 0]);
 
         let _ = campaign.step(PlayerCommand::default(), 0);
-        let after = &campaign
-            .level2_compatibility()
-            .session
-            .state
-            .live
-            .economy
-            .entities[201];
+        let after = &campaign.simulation().session.state.live.economy.entities[201];
         assert_eq!(after.phase, 9);
         assert_eq!(
             u16::from_le_bytes(after.record_bytes()[78..80].try_into().unwrap()),
@@ -5697,13 +5551,15 @@ mod tests {
             i16::from_le_bytes(after.record_bytes()[36..38].try_into().unwrap()),
             crate::heading_for_positions(after.position, target_position) as i16
         );
-        assert!(campaign.events().iter().all(|event| !matches!(
-            event,
-            crate::native_world::Level2DispatchEvent::Error { .. }
-        )));
+        assert!(
+            campaign
+                .events()
+                .iter()
+                .all(|event| !matches!(event, crate::native_world::Mc2DispatchEvent::Error { .. }))
+        );
 
         let attacker_slot = campaign
-            .level2_compatibility()
+            .simulation()
             .entities()
             .iter()
             .find(|entity| {
@@ -5715,15 +5571,15 @@ mod tests {
             .map(|entity| entity.index)
             .expect("qualified Level 3 retains a real player attacker");
 
-        let child_before = campaign.level2_compatibility().entities()[202].clone();
+        let child_before = campaign.simulation().entities()[202].clone();
         assert_eq!(
             campaign
-                .level2_compatibility_mut()
+                .simulation_mut()
                 .stage_imported_worm_child_mailbox_for_test(201, 0, attacker_slot, 7,),
             Some(202)
         );
         let _ = campaign.step(PlayerCommand::default(), 0);
-        let child_after = &campaign.level2_compatibility().entities()[202];
+        let child_after = &campaign.simulation().entities()[202];
         assert_eq!(child_after.life, child_before.life - 7);
         assert_eq!(
             u16::from_le_bytes(child_after.record_bytes()[102..104].try_into().unwrap()),
@@ -5735,16 +5591,16 @@ mod tests {
             campaign
                 .events()
                 .iter()
-                .all(|event| !matches!(event, Level2DispatchEvent::Error { .. }))
+                .all(|event| !matches!(event, Mc2DispatchEvent::Error { .. }))
         );
 
         assert!(
             campaign
-                .level2_compatibility_mut()
+                .simulation_mut()
                 .stage_imported_worm_root_mailbox_for_test(201, attacker_slot, false)
         );
         let _ = campaign.step(PlayerCommand::default(), 0);
-        let attacked = &campaign.level2_compatibility().entities()[201];
+        let attacked = &campaign.simulation().entities()[201];
         assert_eq!(attacked.action, 26);
         assert_eq!(attacked.record_bytes()[77], 10);
         assert_eq!(
@@ -5754,7 +5610,7 @@ mod tests {
 
         let mut imported_allocation_failure = campaign.clone();
         {
-            let failure = imported_allocation_failure.level2_compatibility_mut();
+            let failure = imported_allocation_failure.simulation_mut();
             assert!(failure.stage_imported_worm_attack_cadence_for_test(201, attacker_slot));
             assert!(
                 failure
@@ -5799,7 +5655,7 @@ mod tests {
 
         assert!(
             campaign
-                .level2_compatibility_mut()
+                .simulation_mut()
                 .stage_imported_worm_attack_cadence_for_test(201, attacker_slot)
         );
         let _ = campaign.step(PlayerCommand::default(), 0);
@@ -5807,12 +5663,12 @@ mod tests {
             campaign
                 .events()
                 .iter()
-                .all(|event| !matches!(event, Level2DispatchEvent::Error { .. })),
+                .all(|event| !matches!(event, Mc2DispatchEvent::Error { .. })),
             "imported action-26 pass rolled back: {:?}",
             campaign.events()
         );
         let projectile = campaign
-            .level2_compatibility()
+            .simulation()
             .economy()
             .fireball_projectiles()
             .iter()
@@ -5824,7 +5680,7 @@ mod tests {
             })
             .copied()
             .unwrap_or_else(|| {
-                let compatibility = campaign.level2_compatibility();
+                let compatibility = campaign.simulation();
                 let root = &compatibility.entities()[201];
                 panic!(
                     "imported action 26 did not allocate: root=({},{},{},{:?}) projectiles={:?} events={:?}",
@@ -5848,7 +5704,7 @@ mod tests {
         );
         assert!(
             campaign
-                .level2_compatibility()
+                .simulation()
                 .effect_journal()
                 .records()
                 .iter()
@@ -5865,19 +5721,21 @@ mod tests {
         for root_slot in ROOT_SLOTS {
             assert!(
                 campaign
-                    .level2_compatibility_mut()
+                    .simulation_mut()
                     .stage_imported_worm_root_mailbox_for_test(root_slot, attacker_slot, true,)
             );
         }
         let _ = campaign.step(PlayerCommand::default(), 0);
-        assert!(ROOT_SLOTS.iter().all(|slot| {
-            campaign.level2_compatibility().entities()[usize::from(*slot)].action == 28
-        }));
+        assert!(
+            ROOT_SLOTS
+                .iter()
+                .all(|slot| { campaign.simulation().entities()[usize::from(*slot)].action == 28 })
+        );
         let _ = campaign.step(PlayerCommand::default(), 0);
         let root_actions = ROOT_SLOTS
             .iter()
             .map(|slot| {
-                let row = &campaign.level2_compatibility().entities()[usize::from(*slot)];
+                let row = &campaign.simulation().entities()[usize::from(*slot)];
                 (
                     *slot, row.active, row.class, row.model, row.action, row.phase,
                 )
@@ -5894,13 +5752,12 @@ mod tests {
         );
         for root_slot in ROOT_SLOTS {
             assert!((1..=16).all(|offset| {
-                campaign.level2_compatibility().entities()[usize::from(root_slot + offset)].action
-                    == 29
+                campaign.simulation().entities()[usize::from(root_slot + offset)].action == 29
             }));
         }
         assert_eq!(
             campaign
-                .level2_compatibility()
+                .simulation()
                 .creature_runtime_census()
                 .entries()
                 .iter()
@@ -5930,10 +5787,10 @@ mod tests {
                 campaign
                     .events()
                     .iter()
-                    .all(|event| !matches!(event, Level2DispatchEvent::Error { .. }))
+                    .all(|event| !matches!(event, Mc2DispatchEvent::Error { .. }))
             );
             saw_mana_sphere |= campaign
-                .level2_compatibility()
+                .simulation()
                 .economy()
                 .events()
                 .iter()
@@ -5947,7 +5804,7 @@ mod tests {
                     )
                 });
             saw_death_burst |= campaign
-                .level2_compatibility()
+                .simulation()
                 .economy()
                 .events()
                 .iter()
@@ -5961,12 +5818,12 @@ mod tests {
                     )
                 });
             saw_countdown_armed |= i32::from_le_bytes(
-                campaign.level2_compatibility().entities()[247].record_bytes()[20..24]
+                campaign.simulation().entities()[247].record_bytes()[20..24]
                     .try_into()
                     .unwrap(),
             ) == 16;
             if family_slots.iter().all(|slot| {
-                let row = &campaign.level2_compatibility().entities()[usize::from(*slot)];
+                let row = &campaign.simulation().entities()[usize::from(*slot)];
                 !row.active || row.class == 0
             }) {
                 break;
@@ -5974,20 +5831,20 @@ mod tests {
         }
         assert!(saw_mana_sphere && saw_death_burst);
         assert!(family_slots.iter().all(|slot| {
-            let row = &campaign.level2_compatibility().entities()[usize::from(*slot)];
+            let row = &campaign.simulation().entities()[usize::from(*slot)];
             !row.active || row.class == 0
         }));
 
         fn countdown_timer(source: &crate::native_world::EntitySnapshot) -> i32 {
             i32::from_le_bytes(source.record_bytes()[20..24].try_into().unwrap())
         }
-        let mut timer = countdown_timer(&campaign.level2_compatibility().entities()[247]);
+        let mut timer = countdown_timer(&campaign.simulation().entities()[247]);
         for _ in 0..8 {
             if saw_countdown_armed {
                 break;
             }
             let _ = campaign.step(PlayerCommand::default(), 0);
-            timer = countdown_timer(&campaign.level2_compatibility().entities()[247]);
+            timer = countdown_timer(&campaign.simulation().entities()[247]);
             saw_countdown_armed |= timer == 16;
         }
         assert!(
@@ -5997,17 +5854,13 @@ mod tests {
         while timer > 1 {
             let expected = timer - 1;
             let _ = campaign.step(PlayerCommand::default(), 0);
-            timer = countdown_timer(&campaign.level2_compatibility().entities()[247]);
+            timer = countdown_timer(&campaign.simulation().entities()[247]);
             assert_eq!(timer, expected);
         }
         assert_eq!(timer, 1);
-        let journal_start = campaign
-            .level2_compatibility()
-            .effect_journal()
-            .records()
-            .len();
+        let journal_start = campaign.simulation().effect_journal().records().len();
         let _ = campaign.step(PlayerCommand::default(), 0);
-        let records = &campaign.level2_compatibility().effect_journal().records()[journal_start..];
+        let records = &campaign.simulation().effect_journal().records()[journal_start..];
         let sound = records
             .iter()
             .position(|record| {
@@ -6027,7 +5880,7 @@ mod tests {
                 matches!(
                     &record.effect,
                     crate::campaign::journal::CampaignEffect::Dispatch(
-                        Level2DispatchEvent::AuthoredGroupActivated {
+                        Mc2DispatchEvent::AuthoredGroupActivated {
                             source_slot: 247,
                             group: 11,
                             authored_indices,
@@ -6039,7 +5892,7 @@ mod tests {
             .expect("the imported countdown releases exact group 11");
         assert!(sound < activation);
         let _ = campaign.step(PlayerCommand::default(), 0);
-        assert!(!campaign.level2_compatibility().entities()[247].active);
+        assert!(!campaign.simulation().entities()[247].active);
         campaign.reset();
         assert_eq!(campaign.state_hash(), reset_hash);
         // No-Claim: this proves the imported Level-3 Worm carrier only; it
@@ -6050,7 +5903,7 @@ mod tests {
     fn campaign_step_reset_and_replay_preserve_observations() {
         let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
             .expect("qualified Level 2 Omega fixture loads");
-        let mut session: Level2ResetSession = inspection
+        let mut session: Mc2Simulation = inspection
             .level2_reset_session()
             .expect("qualified Level 2 Omega session opens");
         let initial_hash = session.campaign_state_hash();

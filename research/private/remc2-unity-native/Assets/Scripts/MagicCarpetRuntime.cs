@@ -602,12 +602,12 @@ namespace MagicCarpet.Native
             Array.Empty<NativeSim.NativeEvent>();
         private NativeSim.CampaignAuthoredGroupEvent[] level2AuthoredGroupEvents =
             Array.Empty<NativeSim.CampaignAuthoredGroupEvent>();
-        private Level2IndexedWorldPresenter level2IndexedWorldPresenter;
-        private Level2EntityPresenter level2EntityPresenter;
-        private Level2HudPresenter level2HudPresenter;
-        private Level2SpellPresenter level2SpellPresenter;
-        private Level2MinimapPresenter level2MinimapPresenter;
-        private Level2AudioPresenter level2AudioPresenter;
+        private CampaignIndexedWorldPresenter level2IndexedWorldPresenter;
+        private CampaignEntityPresenter level2EntityPresenter;
+        private CampaignHudPresenter level2HudPresenter;
+        private CampaignSpellPresenter level2SpellPresenter;
+        private CampaignMinimapPresenter level2MinimapPresenter;
+        private CampaignAudioPresenter level2AudioPresenter;
         private readonly List<string> level2PresentationOrder = new();
         private ushort level2StepInputX;
         private ushort level2StepInputY;
@@ -797,23 +797,23 @@ namespace MagicCarpet.Native
         private readonly Queue<string> recentEventDiagnostics = new();
         private Camera flightCamera;
 
-        private Level2IndexedWorldPresenter Level2IndexedWorld =>
-            level2IndexedWorldPresenter ??= new Level2IndexedWorldPresenter(this);
+        private CampaignIndexedWorldPresenter Level2IndexedWorld =>
+            level2IndexedWorldPresenter ??= new CampaignIndexedWorldPresenter(this);
 
-        private Level2EntityPresenter Level2Entities =>
-            level2EntityPresenter ??= new Level2EntityPresenter(this);
+        private CampaignEntityPresenter Level2Entities =>
+            level2EntityPresenter ??= new CampaignEntityPresenter(this);
 
-        private Level2HudPresenter Level2Hud =>
-            level2HudPresenter ??= new Level2HudPresenter(this);
+        private CampaignHudPresenter Level2Hud =>
+            level2HudPresenter ??= new CampaignHudPresenter(this);
 
-        private Level2SpellPresenter Level2Spells =>
-            level2SpellPresenter ??= new Level2SpellPresenter();
+        private CampaignSpellPresenter Level2Spells =>
+            level2SpellPresenter ??= new CampaignSpellPresenter();
 
-        private Level2MinimapPresenter Level2Minimap =>
-            level2MinimapPresenter ??= new Level2MinimapPresenter(this);
+        private CampaignMinimapPresenter Level2Minimap =>
+            level2MinimapPresenter ??= new CampaignMinimapPresenter(this);
 
-        private Level2AudioPresenter Level2Audio =>
-            level2AudioPresenter ??= new Level2AudioPresenter(this);
+        private CampaignAudioPresenter Level2Audio =>
+            level2AudioPresenter ??= new CampaignAudioPresenter(this);
         private Camera carpetOverlayCamera;
         private Transform presentationRig;
         private Transform carpetVisual;
@@ -1187,13 +1187,13 @@ namespace MagicCarpet.Native
         internal NativeSim.CampaignBeyondSightSnapshot Level2ProductionBeyondSight =>
             campaignSession?.BeyondSightState() ?? default;
 
-        internal Level2SpellPresentation[] Level2ProductionSpellEffects =>
+        internal CampaignSpellPresentation[] Level2ProductionSpellEffects =>
             level2SpellPresenter?.ActiveEffects ??
-            System.Array.Empty<Level2SpellPresentation>();
+            System.Array.Empty<CampaignSpellPresentation>();
 
-        internal Level2SpellPresentationReceipt[] Level2ProductionSpellReceipts =>
+        internal CampaignSpellPresentationReceipt[] Level2ProductionSpellReceipts =>
             level2SpellPresenter?.Receipts ??
-            System.Array.Empty<Level2SpellPresentationReceipt>();
+            System.Array.Empty<CampaignSpellPresentationReceipt>();
 
         internal NativeSim.CampaignDayMusicSnapshot Level2ProductionDayMusic =>
             level2DayMusic;
@@ -2816,7 +2816,7 @@ namespace MagicCarpet.Native
                     gameRuntimeSpellAssignmentRequested);
                 if (selectSpell != null)
                 {
-                    var selected = Level2SpellPresenter.FindSpell(gameRuntimeCampaignSnapshot?.value, selectSpell);
+                    var selected = CampaignSpellPresenter.FindSpell(gameRuntimeCampaignSnapshot?.value, selectSpell);
                     gameRuntimeSpellInputStatus = selected != null && selected.selected
                         ? selected.display_name + " selected. Space to cast." : null;
                     gameRuntimeSpellInputStatusUntil = Time.unscaledTime + 3f;
@@ -9580,7 +9580,7 @@ namespace MagicCarpet.Native
 
         internal bool SubmitGameRuntimeSpellKey(int key)
         {
-            var spell = Level2SpellPresenter.SpellForKey(gameRuntimeCampaignSnapshot?.value, key);
+            var spell = CampaignSpellPresenter.SpellForKey(gameRuntimeCampaignSnapshot?.value, key);
             return spell?.acquired == true && SubmitGameRuntimeSpellSelection(spell.id);
         }
 
@@ -10384,7 +10384,7 @@ namespace MagicCarpet.Native
 
             EnsureLevel2EntityPresenterDriver();
             level2ProductionEntityPresenter ??=
-                new global::MagicCarpet.Native.Level2EntityPresenter(transform);
+                new global::MagicCarpet.Native.CampaignEntityPresenter(transform);
             level2ProductionEntityPresenter.AttachTo(transform);
             Require(
                 level2ProductionEntityPresenter.Present(
@@ -13598,7 +13598,7 @@ namespace MagicCarpet.Native
                 $"life {vitals.life,6} / {vitals.max_life,6}  " +
                 $"mana {vitals.mana,6} / {vitals.max_mana,6}\n" +
                 FormatGameRuntimeObjectiveHudText(objective) + "\n" +
-                Level2SpellPresenter.SpellMenuText(observation.value) + "\n" +
+                CampaignSpellPresenter.SpellMenuText(observation.value) + "\n" +
                 $"event {latestEvent}\n" +
                 "W/S speed · A/D strafe · persistent mouse or I/J/K/L steer · " +
                 "C centre · Space fire · P pause · Escape close";

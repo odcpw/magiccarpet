@@ -2,7 +2,7 @@
 fn level_two_local_player_unboosted_mana_upkeep_follows_entity_pass_count_and_reset() {
     let mut session = level_two_campaign_session();
     let baseline_campaign_hash = session.campaign_state_hash();
-    let seed = |session: &mut Level2ResetSession, mana: i32, mana_regen: i32| {
+    let seed = |session: &mut Mc2Simulation, mana: i32, mana_regen: i32| {
         // The numeric player owns the next source visit; presentation copies
         // alone are overwritten when that authoritative carrier is read.
         let player_slot = usize::from(session.state.entity_index);
@@ -808,10 +808,12 @@ fn level_two_stage_tag_materializes_authored_spell_sources_through_shared_arena(
         .iter()
         .map(|source| {
             assert!(!source.drawing_enabled);
-            assert!(session
-                .economy()
-                .map_chains()
-                .is_linked(source.source_entity_index));
+            assert!(
+                session
+                    .economy()
+                    .map_chains()
+                    .is_linked(source.source_entity_index)
+            );
             source.source_entity_index
         })
         .collect::<Vec<_>>();
@@ -855,7 +857,7 @@ fn level_two_stage_tag_materializes_authored_spell_sources_through_shared_arena(
     );
     assert!(session.dispatch_events().iter().any(|event| matches!(
         event,
-        Level2DispatchEvent::AuthoredGroupActivated {
+        Mc2DispatchEvent::AuthoredGroupActivated {
             group: 8,
             authored_indices,
             ..
@@ -869,7 +871,7 @@ fn level_two_stage_tag_materializes_authored_spell_sources_through_shared_arena(
     assert_eq!(session.runtime().bytes()[306], 0);
     assert!(session.dispatch_events().iter().any(|event| matches!(
         event,
-        Level2DispatchEvent::DynamicArena {
+        Mc2DispatchEvent::DynamicArena {
             kind: Level2DynamicArenaKind::SpellPickup,
             source_slot,
             ..
@@ -879,8 +881,7 @@ fn level_two_stage_tag_materializes_authored_spell_sources_through_shared_arena(
     session.step_outer_turn(PlayerCommand::default(), 0);
     assert!(session.economy().authored_model45().is_empty());
     assert!(hidden_model45_slots.iter().all(|slot| {
-        session.economy().free_slots.contains(slot)
-            || session.economy().slot_generation(*slot) > 1
+        session.economy().free_slots.contains(slot) || session.economy().slot_generation(*slot) > 1
     }));
 
     session.reset();
@@ -943,7 +944,7 @@ fn level_two_spell_owner_scan_and_source_gates_are_complete() {
     );
     session.reset();
 
-    let configure_players = |session: &mut Level2ResetSession,
+    let configure_players = |session: &mut Mc2Simulation,
                              local_position: Position,
                              remote_position: Position,
                              remote_model: u8,
@@ -1040,7 +1041,7 @@ fn level_two_spell_owner_scan_and_source_gates_are_complete() {
             .dispatch_events()
             .iter()
             .find_map(|event| match event {
-                Level2DispatchEvent::SpellAcquisition {
+                Mc2DispatchEvent::SpellAcquisition {
                     source_slot,
                     family: 6,
                     result: Some(outcome),
@@ -1147,7 +1148,7 @@ fn level_two_spell_owner_scan_and_source_gates_are_complete() {
             .dispatch_events()
             .iter()
             .find_map(|event| match event {
-                Level2DispatchEvent::SpellAcquisition {
+                Mc2DispatchEvent::SpellAcquisition {
                     source_slot,
                     family: 6,
                     result: Some(outcome),
@@ -1184,7 +1185,7 @@ fn level_two_spell_owner_scan_and_source_gates_are_complete() {
         assert!(session.dispatch_events().iter().all(|event| {
             !matches!(
                 event,
-                Level2DispatchEvent::SpellAcquisition {
+                Mc2DispatchEvent::SpellAcquisition {
                     family: 6,
                     result: Some(_),
                     ..
@@ -1405,7 +1406,7 @@ fn level_two_materialized_authored_spell_reaches_generic_acquisition_path() {
             .dispatch_events()
             .iter()
             .find_map(|event| match event {
-                Level2DispatchEvent::SpellAcquisition {
+                Mc2DispatchEvent::SpellAcquisition {
                     family: 6,
                     result: Some(result),
                     source_slot,
@@ -1453,7 +1454,7 @@ fn level_two_setspell_clamps_holder_payload_but_preserves_raw_hand_tier() {
     assert!(session.dispatch_events().iter().any(|event| {
         matches!(
             event,
-            Level2DispatchEvent::SpellAcquisition {
+            Mc2DispatchEvent::SpellAcquisition {
                 source_slot: 38,
                 family: 12,
                 result: Some(_),
@@ -1537,7 +1538,7 @@ fn level_two_setspell_options_tier_and_hand_state_are_exact() {
     // a tier above two before this unowned family is collected. The
     // behavior under test still enters only through PlayerCommand and
     // the ordinary source cursor; there is no test-only production hook.
-    let configure_cold_pickup = |session: &mut Level2ResetSession| {
+    let configure_cold_pickup = |session: &mut Mc2Simulation| {
         let pickup_position = session.shared_spells().pickups()[0].position;
         let player = &mut session.shared_spells_mut().players[0];
         player.family_selected_tiers[12] = 7;
@@ -1567,7 +1568,7 @@ fn level_two_setspell_options_tier_and_hand_state_are_exact() {
     assert!(session.shared_spells.free_spell_usage);
     assert!(session.dispatch_events().iter().any(|event| matches!(
         event,
-        Level2DispatchEvent::SpellAcquisition {
+        Mc2DispatchEvent::SpellAcquisition {
             source_slot: 38,
             family: 12,
             result: Some(_),
@@ -1659,7 +1660,7 @@ fn level_two_setspell_options_tier_and_hand_state_are_exact() {
     assert!(active.shared_spells.free_spell_usage);
     assert!(active.dispatch_events().iter().any(|event| matches!(
         event,
-        Level2DispatchEvent::SpellAcquisition {
+        Mc2DispatchEvent::SpellAcquisition {
             source_slot: 38,
             family: 12,
             result: Some(_),
@@ -1693,11 +1694,7 @@ fn level_two_dynamic_economy_slots_dispatch_and_reclaim_in_source_order() {
         .state
         .live
         .goats
-        .inject_damage(
-            goat_slot,
-            1_000_000,
-            attacker,
-        )
+        .inject_damage(goat_slot, 1_000_000, attacker)
         .expect("inject lethal Goat damage");
 
     let mut observed_death = false;
@@ -1706,7 +1703,7 @@ fn level_two_dynamic_economy_slots_dispatch_and_reclaim_in_source_order() {
         observed_death = session.dispatch_events().iter().any(|event| {
             matches!(
                 event,
-                Level2DispatchEvent::Goat {
+                Mc2DispatchEvent::Goat {
                     source_slot,
                     events,
                     ..
@@ -1730,7 +1727,7 @@ fn level_two_dynamic_economy_slots_dispatch_and_reclaim_in_source_order() {
         .dispatch_events()
         .iter()
         .find_map(|event| match event {
-            Level2DispatchEvent::Goat {
+            Mc2DispatchEvent::Goat {
                 source_slot,
                 events,
                 ..
@@ -1762,7 +1759,7 @@ fn level_two_dynamic_economy_slots_dispatch_and_reclaim_in_source_order() {
         .dispatch_events()
         .iter()
         .filter_map(|event| match event {
-            Level2DispatchEvent::Economy {
+            Mc2DispatchEvent::Economy {
                 source_slot, event, ..
             } => Some((*source_slot, *event)),
             _ => None,
@@ -1857,12 +1854,12 @@ fn level_two_dynamic_economy_slots_dispatch_and_reclaim_in_source_order() {
         .dispatch_events()
         .iter()
         .filter_map(|event| match event {
-            Level2DispatchEvent::DynamicArena {
+            Mc2DispatchEvent::DynamicArena {
                 source_slot,
                 kind: Level2DynamicArenaKind::ManaSphere,
                 ..
             }
-            | Level2DispatchEvent::DynamicArena {
+            | Mc2DispatchEvent::DynamicArena {
                 source_slot,
                 kind: Level2DynamicArenaKind::DeathBurst,
                 ..
@@ -1875,7 +1872,7 @@ fn level_two_dynamic_economy_slots_dispatch_and_reclaim_in_source_order() {
     assert!(session.dispatch_events().iter().any(|event| {
         matches!(
             event,
-            Level2DispatchEvent::DynamicArena {
+            Mc2DispatchEvent::DynamicArena {
                 source_slot,
                 kind: Level2DynamicArenaKind::DeathBurst,
                 ..
@@ -1913,7 +1910,7 @@ fn level_two_dynamic_economy_slots_dispatch_and_reclaim_in_source_order() {
     session.step_outer_turn(PlayerCommand::default(), 0);
     assert!(session.dispatch_events().iter().any(|event| matches!(
         event,
-        Level2DispatchEvent::Villager {
+        Mc2DispatchEvent::Villager {
             pass: 0,
             source_slot,
             ..
@@ -1933,7 +1930,7 @@ fn level_two_dynamic_economy_slots_dispatch_and_reclaim_in_source_order() {
     );
     assert!(!session.dispatch_events().iter().any(|event| matches!(
         event,
-        Level2DispatchEvent::DynamicArena { source_slot, .. }
+        Mc2DispatchEvent::DynamicArena { source_slot, .. }
             if *source_slot == villager_slot
     )));
     let stepped_ordinary_hash = session.ordinary().reset_hash();
@@ -1963,7 +1960,7 @@ fn level_two_dynamic_economy_slots_dispatch_and_reclaim_in_source_order() {
     );
     assert!(session.dispatch_events().iter().any(|event| matches!(
         event,
-        Level2DispatchEvent::Villager {
+        Mc2DispatchEvent::Villager {
             pass: 0,
             source_slot,
             ..
@@ -1989,7 +1986,7 @@ fn level_two_economy_dispatch_cursor_isolated_and_reset_replays_payloads() {
     assert!(!stale.dispatch_events().iter().any(|event| {
         matches!(
             event,
-            Level2DispatchEvent::Economy {
+            Mc2DispatchEvent::Economy {
                 event: Level2EconomyEvent::ManaSphereSpawned {
                     source_entity_index,
                     ..
@@ -2023,7 +2020,7 @@ fn level_two_economy_dispatch_cursor_isolated_and_reset_replays_payloads() {
     assert!(session.dispatch_events().iter().any(|event| {
         matches!(
             event,
-            Level2DispatchEvent::Economy {
+            Mc2DispatchEvent::Economy {
                 source_slot,
                 event: Level2EconomyEvent::ManaSphereCollected { sphere_id, .. },
                 ..
@@ -2034,7 +2031,7 @@ fn level_two_economy_dispatch_cursor_isolated_and_reset_replays_payloads() {
         .dispatch_events()
         .iter()
         .filter_map(|event| match event {
-            Level2DispatchEvent::Economy { event, .. } => Some(*event),
+            Mc2DispatchEvent::Economy { event, .. } => Some(*event),
             _ => None,
         })
         .collect::<Vec<_>>();
@@ -2050,7 +2047,7 @@ fn level_two_economy_dispatch_cursor_isolated_and_reset_replays_payloads() {
     assert!(!session.dispatch_events().iter().any(|event| {
         matches!(
             event,
-            Level2DispatchEvent::Economy {
+            Mc2DispatchEvent::Economy {
                 event:
                     Level2EconomyEvent::ManaSphereCollected {
                         sphere_id,
@@ -2083,7 +2080,7 @@ fn level_two_economy_dispatch_cursor_isolated_and_reset_replays_payloads() {
         .dispatch_events()
         .iter()
         .filter_map(|event| match event {
-            Level2DispatchEvent::Economy { event, .. } => Some(*event),
+            Mc2DispatchEvent::Economy { event, .. } => Some(*event),
             _ => None,
         })
         .collect::<Vec<_>>();
@@ -2094,11 +2091,9 @@ fn level_two_economy_dispatch_cursor_isolated_and_reset_replays_payloads() {
 fn level_two_raw_source_phase_sidecars_initialize_hash_and_reset_for_exact_carriers() {
     let gameplay_cache = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../../../generated/level2-day-owner-cache/components/gameplay");
-    let inspection = NativeWorld::inspect_level2_with_owner_cache(
-        level_two_fixture_path(),
-        &gameplay_cache,
-    )
-    .expect("qualified Level 2 gameplay component");
+    let inspection =
+        NativeWorld::inspect_level2_with_owner_cache(level_two_fixture_path(), &gameplay_cache)
+            .expect("qualified Level 2 gameplay component");
     let mut session = inspection
         .level2_reset_session()
         .expect("raw source-phase carrier session");
@@ -2256,7 +2251,7 @@ fn level_two_mana_attraction_field_targets_spheres_in_source_order_and_expires()
     assert!(session.dispatch_events().iter().any(|event| {
         matches!(
             event,
-            Level2DispatchEvent::DynamicArena {
+            Mc2DispatchEvent::DynamicArena {
                 source_slot,
                 kind: Level2DynamicArenaKind::ManaAttraction,
                 ..
@@ -2526,17 +2521,14 @@ fn level_two_mana_carrier_dynamic_handler_collects_and_reclaims_sphere() {
         .find(|sphere| sphere.source_entity_index == sphere_slot)
         .copied()
         .expect("collected sphere remains allocated through the callback pass");
-    assert_ne!(
-        hidden_sphere.control_flags & ENTITY_DRAW_DISABLED_BIT,
-        0
-    );
+    assert_ne!(hidden_sphere.control_flags & ENTITY_DRAW_DISABLED_BIT, 0);
     assert!(hidden_sphere.pending_delete);
     assert!(session.economy().map_chains().is_linked(sphere_slot));
     assert!(!session.economy().free_slots.contains(&sphere_slot));
     assert!(session.dispatch_events().iter().any(|event| {
         matches!(
             event,
-            Level2DispatchEvent::DynamicArena {
+            Mc2DispatchEvent::DynamicArena {
                 source_slot,
                 kind: Level2DynamicArenaKind::ManaSphere,
                 ..
@@ -2551,11 +2543,13 @@ fn level_two_mana_carrier_dynamic_handler_collects_and_reclaims_sphere() {
         )
     }));
     session.step_outer_turn(PlayerCommand::default(), 0);
-    assert!(session
-        .economy()
-        .spheres()
-        .iter()
-        .all(|sphere| sphere.source_entity_index != sphere_slot));
+    assert!(
+        session
+            .economy()
+            .spheres()
+            .iter()
+            .all(|sphere| sphere.source_entity_index != sphere_slot)
+    );
     assert!(!session.economy().map_chains().is_linked(sphere_slot));
     assert!(session.economy().free_slots.contains(&sphere_slot));
     assert_ne!(session.economy().reset_hash(), baseline_hash);
@@ -2795,7 +2789,7 @@ fn level_two_spell_replacement_uses_shared_arena_and_outer_cursor() {
     session.step_outer_turn(PlayerCommand::default(), 0);
     assert!(session.dispatch_events().iter().any(|event| matches!(
         event,
-        Level2DispatchEvent::DynamicArena {
+        Mc2DispatchEvent::DynamicArena {
             source_slot,
             kind: Level2DynamicArenaKind::SpellReplacement,
             ..

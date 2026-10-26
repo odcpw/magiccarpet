@@ -164,7 +164,7 @@ pub(crate) fn hidden_slots(arena: &SourceArena) -> Vec<(u16, Position)> {
     hidden
 }
 
-pub(crate) fn sprite_sources(arena: &SourceArena) -> Vec<(u16, u16, u16, i16, Position)> {
+pub(crate) fn sprite_sources(arena: &SourceArena) -> Vec<(u16, u16, u16, i16, Position, u32)> {
     let mut rows = Vec::new();
     let visible = |active: bool, flags: u32| active && flags & 0x421 == 0;
     for s in arena
@@ -179,6 +179,7 @@ pub(crate) fn sprite_sources(arena: &SourceArena) -> Vec<(u16, u16, u16, i16, Po
             s.particle_index,
             0,
             s.position,
+            s.control_flags,
         ));
     }
     for s in arena
@@ -193,6 +194,7 @@ pub(crate) fn sprite_sources(arena: &SourceArena) -> Vec<(u16, u16, u16, i16, Po
             s.sprite_index,
             0,
             s.position,
+            s.control_flags,
         ));
     }
     for s in arena
@@ -207,6 +209,7 @@ pub(crate) fn sprite_sources(arena: &SourceArena) -> Vec<(u16, u16, u16, i16, Po
             s.particle_index,
             0,
             s.position,
+            s.control_flags,
         ));
     }
     for s in arena
@@ -221,6 +224,7 @@ pub(crate) fn sprite_sources(arena: &SourceArena) -> Vec<(u16, u16, u16, i16, Po
             s.particle_index,
             0,
             s.position,
+            s.control_flags,
         ));
     }
     for s in arena
@@ -235,6 +239,7 @@ pub(crate) fn sprite_sources(arena: &SourceArena) -> Vec<(u16, u16, u16, i16, Po
             s.particle_index,
             s.yaw,
             s.position,
+            s.control_flags,
         ));
     }
     for s in arena
@@ -249,6 +254,7 @@ pub(crate) fn sprite_sources(arena: &SourceArena) -> Vec<(u16, u16, u16, i16, Po
             s.particle_index,
             s.yaw,
             s.position,
+            s.control_flags,
         ));
     }
     for s in arena
@@ -257,7 +263,14 @@ pub(crate) fn sprite_sources(arena: &SourceArena) -> Vec<(u16, u16, u16, i16, Po
         .iter()
         .filter(|s| visible(s.active, s.control_flags))
     {
-        rows.push((s.source_entity_index, s.entity_id, 340, s.yaw, s.position));
+        rows.push((
+            s.source_entity_index,
+            s.entity_id,
+            340,
+            s.yaw,
+            s.position,
+            s.control_flags,
+        ));
     }
     rows
 }

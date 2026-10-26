@@ -33,7 +33,7 @@ namespace MagicCarpet.Native.Tests
                 EventRow(4, 23, 405, 6)
             };
             var step = Step(7, 12, events.Length, 3120, 4096, 384);
-            var presenter = new Level2SpellPresenter();
+            var presenter = new CampaignSpellPresenter();
             presenter.Reset(step.generation);
 
             Present(presenter, step, events);
@@ -72,7 +72,7 @@ namespace MagicCarpet.Native.Tests
         [Test]
         public void Level2RootedEffectsExpireOnFollowingProjectionAndResetIdempotently()
         {
-            var presenter = new Level2SpellPresenter();
+            var presenter = new CampaignSpellPresenter();
             presenter.Reset(9);
             var firstEvents = new[] { EventRow(0, 17, 501, 1, generation: 9) };
             var first = Step(9, 30, firstEvents.Length, 100, 200, 256);
@@ -97,28 +97,28 @@ namespace MagicCarpet.Native.Tests
             var valid = EventRow(0, 17, 601, 1, generation: 11);
             var validStep = Step(11, 40, 1, 700, 800, 256);
 
-            var malformed = new Level2SpellPresenter();
+            var malformed = new CampaignSpellPresenter();
             malformed.Reset(validStep.generation);
             var malformedRow = valid;
             malformedRow.structSize = 47;
             Present(malformed, validStep, new[] { malformedRow });
             Assert.That(malformed.RootedEffects, Is.Empty);
 
-            var wrongKind = new Level2SpellPresenter();
+            var wrongKind = new CampaignSpellPresenter();
             wrongKind.Reset(validStep.generation);
             var unrooted = valid;
             unrooted.kind = NativeSim.CampaignEventSpellAcquisition;
             Present(wrongKind, validStep, new[] { unrooted });
             Assert.That(wrongKind.RootedEffects, Is.Empty);
 
-            var rejected = new Level2SpellPresenter();
+            var rejected = new CampaignSpellPresenter();
             rejected.Reset(validStep.generation);
             var rejectedRow = valid;
             rejectedRow.flags = 0;
             Present(rejected, validStep, new[] { rejectedRow });
             Assert.That(rejected.RootedEffects, Is.Empty);
 
-            var duplicate = new Level2SpellPresenter();
+            var duplicate = new CampaignSpellPresenter();
             duplicate.Reset(validStep.generation);
             var duplicateRow = EventRow(
                 1,
@@ -130,13 +130,13 @@ namespace MagicCarpet.Native.Tests
             Present(duplicate, duplicateStep, new[] { valid, duplicateRow });
             Assert.That(duplicate.RootedEffects, Is.Empty);
 
-            var unknown = new Level2SpellPresenter();
+            var unknown = new CampaignSpellPresenter();
             unknown.Reset(validStep.generation);
             var unknownRow = EventRow(0, 99, 602, 1, generation: 11);
             Present(unknown, validStep, new[] { unknownRow });
             Assert.That(unknown.RootedEffects, Is.Empty);
 
-            var stale = new Level2SpellPresenter();
+            var stale = new CampaignSpellPresenter();
             stale.Reset(validStep.generation);
             Present(stale, validStep, new[] { valid });
             var staleStep = Step(10, 41, 1, 700, 800, 256);
@@ -151,10 +151,10 @@ namespace MagicCarpet.Native.Tests
             using var session = NativeCampaignSession.OpenLevel2(
                 Level2Package,
                 Level2DayCache);
-            var presenter = new Level2SpellPresenter();
+            var presenter = new CampaignSpellPresenter();
             presenter.Reset(session.Generation);
 
-            var seen = new Dictionary<byte, Level2EffectPresentation>();
+            var seen = new Dictionary<byte, CampaignEffectPresentation>();
             var positions = new HashSet<(ushort x, ushort y, short z)>();
             foreach (var candidate in session.Entities())
             {
@@ -240,7 +240,7 @@ namespace MagicCarpet.Native.Tests
         }
 
         private static void Present(
-            Level2SpellPresenter presenter,
+            CampaignSpellPresenter presenter,
             NativeSim.CampaignStepSnapshot step,
             NativeSim.CampaignEvent[] events)
         {

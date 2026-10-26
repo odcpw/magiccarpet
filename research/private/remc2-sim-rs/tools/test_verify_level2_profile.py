@@ -118,7 +118,7 @@ class Level2ProfileGuardTests(unittest.TestCase):
         for symbol in level2_only:
             self.assertNotIn(symbol, level1_text)
 
-        level2_header = level1_header.with_name("mc_sim_level2.h")
+        level2_header = level1_header.with_name("mc_sim_campaign.h")
         level2_text = level2_header.read_text(encoding="utf-8")
         for symbol in level2_only:
             self.assertIn(symbol, level2_text)

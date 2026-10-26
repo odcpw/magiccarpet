@@ -1,4 +1,7 @@
-// Moved mechanically from native_world.rs for CF-01. This file is included as a child of native_world so its internal visibility and parent state access remain unchanged.
+//! MC2 simulation orchestration across campaign missions.
+//!
+//! This child of `native_world` binds source-ordered visits to domain owners.
+//! Mission identity selects content; it does not select a second simulation.
 use super::*;
 
 use std::{collections::BTreeMap, sync::Arc};
@@ -23,6 +26,10 @@ use crate::level_definition::{
 };
 use crate::{PLAYER_MIN_SPEED, SpellHolder};
 
+#[cfg(test)]
+#[path = "player_lifecycle_tests.rs"]
+mod player_lifecycle_tests;
+
 pub(crate) struct CarriedSpellProgress {
     pub family: u8,
     pub persistent_experience: i32,
@@ -33,7 +40,7 @@ pub(crate) struct CarriedSpellProgress {
 
 /// sub6D8B0 accepts a human wizard owner. Keep all player projections at
 /// the same progression boundary as the source hit award.
-fn award_source_spell_experience(live: &mut Level2LiveState, owner: u16, family: u8) {
+fn award_source_spell_experience(live: &mut Mc2LiveState, owner: u16, family: u8) {
     if !live
         .economy
         .entities
@@ -51,7 +58,7 @@ fn award_source_spell_experience(live: &mut Level2LiveState, owner: u16, family:
     publish_spell_progression(live, owner, family);
 }
 
-fn publish_spell_progression(live: &mut Level2LiveState, owner: u16, family: u8) {
+fn publish_spell_progression(live: &mut Mc2LiveState, owner: u16, family: u8) {
     if let Some(source) = live
         .shared_spells
         .players
@@ -83,7 +90,7 @@ fn publish_spell_progression(live: &mut Level2LiveState, owner: u16, family: u8)
 /// the authoritative carrier; the compiled registry remains the authority
 /// that selects which accepted handler family may receive it.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum Level2SourceRoute {
+enum SourceRoute {
     SpeedPickup,
     BadStone,
     House,
@@ -107,22 +114,22 @@ enum Level2SourceRoute {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct Level2ResolvedSourceVisit {
+pub(crate) struct ResolvedSourceVisit {
     key: BehaviorKey,
     handler: ExistingHandler,
-    route: Level2SourceRoute,
+    route: SourceRoute,
     phase: Option<u8>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[allow(private_interfaces)]
 pub(crate) enum Level2ResolvedSourcePlan {
-    Callback(Level2ResolvedSourceVisit),
+    Callback(ResolvedSourceVisit),
     /// A live selector whose UpdateEntities table word matches but whose
     /// callback address is null. The numeric cursor retains it unchanged.
     NoCallback {
         key: BehaviorKey,
-        route: Level2SourceRoute,
+        route: SourceRoute,
         phase: Option<u8>,
     },
     /// A live row whose class/action selector does not match any entry in its
@@ -131,14 +138,14 @@ pub(crate) enum Level2ResolvedSourcePlan {
     /// prologue reclaims the row.
     InvalidSelectorHide {
         key: BehaviorKey,
-        route: Level2SourceRoute,
+        route: SourceRoute,
         phase: Option<u8>,
     },
     /// A live row whose selector is not admitted by the compiled registry, or
     /// whose retained carrier cannot lawfully feed the selected handler.
     Unknown {
         key: BehaviorKey,
-        route: Level2SourceRoute,
+        route: SourceRoute,
         phase: Option<u8>,
         message: String,
     },
@@ -150,7 +157,7 @@ enum Level2EpiloguePolicy {
     /// advances the current occupant after callback return.
     SchedulerAdvance {
         before: u8,
-        route: Level2SourceRoute,
+        route: SourceRoute,
         generation: u32,
     },
     /// Retained delegates still contain their historical common increment.
@@ -159,7 +166,7 @@ enum Level2EpiloguePolicy {
     /// generation distinguishes a retained row from NewEvent replacement.
     EnsureDelegateAdvanced {
         before: u8,
-        route: Level2SourceRoute,
+        route: SourceRoute,
         generation: Option<u32>,
     },
 }
@@ -356,14 +363,14 @@ fn validate_semantic_spell_dispatch(
 fn validate_semantic_building_dispatch(
     source_slot: u16,
     building_kind: Option<BuildingKind>,
-    route: Level2SourceRoute,
+    route: SourceRoute,
     raw_action: u8,
     handler: ExistingHandler,
 ) -> std::result::Result<(), String> {
-    let source_is_house = matches!(route, Level2SourceRoute::House);
+    let source_is_house = matches!(route, SourceRoute::House);
     let source_is_house_construction = matches!(
         route,
-        Level2SourceRoute::Dynamic(Level2DynamicArenaCursorRow {
+        SourceRoute::Dynamic(Level2DynamicArenaCursorRow {
             kind: Level2DynamicArenaKind::AuthoredModel45,
             ..
         })
@@ -395,7 +402,7 @@ enum Level2CleanupPolicy {
     HideInvalidSelector,
 }
 
-impl Level2ResetSession {
+impl Mc2Simulation {
     /// Source `sub_159E0`, scheduled after class-list rebuild and before the
     /// numeric `UpdateEntities` cursor. The qualified Level-2 package reaches
     /// both class-9/model-0 Fireball pressure against class-3 targets and
@@ -706,7 +713,7 @@ std::thread_local! {
 }
 
 struct Level2SourceSchedulerWorld<'session, 'evidence> {
-    owner: &'session mut Level2ResetSession,
+    owner: &'session mut Mc2Simulation,
     pass: u8,
     latched_command: crate::LatchedCommand,
     flight_tuning: crate::FlightTuning,
@@ -742,7 +749,7 @@ fn level2_update_key(class: u8, action: u8) -> BehaviorKey {
 }
 
 impl Level2ResolvedSourcePlan {
-    fn route(&self) -> Level2SourceRoute {
+    fn route(&self) -> SourceRoute {
         match self {
             Self::Callback(visit) => visit.route,
             Self::NoCallback { route, .. }
@@ -778,7 +785,7 @@ impl Level2ResolvedSourcePlan {
     #[cfg(test)]
     pub(crate) fn observed_dynamic_cursor_row(&self) -> Option<Level2DynamicArenaCursorRow> {
         match self.route() {
-            Level2SourceRoute::Dynamic(row) => Some(row),
+            SourceRoute::Dynamic(row) => Some(row),
             _ => None,
         }
     }
@@ -1126,7 +1133,7 @@ impl SourceSchedulerWorld for Level2SourceSchedulerWorld<'_, '_> {
                         // numeric callback scan, so publish its prologue
                         // receipt at the real reclaim seam rather than
                         // waiting for a callback that cannot occur.
-                        self.owner.push_dispatch_effect(Level2DispatchEvent::Goat {
+                        self.owner.push_dispatch_effect(Mc2DispatchEvent::Goat {
                             pass: self.pass,
                             source_slot: entity_index,
                             events: vec![event].into_boxed_slice(),
@@ -1165,10 +1172,7 @@ impl SourceSchedulerWorld for Level2SourceSchedulerWorld<'_, '_> {
         match plan {
             Level2ResolvedSourcePlan::Callback(ref visit)
                 if semantic_error.is_none()
-                    && Level2ResetSession::level2_route_accepts_handler(
-                        visit.route,
-                        visit.handler,
-                    ) =>
+                    && Mc2Simulation::level2_route_accepts_handler(visit.route, visit.handler) =>
             {
                 let Some(before) = visit.phase else {
                     let message = format!(
@@ -1186,17 +1190,17 @@ impl SourceSchedulerWorld for Level2SourceSchedulerWorld<'_, '_> {
                 };
                 let generation = self.owner.session.state.live.economy.slot_generation(slot);
                 let epilogue = match visit.route {
-                    Level2SourceRoute::Nyphur
-                    | Level2SourceRoute::Dolmen
-                    | Level2SourceRoute::ExitSwitch
-                    | Level2SourceRoute::PossessionHolder
-                    | Level2SourceRoute::CastleHolder
-                    | Level2SourceRoute::FireballHolder => Level2EpiloguePolicy::SchedulerAdvance {
+                    SourceRoute::Nyphur
+                    | SourceRoute::Dolmen
+                    | SourceRoute::ExitSwitch
+                    | SourceRoute::PossessionHolder
+                    | SourceRoute::CastleHolder
+                    | SourceRoute::FireballHolder => Level2EpiloguePolicy::SchedulerAdvance {
                         before,
                         route: visit.route,
                         generation,
                     },
-                    Level2SourceRoute::Player
+                    SourceRoute::Player
                         if visit.key.selector
                             == (BehaviorSelector::ClassAction {
                                 class: 3,
@@ -1209,7 +1213,7 @@ impl SourceSchedulerWorld for Level2SourceSchedulerWorld<'_, '_> {
                             generation,
                         }
                     }
-                    Level2SourceRoute::Dynamic(row)
+                    SourceRoute::Dynamic(row)
                         if matches!(
                             row.kind,
                             Level2DynamicArenaKind::AuthoredDragonPart
@@ -1234,7 +1238,7 @@ impl SourceSchedulerWorld for Level2SourceSchedulerWorld<'_, '_> {
                             generation,
                         }
                     }
-                    Level2SourceRoute::Imported => Level2EpiloguePolicy::SchedulerAdvance {
+                    SourceRoute::Imported => Level2EpiloguePolicy::SchedulerAdvance {
                         before,
                         route: visit.route,
                         generation,
@@ -1243,7 +1247,7 @@ impl SourceSchedulerWorld for Level2SourceSchedulerWorld<'_, '_> {
                         before,
                         route: visit.route,
                         generation: match visit.route {
-                            Level2SourceRoute::Dynamic(row) => Some(row.generation),
+                            SourceRoute::Dynamic(row) => Some(row.generation),
                             _ => None,
                         },
                     },
@@ -1396,7 +1400,7 @@ impl SourceSchedulerWorld for Level2SourceSchedulerWorld<'_, '_> {
                             .iter()
                             .any(|row| row.source_entity_index == slot)
                         {
-                            Level2SourceRoute::Dynamic(Level2DynamicArenaCursorRow {
+                            SourceRoute::Dynamic(Level2DynamicArenaCursorRow {
                                 source_slot: slot,
                                 generation: current_generation.unwrap_or_default(),
                                 kind: Level2DynamicArenaKind::DeathBurst,
@@ -1474,7 +1478,7 @@ impl SourceSchedulerWorld for Level2SourceSchedulerWorld<'_, '_> {
     }
 }
 
-impl Level2ResetSession {
+impl Mc2Simulation {
     #[cfg(test)]
     pub(crate) fn cf10_production_schedule_receipts(
         &self,
@@ -5097,7 +5101,7 @@ impl Level2ResetSession {
         }
         economy.effects = crate::native_world::effects::reset_state(&runtime);
         let source_model45_building_selectors = economy.rebuilt_model45_building_selectors();
-        let live = Level2LiveState {
+        let live = Mc2LiveState {
             core: CanonicalRuntimeState {
                 state,
                 players,
@@ -5390,10 +5394,10 @@ impl Level2ResetSession {
     fn building_kind_for_source_slot(
         &self,
         source_slot: u16,
-        route: Level2SourceRoute,
+        route: SourceRoute,
     ) -> Option<BuildingKind> {
         match route {
-            Level2SourceRoute::House => self
+            SourceRoute::House => self
                 .session
                 .definition
                 .building_for_initial_source_slot(source_slot)
@@ -5418,7 +5422,7 @@ impl Level2ResetSession {
                         .any(|house| house.active && house.entity_index == source_slot)
                         .then_some(BuildingKind::House)
                 }),
-            Level2SourceRoute::Dynamic(Level2DynamicArenaCursorRow {
+            SourceRoute::Dynamic(Level2DynamicArenaCursorRow {
                 kind: Level2DynamicArenaKind::AuthoredModel45,
                 ..
             }) => self
@@ -5668,7 +5672,7 @@ impl Level2ResetSession {
     /// Append to the canonical journal before updating the legacy Level 2
     /// event slice. The latter remains a compatibility projection until the
     /// generic CF-12 reader replaces it.
-    fn push_dispatch_effect(&mut self, event: Level2DispatchEvent) {
+    fn push_dispatch_effect(&mut self, event: Mc2DispatchEvent) {
         self.flush_shared_effects();
         let turn = self.session.state.live.core.runtime.global_turn;
         self.effect_journal_mut()
@@ -5992,6 +5996,7 @@ impl Level2ResetSession {
                         particle,
                         entity.yaw,
                         entity.position,
+                        entity.control_flags,
                     )
                 })
             })
@@ -6021,6 +6026,7 @@ impl Level2ResetSession {
                         177 + color,
                         0,
                         house.position,
+                        house.control_flags,
                     )
                 }),
         );
@@ -6043,6 +6049,7 @@ impl Level2ResetSession {
                             particle,
                             entity.yaw,
                             entity.position,
+                            entity.control_flags,
                         )
                     })
                 }),
@@ -6073,6 +6080,24 @@ impl Level2ResetSession {
                         source.particle_index,
                         source.yaw,
                         source.position,
+                        self.economy()
+                            .authored_fireflies()
+                            .iter()
+                            .find(|row| row.source_entity_index == source.source_entity_index)
+                            .map(|row| row.control_flags)
+                            .or_else(|| {
+                                self.economy()
+                                    .authored_dragons()
+                                    .iter()
+                                    .find(|row| {
+                                        row.source_entity_index == source.source_entity_index
+                                    })
+                                    .map(|row| row.control_flags)
+                            })
+                            .unwrap_or_else(|| {
+                                self.entities()[usize::from(source.source_entity_index)]
+                                    .control_flags
+                            }),
                     )
                 }),
         );
@@ -6088,6 +6113,7 @@ impl Level2ResetSession {
                         row.render_parameter_index,
                         row.yaw,
                         row.position,
+                        row.control_flags,
                     )
                 }),
         );
@@ -6105,6 +6131,7 @@ impl Level2ResetSession {
                         source.particle_index,
                         source.yaw,
                         source.position,
+                        source.control_flags,
                     )
                 }),
         );
@@ -6125,6 +6152,7 @@ impl Level2ResetSession {
                         crate::level1_mission::FIREBALL_RENDER_INDEX,
                         source.yaw,
                         source.position,
+                        source.control_flags,
                     )
                 }),
         );
@@ -6140,6 +6168,8 @@ impl Level2ResetSession {
                         crate::level1_mission::POSSESSION_PROJECTILE_RENDER_INDEX,
                         source.yaw,
                         source.position,
+                        u32::from(source.acquisition_attempted) * 2
+                            | u32::from(source.threat_accounted) * 0x2000,
                     )
                 }),
         );
@@ -6159,6 +6189,7 @@ impl Level2ResetSession {
                         crate::level1_mission::FIREBALL_IMPACT_RENDER_INDEX,
                         source.yaw,
                         source.position,
+                        source.control_flags,
                     )
                 }),
         );
@@ -6173,6 +6204,7 @@ impl Level2ResetSession {
                 castle.source_particle_parameter,
                 castle.shift_yaw,
                 castle.position,
+                castle.control_flags,
             ));
         }
         // Spheres retain their particle from the actual model-39 callback.
@@ -6203,6 +6235,7 @@ impl Level2ResetSession {
                 sphere.particle_index,
                 sphere.yaw,
                 sphere.position,
+                sphere.control_flags,
             ));
         }
         for balloon in self.economy().castle_children().iter().filter(|child| {
@@ -6220,6 +6253,7 @@ impl Level2ResetSession {
                 balloon.visual_index + owner_color,
                 balloon.yaw.cast_signed(),
                 balloon.position,
+                balloon.control_flags,
             ));
         }
         candidates.extend(crate::native_world::effects::sprite_sources(
@@ -6233,7 +6267,14 @@ impl Level2ResetSession {
         candidates
             .into_iter()
             .map(
-                |(entity_index, source_id, render_parameter_index, yaw, position)| {
+                |(
+                    entity_index,
+                    source_id,
+                    render_parameter_index,
+                    yaw,
+                    position,
+                    control_flags,
+                )| {
                     let parameter = self
                         .session
                         .definition
@@ -6278,6 +6319,24 @@ impl Level2ResetSession {
                             )));
                         }
                     };
+                    let camera = self.source_camera_pose();
+                    let distance_squared =
+                        crate::campaign::sprite_render::source_sprite_distance_squared(
+                            camera.x, camera.y, camera_yaw, position.x, position.y,
+                        );
+                    let pixels = crate::campaign::sprite_render::source_sprite_pixel_metadata(
+                        parameter.byte_10,
+                        distance_squared,
+                    )
+                    .map_err(NativeWorldError::new)?;
+                    let tile = ((position.x >> 8) as u8, (position.y >> 8) as u8);
+                    let draw_order = self
+                        .economy()
+                        .map_chains
+                        .entity_chain(tile.0, tile.1)
+                        .iter()
+                        .position(|slot| *slot == entity_index)
+                        .map_or(u32::MAX, |ordinal| ordinal as u32);
                     Ok(CampaignEntityPresentation {
                         entity_index,
                         source_id,
@@ -6290,6 +6349,13 @@ impl Level2ResetSession {
                         mirrored,
                         position,
                         yaw,
+                        pixel_mode: pixels.pixel_mode,
+                        // sub_48120 initializes playersColors[*][2] to 0x7B
+                        // for all eight players in Day, Night and Cave.
+                        owner_color: 0x7b,
+                        brightness: pixels.brightness,
+                        draw_order,
+                        control_flags,
                     })
                 },
             )
@@ -6698,7 +6764,7 @@ impl Level2ResetSession {
         true
     }
 
-    /// Evaluate every participating owner's remaining Level 2 objective
+    /// Evaluate the authoritative owners' remaining mission objectives
     /// stage after the entity pass. This mirrors the source
     /// `sub_58F00_game_objectives` walk: stage selectors at one are eligible,
     /// a successful predicate writes two, and the first remaining one becomes
@@ -6716,7 +6782,10 @@ impl Level2ResetSession {
             .players
             .iter()
             .enumerate()
-            .take(usize::from(
+            // Campaign sessions are single-player. Retained rival wizards
+            // count for combat predicates, not as offline objective owners.
+            .take(crate::campaign::objectives::objective_owner_count(
+                false,
                 self.session.state.live.core.runtime.player_count,
             ))
             .filter(|(_, player)| player.active_player_index >= 0)
@@ -8920,7 +8989,7 @@ impl Level2ResetSession {
 
 #[cfg(test)]
 pub(crate) struct Level2EconomyTestView<'a> {
-    session: &'a mut Level2ResetSession,
+    session: &'a mut Mc2Simulation,
 }
 
 #[cfg(test)]
@@ -9286,7 +9355,7 @@ impl Level2EconomyTestView<'_> {
 
 #[cfg(test)]
 pub(crate) struct Level2SharedSpellTestView<'a> {
-    session: &'a mut Level2ResetSession,
+    session: &'a mut Mc2Simulation,
 }
 
 #[cfg(test)]
@@ -9377,7 +9446,7 @@ impl Level2SharedSpellTestView<'_> {
 
 #[cfg(test)]
 pub(crate) struct Level2OrdinaryTestView<'a> {
-    session: &'a mut Level2ResetSession,
+    session: &'a mut Mc2Simulation,
 }
 
 #[cfg(test)]
@@ -9425,7 +9494,7 @@ impl Level2OrdinaryTestView<'_> {
     }
 }
 
-impl Level2ResetSession {
+impl Mc2Simulation {
     #[cfg(test)]
     pub(crate) fn possession_guidance_target_top_for_test(
         &self,
@@ -9701,7 +9770,7 @@ impl Level2ResetSession {
                 );
             }
             let source_slot = level2_economy_event_source_slot(event, fallback_source_slot);
-            self.push_dispatch_effect(Level2DispatchEvent::Economy {
+            self.push_dispatch_effect(Mc2DispatchEvent::Economy {
                 pass,
                 source_slot,
                 event,
@@ -9774,7 +9843,7 @@ impl Level2ResetSession {
             .min_by_key(|entity| entity.index)
             .map(|entity| entity.index)
         else {
-            self.push_dispatch_effect(Level2DispatchEvent::Error {
+            self.push_dispatch_effect(Mc2DispatchEvent::Error {
                 pass,
                 source_slot: 0,
                 message: "Level 2 stage-tag root source row is absent".to_owned(),
@@ -9788,7 +9857,7 @@ impl Level2ResetSession {
             .mission
             .level2_dispatch_group_rows(8)
         else {
-            self.push_dispatch_effect(Level2DispatchEvent::Error {
+            self.push_dispatch_effect(Mc2DispatchEvent::Error {
                 pass,
                 source_slot: root_slot,
                 message: "Level 2 activation artifact has no group-8 membership".to_owned(),
@@ -9809,7 +9878,7 @@ impl Level2ResetSession {
             })
             .collect::<Vec<_>>();
         if group_rows.len() != 2 {
-            self.push_dispatch_effect(Level2DispatchEvent::Error {
+            self.push_dispatch_effect(Mc2DispatchEvent::Error {
                 pass,
                 source_slot: root_slot,
                 message: format!(
@@ -9845,7 +9914,7 @@ impl Level2ResetSession {
             self.session.state.live.economy = economy_before;
             self.session.state.live.shared_spells = shared_before;
             self.session.state.live.ordinary = ordinary_before;
-            self.push_dispatch_effect(Level2DispatchEvent::Error {
+            self.push_dispatch_effect(Mc2DispatchEvent::Error {
                 pass,
                 source_slot: root_slot,
                 message: error.to_string(),
@@ -9876,7 +9945,7 @@ impl Level2ResetSession {
             .core
             .runtime
             .mark_level2_objective_done_for(completed_owner_color);
-        self.push_dispatch_effect(Level2DispatchEvent::AuthoredGroupActivated {
+        self.push_dispatch_effect(Mc2DispatchEvent::AuthoredGroupActivated {
             pass,
             source_slot: root_slot,
             group: 8,
@@ -9976,7 +10045,7 @@ impl Level2ResetSession {
         let mut group_rows = group_rows;
         group_rows.sort_unstable_by_key(|feature| feature.index);
         if group_rows.len() != 15 {
-            self.push_dispatch_effect(Level2DispatchEvent::Error {
+            self.push_dispatch_effect(Mc2DispatchEvent::Error {
                 pass,
                 source_slot: root_slot,
                 message: format!(
@@ -9991,7 +10060,7 @@ impl Level2ResetSession {
             .copied()
             .find(|feature| feature.kind == 11 && feature.subtype == 12 && feature.index == 209)
         else {
-            self.push_dispatch_effect(Level2DispatchEvent::Error {
+            self.push_dispatch_effect(Mc2DispatchEvent::Error {
                 pass,
                 source_slot: root_slot,
                 message: "Level 2 stage-tag group 31 is missing model-12 row 209".to_string(),
@@ -10003,7 +10072,7 @@ impl Level2ResetSession {
             .copied()
             .find(|feature| feature.kind == 14 && feature.subtype == 3 && feature.index == 244)
         else {
-            self.push_dispatch_effect(Level2DispatchEvent::Error {
+            self.push_dispatch_effect(Mc2DispatchEvent::Error {
                 pass,
                 source_slot: root_slot,
                 message: "Level 2 stage-tag group 31 is missing class-14/model-3 row 244"
@@ -10023,7 +10092,7 @@ impl Level2ResetSession {
             .map(|feature| feature.index)
             .ne(GROUP31_TREE_ROWS.into_iter())
         {
-            self.push_dispatch_effect(Level2DispatchEvent::Error {
+            self.push_dispatch_effect(Mc2DispatchEvent::Error {
                 pass,
                 source_slot: root_slot,
                 message: "Level 2 stage-tag group 31 tree rows are not the qualified source set"
@@ -10036,7 +10105,7 @@ impl Level2ResetSession {
             .copied()
             .find(|feature| feature.kind == 11 && feature.subtype == 0 && feature.index == 274)
         else {
-            self.push_dispatch_effect(Level2DispatchEvent::Error {
+            self.push_dispatch_effect(Mc2DispatchEvent::Error {
                 pass,
                 source_slot: root_slot,
                 message: "Level 2 stage-tag group 31 is missing model-0 switch row 274".to_string(),
@@ -10044,7 +10113,7 @@ impl Level2ResetSession {
             return;
         };
         let Some(switch_stage_tag) = u16::try_from(switch_row.stage_tag).ok() else {
-            self.push_dispatch_effect(Level2DispatchEvent::Error {
+            self.push_dispatch_effect(Mc2DispatchEvent::Error {
                 pass,
                 source_slot: root_slot,
                 message: "Level 2 row 274 has an invalid stage tag".to_string(),
@@ -10057,7 +10126,7 @@ impl Level2ResetSession {
             .authored_switch_overlap_extent(switch_row.index)
             .and_then(|extent| i16::try_from(extent).ok())
         else {
-            self.push_dispatch_effect(Level2DispatchEvent::Error {
+            self.push_dispatch_effect(Mc2DispatchEvent::Error {
                 pass,
                 source_slot: root_slot,
                 message: "Level 2 row 274 has no semantic overlap extent".to_string(),
@@ -10083,7 +10152,7 @@ impl Level2ResetSession {
             .authored_switch_overlap_extent(model12_row.index)
             .and_then(|extent| i16::try_from(extent).ok())
         else {
-            self.push_dispatch_effect(Level2DispatchEvent::Error {
+            self.push_dispatch_effect(Mc2DispatchEvent::Error {
                 pass,
                 source_slot: root_slot,
                 message: "Level 2 authored model-12 row 209 has no semantic overlap extent"
@@ -10105,7 +10174,7 @@ impl Level2ResetSession {
                 &self.session.state.live.terrain,
             )
         else {
-            self.push_dispatch_effect(Level2DispatchEvent::Error {
+            self.push_dispatch_effect(Mc2DispatchEvent::Error {
                 pass,
                 source_slot: root_slot,
                 message: "Level 2 authored model-12 row 209 could not allocate".to_string(),
@@ -10122,7 +10191,7 @@ impl Level2ResetSession {
             self.session.state.live.level2_switch_producers_activated = switch_producers_before;
             self.session.state.live.level2_class14_activated = class14_before;
             self.session.state.live.level2_tree_activated = tree_before;
-            self.push_dispatch_effect(Level2DispatchEvent::Error {
+            self.push_dispatch_effect(Mc2DispatchEvent::Error {
                 pass,
                 source_slot: root_slot,
                 message: format!(
@@ -10144,7 +10213,7 @@ impl Level2ResetSession {
                 self.session.state.live.level2_switch_producers_activated = switch_producers_before;
                 self.session.state.live.level2_class14_activated = class14_before;
                 self.session.state.live.level2_tree_activated = tree_before;
-                self.push_dispatch_effect(Level2DispatchEvent::Error {
+                self.push_dispatch_effect(Mc2DispatchEvent::Error {
                     pass,
                     source_slot: root_slot,
                     message: format!(
@@ -10183,7 +10252,7 @@ impl Level2ResetSession {
             self.session.state.live.level2_switch_producers_activated = switch_producers_before;
             self.session.state.live.level2_class14_activated = class14_before;
             self.session.state.live.level2_tree_activated = tree_before;
-            self.push_dispatch_effect(Level2DispatchEvent::Error {
+            self.push_dispatch_effect(Mc2DispatchEvent::Error {
                 pass,
                 source_slot: root_slot,
                 message: "Level 2 authored model-0 row 274 could not allocate".to_string(),
@@ -10205,7 +10274,7 @@ impl Level2ResetSession {
         {
             root.disable_drawing();
         }
-        self.push_dispatch_effect(Level2DispatchEvent::AuthoredGroupActivated {
+        self.push_dispatch_effect(Mc2DispatchEvent::AuthoredGroupActivated {
             pass,
             source_slot: root_slot,
             group: 31,
@@ -10253,7 +10322,7 @@ impl Level2ResetSession {
             })
             .collect::<Vec<_>>();
         if all_rows.is_empty() {
-            self.push_dispatch_effect(Level2DispatchEvent::Error {
+            self.push_dispatch_effect(Mc2DispatchEvent::Error {
                 pass,
                 source_slot: producer_slot,
                 message: format!(
@@ -10291,7 +10360,7 @@ impl Level2ResetSession {
             let Some(source_slot) = self.allocate_level2_authored_class14(feature.index) else {
                 self.session.state.live.economy = economy_before;
                 self.session.state.live.level2_class14_activated = activated_before;
-                self.push_dispatch_effect(Level2DispatchEvent::Error {
+                self.push_dispatch_effect(Mc2DispatchEvent::Error {
                     pass,
                     source_slot: producer_slot,
                     message: format!(
@@ -10308,7 +10377,7 @@ impl Level2ResetSession {
                 .insert(feature.index);
             activated_rows.push((feature.index, source_slot.source_entity_index));
         }
-        self.push_dispatch_effect(Level2DispatchEvent::AuthoredGroupActivated {
+        self.push_dispatch_effect(Mc2DispatchEvent::AuthoredGroupActivated {
             pass,
             source_slot: producer_slot,
             group: target_group,
@@ -11148,7 +11217,7 @@ impl Level2ResetSession {
                         .and_then(|extent| i16::try_from(extent).ok())
                         .or_else(|| i16::try_from(feature.word_10).ok());
                     let Some(word_10) = word_10 else {
-                        self.push_dispatch_effect(Level2DispatchEvent::Error {
+                        self.push_dispatch_effect(Mc2DispatchEvent::Error {
                             pass,
                             source_slot: producer_slot,
                             message: format!(
@@ -11331,7 +11400,7 @@ impl Level2ResetSession {
             }
         }
         self.session.state.live.economy.finish_source_group();
-        self.push_dispatch_effect(Level2DispatchEvent::AuthoredGroupActivated {
+        self.push_dispatch_effect(Mc2DispatchEvent::AuthoredGroupActivated {
             pass,
             source_slot: producer_slot,
             group: target_group.cast_unsigned(),
@@ -11493,7 +11562,7 @@ impl Level2ResetSession {
             .mission
             .level2_dispatch_group_rows(target_group)
         else {
-            self.push_dispatch_effect(Level2DispatchEvent::Error {
+            self.push_dispatch_effect(Mc2DispatchEvent::Error {
                 pass,
                 source_slot: producer_slot,
                 message: format!(
@@ -11541,7 +11610,7 @@ impl Level2ResetSession {
             })
             .collect::<Vec<_>>()
             .into_boxed_slice();
-        self.push_dispatch_effect(Level2DispatchEvent::AuthoredGroupActivated {
+        self.push_dispatch_effect(Mc2DispatchEvent::AuthoredGroupActivated {
             pass,
             source_slot: producer_slot,
             group: target_group,
@@ -11566,7 +11635,7 @@ impl Level2ResetSession {
             .mission
             .level2_dispatch_group_rows(target_group)
         else {
-            self.push_dispatch_effect(Level2DispatchEvent::Error {
+            self.push_dispatch_effect(Mc2DispatchEvent::Error {
                 pass,
                 source_slot: producer_slot,
                 message: format!(
@@ -11615,7 +11684,7 @@ impl Level2ResetSession {
             else {
                 self.session.state.live.economy = economy_before;
                 self.session.state.live.level2_class5_activated = activated_before;
-                self.push_dispatch_effect(Level2DispatchEvent::Error {
+                self.push_dispatch_effect(Mc2DispatchEvent::Error {
                     pass,
                     source_slot: producer_slot,
                     message: format!(
@@ -11633,7 +11702,7 @@ impl Level2ResetSession {
             ) else {
                 self.session.state.live.economy = economy_before;
                 self.session.state.live.level2_class5_activated = activated_before;
-                self.push_dispatch_effect(Level2DispatchEvent::Error {
+                self.push_dispatch_effect(Mc2DispatchEvent::Error {
                     pass,
                     source_slot: producer_slot,
                     message: format!(
@@ -11651,7 +11720,7 @@ impl Level2ResetSession {
             self.bind_level2_trader_authored_route(feature, source.source_entity_index);
             activated.push((feature.index, source.source_entity_index));
         }
-        self.push_dispatch_effect(Level2DispatchEvent::AuthoredGroupActivated {
+        self.push_dispatch_effect(Mc2DispatchEvent::AuthoredGroupActivated {
             pass,
             source_slot: producer_slot,
             group: target_group,
@@ -11765,7 +11834,7 @@ impl Level2ResetSession {
                 match result {
                     Ok(Some(slot)) => activated.push((feature.index, slot)),
                     Ok(None) => {}
-                    Err(message) => self.push_dispatch_effect(Level2DispatchEvent::Error {
+                    Err(message) => self.push_dispatch_effect(Mc2DispatchEvent::Error {
                         pass,
                         source_slot: producer_slot,
                         message,
@@ -11791,7 +11860,7 @@ impl Level2ResetSession {
                     position,
                     terrain,
                 ) else {
-                    self.push_dispatch_effect(Level2DispatchEvent::Error {
+                    self.push_dispatch_effect(Mc2DispatchEvent::Error {
                         pass,
                         source_slot: producer_slot,
                         message: format!(
@@ -11846,7 +11915,7 @@ impl Level2ResetSession {
                     .authored_creature_max_life(feature.index)
                     .map(u32::cast_signed)
                 else {
-                    self.push_dispatch_effect(Level2DispatchEvent::Error {
+                    self.push_dispatch_effect(Mc2DispatchEvent::Error {
                         pass,
                         source_slot: producer_slot,
                         message: format!(
@@ -11864,7 +11933,7 @@ impl Level2ResetSession {
                     position,
                     max_life,
                 ) else {
-                    self.push_dispatch_effect(Level2DispatchEvent::Error {
+                    self.push_dispatch_effect(Mc2DispatchEvent::Error {
                         pass,
                         source_slot: producer_slot,
                         message: format!(
@@ -11909,7 +11978,7 @@ impl Level2ResetSession {
                         terrain,
                     )
                 }) else {
-                    self.push_dispatch_effect(Level2DispatchEvent::Error {
+                    self.push_dispatch_effect(Mc2DispatchEvent::Error {
                         pass,
                         source_slot: producer_slot,
                         message: format!(
@@ -11938,7 +12007,7 @@ impl Level2ResetSession {
                     continue;
                 }
                 let Some(source) = self.allocate_level2_authored_model22(feature.index) else {
-                    self.push_dispatch_effect(Level2DispatchEvent::Error {
+                    self.push_dispatch_effect(Mc2DispatchEvent::Error {
                         pass,
                         source_slot: producer_slot,
                         message: format!(
@@ -11967,7 +12036,7 @@ impl Level2ResetSession {
                     continue;
                 }
                 let Some(source) = self.allocate_level2_authored_model76(feature.index) else {
-                    self.push_dispatch_effect(Level2DispatchEvent::Error {
+                    self.push_dispatch_effect(Mc2DispatchEvent::Error {
                         pass,
                         source_slot: producer_slot,
                         message: format!(
@@ -12007,7 +12076,7 @@ impl Level2ResetSession {
                     producer_slot,
                     position,
                 ) else {
-                    self.push_dispatch_effect(Level2DispatchEvent::Error {
+                    self.push_dispatch_effect(Mc2DispatchEvent::Error {
                         pass,
                         source_slot: producer_slot,
                         message: format!(
@@ -12036,7 +12105,7 @@ impl Level2ResetSession {
                     continue;
                 }
                 let Some(source) = self.allocate_level2_authored_model6(feature.index) else {
-                    self.push_dispatch_effect(Level2DispatchEvent::Error {
+                    self.push_dispatch_effect(Mc2DispatchEvent::Error {
                         pass,
                         source_slot: producer_slot,
                         message: format!(
@@ -12065,7 +12134,7 @@ impl Level2ResetSession {
                     continue;
                 }
                 let Some(source) = self.allocate_level2_authored_model59(feature.index) else {
-                    self.push_dispatch_effect(Level2DispatchEvent::Error {
+                    self.push_dispatch_effect(Mc2DispatchEvent::Error {
                         pass,
                         source_slot: producer_slot,
                         message: format!(
@@ -12094,7 +12163,7 @@ impl Level2ResetSession {
                     continue;
                 }
                 let Some(source) = self.allocate_level2_authored_model53(feature.index) else {
-                    self.push_dispatch_effect(Level2DispatchEvent::Error {
+                    self.push_dispatch_effect(Mc2DispatchEvent::Error {
                         pass,
                         source_slot: producer_slot,
                         message: format!(
@@ -12131,7 +12200,7 @@ impl Level2ResetSession {
                     continue;
                 }
                 let Some(source) = self.allocate_level2_authored_model32(feature.index) else {
-                    self.push_dispatch_effect(Level2DispatchEvent::Error {
+                    self.push_dispatch_effect(Mc2DispatchEvent::Error {
                         pass,
                         source_slot: producer_slot,
                         message: format!(
@@ -12188,7 +12257,7 @@ impl Level2ResetSession {
                     &self.session.state.live.terrain,
                 )
             else {
-                self.push_dispatch_effect(Level2DispatchEvent::Error {
+                self.push_dispatch_effect(Mc2DispatchEvent::Error {
                     pass,
                     source_slot: producer_slot,
                     message: format!(
@@ -12206,7 +12275,7 @@ impl Level2ResetSession {
             activated.push((feature.index, source.source_entity_index));
         }
         if !activated.is_empty() {
-            self.push_dispatch_effect(Level2DispatchEvent::AuthoredGroupActivated {
+            self.push_dispatch_effect(Mc2DispatchEvent::AuthoredGroupActivated {
                 pass,
                 source_slot: producer_slot,
                 group: target_group,
@@ -12355,7 +12424,7 @@ impl Level2ResetSession {
                 .collect::<Vec<_>>();
             for feature in rows {
                 let Some(source_slot) = allocate(self, feature.index) else {
-                    self.push_dispatch_effect(Level2DispatchEvent::Error {
+                    self.push_dispatch_effect(Mc2DispatchEvent::Error {
                         pass,
                         source_slot: producer_slot,
                         message: format!(
@@ -12365,7 +12434,7 @@ impl Level2ResetSession {
                     });
                     continue;
                 };
-                self.push_dispatch_effect(Level2DispatchEvent::AuthoredGroupActivated {
+                self.push_dispatch_effect(Mc2DispatchEvent::AuthoredGroupActivated {
                     pass,
                     source_slot: producer_slot,
                     group: producer_group,
@@ -12631,7 +12700,7 @@ impl Level2ResetSession {
             let Some(source) = source else {
                 self.session.state.live.economy = economy_before;
                 self.session.state.live.level2_class5_activated = activated_before;
-                self.push_dispatch_effect(Level2DispatchEvent::Error {
+                self.push_dispatch_effect(Mc2DispatchEvent::Error {
                     pass,
                     source_slot: producer_slot,
                     message: format!(
@@ -12648,7 +12717,7 @@ impl Level2ResetSession {
                 .insert(feature.index);
             activated.push((feature.index, source.source_entity_index));
         }
-        self.push_dispatch_effect(Level2DispatchEvent::AuthoredGroupActivated {
+        self.push_dispatch_effect(Mc2DispatchEvent::AuthoredGroupActivated {
             pass,
             source_slot: producer_slot,
             group: target_group,
@@ -12684,7 +12753,7 @@ impl Level2ResetSession {
             })
             .collect::<Vec<_>>();
         if rows.len() != 1 {
-            self.push_dispatch_effect(Level2DispatchEvent::Error {
+            self.push_dispatch_effect(Mc2DispatchEvent::Error {
                 pass,
                 source_slot: producer_slot,
                 message: format!(
@@ -12696,7 +12765,7 @@ impl Level2ResetSession {
         }
         let feature = rows[0];
         if !matches!((feature.kind, feature.subtype), (15, 6 | 11)) {
-            self.push_dispatch_effect(Level2DispatchEvent::Error {
+            self.push_dispatch_effect(Mc2DispatchEvent::Error {
                 pass,
                 source_slot: producer_slot,
                 message: format!(
@@ -12724,7 +12793,7 @@ impl Level2ResetSession {
             Ok(None) => {
                 self.session.state.live.economy = economy_before;
                 self.session.state.live.shared_spells = shared_before;
-                self.push_dispatch_effect(Level2DispatchEvent::Error {
+                self.push_dispatch_effect(Mc2DispatchEvent::Error {
                     pass,
                     source_slot: producer_slot,
                     message: format!(
@@ -12737,7 +12806,7 @@ impl Level2ResetSession {
             Err(error) => {
                 self.session.state.live.economy = economy_before;
                 self.session.state.live.shared_spells = shared_before;
-                self.push_dispatch_effect(Level2DispatchEvent::Error {
+                self.push_dispatch_effect(Mc2DispatchEvent::Error {
                     pass,
                     source_slot: producer_slot,
                     message: error.to_string(),
@@ -12774,7 +12843,7 @@ impl Level2ResetSession {
             {
                 self.session.state.live.economy = economy_before;
                 self.session.state.live.shared_spells = shared_before;
-                self.push_dispatch_effect(Level2DispatchEvent::Error {
+                self.push_dispatch_effect(Mc2DispatchEvent::Error {
                     pass,
                     source_slot: producer_slot,
                     message: format!(
@@ -12794,7 +12863,7 @@ impl Level2ResetSession {
         if let Some(companion) = companion {
             activated_indices.push(companion.index);
         }
-        self.push_dispatch_effect(Level2DispatchEvent::AuthoredGroupActivated {
+        self.push_dispatch_effect(Mc2DispatchEvent::AuthoredGroupActivated {
             pass,
             source_slot: producer_slot,
             group: target_group,
@@ -12833,7 +12902,7 @@ impl Level2ResetSession {
                 .entities
                 .get(usize::from(source_slot))
                 .filter(|row| row.active && row.index == source_slot)
-                .map(|row| (Level2SourceRoute::Player, row.class, row.action))
+                .map(|row| (SourceRoute::Player, row.class, row.action))
         } else if let Some(row) = dynamic_row.filter(|row| {
             matches!(
                 row.kind,
@@ -12848,7 +12917,7 @@ impl Level2ResetSession {
             live.economy
                 .economy
                 .live_arena_class_action(source_slot, row.kind)
-                .map(|(class, action)| (Level2SourceRoute::Dynamic(row), class, action))
+                .map(|(class, action)| (SourceRoute::Dynamic(row), class, action))
         } else if let Some(pickup) = live
             .shared_spells
             .pickups()
@@ -12866,7 +12935,7 @@ impl Level2ResetSession {
             // Reset-imported family-3 pickups retain the legacy shared row.
             // NewEvent-backed family-3 rows were resolved above through the
             // dynamic arena and therefore use the generic acquisition path.
-            Some((Level2SourceRoute::SpeedPickup, pickup.class, pickup.action))
+            Some((SourceRoute::SpeedPickup, pickup.class, pickup.action))
         } else if let Some(pickup) = live
             .shared_spells
             .pickups()
@@ -12895,7 +12964,7 @@ impl Level2ResetSession {
             })
         {
             Some((
-                Level2SourceRoute::ImportedSpellSource,
+                SourceRoute::ImportedSpellSource,
                 pickup.class,
                 pickup.action,
             ))
@@ -12914,7 +12983,7 @@ impl Level2ResetSession {
             })
         {
             Some((
-                Level2SourceRoute::PossessionHolder,
+                SourceRoute::PossessionHolder,
                 holder.class,
                 holder.action,
             ))
@@ -12933,7 +13002,7 @@ impl Level2ResetSession {
             })
         {
             Some((
-                Level2SourceRoute::FireballHolder,
+                SourceRoute::FireballHolder,
                 holder.class,
                 holder.action,
             ))
@@ -12948,7 +13017,7 @@ impl Level2ResetSession {
                 && holder.active_value > 0
         }) {
             Some((
-                Level2SourceRoute::PossessionHolder,
+                SourceRoute::PossessionHolder,
                 holder.class,
                 holder.action,
             ))
@@ -12963,7 +13032,7 @@ impl Level2ResetSession {
                 && holder.active_value > 0
         }) {
             Some((
-                Level2SourceRoute::FireballHolder,
+                SourceRoute::FireballHolder,
                 holder.class,
                 holder.action,
             ))
@@ -12980,14 +13049,14 @@ impl Level2ResetSession {
                     && holder.action == CASTLE_SPELL_FAMILY.saturating_mul(3)
             })
         {
-            Some((Level2SourceRoute::CastleHolder, holder.class, holder.action))
+            Some((SourceRoute::CastleHolder, holder.class, holder.action))
         } else if let Some(stone) = live
             .bad_stones
             .iter()
             .find(|stone| stone.entity.active && stone.entity.index == source_slot)
         {
             Some((
-                Level2SourceRoute::BadStone,
+                SourceRoute::BadStone,
                 stone.entity.class,
                 stone.entity.action,
             ))
@@ -12995,7 +13064,7 @@ impl Level2ResetSession {
             entity.active && entity.index == source_slot && entity.class == 11 && entity.model == 4
         }) {
             Some((
-                Level2SourceRoute::ExitSwitch,
+                SourceRoute::ExitSwitch,
                 exit_switch.class,
                 exit_switch.action,
             ))
@@ -13005,14 +13074,14 @@ impl Level2ResetSession {
             .iter()
             .find(|house| house.active && house.entity_index == source_slot)
         {
-            Some((Level2SourceRoute::House, 10, house.action))
+            Some((SourceRoute::House, 10, house.action))
         } else if let Some(villager) = live
             .ordinary
             .villagers()
             .iter()
             .find(|villager| villager.active && villager.entity_index == source_slot)
         {
-            Some((Level2SourceRoute::Villager, 5, villager.action))
+            Some((SourceRoute::Villager, 5, villager.action))
         } else if let Some(dolmen) = live
             .ordinary
             .dolmens()
@@ -13020,7 +13089,7 @@ impl Level2ResetSession {
             .find(|dolmen| dolmen.entity.active && dolmen.entity.index == source_slot)
         {
             Some((
-                Level2SourceRoute::Dolmen,
+                SourceRoute::Dolmen,
                 dolmen.entity.class,
                 dolmen.entity.action,
             ))
@@ -13030,7 +13099,7 @@ impl Level2ResetSession {
             .filter(|castle| castle.active && castle.source_entity_index == source_slot)
         {
             Some((
-                Level2SourceRoute::CastleRoot,
+                SourceRoute::CastleRoot,
                 castle.source_class,
                 castle.action,
             ))
@@ -13040,19 +13109,19 @@ impl Level2ResetSession {
             .iter()
             .find(|goat| goat.active && goat.entity_index == source_slot)
         {
-            Some((Level2SourceRoute::Goat, 5, goat.action))
+            Some((SourceRoute::Goat, 5, goat.action))
         } else if let Some(nyphur) = live.economy.entities.iter().find(|entity| {
             entity.active && entity.index == source_slot && entity.class == 3 && entity.model == 1
         }) {
-            Some((Level2SourceRoute::Nyphur, nyphur.class, nyphur.action))
+            Some((SourceRoute::Nyphur, nyphur.class, nyphur.action))
         } else if let Some(body) = live.economy.entities.get(usize::from(source_slot))
             .filter(|row| creatures::morph::is_body(row)) {
-            Some((Level2SourceRoute::Imported, body.class, body.action))
+            Some((SourceRoute::Imported, body.class, body.action))
         } else if let Some(row) = dynamic_row {
             live.economy
                 .economy
                 .live_arena_class_action(source_slot, row.kind)
-                .map(|(class, action)| (Level2SourceRoute::Dynamic(row), class, action))
+                .map(|(class, action)| (SourceRoute::Dynamic(row), class, action))
         } else if let Some(entity) =
             live.economy
                 .entities
@@ -13073,7 +13142,7 @@ impl Level2ResetSession {
                         )
                 })
         {
-            Some((Level2SourceRoute::Imported, entity.class, entity.action))
+            Some((SourceRoute::Imported, entity.class, entity.action))
         } else {
             None
         };
@@ -13085,7 +13154,7 @@ impl Level2ResetSession {
         let phase = self.level2_source_phase(source_slot, route);
         if matches!(
             route,
-            Level2SourceRoute::Dynamic(Level2DynamicArenaCursorRow {
+            SourceRoute::Dynamic(Level2DynamicArenaCursorRow {
                 kind: Level2DynamicArenaKind::AuthoredClass5ArcherChild,
                 ..
             })
@@ -13107,30 +13176,26 @@ impl Level2ResetSession {
                 ),
             });
         };
-        Some(Level2ResolvedSourcePlan::Callback(
-            Level2ResolvedSourceVisit {
-                key,
-                handler: entry.handler,
-                route,
-                phase,
-            },
-        ))
+        Some(Level2ResolvedSourcePlan::Callback(ResolvedSourceVisit {
+            key,
+            handler: entry.handler,
+            route,
+            phase,
+        }))
     }
 
-    fn level2_source_phase(&self, source_slot: u16, route: Level2SourceRoute) -> Option<u8> {
+    fn level2_source_phase(&self, source_slot: u16, route: SourceRoute) -> Option<u8> {
         let live = &self.session.state.live;
         match route {
-            Level2SourceRoute::Player
-            | Level2SourceRoute::Nyphur
-            | Level2SourceRoute::ExitSwitch => live
+            SourceRoute::Player | SourceRoute::Nyphur | SourceRoute::ExitSwitch => live
                 .economy
                 .entities
                 .iter()
                 .find(|row| row.active && row.index == source_slot)
                 .map(|row| row.phase),
-            Level2SourceRoute::SpeedPickup
-            | Level2SourceRoute::ImportedSpellSource
-            | Level2SourceRoute::CastleHolder => live
+            SourceRoute::SpeedPickup
+            | SourceRoute::ImportedSpellSource
+            | SourceRoute::CastleHolder => live
                 .shared_spells
                 .pickups()
                 .iter()
@@ -13145,7 +13210,7 @@ impl Level2ResetSession {
                         .find(|row| row.active && row.index == source_slot)
                         .map(|row| row.phase)
                 }),
-            Level2SourceRoute::PossessionHolder | Level2SourceRoute::FireballHolder => {
+            SourceRoute::PossessionHolder | SourceRoute::FireballHolder => {
                 if source_slot == LEVEL2_NYPHUR_POSSESSION_HOLDER_INDEX
                     || source_slot == LEVEL2_NYPHUR_FIREBALL_HOLDER_INDEX
                 {
@@ -13161,41 +13226,41 @@ impl Level2ResetSession {
                         .map(|row| row.phase)
                 }
             }
-            Level2SourceRoute::BadStone => live
+            SourceRoute::BadStone => live
                 .bad_stones
                 .iter()
                 .find(|row| row.entity.active && row.entity.index == source_slot)
                 .map(|row| row.entity.phase),
-            Level2SourceRoute::House => live
+            SourceRoute::House => live
                 .ordinary
                 .houses()
                 .iter()
                 .find(|row| row.active && row.entity_index == source_slot)
                 .map(|row| row.phase),
-            Level2SourceRoute::Villager => live
+            SourceRoute::Villager => live
                 .ordinary
                 .villagers()
                 .iter()
                 .find(|row| row.active && row.entity_index == source_slot)
                 .map(|row| row.phase),
-            Level2SourceRoute::Dolmen => live
+            SourceRoute::Dolmen => live
                 .ordinary
                 .dolmens()
                 .iter()
                 .find(|row| row.entity.active && row.entity.index == source_slot)
                 .map(|row| row.entity.phase),
-            Level2SourceRoute::CastleRoot => live
+            SourceRoute::CastleRoot => live
                 .economy
                 .castle()
                 .filter(|row| row.active && row.source_entity_index == source_slot)
                 .map(|row| row.phase),
-            Level2SourceRoute::Goat => live
+            SourceRoute::Goat => live
                 .goats
                 .goats()
                 .iter()
                 .find(|row| row.active && row.entity_index == source_slot)
                 .map(|row| row.phase),
-            Level2SourceRoute::Dynamic(cursor) => {
+            SourceRoute::Dynamic(cursor) => {
                 let economy = &live.economy.economy;
                 macro_rules! row_phase {
                     ($rows:expr, $field:ident) => {
@@ -13333,7 +13398,7 @@ impl Level2ResetSession {
                     }
                 }
             }
-            Level2SourceRoute::Imported => live
+            SourceRoute::Imported => live
                 .economy
                 .entities
                 .get(usize::from(source_slot))
@@ -13346,16 +13411,12 @@ impl Level2ResetSession {
     /// row. `UpdateEntities_57730` advances that same numeric row before the
     /// following pass reclaims it, so active-only selector resolution is too
     /// narrow for epilogue verification.
-    fn level2_retained_source_phase(
-        &self,
-        source_slot: u16,
-        route: Level2SourceRoute,
-    ) -> Option<u8> {
+    fn level2_retained_source_phase(&self, source_slot: u16, route: SourceRoute) -> Option<u8> {
         let live = &self.session.state.live;
         match route {
-            Level2SourceRoute::SpeedPickup
-            | Level2SourceRoute::ImportedSpellSource
-            | Level2SourceRoute::CastleHolder => live
+            SourceRoute::SpeedPickup
+            | SourceRoute::ImportedSpellSource
+            | SourceRoute::CastleHolder => live
                 .shared_spells
                 .pickups()
                 .iter()
@@ -13370,7 +13431,7 @@ impl Level2ResetSession {
                         .find(|row| row.index == source_slot)
                         .map(|row| row.phase)
                 }),
-            Level2SourceRoute::PossessionHolder | Level2SourceRoute::FireballHolder => {
+            SourceRoute::PossessionHolder | SourceRoute::FireballHolder => {
                 if source_slot == LEVEL2_NYPHUR_POSSESSION_HOLDER_INDEX
                     || source_slot == LEVEL2_NYPHUR_FIREBALL_HOLDER_INDEX
                 {
@@ -13389,50 +13450,48 @@ impl Level2ResetSession {
                         .map(|row| row.phase)
                 }
             }
-            Level2SourceRoute::BadStone => live
+            SourceRoute::BadStone => live
                 .bad_stones
                 .iter()
                 .find(|row| row.entity.index == source_slot)
                 .map(|row| row.entity.phase),
-            Level2SourceRoute::House => live
+            SourceRoute::House => live
                 .ordinary
                 .houses()
                 .iter()
                 .find(|row| row.entity_index == source_slot)
                 .map(|row| row.phase),
-            Level2SourceRoute::Villager => live
+            SourceRoute::Villager => live
                 .ordinary
                 .villagers()
                 .iter()
                 .find(|row| row.entity_index == source_slot)
                 .map(|row| row.phase),
-            Level2SourceRoute::Goat => live
+            SourceRoute::Goat => live
                 .goats
                 .goats()
                 .iter()
                 .find(|row| row.entity_index == source_slot)
                 .map(|row| row.phase),
-            Level2SourceRoute::Player
-            | Level2SourceRoute::Nyphur
-            | Level2SourceRoute::ExitSwitch => live
+            SourceRoute::Player | SourceRoute::Nyphur | SourceRoute::ExitSwitch => live
                 .economy
                 .entities
                 .iter()
                 .find(|row| row.index == source_slot)
                 .map(|row| row.phase),
-            Level2SourceRoute::Dolmen => live
+            SourceRoute::Dolmen => live
                 .ordinary
                 .dolmens()
                 .iter()
                 .find(|row| row.entity.index == source_slot)
                 .map(|row| row.entity.phase),
-            Level2SourceRoute::CastleRoot => live
+            SourceRoute::CastleRoot => live
                 .economy
                 .economy
                 .castle
                 .filter(|row| row.source_entity_index == source_slot)
                 .map(|row| row.phase),
-            Level2SourceRoute::Dynamic(cursor) => {
+            SourceRoute::Dynamic(cursor) => {
                 let economy = &live.economy.economy;
                 macro_rules! retained_phase {
                     ($rows:expr, $field:ident) => {
@@ -13572,7 +13631,7 @@ impl Level2ResetSession {
                     }
                 }
             }
-            Level2SourceRoute::Imported => live
+            SourceRoute::Imported => live
                 .economy
                 .entities
                 .get(usize::from(source_slot))
@@ -13584,23 +13643,23 @@ impl Level2ResetSession {
     fn advance_level2_outer_owned_phase(
         &mut self,
         source_slot: u16,
-        route: Level2SourceRoute,
+        route: SourceRoute,
     ) -> std::result::Result<(), String> {
         let live = &mut self.session.state.live;
         let phase = match route {
-            Level2SourceRoute::SpeedPickup | Level2SourceRoute::ImportedSpellSource => live
+            SourceRoute::SpeedPickup | SourceRoute::ImportedSpellSource => live
                 .shared_spells
                 .pickup_mut(source_slot)
                 .map(|row| &mut row.phase),
-            Level2SourceRoute::Nyphur
-            | Level2SourceRoute::Player
-            | Level2SourceRoute::ExitSwitch => live
+            SourceRoute::Nyphur
+            | SourceRoute::Player
+            | SourceRoute::ExitSwitch => live
                 .economy
                 .entities
                 .iter_mut()
                 .find(|row| row.index == source_slot)
                 .map(|row| &mut row.phase),
-            Level2SourceRoute::House => {
+            SourceRoute::House => {
                 return live
                     .ordinary
                     .advance_house_source_phase(source_slot)
@@ -13611,20 +13670,20 @@ impl Level2ResetSession {
                         )
                     });
             }
-            Level2SourceRoute::Dolmen => live
+            SourceRoute::Dolmen => live
                 .ordinary
                 .dolmens
                 .iter_mut()
                 .find(|row| row.entity.index == source_slot)
                 .map(|row| &mut row.entity.phase),
-            Level2SourceRoute::CastleRoot => live
+            SourceRoute::CastleRoot => live
                 .economy
                 .economy
                 .castle
                 .as_mut()
                 .filter(|row| row.source_entity_index == source_slot)
                 .map(|row| &mut row.phase),
-            Level2SourceRoute::PossessionHolder | Level2SourceRoute::FireballHolder => {
+            SourceRoute::PossessionHolder | SourceRoute::FireballHolder => {
                 if source_slot == LEVEL2_NYPHUR_POSSESSION_HOLDER_INDEX
                     || source_slot == LEVEL2_NYPHUR_FIREBALL_HOLDER_INDEX
                 {
@@ -13639,11 +13698,11 @@ impl Level2ResetSession {
                         .map(|row| &mut row.phase)
                 }
             }
-            Level2SourceRoute::CastleHolder => live
+            SourceRoute::CastleHolder => live
                 .shared_spells
                 .pickup_mut(source_slot)
                 .map(|row| &mut row.phase),
-            Level2SourceRoute::Dynamic(row) => {
+            SourceRoute::Dynamic(row) => {
                 macro_rules! dynamic_phase_mut {
                     ($rows:expr, $field:ident) => {
                         $rows
@@ -13812,7 +13871,7 @@ impl Level2ResetSession {
                     ),
                 }
             }
-            Level2SourceRoute::Imported => live
+            SourceRoute::Imported => live
                 .economy
                 .entities
                 .get_mut(usize::from(source_slot))
@@ -13828,15 +13887,15 @@ impl Level2ResetSession {
         *phase = phase.wrapping_add(1);
         let advanced = *phase;
         match route {
-            Level2SourceRoute::SpeedPickup | Level2SourceRoute::ImportedSpellSource => {
+            SourceRoute::SpeedPickup | SourceRoute::ImportedSpellSource => {
                 if let Some(row) = live.shared_spells.pickup_mut(source_slot) {
                     row.record[66] = advanced;
                 }
             }
-            Level2SourceRoute::Nyphur
-            | Level2SourceRoute::Player
-            | Level2SourceRoute::ExitSwitch
-            | Level2SourceRoute::Imported => {
+            SourceRoute::Nyphur
+            | SourceRoute::Player
+            | SourceRoute::ExitSwitch
+            | SourceRoute::Imported => {
                 if let Some(row) = live
                     .economy
                     .entities
@@ -13846,7 +13905,7 @@ impl Level2ResetSession {
                     row.record[66] = advanced;
                 }
             }
-            Level2SourceRoute::Dolmen => {
+            SourceRoute::Dolmen => {
                 if let Some(row) = live
                     .ordinary
                     .dolmens
@@ -13856,7 +13915,7 @@ impl Level2ResetSession {
                     row.entity.record[66] = advanced;
                 }
             }
-            Level2SourceRoute::PossessionHolder | Level2SourceRoute::FireballHolder => {
+            SourceRoute::PossessionHolder | SourceRoute::FireballHolder => {
                 if source_slot == LEVEL2_NYPHUR_POSSESSION_HOLDER_INDEX
                     || source_slot == LEVEL2_NYPHUR_FIREBALL_HOLDER_INDEX
                 {
@@ -13872,14 +13931,14 @@ impl Level2ResetSession {
                     row.record[66] = advanced;
                 }
             }
-            Level2SourceRoute::CastleHolder => {
+            SourceRoute::CastleHolder => {
                 if let Some(row) = live.shared_spells.pickup_mut(source_slot) {
                     row.record[66] = advanced;
                 }
             }
             _ => {}
         }
-        if route == Level2SourceRoute::Imported
+        if route == SourceRoute::Imported
             && let Some(entity) = live
                 .economy
                 .entities
@@ -13902,7 +13961,7 @@ impl Level2ResetSession {
             root.drawing_enabled = !entity.drawing_disabled();
             root.active = entity.active;
         }
-        if route == Level2SourceRoute::Imported
+        if route == SourceRoute::Imported
             && live
                 .level2_group10_switch25
                 .is_some_and(|switch| switch.source_slot == source_slot)
@@ -13926,10 +13985,10 @@ impl Level2ResetSession {
         }
         let sync_imported_holder = matches!(
             route,
-            Level2SourceRoute::PossessionHolder
-                | Level2SourceRoute::CastleHolder
-                | Level2SourceRoute::FireballHolder
-                | Level2SourceRoute::ImportedSpellSource
+            SourceRoute::PossessionHolder
+                | SourceRoute::CastleHolder
+                | SourceRoute::FireballHolder
+                | SourceRoute::ImportedSpellSource
         ) && source_slot != LEVEL2_NYPHUR_POSSESSION_HOLDER_INDEX
             && source_slot != LEVEL2_NYPHUR_FIREBALL_HOLDER_INDEX
             && live
@@ -13944,32 +14003,32 @@ impl Level2ResetSession {
         Ok(())
     }
 
-    fn level2_route_accepts_handler(route: Level2SourceRoute, handler: ExistingHandler) -> bool {
+    fn level2_route_accepts_handler(route: SourceRoute, handler: ExistingHandler) -> bool {
         match route {
-            Level2SourceRoute::SpeedPickup
-            | Level2SourceRoute::ImportedSpellSource
-            | Level2SourceRoute::PossessionHolder
-            | Level2SourceRoute::CastleHolder
-            | Level2SourceRoute::FireballHolder => handler == ExistingHandler::SpellHolderAndPickup,
-            Level2SourceRoute::BadStone => handler == ExistingHandler::BadStone,
-            Level2SourceRoute::House => handler == ExistingHandler::Class10Effects,
-            Level2SourceRoute::Villager => matches!(
+            SourceRoute::SpeedPickup
+            | SourceRoute::ImportedSpellSource
+            | SourceRoute::PossessionHolder
+            | SourceRoute::CastleHolder
+            | SourceRoute::FireballHolder => handler == ExistingHandler::SpellHolderAndPickup,
+            SourceRoute::BadStone => handler == ExistingHandler::BadStone,
+            SourceRoute::House => handler == ExistingHandler::Class10Effects,
+            SourceRoute::Villager => matches!(
                 handler,
                 ExistingHandler::BuilderFamily
                     | ExistingHandler::VillagerFamily
                     | ExistingHandler::BuilderVillagerPostBuild
                     | ExistingHandler::TraderFamily
             ),
-            Level2SourceRoute::Dolmen => handler == ExistingHandler::Dolmen,
-            Level2SourceRoute::ExitSwitch => handler == ExistingHandler::SwitchProducers,
-            Level2SourceRoute::CastleRoot => handler == ExistingHandler::CastleRoot,
-            Level2SourceRoute::Goat => handler == ExistingHandler::GoatFamily,
-            Level2SourceRoute::Player => handler == ExistingHandler::PlayerFlight,
-            Level2SourceRoute::Nyphur => matches!(
+            SourceRoute::Dolmen => handler == ExistingHandler::Dolmen,
+            SourceRoute::ExitSwitch => handler == ExistingHandler::SwitchProducers,
+            SourceRoute::CastleRoot => handler == ExistingHandler::CastleRoot,
+            SourceRoute::Goat => handler == ExistingHandler::GoatFamily,
+            SourceRoute::Player => handler == ExistingHandler::PlayerFlight,
+            SourceRoute::Nyphur => matches!(
                 handler,
                 ExistingHandler::NyphurPlayer | ExistingHandler::PlayerFlight
             ),
-            Level2SourceRoute::Imported => matches!(
+            SourceRoute::Imported => matches!(
                 handler,
                 ExistingHandler::BallisticScenery
                     | ExistingHandler::CountdownSwitch
@@ -13995,7 +14054,7 @@ impl Level2ResetSession {
                     | ExistingHandler::MorphBody
                     | ExistingHandler::FireflyFamily
             ),
-            Level2SourceRoute::Dynamic(row) => match row.kind {
+            SourceRoute::Dynamic(row) => match row.kind {
                 Level2DynamicArenaKind::CastleProjectile
                 | Level2DynamicArenaKind::FireballProjectile
                 | Level2DynamicArenaKind::PossessionProjectile
@@ -14086,7 +14145,7 @@ impl Level2ResetSession {
     fn validate_semantic_source_visit(
         &self,
         source_slot: u16,
-        visit: &Level2ResolvedSourceVisit,
+        visit: &ResolvedSourceVisit,
     ) -> std::result::Result<(), String> {
         // Legacy direct-selector sessions intentionally have no semantic
         // LevelDefinition. Semantic/raw consistency becomes authoritative
@@ -14149,7 +14208,7 @@ impl Level2ResetSession {
                 | ExistingHandler::Spider
         );
         let semantic_creature = match visit.route {
-            Level2SourceRoute::Dynamic(Level2DynamicArenaCursorRow {
+            SourceRoute::Dynamic(Level2DynamicArenaCursorRow {
                 kind:
                     Level2DynamicArenaKind::AuthoredClass5
                     | Level2DynamicArenaKind::BeeCreature
@@ -14158,8 +14217,8 @@ impl Level2ResetSession {
                     | Level2DynamicArenaKind::AuthoredDragonPart,
                 ..
             }) => self.creature_identity_for_source_slot(source_slot),
-            Level2SourceRoute::Goat => self.creature_identity_for_source_slot(source_slot),
-            Level2SourceRoute::Imported | Level2SourceRoute::Villager => self
+            SourceRoute::Goat => self.creature_identity_for_source_slot(source_slot),
+            SourceRoute::Imported | SourceRoute::Villager => self
                 .session
                 .state
                 .live
@@ -14173,7 +14232,7 @@ impl Level2ResetSession {
         if semantic_creature.is_some()
             || matches!(
                 visit.route,
-                Level2SourceRoute::Dynamic(Level2DynamicArenaCursorRow {
+                SourceRoute::Dynamic(Level2DynamicArenaCursorRow {
                     kind: Level2DynamicArenaKind::AuthoredClass5
                         | Level2DynamicArenaKind::BeeCreature,
                     ..
@@ -14187,7 +14246,7 @@ impl Level2ResetSession {
         if semantic_scenery.is_some()
             || matches!(
                 visit.route,
-                Level2SourceRoute::Dynamic(Level2DynamicArenaCursorRow {
+                SourceRoute::Dynamic(Level2DynamicArenaCursorRow {
                     kind: Level2DynamicArenaKind::AuthoredTree,
                     ..
                 })
@@ -14196,7 +14255,7 @@ impl Level2ResetSession {
         {
             validate_semantic_scenery_dispatch(source_slot, semantic_scenery, visit.handler)?;
         }
-        if let Level2SourceRoute::Dynamic(Level2DynamicArenaCursorRow {
+        if let SourceRoute::Dynamic(Level2DynamicArenaCursorRow {
             kind: Level2DynamicArenaKind::AuthoredClass14,
             ..
         }) = visit.route
@@ -14239,7 +14298,7 @@ impl Level2ResetSession {
                 }
             }
         }
-        if let Level2SourceRoute::Dynamic(Level2DynamicArenaCursorRow {
+        if let SourceRoute::Dynamic(Level2DynamicArenaCursorRow {
             kind: Level2DynamicArenaKind::SpellPickup,
             ..
         }) = visit.route
@@ -14266,17 +14325,17 @@ impl Level2ResetSession {
             )?;
         }
         if self.session.definition.semantic_level().is_some()
-            && (matches!(visit.route, Level2SourceRoute::House)
+            && (matches!(visit.route, SourceRoute::House)
                 || matches!(
                     visit.route,
-                    Level2SourceRoute::Dynamic(Level2DynamicArenaCursorRow {
+                    SourceRoute::Dynamic(Level2DynamicArenaCursorRow {
                         kind: Level2DynamicArenaKind::AuthoredModel45,
                         ..
                     })
                 ))
         {
             let raw_action = match visit.route {
-                Level2SourceRoute::House => self
+                SourceRoute::House => self
                     .session
                     .state
                     .live
@@ -14285,7 +14344,7 @@ impl Level2ResetSession {
                     .iter()
                     .find(|house| house.active && house.entity_index == source_slot)
                     .map(|house| house.action),
-                Level2SourceRoute::Dynamic(Level2DynamicArenaCursorRow {
+                SourceRoute::Dynamic(Level2DynamicArenaCursorRow {
                     kind: Level2DynamicArenaKind::AuthoredModel45,
                     ..
                 }) => self
@@ -14312,7 +14371,7 @@ impl Level2ResetSession {
         if self.session.definition.semantic_level().is_some() {
             let semantic_switch = self.switch_kind_for_source_slot(source_slot);
             let raw_selector = match visit.route {
-                Level2SourceRoute::Imported | Level2SourceRoute::ExitSwitch => self
+                SourceRoute::Imported | SourceRoute::ExitSwitch => self
                     .session
                     .state
                     .live
@@ -14320,7 +14379,7 @@ impl Level2ResetSession {
                     .entities
                     .get(usize::from(source_slot))
                     .map(|source| (source.class, source.model, source.action)),
-                Level2SourceRoute::Dynamic(Level2DynamicArenaCursorRow {
+                SourceRoute::Dynamic(Level2DynamicArenaCursorRow {
                     kind: Level2DynamicArenaKind::AuthoredSwitchProducer,
                     ..
                 }) => self
@@ -14333,7 +14392,7 @@ impl Level2ResetSession {
                     .iter()
                     .find(|source| source.active && source.source_entity_index == source_slot)
                     .map(|source| (source.source_class, source.model, source.action)),
-                Level2SourceRoute::Dynamic(Level2DynamicArenaCursorRow {
+                SourceRoute::Dynamic(Level2DynamicArenaCursorRow {
                     kind: Level2DynamicArenaKind::AuthoredModel32,
                     ..
                 }) => self
@@ -14666,7 +14725,7 @@ impl Level2ResetSession {
         flight_tuning: crate::FlightTuning,
         evidence: &mut Vec<crate::StepEvidence>,
         source_slot: u16,
-        visit: &Level2ResolvedSourceVisit,
+        visit: &ResolvedSourceVisit,
         player_entity_index: u16,
         player_position: &mut Position,
         source_player_order: &[usize],
@@ -14696,7 +14755,7 @@ impl Level2ResetSession {
             return Ok(());
         }
         match (visit.handler, visit.route) {
-            (ExistingHandler::Creature22, Level2SourceRoute::Imported) => {
+            (ExistingHandler::Creature22, SourceRoute::Imported) => {
                 let empty_models = std::array::from_fn(|_| Vec::new());
                 let (models, players) = if effect_lists.is_current(&self.session.state.live.economy)
                 {
@@ -14736,10 +14795,7 @@ impl Level2ResetSession {
                 }
                 self.append_new_economy_events(pass, source_slot);
             }
-            (
-                ExistingHandler::Creature24 | ExistingHandler::Spider,
-                Level2SourceRoute::Imported,
-            ) => {
+            (ExistingHandler::Creature24 | ExistingHandler::Spider, SourceRoute::Imported) => {
                 let empty_models = std::array::from_fn(|_| Vec::new());
                 let (models, players) = if effect_lists.is_current(&self.session.state.live.economy)
                 {
@@ -14832,7 +14888,7 @@ impl Level2ResetSession {
                 }
                 self.append_new_economy_events(pass, source_slot);
             }
-            (ExistingHandler::LightningProjectile, Level2SourceRoute::Imported) => {
+            (ExistingHandler::LightningProjectile, SourceRoute::Imported) => {
                 let live = &mut self.session.state.live;
                 let owner_range = live
                     .economy
@@ -14960,7 +15016,7 @@ impl Level2ResetSession {
                 }
                 self.append_new_economy_events(pass, source_slot);
             }
-            (ExistingHandler::SpiderWeb, Level2SourceRoute::Imported) => {
+            (ExistingHandler::SpiderWeb, SourceRoute::Imported) => {
                 let live = &mut self.session.state.live;
                 let outcome = creatures::spider::web::step(
                     &mut live.economy,
@@ -14974,7 +15030,7 @@ impl Level2ResetSession {
                 }
                 self.append_new_economy_events(pass, source_slot);
             }
-            (ExistingHandler::Mushrooms, Level2SourceRoute::Imported) => {
+            (ExistingHandler::Mushrooms, SourceRoute::Imported) => {
                 let live = &mut self.session.state.live;
                 let source = &mut live.economy.entities[usize::from(source_slot)];
                 let damage =
@@ -15000,7 +15056,7 @@ impl Level2ResetSession {
                     )?;
                 }
             }
-            (ExistingHandler::Fields, Level2SourceRoute::Imported) => {
+            (ExistingHandler::Fields, SourceRoute::Imported) => {
                 use crate::level_definition::{FieldKind, TilePosition};
                 use crate::world::fields::{status, transport};
                 let live = &mut self.session.state.live;
@@ -15104,7 +15160,7 @@ impl Level2ResetSession {
                 }
                 self.append_new_economy_events(pass, source_slot);
             }
-            (ExistingHandler::TerrainDisasters, Level2SourceRoute::Imported) => {
+            (ExistingHandler::TerrainDisasters, SourceRoute::Imported) => {
                 use crate::world::terrain::disasters::mc2;
                 let particles = &self.session.definition.presentation.particles;
                 let masks = self.session.definition.collision_masks.as_ref();
@@ -15143,7 +15199,7 @@ impl Level2ResetSession {
                     self.push_flight_effect(effect);
                 }
             }
-            (ExistingHandler::CaveSpell, Level2SourceRoute::Imported) => {
+            (ExistingHandler::CaveSpell, SourceRoute::Imported) => {
                 let live = &mut self.session.state.live;
                 cave_spells::step_source(
                     &mut live.economy,
@@ -15154,7 +15210,7 @@ impl Level2ResetSession {
                     &self.session.definition.presentation.entity_parameters,
                 )?;
             }
-            (ExistingHandler::CaveFeatures, Level2SourceRoute::Imported) => {
+            (ExistingHandler::CaveFeatures, SourceRoute::Imported) => {
                 let live = &mut self.session.state.live;
                 let outcome = cave_features::visit_source(
                     &mut live.economy,
@@ -15176,7 +15232,7 @@ impl Level2ResetSession {
                     });
                 }
             }
-            (ExistingHandler::Class14Events, Level2SourceRoute::Imported) => {
+            (ExistingHandler::Class14Events, SourceRoute::Imported) => {
                 let live = &mut self.session.state.live;
                 let source = &mut live.economy.entities[usize::from(source_slot)];
                 if !matches!((source.model, source.action), (3, 8) | (4, 9)) {
@@ -15189,16 +15245,16 @@ impl Level2ResetSession {
                 position.z = live.terrain.ground_height(position);
                 source.set_position(position);
             }
-            (ExistingHandler::BallisticScenery, Level2SourceRoute::Imported) => {
+            (ExistingHandler::BallisticScenery, SourceRoute::Imported) => {
                 self.step_imported_ballistic_scenery(source_slot)?;
             }
             (
                 ExistingHandler::CountdownSwitch
                 | ExistingHandler::SwitchProducers
                 | ExistingHandler::ObjectiveSwitch,
-                Level2SourceRoute::Imported
-                | Level2SourceRoute::ExitSwitch
-                | Level2SourceRoute::Dynamic(Level2DynamicArenaCursorRow {
+                SourceRoute::Imported
+                | SourceRoute::ExitSwitch
+                | SourceRoute::Dynamic(Level2DynamicArenaCursorRow {
                     kind: Level2DynamicArenaKind::AuthoredSwitchProducer,
                     ..
                 }),
@@ -15211,35 +15267,35 @@ impl Level2ResetSession {
                     pass_start_class5_model_slots,
                 )?;
             }
-            (ExistingHandler::TerrainStripController, Level2SourceRoute::Imported) => {
+            (ExistingHandler::TerrainStripController, SourceRoute::Imported) => {
                 self.step_imported_terrain_strip(source_slot)?;
             }
             (
                 ExistingHandler::TerrainStripController,
-                Level2SourceRoute::Dynamic(Level2DynamicArenaCursorRow {
+                SourceRoute::Dynamic(Level2DynamicArenaCursorRow {
                     kind: Level2DynamicArenaKind::TerrainStripCloseTrigger,
                     ..
                 }),
             ) => {
                 self.step_dynamic_terrain_strip_close_trigger(source_slot)?;
             }
-            (ExistingHandler::TreeLifecycle, Level2SourceRoute::Imported) => {
+            (ExistingHandler::TreeLifecycle, SourceRoute::Imported) => {
                 self.step_imported_tree(source_slot)?;
             }
-            (ExistingHandler::Stone, Level2SourceRoute::Imported) => {
+            (ExistingHandler::Stone, SourceRoute::Imported) => {
                 self.step_imported_stone(source_slot)?;
             }
-            (ExistingHandler::Model9Family, Level2SourceRoute::Imported) => {
+            (ExistingHandler::Model9Family, SourceRoute::Imported) => {
                 self.step_imported_model9(
                     source_slot,
                     pass_start_class5_model_slots,
                     pass_start_class3_slots,
                 )?;
             }
-            (ExistingHandler::MultipartFamily, Level2SourceRoute::Imported) => {
+            (ExistingHandler::MultipartFamily, SourceRoute::Imported) => {
                 self.step_imported_multipart(source_slot, pass_start_class5_model_slots)?;
             }
-            (ExistingHandler::ArcherFamily, Level2SourceRoute::Dynamic(row)) => {
+            (ExistingHandler::ArcherFamily, SourceRoute::Dynamic(row)) => {
                 if row.kind != Level2DynamicArenaKind::AuthoredClass5 {
                     return Err(format!(
                         "Archer source slot {source_slot} has incompatible arena kind {:?}",
@@ -15252,14 +15308,14 @@ impl Level2ResetSession {
                     pass_start_class3_slots,
                 )? {
                     self.append_new_economy_events(pass, source_slot);
-                    self.push_dispatch_effect(Level2DispatchEvent::DynamicArena {
+                    self.push_dispatch_effect(Mc2DispatchEvent::DynamicArena {
                         pass,
                         source_slot,
                         kind: row.kind,
                     });
                 }
             }
-            (ExistingHandler::Class10Effects, Level2SourceRoute::Imported) => {
+            (ExistingHandler::Class10Effects, SourceRoute::Imported) => {
                 if crate::world::effects::source_kind(
                     self.session.state.live.economy.entities[usize::from(source_slot)].model,
                 )
@@ -15278,7 +15334,7 @@ impl Level2ResetSession {
                     )?;
                 }
             }
-            (ExistingHandler::PlayerFlight, Level2SourceRoute::Player) => {
+            (ExistingHandler::PlayerFlight, SourceRoute::Player) => {
                 // The player source owns mailbox consumption.  A Bee
                 // contact written by a later source slot therefore stays
                 // pending until the next outer pass, while an earlier
@@ -15302,7 +15358,6 @@ impl Level2ResetSession {
                     let player_action_at_visit = self.session.state.live.economy.entities
                         [usize::from(player_entity_index)]
                     .action;
-                    let mut lethal_at_visit = false;
                     // `AddPlayer03_00_5E010` tests the Castle shift AABB
                     // against the entity-111 position before the generic
                     // body updates position. Preserve that source-time
@@ -15331,7 +15386,6 @@ impl Level2ResetSession {
                             if let Some((damage, attacker, lethal)) =
                                 self.consume_level2_player_damage()
                             {
-                                lethal_at_visit = lethal;
                                 self.session.state.live.economy.events.push(
                                     Level2EconomyEvent::DamageApplied {
                                         target_entity_index: player_entity_index,
@@ -15471,7 +15525,10 @@ impl Level2ResetSession {
                             .shared_spells
                             .sync_typed_spell_parent_caches_from_player_entity();
                         self.sync_level2_spell_fire_context();
-                        if lethal_at_visit {
+                        // AddPlayer03_00 checks authoritative post-body life.
+                        // Shield publishes its own damage effect, so absence
+                        // of a second damage receipt cannot imply survival.
+                        if self.session.state.live.player_life < 0 {
                             mark_source_audio_call(SourceAudioCallTag::PlayerDeath);
                             self.push_flight_effect(FlightEvent::PrepareSound {
                                 #[cfg(test)]
@@ -15496,7 +15553,7 @@ impl Level2ResetSession {
                         .sync_typed_spell_parent_caches_from_player_entity();
                 }
             }
-            (ExistingHandler::SpellHolderAndPickup, Level2SourceRoute::SpeedPickup) => {
+            (ExistingHandler::SpellHolderAndPickup, SourceRoute::SpeedPickup) => {
                 let terrain = &self.session.state.live.terrain;
                 let result = self.session.state.live.shared_spells.step_shared_pickup(
                     source_slot,
@@ -15505,19 +15562,19 @@ impl Level2ResetSession {
                     terrain,
                 );
                 match result {
-                    Ok(result) => self.push_dispatch_effect(Level2DispatchEvent::SharedPickup {
+                    Ok(result) => self.push_dispatch_effect(Mc2DispatchEvent::SharedPickup {
                         pass,
                         source_slot,
                         result,
                     }),
-                    Err(error) => self.push_dispatch_effect(Level2DispatchEvent::Error {
+                    Err(error) => self.push_dispatch_effect(Mc2DispatchEvent::Error {
                         pass,
                         source_slot,
                         message: error.to_string(),
                     }),
                 }
             }
-            (ExistingHandler::SpellHolderAndPickup, Level2SourceRoute::ImportedSpellSource) => {
+            (ExistingHandler::SpellHolderAndPickup, SourceRoute::ImportedSpellSource) => {
                 self.refresh_imported_spell_source_projection(source_slot)
                     .map_err(|error| error.to_string())?;
                 if self
@@ -15678,15 +15735,13 @@ impl Level2ResetSession {
                         )
                 };
                 match acquisition {
-                    Ok(result) => {
-                        self.push_dispatch_effect(Level2DispatchEvent::SpellAcquisition {
-                            pass,
-                            source_slot,
-                            family,
-                            result,
-                        })
-                    }
-                    Err(error) => self.push_dispatch_effect(Level2DispatchEvent::Error {
+                    Ok(result) => self.push_dispatch_effect(Mc2DispatchEvent::SpellAcquisition {
+                        pass,
+                        source_slot,
+                        family,
+                        result,
+                    }),
+                    Err(error) => self.push_dispatch_effect(Mc2DispatchEvent::Error {
                         pass,
                         source_slot,
                         message: error.to_string(),
@@ -15709,19 +15764,19 @@ impl Level2ResetSession {
                 self.commit_imported_spell_source_projection(source_slot)
                     .map_err(|error| error.to_string())?;
             }
-            (ExistingHandler::BadStone, Level2SourceRoute::BadStone) => {
+            (ExistingHandler::BadStone, SourceRoute::BadStone) => {
                 match self.step_bad_stone_action_9(source_slot) {
                     Ok(step) => {
-                        self.push_dispatch_effect(Level2DispatchEvent::BadStone { pass, step })
+                        self.push_dispatch_effect(Mc2DispatchEvent::BadStone { pass, step })
                     }
-                    Err(error) => self.push_dispatch_effect(Level2DispatchEvent::Error {
+                    Err(error) => self.push_dispatch_effect(Mc2DispatchEvent::Error {
                         pass,
                         source_slot,
                         message: error.to_string(),
                     }),
                 }
             }
-            (ExistingHandler::Class10Effects, Level2SourceRoute::House) => {
+            (ExistingHandler::Class10Effects, SourceRoute::House) => {
                 let demolition_group = self
                     .session
                     .state
@@ -15785,7 +15840,7 @@ impl Level2ResetSession {
                             }
                         }
                         self.append_new_economy_events(pass, source_slot);
-                        self.push_dispatch_effect(Level2DispatchEvent::House {
+                        self.push_dispatch_effect(Mc2DispatchEvent::House {
                             pass,
                             source_slot,
                             events: events.into_boxed_slice(),
@@ -15799,7 +15854,7 @@ impl Level2ResetSession {
                 | ExistingHandler::VillagerFamily
                 | ExistingHandler::BuilderVillagerPostBuild
                 | ExistingHandler::TraderFamily,
-                Level2SourceRoute::Villager,
+                SourceRoute::Villager,
             ) => {
                 let live = &mut self.session.state.live;
                 let step = live.ordinary.step_villager_source(
@@ -15863,13 +15918,13 @@ impl Level2ResetSession {
                     }
                 }
                 self.append_new_economy_events(pass, source_slot);
-                self.push_dispatch_effect(Level2DispatchEvent::Villager {
+                self.push_dispatch_effect(Mc2DispatchEvent::Villager {
                     pass,
                     source_slot,
                     effects: effects.into_boxed_slice(),
                 });
             }
-            (ExistingHandler::Dolmen, Level2SourceRoute::Dolmen) => {
+            (ExistingHandler::Dolmen, SourceRoute::Dolmen) => {
                 let terrain = &self.session.state.live.terrain;
                 match self
                     .session
@@ -15878,17 +15933,15 @@ impl Level2ResetSession {
                     .ordinary
                     .step_dolmen_action_6(source_slot, terrain)
                 {
-                    Ok(step) => {
-                        self.push_dispatch_effect(Level2DispatchEvent::Dolmen { pass, step })
-                    }
-                    Err(error) => self.push_dispatch_effect(Level2DispatchEvent::Error {
+                    Ok(step) => self.push_dispatch_effect(Mc2DispatchEvent::Dolmen { pass, step }),
+                    Err(error) => self.push_dispatch_effect(Mc2DispatchEvent::Error {
                         pass,
                         source_slot,
                         message: error.to_string(),
                     }),
                 }
             }
-            (ExistingHandler::CastleRoot, Level2SourceRoute::CastleRoot) => {
+            (ExistingHandler::CastleRoot, SourceRoute::CastleRoot) => {
                 let construction_completion =
                     self.session
                         .state
@@ -15910,7 +15963,7 @@ impl Level2ResetSession {
                 // ApplyEvents cursor order used by dynamic rows.
                 self.append_new_economy_events(pass, source_slot);
                 if pass_start_castle_root_slot == Some(source_slot) {
-                    self.push_dispatch_effect(Level2DispatchEvent::Castle {
+                    self.push_dispatch_effect(Mc2DispatchEvent::Castle {
                         pass,
                         source_slot,
                         advanced,
@@ -15921,7 +15974,7 @@ impl Level2ResetSession {
                     // pass. The handler still runs immediately; only its
                     // compatibility receipt remains the dynamic family-1
                     // projection used before the scheduler cutover.
-                    self.push_dispatch_effect(Level2DispatchEvent::DynamicArena {
+                    self.push_dispatch_effect(Mc2DispatchEvent::DynamicArena {
                         pass,
                         source_slot,
                         kind: Level2DynamicArenaKind::CastleRoot,
@@ -15955,7 +16008,7 @@ impl Level2ResetSession {
             }
             (
                 ExistingHandler::DragonFamily,
-                Level2SourceRoute::Dynamic(Level2DynamicArenaCursorRow {
+                SourceRoute::Dynamic(Level2DynamicArenaCursorRow {
                     kind: Level2DynamicArenaKind::AuthoredClass5,
                     ..
                 }),
@@ -16008,7 +16061,7 @@ impl Level2ResetSession {
                     }
                     self.append_new_economy_events(pass, source_slot);
                     if lifecycle.retained_for_epilogue {
-                        self.push_dispatch_effect(Level2DispatchEvent::DynamicArena {
+                        self.push_dispatch_effect(Mc2DispatchEvent::DynamicArena {
                             pass,
                             source_slot,
                             kind: Level2DynamicArenaKind::AuthoredClass5,
@@ -16115,7 +16168,7 @@ impl Level2ResetSession {
                     }
                 };
                 if live {
-                    self.push_dispatch_effect(Level2DispatchEvent::DynamicArena {
+                    self.push_dispatch_effect(Mc2DispatchEvent::DynamicArena {
                         pass,
                         source_slot,
                         kind: Level2DynamicArenaKind::AuthoredClass5,
@@ -16124,7 +16177,7 @@ impl Level2ResetSession {
             }
             (
                 ExistingHandler::FireflyFamily,
-                Level2SourceRoute::Dynamic(Level2DynamicArenaCursorRow {
+                SourceRoute::Dynamic(Level2DynamicArenaCursorRow {
                     kind: Level2DynamicArenaKind::AuthoredClass5,
                     ..
                 }),
@@ -16175,7 +16228,7 @@ impl Level2ResetSession {
                     }
                     self.append_new_economy_events(pass, source_slot);
                     if lifecycle.retained_for_epilogue {
-                        self.push_dispatch_effect(Level2DispatchEvent::DynamicArena {
+                        self.push_dispatch_effect(Mc2DispatchEvent::DynamicArena {
                             pass,
                             source_slot,
                             kind: Level2DynamicArenaKind::AuthoredClass5,
@@ -16295,7 +16348,7 @@ impl Level2ResetSession {
                     }
                 };
                 if live {
-                    self.push_dispatch_effect(Level2DispatchEvent::DynamicArena {
+                    self.push_dispatch_effect(Mc2DispatchEvent::DynamicArena {
                         pass,
                         source_slot,
                         kind: Level2DynamicArenaKind::AuthoredClass5,
@@ -16322,7 +16375,7 @@ impl Level2ResetSession {
                 | ExistingHandler::SpellHolderAndPickup
                 | ExistingHandler::BeeFamily
                 | ExistingHandler::CastleAuxiliary,
-                Level2SourceRoute::Dynamic(row),
+                SourceRoute::Dynamic(row),
             ) => {
                 if row.kind == Level2DynamicArenaKind::FireballProjectile {
                     let step = {
@@ -16348,7 +16401,7 @@ impl Level2ResetSession {
                     }
                     self.append_new_economy_events(pass, source_slot);
                     if step.live {
-                        self.push_dispatch_effect(Level2DispatchEvent::DynamicArena {
+                        self.push_dispatch_effect(Mc2DispatchEvent::DynamicArena {
                             pass,
                             source_slot,
                             kind: row.kind,
@@ -16376,7 +16429,7 @@ impl Level2ResetSession {
                         *player_position,
                     )?;
                     self.append_new_economy_events(pass, source_slot);
-                    self.push_dispatch_effect(Level2DispatchEvent::DynamicArena {
+                    self.push_dispatch_effect(Mc2DispatchEvent::DynamicArena {
                         pass,
                         source_slot,
                         kind: row.kind,
@@ -16404,7 +16457,7 @@ impl Level2ResetSession {
                             let _ = dispatcher.apply_class5_player_feedback(entity);
                         }
                         self.append_new_economy_events(pass, source_slot);
-                        self.push_dispatch_effect(Level2DispatchEvent::DynamicArena {
+                        self.push_dispatch_effect(Mc2DispatchEvent::DynamicArena {
                             pass,
                             source_slot,
                             kind: row.kind,
@@ -16440,7 +16493,7 @@ impl Level2ResetSession {
                 {
                     self.step_lightning_holder_source_slot(source_slot)?;
                     self.append_new_economy_events(pass, source_slot);
-                    self.push_dispatch_effect(Level2DispatchEvent::DynamicArena {
+                    self.push_dispatch_effect(Mc2DispatchEvent::DynamicArena {
                         pass,
                         source_slot,
                         kind: row.kind,
@@ -16467,7 +16520,7 @@ impl Level2ResetSession {
                         &self.session.definition.presentation.particles,
                         source_slot,
                     )?;
-                    self.push_dispatch_effect(Level2DispatchEvent::DynamicArena {
+                    self.push_dispatch_effect(Mc2DispatchEvent::DynamicArena {
                         pass,
                         source_slot,
                         kind: row.kind,
@@ -16495,7 +16548,7 @@ impl Level2ResetSession {
                         source_slot,
                     )?;
                     live.player_life = live.shared_spells.player_entity.life;
-                    self.push_dispatch_effect(Level2DispatchEvent::DynamicArena {
+                    self.push_dispatch_effect(Mc2DispatchEvent::DynamicArena {
                         pass,
                         source_slot,
                         kind: row.kind,
@@ -16555,14 +16608,14 @@ impl Level2ResetSession {
                 };
                 self.append_new_economy_events(pass, source_slot);
                 if live {
-                    self.push_dispatch_effect(Level2DispatchEvent::DynamicArena {
+                    self.push_dispatch_effect(Mc2DispatchEvent::DynamicArena {
                         pass,
                         source_slot,
                         kind: row.kind,
                     });
                 }
             }
-            (ExistingHandler::GoatFamily, Level2SourceRoute::Goat) => {
+            (ExistingHandler::GoatFamily, SourceRoute::Goat) => {
                 let mut events = goat_begin_events.remove(&source_slot).unwrap_or_default();
                 let awards = {
                     let live = &mut self.session.state.live;
@@ -16586,7 +16639,7 @@ impl Level2ResetSession {
                 }
                 self.apply_level2_goat_economy_events(&events);
                 self.append_new_economy_events(pass, source_slot);
-                self.push_dispatch_effect(Level2DispatchEvent::Goat {
+                self.push_dispatch_effect(Mc2DispatchEvent::Goat {
                     pass,
                     source_slot,
                     events: events.into_boxed_slice(),
@@ -16594,7 +16647,7 @@ impl Level2ResetSession {
             }
             (
                 ExistingHandler::NyphurPlayer | ExistingHandler::PlayerFlight,
-                Level2SourceRoute::Nyphur,
+                SourceRoute::Nyphur,
             ) => {
                 let action =
                     self.session.state.live.economy.entities[usize::from(source_slot)].action;
@@ -16670,7 +16723,7 @@ impl Level2ResetSession {
                             .nyphur_dispatch_traces
                             .push(trace);
                     }
-                    Err(error) => self.push_dispatch_effect(Level2DispatchEvent::Error {
+                    Err(error) => self.push_dispatch_effect(Mc2DispatchEvent::Error {
                         pass,
                         source_slot,
                         message: error.to_string(),
@@ -16678,7 +16731,7 @@ impl Level2ResetSession {
                 }
                 // The scheduler epilogue advances the current occupant.
             }
-            (ExistingHandler::SpellHolderAndPickup, Level2SourceRoute::PossessionHolder) => {
+            (ExistingHandler::SpellHolderAndPickup, SourceRoute::PossessionHolder) => {
                 // The holder is a constructor/producer only. The
                 // newly allocated row is dispatched by the source cursor
                 // below, and emits DynamicArena only if its callback
@@ -16691,14 +16744,14 @@ impl Level2ResetSession {
                 // The scheduler epilogue advances the current occupant
                 // after this constructor callback returns.
             }
-            (ExistingHandler::SpellHolderAndPickup, Level2SourceRoute::CastleHolder) => {
+            (ExistingHandler::SpellHolderAndPickup, SourceRoute::CastleHolder) => {
                 // The holder is a constructor/producer only. The
                 // higher-slot flyer callback owns the DynamicArena
                 // receipt after step_level2_dynamic_arena returns live.
                 self.step_level2_castle_holder_source_slot(source_slot);
                 // The scheduler epilogue advances byte 0x3e, including W=0.
             }
-            (ExistingHandler::SpellHolderAndPickup, Level2SourceRoute::FireballHolder) => {
+            (ExistingHandler::SpellHolderAndPickup, SourceRoute::FireballHolder) => {
                 // Family-0's class/action keyed handler owns the
                 // producer transition; the higher-slot Fireball callback
                 // receives the ordinary dynamic-arena dispatch below.
@@ -18319,7 +18372,7 @@ impl Level2ResetSession {
                     .level_exit
                     .start(source_slot, portal_slot);
                 mark_source_audio_call(SourceAudioCallTag::ExitOverlapSwitch);
-                self.push_dispatch_effect(Level2DispatchEvent::LevelExitSequenceStarted {
+                self.push_dispatch_effect(Mc2DispatchEvent::LevelExitSequenceStarted {
                     pass,
                     trigger_entity_index: source_slot,
                     portal_entity_index: portal_slot,
@@ -18648,13 +18701,13 @@ impl Level2ResetSession {
                 terrain,
                 source_player_order,
             ) {
-            Ok(result) => self.push_dispatch_effect(Level2DispatchEvent::SpellAcquisition {
+            Ok(result) => self.push_dispatch_effect(Mc2DispatchEvent::SpellAcquisition {
                 pass,
                 source_slot,
                 family,
                 result,
             }),
-            Err(error) => self.push_dispatch_effect(Level2DispatchEvent::Error {
+            Err(error) => self.push_dispatch_effect(Mc2DispatchEvent::Error {
                 pass,
                 source_slot,
                 message: error.to_string(),
@@ -18678,7 +18731,7 @@ impl Level2ResetSession {
             .pickup(source_slot)
             .map(|pickup| (pickup.action, pickup.position))
         else {
-            self.push_dispatch_effect(Level2DispatchEvent::Error {
+            self.push_dispatch_effect(Mc2DispatchEvent::Error {
                 pass,
                 source_slot,
                 message: "dynamic spell pickup lost its shared entity projection".to_owned(),
@@ -18692,7 +18745,7 @@ impl Level2ResetSession {
             .economy
             .sync_spell_pickup_projection(source_slot, action, position)
         {
-            self.push_dispatch_effect(Level2DispatchEvent::Error {
+            self.push_dispatch_effect(Mc2DispatchEvent::Error {
                 pass,
                 source_slot,
                 message: "dynamic spell pickup lost its source-arena projection".to_owned(),
@@ -18706,7 +18759,7 @@ impl Level2ResetSession {
             .economy
             .step_spell_pickup_slot(source_slot);
         if let Err(error) = self.commit_imported_spell_source_projection(source_slot) {
-            self.push_dispatch_effect(Level2DispatchEvent::Error {
+            self.push_dispatch_effect(Mc2DispatchEvent::Error {
                 pass,
                 source_slot,
                 message: error.to_string(),
@@ -19123,7 +19176,7 @@ impl Level2ResetSession {
 
     fn step_dynamic_morph_holder(&mut self, pass: u8, source_slot: u16) -> bool {
         if let Err(error) = self.step_morph_holder_source_slot(source_slot) {
-            self.push_dispatch_effect(Level2DispatchEvent::Error {
+            self.push_dispatch_effect(Mc2DispatchEvent::Error {
                 pass,
                 source_slot,
                 message: error.to_string(),
@@ -19415,7 +19468,7 @@ impl Level2ResetSession {
             .pickup(source_slot)
             .map(|holder| (holder.action, holder.position))
         else {
-            self.push_dispatch_effect(Level2DispatchEvent::Error {
+            self.push_dispatch_effect(Mc2DispatchEvent::Error {
                 pass,
                 source_slot,
                 message: "dynamic Castle holder lost its shared entity projection".to_owned(),
@@ -19429,7 +19482,7 @@ impl Level2ResetSession {
             .economy
             .sync_spell_pickup_projection(source_slot, action, position)
         {
-            self.push_dispatch_effect(Level2DispatchEvent::Error {
+            self.push_dispatch_effect(Mc2DispatchEvent::Error {
                 pass,
                 source_slot,
                 message: "dynamic Castle holder lost its source-arena projection".to_owned(),
@@ -19461,7 +19514,7 @@ impl Level2ResetSession {
             .pickup(source_slot)
             .map(|holder| (holder.action, holder.position))
         else {
-            self.push_dispatch_effect(Level2DispatchEvent::Error {
+            self.push_dispatch_effect(Mc2DispatchEvent::Error {
                 pass,
                 source_slot,
                 message: "dynamic Speed holder lost its shared entity projection".to_owned(),
@@ -19475,7 +19528,7 @@ impl Level2ResetSession {
             .economy
             .sync_spell_pickup_projection(source_slot, action, position)
         {
-            self.push_dispatch_effect(Level2DispatchEvent::Error {
+            self.push_dispatch_effect(Mc2DispatchEvent::Error {
                 pass,
                 source_slot,
                 message: "dynamic Speed holder lost its source-arena projection".to_owned(),
@@ -19489,7 +19542,7 @@ impl Level2ResetSession {
             .economy
             .step_spell_pickup_slot(source_slot);
         if let Err(error) = self.commit_imported_spell_source_projection(source_slot) {
-            self.push_dispatch_effect(Level2DispatchEvent::Error {
+            self.push_dispatch_effect(Mc2DispatchEvent::Error {
                 pass,
                 source_slot,
                 message: error.to_string(),
@@ -19541,13 +19594,13 @@ impl Level2ResetSession {
                 terrain,
                 source_player_order,
             ) {
-            Ok(result) => self.push_dispatch_effect(Level2DispatchEvent::SpellAcquisition {
+            Ok(result) => self.push_dispatch_effect(Mc2DispatchEvent::SpellAcquisition {
                 pass,
                 source_slot,
                 family,
                 result,
             }),
-            Err(error) => self.push_dispatch_effect(Level2DispatchEvent::Error {
+            Err(error) => self.push_dispatch_effect(Mc2DispatchEvent::Error {
                 pass,
                 source_slot,
                 message: error.to_string(),
@@ -19767,7 +19820,7 @@ impl Level2ResetSession {
         ) {
             Ok(()) => true,
             Err(message) => {
-                self.push_dispatch_effect(Level2DispatchEvent::Error {
+                self.push_dispatch_effect(Mc2DispatchEvent::Error {
                     pass,
                     source_slot,
                     message,
@@ -19925,7 +19978,7 @@ impl Level2ResetSession {
                     });
                 }
                 crate::level_exit::LevelExitEffect::Completed { result_code } => {
-                    self.push_dispatch_effect(Level2DispatchEvent::LevelExitSequenceCompleted {
+                    self.push_dispatch_effect(Mc2DispatchEvent::LevelExitSequenceCompleted {
                         pass,
                         player_entity_index,
                         result_code,
@@ -21047,7 +21100,7 @@ impl Level2ResetSession {
             return true;
         };
         if let Err(error) = consume_result {
-            self.push_dispatch_effect(Level2DispatchEvent::Error {
+            self.push_dispatch_effect(Mc2DispatchEvent::Error {
                 pass,
                 source_slot,
                 message: error,
@@ -21225,7 +21278,7 @@ impl Level2ResetSession {
                 match self.step_level2_mana_sphere_source_slot(source_slot) {
                     Ok(live) => live,
                     Err(error) => {
-                        self.push_dispatch_effect(Level2DispatchEvent::Error {
+                        self.push_dispatch_effect(Mc2DispatchEvent::Error {
                             pass,
                             source_slot,
                             message: error.to_string(),
@@ -21339,7 +21392,7 @@ impl Level2ResetSession {
                 let effects = match result {
                     Ok(effects) => effects,
                     Err(message) => {
-                        self.push_dispatch_effect(Level2DispatchEvent::Error {
+                        self.push_dispatch_effect(Mc2DispatchEvent::Error {
                             pass,
                             source_slot,
                             message,
@@ -21362,7 +21415,7 @@ impl Level2ResetSession {
                             contact.damage as u16,
                             contact.attacker,
                         ) {
-                            self.push_dispatch_effect(Level2DispatchEvent::Error {
+                            self.push_dispatch_effect(Mc2DispatchEvent::Error {
                                 pass,
                                 source_slot,
                                 message,
@@ -21475,7 +21528,7 @@ impl Level2ResetSession {
                     if let Err(message) =
                         self.step_level2_authored_model22_sub33340_eligible_targets(source_slot)
                     {
-                        self.push_dispatch_effect(Level2DispatchEvent::Error {
+                        self.push_dispatch_effect(Mc2DispatchEvent::Error {
                             pass,
                             source_slot,
                             message,
@@ -21486,7 +21539,7 @@ impl Level2ResetSession {
                         if let Err(message) =
                             self.step_level2_authored_model22_wind_pulse(source_slot, effect_lists)
                         {
-                            self.push_dispatch_effect(Level2DispatchEvent::Error {
+                            self.push_dispatch_effect(Mc2DispatchEvent::Error {
                                 pass,
                                 source_slot,
                                 message,
@@ -21570,7 +21623,7 @@ impl Level2ResetSession {
                     return match self.step_level2_archer_source(source_slot, &models, &players) {
                         Ok(live) => live,
                         Err(message) => {
-                            self.push_dispatch_effect(Level2DispatchEvent::Error {
+                            self.push_dispatch_effect(Mc2DispatchEvent::Error {
                                 pass,
                                 source_slot,
                                 message,
@@ -21641,7 +21694,7 @@ impl Level2ResetSession {
                         Ok(Some(step)) => step,
                         Ok(None) => return false,
                         Err(message) => {
-                            self.push_dispatch_effect(Level2DispatchEvent::Error {
+                            self.push_dispatch_effect(Mc2DispatchEvent::Error {
                                 pass,
                                 source_slot,
                                 message,
@@ -21989,7 +22042,7 @@ impl Level2ResetSession {
                         step.map_synced
                     }
                     Err(message) => {
-                        self.push_dispatch_effect(Level2DispatchEvent::Error {
+                        self.push_dispatch_effect(Mc2DispatchEvent::Error {
                             pass,
                             source_slot,
                             message,
@@ -22138,7 +22191,7 @@ impl Level2ResetSession {
     }
 
     #[must_use]
-    pub fn dispatch_events(&self) -> &[Level2DispatchEvent] {
+    pub fn dispatch_events(&self) -> &[Mc2DispatchEvent] {
         &self.session.state.scratch.dispatch_events
     }
 
@@ -23764,7 +23817,7 @@ impl Level2ResetSession {
                     .state
                     .scratch
                     .dispatch_events
-                    .push(Level2DispatchEvent::Error {
+                    .push(Mc2DispatchEvent::Error {
                         pass: 0,
                         source_slot: self.session.state.live.core.state.entity_index,
                         message: error.to_string(),
@@ -23827,7 +23880,7 @@ impl Level2ResetSession {
                 .state
                 .scratch
                 .dispatch_events
-                .push(Level2DispatchEvent::Error {
+                .push(Mc2DispatchEvent::Error {
                     pass: 0,
                     source_slot,
                     message,
@@ -23879,7 +23932,7 @@ impl Level2ResetSession {
                         .state
                         .scratch
                         .dispatch_events
-                        .push(Level2DispatchEvent::Error {
+                        .push(Mc2DispatchEvent::Error {
                             pass: u8::try_from(pass).unwrap_or(u8::MAX),
                             source_slot,
                             message,
@@ -23938,7 +23991,7 @@ impl Level2ResetSession {
 
         let mut candidate = self.clone();
         let evidence = candidate.step_outer_turn(command, speed_index);
-        let observed = ResetState::from_level2(&candidate);
+        let observed = ResetState::from_simulation(&candidate);
         let written = encode_reset_v1_into(&observed, output).map_err(CampaignStepError::Encode)?;
         let campaign = candidate.campaign_state_mut();
         campaign.scratch.valid = true;
@@ -23965,7 +24018,7 @@ mod tests {
             CampaignSelection::LEVEL3,
         )
         .unwrap();
-        let session = campaign.level2_compatibility_mut();
+        let session = campaign.simulation_mut();
         session.apply_carried_spell_families(&[4], Some(4)).unwrap();
         let holder = session.shared_spells().local_player().enabled_spell_holders[4];
         let parent = session.state.entity_index;
@@ -24033,7 +24086,7 @@ mod tests {
             .1;
         for allocation_fails in [false, true] {
             let mut campaign = CampaignSession::open(&package, CampaignSelection::LEVEL1).unwrap();
-            let session = campaign.level2_compatibility_mut();
+            let session = campaign.simulation_mut();
             let player = session.state.entity_index;
             let position = session.state.position;
             let castle = session
@@ -24050,7 +24103,7 @@ mod tests {
                 !session
                     .dispatch_events()
                     .iter()
-                    .any(|event| matches!(event, Level2DispatchEvent::Error { .. })),
+                    .any(|event| matches!(event, Mc2DispatchEvent::Error { .. })),
                 "{:?}",
                 session.dispatch_events()
             );
@@ -24062,7 +24115,7 @@ mod tests {
             // is emitted only after its model42 allocation succeeds.
             assert_eq!(
                 session.dispatch_events().iter().any(|event| matches!(event,
-                Level2DispatchEvent::Economy { event: Level2EconomyEvent::CastleConstructionSound {
+                Mc2DispatchEvent::Economy { event: Level2EconomyEvent::CastleConstructionSound {
                     source_entity_index, sound_id: 10,
                 }, .. } if *source_entity_index == castle)),
                 !allocation_fails
@@ -24229,7 +24282,7 @@ mod tests {
         ] {
             let mut campaign =
                 CampaignSession::open(&package, CampaignSelection::ordinary(4).unwrap()).unwrap();
-            let session = campaign.level2_compatibility_mut();
+            let session = campaign.simulation_mut();
             let player = session.state.entity_index;
             // Standalone Level4 has no carried abilities. Exercise the real
             // SetSpell carry constructor used after Level3 acquisition; the
@@ -24306,26 +24359,26 @@ mod tests {
             );
             assert!(
                 !campaign
-                    .level2_compatibility()
+                    .simulation()
                     .dispatch_events()
                     .iter()
-                    .any(|event| matches!(event, Level2DispatchEvent::Error { .. })),
+                    .any(|event| matches!(event, Mc2DispatchEvent::Error { .. })),
                 "initial Morph cast rolled back: {:?}",
-                campaign.level2_compatibility().dispatch_events()
+                campaign.simulation().dispatch_events()
             );
             for _ in 0..3 {
                 let _ = campaign.step(PlayerCommand::default(), 0);
                 assert!(
                     !campaign
-                        .level2_compatibility()
+                        .simulation()
                         .dispatch_events()
                         .iter()
-                        .any(|event| matches!(event, Level2DispatchEvent::Error { .. })),
+                        .any(|event| matches!(event, Mc2DispatchEvent::Error { .. })),
                     "{:?}",
-                    campaign.level2_compatibility().dispatch_events()
+                    campaign.simulation().dispatch_events()
                 );
                 if campaign
-                    .level2_compatibility()
+                    .simulation()
                     .shared_spells()
                     .pickup(holder_slot)
                     .unwrap()
@@ -24335,7 +24388,7 @@ mod tests {
                     break;
                 }
             }
-            let session = campaign.level2_compatibility_mut();
+            let session = campaign.simulation_mut();
             let body_slot = session
                 .shared_spells()
                 .pickup(holder_slot)
@@ -24378,7 +24431,7 @@ mod tests {
                 !session
                     .dispatch_events()
                     .iter()
-                    .any(|event| matches!(event, Level2DispatchEvent::Error { .. })),
+                    .any(|event| matches!(event, Mc2DispatchEvent::Error { .. })),
                 "{:?}",
                 session.dispatch_events()
             );
@@ -24446,7 +24499,7 @@ mod tests {
                 CampaignSelection::LEVEL1,
             )
             .unwrap();
-            let session = campaign.level2_compatibility_mut();
+            let session = campaign.simulation_mut();
             let player = session.state.entity_index;
             let slot = session.shared_spells().local_player.enabled_spell_holders[1];
             if tier == 2 {
@@ -24744,7 +24797,7 @@ mod tests {
         let package = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../../../generated/mc-1pb-16-level2-full-build-v2");
         let campaign = CampaignSession::open(package, CampaignSelection::LEVEL2).unwrap();
-        let mut session = campaign.level2_compatibility().clone();
+        let mut session = campaign.simulation().clone();
         let house = *session
             .ordinary()
             .houses()
@@ -24789,7 +24842,7 @@ mod tests {
     #[test]
     fn qualified_house_lazy_rollback_matches_eager_outputs_and_hashes() {
         fn eager_reference(
-            compatibility: &mut Level2ResetSession,
+            compatibility: &mut Mc2Simulation,
             source_slot: u16,
         ) -> std::result::Result<Vec<HouseStepEvent>, String> {
             let live = &mut compatibility.session.state.live;
@@ -24828,11 +24881,11 @@ mod tests {
             CampaignSelection::LEVEL2,
         )
         .expect("qualified House rollback campaign opens with owner BUILD footprints");
-        let house = &baseline.level2_compatibility().ordinary().houses()[0];
+        let house = &baseline.simulation().ordinary().houses()[0];
         let source_slot = house.entity_index;
         assert!(
             baseline
-                .level2_compatibility()
+                .simulation()
                 .ordinary()
                 .house_build_footprints
                 .contains_key(&house.building_index),
@@ -24848,7 +24901,7 @@ mod tests {
         ] {
             let mut actual = baseline.clone();
             {
-                let live = &mut actual.level2_compatibility_mut().session.state.live;
+                let live = &mut actual.simulation_mut().session.state.live;
                 let house = live.ordinary.houses.house_mut(source_slot).unwrap();
                 house.phase = 1;
                 house.pending_damage = 0;
@@ -24882,14 +24935,14 @@ mod tests {
             }
             let before = actual.clone();
             let mut reference = actual.clone();
-            let expected = eager_reference(reference.level2_compatibility_mut(), source_slot);
+            let expected = eager_reference(reference.simulation_mut(), source_slot);
             let observed = actual
-                .level2_compatibility_mut()
+                .simulation_mut()
                 .step_level2_house_sink_with_rollback(source_slot);
             assert_eq!(observed, expected, "ordered House events/error: {case}");
             assert_eq!(
-                actual.level2_compatibility(),
-                reference.level2_compatibility(),
+                actual.simulation(),
+                reference.simulation(),
                 "all rollback and source carriers: {case}"
             );
             assert_eq!(
@@ -24900,8 +24953,8 @@ mod tests {
             if matches!(case, "missing-footprint" | "missing-removal-footprint") {
                 assert!(observed.unwrap_err().contains("BUILD footprint"));
                 assert_eq!(
-                    actual.level2_compatibility(),
-                    before.level2_compatibility(),
+                    actual.simulation(),
+                    before.simulation(),
                     "failure restores every pre-callback domain"
                 );
             } else {
@@ -24925,11 +24978,8 @@ mod tests {
                     ),
                     _ => unreachable!(),
                 }
-                assert_eq!(
-                    actual.level2_compatibility().ordinary().houses()[0].phase,
-                    2
-                );
-                let live = &actual.level2_compatibility().session.state.live;
+                assert_eq!(actual.simulation().ordinary().houses()[0].phase, 2);
+                let live = &actual.simulation().session.state.live;
                 let house = live
                     .ordinary
                     .houses()
@@ -24951,12 +25001,12 @@ mod tests {
         fn assert_no_dispatch_error(campaign: &CampaignSession) {
             assert!(
                 campaign
-                    .level2_compatibility()
+                    .simulation()
                     .dispatch_events()
                     .iter()
-                    .all(|event| !matches!(event, Level2DispatchEvent::Error { .. })),
+                    .all(|event| !matches!(event, Mc2DispatchEvent::Error { .. })),
                 "{:?}",
-                campaign.level2_compatibility().dispatch_events()
+                campaign.simulation().dispatch_events()
             );
         }
         let package = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -24966,14 +25016,14 @@ mod tests {
             // Retain an already advanced world, rather than a reset-state-only fixture.
             let _ = campaign.step(PlayerCommand::default(), 0);
             assert_no_dispatch_error(&campaign);
-            let actor_slot = campaign.level2_compatibility().state.entity_index;
+            let actor_slot = campaign.simulation().state.entity_index;
             let held_before = campaign
-                .level2_compatibility()
+                .simulation()
                 .shared_spells()
                 .local_player()
                 .enabled_spell_holders;
             let castle_position = if with_castle {
-                let live = &mut campaign.level2_compatibility_mut().session.state.live;
+                let live = &mut campaign.simulation_mut().session.state.live;
                 let terrain = live.terrain.clone();
                 live.economy
                     .build_castle(live.core.state.position, actor_slot, &terrain)
@@ -24989,7 +25039,7 @@ mod tests {
                 None
             };
             let away = {
-                let session = campaign.level2_compatibility();
+                let session = campaign.simulation();
                 let actor = &session.entities()[usize::from(actor_slot)];
                 let parameter = actor.parameter_relation.unwrap();
                 let row = &session.session.definition.presentation.entity_parameters
@@ -25001,7 +25051,7 @@ mod tests {
                 position
             };
             let attacker = campaign
-                .level2_compatibility()
+                .simulation()
                 .session
                 .state
                 .live
@@ -25012,7 +25062,7 @@ mod tests {
                 .unwrap()
                 .entity_index;
             {
-                let session = campaign.level2_compatibility_mut();
+                let session = campaign.simulation_mut();
                 session
                     .set_level2_entity_position(actor_slot, away)
                     .unwrap();
@@ -25048,7 +25098,7 @@ mod tests {
                 }
             }
             let before = campaign.clone();
-            let before_live = &before.level2_compatibility().session.state.live;
+            let before_live = &before.simulation().session.state.live;
             let before_actor = &before_live.economy.entities[usize::from(actor_slot)];
             let before_player = before_live.shared_spells.local_player().clone();
             let castle_slot = before_live.economy.player_castle_entity_index();
@@ -25072,8 +25122,8 @@ mod tests {
                 0,
             );
             assert_no_dispatch_error(&campaign);
-            let live = &campaign.level2_compatibility().session.state.live;
-            let reference = &neutral.level2_compatibility().session.state.live;
+            let live = &campaign.simulation().session.state.live;
+            let reference = &neutral.simulation().session.state.live;
             let actor = &live.economy.entities[usize::from(actor_slot)];
             let player = live.shared_spells.local_player();
             assert_eq!(campaign.generation(), before.generation());
@@ -25276,7 +25326,7 @@ mod tests {
     #[test]
     fn qualified_castle_protection_clears_each_mailbox_and_one_departure_visit() {
         fn assert_protected_projection(campaign: &CampaignSession, counter: u16) {
-            let live = &campaign.level2_compatibility().session.state.live;
+            let live = &campaign.simulation().session.state.live;
             let player_slot = live.core.state.entity_index;
             for entity in [
                 &live.economy.entities[usize::from(player_slot)],
@@ -25304,7 +25354,7 @@ mod tests {
             );
         }
         fn move_player(campaign: &mut CampaignSession, position: Position) {
-            let live = &mut campaign.level2_compatibility_mut().session.state.live;
+            let live = &mut campaign.simulation_mut().session.state.live;
             let player_slot = live.core.state.entity_index;
             live.core.state.position = position;
             live.economy.entities[usize::from(player_slot)].set_position(position);
@@ -25319,15 +25369,9 @@ mod tests {
             .join("../../../generated/mc-cf02-campaign-package-v2-b/qualified-level2");
         let mut campaign = CampaignSession::open(&package, CampaignSelection::LEVEL2)
             .expect("qualified Castle protection campaign opens");
-        let terrain = campaign
-            .level2_compatibility()
-            .session
-            .state
-            .live
-            .terrain
-            .clone();
+        let terrain = campaign.simulation().session.state.live.terrain.clone();
         let (player_slot, attacker, castle_slot, protected_position, player_life) = {
-            let live = &mut campaign.level2_compatibility_mut().session.state.live;
+            let live = &mut campaign.simulation_mut().session.state.live;
             let player_slot = live.core.state.entity_index;
             let attacker = live
                 .core
@@ -25373,11 +25417,11 @@ mod tests {
         move_player(&mut campaign, protected_position);
         assert!(
             campaign
-                .level2_compatibility()
+                .simulation()
                 .economy()
                 .player_castle_shift_aabb_overlap(
                     &campaign
-                        .level2_compatibility()
+                        .simulation()
                         .session
                         .state
                         .live
@@ -25386,37 +25430,21 @@ mod tests {
                 )
         );
         // A zero-damage visit still refreshes 2 and consumes exactly one visit.
-        let compact_spell_bytes = campaign
-            .level2_compatibility()
-            .shared_spells()
-            .local_player()
-            .record[345..347]
-            .to_vec();
+        let compact_spell_bytes =
+            campaign.simulation().shared_spells().local_player().record[345..347].to_vec();
         let _ = campaign.step(PlayerCommand::default(), 0);
         assert_protected_projection(&campaign, 1);
         assert_eq!(
-            &campaign
-                .level2_compatibility()
-                .shared_spells()
-                .local_player()
-                .record[345..347],
+            &campaign.simulation().shared_spells().local_player().record[345..347],
             compact_spell_bytes.as_slice(),
             "source word159 must not overwrite compact spell bytes"
         );
-        let castle_life = campaign
-            .level2_compatibility()
-            .economy()
-            .castle
-            .unwrap()
-            .life;
-        let castle_generation = campaign
-            .level2_compatibility()
-            .economy()
-            .slot_generation(castle_slot);
-        let events_before = campaign.level2_compatibility().economy().events().len();
+        let castle_life = campaign.simulation().economy().castle.unwrap().life;
+        let castle_generation = campaign.simulation().economy().slot_generation(castle_slot);
+        let events_before = campaign.simulation().economy().events().len();
         for hit in 1..=2 {
             {
-                let live = &mut campaign.level2_compatibility_mut().session.state.live;
+                let live = &mut campaign.simulation_mut().session.state.live;
                 // Distinguish the source full-struct memset from payload/attacker-only clears.
                 live.economy.entities[usize::from(player_slot)].record[104..134].fill(0x5a);
                 live.shared_spells.player_entity.record[104..134].fill(0x5a);
@@ -25427,17 +25455,16 @@ mod tests {
                 }
             }
             campaign
-                .level2_compatibility_mut()
+                .simulation_mut()
                 .queue_level2_player_contact_damage(200, attacker);
             assert_eq!(
-                campaign.level2_compatibility().entities()[usize::from(player_slot)]
-                    .source_upkeep_payload(),
+                campaign.simulation().entities()[usize::from(player_slot)].source_upkeep_payload(),
                 200,
                 "the next real contact starts with a cleared ownerless payload"
             );
             let _ = campaign.step(PlayerCommand::default(), 0);
             assert_protected_projection(&campaign, 1);
-            let live = &campaign.level2_compatibility().session.state.live;
+            let live = &campaign.simulation().session.state.live;
             assert_eq!(live.player_life, player_life);
             assert_eq!(
                 live.economy.castle.unwrap().life,
@@ -25454,11 +25481,11 @@ mod tests {
         move_player(&mut campaign, away);
         assert!(
             !campaign
-                .level2_compatibility()
+                .simulation()
                 .economy()
                 .player_castle_shift_aabb_overlap(
                     &campaign
-                        .level2_compatibility()
+                        .simulation()
                         .session
                         .state
                         .live
@@ -25467,34 +25494,24 @@ mod tests {
                 )
         );
         campaign
-            .level2_compatibility_mut()
+            .simulation_mut()
             .queue_level2_player_contact_damage(200, attacker);
         let _ = campaign.step(PlayerCommand::default(), 0);
         assert_protected_projection(&campaign, 0);
         assert_eq!(
-            campaign
-                .level2_compatibility()
-                .session
-                .state
-                .live
-                .player_life,
+            campaign.simulation().session.state.live.player_life,
             player_life,
             "the first callback after departure consumes the remaining protected visit"
         );
         assert_eq!(
-            campaign
-                .level2_compatibility()
-                .economy()
-                .castle
-                .unwrap()
-                .life,
+            campaign.simulation().economy().castle.unwrap().life,
             castle_life - 400
         );
         campaign
-            .level2_compatibility_mut()
+            .simulation_mut()
             .queue_level2_player_contact_damage(200, attacker);
         let _ = campaign.step(PlayerCommand::default(), 0);
-        let live = &campaign.level2_compatibility().session.state.live;
+        let live = &campaign.simulation().session.state.live;
         assert_eq!(
             live.player_life,
             player_life - 200,
@@ -25547,10 +25564,10 @@ mod tests {
         let mut campaign = CampaignSession::open(&package, CampaignSelection::LEVEL2)
             .expect("qualified Level 2 campaign opens");
         let baseline_hash = campaign.state_hash();
-        let player_slot = campaign.level2_compatibility().state.entity_index;
+        let player_slot = campaign.simulation().state.entity_index;
         assert_eq!(
             campaign
-                .level2_compatibility()
+                .simulation()
                 .session
                 .state
                 .live
@@ -25560,7 +25577,7 @@ mod tests {
             "the source full-player reset clears dword_0x18D"
         );
         let starting_life = {
-            let live = &mut campaign.level2_compatibility_mut().session.state.live;
+            let live = &mut campaign.simulation_mut().session.state.live;
             let life = live.shared_spells.player_entity.max_life / 2;
             live.player_life = life;
             live.economy.entities[usize::from(player_slot)].set_life(life);
@@ -25578,7 +25595,7 @@ mod tests {
         // It applies the old zero life rate and selects the outdoor rate.
         let _ = campaign.step(PlayerCommand::default(), 0);
         let regen = campaign
-            .level2_compatibility()
+            .simulation()
             .session
             .state
             .live
@@ -25586,32 +25603,22 @@ mod tests {
             .player_life_regen;
         assert!(regen > 0);
         assert_eq!(
-            campaign
-                .level2_compatibility()
-                .canonical_player_life_for_test(),
+            campaign.simulation().canonical_player_life_for_test(),
             starting_life
         );
-        assert_eq!(
-            campaign
-                .level2_compatibility()
-                .shared_spells()
-                .player_mana(),
-            7
-        );
+        assert_eq!(campaign.simulation().shared_spells().player_mana(), 7);
         // The nearest no-damage case must not arm a healing countdown.
         campaign
-            .level2_compatibility_mut()
+            .simulation_mut()
             .queue_level2_player_contact_damage(0, 1);
         let _ = campaign.step(PlayerCommand::default(), 0);
         assert_eq!(
-            campaign
-                .level2_compatibility()
-                .canonical_player_life_for_test(),
+            campaign.simulation().canonical_player_life_for_test(),
             starting_life + regen
         );
         assert_eq!(
             campaign
-                .level2_compatibility()
+                .simulation()
                 .session
                 .state
                 .live
@@ -25620,34 +25627,30 @@ mod tests {
             0
         );
         let held_spells = campaign
-            .level2_compatibility()
+            .simulation()
             .shared_spells()
             .local_player()
             .enabled_spell_holders;
         let selector_bytes = campaign
-            .level2_compatibility()
+            .simulation()
             .shared_spells()
             .local_player()
             .record_bytes()[372..398]
             .to_vec();
-        let events_before = campaign.level2_compatibility().economy().events().len();
+        let events_before = campaign.simulation().economy().events().len();
         campaign
-            .level2_compatibility_mut()
+            .simulation_mut()
             .queue_level2_player_contact_damage(100, 1);
         let damaged_life = starting_life + regen - 100;
         for visit in 0..16 {
-            let mana_before = campaign
-                .level2_compatibility()
-                .shared_spells()
-                .player_entity
-                .mana;
+            let mana_before = campaign.simulation().shared_spells().player_entity.mana;
             let mana_regen = campaign
-                .level2_compatibility()
+                .simulation()
                 .shared_spells()
                 .player_entity
                 .mana_regen;
             let _ = campaign.step(PlayerCommand::default(), 0);
-            let live = &campaign.level2_compatibility().session.state.live;
+            let live = &campaign.simulation().session.state.live;
             assert_eq!(live.shared_spells.player_life_regen_cooldown, 15 - visit);
             assert_eq!(
                 (
@@ -25687,7 +25690,7 @@ mod tests {
             }
         }
         assert_eq!(
-            campaign.level2_compatibility().economy().events()[events_before..]
+            campaign.simulation().economy().events()[events_before..]
                 .iter()
                 .filter(|event| matches!(event,
                 Level2EconomyEvent::DamageApplied { target_entity_index,
@@ -25699,14 +25702,12 @@ mod tests {
         );
         let _ = campaign.step(PlayerCommand::default(), 0);
         assert_eq!(
-            campaign
-                .level2_compatibility()
-                .canonical_player_life_for_test(),
+            campaign.simulation().canonical_player_life_for_test(),
             damaged_life + regen
         );
         assert_eq!(
             campaign
-                .level2_compatibility()
+                .simulation()
                 .session
                 .state
                 .live
@@ -25718,7 +25719,7 @@ mod tests {
         assert_eq!(campaign.state_hash(), baseline_hash);
         assert_eq!(
             campaign
-                .level2_compatibility()
+                .simulation()
                 .session
                 .state
                 .live
@@ -25743,7 +25744,7 @@ mod tests {
             (2_304, false, true),
         ] {
             campaign.reset();
-            let session = campaign.level2_compatibility_mut();
+            let session = campaign.simulation_mut();
             let axis = Position {
                 x: 20_000,
                 y: 20_000,
@@ -25856,7 +25857,7 @@ mod tests {
         // at 512 units. Its nearest negative must retain the inner turn.
         for distance in [511_u16, 512] {
             campaign.reset();
-            let session = campaign.level2_compatibility_mut();
+            let session = campaign.simulation_mut();
             let axis = Position {
                 x: 20_000,
                 y: 20_000,
@@ -25926,7 +25927,7 @@ mod tests {
                 },
                 0,
             );
-            let live = &campaign.level2_compatibility().session.state.live;
+            let live = &campaign.simulation().session.state.live;
             let player = &live.economy.entities[usize::from(live.core.state.entity_index)];
             let caster = live.core.context.spell_fire.as_ref().unwrap().caster;
             assert_eq!(caster.control_flags & 0x300, expected_hand);
@@ -25959,7 +25960,7 @@ mod tests {
     fn level_three_skeleton_action74_local_row_matches_frozen_table_callback() {
         let package = level_three_descriptor_fixture_path();
         let mut seed = CampaignSession::open(&package, CampaignSelection::LEVEL3).unwrap();
-        let session = seed.level2_compatibility_mut();
+        let session = seed.simulation_mut();
         session.consume_authored_group(0, 0, 5).unwrap();
         let predator_slot = 122_u16;
         let (prey_slot, prey_position) = session
@@ -25996,7 +25997,7 @@ mod tests {
             "invalid_child",
         ] {
             let mut actual = seed.clone();
-            let session = actual.level2_compatibility_mut();
+            let session = actual.simulation_mut();
             if case == "prey_allocation_failure" {
                 session
                     .session
@@ -26025,7 +26026,7 @@ mod tests {
                 .rebuilt_class5_model_slots();
             let mut reference = actual.clone();
             let expected = {
-                let session = reference.level2_compatibility_mut();
+                let session = reference.simulation_mut();
                 let movement_pose = session.model9_particle_pose(201).unwrap();
                 let reaction_pose = session.model9_particle_pose(202).unwrap();
                 let source =
@@ -26101,11 +26102,11 @@ mod tests {
                 })
             };
             let observed = actual
-                .level2_compatibility_mut()
+                .simulation_mut()
                 .step_imported_model9_action74(predator_slot, &model_slots);
             assert_eq!(observed, expected, "{case}");
-            let actual = actual.level2_compatibility();
-            let reference = reference.level2_compatibility();
+            let actual = actual.simulation();
+            let reference = reference.simulation();
             assert_eq!(actual.entities(), reference.entities(), "{case}");
             assert_eq!(
                 actual.campaign_state_hash(),
@@ -26149,7 +26150,7 @@ mod tests {
         let mut campaign = CampaignSession::open(&package, CampaignSelection::LEVEL3).unwrap();
         let reset_hash = campaign.state_hash();
         let reset_counter = campaign
-            .level2_compatibility()
+            .simulation()
             .economy()
             .class5_model9_constructor_phase;
         let runtime_bytes = std::fs::read(package.join("runtime.bin")).unwrap();
@@ -26160,7 +26161,7 @@ mod tests {
                 "real Level 3 has already constructed Skeletons"
             );
         }
-        let session = campaign.level2_compatibility_mut();
+        let session = campaign.simulation_mut();
         session.consume_authored_group(0, 0, 5).unwrap();
         let predator_slot = 122_u16;
         let predator = &mut session.session.state.live.economy.entities[usize::from(predator_slot)];
@@ -26195,7 +26196,7 @@ mod tests {
             .count();
         let mut allocation_failure = campaign.clone();
         allocation_failure
-            .level2_compatibility_mut()
+            .simulation_mut()
             .session
             .state
             .live
@@ -26208,11 +26209,11 @@ mod tests {
             !allocation_failure
                 .events()
                 .iter()
-                .any(|event| matches!(event, Level2DispatchEvent::Error { .. })),
+                .any(|event| matches!(event, Mc2DispatchEvent::Error { .. })),
             "allocation failure is a normal conversion outcome: {:?}",
             allocation_failure.events()
         );
-        let failed = allocation_failure.level2_compatibility();
+        let failed = allocation_failure.simulation();
         assert!(failed.economy().converted_skeleton_origins.is_empty());
         assert!(
             !failed
@@ -26229,11 +26230,11 @@ mod tests {
             !campaign
                 .events()
                 .iter()
-                .any(|event| matches!(event, Level2DispatchEvent::Error { .. })),
+                .any(|event| matches!(event, Mc2DispatchEvent::Error { .. })),
             "conversion rejected: {:?}",
             campaign.events()
         );
-        let session = campaign.level2_compatibility();
+        let session = campaign.simulation();
         assert_eq!(
             session
                 .entities()
@@ -26300,12 +26301,12 @@ mod tests {
                 !campaign
                     .events()
                     .iter()
-                    .any(|event| matches!(event, Level2DispatchEvent::Error { .. })),
+                    .any(|event| matches!(event, Mc2DispatchEvent::Error { .. })),
                 "converted Skeleton lifecycle rejected: {:?}",
                 campaign.events()
             );
         }
-        let session = campaign.level2_compatibility();
+        let session = campaign.simulation();
         assert!(
             !session
                 .economy()
@@ -26326,7 +26327,7 @@ mod tests {
         // At the common hide boundary the conversion's semantic provenance
         // must expire with its source generation, not survive slot reuse.
         campaign
-            .level2_compatibility_mut()
+            .simulation_mut()
             .session
             .state
             .live
@@ -26336,7 +26337,7 @@ mod tests {
         campaign.step(PlayerCommand::default(), 0);
         assert!(
             !campaign
-                .level2_compatibility()
+                .simulation()
                 .economy()
                 .converted_skeleton_origins
                 .contains_key(&child_slot)
@@ -26345,14 +26346,14 @@ mod tests {
         assert_eq!(campaign.state_hash(), reset_hash);
         assert_eq!(
             campaign
-                .level2_compatibility()
+                .simulation()
                 .economy()
                 .class5_model9_constructor_phase,
             reset_counter
         );
         assert!(
             campaign
-                .level2_compatibility()
+                .simulation()
                 .economy()
                 .converted_skeleton_origins
                 .is_empty()
@@ -26374,7 +26375,7 @@ mod tests {
         let package = level_one_descriptor_fixture_path();
         let mut campaign = CampaignSession::open(&package, CampaignSelection::LEVEL1)
             .expect("real Level 1 descriptor opens");
-        let session = campaign.level2_compatibility_mut();
+        let session = campaign.simulation_mut();
         session
             .consume_authored_group(0, 0, 3)
             .expect("real package group 3 materializes through the shared arena");
@@ -26400,7 +26401,7 @@ mod tests {
         assert!(session.dispatch_events().iter().any(|event| {
             matches!(
                 event,
-                Level2DispatchEvent::Error {
+                Mc2DispatchEvent::Error {
                     source_slot,
                     message,
                     ..
@@ -26416,7 +26417,7 @@ mod tests {
         let package = level_three_descriptor_fixture_path();
         let mut campaign = CampaignSession::open(&package, CampaignSelection::LEVEL3)
             .expect("real Level 3 descriptor opens");
-        let session = campaign.level2_compatibility_mut();
+        let session = campaign.simulation_mut();
         let worm = session
             .creature_runtime_census()
             .roots_of_kind(CreatureKind::Worm)
@@ -26430,7 +26431,7 @@ mod tests {
         assert!(session.dispatch_events().iter().any(|event| {
             matches!(
                 event,
-                Level2DispatchEvent::Error {
+                Mc2DispatchEvent::Error {
                     source_slot,
                     message,
                     ..
@@ -26453,7 +26454,7 @@ mod tests {
                 CampaignSelection::ordinary(level).unwrap(),
             )
             .unwrap();
-            let session = campaign.level2_compatibility_mut();
+            let session = campaign.simulation_mut();
             // Isolated authored producer/callback diagnostic, not an earned route.
             session.consume_authored_group(0, 0, group).unwrap();
             let source = *session
@@ -26525,7 +26526,7 @@ mod tests {
             });
         let mut campaign = CampaignSession::open(package, CampaignSelection::LEVEL2).unwrap();
         campaign.reset();
-        let session = campaign.level2_compatibility_mut();
+        let session = campaign.simulation_mut();
         for (selector, expected) in [(21, (6, 8, 54)), (54, (8, 8, 0))] {
             let parameter = session.session.state.live.ordinary.house_parameters[&selector];
             assert_eq!(
@@ -26551,7 +26552,7 @@ mod tests {
                 session
                     .dispatch_events()
                     .iter()
-                    .all(|event| !matches!(event, Level2DispatchEvent::Error { .. })),
+                    .all(|event| !matches!(event, Mc2DispatchEvent::Error { .. })),
                 "{:?}",
                 session.dispatch_events()
             );
@@ -26602,7 +26603,7 @@ mod tests {
                 session
                     .dispatch_events()
                     .iter()
-                    .all(|event| !matches!(event, Level2DispatchEvent::Error { .. })),
+                    .all(|event| !matches!(event, Mc2DispatchEvent::Error { .. })),
                 "{:?}",
                 session.dispatch_events()
             );
@@ -26636,7 +26637,7 @@ mod tests {
                 session
                     .dispatch_events()
                     .iter()
-                    .all(|event| !matches!(event, Level2DispatchEvent::Error { .. })),
+                    .all(|event| !matches!(event, Mc2DispatchEvent::Error { .. })),
                 "{:?}",
                 session.dispatch_events()
             );
@@ -26657,7 +26658,7 @@ mod tests {
             .join("../../../generated/mc-bhq6-ordinary-20261025-zclu5fjj/level4");
         let mut campaign =
             CampaignSession::open(root, CampaignSelection::ordinary(4).unwrap()).unwrap();
-        let session = campaign.level2_compatibility_mut();
+        let session = campaign.simulation_mut();
         // Isolated source group boundary, not an earned mission/playthrough.
         session.consume_authored_group(0, 0, 1).unwrap();
         session.consume_authored_group(0, 0, 3).unwrap();
@@ -26677,7 +26678,7 @@ mod tests {
                 session
                     .dispatch_events()
                     .iter()
-                    .all(|event| !matches!(event, Level2DispatchEvent::Error { .. })),
+                    .all(|event| !matches!(event, Mc2DispatchEvent::Error { .. })),
                 "{:?}",
                 session.dispatch_events()
             );
@@ -26709,7 +26710,7 @@ mod tests {
         let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../../../generated/level3-day-block32-campaign-recipe-v2");
         let mut campaign = CampaignSession::open(root, CampaignSelection::LEVEL3).unwrap();
-        let session = campaign.level2_compatibility_mut();
+        let session = campaign.simulation_mut();
         session
             .apply_carried_spell_families(&[4, 6, 9, 11, 12], Some(12))
             .unwrap();
@@ -26738,7 +26739,7 @@ mod tests {
                 session
                     .dispatch_events()
                     .iter()
-                    .all(|event| !matches!(event, Level2DispatchEvent::Error { .. })),
+                    .all(|event| !matches!(event, Mc2DispatchEvent::Error { .. })),
                 "{:?}",
                 session.dispatch_events()
             );
@@ -26768,7 +26769,7 @@ mod tests {
             crate::level_definition::LevelEntityPositionAccess::ReadOnly
         );
         assert_eq!(spider.creature_health().unwrap().max_life(), 5500);
-        let session = campaign.level2_compatibility_mut();
+        let session = campaign.simulation_mut();
         // Diagnostic at the authored group boundary, not earned mission progress.
         session
             .consume_authored_group(0, 0, 6)
@@ -26802,7 +26803,7 @@ mod tests {
                 session
                     .dispatch_events()
                     .iter()
-                    .all(|event| !matches!(event, Level2DispatchEvent::Error { .. })),
+                    .all(|event| !matches!(event, Mc2DispatchEvent::Error { .. })),
                 "real pickup source visits must remain dispatchable: {:?}",
                 session.dispatch_events()
             );
@@ -26838,7 +26839,7 @@ mod tests {
             session
                 .dispatch_events()
                 .iter()
-                .all(|event| !matches!(event, Level2DispatchEvent::Error { .. })),
+                .all(|event| !matches!(event, Mc2DispatchEvent::Error { .. })),
             "acquired Lightning dispatches its active owner without changing objectives"
         );
         assert_eq!(
@@ -26853,7 +26854,7 @@ mod tests {
         let mut campaign = CampaignSession::open(&package, CampaignSelection::LEVEL1)
             .expect("real Level 1 descriptor opens");
         let reset_hash = campaign.state_hash();
-        let session = campaign.level2_compatibility_mut();
+        let session = campaign.simulation_mut();
 
         // Group 11's natural Archer-absence countdown is a separate proven
         // producer. Stage only that package activation boundary here; the
@@ -26883,7 +26884,7 @@ mod tests {
             session.step_outer_turn(PlayerCommand::default(), 0);
             assert!(session.dispatch_events().iter().any(|event| matches!(
                 event,
-                Level2DispatchEvent::SpellAcquisition {
+                Mc2DispatchEvent::SpellAcquisition {
                     source_slot,
                     family: 3,
                     result: None,
@@ -26911,7 +26912,7 @@ mod tests {
             .dispatch_events()
             .iter()
             .find_map(|event| match event {
-                Level2DispatchEvent::SpellAcquisition {
+                Mc2DispatchEvent::SpellAcquisition {
                     source_slot,
                     family: 3,
                     result: Some(outcome),
@@ -26945,7 +26946,7 @@ mod tests {
             session
                 .dispatch_events()
                 .iter()
-                .all(|event| !matches!(event, Level2DispatchEvent::Error { .. }))
+                .all(|event| !matches!(event, Mc2DispatchEvent::Error { .. }))
         );
 
         let acquired_phase = holder.phase;
@@ -26968,7 +26969,7 @@ mod tests {
             session
                 .dispatch_events()
                 .iter()
-                .all(|event| !matches!(event, Level2DispatchEvent::Error { .. }))
+                .all(|event| !matches!(event, Mc2DispatchEvent::Error { .. }))
         );
 
         campaign.reset();
@@ -26976,7 +26977,7 @@ mod tests {
 
         let mut mismatch = CampaignSession::open(&package, CampaignSelection::LEVEL1)
             .expect("real Level 1 descriptor reopens for the planted negative");
-        let mismatch_session = mismatch.level2_compatibility_mut();
+        let mismatch_session = mismatch.simulation_mut();
         mismatch_session
             .consume_authored_group(0, 0, 11)
             .expect("real package group 11 materializes for the planted negative");
@@ -27003,7 +27004,7 @@ mod tests {
                 .iter()
                 .any(|event| matches!(
                     event,
-                    Level2DispatchEvent::Error {
+                    Mc2DispatchEvent::Error {
                         source_slot,
                         message,
                         ..
@@ -27021,7 +27022,7 @@ mod tests {
         let mut campaign = CampaignSession::open(&package, CampaignSelection::LEVEL1)
             .expect("real Level 1 descriptor opens");
         let reset_hash = campaign.state_hash();
-        let session = campaign.level2_compatibility_mut();
+        let session = campaign.simulation_mut();
         let house = session
             .ordinary()
             .houses()
@@ -27030,21 +27031,21 @@ mod tests {
             .copied()
             .expect("real package contains a live House");
         assert_eq!(
-            session.building_kind_for_source_slot(house.entity_index, Level2SourceRoute::House),
+            session.building_kind_for_source_slot(house.entity_index, SourceRoute::House),
             Some(BuildingKind::House)
         );
 
         session.step_outer_turn(PlayerCommand::default(), 0);
         assert!(session.dispatch_events().iter().any(|event| matches!(
             event,
-            Level2DispatchEvent::House { source_slot, .. }
+            Mc2DispatchEvent::House { source_slot, .. }
                 if *source_slot == house.entity_index
         )));
         assert!(
             session
                 .dispatch_events()
                 .iter()
-                .all(|event| !matches!(event, Level2DispatchEvent::Error { .. }))
+                .all(|event| !matches!(event, Mc2DispatchEvent::Error { .. }))
         );
         let visited_house = session
             .ordinary()
@@ -27059,7 +27060,7 @@ mod tests {
 
         let mut mismatch = CampaignSession::open(&package, CampaignSelection::LEVEL1)
             .expect("real Level 1 descriptor reopens for the planted negative");
-        let mismatch_session = mismatch.level2_compatibility_mut();
+        let mismatch_session = mismatch.simulation_mut();
         let mismatch_slot = mismatch_session
             .ordinary()
             .houses()
@@ -27080,7 +27081,7 @@ mod tests {
                 .iter()
                 .any(|event| matches!(
                     event,
-                    Level2DispatchEvent::Error {
+                    Mc2DispatchEvent::Error {
                         source_slot,
                         message,
                         ..
@@ -27095,7 +27096,7 @@ mod tests {
                 .iter()
                 .all(|event| !matches!(
                     event,
-                    Level2DispatchEvent::House { source_slot, .. } if *source_slot == mismatch_slot
+                    Mc2DispatchEvent::House { source_slot, .. } if *source_slot == mismatch_slot
                 ))
         );
     }
@@ -27106,7 +27107,7 @@ mod tests {
         let mut campaign = CampaignSession::open(&package, CampaignSelection::LEVEL1)
             .expect("real Level 1 descriptor opens");
         let reset_hash = campaign.state_hash();
-        let session = campaign.level2_compatibility_mut();
+        let session = campaign.simulation_mut();
         let trigger = session
             .entities()
             .iter()
@@ -27127,7 +27128,7 @@ mod tests {
         }
         assert!(session.dispatch_events().iter().all(|event| !matches!(
             event,
-            Level2DispatchEvent::AuthoredGroupActivated {
+            Mc2DispatchEvent::AuthoredGroupActivated {
                 source_slot,
                 group: 1,
                 ..
@@ -27157,7 +27158,7 @@ mod tests {
 
         assert!(session.dispatch_events().iter().any(|event| matches!(
             event,
-            Level2DispatchEvent::AuthoredGroupActivated {
+            Mc2DispatchEvent::AuthoredGroupActivated {
                 source_slot,
                 group: 1,
                 authored_indices,
@@ -27167,7 +27168,7 @@ mod tests {
         )));
         assert!(session.dispatch_events().iter().all(|event| !matches!(
             event,
-            Level2DispatchEvent::Error { source_slot, .. } if *source_slot == trigger.index
+            Mc2DispatchEvent::Error { source_slot, .. } if *source_slot == trigger.index
         )));
         let fired = &session.entities()[usize::from(trigger.index)];
         assert!(fired.active);
@@ -27185,7 +27186,7 @@ mod tests {
 
         let mut mismatch = CampaignSession::open(&package, CampaignSelection::LEVEL1)
             .expect("real Level 1 descriptor reopens for the planted negative");
-        let mismatch_session = mismatch.level2_compatibility_mut();
+        let mismatch_session = mismatch.simulation_mut();
         let mismatch_slot = mismatch_session
             .entities()
             .iter()
@@ -27206,7 +27207,7 @@ mod tests {
                 .iter()
                 .any(|event| matches!(
                     event,
-                    Level2DispatchEvent::Error {
+                    Mc2DispatchEvent::Error {
                         source_slot,
                         message,
                         ..
@@ -27221,7 +27222,7 @@ mod tests {
                 .iter()
                 .all(|event| !matches!(
                     event,
-                    Level2DispatchEvent::AuthoredGroupActivated {
+                    Mc2DispatchEvent::AuthoredGroupActivated {
                         source_slot,
                         group: 1,
                         ..
@@ -27236,7 +27237,7 @@ mod tests {
         let mut campaign = CampaignSession::open(&package, CampaignSelection::LEVEL1)
             .expect("real Level 1 descriptor opens");
         let reset_hash = campaign.state_hash();
-        let session = campaign.level2_compatibility_mut();
+        let session = campaign.simulation_mut();
 
         // The preceding objective gate is a separate package-present chain.
         // Stage only its real group-4 boundary; construction, numeric visits,
@@ -27282,10 +27283,12 @@ mod tests {
         for _ in 1..turns_until_cadence {
             session.step_outer_turn(PlayerCommand::default(), 0);
             assert!(!session.level_exit_sequence().active);
-            assert!(session.dispatch_events().iter().all(|event| !matches!(
-                event,
-                Level2DispatchEvent::LevelExitSequenceStarted { .. }
-            )));
+            assert!(
+                session.dispatch_events().iter().all(|event| !matches!(
+                    event,
+                    Mc2DispatchEvent::LevelExitSequenceStarted { .. }
+                ))
+            );
         }
 
         let journal_start = session.effect_journal().records().len();
@@ -27323,7 +27326,7 @@ mod tests {
         );
         assert!(session.dispatch_events().iter().any(|event| matches!(
             event,
-            Level2DispatchEvent::LevelExitSequenceStarted {
+            Mc2DispatchEvent::LevelExitSequenceStarted {
                 trigger_entity_index,
                 portal_entity_index,
                 ..
@@ -27350,7 +27353,7 @@ mod tests {
                 matches!(
                     record.effect,
                     crate::campaign::journal::CampaignEffect::Dispatch(
-                        Level2DispatchEvent::LevelExitSequenceStarted {
+                        Mc2DispatchEvent::LevelExitSequenceStarted {
                             trigger_entity_index,
                             ..
                         }
@@ -27507,7 +27510,7 @@ mod tests {
                 .iter()
                 .filter(|event| matches!(
                     event,
-                    Level2DispatchEvent::LevelExitSequenceCompleted {
+                    Mc2DispatchEvent::LevelExitSequenceCompleted {
                         player_entity_index: completed_player,
                         result_code: 10,
                         ..
@@ -27525,13 +27528,13 @@ mod tests {
         campaign.reset();
         assert_eq!(campaign.state_hash(), reset_hash);
         assert_eq!(
-            campaign.level2_compatibility().level_exit_sequence(),
+            campaign.simulation().level_exit_sequence(),
             LevelExitSequence::default()
         );
 
         let mut mismatch = CampaignSession::open(&package, CampaignSelection::LEVEL1)
             .expect("real Level 1 descriptor reopens for the planted negative");
-        let mismatch_session = mismatch.level2_compatibility_mut();
+        let mismatch_session = mismatch.simulation_mut();
         mismatch_session
             .consume_authored_group(0, 0, 4)
             .expect("real package group 4 materializes for the planted negative");
@@ -27557,7 +27560,7 @@ mod tests {
                 .iter()
                 .any(|event| matches!(
                     event,
-                    Level2DispatchEvent::Error {
+                    Mc2DispatchEvent::Error {
                         source_slot,
                         message,
                         ..
@@ -27577,7 +27580,7 @@ mod tests {
         let package = level_one_descriptor_fixture_path();
         let mut campaign = CampaignSession::open(&package, CampaignSelection::LEVEL1)
             .expect("real Level 1 descriptor opens");
-        let session = campaign.level2_compatibility_mut();
+        let session = campaign.simulation_mut();
         session
             .consume_authored_group(0, 0, 1)
             .expect("real package group 1 materializes through the shared arena");
@@ -27603,7 +27606,7 @@ mod tests {
             session.dispatch_events().iter().any(|event| {
                 matches!(
                     event,
-                    Level2DispatchEvent::Error {
+                    Mc2DispatchEvent::Error {
                         source_slot,
                         message,
                         ..
@@ -27624,7 +27627,7 @@ mod tests {
         let package = level_one_descriptor_fixture_path();
         let mut campaign = CampaignSession::open(&package, CampaignSelection::LEVEL1)
             .expect("real Level 1 descriptor opens");
-        let session = campaign.level2_compatibility_mut();
+        let session = campaign.simulation_mut();
         assert_eq!(
             session
                 .session
@@ -27661,7 +27664,7 @@ mod tests {
 
         assert!(session.dispatch_events().iter().all(|event| !matches!(
             event,
-            Level2DispatchEvent::Error { source_slot, .. } if *source_slot == stone_slot
+            Mc2DispatchEvent::Error { source_slot, .. } if *source_slot == stone_slot
         )));
         let stone = &session.entities()[usize::from(stone_slot)];
         assert_eq!((stone.class, stone.model, stone.action), (2, 1, 3));
@@ -27687,7 +27690,7 @@ mod tests {
         let mut campaign = CampaignSession::open(&package, CampaignSelection::LEVEL2)
             .expect("real Level 2 descriptor opens");
         let baseline_hash = campaign.state_hash();
-        let session = campaign.level2_compatibility_mut();
+        let session = campaign.simulation_mut();
         let objective_id =
             crate::level_definition::LevelObjectiveId::parse("objective.clear.payahandra_vaults")
                 .unwrap();
@@ -27749,7 +27752,7 @@ mod tests {
         session.activate_level2_authored_group8(0);
         assert!(session.dispatch_events().iter().any(|event| matches!(
             event,
-            Level2DispatchEvent::AuthoredGroupActivated {
+            Mc2DispatchEvent::AuthoredGroupActivated {
                 source_slot: 32,
                 group: 8,
                 authored_indices,
@@ -27939,13 +27942,13 @@ mod tests {
         );
         assert!(session.dispatch_events().iter().all(|event| !matches!(
             event,
-            Level2DispatchEvent::AuthoredGroupActivated { group: 31, .. }
+            Mc2DispatchEvent::AuthoredGroupActivated { group: 31, .. }
         )));
 
         session.step_outer_turn(PlayerCommand::default(), 0);
         assert!(session.dispatch_events().iter().any(|event| matches!(
             event,
-            Level2DispatchEvent::AuthoredGroupActivated {
+            Mc2DispatchEvent::AuthoredGroupActivated {
                 source_slot: 37,
                 group: 31,
                 authored_indices,
@@ -27956,7 +27959,7 @@ mod tests {
             session
                 .dispatch_events()
                 .iter()
-                .all(|event| !matches!(event, Level2DispatchEvent::Error { .. }))
+                .all(|event| !matches!(event, Mc2DispatchEvent::Error { .. }))
         );
 
         let target = session
@@ -27976,7 +27979,7 @@ mod tests {
 
         campaign.reset();
         assert_eq!(campaign.state_hash(), baseline_hash);
-        let reset = campaign.level2_compatibility();
+        let reset = campaign.simulation();
         assert_eq!(reset.source_frame_timing_index, 0);
         assert_eq!(reset.runtime().objectives[0].is_level_end, 0);
         assert!(reset.campaign_exit_objective_target().is_none());
@@ -27995,7 +27998,7 @@ mod tests {
         let mut campaign = CampaignSession::open(&package, CampaignSelection::LEVEL2)
             .expect("real Level 2 descriptor opens");
         let reset_hash = campaign.state_hash();
-        let session = campaign.level2_compatibility_mut();
+        let session = campaign.simulation_mut();
         session
             .consume_authored_group(0, 0, 5)
             .expect("real package group 5 materializes through the shared arena");
@@ -28075,7 +28078,7 @@ mod tests {
 
         let mut mismatch = CampaignSession::open(&package, CampaignSelection::LEVEL2)
             .expect("real Level 2 descriptor reopens for the planted negative");
-        let mismatch_session = mismatch.level2_compatibility_mut();
+        let mismatch_session = mismatch.simulation_mut();
         mismatch_session
             .consume_authored_group(0, 0, 5)
             .expect("real package group 5 materializes for the planted negative");
@@ -28099,7 +28102,7 @@ mod tests {
         assert!(mismatch_session.dispatch_events().iter().any(|event| {
             matches!(
                 event,
-                Level2DispatchEvent::Error {
+                Mc2DispatchEvent::Error {
                     source_slot,
                     message,
                     ..
@@ -28122,7 +28125,7 @@ mod tests {
         let mut campaign = CampaignSession::open(&package, CampaignSelection::LEVEL2)
             .expect("real Level 2 descriptor opens");
         let reset_hash = campaign.state_hash();
-        let session = campaign.level2_compatibility_mut();
+        let session = campaign.simulation_mut();
         let (gate_slot, gate_stage_index) = session
             .entities()
             .iter()
@@ -28150,7 +28153,7 @@ mod tests {
 
         assert!(session.dispatch_events().iter().all(|event| !matches!(
             event,
-            Level2DispatchEvent::AuthoredGroupActivated { group: 21, .. }
+            Mc2DispatchEvent::AuthoredGroupActivated { group: 21, .. }
         )));
         assert!(!session.entities()[usize::from(gate_slot)].drawing_disabled());
 
@@ -28167,7 +28170,7 @@ mod tests {
 
         assert!(session.dispatch_events().iter().any(|event| matches!(
             event,
-            Level2DispatchEvent::AuthoredGroupActivated {
+            Mc2DispatchEvent::AuthoredGroupActivated {
                 source_slot,
                 group: 21,
                 authored_indices,
@@ -28176,7 +28179,7 @@ mod tests {
         )));
         assert!(session.dispatch_events().iter().all(|event| !matches!(
             event,
-            Level2DispatchEvent::Error { source_slot, .. } if *source_slot == gate_slot
+            Mc2DispatchEvent::Error { source_slot, .. } if *source_slot == gate_slot
         )));
         assert!(session.entities()[usize::from(gate_slot)].drawing_disabled());
 
@@ -28188,7 +28191,7 @@ mod tests {
         let level_one = level_one_descriptor_fixture_path();
         let mut mismatch = CampaignSession::open(&level_one, CampaignSelection::LEVEL1)
             .expect("real Level 1 descriptor opens for the planted negative");
-        let mismatch_session = mismatch.level2_compatibility_mut();
+        let mismatch_session = mismatch.simulation_mut();
         mismatch_session
             .consume_authored_group(0, 0, 1)
             .expect("real package group 1 materializes its first objective gate");
@@ -28214,7 +28217,7 @@ mod tests {
                 .iter()
                 .any(|event| matches!(
                     event,
-                    Level2DispatchEvent::Error {
+                    Mc2DispatchEvent::Error {
                         source_slot,
                         message,
                         ..
@@ -28245,20 +28248,15 @@ mod tests {
                 .expect("qualified Level 3 descriptor opens");
             let baseline_hash = campaign.state_hash();
             let player_entity_index = campaign
-                .level2_compatibility()
+                .simulation()
                 .session
                 .state
                 .live
                 .core
                 .state
                 .entity_index;
-            let baseline_pickup = campaign
-                .level2_compatibility()
-                .session
-                .state
-                .live
-                .economy
-                .entities[usize::from(source_slot)]
+            let baseline_pickup = campaign.simulation().session.state.live.economy.entities
+                [usize::from(source_slot)]
             .clone();
             assert_eq!(
                 (
@@ -28269,7 +28267,7 @@ mod tests {
                 (15, family, pickup_action)
             );
             let baseline_player = campaign
-                .level2_compatibility()
+                .simulation()
                 .session
                 .state
                 .live
@@ -28283,18 +28281,13 @@ mod tests {
             let unchanged_offsets = [398, 424, 450, 502, 528];
 
             campaign
-                .level2_compatibility_mut()
+                .simulation_mut()
                 .set_level2_entity_position(player_entity_index, baseline_pickup.position)
                 .expect("public local-player input reaches the pickup position");
             for _ in 0..4 {
                 let _ = campaign.step(PlayerCommand::default(), 0);
-                if campaign
-                    .level2_compatibility()
-                    .session
-                    .state
-                    .live
-                    .economy
-                    .entities[usize::from(source_slot)]
+                if campaign.simulation().session.state.live.economy.entities
+                    [usize::from(source_slot)]
                 .action
                     == active_action
                 {
@@ -28302,7 +28295,7 @@ mod tests {
                 }
             }
 
-            let live = &campaign.level2_compatibility().session.state.live;
+            let live = &campaign.simulation().session.state.live;
             let raw_pickup = &live.economy.entities[usize::from(source_slot)];
             let typed_pickup = live
                 .shared_spells
@@ -28396,13 +28389,8 @@ mod tests {
                     .expect("pickup timer bytes"),
             );
             let _ = campaign.step(PlayerCommand::default(), 0);
-            let raw_pickup = &campaign
-                .level2_compatibility()
-                .session
-                .state
-                .live
-                .economy
-                .entities[usize::from(source_slot)];
+            let raw_pickup = &campaign.simulation().session.state.live.economy.entities
+                [usize::from(source_slot)];
             assert_eq!(raw_pickup.action, active_action);
             assert_eq!(raw_pickup.phase, phase_before.wrapping_add(1));
             assert_eq!(
@@ -28429,7 +28417,7 @@ mod tests {
                     .records
                     .is_empty()
             );
-            let reset_live = &campaign.level2_compatibility().session.state.live;
+            let reset_live = &campaign.simulation().session.state.live;
             assert_eq!(
                 reset_live.economy.entities[usize::from(source_slot)].record_bytes(),
                 baseline_pickup.record_bytes()
@@ -28456,23 +28444,16 @@ mod tests {
         let mut campaign = CampaignSession::open(&package, CampaignSelection::LEVEL3)
             .expect("qualified Level 3 descriptor opens");
         let player_entity_index = campaign
-            .level2_compatibility()
+            .simulation()
             .session
             .state
             .live
             .core
             .state
             .entity_index;
-        let player_position = campaign
-            .level2_compatibility()
-            .session
-            .state
-            .live
-            .core
-            .state
-            .position;
+        let player_position = campaign.simulation().session.state.live.core.state.position;
         {
-            let live = &mut campaign.level2_compatibility_mut().session.state.live;
+            let live = &mut campaign.simulation_mut().session.state.live;
             live.player_life = 2_000;
             live.shared_spells.set_player_entity_life(2_000);
             live.economy.entities[usize::from(player_entity_index)].set_life(2_000);
@@ -28482,7 +28463,7 @@ mod tests {
         // the following visit applies that exact five-point rate.
         let _ = campaign.step(PlayerCommand::default(), 0);
         let _ = campaign.step(PlayerCommand::default(), 0);
-        let live = &campaign.level2_compatibility().session.state.live;
+        let live = &campaign.simulation().session.state.live;
         assert_eq!(
             (
                 live.player_life,
@@ -28494,7 +28475,7 @@ mod tests {
         );
 
         campaign
-            .level2_compatibility_mut()
+            .simulation_mut()
             .apply_level2_class10_model0_damage(level2_dynamic_economy::Level2Class10Model0Step {
                 live: true,
                 first_impact: true,
@@ -28503,13 +28484,8 @@ mod tests {
                 payload: DRAGON_FIREBALL_DAMAGE,
                 position: player_position,
             });
-        let player = &campaign
-            .level2_compatibility()
-            .session
-            .state
-            .live
-            .economy
-            .entities[usize::from(player_entity_index)];
+        let player = &campaign.simulation().session.state.live.economy.entities
+            [usize::from(player_entity_index)];
         assert_eq!(
             (
                 player.source_upkeep_payload(),
@@ -28519,7 +28495,7 @@ mod tests {
         );
 
         let events_before = campaign
-            .level2_compatibility()
+            .simulation()
             .session
             .state
             .live
@@ -28527,7 +28503,7 @@ mod tests {
             .events
             .len();
         let _ = campaign.step(PlayerCommand::default(), 0);
-        let live = &campaign.level2_compatibility().session.state.live;
+        let live = &campaign.simulation().session.state.live;
         assert_eq!(
             (
                 live.player_life,
@@ -28556,22 +28532,16 @@ mod tests {
         let mut protected = CampaignSession::open(&package, CampaignSelection::LEVEL3)
             .expect("qualified Level 3 Castle-protection descriptor opens");
         let protected_player = protected
-            .level2_compatibility()
+            .simulation()
             .session
             .state
             .live
             .core
             .state
             .entity_index;
-        let protected_terrain = protected
-            .level2_compatibility()
-            .session
-            .state
-            .live
-            .terrain
-            .clone();
+        let protected_terrain = protected.simulation().session.state.live.terrain.clone();
         let protected_position = {
-            let live = &mut protected.level2_compatibility_mut().session.state.live;
+            let live = &mut protected.simulation_mut().session.state.live;
             let castle_slot = live
                 .economy
                 .build_castle(
@@ -28593,7 +28563,7 @@ mod tests {
             }
         };
         {
-            let live = &mut protected.level2_compatibility_mut().session.state.live;
+            let live = &mut protected.simulation_mut().session.state.live;
             live.core.state.position = protected_position;
             let set_player = |entity: &mut EntitySnapshot| {
                 entity.record[86..88].copy_from_slice(&100_i16.to_le_bytes());
@@ -28608,7 +28578,7 @@ mod tests {
         }
         let _ = protected.step(PlayerCommand::default(), 0);
         {
-            let live = &mut protected.level2_compatibility_mut().session.state.live;
+            let live = &mut protected.simulation_mut().session.state.live;
             assert!(
                 live.economy
                     .player_castle_shift_aabb_overlap(&live.shared_spells.player_entity)
@@ -28622,7 +28592,7 @@ mod tests {
             live.economy.entities[usize::from(protected_player)].set_life(2_000);
         }
         protected
-            .level2_compatibility_mut()
+            .simulation_mut()
             .apply_level2_class10_model0_damage(level2_dynamic_economy::Level2Class10Model0Step {
                 live: true,
                 first_impact: true,
@@ -28632,7 +28602,7 @@ mod tests {
                 position: protected_position,
             });
         let protected_events_before = protected
-            .level2_compatibility()
+            .simulation()
             .session
             .state
             .live
@@ -28640,7 +28610,7 @@ mod tests {
             .events
             .len();
         let _ = protected.step(PlayerCommand::default(), 0);
-        let live = &protected.level2_compatibility().session.state.live;
+        let live = &protected.simulation().session.state.live;
         let castle_slot = live.economy.player_castle_entity_index();
         assert_eq!(
             (
@@ -28688,7 +28658,7 @@ mod tests {
         let mut campaign = CampaignSession::open(&package, CampaignSelection::LEVEL3)
             .expect("qualified Level 3 descriptor opens");
         let player_entity_index = campaign
-            .level2_compatibility()
+            .simulation()
             .session
             .state
             .live
@@ -28697,7 +28667,7 @@ mod tests {
             .entity_index;
 
         let skeleton_slots = campaign
-            .level2_compatibility()
+            .simulation()
             .session
             .state
             .live
@@ -28710,7 +28680,7 @@ mod tests {
         assert_eq!(skeleton_slots.len(), 11);
         for source_slot in skeleton_slots {
             campaign
-                .level2_compatibility_mut()
+                .simulation_mut()
                 .session
                 .state
                 .live
@@ -28722,7 +28692,7 @@ mod tests {
         let _ = campaign.step(PlayerCommand::default(), 0);
 
         let mut dragon_slots = campaign
-            .level2_compatibility()
+            .simulation()
             .session
             .state
             .live
@@ -28738,13 +28708,7 @@ mod tests {
         let follower_slot = dragon_slots[0];
         let peer_slot = dragon_slots[1];
 
-        let terrain = campaign
-            .level2_compatibility()
-            .session
-            .state
-            .live
-            .terrain
-            .clone();
+        let terrain = campaign.simulation().session.state.live.terrain.clone();
         let mut follower_position = Position {
             x: (79_u16 << 8).wrapping_add(128),
             y: (143_u16 << 8).wrapping_add(128),
@@ -28760,7 +28724,7 @@ mod tests {
         ))
         .expect("Dragon peer heading fits i16");
         {
-            let mut economy = campaign.level2_compatibility_mut().economy_mut();
+            let mut economy = campaign.simulation_mut().economy_mut();
             assert!(economy.stage_authored_dragon_attack_prerequisite_for_test(
                 follower_slot,
                 follower_position,
@@ -28773,7 +28737,7 @@ mod tests {
             ));
         }
         {
-            let mut economy = campaign.level2_compatibility_mut().economy_mut();
+            let mut economy = campaign.simulation_mut().economy_mut();
             let follower = economy
                 .authored_class5
                 .iter_mut()
@@ -28797,13 +28761,13 @@ mod tests {
         }
 
         let _ = campaign.step(PlayerCommand::default(), 0);
-        let live = &campaign.level2_compatibility().session.state.live;
+        let live = &campaign.simulation().session.state.live;
         assert!(
             campaign
-                .level2_compatibility()
+                .simulation()
                 .dispatch_events()
                 .iter()
-                .all(|event| !matches!(event, Level2DispatchEvent::Error { .. }))
+                .all(|event| !matches!(event, Mc2DispatchEvent::Error { .. }))
         );
         let follower = live
             .economy
@@ -28852,7 +28816,7 @@ mod tests {
             (follower, peer)
         };
         {
-            let mut economy = campaign.level2_compatibility_mut().economy_mut();
+            let mut economy = campaign.simulation_mut().economy_mut();
             let follower = economy
                 .authored_class5
                 .iter_mut()
@@ -28896,7 +28860,7 @@ mod tests {
         ))
         .expect("Dragon peer heading fits i16");
         let _ = campaign.step(PlayerCommand::default(), 0);
-        let live = &campaign.level2_compatibility().session.state.live;
+        let live = &campaign.simulation().session.state.live;
         let follower = live
             .economy
             .economy
@@ -28932,7 +28896,7 @@ mod tests {
         );
 
         {
-            let mut economy = campaign.level2_compatibility_mut().economy_mut();
+            let mut economy = campaign.simulation_mut().economy_mut();
             let follower = economy
                 .authored_class5
                 .iter_mut()
@@ -28956,7 +28920,7 @@ mod tests {
                 .linked_entity_index = peer_slot;
         }
         let _ = campaign.step(PlayerCommand::default(), 0);
-        let live = &campaign.level2_compatibility().session.state.live;
+        let live = &campaign.simulation().session.state.live;
         let follower = live
             .economy
             .economy
@@ -28994,19 +28958,13 @@ mod tests {
         const FIREBALL_DAMAGE: u16 = 500;
 
         fn skeleton(campaign: &CampaignSession) -> &EntitySnapshot {
-            &campaign
-                .level2_compatibility()
-                .session
-                .state
-                .live
-                .economy
-                .entities[usize::from(SKELETON_SLOT)]
+            &campaign.simulation().session.state.live.economy.entities[usize::from(SKELETON_SLOT)]
         }
 
         fn apply_hit(campaign: &mut CampaignSession, owner_entity_index: u16) {
             let position = skeleton(campaign).position;
             campaign
-                .level2_compatibility_mut()
+                .simulation_mut()
                 .apply_level2_class10_model0_damage(
                     level2_dynamic_economy::Level2Class10Model0Step {
                         live: true,
@@ -29029,12 +28987,12 @@ mod tests {
             let _ = campaign.step(PlayerCommand::default(), 0);
             assert!(
                 campaign
-                    .level2_compatibility()
+                    .simulation()
                     .dispatch_events()
                     .iter()
-                    .all(|event| !matches!(event, Level2DispatchEvent::Error { .. })),
+                    .all(|event| !matches!(event, Mc2DispatchEvent::Error { .. })),
                 "Skeleton lifecycle dispatch errors: {:?}",
-                campaign.level2_compatibility().dispatch_events()
+                campaign.simulation().dispatch_events()
             );
         }
 
@@ -29043,7 +29001,7 @@ mod tests {
             .expect("qualified Level 3 descriptor opens");
         let baseline_hash = campaign.state_hash();
         let player_entity_index = campaign
-            .level2_compatibility()
+            .simulation()
             .session
             .state
             .live
@@ -29071,7 +29029,7 @@ mod tests {
 
         let first_phase = skeleton(&campaign).phase;
         let sphere_count = campaign
-            .level2_compatibility()
+            .simulation()
             .session
             .state
             .live
@@ -29080,7 +29038,7 @@ mod tests {
             .spheres()
             .len();
         let burst_count = campaign
-            .level2_compatibility()
+            .simulation()
             .session
             .state
             .live
@@ -29100,7 +29058,7 @@ mod tests {
         assert!(!first_hit.drawing_disabled());
         assert_eq!(
             campaign
-                .level2_compatibility()
+                .simulation()
                 .session
                 .state
                 .live
@@ -29113,7 +29071,7 @@ mod tests {
         );
         assert_eq!(
             campaign
-                .level2_compatibility()
+                .simulation()
                 .session
                 .state
                 .live
@@ -29186,7 +29144,7 @@ mod tests {
             assert_eq!(skeleton(&campaign).phase, phase_before.wrapping_add(1));
             assert_eq!(
                 campaign
-                    .level2_compatibility()
+                    .simulation()
                     .session
                     .state
                     .live
@@ -29212,13 +29170,7 @@ mod tests {
         );
         assert_eq!(hidden.source_player_entity_index(), 0);
 
-        let economy = &campaign
-            .level2_compatibility()
-            .session
-            .state
-            .live
-            .economy
-            .economy;
+        let economy = &campaign.simulation().session.state.live.economy.economy;
         assert_eq!(economy.spheres().len(), sphere_count + 1);
         let sphere = economy.spheres().last().expect("Skeleton mana sphere");
         assert_eq!(sphere.mana, 500);
@@ -29234,7 +29186,7 @@ mod tests {
         assert_eq!(reclaimed.class, 0);
         assert!(
             !campaign
-                .level2_compatibility()
+                .simulation()
                 .session
                 .state
                 .live
@@ -29259,7 +29211,7 @@ mod tests {
         // this continuation proves only the downstream frozen-census objective
         // chronology, not eleven copies of combat.
         let skeleton_slots = campaign
-            .level2_compatibility()
+            .simulation()
             .session
             .state
             .live
@@ -29272,7 +29224,7 @@ mod tests {
         assert_eq!(skeleton_slots.len(), 11);
         assert_eq!(
             campaign
-                .level2_compatibility()
+                .simulation()
                 .session
                 .state
                 .live
@@ -29284,7 +29236,7 @@ mod tests {
         );
         for source_slot in &skeleton_slots {
             campaign
-                .level2_compatibility_mut()
+                .simulation_mut()
                 .session
                 .state
                 .live
@@ -29293,7 +29245,7 @@ mod tests {
             .disable_drawing();
         }
         step(&mut campaign);
-        let live = &campaign.level2_compatibility().session.state.live;
+        let live = &campaign.simulation().session.state.live;
         assert!(skeleton_slots.iter().all(|source_slot| {
             let entity = &live.economy.entities[usize::from(*source_slot)];
             !entity.active && entity.class == 0
@@ -29307,12 +29259,12 @@ mod tests {
         );
         assert!(
             campaign
-                .level2_compatibility()
+                .simulation()
                 .dispatch_events()
                 .iter()
                 .all(|event| !matches!(
                     event,
-                    Level2DispatchEvent::AuthoredGroupActivated { group: 1, .. }
+                    Mc2DispatchEvent::AuthoredGroupActivated { group: 1, .. }
                 ))
         );
 
@@ -29321,27 +29273,22 @@ mod tests {
         // package group 1. That group contains exactly the two authored
         // Dragon rows 141/142; no level-specific spawn list is involved.
         const DRAGON_GATE_SLOT: u16 = 127;
-        let global_rng_before_dragons = campaign.level2_compatibility().source_global_rng();
-        let gate_phase_before = campaign
-            .level2_compatibility()
-            .session
-            .state
-            .live
-            .economy
-            .entities[usize::from(DRAGON_GATE_SLOT)]
+        let global_rng_before_dragons = campaign.simulation().source_global_rng();
+        let gate_phase_before = campaign.simulation().session.state.live.economy.entities
+            [usize::from(DRAGON_GATE_SLOT)]
         .phase;
         step(&mut campaign);
-        let dragon_events = campaign.level2_compatibility().dispatch_events();
+        let dragon_events = campaign.simulation().dispatch_events();
         assert!(dragon_events.iter().any(|event| matches!(
             event,
-            Level2DispatchEvent::AuthoredGroupActivated {
+            Mc2DispatchEvent::AuthoredGroupActivated {
                 source_slot: DRAGON_GATE_SLOT,
                 group: 1,
                 authored_indices,
                 ..
             } if authored_indices.as_ref() == [141, 142]
         )));
-        let live = &campaign.level2_compatibility().session.state.live;
+        let live = &campaign.simulation().session.state.live;
         assert_eq!(live.core.runtime.objectives[0].stage_selectors[1], 1);
         let gate = &live.economy.entities[usize::from(DRAGON_GATE_SLOT)];
         assert!(gate.drawing_disabled());
@@ -29385,9 +29332,7 @@ mod tests {
                 z: 0,
             },
         ];
-        let receipts = campaign
-            .level2_compatibility()
-            .cf10_production_schedule_receipts();
+        let receipts = campaign.simulation().cf10_production_schedule_receipts();
         let mut same_pass_roots = 0;
         for (dragon_index, dragon) in dragons.iter().enumerate() {
             let constructor_phase = u8::try_from(dragon_index).expect("two Dragons");
@@ -29616,11 +29561,9 @@ mod tests {
         // visits every lower-slot Dragon/part that the fixed ascending cursor
         // could not reach in the birth pass.
         step(&mut campaign);
-        let live = &campaign.level2_compatibility().session.state.live;
+        let live = &campaign.simulation().session.state.live;
         assert!(!live.economy.entities[usize::from(DRAGON_GATE_SLOT)].active);
-        let receipts = campaign
-            .level2_compatibility()
-            .cf10_production_schedule_receipts();
+        let receipts = campaign.simulation().cf10_production_schedule_receipts();
         for source_slot in live
             .economy
             .economy
@@ -29650,7 +29593,7 @@ mod tests {
         // The root is numerically earlier, so it cannot observe the segment's
         // lower life until the following UpdateEntities pass.
         let damaged_dragon_slot = campaign
-            .level2_compatibility()
+            .simulation()
             .session
             .state
             .live
@@ -29665,7 +29608,7 @@ mod tests {
             .expect("a real Dragon is available for body damage")
             .source_entity_index;
         let mut damaged_part_slot = campaign
-            .level2_compatibility()
+            .simulation()
             .session
             .state
             .live
@@ -29678,7 +29621,7 @@ mod tests {
             .linked_head;
         for _ in 0..8 {
             damaged_part_slot = campaign
-                .level2_compatibility()
+                .simulation()
                 .session
                 .state
                 .live
@@ -29701,7 +29644,7 @@ mod tests {
             z: 0,
         };
         isolated_part_position.z = campaign
-            .level2_compatibility()
+            .simulation()
             .session
             .state
             .live
@@ -29709,7 +29652,7 @@ mod tests {
             .ground_height(isolated_part_position);
         assert!(
             campaign
-                .level2_compatibility_mut()
+                .simulation_mut()
                 .session
                 .state
                 .live
@@ -29721,7 +29664,7 @@ mod tests {
                 )
         );
         let damaged_root_position = campaign
-            .level2_compatibility()
+            .simulation()
             .session
             .state
             .live
@@ -29734,7 +29677,7 @@ mod tests {
             .position;
         assert!(
             campaign
-                .level2_compatibility_mut()
+                .simulation_mut()
                 .session
                 .state
                 .live
@@ -29747,7 +29690,7 @@ mod tests {
                 )
         );
         let death_spheres_before_damage = campaign
-            .level2_compatibility()
+            .simulation()
             .session
             .state
             .live
@@ -29756,7 +29699,7 @@ mod tests {
             .spheres()
             .len();
         let death_bursts_before_damage = campaign
-            .level2_compatibility()
+            .simulation()
             .session
             .state
             .live
@@ -29765,7 +29708,7 @@ mod tests {
             .death_bursts()
             .len();
         campaign
-            .level2_compatibility_mut()
+            .simulation_mut()
             .apply_level2_class10_model0_damage(level2_dynamic_economy::Level2Class10Model0Step {
                 live: true,
                 first_impact: true,
@@ -29775,7 +29718,7 @@ mod tests {
                 position: isolated_part_position,
             });
         let queued_part = campaign
-            .level2_compatibility()
+            .simulation()
             .session
             .state
             .live
@@ -29795,7 +29738,7 @@ mod tests {
             (4_000, player_entity_index, 500, 0)
         );
         let queued_root = campaign
-            .level2_compatibility()
+            .simulation()
             .session
             .state
             .live
@@ -29813,7 +29756,7 @@ mod tests {
         let root_phase_before_part_hit = queued_root.source_byte_3e;
         let part_phase_before_hit = queued_part.source_byte_3e;
         step(&mut campaign);
-        let live = &campaign.level2_compatibility().session.state.live;
+        let live = &campaign.simulation().session.state.live;
         let root_after_part_hit = live
             .economy
             .economy
@@ -29854,7 +29797,7 @@ mod tests {
 
         let root_phase_before_propagation = root_after_part_hit.source_byte_3e;
         step(&mut campaign);
-        let live = &campaign.level2_compatibility().session.state.live;
+        let live = &campaign.simulation().session.state.live;
         let propagated_root = live
             .economy
             .economy
@@ -29895,7 +29838,7 @@ mod tests {
         // action 5 before any later body slot is visited.
         let mut damaged_body_slots = Vec::new();
         let mut body_slot = campaign
-            .level2_compatibility()
+            .simulation()
             .session
             .state
             .live
@@ -29909,7 +29852,7 @@ mod tests {
         while body_slot != 0 {
             damaged_body_slots.push(body_slot);
             body_slot = campaign
-                .level2_compatibility()
+                .simulation()
                 .session
                 .state
                 .live
@@ -29926,7 +29869,7 @@ mod tests {
             level2_class5::dragon::DRAGON_PART_COUNT
         );
         let kill_census_before = campaign
-            .level2_compatibility()
+            .simulation()
             .session
             .state
             .live
@@ -29935,7 +29878,7 @@ mod tests {
             .authored_bee_kill_census(player_entity_index);
         assert!(
             campaign
-                .level2_compatibility_mut()
+                .simulation_mut()
                 .session
                 .state
                 .live
@@ -29948,7 +29891,7 @@ mod tests {
         );
         let lethal_part_position = isolated_part_position;
         campaign
-            .level2_compatibility_mut()
+            .simulation_mut()
             .apply_level2_class10_model0_damage(level2_dynamic_economy::Level2Class10Model0Step {
                 live: true,
                 first_impact: true,
@@ -29959,7 +29902,7 @@ mod tests {
                 position: lethal_part_position,
             });
         step(&mut campaign);
-        let live = &campaign.level2_compatibility().session.state.live;
+        let live = &campaign.simulation().session.state.live;
         let root_before_lethal_propagation = live
             .economy
             .economy
@@ -29991,7 +29934,7 @@ mod tests {
         );
 
         step(&mut campaign);
-        let live = &campaign.level2_compatibility().session.state.live;
+        let live = &campaign.simulation().session.state.live;
         let pre_kill_root = live
             .economy
             .economy
@@ -30021,7 +29964,7 @@ mod tests {
             .expect("the sixteen Dragon phases include an immediate action-5 cadence");
         let root_phase_before_pre_kill = pre_kill_root.source_byte_3e;
         step(&mut campaign);
-        let live = &campaign.level2_compatibility().session.state.live;
+        let live = &campaign.simulation().session.state.live;
         let dying_root = live
             .economy
             .economy
@@ -30089,7 +30032,7 @@ mod tests {
         for _ in 0..callbacks_before_root_kill {
             step(&mut campaign);
             let root = campaign
-                .level2_compatibility()
+                .simulation()
                 .session
                 .state
                 .live
@@ -30102,7 +30045,7 @@ mod tests {
             assert!(root.active && root.action == level2_class5::dragon::DRAGON_KILL_ACTION);
         }
         step(&mut campaign);
-        let live = &campaign.level2_compatibility().session.state.live;
+        let live = &campaign.simulation().session.state.live;
         let hidden_root = live
             .economy
             .economy
@@ -30134,7 +30077,7 @@ mod tests {
         // further ordinary visits all sixteen rows have converted their own
         // mana and the following prologues reclaim the hidden root/body slots.
         for _ in 0..9 {
-            let live = &campaign.level2_compatibility().session.state.live;
+            let live = &campaign.simulation().session.state.live;
             let root_present = live
                 .economy
                 .economy
@@ -30152,7 +30095,7 @@ mod tests {
             }
             step(&mut campaign);
         }
-        let live = &campaign.level2_compatibility().session.state.live;
+        let live = &campaign.simulation().session.state.live;
         assert!(
             live.economy
                 .economy
@@ -30210,7 +30153,7 @@ mod tests {
         // target selection, dispatch, NewEvent allocation, feedback, audio,
         // and the projectile scheduler remain the ordinary production path.
         let dragon_slot = campaign
-            .level2_compatibility()
+            .simulation()
             .session
             .state
             .live
@@ -30225,7 +30168,7 @@ mod tests {
             .expect("a real group-1 Dragon remains in ordinary roam")
             .source_entity_index;
         let dragon_before_target = campaign
-            .level2_compatibility()
+            .simulation()
             .session
             .state
             .live
@@ -30236,7 +30179,7 @@ mod tests {
             .find(|source| source.source_entity_index == dragon_slot)
             .copied()
             .expect("selected Dragon root");
-        let terrain = &campaign.level2_compatibility().session.state.live.terrain;
+        let terrain = &campaign.simulation().session.state.live.terrain;
         let target_transition = crate::ground_creature_motion::step_ground_creature_motion(
             dragon_before_target.position,
             dragon_before_target.yaw,
@@ -30257,7 +30200,7 @@ mod tests {
         crate::move_entity(&mut target_position, target_transition.yaw, 0, 512);
         assert!(
             campaign
-                .level2_compatibility_mut()
+                .simulation_mut()
                 .session
                 .state
                 .live
@@ -30270,11 +30213,11 @@ mod tests {
                 )
         );
         campaign
-            .level2_compatibility_mut()
+            .simulation_mut()
             .set_level2_entity_position(player_entity_index, target_position)
             .expect("stage the real player in the real Dragon view cone");
         let projectile_count_before = campaign
-            .level2_compatibility()
+            .simulation()
             .session
             .state
             .live
@@ -30282,14 +30225,10 @@ mod tests {
             .economy
             .fireball_projectiles()
             .len();
-        let journal_before_target = campaign
-            .level2_compatibility()
-            .effect_journal()
-            .records()
-            .len();
+        let journal_before_target = campaign.simulation().effect_journal().records().len();
         step(&mut campaign);
         let targeted = campaign
-            .level2_compatibility()
+            .simulation()
             .session
             .state
             .live
@@ -30320,7 +30259,7 @@ mod tests {
         );
         assert_eq!(
             campaign
-                .level2_compatibility()
+                .simulation()
                 .session
                 .state
                 .live
@@ -30332,7 +30271,7 @@ mod tests {
             "action 1 only selects action 2; it does not recursively fire"
         );
         assert!(
-            campaign.level2_compatibility().effect_journal().records()[journal_before_target..]
+            campaign.simulation().effect_journal().records()[journal_before_target..]
                 .iter()
                 .all(|record| !matches!(
                     record.effect,
@@ -30345,7 +30284,7 @@ mod tests {
         );
 
         let dragon_before_fire = targeted;
-        let terrain = &campaign.level2_compatibility().session.state.live.terrain;
+        let terrain = &campaign.simulation().session.state.live.terrain;
         let fire_transition = crate::ground_creature_motion::step_ground_creature_motion(
             dragon_before_fire.position,
             dragon_before_fire.yaw,
@@ -30372,7 +30311,7 @@ mod tests {
         expected_launch_position.z = expected_launch_position.z.wrapping_add(140);
         assert!(
             campaign
-                .level2_compatibility_mut()
+                .simulation_mut()
                 .session
                 .state
                 .live
@@ -30385,16 +30324,12 @@ mod tests {
                 )
         );
         campaign
-            .level2_compatibility_mut()
+            .simulation_mut()
             .set_level2_entity_position(player_entity_index, fire_target_position)
             .expect("stage the real target inside the Dragon fire range");
-        let journal_before_fire = campaign
-            .level2_compatibility()
-            .effect_journal()
-            .records()
-            .len();
+        let journal_before_fire = campaign.simulation().effect_journal().records().len();
         step(&mut campaign);
-        let live = &campaign.level2_compatibility().session.state.live;
+        let live = &campaign.simulation().session.state.live;
         let fired = live
             .economy
             .economy
@@ -30464,9 +30399,7 @@ mod tests {
                 true,
             )
         );
-        let receipts = campaign
-            .level2_compatibility()
-            .cf10_production_schedule_receipts();
+        let receipts = campaign.simulation().cf10_production_schedule_receipts();
         assert_eq!(
             receipts.iter().any(|receipt| matches!(
                 receipt,
@@ -30483,8 +30416,7 @@ mod tests {
             100,
             "sub_1CC20 applies target feedback only after allocation succeeds"
         );
-        let launch_sounds = campaign.level2_compatibility().effect_journal().records()
-            [journal_before_fire..]
+        let launch_sounds = campaign.simulation().effect_journal().records()[journal_before_fire..]
             .iter()
             .filter(|record| {
                 matches!(
@@ -30514,7 +30446,7 @@ mod tests {
         // the downstream semantic objective, objective gate, authored group,
         // and terrain-strip command lifecycle—not a duplicate combat proof.
         let remaining_dragons = campaign
-            .level2_compatibility()
+            .simulation()
             .session
             .state
             .live
@@ -30528,7 +30460,7 @@ mod tests {
         assert_eq!(remaining_dragons, [dragon_slot]);
         assert_eq!(
             campaign
-                .level2_compatibility()
+                .simulation()
                 .session
                 .state
                 .live
@@ -30540,7 +30472,7 @@ mod tests {
         );
         assert!(
             campaign
-                .level2_compatibility_mut()
+                .simulation_mut()
                 .session
                 .state
                 .live
@@ -30549,7 +30481,7 @@ mod tests {
                 .stage_authored_dragon_terminal_hide_for_test(dragon_slot)
         );
         step(&mut campaign);
-        let live = &campaign.level2_compatibility().session.state.live;
+        let live = &campaign.simulation().session.state.live;
         assert!(live.economy.economy.authored_dragons().is_empty());
         assert!(live.economy.economy.authored_dragon_parts().is_empty());
         assert_eq!(live.core.runtime.objectives[0].stage_selectors[1], 2);
@@ -30562,12 +30494,12 @@ mod tests {
         );
         assert!(
             campaign
-                .level2_compatibility()
+                .simulation()
                 .dispatch_events()
                 .iter()
                 .all(|event| !matches!(
                     event,
-                    Level2DispatchEvent::AuthoredGroupActivated { group: 2, .. }
+                    Mc2DispatchEvent::AuthoredGroupActivated { group: 2, .. }
                 ))
         );
 
@@ -30579,19 +30511,14 @@ mod tests {
         const GROUP5_GATE_SLOT: u16 = 218;
         const TERRAIN_GATE_SLOT: u16 = 128;
         const TERRAIN_CONTROLLER_SLOT: u16 = 94;
-        let group5_gate_phase_before = campaign
-            .level2_compatibility()
-            .session
-            .state
-            .live
-            .economy
-            .entities[usize::from(GROUP5_GATE_SLOT)]
+        let group5_gate_phase_before = campaign.simulation().session.state.live.economy.entities
+            [usize::from(GROUP5_GATE_SLOT)]
         .phase;
         step(&mut campaign);
-        let events = campaign.level2_compatibility().dispatch_events();
+        let events = campaign.simulation().dispatch_events();
         assert!(events.iter().any(|event| matches!(
             event,
-            Level2DispatchEvent::AuthoredGroupActivated {
+            Mc2DispatchEvent::AuthoredGroupActivated {
                 source_slot: GROUP5_GATE_SLOT,
                 group: 5,
                 authored_indices,
@@ -30600,9 +30527,9 @@ mod tests {
         )));
         assert!(events.iter().all(|event| !matches!(
             event,
-            Level2DispatchEvent::AuthoredGroupActivated { group: 2, .. }
+            Mc2DispatchEvent::AuthoredGroupActivated { group: 2, .. }
         )));
-        let live = &campaign.level2_compatibility().session.state.live;
+        let live = &campaign.simulation().session.state.live;
         let group5_gate = &live.economy.entities[usize::from(GROUP5_GATE_SLOT)];
         assert!(group5_gate.active && group5_gate.drawing_disabled());
         assert_eq!(group5_gate.phase, group5_gate_phase_before.wrapping_add(1));
@@ -30621,9 +30548,7 @@ mod tests {
                 .collect::<Vec<_>>(),
             (166_u16..=176).collect::<Vec<_>>()
         );
-        let receipts = campaign
-            .level2_compatibility()
-            .cf10_production_schedule_receipts();
+        let receipts = campaign.simulation().cf10_production_schedule_receipts();
         for (constructor_phase, source) in goat_roots.iter().enumerate() {
             let goat = live
                 .goats
@@ -30727,13 +30652,8 @@ mod tests {
             (11, 32, 32, 2, 2)
         );
         let terrain_gate_phase = terrain_gate.phase;
-        let controller_position = campaign
-            .level2_compatibility()
-            .session
-            .state
-            .live
-            .economy
-            .entities[usize::from(TERRAIN_CONTROLLER_SLOT)]
+        let controller_position = campaign.simulation().session.state.live.economy.entities
+            [usize::from(TERRAIN_CONTROLLER_SLOT)]
         .position;
         let expected_trigger_position = Position {
             z: live.terrain.ground_height(controller_position),
@@ -30744,17 +30664,17 @@ mod tests {
         let denominator = live.economy.economy.owner_mana_global();
         assert!(denominator > 0);
         let castle_slot = campaign
-            .level2_compatibility_mut()
+            .simulation_mut()
             .economy_mut()
             .build_castle(player_position, player_entity_index)
             .expect("the package arena can stage the Castle-mana prerequisite");
         assert!(
             campaign
-                .level2_compatibility_mut()
+                .simulation_mut()
                 .economy_mut()
                 .set_castle_mana_prerequisite_for_test(castle_slot, denominator)
         );
-        let staged_economy = campaign.level2_compatibility().economy();
+        let staged_economy = campaign.simulation().economy();
         let staged_castle = staged_economy
             .castle()
             .expect("the staged Castle remains the player Castle authority");
@@ -30770,7 +30690,7 @@ mod tests {
         );
 
         step(&mut campaign);
-        let live = &campaign.level2_compatibility().session.state.live;
+        let live = &campaign.simulation().session.state.live;
         let post_objective_economy = &live.economy.economy;
         let post_objective_castle = post_objective_economy
             .castle()
@@ -30789,12 +30709,12 @@ mod tests {
         assert_eq!(terrain_gate.phase, terrain_gate_phase.wrapping_add(1));
         assert!(
             campaign
-                .level2_compatibility()
+                .simulation()
                 .dispatch_events()
                 .iter()
                 .all(|event| !matches!(
                     event,
-                    Level2DispatchEvent::AuthoredGroupActivated { group: 2, .. }
+                    Mc2DispatchEvent::AuthoredGroupActivated { group: 2, .. }
                 ))
         );
 
@@ -30802,11 +30722,11 @@ mod tests {
         // sees the completed selector and constructs the model-63 command only
         // on this following source pass.
         step(&mut campaign);
-        let events = campaign.level2_compatibility().dispatch_events();
+        let events = campaign.simulation().dispatch_events();
         assert!(
             events.iter().any(|event| matches!(
                 event,
-                Level2DispatchEvent::AuthoredGroupActivated {
+                Mc2DispatchEvent::AuthoredGroupActivated {
                     source_slot,
                     group: 2,
                     authored_indices,
@@ -30816,7 +30736,7 @@ mod tests {
             )),
             "the following numeric pass must expose real group-2 activation: {events:?}"
         );
-        let live = &campaign.level2_compatibility().session.state.live;
+        let live = &campaign.simulation().session.state.live;
         let hidden_terrain_gate = &live.economy.entities[usize::from(TERRAIN_GATE_SLOT)];
         assert!(hidden_terrain_gate.active && hidden_terrain_gate.drawing_disabled());
         assert_eq!(
@@ -30859,9 +30779,7 @@ mod tests {
             trigger.source_byte_3e,
             (trigger.source_entity_index as u8).wrapping_add(u8::from(trigger_visited))
         );
-        let receipts = campaign
-            .level2_compatibility()
-            .cf10_production_schedule_receipts();
+        let receipts = campaign.simulation().cf10_production_schedule_receipts();
         assert_eq!(
             receipts.iter().any(|receipt| matches!(
                 receipt,
@@ -30874,7 +30792,7 @@ mod tests {
         if !trigger_visited {
             step(&mut campaign);
         }
-        let live = &campaign.level2_compatibility().session.state.live;
+        let live = &campaign.simulation().session.state.live;
         let hidden_trigger = live
             .economy
             .economy
@@ -30898,9 +30816,7 @@ mod tests {
                 2,
             )
         );
-        let receipts = campaign
-            .level2_compatibility()
-            .cf10_production_schedule_receipts();
+        let receipts = campaign.simulation().cf10_production_schedule_receipts();
         assert!(receipts.iter().any(|receipt| matches!(
             receipt,
             ScheduleReceipt::CallbackCompleted { slot, .. }
@@ -30913,13 +30829,9 @@ mod tests {
         )));
 
         let terrain_before_close = campaign.terrain_hash();
-        let journal_before_close = campaign
-            .level2_compatibility()
-            .effect_journal()
-            .records()
-            .len();
+        let journal_before_close = campaign.simulation().effect_journal().records().len();
         step(&mut campaign);
-        let live = &campaign.level2_compatibility().session.state.live;
+        let live = &campaign.simulation().session.state.live;
         assert!(
             live.economy
                 .economy
@@ -30930,7 +30842,7 @@ mod tests {
         assert!(!live.economy.entities[usize::from(TERRAIN_GATE_SLOT)].active);
         assert_ne!(campaign.terrain_hash(), terrain_before_close);
         assert!(
-            campaign.level2_compatibility().effect_journal().records()[journal_before_close..]
+            campaign.simulation().effect_journal().records()[journal_before_close..]
                 .iter()
                 .any(|record| matches!(
                     record.effect,
@@ -30946,7 +30858,7 @@ mod tests {
         assert_eq!(campaign.state_hash(), baseline_hash);
         assert!(
             campaign
-                .level2_compatibility()
+                .simulation()
                 .session
                 .state
                 .live
@@ -30957,7 +30869,7 @@ mod tests {
         );
         assert!(
             campaign
-                .level2_compatibility()
+                .simulation()
                 .session
                 .state
                 .live
@@ -30976,7 +30888,7 @@ mod tests {
         let mut campaign = CampaignSession::open(&package, CampaignSelection::LEVEL3)
             .expect("qualified Level 3 descriptor opens");
         let player_entity_index = campaign
-            .level2_compatibility()
+            .simulation()
             .session
             .state
             .live
@@ -30984,7 +30896,7 @@ mod tests {
             .state
             .entity_index;
         let feature = campaign
-            .level2_compatibility()
+            .simulation()
             .session
             .state
             .live
@@ -30995,7 +30907,7 @@ mod tests {
             .copied()
             .expect("Level 3 package contains Bee row 149");
         let initial = campaign
-            .level2_compatibility_mut()
+            .simulation_mut()
             .allocate_level2_authored_bee_feature(feature)
             .expect("package-present Bee allocates through its ordinary constructor");
         let source_slot = initial.source_entity_index;
@@ -31003,7 +30915,7 @@ mod tests {
         let mut target_after_move = initial.position;
         crate::move_entity(&mut target_after_move, initial.yaw, 0, initial.actual_speed);
         campaign
-            .level2_compatibility_mut()
+            .simulation_mut()
             .set_level2_entity_position(player_entity_index, target_after_move)
             .expect("place the real player on the Bee's post-move awareness point");
         let mut action17 = initial;
@@ -31013,7 +30925,7 @@ mod tests {
         action17.target_entity_index = Some(player_entity_index);
         assert!(
             campaign
-                .level2_compatibility_mut()
+                .simulation_mut()
                 .session
                 .state
                 .live
@@ -31022,17 +30934,13 @@ mod tests {
                 .replace_authored_bee_for_test(action17)
         );
 
-        let action17_cursor = campaign
-            .level2_compatibility()
-            .effect_journal()
-            .records()
-            .len();
+        let action17_cursor = campaign.simulation().effect_journal().records().len();
         let _ = campaign.step(PlayerCommand::default(), 0);
         let first = level2_next_rng16(initial.entity_rng);
         let second = level2_next_rng16(first);
         let third = level2_next_rng16(second);
         let acquired = campaign
-            .level2_compatibility()
+            .simulation()
             .session
             .state
             .live
@@ -31044,8 +30952,7 @@ mod tests {
             .copied()
             .expect("action-17 Bee remains live");
         assert_eq!((acquired.action, acquired.entity_rng), (18, third));
-        let action17_sounds = campaign.level2_compatibility().effect_journal().records()
-            [action17_cursor..]
+        let action17_sounds = campaign.simulation().effect_journal().records()[action17_cursor..]
             .iter()
             .filter_map(|record| match record.effect {
                 crate::campaign::journal::CampaignEffect::Flight(FlightEvent::PrepareSound {
@@ -31061,14 +30968,10 @@ mod tests {
         assert_eq!(action17_sounds[0].1, (third & 1) + 12);
 
         let off_cadence_rng = acquired.entity_rng;
-        let off_cadence_cursor = campaign
-            .level2_compatibility()
-            .effect_journal()
-            .records()
-            .len();
+        let off_cadence_cursor = campaign.simulation().effect_journal().records().len();
         let _ = campaign.step(PlayerCommand::default(), 0);
         let off_cadence = campaign
-            .level2_compatibility()
+            .simulation()
             .session
             .state
             .live
@@ -31081,7 +30984,7 @@ mod tests {
             .expect("off-cadence Bee remains live");
         assert_eq!(off_cadence.entity_rng, off_cadence_rng);
         assert!(
-            campaign.level2_compatibility().effect_journal().records()[off_cadence_cursor..]
+            campaign.simulation().effect_journal().records()[off_cadence_cursor..]
                 .iter()
                 .all(|record| !matches!(
                     record.effect,
@@ -31099,14 +31002,7 @@ mod tests {
         contact.source_byte_3e = 0;
         contact.control_flags |= LEVEL2_BEE_MOVEMENT_SKIP_BIT;
         contact.target_entity_index = Some(player_entity_index);
-        let live_player_position = campaign
-            .level2_compatibility()
-            .session
-            .state
-            .live
-            .core
-            .state
-            .position;
+        let live_player_position = campaign.simulation().session.state.live.core.state.position;
         contact.position = Position {
             x: live_player_position.x.wrapping_add(
                 u16::try_from(LEVEL2_BEE_CONTACT_RADIUS - 1).expect("Bee contact radius fits u16"),
@@ -31116,7 +31012,7 @@ mod tests {
         };
         assert!(
             campaign
-                .level2_compatibility_mut()
+                .simulation_mut()
                 .session
                 .state
                 .live
@@ -31124,15 +31020,11 @@ mod tests {
                 .economy
                 .replace_authored_bee_for_test(contact)
         );
-        let contact_cursor = campaign
-            .level2_compatibility()
-            .effect_journal()
-            .records()
-            .len();
+        let contact_cursor = campaign.simulation().effect_journal().records().len();
         let _ = campaign.step(PlayerCommand::default(), 0);
         let contact_rng = level2_next_rng16(off_cadence_rng);
         let contacted = campaign
-            .level2_compatibility()
+            .simulation()
             .session
             .state
             .live
@@ -31144,8 +31036,7 @@ mod tests {
             .copied()
             .expect("contacting Bee remains live");
         assert_eq!(contacted.entity_rng, contact_rng);
-        let contact_sounds = campaign.level2_compatibility().effect_journal().records()
-            [contact_cursor..]
+        let contact_sounds = campaign.simulation().effect_journal().records()[contact_cursor..]
             .iter()
             .filter_map(|record| match record.effect {
                 crate::campaign::journal::CampaignEffect::Flight(FlightEvent::PrepareSound {
@@ -31195,12 +31086,12 @@ mod tests {
             let _ = campaign.step(command, 0);
             assert!(
                 campaign
-                    .level2_compatibility()
+                    .simulation()
                     .dispatch_events()
                     .iter()
-                    .all(|event| !matches!(event, Level2DispatchEvent::Error { .. })),
+                    .all(|event| !matches!(event, Mc2DispatchEvent::Error { .. })),
                 "Level 3 final-chain dispatch errors: {:?}",
-                campaign.level2_compatibility().dispatch_events()
+                campaign.simulation().dispatch_events()
             );
         }
 
@@ -31214,7 +31105,7 @@ mod tests {
             .expect("qualified Level 3 descriptor opens");
         let baseline_hash = campaign.state_hash();
         let player_entity_index = campaign
-            .level2_compatibility()
+            .simulation()
             .session
             .state
             .live
@@ -31227,13 +31118,7 @@ mod tests {
         // the real reach-location predicate and retains every later producer,
         // numeric callback, objective pause, constructor, and acquisition.
         {
-            let runtime = &mut campaign
-                .level2_compatibility_mut()
-                .session
-                .state
-                .live
-                .core
-                .runtime;
+            let runtime = &mut campaign.simulation_mut().session.state.live.core.runtime;
             for stage_index in 0..REACH_STAGE {
                 runtime.set_level2_objective_stage_selector_for(0, stage_index, 2);
             }
@@ -31244,7 +31129,7 @@ mod tests {
             x: 110_u16.wrapping_mul(256),
             y: 110_u16.wrapping_mul(256),
             z: campaign
-                .level2_compatibility()
+                .simulation()
                 .session
                 .state
                 .live
@@ -31261,11 +31146,11 @@ mod tests {
             ..target
         };
         campaign
-            .level2_compatibility_mut()
+            .simulation_mut()
             .set_level2_entity_position(player_entity_index, outside)
             .expect("stage the real player just outside the reach radius");
         step(&mut campaign);
-        let live = &campaign.level2_compatibility().session.state.live;
+        let live = &campaign.simulation().session.state.live;
         assert_eq!(
             live.core.runtime.objectives[0].stage_selectors[REACH_STAGE],
             1
@@ -31273,21 +31158,21 @@ mod tests {
         assert!(live.economy.economy.bee_creatures().is_empty());
         assert!(
             campaign
-                .level2_compatibility()
+                .simulation()
                 .dispatch_events()
                 .iter()
                 .all(|event| !matches!(
                     event,
-                    Level2DispatchEvent::AuthoredGroupActivated { group: 3, .. }
+                    Mc2DispatchEvent::AuthoredGroupActivated { group: 3, .. }
                 ))
         );
 
         campaign
-            .level2_compatibility_mut()
+            .simulation_mut()
             .set_level2_entity_position(player_entity_index, target)
             .expect("move the real player onto the package reach point");
         step(&mut campaign);
-        let live = &campaign.level2_compatibility().session.state.live;
+        let live = &campaign.simulation().session.state.live;
         assert_eq!(
             live.core.runtime.objectives[0].stage_selectors[REACH_STAGE],
             2
@@ -31299,12 +31184,12 @@ mod tests {
         assert!(live.economy.economy.bee_creatures().is_empty());
         assert!(
             campaign
-                .level2_compatibility()
+                .simulation()
                 .dispatch_events()
                 .iter()
                 .all(|event| !matches!(
                     event,
-                    Level2DispatchEvent::AuthoredGroupActivated { group: 3, .. }
+                    Mc2DispatchEvent::AuthoredGroupActivated { group: 3, .. }
                 ))
         );
 
@@ -31312,17 +31197,17 @@ mod tests {
         // the completed selector only on the following numeric visit, then
         // synchronously constructs the six package Bees in authored order.
         step(&mut campaign);
-        let events = campaign.level2_compatibility().dispatch_events();
+        let events = campaign.simulation().dispatch_events();
         assert!(events.iter().any(|event| matches!(
             event,
-            Level2DispatchEvent::AuthoredGroupActivated {
+            Mc2DispatchEvent::AuthoredGroupActivated {
                 source_slot: REACH_GATE_SLOT,
                 group: 3,
                 authored_indices,
                 ..
             } if authored_indices.as_ref() == BEE_ROWS
         )));
-        let live = &campaign.level2_compatibility().session.state.live;
+        let live = &campaign.simulation().session.state.live;
         assert_eq!(
             live.core.runtime.objectives[0].stage_selectors[BEE_STAGE],
             1
@@ -31342,9 +31227,7 @@ mod tests {
             bee_slots.windows(2).all(|slots| slots[0] < slots[1]),
             "the shared allocator assigns the package rows in authored order: {bee_slots:?}"
         );
-        let receipts = campaign
-            .level2_compatibility()
-            .cf10_production_schedule_receipts();
+        let receipts = campaign.simulation().cf10_production_schedule_receipts();
         for (constructor_phase, bee) in bees.iter().enumerate() {
             let visited = bee.source_entity_index > REACH_GATE_SLOT;
             assert_eq!(
@@ -31394,13 +31277,13 @@ mod tests {
         // reclaim and the frozen model-2 objective census remain under test.
         assert_eq!(
             campaign
-                .level2_compatibility_mut()
+                .simulation_mut()
                 .economy_mut()
                 .stage_authored_bee_terminal_hide_for_test(&BEE_ROWS),
             BEE_ROWS.len()
         );
         step(&mut campaign);
-        let live = &campaign.level2_compatibility().session.state.live;
+        let live = &campaign.simulation().session.state.live;
         assert!(live.economy.economy.bee_creatures().is_empty());
         assert_eq!(
             live.core.runtime.objectives[0].stage_selectors[BEE_STAGE],
@@ -31408,27 +31291,27 @@ mod tests {
         );
         assert!(
             campaign
-                .level2_compatibility()
+                .simulation()
                 .dispatch_events()
                 .iter()
                 .all(|event| !matches!(
                     event,
-                    Level2DispatchEvent::AuthoredGroupActivated { group: 4, .. }
+                    Mc2DispatchEvent::AuthoredGroupActivated { group: 4, .. }
                 ))
         );
 
         step(&mut campaign);
-        let events = campaign.level2_compatibility().dispatch_events();
+        let events = campaign.simulation().dispatch_events();
         assert!(events.iter().any(|event| matches!(
             event,
-            Level2DispatchEvent::AuthoredGroupActivated {
+            Mc2DispatchEvent::AuthoredGroupActivated {
                 source_slot: FINAL_GATE_SLOT,
                 group: 4,
                 authored_indices,
                 ..
             } if authored_indices.as_ref() == [127, 157]
         )));
-        let live = &campaign.level2_compatibility().session.state.live;
+        let live = &campaign.simulation().session.state.live;
         let final_switch = *live
             .economy
             .economy
@@ -31479,14 +31362,10 @@ mod tests {
         );
         assert!(events.iter().all(|event| !matches!(
             event,
-            Level2DispatchEvent::AuthoredGroupActivated { group: 12, .. }
+            Mc2DispatchEvent::AuthoredGroupActivated { group: 12, .. }
         )));
 
-        let journal_start = campaign
-            .level2_compatibility()
-            .effect_journal()
-            .records()
-            .len();
+        let journal_start = campaign.simulation().effect_journal().records().len();
         // Row 127 is not an eager area trigger. NewEvent may reuse any current
         // free slot, so pin the source rule rather than a stale slot number:
         // model-0 fires only on phase&7==0 and Morph acquires only on
@@ -31494,7 +31373,7 @@ mod tests {
         let mut saw_morph_acquisition = false;
         let mut firing_switch_phase = None;
         for _ in 0..8 {
-            let live = &campaign.level2_compatibility().session.state.live;
+            let live = &campaign.simulation().session.state.live;
             let switch = live
                 .economy
                 .economy
@@ -31513,17 +31392,17 @@ mod tests {
             let switch_phase = switch.phase;
 
             step(&mut campaign);
-            let events = campaign.level2_compatibility().dispatch_events();
+            let events = campaign.simulation().dispatch_events();
             let fired_group12 = events.iter().any(|event| {
                 matches!(
                     event,
-                    Level2DispatchEvent::AuthoredGroupActivated { group: 12, .. }
+                    Mc2DispatchEvent::AuthoredGroupActivated { group: 12, .. }
                 )
             });
             let acquired_morph = events.iter().any(|event| {
                 matches!(
                     event,
-                    Level2DispatchEvent::SpellAcquisition {
+                    Mc2DispatchEvent::SpellAcquisition {
                         source_slot,
                         family: 4,
                         result: Some(_),
@@ -31541,10 +31420,10 @@ mod tests {
         }
         assert!(firing_switch_phase.is_some_and(|phase| phase & 7 == 0));
 
-        let events = campaign.level2_compatibility().dispatch_events();
+        let events = campaign.simulation().dispatch_events();
         assert!(events.iter().any(|event| matches!(
             event,
-            Level2DispatchEvent::AuthoredGroupActivated {
+            Mc2DispatchEvent::AuthoredGroupActivated {
                 source_slot,
                 group: 12,
                 authored_indices,
@@ -31553,7 +31432,7 @@ mod tests {
                 && authored_indices.as_ref() == FINAL_DRAGON_ROWS
         )));
         let hidden_switch = campaign
-            .level2_compatibility()
+            .simulation()
             .session
             .state
             .live
@@ -31581,39 +31460,31 @@ mod tests {
                 break;
             }
             let morph = campaign
-                .level2_compatibility()
+                .simulation()
                 .shared_spells()
                 .pickup(morph_slot)
                 .expect("Morph remains live until acquisition");
             let may_acquire = morph.action == 13 && morph.phase & 3 == 0;
             step(&mut campaign);
-            let acquired = campaign
-                .level2_compatibility()
-                .dispatch_events()
-                .iter()
-                .any(|event| {
-                    matches!(event, Level2DispatchEvent::SpellAcquisition {
+            let acquired = campaign.simulation().dispatch_events().iter().any(|event| {
+                matches!(event, Mc2DispatchEvent::SpellAcquisition {
                     source_slot, family: 4, result: Some(_), ..
                 } if *source_slot == morph_slot)
-                });
+            });
             assert_eq!(acquired, may_acquire);
             assert!(
-                !campaign
-                    .level2_compatibility()
-                    .dispatch_events()
-                    .iter()
-                    .any(
-                        |event| matches!(event, Level2DispatchEvent::AuthoredGroupActivated {
+                !campaign.simulation().dispatch_events().iter().any(
+                    |event| matches!(event, Mc2DispatchEvent::AuthoredGroupActivated {
                     source_slot, group: 12, ..
                 } if *source_slot == final_switch.source_entity_index)
-                    ),
+                ),
                 "the consumed final switch must not fire again"
             );
             saw_morph_acquisition |= acquired;
         }
         assert!(saw_morph_acquisition);
 
-        let live = &campaign.level2_compatibility().session.state.live;
+        let live = &campaign.simulation().session.state.live;
         let morph = live
             .shared_spells
             .dynamic_pickups()
@@ -31647,7 +31518,7 @@ mod tests {
                 .collect::<Vec<_>>(),
             FINAL_DRAGON_ROWS
         );
-        let effects = &campaign.level2_compatibility().effect_journal().records()[journal_start..];
+        let effects = &campaign.simulation().effect_journal().records()[journal_start..];
         let sound_sequence = effects
             .iter()
             .find_map(|record| match record.effect {
@@ -31678,27 +31549,20 @@ mod tests {
         // prerequisites. The real acquired holder, public spell command,
         // numeric holder visit, shared arena allocation, and follower visit
         // remain production-owned below.
-        let player_position = campaign
-            .level2_compatibility()
-            .session
-            .state
-            .live
-            .core
-            .state
-            .position;
+        let player_position = campaign.simulation().session.state.live.core.state.position;
         let castle_slot = campaign
-            .level2_compatibility_mut()
+            .simulation_mut()
             .economy_mut()
             .build_castle(player_position, player_entity_index)
             .expect("the package arena can stage Morph's Castle prerequisite");
         assert!(
             campaign
-                .level2_compatibility_mut()
+                .simulation_mut()
                 .economy_mut()
                 .set_castle_mana_prerequisite_for_test(castle_slot, 20_000)
         );
         {
-            let live = &mut campaign.level2_compatibility_mut().session.state.live;
+            let live = &mut campaign.simulation_mut().session.state.live;
             live.economy.refresh_owner_mana_rows();
             live.shared_spells.player_entity.set_mana(5_000);
             let player_snapshot = live.shared_spells.player_entity.clone();
@@ -31712,7 +31576,7 @@ mod tests {
             live.economy.entities[usize::from(player_entity_index)].set_mana(5_000);
         }
         let pre_cast_bee_count = campaign
-            .level2_compatibility()
+            .simulation()
             .session
             .state
             .live
@@ -31720,13 +31584,9 @@ mod tests {
             .economy
             .bee_creatures()
             .len();
-        let pre_cast_sound_cursor = campaign
-            .level2_compatibility()
-            .effect_journal()
-            .records()
-            .len();
+        let pre_cast_sound_cursor = campaign.simulation().effect_journal().records().len();
         let pre_cast_experience = campaign
-            .level2_compatibility()
+            .simulation()
             .session
             .state
             .live
@@ -31745,7 +31605,7 @@ mod tests {
                 ..PlayerCommand::default()
             },
         );
-        let armed_live = &campaign.level2_compatibility().session.state.live;
+        let armed_live = &campaign.simulation().session.state.live;
         let armed_holder = armed_live
             .shared_spells
             .dynamic_pickups()
@@ -31762,7 +31622,7 @@ mod tests {
             pre_cast_bee_count
         );
         assert!(
-            campaign.level2_compatibility().effect_journal().records()[pre_cast_sound_cursor..]
+            campaign.simulation().effect_journal().records()[pre_cast_sound_cursor..]
                 .iter()
                 .all(|record| !matches!(
                     record.effect,
@@ -31774,28 +31634,18 @@ mod tests {
         );
 
         let mut allocation_failure = campaign.clone();
-        let player_before_pulse = campaign
-            .level2_compatibility()
-            .session
-            .state
-            .live
-            .core
-            .state;
+        let player_before_pulse = campaign.simulation().session.state.live.core.state;
         let player_mana_before_pulse = campaign
-            .level2_compatibility()
+            .simulation()
             .session
             .state
             .live
             .shared_spells
             .player_entity
             .mana;
-        let success_journal_cursor = campaign
-            .level2_compatibility()
-            .effect_journal()
-            .records()
-            .len();
+        let success_journal_cursor = campaign.simulation().effect_journal().records().len();
         step(&mut campaign);
-        let success_live = &campaign.level2_compatibility().session.state.live;
+        let success_live = &campaign.simulation().session.state.live;
         let holder = success_live
             .shared_spells
             .dynamic_pickups()
@@ -31925,7 +31775,7 @@ mod tests {
             0x21
         );
         let success_effects =
-            &campaign.level2_compatibility().effect_journal().records()[success_journal_cursor..];
+            &campaign.simulation().effect_journal().records()[success_journal_cursor..];
         assert_eq!(
             success_effects
                 .iter()
@@ -31949,9 +31799,7 @@ mod tests {
                 .map(|(_, hash)| *hash),
             Some("51d9ecbc8c8301f053d666cd4dd85e983569ca314534fa5e57d0a2d5014eaeaf")
         );
-        let receipts = campaign
-            .level2_compatibility()
-            .cf10_production_schedule_receipts();
+        let receipts = campaign.simulation().cf10_production_schedule_receipts();
         let holder_callback = receipts
             .iter()
             .position(|receipt| {
@@ -31974,15 +31822,10 @@ mod tests {
         }
 
         let mut non_expiry = campaign.clone();
-        let non_expiry_effect_cursor = non_expiry
-            .level2_compatibility()
-            .effect_journal()
-            .records()
-            .len();
+        let non_expiry_effect_cursor = non_expiry.simulation().effect_journal().records().len();
         step(&mut non_expiry);
         assert!(
-            non_expiry.level2_compatibility().effect_journal().records()
-                [non_expiry_effect_cursor..]
+            non_expiry.simulation().effect_journal().records()[non_expiry_effect_cursor..]
                 .iter()
                 .all(|record| !matches!(
                     record.effect,
@@ -32000,7 +31843,7 @@ mod tests {
         let mut morph_hash_negative = campaign.clone();
         let morph_hash = campaign.state_hash();
         morph_hash_negative
-            .level2_compatibility_mut()
+            .simulation_mut()
             .economy_mut()
             .bee_creatures
             .iter_mut()
@@ -32016,7 +31859,7 @@ mod tests {
         // valid after installing the next source constructor tier.
         let mut queued_expiry = campaign.clone();
         let body_before_expiry = queued_expiry
-            .level2_compatibility()
+            .simulation()
             .session
             .state
             .live
@@ -32029,7 +31872,7 @@ mod tests {
             .expect("live Morph body before expiry");
         {
             let holder = queued_expiry
-                .level2_compatibility_mut()
+                .simulation_mut()
                 .session
                 .state
                 .live
@@ -32040,13 +31883,9 @@ mod tests {
             holder.record[50..52].copy_from_slice(&1_i16.to_le_bytes());
             holder.set_source_word_2c(2);
         }
-        let expiry_effect_cursor = queued_expiry
-            .level2_compatibility()
-            .effect_journal()
-            .records()
-            .len();
+        let expiry_effect_cursor = queued_expiry.simulation().effect_journal().records().len();
         step(&mut queued_expiry);
-        let expired_live = &queued_expiry.level2_compatibility().session.state.live;
+        let expired_live = &queued_expiry.simulation().session.state.live;
         let expired_holder = expired_live
             .shared_spells
             .pickup(morph_slot)
@@ -32072,7 +31911,7 @@ mod tests {
         assert!(expired_body.active && !expired_body.drawing_enabled);
         assert_eq!(
             queued_expiry
-                .level2_compatibility()
+                .simulation()
                 .creature_kind_for_source_slot(expected_bee_slot),
             Some(CreatureKind::Bee),
             "the terminal Morph origin remains dispatchable after expiry clears the holder back-reference"
@@ -32086,10 +31925,7 @@ mod tests {
             "the pre-existing Morph body gets exactly one numeric callback in the expiry pass; slot order decides whether it runs before or after the holder hide"
         );
         assert_eq!(
-            queued_expiry
-                .level2_compatibility()
-                .effect_journal()
-                .records()[expiry_effect_cursor..]
+            queued_expiry.simulation().effect_journal().records()[expiry_effect_cursor..]
                 .iter()
                 .filter(|record| matches!(
                     record.effect,
@@ -32113,23 +31949,23 @@ mod tests {
         );
         assert!(
             queued_expiry
-                .level2_compatibility()
+                .simulation()
                 .dispatch_events()
                 .iter()
-                .all(|event| !matches!(event, Level2DispatchEvent::Error { .. }))
+                .all(|event| !matches!(event, Mc2DispatchEvent::Error { .. }))
         );
         step(&mut queued_expiry);
         assert!(
             queued_expiry
-                .level2_compatibility()
+                .simulation()
                 .dispatch_events()
                 .iter()
-                .all(|event| !matches!(event, Level2DispatchEvent::Error { .. })),
+                .all(|event| !matches!(event, Mc2DispatchEvent::Error { .. })),
             "an idle queued tier must not require an unimplemented Morph product"
         );
         assert!(
             queued_expiry
-                .level2_compatibility()
+                .simulation()
                 .session
                 .state
                 .live
@@ -32142,7 +31978,7 @@ mod tests {
         );
         assert!(
             !queued_expiry
-                .level2_compatibility()
+                .simulation()
                 .session
                 .state
                 .live
@@ -32153,7 +31989,7 @@ mod tests {
         );
         assert!(
             queued_expiry
-                .level2_compatibility()
+                .simulation()
                 .session
                 .state
                 .live
@@ -32166,7 +32002,7 @@ mod tests {
 
         let mut severed_relation = campaign.clone();
         severed_relation
-            .level2_compatibility_mut()
+            .simulation_mut()
             .session
             .state
             .live
@@ -32177,12 +32013,12 @@ mod tests {
         let _ = severed_relation.step(PlayerCommand::default(), 0);
         assert!(
             severed_relation
-                .level2_compatibility()
+                .simulation()
                 .dispatch_events()
                 .iter()
                 .any(|event| matches!(
                     event,
-                    Level2DispatchEvent::Error {
+                    Mc2DispatchEvent::Error {
                         source_slot,
                         message,
                         ..
@@ -32195,13 +32031,7 @@ mod tests {
         // The selector-12 body follows the live player carrier and preserves
         // numeric ordering. A lower-slot body observes the preceding turn's
         // public orientation; a higher-slot body observes it in the same pass.
-        let pre_turn_player = campaign
-            .level2_compatibility()
-            .session
-            .state
-            .live
-            .core
-            .state;
+        let pre_turn_player = campaign.simulation().session.state.live.core.state;
         step_with_command(
             &mut campaign,
             PlayerCommand {
@@ -32210,7 +32040,7 @@ mod tests {
             },
         );
         if expected_bee_slot > player_entity_index {
-            let live = &campaign.level2_compatibility().session.state.live;
+            let live = &campaign.simulation().session.state.live;
             let follower = live
                 .economy
                 .economy
@@ -32228,7 +32058,7 @@ mod tests {
             );
         } else {
             let follower = campaign
-                .level2_compatibility()
+                .simulation()
                 .session
                 .state
                 .live
@@ -32249,12 +32079,12 @@ mod tests {
         }
 
         let failure_sound_cursor = allocation_failure
-            .level2_compatibility()
+            .simulation()
             .effect_journal()
             .records()
             .len();
         let removed_slot = allocation_failure
-            .level2_compatibility_mut()
+            .simulation_mut()
             .session
             .state
             .live
@@ -32264,7 +32094,7 @@ mod tests {
             .expect("failure branch removes a real free slot");
         {
             let arena = &mut allocation_failure
-                .level2_compatibility_mut()
+                .simulation_mut()
                 .session
                 .state
                 .live
@@ -32277,7 +32107,7 @@ mod tests {
             arena.finish_source_group();
         }
         let failure_constructor_phase = allocation_failure
-            .level2_compatibility()
+            .simulation()
             .session
             .state
             .live
@@ -32288,13 +32118,11 @@ mod tests {
         // legitimately reclaim another address before this numeric visit.
         assert!(
             allocation_failure
-                .level2_compatibility_mut()
+                .simulation_mut()
                 .step_dynamic_morph_holder(0, morph_slot)
         );
-        allocation_failure
-            .level2_compatibility_mut()
-            .flush_shared_effects();
-        let failed_live = &allocation_failure.level2_compatibility().session.state.live;
+        allocation_failure.simulation_mut().flush_shared_effects();
+        let failed_live = &allocation_failure.simulation().session.state.live;
         let failed_holder = failed_live
             .shared_spells
             .dynamic_pickups()
@@ -32329,10 +32157,7 @@ mod tests {
             0
         );
         assert!(
-            allocation_failure
-                .level2_compatibility()
-                .effect_journal()
-                .records()[failure_sound_cursor..]
+            allocation_failure.simulation().effect_journal().records()[failure_sound_cursor..]
                 .iter()
                 .all(|record| !matches!(
                     record.effect,
@@ -32344,7 +32169,7 @@ mod tests {
         );
         assert!(
             allocation_failure
-                .level2_compatibility_mut()
+                .simulation_mut()
                 .session
                 .state
                 .live
@@ -32353,7 +32178,7 @@ mod tests {
                 .restore_new_event_slot_for_test(removed_slot)
         );
         step(&mut allocation_failure);
-        let failed_live = &allocation_failure.level2_compatibility().session.state.live;
+        let failed_live = &allocation_failure.simulation().session.state.live;
         let failed_holder = failed_live
             .shared_spells
             .dynamic_pickups()
@@ -32390,7 +32215,7 @@ mod tests {
     #[test]
     fn cf14_level3_ballistic_death_spawns_then_reclaims_on_production_boundaries() {
         fn arm_lethal_contact(campaign: &mut CampaignSession) -> (u8, u16, u32, usize) {
-            let live = &mut campaign.level2_compatibility_mut().session.state.live;
+            let live = &mut campaign.simulation_mut().session.state.live;
             let source = &mut live.economy.entities[245];
             assert_eq!((source.class, source.model, source.action), (2, 8, 21));
             let mut position = source.position;
@@ -32422,13 +32247,7 @@ mod tests {
         let first_evidence = campaign.step(PlayerCommand::default(), 0);
         let first_state_hash = campaign.state_hash();
         let first_events = campaign.events().to_vec();
-        let source = &campaign
-            .level2_compatibility()
-            .session
-            .state
-            .live
-            .economy
-            .entities[245];
+        let source = &campaign.simulation().session.state.live.economy.entities[245];
         assert_eq!(source.life, -50);
         assert!(source.drawing_disabled());
         assert!(source.active, "hide is retained until the next prepass");
@@ -32440,12 +32259,12 @@ mod tests {
         );
         assert_eq!(source.source_upkeep_word_62(), 0);
         assert_eq!(
-            campaign.level2_compatibility().source_global_rng(),
+            campaign.simulation().source_global_rng(),
             next32(next32(global_rng_before)),
             "UpdateEntities and the smoke constructor each consume one global draw"
         );
         let smoke_children = campaign
-            .level2_compatibility()
+            .simulation()
             .session
             .state
             .live
@@ -32456,18 +32275,12 @@ mod tests {
         assert!(smoke_children.last().is_some_and(|child| child.active));
 
         let _ = campaign.step(PlayerCommand::default(), 0);
-        let reclaimed = &campaign
-            .level2_compatibility()
-            .session
-            .state
-            .live
-            .economy
-            .entities[245];
+        let reclaimed = &campaign.simulation().session.state.live.economy.entities[245];
         assert!(!reclaimed.active);
         assert_eq!(reclaimed.class, 0);
         assert!(
             !campaign
-                .level2_compatibility()
+                .simulation()
                 .session
                 .state
                 .live
@@ -32494,20 +32307,14 @@ mod tests {
         let (phase_before, entity_rng_before, global_rng_before, smoke_count_before) =
             arm_lethal_contact(&mut campaign);
         {
-            let economy = &mut campaign
-                .level2_compatibility_mut()
-                .session
-                .state
-                .live
-                .economy
-                .economy;
+            let economy = &mut campaign.simulation_mut().session.state.live.economy.economy;
             economy.free_slots.clear();
             for _ in 0..1_000 {
                 economy.decrement_replacement_cursor_after_player_contact();
             }
         }
         let _ = campaign.step(PlayerCommand::default(), 0);
-        let live = &campaign.level2_compatibility().session.state.live;
+        let live = &campaign.simulation().session.state.live;
         let source = &live.economy.entities[245];
         assert!(source.active && source.drawing_disabled());
         assert_eq!(source.phase, phase_before.wrapping_add(1));
@@ -32521,13 +32328,7 @@ mod tests {
             next32(next32(global_rng_before))
         );
         let _ = campaign.step(PlayerCommand::default(), 0);
-        let source = &campaign
-            .level2_compatibility()
-            .session
-            .state
-            .live
-            .economy
-            .entities[245];
+        let source = &campaign.simulation().session.state.live.economy.entities[245];
         assert!(!source.active);
         assert_eq!(source.class, 0);
     }
@@ -32536,7 +32337,7 @@ mod tests {
     fn cf14_level3_countdown_fires_group_once_then_reclaims_on_production_boundary() {
         fn remove_blocking_roots(campaign: &mut CampaignSession) {
             let roots = campaign
-                .level2_compatibility()
+                .simulation()
                 .session
                 .state
                 .live
@@ -32549,7 +32350,7 @@ mod tests {
             assert_eq!(roots.len(), 5);
             for slot in roots {
                 campaign
-                    .level2_compatibility_mut()
+                    .simulation_mut()
                     .session
                     .state
                     .live
@@ -32567,7 +32368,7 @@ mod tests {
         }
 
         fn exhaust_source_allocator(campaign: &mut CampaignSession) {
-            let session = campaign.level2_compatibility_mut();
+            let session = campaign.simulation_mut();
             std::sync::Arc::make_mut(&mut session.session.baseline)
                 .economy
                 .economy
@@ -32601,23 +32402,10 @@ mod tests {
         let mut campaign = CampaignSession::open(&package, CampaignSelection::LEVEL3)
             .expect("qualified Level 3 descriptor opens");
         let reset_hash = campaign.state_hash();
-        let phase_before = campaign
-            .level2_compatibility()
-            .session
-            .state
-            .live
-            .economy
-            .entities[247]
-            .phase;
+        let phase_before = campaign.simulation().session.state.live.economy.entities[247].phase;
         fire(&mut campaign);
 
-        let producer = &campaign
-            .level2_compatibility()
-            .session
-            .state
-            .live
-            .economy
-            .entities[247];
+        let producer = &campaign.simulation().session.state.live.economy.entities[247];
         assert_eq!(
             producer.source_dword_10(),
             1,
@@ -32628,7 +32416,7 @@ mod tests {
         assert!(producer.active);
         assert_eq!(producer.phase, phase_before.wrapping_add(17));
         let constructed = campaign
-            .level2_compatibility()
+            .simulation()
             .session
             .state
             .live
@@ -32669,7 +32457,7 @@ mod tests {
             .iter()
             .find_map(|record| match &record.effect {
                 crate::campaign::journal::CampaignEffect::Dispatch(
-                    crate::native_world::Level2DispatchEvent::AuthoredGroupActivated {
+                    crate::native_world::Mc2DispatchEvent::AuthoredGroupActivated {
                         source_slot: 247,
                         group: 11,
                         authored_indices,
@@ -32695,13 +32483,7 @@ mod tests {
             )
             .expect("complete post-cleanup journal page")
             .records;
-        let producer = &campaign
-            .level2_compatibility()
-            .session
-            .state
-            .live
-            .economy
-            .entities[247];
+        let producer = &campaign.simulation().session.state.live.economy.entities[247];
         assert!(!producer.active);
         assert_eq!(producer.class, 0);
         assert_eq!(
@@ -32749,18 +32531,11 @@ mod tests {
         remove_blocking_roots(&mut campaign);
         let _ = campaign.step(PlayerCommand::default(), 0);
         assert_eq!(
-            campaign
-                .level2_compatibility()
-                .session
-                .state
-                .live
-                .economy
-                .entities[247]
-                .source_dword_10(),
+            campaign.simulation().session.state.live.economy.entities[247].source_dword_10(),
             16
         );
         {
-            let live = &mut campaign.level2_compatibility_mut().session.state.live;
+            let live = &mut campaign.simulation_mut().session.state.live;
             for row in &mut live.economy.entities {
                 if row.class == 5 && row.model == 3 {
                     row.reclaim_source_row();
@@ -32770,18 +32545,12 @@ mod tests {
         }
         exhaust_source_allocator(&mut campaign);
         let _ = campaign.step(PlayerCommand::default(), 0);
-        let producer = &campaign
-            .level2_compatibility()
-            .session
-            .state
-            .live
-            .economy
-            .entities[247];
+        let producer = &campaign.simulation().session.state.live.economy.entities[247];
         assert!(producer.active && producer.drawing_disabled());
         assert_eq!(producer.phase, phase_before.wrapping_add(2));
         assert_eq!(
             campaign
-                .level2_compatibility()
+                .simulation()
                 .session
                 .state
                 .live
@@ -32806,7 +32575,7 @@ mod tests {
         assert!(exhausted_effects.iter().any(|record| matches!(
             &record.effect,
             crate::campaign::journal::CampaignEffect::Dispatch(
-                crate::native_world::Level2DispatchEvent::AuthoredGroupActivated {
+                crate::native_world::Mc2DispatchEvent::AuthoredGroupActivated {
                     source_slot: 247,
                     group: 11,
                     authored_indices,
@@ -32815,16 +32584,7 @@ mod tests {
             ) if authored_indices.as_ref() == (247_u16..=256).collect::<Vec<_>>()
         )));
         let _ = campaign.step(PlayerCommand::default(), 0);
-        assert!(
-            !campaign
-                .level2_compatibility()
-                .session
-                .state
-                .live
-                .economy
-                .entities[247]
-                .active
-        );
+        assert!(!campaign.simulation().session.state.live.economy.entities[247].active);
     }
 
     #[test]
@@ -32834,27 +32594,21 @@ mod tests {
             .expect("qualified Level 3 descriptor opens");
         let reset_hash = campaign.state_hash();
         let terrain_rng = campaign
-            .level2_compatibility()
+            .simulation()
             .session
             .state
             .live
             .terrain
             .terrain_rng();
-        let controller_rng = campaign
-            .level2_compatibility()
-            .session
-            .state
-            .live
-            .economy
-            .entities[94]
-            .entity_rng;
+        let controller_rng =
+            campaign.simulation().session.state.live.economy.entities[94].entity_rng;
 
         // Group 2's real row-146 command is proven in the package-chain test.
         // Start at its resulting controller state here so this focused test
         // owns only the package-present controller callback and replay.
         {
             let controller = &mut campaign
-                .level2_compatibility_mut()
+                .simulation_mut()
                 .session
                 .state
                 .live
@@ -32864,19 +32618,13 @@ mod tests {
         }
         let terrain_before = campaign.terrain_hash();
         let _ = campaign.step(PlayerCommand::default(), 0);
-        let controller = &campaign
-            .level2_compatibility()
-            .session
-            .state
-            .live
-            .economy
-            .entities[94];
+        let controller = &campaign.simulation().session.state.live.economy.entities[94];
         assert_eq!((controller.life, controller.subspell_index), (2, 47));
         assert_ne!(campaign.terrain_hash(), terrain_before);
         assert_eq!(controller.entity_rng, controller_rng);
         assert_eq!(
             campaign
-                .level2_compatibility()
+                .simulation()
                 .session
                 .state
                 .live
@@ -32923,7 +32671,7 @@ mod tests {
         assert_eq!(campaign.state_hash(), reset_hash);
         {
             let controller = &mut campaign
-                .level2_compatibility_mut()
+                .simulation_mut()
                 .session
                 .state
                 .live
@@ -32948,7 +32696,7 @@ mod tests {
         );
     }
 
-    fn level_two_nyphur_possession_session() -> Level2ResetSession {
+    fn level_two_nyphur_possession_session() -> Mc2Simulation {
         let package = super::super::tests::level_two_fixture_path();
         let gameplay_cache = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../../../generated/level2-day-owner-cache/components/gameplay");
@@ -32991,13 +32739,13 @@ mod tests {
                 !session
                     .dispatch_events()
                     .iter()
-                    .any(|event| matches!(event, Level2DispatchEvent::Error { .. })),
+                    .any(|event| matches!(event, Mc2DispatchEvent::Error { .. })),
                 "{:?}",
                 session.dispatch_events()
             );
             assert!(
                 session.dispatch_events().iter().any(|event| matches!(event,
-                Level2DispatchEvent::Villager { source_slot, effects, .. }
+                Mc2DispatchEvent::Villager { source_slot, effects, .. }
                     if *source_slot == slot && effects.contains(&VillagerStepEffect::TargetPlayer {
                         player_source_entity_index: player,
                     }))),
@@ -33011,7 +32759,7 @@ mod tests {
         }
     }
 
-    fn install_nyphur_possession_profile(session: &mut Level2ResetSession, tier: u8) {
+    fn install_nyphur_possession_profile(session: &mut Mc2Simulation, tier: u8) {
         let profile = level2_direct_starting_spell_profile(POSSESSION_SPELL_FAMILY, tier)
             .expect("family-1 profile exists for the physical tier");
         let holder = session
@@ -33256,7 +33004,7 @@ mod tests {
             .join("../../../generated/level2-day-block32-campaign-v2");
         let mut campaign =
             crate::campaign::CampaignSession::open(package, CampaignSelection::LEVEL2).unwrap();
-        let session = campaign.level2_compatibility_mut();
+        let session = campaign.simulation_mut();
         // Invoke the real package group constructor to isolate rendering from
         // the separately failing preceding objective/switch scenario.
         session.consume_authored_group(0, 0, 20).unwrap();
@@ -33267,7 +33015,7 @@ mod tests {
             .find(|source| source.active && source.model == 4)
             .copied()
             .unwrap();
-        let check = |session: &Level2ResetSession| {
+        let check = |session: &Mc2Simulation| {
             let before = session.campaign_state_hash();
             let live = session
                 .economy()
@@ -33323,13 +33071,7 @@ mod tests {
             "hidden dynamic occupant cannot resurrect its previous imported sprite"
         );
         campaign.reset();
-        assert!(
-            campaign
-                .level2_compatibility()
-                .economy()
-                .authored_class5()
-                .is_empty()
-        );
+        assert!(campaign.simulation().economy().authored_class5().is_empty());
     }
 
     #[test]

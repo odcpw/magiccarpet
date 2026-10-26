@@ -17,7 +17,9 @@ fn condition_eight_root_uses_current_stage_and_source_player_slot() {
     session.runtime.stages[0].kind = 8;
     session.runtime.stages[1].kind = 8;
     session.runtime.objectives[0] = RuntimeObjective {
-        is_level_end: 0, text_selector: 0, done: 0,
+        is_level_end: 0,
+        text_selector: 0,
+        done: 0,
         stage_selectors: [1, 1, 0, 0, 0, 0, 0, 0],
     };
     let target = session.players[0].entity_index;
@@ -25,13 +27,19 @@ fn condition_eight_root_uses_current_stage_and_source_player_slot() {
     for state in [None, Some(1)] {
         session.players[0].banishment_state_0x006 = state;
         session.advance_level2_objectives(&[false; 29], &[]);
-        assert_eq!(&session.runtime.objectives[0].stage_selectors[..2], &[1, 1],
-            "missing/nonzero counted player state remains incomplete despite actor death");
+        assert_eq!(
+            &session.runtime.objectives[0].stage_selectors[..2],
+            &[1, 1],
+            "missing/nonzero counted player state remains incomplete despite actor death"
+        );
     }
     session.players[0].banishment_state_0x006 = Some(0);
     session.advance_level2_objectives(&[false; 29], &[]);
-    assert_eq!(&session.runtime.objectives[0].stage_selectors[..2], &[2, 1],
-        "only the current stage completes; own and undeclared player flags are excluded");
+    assert_eq!(
+        &session.runtime.objectives[0].stage_selectors[..2],
+        &[2, 1],
+        "only the current stage completes; own and undeclared player flags are excluded"
+    );
     assert_eq!(session.runtime.objectives[0].text_selector, 1);
     assert_eq!(session.runtime.objectives[0].is_level_end, 0);
     session.advance_level2_objectives(&[false; 29], &[]);
@@ -45,10 +53,16 @@ fn condition_eight_root_uses_current_stage_and_source_player_slot() {
 #[test]
 fn imported_mana_sphere_retains_particle_and_axes_until_current_owner_callback() {
     let mut session = level_two_campaign_session();
-    let player = session.players().iter().find(|player| player.entity_index != 0)
-        .unwrap().clone();
+    let player = session
+        .players()
+        .iter()
+        .find(|player| player.entity_index != 0)
+        .unwrap()
+        .clone();
     let position = session.session.state.live.core.state.position;
-    let created = session.economy_mut().allocate_authored_model39(0, 0, position)
+    let created = session
+        .economy_mut()
+        .allocate_authored_model39(0, 0, position)
         .expect("ordinary sphere constructor reserves the source address");
     let slot = created.source_entity_index;
     // Exercise the import boundary with source fields deliberately differing
@@ -69,35 +83,73 @@ fn imported_mana_sphere_retains_particle_and_axes_until_current_owner_callback()
     for (offset, value) in [(86, 13_i16), (88, 31), (90, 45), (92, 57)] {
         raw.record[offset..offset + 2].copy_from_slice(&value.to_le_bytes());
     }
-    let mut imported = level2_static_mana_spheres_from_entities(
-        &[raw.clone()], &BTreeMap::from([(slot, 0)]),
-    ).remove(0);
-    assert_eq!((imported.particle_index, imported.collision_yaw,
-        imported.collision_pitch, imported.collision_roll, imported.collision_fov),
-        (53, 13, 31, 45, 57));
+    let mut imported =
+        level2_static_mana_spheres_from_entities(&[raw.clone()], &BTreeMap::from([(slot, 0)]))
+            .remove(0);
+    assert_eq!(
+        (
+            imported.particle_index,
+            imported.collision_yaw,
+            imported.collision_pitch,
+            imported.collision_roll,
+            imported.collision_fov
+        ),
+        (53, 13, 31, 45, 57)
+    );
     raw.particle_parameter_index = None;
     raw.record[94..96].copy_from_slice(&u16::MAX.to_le_bytes());
-    assert_eq!(level2_static_mana_spheres_from_entities(&[raw],
-        &BTreeMap::from([(slot, 0)]))[0].particle_index, u16::MAX,
-        "an absent decoded index does not discard its raw source bits");
+    assert_eq!(
+        level2_static_mana_spheres_from_entities(&[raw], &BTreeMap::from([(slot, 0)]))[0]
+            .particle_index,
+        u16::MAX,
+        "an absent decoded index does not discard its raw source bits"
+    );
     imported.incoming_owner_entity_index = player.entity_index;
-    *session.economy_mut().spheres_mut().iter_mut()
-        .find(|sphere| sphere.source_entity_index == slot).unwrap() = imported;
+    *session
+        .economy_mut()
+        .spheres_mut()
+        .iter_mut()
+        .find(|sphere| sphere.source_entity_index == slot)
+        .unwrap() = imported;
     let presentation = session.campaign_entity_presentations(0).unwrap();
-    assert_eq!(presentation.iter().find(|row| row.entity_index == slot)
-        .unwrap().render_parameter_index, 53);
+    assert_eq!(
+        presentation
+            .iter()
+            .find(|row| row.entity_index == slot)
+            .unwrap()
+            .render_parameter_index,
+        53
+    );
     assert!(session.economy_mut().step_mana_sphere_slot(slot));
-    let sphere = session.economy().spheres().iter()
-        .find(|sphere| sphere.source_entity_index == slot).unwrap();
+    let sphere = session
+        .economy()
+        .spheres()
+        .iter()
+        .find(|sphere| sphere.source_entity_index == slot)
+        .unwrap();
     let color = [0_u16, 1, 4, 3, 2, 5, 7, 6][usize::from(player.player_color_index())];
     assert_eq!(sphere.player_entity_index, player.entity_index);
     // The source thresholds put 8000 between 4096 and 9192: ordinal5.
     assert_eq!(sphere.particle_index, 105 + 8 * color + 5);
-    assert_eq!((sphere.collision_yaw, sphere.collision_pitch,
-        sphere.collision_roll, sphere.collision_fov), (84, 84, 84, 84));
-    assert_eq!(session.campaign_entity_presentations(0).unwrap().iter()
-        .find(|row| row.entity_index == slot).unwrap().render_parameter_index,
-        sphere.particle_index);
+    assert_eq!(
+        (
+            sphere.collision_yaw,
+            sphere.collision_pitch,
+            sphere.collision_roll,
+            sphere.collision_fov
+        ),
+        (84, 84, 84, 84)
+    );
+    assert_eq!(
+        session
+            .campaign_entity_presentations(0)
+            .unwrap()
+            .iter()
+            .find(|row| row.entity_index == slot)
+            .unwrap()
+            .render_parameter_index,
+        sphere.particle_index
+    );
 }
 
 #[test]
@@ -109,11 +161,24 @@ fn ordinary_player_death_advances_its_dropped_speed_holder() {
     };
     let root = level_two_campaign_fixture_path();
     let definition = load_mc2_campaign(&root, &default_catalog().unwrap()).unwrap();
-    let mut game = GameSession::open(&Mc2CampaignAdapter, std::sync::Arc::new(definition),
-        37, Mc2CampaignInputs::new(root)).unwrap();
-    let slot = game.backend().compatibility_campaign().level2_compatibility()
-        .shared_spells().local_player().enabled_spell_holders[3];
-    assert_eq!(slot, 118, "the ordinary package constructs its own Speed holder");
+    let mut game = GameSession::open(
+        &Mc2CampaignAdapter,
+        std::sync::Arc::new(definition),
+        37,
+        Mc2CampaignInputs::new(root),
+    )
+    .unwrap();
+    let slot = game
+        .backend()
+        .compatibility_campaign()
+        .simulation()
+        .shared_spells()
+        .local_player()
+        .enabled_spell_holders[3];
+    assert_eq!(
+        slot, 118,
+        "the ordinary package constructs its own Speed holder"
+    );
     let mut first_drop_life = None;
     let mut last_drop_life = None;
     // Exact ordinary control prefix that exposed the installed-player failure:
@@ -121,24 +186,42 @@ fn ordinary_player_death_advances_its_dropped_speed_holder() {
     // grounded death releases Speed as a new ordinary pickup at this slot.
     for tick in 0..260 {
         let id = game.identity();
-        game.step(SessionGuard { session_id: id.session_id, generation: id.generation, expected_tick: id.tick },
-            GameCommand { longitudinal: LongitudinalControl::Accelerate,
-                ..GameCommand::default() }).unwrap_or_else(|error| panic!("ordinary turn {tick}: {error:?}"));
-        let session = game.backend().compatibility_campaign().level2_compatibility();
+        game.step(
+            SessionGuard {
+                session_id: id.session_id,
+                generation: id.generation,
+                expected_tick: id.tick,
+            },
+            GameCommand {
+                longitudinal: LongitudinalControl::Accelerate,
+                ..GameCommand::default()
+            },
+        )
+        .unwrap_or_else(|error| panic!("ordinary turn {tick}: {error:?}"));
+        let session = game.backend().compatibility_campaign().simulation();
         let holder = session.shared_spells().pickup(slot).unwrap();
         if holder.action == 10 {
-            assert!(session.shared_spells().player_entity().life < 0,
-                "the actual player death produced this drop");
+            assert!(
+                session.shared_spells().player_entity().life < 0,
+                "the actual player death produced this drop"
+            );
             first_drop_life.get_or_insert(holder.life);
             last_drop_life = Some(holder.life);
             let numeric = &session.economy.entities[usize::from(slot)];
-            assert_eq!((numeric.action, numeric.life, numeric.phase),
-                (holder.action, holder.life, holder.phase));
+            assert_eq!(
+                (numeric.action, numeric.life, numeric.phase),
+                (holder.action, holder.life, holder.phase)
+            );
         }
     }
-    assert!(first_drop_life.is_some(), "the ordinary route must reach the death/drop producer");
-    assert!(last_drop_life.unwrap() < first_drop_life.unwrap(),
-        "the dropped slot keeps receiving its own pickup lifecycle");
+    assert!(
+        first_drop_life.is_some(),
+        "the ordinary route must reach the death/drop producer"
+    );
+    assert!(
+        last_drop_life.unwrap() < first_drop_life.unwrap(),
+        "the dropped slot keeps receiving its own pickup lifecycle"
+    );
 }
 
 #[test]
@@ -151,44 +234,86 @@ fn carried_speed_holder_runs_its_imported_callback_after_public_cast() {
     };
     let root = level_two_campaign_fixture_path();
     let definition = load_mc2_campaign(&root, &default_catalog().unwrap()).unwrap();
-    let mut game = GameSession::open(&Mc2CampaignAdapter, std::sync::Arc::new(definition),
-        37, Mc2CampaignInputs::new(root)).unwrap();
+    let mut game = GameSession::open(
+        &Mc2CampaignAdapter,
+        std::sync::Arc::new(definition),
+        37,
+        Mc2CampaignInputs::new(root),
+    )
+    .unwrap();
     // Exercise the existing cross-mission carry producer with the unchanged
     // Level 2 package and its real mana/holder defaults.
-    game.backend_mut().install_semantic_spell_carry_for_test(
-        vec![SpellKind::Speed], Some(SpellKind::Speed),
-    ).unwrap();
-    let constructed = game.backend().compatibility_campaign().level2_compatibility();
-    let slot = constructed.shared_spells().local_player().enabled_spell_holders[3];
+    game.backend_mut()
+        .install_semantic_spell_carry_for_test(vec![SpellKind::Speed], Some(SpellKind::Speed))
+        .unwrap();
+    let constructed = game.backend().compatibility_campaign().simulation();
+    let slot = constructed
+        .shared_spells()
+        .local_player()
+        .enabled_spell_holders[3];
     let row = &constructed.economy.entities[usize::from(slot)];
-    assert!(row.active, "carry publishes its holder before the first callback");
+    assert!(
+        row.active,
+        "carry publishes its holder before the first callback"
+    );
     assert_eq!((row.class, row.model, row.action), (15, 3, 9));
     assert!(constructed.economy.map_chains.is_linked(slot));
     let id = game.identity();
-    game.step(SessionGuard { session_id: id.session_id, generation: id.generation, expected_tick: id.tick },
-        GameCommand { select_spell: Some(SemanticId::parse("spell.speed").unwrap()),
-            cast_selected: true, ..GameCommand::default() }).unwrap();
-    let session = game.backend().compatibility_campaign().level2_compatibility();
+    game.step(
+        SessionGuard {
+            session_id: id.session_id,
+            generation: id.generation,
+            expected_tick: id.tick,
+        },
+        GameCommand {
+            select_spell: Some(SemanticId::parse("spell.speed").unwrap()),
+            cast_selected: true,
+            ..GameCommand::default()
+        },
+    )
+    .unwrap();
+    let session = game.backend().compatibility_campaign().simulation();
     let holder_slot = session.shared_spells().local_player().enabled_spell_holders[3];
     if holder_slot < session.session.state.live.core.state.entity_index {
         // A lower numeric holder has already visited before PlayerEvents
         // activates it. Its first active callback belongs to the next pass.
-        assert!(session.shared_spells().pickup(holder_slot).unwrap().active_value > 0);
+        assert!(
+            session
+                .shared_spells()
+                .pickup(holder_slot)
+                .unwrap()
+                .active_value
+                > 0
+        );
         let id = game.identity();
-        game.step(SessionGuard { session_id: id.session_id, generation: id.generation, expected_tick: id.tick },
-            GameCommand::default()).unwrap();
+        game.step(
+            SessionGuard {
+                session_id: id.session_id,
+                generation: id.generation,
+                expected_tick: id.tick,
+            },
+            GameCommand::default(),
+        )
+        .unwrap();
     }
-    let session = game.backend().compatibility_campaign().level2_compatibility();
+    let session = game.backend().compatibility_campaign().simulation();
     let state = session.session.state.live.core.state;
     let holder_slot = session.shared_spells().local_player().enabled_spell_holders[3];
     let holder = session.shared_spells().pickup(holder_slot).unwrap();
-    assert_eq!(state.target_speed, 240,
+    assert_eq!(
+        state.target_speed,
+        240,
         "imported Speed pulse: slot={holder_slot}, action={}, phase={}, active={}, duration={}, mana_cost={}, parent={}, mana={}, raw_active={}, raw_action={}",
-        holder.action, holder.phase, holder.active_value, holder.activation_value, holder.max_mana,
+        holder.action,
+        holder.phase,
+        holder.active_value,
+        holder.activation_value,
+        holder.max_mana,
         u16::from_le_bytes([holder.record[44], holder.record[45]]),
         session.shared_spells().player_entity().mana,
         session.economy.entities[usize::from(holder_slot)].active,
-        session.economy.entities[usize::from(holder_slot)].action);
+        session.economy.entities[usize::from(holder_slot)].action
+    );
     assert_eq!(state.actual_speed, 240);
     // GetScroll_69DB0 -> sub_68DE0 queues the cost in manaRegen after
     // this player's visit. Its following upkeep applies the debit.
@@ -197,27 +322,78 @@ fn carried_speed_holder_runs_its_imported_callback_after_public_cast() {
     let cost = holder.max_mana;
     assert_eq!(cost, 1_000, "the source tier-zero Speed cost is nonzero");
     assert_eq!(player.mana_regen, -cost);
-    assert_eq!(session.economy.entities[usize::from(player.index)].mana_regen, -cost);
+    assert_eq!(
+        session.economy.entities[usize::from(player.index)].mana_regen,
+        -cost
+    );
     assert!(holder.active_value > 0);
-    assert_eq!(session.economy.entities[usize::from(holder_slot)].phase, holder.phase);
+    assert_eq!(
+        session.economy.entities[usize::from(holder_slot)].phase,
+        holder.phase
+    );
     let id = game.identity();
-    game.step(SessionGuard { session_id: id.session_id, generation: id.generation, expected_tick: id.tick },
-        GameCommand { recenter: true, ..GameCommand::default() }).unwrap();
-    assert_eq!(game.backend().compatibility_campaign().level2_compatibility()
-        .shared_spells().player_entity().mana, before_upkeep - cost,
-        "the following real player upkeep consumes the queued Speed cost");
-    assert!(game.backend().compatibility_campaign().level2_compatibility()
-        .shared_spells().pickup(holder_slot).unwrap().active_value > 0,
-        "ordinary recenter preserves the active Speed holder");
+    game.step(
+        SessionGuard {
+            session_id: id.session_id,
+            generation: id.generation,
+            expected_tick: id.tick,
+        },
+        GameCommand {
+            recenter: true,
+            ..GameCommand::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        game.backend()
+            .compatibility_campaign()
+            .simulation()
+            .shared_spells()
+            .player_entity()
+            .mana,
+        before_upkeep - cost,
+        "the following real player upkeep consumes the queued Speed cost"
+    );
+    assert!(
+        game.backend()
+            .compatibility_campaign()
+            .simulation()
+            .shared_spells()
+            .pickup(holder_slot)
+            .unwrap()
+            .active_value
+            > 0,
+        "ordinary recenter preserves the active Speed holder"
+    );
     for full_stop in [true, false, false] {
         let id = game.identity();
-        game.step(SessionGuard { session_id: id.session_id, generation: id.generation, expected_tick: id.tick },
-            GameCommand { full_stop, ..GameCommand::default() }).unwrap();
-        let session = game.backend().compatibility_campaign().level2_compatibility();
+        game.step(
+            SessionGuard {
+                session_id: id.session_id,
+                generation: id.generation,
+                expected_tick: id.tick,
+            },
+            GameCommand {
+                full_stop,
+                ..GameCommand::default()
+            },
+        )
+        .unwrap();
+        let session = game.backend().compatibility_campaign().simulation();
         let state = session.session.state.live.core.state;
         assert_eq!((state.target_speed, state.actual_speed), (0, 0));
-        assert_eq!(session.shared_spells().pickup(holder_slot).unwrap().active_value, 0);
-        assert_eq!(session.economy.entities[usize::from(holder_slot)].active_value, 0);
+        assert_eq!(
+            session
+                .shared_spells()
+                .pickup(holder_slot)
+                .unwrap()
+                .active_value,
+            0
+        );
+        assert_eq!(
+            session.economy.entities[usize::from(holder_slot)].active_value,
+            0
+        );
     }
 }
 
@@ -228,12 +404,26 @@ fn level_two_wind_latch_is_consumed_by_the_actual_player_visit() {
     let player = &mut session.economy.entities[usize::from(slot)];
     player.set_control_flags(player.control_flags | 0x800);
     let evidence = session.step_outer_turn(PlayerCommand::default(), 0);
-    assert!(evidence.iter().any(|step| step.movement_resolution == "skipped"));
-    assert_eq!(session.economy.entities[usize::from(slot)].control_flags & 0x800, 0);
-    assert_eq!(session.shared_spells().player_entity.control_flags & 0x800, 0);
+    assert!(
+        evidence
+            .iter()
+            .any(|step| step.movement_resolution == "skipped")
+    );
+    assert_eq!(
+        session.economy.entities[usize::from(slot)].control_flags & 0x800,
+        0
+    );
+    assert_eq!(
+        session.shared_spells().player_entity.control_flags & 0x800,
+        0
+    );
     let following = session.step_outer_turn(PlayerCommand::default(), 0);
     assert!(!following.is_empty());
-    assert!(following.iter().all(|step| step.movement_resolution != "skipped"));
+    assert!(
+        following
+            .iter()
+            .all(|step| step.movement_resolution != "skipped")
+    );
 }
 
 #[test]
@@ -241,21 +431,36 @@ fn level_two_wind_pulse_reaches_the_constructed_castle_carrier() {
     let mut session = level_two_campaign_session();
     let position = session.session.state.live.core.state.position;
     let player_slot = session.session.state.live.core.state.entity_index;
-    let castle_slot = session.economy_mut().build_castle(position, player_slot)
+    let castle_slot = session
+        .economy_mut()
+        .build_castle(position, player_slot)
         .expect("ordinary Castle constructor");
     let castle_position = session.economy().castle().unwrap().position;
-    let wind = session.economy_mut().allocate_authored_model22(110, castle_position, castle_position)
+    let wind = session
+        .economy_mut()
+        .allocate_authored_model22(110, castle_position, castle_position)
         .expect("ordinary Wind constructor");
-    session.economy_mut().fields.authored_model22.iter_mut()
-        .find(|row| row.source_entity_index == wind.source_entity_index).unwrap().phase = 1;
+    session
+        .economy_mut()
+        .fields
+        .authored_model22
+        .iter_mut()
+        .find(|row| row.source_entity_index == wind.source_entity_index)
+        .unwrap()
+        .phase = 1;
     session.economy.castle.as_mut().unwrap().pending_damage = 7;
-    session.step_level2_authored_model22_wind_pulse(wind.source_entity_index, None).unwrap();
+    session
+        .step_level2_authored_model22_wind_pulse(wind.source_entity_index, None)
+        .unwrap();
     let castle = session.economy().castle().unwrap();
     assert_eq!(castle.source_entity_index, castle_slot);
     assert_eq!(castle.pending_damage, 7 + i32::from(wind.subspell_index));
     assert_eq!(castle.pending_attacker_entity_index, wind.entity_id);
     assert_eq!(castle.source_word_30, 30);
-    assert_eq!(session.economy.entities[usize::from(castle_slot)].word_26(), wind.source_entity_index);
+    assert_eq!(
+        session.economy.entities[usize::from(castle_slot)].word_26(),
+        wind.source_entity_index
+    );
 }
 
 #[test]
@@ -328,7 +533,11 @@ fn level_two_wind_sub33710_writes_strict_target_mailboxes_on_cadence() {
     // the second `sub_33710` branch without adding a synthetic arena row.
     // HouseFamily owns this row; moving only its projection is overwritten
     // by the earlier House callback before the later wind callback visits it.
-    session.ordinary.house_mut(1).expect("authoritative House").position = parent.position;
+    session
+        .ordinary
+        .house_mut(1)
+        .expect("authoritative House")
+        .position = parent.position;
     session.economy.entities[1].set_position(parent.position);
     session.economy.entities[112].model = 2;
     session.economy.entities[112].record[68] = 2;
@@ -343,7 +552,10 @@ fn level_two_wind_sub33710_writes_strict_target_mailboxes_on_cadence() {
     assert_eq!(session.economy.entities[112].source_spell_word_30(), 30);
     assert_eq!(session.economy.entities[112].activation_value, 30);
     assert_eq!(session.economy.entities[112].word_26(), parent_slot);
-    assert_eq!(session.economy.entities[112].source_wind_spell_payload(), 1_000);
+    assert_eq!(
+        session.economy.entities[112].source_wind_spell_payload(),
+        1_000
+    );
     assert_eq!(
         session.economy.entities[112].source_wind_spell_owner(),
         parent.entity_id
@@ -354,9 +566,14 @@ fn level_two_wind_sub33710_writes_strict_target_mailboxes_on_cadence() {
     let house = session.ordinary.house_mut(1).expect("authoritative House");
     house.pending_damage = 7;
     house.pending_attacker = 55;
-    session.step_level2_authored_model22_wind_pulse(parent_slot, None).unwrap();
+    session
+        .step_level2_authored_model22_wind_pulse(parent_slot, None)
+        .unwrap();
     assert_eq!(session.ordinary.houses.houses()[0].pending_damage, 1_000);
-    assert_eq!(session.ordinary.houses.houses()[0].pending_attacker as u16, parent.entity_id);
+    assert_eq!(
+        session.ordinary.houses.houses()[0].pending_attacker as u16,
+        parent.entity_id
+    );
     let next_parent_position = session
         .economy()
         .authored_model22()
@@ -364,7 +581,11 @@ fn level_two_wind_sub33710_writes_strict_target_mailboxes_on_cadence() {
         .find(|source| source.source_entity_index == parent_slot)
         .expect("live wind parent")
         .position;
-    session.ordinary.house_mut(1).expect("authoritative House").position = next_parent_position;
+    session
+        .ordinary
+        .house_mut(1)
+        .expect("authoritative House")
+        .position = next_parent_position;
     session.economy.entities[1].set_position(next_parent_position);
     session.economy.entities[112].set_position(next_parent_position);
     session
@@ -427,7 +648,9 @@ fn level_two_wind_sub33340_filters_and_moves_model0_target_on_production_turn() 
     let parent_source_id = parent.entity_id;
     let spell_experience_before = *session.shared_spells().spell_experience();
     let (target_snapshot, target_speed_before) = {
-        let target = session.economy.entities
+        let target = session
+            .economy
+            .entities
             .get_mut(usize::from(target_index))
             .expect("imported player target");
         assert_eq!(target.class, 3);
@@ -520,7 +743,10 @@ fn level_two_wind_sub33340_filters_and_moves_model0_target_on_production_turn() 
         })
         .expect("second target map chain follows its source position");
     session.step_outer_turn(PlayerCommand::default(), 0);
-    assert_eq!(session.economy.entities[usize::from(target_index)].actual_speed, 80);
+    assert_eq!(
+        session.economy.entities[usize::from(target_index)].actual_speed,
+        80
+    );
     let roll_after = session
         .players
         .iter()
@@ -592,35 +818,50 @@ fn level_two_wind_sub33340_filters_and_moves_model0_target_on_production_turn() 
     // Exercise class10/39 through its actual constructor and carrier. A raw
     // Nyphur reclassified as model39 retains a player action, so it is not a
     // valid scheduler producer and correctly fails selector admission.
-    let class10_parent = session.economy().authored_model22().iter()
+    let class10_parent = session
+        .economy()
+        .authored_model22()
+        .iter()
         .find(|source| source.source_entity_index == parent.source_entity_index)
-        .copied().expect("wind parent after non-zero model callback");
+        .copied()
+        .expect("wind parent after non-zero model callback");
     let class10_position = Position {
         x: class10_parent.axis_position.x.wrapping_add(1_024),
         y: class10_parent.axis_position.y,
         z: class10_parent.position.z,
     };
-    let sphere = session.economy_mut()
+    let sphere = session
+        .economy_mut()
         .allocate_authored_model39(0, parent.source_entity_index, class10_position)
         .expect("actual model39 constructor");
     let slot = sphere.source_entity_index;
     {
         let mut economy = session.economy_mut();
-        let target = economy.spheres_mut().iter_mut()
-            .find(|sphere| sphere.source_entity_index == slot).unwrap();
+        let target = economy
+            .spheres_mut()
+            .iter_mut()
+            .find(|sphere| sphere.source_entity_index == slot)
+            .unwrap();
         target.yaw = 0;
         target.control_flags |= 0x1000_0000;
     }
-    session.step_level2_authored_model22_sub33340_eligible_targets(parent.source_entity_index)
+    session
+        .step_level2_authored_model22_sub33340_eligible_targets(parent.source_entity_index)
         .expect("wind visits the current sphere carrier");
-    let target = session.economy().spheres().iter()
-        .find(|sphere| sphere.source_entity_index == slot).unwrap();
+    let target = session
+        .economy()
+        .spheres()
+        .iter()
+        .find(|sphere| sphere.source_entity_index == slot)
+        .unwrap();
     assert_eq!(target.yaw, 204);
     assert_ne!(target.control_flags & 0x0000_0800, 0);
-    assert_eq!(target.ordinary_damage_payload, i32::from(parent.subspell_index));
+    assert_eq!(
+        target.ordinary_damage_payload,
+        i32::from(parent.subspell_index)
+    );
     assert_eq!(target.ordinary_damage_owner, parent.entity_id);
     assert_eq!(target.mana, 512, "contact damage is not mana subtraction");
-
 }
 
 #[test]
@@ -639,7 +880,7 @@ fn level_two_day_bee_l2_06_selector2_boundaries_and_handoff_are_source_shaped() 
         y: 0x1000,
         z: 0,
     };
-    let configure = |session: &mut Level2ResetSession,
+    let configure = |session: &mut Mc2Simulation,
                      position: Position,
                      source_byte_3e: u8,
                      source_byte_39: i16| {
@@ -944,7 +1185,8 @@ fn level_two_day_bee_l2_06_terminal_selector2_defers_action20_until_next_callbac
             "each forced retry crosses into a source-slope tile"
         );
         assert!(
-            level2_bee_slope_measure(session.canonical_terrain(), candidate) >= LEVEL2_BEE_TERRAIN_THRESHOLD,
+            level2_bee_slope_measure(session.canonical_terrain(), candidate)
+                >= LEVEL2_BEE_TERRAIN_THRESHOLD,
             "each retry candidate is source-blocked"
         );
     }
@@ -1039,13 +1281,16 @@ fn level_two_bee_action17_terrain_death_enters_uncredited_action20_on_following_
     action17.action = 17;
     action17.source_byte_3e = 1;
     action17.source_byte_39 = 0;
-    action17.control_flags &=
-        !(LEVEL2_BEE_MOVEMENT_SKIP_BIT | LEVEL2_BEE_OBSTRUCTION_BIT);
+    action17.control_flags &= !(LEVEL2_BEE_MOVEMENT_SKIP_BIT | LEVEL2_BEE_OBSTRUCTION_BIT);
     action17.pending_damage = 250;
     action17.pending_attacker_entity_index = 0;
     action17.damage_attacker_entity_index = session.state.entity_index;
     action17.kill_credit_entity_index = session.state.entity_index;
-    assert!(session.economy_mut().replace_authored_bee_for_test(action17));
+    assert!(
+        session
+            .economy_mut()
+            .replace_authored_bee_for_test(action17)
+    );
 
     for y in 0..=u8::MAX {
         for x in 0..=u8::MAX {
@@ -1112,7 +1357,9 @@ fn level_two_bee_action17_moves_before_acquisition_rng() {
     configured.entity_rng = 0x1234;
     assert!(session.economy.replace_authored_bee_for_test(configured));
 
-    let ground = session.canonical_terrain().ground_height(configured.position);
+    let ground = session
+        .canonical_terrain()
+        .ground_height(configured.position);
     let mut expected_position = configured.position;
     if expected_position.z > ground {
         expected_position.z = expected_position
@@ -1571,7 +1818,10 @@ fn level_two_authored_bee_actions20_to23_preserve_death_and_no_call_semantics() 
         .find(|bee| bee.source_entity_index == dying.source_entity_index)
         .copied()
         .expect("kill callback leaves a reclaimable source row");
-    assert!(dead.active, "drawing disable retains the row until following-pass reclaim");
+    assert!(
+        dead.active,
+        "drawing disable retains the row until following-pass reclaim"
+    );
     assert!(!dead.drawing_enabled);
     assert_eq!(dead.life, dying.life, "KillEntity does not rewrite life");
     assert!(session.economy().events().iter().any(|event| matches!(
@@ -1635,10 +1885,7 @@ fn level_two_authored_bee_actions20_to23_preserve_death_and_no_call_semantics() 
         .copied()
         .expect("no-call Bee remains live");
     assert_eq!(after_no_call.action, before_no_call.action);
-    assert_eq!(
-        after_no_call.source_byte_3e,
-        before_no_call.source_byte_3e
-    );
+    assert_eq!(after_no_call.source_byte_3e, before_no_call.source_byte_3e);
     assert_eq!(after_no_call.phase, before_no_call.phase);
     assert_eq!(after_no_call.entity_rng, before_no_call.entity_rng);
     assert_eq!(after_no_call.roll, before_no_call.roll);
@@ -1660,15 +1907,20 @@ fn level_two_authored_bee_actions20_to23_preserve_death_and_no_call_semantics() 
         // Isolate source1DDA0's point-follow and1F8A0's wrapper from terrain
         // motion using the real one-shot source movement-skip flag.
         bee.control_flags = (bee.control_flags & !0x40000) | 0x800;
-        let point = bee.stage_target.expect("authored row231 retains its real point route");
+        let point = bee
+            .stage_target
+            .expect("authored row231 retains its real point route");
         let first = level2_next_rng16(bee.entity_rng);
         let second = level2_next_rng16(first);
         let base_direction = 2 * (i32::from(first % 157) / 79) - 1;
         let mut roll = (heading_for_positions(bee.position, point)
-            + (i32::from(second & 255) + 85) * base_direction) & 2047;
+            + (i32::from(second & 255) + 85) * base_direction)
+            & 2047;
         // The source peer loop follows the base jitter but consumes no RNG.
         if let Some(peer) = peers.iter().find(|peer| {
-            peer.active && peer.life >= 0 && peer.entity_id != bee.entity_id
+            peer.active
+                && peer.life >= 0
+                && peer.entity_id != bee.entity_id
                 && (i32::from(bee.position.x as i16) - i32::from(peer.position.x as i16)).abs()
                     < i32::from(bee.shift_rot_x)
                 && (i32::from(bee.position.y as i16) - i32::from(peer.position.y as i16)).abs()
@@ -1941,7 +2193,7 @@ fn level_two_authored_bee_action18_contact_is_strictly_below_1024_and_cadence_ga
         .expect("production row-229 Bee");
     assert!(row229_slot > session.state.entity_index);
     let local_target = session.state.position;
-    let configure = |session: &mut Level2ResetSession, delta: u16, byte_3e: u8| {
+    let configure = |session: &mut Mc2Simulation, delta: u16, byte_3e: u8| {
         let bee = session
             .economy()
             .bee_creatures()
@@ -1985,7 +2237,8 @@ fn level_two_authored_bee_action18_contact_is_strictly_below_1024_and_cadence_ga
     session.queue_level2_player_contact_damage(77, 222);
     assert_eq!(session.player_pending_damage, 77);
     assert_eq!(session.player_pending_attacker, 222);
-    let player_record = session.economy.entities[usize::from(session.state.entity_index)].record_bytes();
+    let player_record =
+        session.economy.entities[usize::from(session.state.entity_index)].record_bytes();
     assert_eq!(
         i32::from_le_bytes(
             player_record[98..102]
@@ -2083,7 +2336,8 @@ fn level_two_authored_bee_action18_contact_is_consumed_at_next_player_source_vis
         session.player_life,
         life_before - LEVEL2_BEE_CONTACT_SUBSPELL
     );
-    let player_record = session.economy.entities[usize::from(session.state.entity_index)].record_bytes();
+    let player_record =
+        session.economy.entities[usize::from(session.state.entity_index)].record_bytes();
     assert_eq!(
         i32::from_le_bytes(
             player_record[98..102]
@@ -2104,7 +2358,7 @@ fn level_two_authored_bee_action18_contact_is_consumed_at_next_player_source_vis
         .dispatch_events()
         .iter()
         .filter_map(|event| match event {
-            Level2DispatchEvent::Economy {
+            Mc2DispatchEvent::Economy {
                 event:
                     Level2EconomyEvent::DamageApplied {
                         target_entity_index,
@@ -2225,7 +2479,7 @@ fn level_two_player_contact_runs_remc2_action2_death_lifecycle_on_following_visi
     );
     assert!(session.dispatch_events().iter().any(|event| matches!(
         event,
-        Level2DispatchEvent::Economy {
+        Mc2DispatchEvent::Economy {
             event: Level2EconomyEvent::DamageApplied {
                 attacker_entity_index,
                 lethal: true,
@@ -2238,24 +2492,28 @@ fn level_two_player_contact_runs_remc2_action2_death_lifecycle_on_following_visi
         .effect_journal()
         .records()
         .iter()
-        .position(|record| matches!(
-            record.effect,
-            crate::campaign::journal::CampaignEffect::Flight(FlightEvent::PrepareSound {
-                audio_site: crate::MissionAudioSite::PlayerDeath,
-                entity_index,
-                player_index: -1,
-                sound_id: 16,
-            }) if entity_index == session.state.entity_index
-        ))
+        .position(|record| {
+            matches!(
+                record.effect,
+                crate::campaign::journal::CampaignEffect::Flight(FlightEvent::PrepareSound {
+                    audio_site: crate::MissionAudioSite::PlayerDeath,
+                    entity_index,
+                    player_index: -1,
+                    sound_id: 16,
+                }) if entity_index == session.state.entity_index
+            )
+        })
         .expect("lethal action-0 publishes the real player-death audio effect");
     let dead_scene = session
         .effect_journal()
         .records()
         .iter()
-        .position(|record| matches!(
-            record.effect,
-            crate::campaign::journal::CampaignEffect::SceneChange { scene: 4 }
-        ))
+        .position(|record| {
+            matches!(
+                record.effect,
+                crate::campaign::journal::CampaignEffect::SceneChange { scene: 4 }
+            )
+        })
         .expect("lethal action-0 publishes remc2 Scene::DEAD");
     assert!(death_sound < dead_scene, "sound 16 precedes Scene::DEAD");
 
@@ -2322,14 +2580,16 @@ fn level_two_player_contact_runs_remc2_action2_death_lifecycle_on_following_visi
         released_holder.control_flags,
         released_holder_before.control_flags & !1
     );
-    assert!(session
-        .economy
-        .map_chains
-        .entity_chain(
-            released_holder.position.x.to_be_bytes()[0],
-            released_holder.position.y.to_be_bytes()[0],
-        )
-        .contains(&released_holder_index));
+    assert!(
+        session
+            .economy
+            .map_chains
+            .entity_chain(
+                released_holder.position.x.to_be_bytes()[0],
+                released_holder.position.y.to_be_bytes()[0],
+            )
+            .contains(&released_holder_index)
+    );
     let core_attacker = session
         .players
         .iter()
@@ -2357,7 +2617,7 @@ fn level_two_player_contact_runs_remc2_action2_death_lifecycle_on_following_visi
     );
     assert!(session.dispatch_events().iter().any(|event| matches!(
         event,
-        Level2DispatchEvent::Economy {
+        Mc2DispatchEvent::Economy {
             event: Level2EconomyEvent::DeathBurstSpawned {
                 parent_entity_index,
                 id_entity_index,
@@ -2399,7 +2659,7 @@ fn level_two_player_contact_runs_remc2_action2_death_lifecycle_on_following_visi
     );
     assert!(!session.dispatch_events().iter().any(|event| matches!(
         event,
-        Level2DispatchEvent::Economy {
+        Mc2DispatchEvent::Economy {
             event: Level2EconomyEvent::DamageApplied { .. },
             ..
         }
@@ -2419,12 +2679,9 @@ fn level_two_player_contact_runs_remc2_action2_death_lifecycle_on_following_visi
             player_state.record[48..50].copy_from_slice(&789_i16.to_le_bytes());
         }
     }
-    session.shared_spells.local_player.record[32..34]
-        .copy_from_slice(&123_i16.to_le_bytes());
-    session.shared_spells.local_player.record[46..48]
-        .copy_from_slice(&456_i16.to_le_bytes());
-    session.shared_spells.local_player.record[48..50]
-        .copy_from_slice(&789_i16.to_le_bytes());
+    session.shared_spells.local_player.record[32..34].copy_from_slice(&123_i16.to_le_bytes());
+    session.shared_spells.local_player.record[46..48].copy_from_slice(&456_i16.to_le_bytes());
+    session.shared_spells.local_player.record[48..50].copy_from_slice(&789_i16.to_le_bytes());
     let phase_before_action3 = session.state.entity_phase;
     let tick_before_action3 = session.state.tick;
     session.step_outer_turn(PlayerCommand::default(), 0);
@@ -2513,20 +2770,22 @@ fn level_two_airborne_player_death_visit_uses_action2_body_and_player_burst() {
         (high_position.x, high_position.y),
         "sub_5D530 moves before the action-2 death tail"
     );
-    assert!(session
-        .economy()
-        .map_chains
-        .entity_chain(
-            player.position.x.to_be_bytes()[0],
-            player.position.y.to_be_bytes()[0],
-        )
-        .contains(&session.state.entity_index));
+    assert!(
+        session
+            .economy()
+            .map_chains
+            .entity_chain(
+                player.position.x.to_be_bytes()[0],
+                player.position.y.to_be_bytes()[0],
+            )
+            .contains(&session.state.entity_index)
+    );
     assert_eq!(player.control_flags & 0x20, 0);
     assert_eq!(session.level2_player_menu_state(), 0);
     assert!(session.economy().player_death_markers().is_empty());
     assert!(session.dispatch_events().iter().any(|event| matches!(
         event,
-        Level2DispatchEvent::Economy {
+        Mc2DispatchEvent::Economy {
             event: Level2EconomyEvent::DeathBurstSpawned {
                 parent_entity_index,
                 id_entity_index,
@@ -2536,12 +2795,18 @@ fn level_two_airborne_player_death_visit_uses_action2_body_and_player_burst() {
         } if *parent_entity_index == session.state.entity_index
             && *id_entity_index == player_source_id
     )));
-    assert!(!session.effect_journal().records().iter().any(|record| matches!(
-        record.effect,
-        crate::campaign::journal::CampaignEffect::Flight(
-            FlightEvent::RequestSpellActivation { .. }
-        )
-    )));
+    assert!(
+        !session
+            .effect_journal()
+            .records()
+            .iter()
+            .any(|record| matches!(
+                record.effect,
+                crate::campaign::journal::CampaignEffect::Flight(
+                    FlightEvent::RequestSpellActivation { .. }
+                )
+            ))
+    );
 }
 
 #[test]
@@ -2728,7 +2993,10 @@ fn level_two_player_death_burst_slot_reclaims_only_at_following_boundary() {
         .first()
         .copied()
         .expect("qualified reset has an ordinary free slot");
-    session.economy.free_slots.retain(|candidate| *candidate != slot);
+    session
+        .economy
+        .free_slots
+        .retain(|candidate| *candidate != slot);
     session.economy.death_bursts.push(Level2DeathBurst {
         source_entity_index: slot,
         entity_rng: 77,
@@ -2744,22 +3012,26 @@ fn level_two_player_death_burst_slot_reclaims_only_at_following_boundary() {
     });
 
     session.step_outer_turn(PlayerCommand::default(), 0);
-    assert!(session
-        .economy
-        .death_bursts
-        .iter()
-        .any(|burst| burst.source_entity_index == slot && !burst.active));
+    assert!(
+        session
+            .economy
+            .death_bursts
+            .iter()
+            .any(|burst| burst.source_entity_index == slot && !burst.active)
+    );
     assert!(
         !session.economy.free_slots.contains(&slot),
         "ordinary pass tail keeps the disabled row reserved"
     );
 
     session.step_outer_turn(PlayerCommand::default(), 0);
-    assert!(!session
-        .economy
-        .death_bursts
-        .iter()
-        .any(|burst| burst.source_entity_index == slot));
+    assert!(
+        !session
+            .economy
+            .death_bursts
+            .iter()
+            .any(|burst| burst.source_entity_index == slot)
+    );
     assert!(
         session.economy.free_slots.contains(&slot),
         "following ordinary pass prologue releases the row"
@@ -2780,8 +3052,7 @@ fn level_two_player_death_reset_replays_hash_events_and_audio_exactly() {
 
     session.player_life = 100;
     session.economy.entities[local_index].life = 100;
-    session.economy.entities[local_index].record[12..16]
-        .copy_from_slice(&100_i32.to_le_bytes());
+    session.economy.entities[local_index].record[12..16].copy_from_slice(&100_i32.to_le_bytes());
     session.shared_spells.set_player_entity_life(100);
     session.queue_level2_player_contact_damage(200, attacker);
     session.step_outer_turn(PlayerCommand::default(), 0);
@@ -2804,8 +3075,7 @@ fn level_two_player_death_reset_replays_hash_events_and_audio_exactly() {
 
     session.player_life = 100;
     session.economy.entities[local_index].life = 100;
-    session.economy.entities[local_index].record[12..16]
-        .copy_from_slice(&100_i32.to_le_bytes());
+    session.economy.entities[local_index].record[12..16].copy_from_slice(&100_i32.to_le_bytes());
     session.shared_spells.set_player_entity_life(100);
     session.queue_level2_player_contact_damage(200, attacker);
     session.step_outer_turn(PlayerCommand::default(), 0);
@@ -2834,7 +3104,9 @@ fn level_two_authored_bee_action17_overwrites_stale_target_on_production_reacqui
         .map(|bee| bee.source_entity_index)
         .expect("production group-21 Bee");
     let local_index = usize::from(session.state.entity_index);
-    let candidate_index = session.economy.entities
+    let candidate_index = session
+        .economy
+        .entities
         .iter()
         .position(|entity| entity.index != 0 && !entity.active)
         .expect("inactive class-3 candidate row");
@@ -2950,7 +3222,9 @@ fn level_two_authored_bee_action17_naturally_acquires_source_order_target() {
         .expect("production group-21 row 229 Bee");
 
     let local_index = usize::from(session.state.entity_index);
-    let candidate_indices = session.economy.entities
+    let candidate_indices = session
+        .economy
+        .entities
         .iter()
         .enumerate()
         .filter(|(_, entity)| entity.index != 0 && !entity.active)
@@ -3000,7 +3274,7 @@ fn level_two_authored_bee_action17_naturally_acquires_source_order_target() {
         },
     ];
     let initial_rng = 0x1234;
-    let configure = |session: &mut Level2ResetSession, all_blocked: bool| {
+    let configure = |session: &mut Mc2Simulation, all_blocked: bool| {
         let player_entity_index = session.state.entity_index;
         for entity in &mut session.economy.entities {
             if entity.class == 3 && entity.index != player_entity_index {
@@ -3184,7 +3458,7 @@ fn level_two_bee_activation_filters_kind_subtype_and_preserves_source_order() {
         })
     }));
     assert!(session.dispatch_events().iter().any(|event| {
-        matches!(event, Level2DispatchEvent::AuthoredGroupActivated { group, .. }
+        matches!(event, Mc2DispatchEvent::AuthoredGroupActivated { group, .. }
                 if matches!(group, 4 | 17 | 21 | 29))
     }));
 }
@@ -3239,7 +3513,7 @@ fn level_two_authored_model6_runs_source_callback_and_spawn_branch() {
     assert_eq!(stepped.particle_index, before_turn.particle_index + 1);
     assert!(session.dispatch_events().iter().any(|event| matches!(
         event,
-        Level2DispatchEvent::DynamicArena {
+        Mc2DispatchEvent::DynamicArena {
             kind: Level2DynamicArenaKind::AuthoredModel6,
             source_slot,
             ..
@@ -3332,30 +3606,40 @@ fn level_two_authored_model6_runs_source_callback_and_spawn_branch() {
         .expect("expired child remains allocated through its callback pass");
     assert!(!hidden_child.active);
     assert_ne!(hidden_child.control_flags & ENTITY_DRAW_DISABLED_BIT, 0);
-    assert!(session
-        .economy()
-        .map_chains()
-        .is_linked(child.source_entity_index));
-    assert!(!session
-        .economy()
-        .free_slots
-        .contains(&child.source_entity_index));
+    assert!(
+        session
+            .economy()
+            .map_chains()
+            .is_linked(child.source_entity_index)
+    );
+    assert!(
+        !session
+            .economy()
+            .free_slots
+            .contains(&child.source_entity_index)
+    );
     session
         .economy_mut()
         .reclaim_inactive_slots_at_source_boundary();
-    assert!(session
-        .economy()
-        .model6_spawned_children()
-        .iter()
-        .all(|candidate| candidate.source_entity_index != child.source_entity_index));
-    assert!(!session
-        .economy()
-        .map_chains()
-        .is_linked(child.source_entity_index));
-    assert!(session
-        .economy()
-        .free_slots
-        .contains(&child.source_entity_index));
+    assert!(
+        session
+            .economy()
+            .model6_spawned_children()
+            .iter()
+            .all(|candidate| candidate.source_entity_index != child.source_entity_index)
+    );
+    assert!(
+        !session
+            .economy()
+            .map_chains()
+            .is_linked(child.source_entity_index)
+    );
+    assert!(
+        session
+            .economy()
+            .free_slots
+            .contains(&child.source_entity_index)
+    );
 
     // `sub_104D0_terrain_tile_is_water` disables drawing after the
     // height projection. Force the live second source onto a source water
@@ -3505,7 +3789,7 @@ fn level_two_authored_model17_runs_meteor_constructor_and_spawn_branch() {
     assert_eq!(session.economy().model17_spawned_children().len(), 3);
     assert!(session.dispatch_events().iter().any(|event| matches!(
         event,
-        Level2DispatchEvent::DynamicArena {
+        Mc2DispatchEvent::DynamicArena {
             kind: Level2DynamicArenaKind::AuthoredModel17,
             source_slot,
             ..
@@ -3570,8 +3854,7 @@ fn level_two_authored_model17_runs_meteor_constructor_and_spawn_branch() {
         .expect("Meteor child for negative-life sentinel")
         .life = -1;
     assert!(
-        !
-        session
+        !session
             .economy_mut()
             .step_model17_spawned_child_slot(child.source_entity_index)
     );
@@ -3755,7 +4038,7 @@ fn level_two_authored_model22_runs_wind_constructor_chain_and_expiry() {
     assert!(stepped_child.drawing_enabled);
     assert!(session.dispatch_events().iter().any(|event| matches!(
         event,
-        Level2DispatchEvent::DynamicArena {
+        Mc2DispatchEvent::DynamicArena {
             kind: Level2DynamicArenaKind::AuthoredModel22,
             source_slot,
             ..
@@ -3763,7 +4046,7 @@ fn level_two_authored_model22_runs_wind_constructor_chain_and_expiry() {
     )));
     assert!(session.dispatch_events().iter().all(|event| !matches!(
         event,
-        Level2DispatchEvent::DynamicArena {
+        Mc2DispatchEvent::DynamicArena {
             kind: Level2DynamicArenaKind::Model22SpawnedChild,
             ..
         }
@@ -3803,20 +4086,21 @@ fn level_two_authored_model22_runs_wind_constructor_chain_and_expiry() {
         .find(|source| source.source_entity_index == wind.source_entity_index)
         .expect("Wind parent remains allocated through its callback pass");
     assert!(hidden_parent.active);
-    assert_ne!(
-        hidden_parent.control_flags & ENTITY_DRAW_DISABLED_BIT,
-        0
+    assert_ne!(hidden_parent.control_flags & ENTITY_DRAW_DISABLED_BIT, 0);
+    assert!(
+        session
+            .economy()
+            .map_chains()
+            .is_linked(hidden_parent.source_entity_index)
     );
-    assert!(session
-        .economy()
-        .map_chains()
-        .is_linked(hidden_parent.source_entity_index));
     assert_eq!(hidden_parent.phase, parent_phase_before.wrapping_add(1));
-    assert!(session
-        .economy()
-        .model22_spawned_children()
-        .iter()
-        .all(|child| !child.active));
+    assert!(
+        session
+            .economy()
+            .model22_spawned_children()
+            .iter()
+            .all(|child| !child.active)
+    );
     session.step_outer_turn(PlayerCommand::default(), 0);
     assert!(
         session
@@ -3942,7 +4226,7 @@ fn level_two_whirlwind_action82_player_handoff_is_exact() {
     );
     assert!(session.dispatch_events().iter().all(|event| !matches!(
         event,
-        Level2DispatchEvent::DynamicArena {
+        Mc2DispatchEvent::DynamicArena {
             kind: Level2DynamicArenaKind::Model22SpawnedChild,
             source_slot,
             ..
@@ -3950,7 +4234,7 @@ fn level_two_whirlwind_action82_player_handoff_is_exact() {
     )));
     assert!(session.dispatch_events().iter().all(|event| !matches!(
         event,
-        Level2DispatchEvent::SpellAcquisition {
+        Mc2DispatchEvent::SpellAcquisition {
             source_slot,
             result: Some(_),
             ..
@@ -4434,11 +4718,15 @@ fn level_two_goat_dispatch_uses_live_class3_player_feed_in_source_order() {
         .level2_reset_session()
         .expect("Level 2 Goat player-feed session");
     let local_player_index = usize::from(session.state.entity_index);
-    let injected_index = session.economy.entities
+    let injected_index = session
+        .economy
+        .entities
         .iter()
         .position(|entity| entity.index != 0 && !entity.active)
         .expect("inactive source row for synthetic class-3 candidate");
-    let second_injected_index = session.economy.entities
+    let second_injected_index = session
+        .economy
+        .entities
         .iter()
         .enumerate()
         .skip(injected_index + 1)
@@ -4503,11 +4791,9 @@ fn level_two_goat_dispatch_uses_live_class3_player_feed_in_source_order() {
     let second_slot = session.economy.entities[second_injected_index].index;
     let nyphur_slot = session.economy.entities[112].index;
     let injected_slot = session.economy.entities[injected_index].index;
-    session.economy.entities[local_player_index].next_relation =
-        Some(second_slot);
-    session.economy.entities[local_player_index].record[4..8].copy_from_slice(
-        &(u32::from(second_slot) + 1).to_le_bytes(),
-    );
+    session.economy.entities[local_player_index].next_relation = Some(second_slot);
+    session.economy.entities[local_player_index].record[4..8]
+        .copy_from_slice(&(u32::from(second_slot) + 1).to_le_bytes());
     session.economy.entities[second_injected_index].next_relation = Some(nyphur_slot);
     session.economy.entities[second_injected_index].record[4..8]
         .copy_from_slice(&(u32::from(nyphur_slot) + 1).to_le_bytes());
@@ -4516,7 +4802,9 @@ fn level_two_goat_dispatch_uses_live_class3_player_feed_in_source_order() {
         .copy_from_slice(&(u32::from(injected_slot) + 1).to_le_bytes());
     session.economy.entities[injected_index].next_relation = None;
     session.economy.entities[injected_index].record[4..8].fill(0);
-    let expected_player_slots = session.economy.entities
+    let expected_player_slots = session
+        .economy
+        .entities
         .iter()
         .filter(|entity| {
             entity.index != 0
@@ -4618,7 +4906,9 @@ fn level_two_goat_dispatch_falls_back_to_peer_when_all_live_players_are_ineligib
         .level2_reset_session()
         .expect("Level 2 Goat peer-fallback session");
     let local_player_index = usize::from(session.state.entity_index);
-    let injected_index = session.economy.entities
+    let injected_index = session
+        .economy
+        .entities
         .iter()
         .position(|entity| entity.index != 0 && !entity.active)
         .expect("inactive source row for synthetic class-3 candidate");
@@ -4717,7 +5007,7 @@ fn level_two_goat_action9_peer_fallback_requires_proximity_countdown() {
         .level2_reset_session()
         .expect("Level 2 action-9 peer-fallback session");
 
-    let configure = |session: &mut Level2ResetSession, proximity_countdown: i8| {
+    let configure = |session: &mut Mc2Simulation, proximity_countdown: i8| {
         let mut rows = session.goats().to_vec();
         for goat in &mut rows {
             if !matches!(goat.entity_index, 40 | 41) {
@@ -4779,7 +5069,7 @@ fn level_two_goat_action9_peer_fallback_requires_proximity_countdown() {
     assert_eq!(goat.target_entity_index, None);
     assert!(session.dispatch_events().iter().any(|event| matches!(
         event,
-        Level2DispatchEvent::Goat {
+        Mc2DispatchEvent::Goat {
             source_slot: 40,
             ..
         }
@@ -4838,7 +5128,7 @@ fn level_two_goat_action14_production_distinguishes_ordinary_and_direct_hit_tail
     assert_eq!(ordinary_after.actual_speed, ordinary_after.minimum_speed);
     assert!(session.dispatch_events().iter().any(|event| matches!(
         event,
-        Level2DispatchEvent::Goat {
+        Mc2DispatchEvent::Goat {
             source_slot: 39,
             events,
             ..
@@ -4880,7 +5170,7 @@ fn level_two_goat_action14_production_distinguishes_ordinary_and_direct_hit_tail
     assert_eq!(hit_after.rng, 989);
     assert!(session.dispatch_events().iter().any(|event| matches!(
         event,
-        Level2DispatchEvent::Goat {
+        Mc2DispatchEvent::Goat {
             source_slot: 39,
             events,
             ..
@@ -4911,11 +5201,7 @@ fn level_two_goat_death_respects_source_burst_suppression_bit() {
         .state
         .live
         .goats
-        .inject_damage(
-            goat_slot,
-            1_000_000,
-            attacker,
-        )
+        .inject_damage(goat_slot, 1_000_000, attacker)
         .expect("inject lethal Goat damage");
 
     let mut observed_death = false;
@@ -4924,7 +5210,7 @@ fn level_two_goat_death_respects_source_burst_suppression_bit() {
         if session.dispatch_events().iter().any(|event| {
             matches!(
                 event,
-                Level2DispatchEvent::Goat {
+                Mc2DispatchEvent::Goat {
                     source_slot,
                     events,
                     ..
@@ -5086,17 +5372,24 @@ fn level_two_public_fireball_hits_qualified_water_without_fabricating_an_impact(
         (9, 0, 0)
     );
     assert!(!flyer.active && flyer.drawing_disabled);
-    assert!(session.economy().map_chains().is_linked(flyer.source_entity_index));
+    assert!(
+        session
+            .economy()
+            .map_chains()
+            .is_linked(flyer.source_entity_index)
+    );
     assert_eq!(
         session.economy().source_rng[&flyer.source_entity_index],
         flyer.entity_rng,
         "the water branch never consumes an impact RNG tail"
     );
-    assert!(session
-        .economy()
-        .model17_spawned_children()
-        .iter()
-        .all(|row| impact_slots_before.contains(&row.source_entity_index)));
+    assert!(
+        session
+            .economy()
+            .model17_spawned_children()
+            .iter()
+            .all(|row| impact_slots_before.contains(&row.source_entity_index))
+    );
     let splash = session
         .economy()
         .authored_model5_water_splashes()
@@ -5108,33 +5401,40 @@ fn level_two_public_fireball_hits_qualified_water_without_fabricating_an_impact(
 
     let cast_events = &session.shared_spells().activation_events()[events_before..];
     assert!(cast_events.iter().any(|event| matches!(
-            event,
-            FlightEvent::PrepareSound {
-                audio_site: crate::MissionAudioSite::FireballLaunch,
-                entity_index,
-                player_index: -1,
-                sound_id: 9,
-            } if *entity_index == flyer.source_entity_index
-        )));
+        event,
+        FlightEvent::PrepareSound {
+            audio_site: crate::MissionAudioSite::FireballLaunch,
+            entity_index,
+            player_index: -1,
+            sound_id: 9,
+        } if *entity_index == flyer.source_entity_index
+    )));
     assert!(cast_events.iter().all(|event| !matches!(
-            event,
-            FlightEvent::PrepareSound {
-                audio_site: crate::MissionAudioSite::FireballImpact,
-                entity_index,
-                player_index: -1,
-                sound_id: 3,
-            } if *entity_index == flyer.source_entity_index
-        )));
+        event,
+        FlightEvent::PrepareSound {
+            audio_site: crate::MissionAudioSite::FireballImpact,
+            entity_index,
+            player_index: -1,
+            sound_id: 3,
+        } if *entity_index == flyer.source_entity_index
+    )));
 
     // Water hides the flyer even if splash allocation fails; the normal next
     // prepass owns its unlink and slot reclamation.
     session.step_outer_turn(PlayerCommand::default(), 0);
-    assert!(session
-        .economy()
-        .fireball_projectiles()
-        .iter()
-        .all(|row| row.source_entity_index != flyer.source_entity_index));
-    assert!(!session.economy().map_chains().is_linked(flyer.source_entity_index));
+    assert!(
+        session
+            .economy()
+            .fireball_projectiles()
+            .iter()
+            .all(|row| row.source_entity_index != flyer.source_entity_index)
+    );
+    assert!(
+        !session
+            .economy()
+            .map_chains()
+            .is_linked(flyer.source_entity_index)
+    );
     session.reset();
     assert_eq!(session.campaign_state_hash(), baseline_hash);
 }
@@ -5235,14 +5535,17 @@ fn level_two_public_family0_fireball_reaches_authored_bee_mailbox() {
         "sub_693F0 copies then clears the source A4 byte"
     );
     assert!(projectile.source_entity_index < projectile.holder_entity_index);
-    assert!(session.dispatch_events().iter().all(|event| !matches!(
-        event,
-        Level2DispatchEvent::DynamicArena {
-            source_slot,
-            kind: Level2DynamicArenaKind::FireballProjectile,
-            ..
-        } if *source_slot == projectile.source_entity_index
-    )), "a lower-slot flyer is first visible on the following numeric pass");
+    assert!(
+        session.dispatch_events().iter().all(|event| !matches!(
+            event,
+            Mc2DispatchEvent::DynamicArena {
+                source_slot,
+                kind: Level2DynamicArenaKind::FireballProjectile,
+                ..
+            } if *source_slot == projectile.source_entity_index
+        )),
+        "a lower-slot flyer is first visible on the following numeric pass"
+    );
     let launch_events = &session.shared_spells().activation_events()[launch_event_start..];
     assert!(launch_events.iter().any(|event| matches!(
         event,
@@ -5268,23 +5571,26 @@ fn level_two_public_family0_fireball_reaches_authored_bee_mailbox() {
                 .economy()
                 .fireball_projectiles()
                 .iter()
-                .find(|candidate| {
-                    candidate.source_entity_index == projectile.source_entity_index
-                })
+                .find(|candidate| candidate.source_entity_index == projectile.source_entity_index)
                 .copied()?;
             Some((flyer, impact))
         })
         .expect("ordinary flyer reaches the authored Bee and constructs its impact");
     assert!(!hit_projectile.active && hit_projectile.drawing_disabled);
-    assert!(session
-        .economy()
-        .map_chains()
-        .is_linked(hit_projectile.source_entity_index));
+    assert!(
+        session
+            .economy()
+            .map_chains()
+            .is_linked(hit_projectile.source_entity_index)
+    );
     assert_eq!(
         hit_projectile.entity_rng, launch_rng,
         "the class-9 flyer never consumes the class-10 impact RNG tail"
     );
-    assert_eq!((impact.source_class, impact.model, impact.action), (10, 0, 0));
+    assert_eq!(
+        (impact.source_class, impact.model, impact.action),
+        (10, 0, 0)
+    );
     assert_eq!(
         (impact.parent_entity_index, impact.parent_entity_id),
         (projectile.source_entity_index, session.state.entity_index)
@@ -5348,7 +5654,7 @@ fn level_two_public_family0_fireball_reaches_authored_bee_mailbox() {
     );
     assert!(session.dispatch_events().iter().any(|event| matches!(
         event,
-        Level2DispatchEvent::Economy {
+        Mc2DispatchEvent::Economy {
             source_slot,
             event: Level2EconomyEvent::DamageApplied {
                 target_entity_index,
@@ -5369,7 +5675,7 @@ fn level_two_public_family0_fireball_reaches_authored_bee_mailbox() {
 }
 
 fn drive_level_two_bee_to_action17_for_fireball(
-    session: &mut Level2ResetSession,
+    session: &mut Mc2Simulation,
     bee_slot: u16,
 ) -> BeeCreatureRuntime {
     for _ in 0..160 {
@@ -5418,7 +5724,7 @@ fn drive_level_two_bee_to_action17_for_fireball(
 }
 
 fn cast_level_two_family0_fireball_at_bee(
-    session: &mut Level2ResetSession,
+    session: &mut Mc2Simulation,
     bee_slot: u16,
 ) -> BeeCreatureRuntime {
     let bee = drive_level_two_bee_to_action17_for_fireball(session, bee_slot);
@@ -5430,10 +5736,7 @@ fn cast_level_two_family0_fireball_at_bee(
     let player_position = Position {
         x: bee.position.x.wrapping_add(256),
         y: bee.position.y.wrapping_add(384),
-        z: bee
-            .position
-            .z
-            .wrapping_sub(session.state.entity_fov),
+        z: bee.position.z.wrapping_sub(session.state.entity_fov),
     };
     session
         .set_level2_entity_position(session.state.entity_index, player_position)
@@ -5584,7 +5887,7 @@ fn level_two_public_fireball_lethal_bee_waits_for_phase_zero_and_credits_kill() 
         1
     );
     assert_ne!(pre_kill.source_byte_3e & 7, 0);
-    let output_counts = |session: &Level2ResetSession| {
+    let output_counts = |session: &Mc2Simulation| {
         (
             session
                 .economy()
@@ -5643,14 +5946,19 @@ fn level_two_public_fireball_lethal_bee_waits_for_phase_zero_and_credits_kill() 
             == 0
         {
             phase_zero_callback_seen = true;
-            assert!(after.active, "drawing disable retains the source class until following-pass reclaim");
-            assert_eq!(after.life, pre_kill.life, "KillEntity does not rewrite the lethal life value");
+            assert!(
+                after.active,
+                "drawing disable retains the source class until following-pass reclaim"
+            );
+            assert_eq!(
+                after.life, pre_kill.life,
+                "KillEntity does not rewrite the lethal life value"
+            );
             assert!(session.economy().map_chains.is_linked(bee_slot));
             assert!(!after.drawing_enabled);
             assert_eq!(after_counts, (1, 1));
             assert_eq!(
-                session.runtime().objectives[0].stage_selectors
-                    [LEVEL2_BEE_OBJECTIVE_STAGE_INDEX],
+                session.runtime().objectives[0].stage_selectors[LEVEL2_BEE_OBJECTIVE_STAGE_INDEX],
                 1,
                 "the hide pass still uses its frozen pass-start model-2 census"
             );
@@ -5717,7 +6025,7 @@ fn level_two_family0_fireball_rejects_invalid_producer_admission_and_capacity() 
     assert!(session.economy().fireball_projectiles().is_empty());
     assert!(!session.dispatch_events().iter().any(|event| matches!(
         event,
-        Level2DispatchEvent::DynamicArena {
+        Mc2DispatchEvent::DynamicArena {
             kind: Level2DynamicArenaKind::FireballProjectile,
             ..
         }
@@ -5819,8 +6127,7 @@ fn level_two_family0_fireball_rejects_invalid_producer_admission_and_capacity() 
         };
         shared.player_entity.mana = max_mana - 1;
         let mana = shared.player_entity.mana;
-        shared.player_entity.record[148..152]
-            .copy_from_slice(&mana.to_le_bytes());
+        shared.player_entity.record[148..152].copy_from_slice(&mana.to_le_bytes());
     }
     assert!(
         session
@@ -5911,7 +6218,7 @@ fn level_two_fireball_collision_constructs_distinct_one_shot_impact() {
         crate::campaign::spec::CampaignSelection::LEVEL2,
     )
     .expect("qualified semantic Level 2 campaign");
-    let session = campaign.level2_compatibility_mut();
+    let session = campaign.simulation_mut();
     session.select_level2_campaign_entry_stage();
     // This is the focused callback split check. The separate production test
     // below owns the public holder -> flyer -> impact proof; here a real
@@ -6061,7 +6368,11 @@ fn level_two_fireball_collision_constructs_distinct_one_shot_impact() {
         .copied()
         .expect("class-10/model-0 impact row");
     assert_eq!(
-        (impact_before.source_class, impact_before.model, impact_before.action),
+        (
+            impact_before.source_class,
+            impact_before.model,
+            impact_before.action
+        ),
         (10, 0, 0)
     );
     let impact_step = economy.step_model17_spawned_child_slot(impact_slot, &terrain);
@@ -6164,7 +6475,7 @@ fn cf10_unknown_reached_selector_rolls_back_outer_turn_before_later_callbacks() 
     assert_eq!(session.dispatch_events().len(), 1);
     assert!(matches!(
         &session.dispatch_events()[0],
-        Level2DispatchEvent::Error {
+        Mc2DispatchEvent::Error {
             source_slot,
             message,
             ..

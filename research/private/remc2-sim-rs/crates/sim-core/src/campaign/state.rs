@@ -1,10 +1,4 @@
-//! CampaignState carrier for the campaign fold seam.
-//!
-//! CF-04 introduced this carrier as a read-only projection. CF-05 moved terrain,
-//! CF-06 established the canonical source arena, and CF-07 moves flight,
-//! players, global runtime, context, and source-RNG receipts without changing
-//! the source schedule. Remaining domains stay projections until their
-//! sequential cutover leaves land.
+//! Canonical simulation state, immutable mission bindings and reset baseline.
 
 use std::{collections::BTreeMap, sync::Arc};
 
@@ -21,8 +15,8 @@ use crate::{
         MechanicKind, RivalWizardId, SceneryKind, SpellKind, SwitchKind,
     },
     native_world::{
-        Level2DispatchEvent, Level2LiveState, Level2NyphurDispatchTrace, Level2ResetSession,
-        LevelExitSequence, PlayerSnapshot, PresentationSelectors, RuntimeSnapshot, SessionTerrain,
+        Level2NyphurDispatchTrace, LevelExitSequence, Mc2DispatchEvent, Mc2LiveState,
+        Mc2Simulation, PlayerSnapshot, PresentationSelectors, RuntimeSnapshot, SessionTerrain,
     },
     spell_activation::{SpellActivationHolder, SpellCasterState},
     state_hash,
@@ -64,7 +58,7 @@ impl Default for CanonicalDigest {
     }
 }
 
-/// Immutable package identity observed from the existing Level 2 session.
+/// Immutable package identity and semantic bindings for one mission.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CampaignDefinition {
     pub profile: FlightProfile,
@@ -145,10 +139,7 @@ pub struct SourceLink {
     pub active: bool,
 }
 
-/// The one live owner for the state domains cut over through CF-07.
-///
-/// `Level2ResetSession` borrows these fields through its private campaign
-/// carrier; it no longer stores parallel flight/player/runtime/RNG fields.
+/// The authoritative flight, player, runtime and ordered-effect state.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CanonicalRuntimeState {
     pub state: FlightState,
@@ -158,16 +149,10 @@ pub struct CanonicalRuntimeState {
     pub effect_journal: EffectJournal,
 }
 
-/// The complete resettable live carrier, grouped according to the census.
-///
-/// This is the canonical name used by the campaign contract. The concrete
-/// carrier lives beside the legacy Level 2 types only so its private typed
-/// sidecars do not become a public package contract.
-pub type ResetState = Level2LiveState;
+/// Complete resettable live state of the shared MC2 simulation.
+pub type ResetState = Mc2LiveState;
 
-/// No current census field is proven to survive `Level2ResetSession::reset`.
-/// Keeping this as a distinct unit type prevents accidental admission of a
-/// persistent field during the shell phase.
+/// Mission reset currently preserves no mutable gameplay fields.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct PersistentState;
 
@@ -176,7 +161,7 @@ pub struct ScratchState {
     pub validity_epoch: u64,
     pub valid: bool,
     pub dispatch_receipt: CanonicalDigest,
-    pub(crate) dispatch_events: Vec<Level2DispatchEvent>,
+    pub(crate) dispatch_events: Vec<Mc2DispatchEvent>,
     pub(crate) economy_event_cursor: usize,
     pub(crate) nyphur_dispatch_traces: Vec<Level2NyphurDispatchTrace>,
     pub(crate) level2_day_hud_color_phase_1: u8,
@@ -297,8 +282,7 @@ impl ResetReceipt {
     }
 }
 
-/// Read-only campaign shell.  `from_level2` clones the old authority only to
-/// obtain its frame-zero baseline; no shell method writes the old session.
+/// Mutable state and immutable reset baseline for one simulation generation.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CampaignSession {
     pub definition: Arc<CampaignDefinition>,
@@ -327,11 +311,11 @@ impl CampaignSession {
     }
 
     #[must_use]
-    pub fn from_level2(session: &Level2ResetSession) -> Self {
+    pub fn from_simulation(session: &Mc2Simulation) -> Self {
         session.session.clone()
     }
 
-    /// Shell-only reset semantics; this does not reset the old authority.
+    /// Restore the mission baseline and invalidate derived presentation state.
     pub fn reset(&mut self) {
         self.generation = self.generation.wrapping_add(1);
         self.state.live.clone_from(&self.baseline);
@@ -348,7 +332,7 @@ impl CampaignSession {
 
 impl CampaignDefinition {
     #[must_use]
-    pub fn from_level2(session: &Level2ResetSession) -> Self {
+    pub fn from_simulation(session: &Mc2Simulation) -> Self {
         (*session.session.definition).clone()
     }
 
@@ -617,7 +601,7 @@ impl CampaignDefinition {
 
 impl ResetState {
     #[must_use]
-    pub fn from_level2(session: &Level2ResetSession) -> Self {
+    pub fn from_simulation(session: &Mc2Simulation) -> Self {
         session.campaign_state().live.clone()
     }
 }
@@ -1152,14 +1136,14 @@ mod tests {
         )
     }
 
-    fn level_two_session() -> Level2ResetSession {
+    fn level_two_session() -> Mc2Simulation {
         crate::native_world::NativeWorld::inspect_level2(level_two_fixture_path())
             .expect("qualified Level 2 package")
             .level2_reset_session()
             .expect("qualified Level 2 session")
     }
 
-    fn assert_canonical_receipt_matches_live(session: &Level2ResetSession) {
+    fn assert_canonical_receipt_matches_live(session: &Mc2Simulation) {
         let public_hash = session.campaign_state_hash();
         let terrain_hash = session.terrain_hash();
         let receipt = ResetReceipt::from_state(&session.session.state.live);
@@ -1174,7 +1158,7 @@ mod tests {
     #[test]
     fn cf04_omitted_field_is_detected() {
         let session = level_two_session();
-        let reset = ResetState::from_level2(&session);
+        let reset = ResetState::from_simulation(&session);
         let receipt = ResetReceipt::from_state(&reset);
         assert_ne!(reset.core.effect_journal.receipt(), CanonicalDigest::zero());
 
@@ -1191,7 +1175,7 @@ mod tests {
     #[test]
     fn cf04_failed_capacity_does_not_change_observer() {
         let session = level_two_session();
-        let reset = ResetState::from_level2(&session);
+        let reset = ResetState::from_simulation(&session);
         let campaign_state_hash = session.campaign_state_hash();
         let terrain_hash = session.terrain_hash();
         let mut undersized = vec![0_u8; RESET_V1_ENCODED_LEN - 1];
@@ -1248,7 +1232,7 @@ mod tests {
             in_type,
             target_type: 20,
         };
-        let apply = |session: &mut Level2ResetSession, update: CastleTerrainUpdate| {
+        let apply = |session: &mut Mc2Simulation, update: CastleTerrainUpdate| {
             session
                 .canonical_terrain_mut()
                 .apply_ambient_update(update)
@@ -1347,7 +1331,10 @@ mod tests {
         assert_eq!(session.players(), control.players());
         assert_eq!(session.runtime(), control.runtime());
         assert_eq!(session.context, control.context);
-        assert_eq!(output, encode_reset_v1(&ResetState::from_level2(&session)));
+        assert_eq!(
+            output,
+            encode_reset_v1(&ResetState::from_simulation(&session))
+        );
 
         let after_rng = session.cf07_rng_observation();
         let expected_source_rng = (0..crate::entity_passes_for_speed_index(1))
@@ -1367,7 +1354,7 @@ mod tests {
         // The source-schedule RNG and player/effects RNG sites occupy distinct
         // canonical receipt domains. Swapping, dropping, or duplicating an
         // observation cannot alias the accepted post-turn receipt.
-        let accepted = ResetState::from_level2(&session);
+        let accepted = ResetState::from_simulation(&session);
         let accepted_bytes = encode_reset_v1(&accepted);
         let mut swapped = accepted.clone();
         let effect_rng = swapped
@@ -1532,7 +1519,7 @@ mod tests {
         candidate.session.state.live.core.state.position.x ^= 1;
         let candidate_reset_receipt = ResetReceipt::from_state(&candidate.session.state.live);
         candidate.session.state.scratch.dispatch_events.push(
-            crate::native_world::Level2DispatchEvent::Error {
+            crate::native_world::Mc2DispatchEvent::Error {
                 pass: 0,
                 source_slot: 0,
                 message: "planted scratch mutation".to_owned(),
@@ -1552,7 +1539,7 @@ mod tests {
 
         session.session.state.live.core.state.position.x ^= 1;
         session.session.state.scratch.dispatch_events.push(
-            crate::native_world::Level2DispatchEvent::Error {
+            crate::native_world::Mc2DispatchEvent::Error {
                 pass: 0,
                 source_slot: 0,
                 message: "discarded on reset".to_owned(),

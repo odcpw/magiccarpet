@@ -6,14 +6,14 @@ using UnityEngine.Rendering;
 
 namespace MagicCarpet.Native
 {
-    internal enum Level2WorldObjectKind : byte
+    internal enum CampaignWorldObjectKind : byte
     {
         Scenery = 1,
         Building = 2,
         Castle = 3
     }
 
-    internal enum Level2WorldObjectLifecycle : byte
+    internal enum CampaignWorldObjectLifecycle : byte
     {
         Active = 1,
         Built = 2,
@@ -21,11 +21,11 @@ namespace MagicCarpet.Native
         Destroyed = 4
     }
 
-    internal readonly struct Level2WorldObjectDescription
+    internal readonly struct CampaignWorldObjectDescription
     {
-        internal Level2WorldObjectDescription(
-            Level2WorldObjectKind kind,
-            Level2WorldObjectLifecycle lifecycle,
+        internal CampaignWorldObjectDescription(
+            CampaignWorldObjectKind kind,
+            CampaignWorldObjectLifecycle lifecycle,
             ushort sourceSlot,
             ushort sourceId,
             byte classId,
@@ -51,8 +51,8 @@ namespace MagicCarpet.Native
             AssetSelector = assetSelector;
         }
 
-        internal Level2WorldObjectKind Kind { get; }
-        internal Level2WorldObjectLifecycle Lifecycle { get; }
+        internal CampaignWorldObjectKind Kind { get; }
+        internal CampaignWorldObjectLifecycle Lifecycle { get; }
         internal ushort SourceSlot { get; }
         internal ushort SourceId { get; }
         internal byte ClassId { get; }
@@ -64,14 +64,14 @@ namespace MagicCarpet.Native
         internal short Z { get; }
         internal ushort AssetSelector { get; }
 
-        internal static Level2WorldObjectDescription FromEntity(
+        internal static CampaignWorldObjectDescription FromEntity(
             NativeSim.CampaignEntitySnapshot row,
-            Level2WorldObjectKind kind,
+            CampaignWorldObjectKind kind,
             ushort assetSelector)
         {
-            return new Level2WorldObjectDescription(
+            return new CampaignWorldObjectDescription(
                 kind,
-                Level2WorldObjectLifecycle.Active,
+                CampaignWorldObjectLifecycle.Active,
                 row.entityIndex,
                 row.sourceId,
                 row.classId,
@@ -85,7 +85,7 @@ namespace MagicCarpet.Native
         }
     }
 
-    internal struct Level2CastleLifecycleState
+    internal struct CampaignCastleLifecycleState
     {
         internal ushort SourceSlot;
         internal ushort OwnerEntityIndex;
@@ -94,10 +94,10 @@ namespace MagicCarpet.Native
         internal bool Active;
         internal ulong Generation;
         internal ulong Tick;
-        internal Level2WorldObjectLifecycle Lifecycle;
+        internal CampaignWorldObjectLifecycle Lifecycle;
     }
 
-    internal static class Level2WorldObjectProjection
+    internal static class CampaignWorldObjectProjection
     {
         private const byte SceneryClass = 2;
         private const byte BuildingClass = 10;
@@ -114,7 +114,7 @@ namespace MagicCarpet.Native
 
         internal static bool TryDescribe(
             NativeSim.CampaignEntitySnapshot row,
-            out Level2WorldObjectDescription description)
+            out CampaignWorldObjectDescription description)
         {
             description = default;
             if (row.abiVersion != NativeSim.AbiVersion ||
@@ -132,9 +132,9 @@ namespace MagicCarpet.Native
                 row.model == 1 &&
                 row.action == 3)
             {
-                description = Level2WorldObjectDescription.FromEntity(
+                description = CampaignWorldObjectDescription.FromEntity(
                     row,
-                    Level2WorldObjectKind.Scenery,
+                    CampaignWorldObjectKind.Scenery,
                     78);
                 return true;
             }
@@ -143,9 +143,9 @@ namespace MagicCarpet.Native
                 row.model == 2 &&
                 row.action == 6)
             {
-                description = Level2WorldObjectDescription.FromEntity(
+                description = CampaignWorldObjectDescription.FromEntity(
                     row,
-                    Level2WorldObjectKind.Scenery,
+                    CampaignWorldObjectKind.Scenery,
                     79);
                 return true;
             }
@@ -154,9 +154,9 @@ namespace MagicCarpet.Native
                 row.model == 3 &&
                 row.action == 9)
             {
-                description = Level2WorldObjectDescription.FromEntity(
+                description = CampaignWorldObjectDescription.FromEntity(
                     row,
-                    Level2WorldObjectKind.Scenery,
+                    CampaignWorldObjectKind.Scenery,
                     198);
                 return true;
             }
@@ -170,9 +170,9 @@ namespace MagicCarpet.Native
                 row.model == 45 &&
                 row.action == 52)
             {
-                description = Level2WorldObjectDescription.FromEntity(
+                description = CampaignWorldObjectDescription.FromEntity(
                     row,
-                    Level2WorldObjectKind.Building,
+                    CampaignWorldObjectKind.Building,
                     96);
                 return true;
             }
@@ -185,9 +185,9 @@ namespace MagicCarpet.Native
                 row.model == 2 &&
                 (row.action == 4 || row.action == 5 || row.action == 6))
             {
-                description = Level2WorldObjectDescription.FromEntity(
+                description = CampaignWorldObjectDescription.FromEntity(
                     row,
-                    Level2WorldObjectKind.Castle,
+                    CampaignWorldObjectKind.Castle,
                     96);
                 return true;
             }
@@ -197,16 +197,16 @@ namespace MagicCarpet.Native
 
         internal static bool TryProjectRows(
             NativeSim.CampaignEntitySnapshot[] rows,
-            out Level2WorldObjectDescription[] descriptions)
+            out CampaignWorldObjectDescription[] descriptions)
         {
-            descriptions = Array.Empty<Level2WorldObjectDescription>();
+            descriptions = Array.Empty<CampaignWorldObjectDescription>();
             if (rows == null)
             {
                 return false;
             }
 
             var sourceSlots = new HashSet<ushort>();
-            var projected = new List<Level2WorldObjectDescription>();
+            var projected = new List<CampaignWorldObjectDescription>();
             foreach (var row in rows)
             {
                 if (row.abiVersion != NativeSim.AbiVersion ||
@@ -239,7 +239,7 @@ namespace MagicCarpet.Native
             ulong generation,
             ulong tick,
             bool dispatchBound,
-            ref Level2CastleLifecycleState state)
+            ref CampaignCastleLifecycleState state)
         {
             if (row.abiVersion != NativeSim.AbiVersion ||
                 row.structSize != 64 ||
@@ -264,7 +264,7 @@ namespace MagicCarpet.Native
                     return true;
 
                 case CastleBuiltCode:
-                    state = new Level2CastleLifecycleState
+                    state = new CampaignCastleLifecycleState
                     {
                         SourceSlot = row.sourceSlot,
                         OwnerEntityIndex = row.entity0,
@@ -273,7 +273,7 @@ namespace MagicCarpet.Native
                         Active = true,
                         Generation = generation,
                         Tick = tick,
-                        Lifecycle = Level2WorldObjectLifecycle.Built
+                        Lifecycle = CampaignWorldObjectLifecycle.Built
                     };
                     return true;
 
@@ -292,14 +292,14 @@ namespace MagicCarpet.Native
                     state.Active = state.Stage != 0;
                     state.Generation = generation;
                     state.Tick = tick;
-                    state.Lifecycle = Level2WorldObjectLifecycle.StageDestroyed;
+                    state.Lifecycle = CampaignWorldObjectLifecycle.StageDestroyed;
                     return true;
 
                 case CastleDestroyedCode:
                     if (state.SourceSlot != row.sourceSlot ||
-                        state.Lifecycle == Level2WorldObjectLifecycle.Destroyed ||
+                        state.Lifecycle == CampaignWorldObjectLifecycle.Destroyed ||
                         (!state.Active &&
-                         state.Lifecycle != Level2WorldObjectLifecycle.StageDestroyed))
+                         state.Lifecycle != CampaignWorldObjectLifecycle.StageDestroyed))
                     {
                         return false;
                     }
@@ -307,7 +307,7 @@ namespace MagicCarpet.Native
                     state.Active = false;
                     state.Generation = generation;
                     state.Tick = tick;
-                    state.Lifecycle = Level2WorldObjectLifecycle.Destroyed;
+                    state.Lifecycle = CampaignWorldObjectLifecycle.Destroyed;
                     return true;
 
                 default:
@@ -318,10 +318,10 @@ namespace MagicCarpet.Native
         }
     }
 
-    internal sealed class Level2WorldObjectMarker : MonoBehaviour
+    internal sealed class CampaignWorldObjectMarker : MonoBehaviour
     {
-        internal Level2WorldObjectKind Kind { get; private set; }
-        internal Level2WorldObjectLifecycle Lifecycle { get; private set; }
+        internal CampaignWorldObjectKind Kind { get; private set; }
+        internal CampaignWorldObjectLifecycle Lifecycle { get; private set; }
         internal ushort SourceSlot { get; private set; }
         internal ushort SourceId { get; private set; }
         internal byte ClassId { get; private set; }
@@ -338,7 +338,7 @@ namespace MagicCarpet.Native
         internal bool Live { get; private set; }
 
         internal void Bind(
-            Level2WorldObjectDescription description,
+            CampaignWorldObjectDescription description,
             ulong generation,
             ulong tick,
             string assetPath)
@@ -369,7 +369,7 @@ namespace MagicCarpet.Native
 
     public sealed partial class MagicCarpetRuntime
     {
-        private sealed class Level2IndexedWorldPresenter
+        private sealed class CampaignIndexedWorldPresenter
         {
             private const string MaterialDescriptorPath =
                 "components/material/materials/descriptor.json";
@@ -377,35 +377,35 @@ namespace MagicCarpet.Native
                 "mc2-level2-day-materials/v1";
 
             private readonly MagicCarpetRuntime owner;
-            private readonly Dictionary<ushort, Level2WorldObjectView> worldObjectViews =
+            private readonly Dictionary<ushort, CampaignWorldObjectView> worldObjectViews =
                 new();
-            private readonly Dictionary<ushort, Level2WorldObjectAsset> worldObjectAssets =
+            private readonly Dictionary<ushort, CampaignWorldObjectAsset> worldObjectAssets =
                 new();
-            private readonly Dictionary<ushort, Level2CastleLifecycleState> castleStates =
+            private readonly Dictionary<ushort, CampaignCastleLifecycleState> castleStates =
                 new();
             private Transform worldObjectsRoot;
             private Mesh worldObjectMesh;
             private Shader worldObjectShader;
-            private Level2MaterialDescriptor materialDescriptor;
+            private CampaignMaterialDescriptor materialDescriptor;
             private ulong observedGeneration = ulong.MaxValue;
             private ulong observedTick;
 
             [Serializable]
-            private sealed class Level2MaterialDescriptor
+            private sealed class CampaignMaterialDescriptor
             {
                 public string schema;
-                public Level2MaterialTmaps0 tmaps0;
+                public CampaignMaterialTmaps0 tmaps0;
             }
 
             [Serializable]
-            private sealed class Level2MaterialTmaps0
+            private sealed class CampaignMaterialTmaps0
             {
                 public int[] selectors;
-                public Level2MaterialTexture[] textures;
+                public CampaignMaterialTexture[] textures;
             }
 
             [Serializable]
-            private sealed class Level2MaterialTexture
+            private sealed class CampaignMaterialTexture
             {
                 public int index;
                 public int width;
@@ -414,7 +414,7 @@ namespace MagicCarpet.Native
                 public string indices_path;
             }
 
-            private sealed class Level2WorldObjectAsset
+            private sealed class CampaignWorldObjectAsset
             {
                 internal ushort Selector;
                 internal int Width;
@@ -425,16 +425,16 @@ namespace MagicCarpet.Native
                 internal Material Material;
             }
 
-            private sealed class Level2WorldObjectView
+            private sealed class CampaignWorldObjectView
             {
                 internal GameObject Object;
                 internal MeshRenderer Renderer;
-                internal Level2WorldObjectMarker Marker;
+                internal CampaignWorldObjectMarker Marker;
                 internal ushort AssetSelector;
                 internal int MissingProjections;
             }
 
-            internal Level2IndexedWorldPresenter(MagicCarpetRuntime owner)
+            internal CampaignIndexedWorldPresenter(MagicCarpetRuntime owner)
             {
                 this.owner = owner;
             }
@@ -657,7 +657,7 @@ namespace MagicCarpet.Native
                 AdvanceMissingWorldObjects();
 
                 var rows = owner.campaignSession.Entities();
-                if (!Level2WorldObjectProjection.TryProjectRows(
+                if (!CampaignWorldObjectProjection.TryProjectRows(
                         rows,
                         out var descriptions))
                 {
@@ -672,7 +672,7 @@ namespace MagicCarpet.Native
                     return;
                 }
 
-                var desired = new Dictionary<ushort, Level2WorldObjectDescription>();
+                var desired = new Dictionary<ushort, CampaignWorldObjectDescription>();
                 foreach (var description in descriptions)
                 {
                     if (!desired.TryAdd(description.SourceSlot, description))
@@ -738,7 +738,7 @@ namespace MagicCarpet.Native
                         out var prior)
                         ? prior
                         : default;
-                    if (!Level2WorldObjectProjection.TryApplyCastleEvent(
+                    if (!CampaignWorldObjectProjection.TryApplyCastleEvent(
                             row,
                             generation,
                             tick,
@@ -781,9 +781,9 @@ namespace MagicCarpet.Native
             }
 
             private bool TryDescribeCastleState(
-                Level2CastleLifecycleState state,
+                CampaignCastleLifecycleState state,
                 NativeSim.CampaignEntitySnapshot[] rows,
-                out Level2WorldObjectDescription description)
+                out CampaignWorldObjectDescription description)
             {
                 description = default;
                 foreach (var row in rows)
@@ -796,8 +796,8 @@ namespace MagicCarpet.Native
                         (row.model == 0 || row.model == 1) &&
                         row.sourceId != 0)
                     {
-                        description = new Level2WorldObjectDescription(
-                            Level2WorldObjectKind.Castle,
+                        description = new CampaignWorldObjectDescription(
+                            CampaignWorldObjectKind.Castle,
                             state.Lifecycle,
                             state.SourceSlot,
                             state.OwnerEntityIndex,
@@ -820,10 +820,10 @@ namespace MagicCarpet.Native
                         state.SourceSlot,
                         out var view) &&
                     view.Marker != null &&
-                    view.Marker.Kind == Level2WorldObjectKind.Castle)
+                    view.Marker.Kind == CampaignWorldObjectKind.Castle)
                 {
-                    description = new Level2WorldObjectDescription(
-                        Level2WorldObjectKind.Castle,
+                    description = new CampaignWorldObjectDescription(
+                        CampaignWorldObjectKind.Castle,
                         state.Lifecycle,
                         state.SourceSlot,
                         state.OwnerEntityIndex,
@@ -841,7 +841,7 @@ namespace MagicCarpet.Native
             }
 
             private void PresentWorldObject(
-                Level2WorldObjectDescription description,
+                CampaignWorldObjectDescription description,
                 ulong generation,
                 ulong tick)
             {
@@ -878,9 +878,9 @@ namespace MagicCarpet.Native
                 view.Renderer.enabled = true;
             }
 
-            private Level2WorldObjectView CreateWorldObjectView(
+            private CampaignWorldObjectView CreateWorldObjectView(
                 ushort sourceSlot,
-                Level2WorldObjectAsset asset)
+                CampaignWorldObjectAsset asset)
             {
                 var viewObject = new GameObject(
                     $"Level 2 world object slot {sourceSlot:D3}");
@@ -893,8 +893,8 @@ namespace MagicCarpet.Native
                 renderer.receiveShadows = false;
                 renderer.sharedMaterial = asset.Material;
                 renderer.enabled = false;
-                var marker = viewObject.AddComponent<Level2WorldObjectMarker>();
-                return new Level2WorldObjectView
+                var marker = viewObject.AddComponent<CampaignWorldObjectMarker>();
+                return new CampaignWorldObjectView
                 {
                     Object = viewObject,
                     Renderer = renderer,
@@ -904,7 +904,7 @@ namespace MagicCarpet.Native
                 };
             }
 
-            private Level2WorldObjectAsset GetWorldObjectAsset(ushort selector)
+            private CampaignWorldObjectAsset GetWorldObjectAsset(ushort selector)
             {
                 if (worldObjectAssets.TryGetValue(selector, out var existing))
                 {
@@ -963,7 +963,7 @@ namespace MagicCarpet.Native
                 material.SetTexture(
                     "_Palette",
                     owner.level2IndexedFramePaletteTexture);
-                var asset = new Level2WorldObjectAsset
+                var asset = new CampaignWorldObjectAsset
                 {
                     Selector = selector,
                     Width = textureDescriptor.width,
@@ -984,7 +984,7 @@ namespace MagicCarpet.Native
                     return;
                 }
                 var text = owner.ownerAssetCache.ReadOutputText(MaterialDescriptorPath);
-                materialDescriptor = JsonUtility.FromJson<Level2MaterialDescriptor>(text);
+                materialDescriptor = JsonUtility.FromJson<CampaignMaterialDescriptor>(text);
                 MagicCarpetRuntime.Require(
                     materialDescriptor != null &&
                     materialDescriptor.schema == MaterialSchema &&
@@ -994,7 +994,7 @@ namespace MagicCarpet.Native
                     "Level 2 material descriptor for world objects");
             }
 
-            private Level2MaterialTexture FindMaterialTexture(ushort selector)
+            private CampaignMaterialTexture FindMaterialTexture(ushort selector)
             {
                 foreach (var candidate in materialDescriptor.tmaps0.textures)
                 {
@@ -1035,7 +1035,7 @@ namespace MagicCarpet.Native
 
             private void DestroyWorldObjectViews()
             {
-                var views = new List<Level2WorldObjectView>(
+                var views = new List<CampaignWorldObjectView>(
                     worldObjectViews.Values);
                 worldObjectViews.Clear();
                 foreach (var view in views)
@@ -1046,7 +1046,7 @@ namespace MagicCarpet.Native
 
             private void DestroyWorldObjectView(
                 ushort sourceSlot,
-                Level2WorldObjectView view)
+                CampaignWorldObjectView view)
             {
                 worldObjectViews.Remove(sourceSlot);
                 DestroyObject(view.Object);

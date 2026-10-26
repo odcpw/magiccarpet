@@ -605,7 +605,7 @@ mod tests {
     use crate::{
         PlayerCommand,
         campaign::{dispatch::CAMPAIGN_BEHAVIOR_REGISTRY, spec::BehaviorSelector},
-        native_world::{Level2DispatchEvent, NativeWorld},
+        native_world::{Mc2DispatchEvent, NativeWorld},
     };
     use std::collections::BTreeMap;
     use std::path::PathBuf;
@@ -1030,10 +1030,11 @@ mod tests {
             first_receipts
         );
         assert!(!first_events.is_empty());
-        assert!(first_events.iter().all(|event| !matches!(
-            event,
-            crate::native_world::Level2DispatchEvent::Error { .. }
-        )));
+        assert!(
+            first_events
+                .iter()
+                .all(|event| !matches!(event, crate::native_world::Mc2DispatchEvent::Error { .. }))
+        );
         assert_eq!(
             first_rng,
             initial_rng.wrapping_mul(9_377).wrapping_add(9_439),
@@ -1203,7 +1204,7 @@ mod tests {
                 session
                     .dispatch_events()
                     .iter()
-                    .all(|event| !matches!(event, Level2DispatchEvent::Error { .. }))
+                    .all(|event| !matches!(event, Mc2DispatchEvent::Error { .. }))
             );
             let receipts = session.cf10_production_schedule_receipts();
             assert!(receipts.iter().any(|receipt| matches!(
@@ -1260,7 +1261,7 @@ mod tests {
         assert_eq!(session.cf07_rng_observation(), rng_before);
         assert!(matches!(
             session.dispatch_events(),
-            [Level2DispatchEvent::Error {
+            [Mc2DispatchEvent::Error {
                 source_slot,
                 message,
                 ..

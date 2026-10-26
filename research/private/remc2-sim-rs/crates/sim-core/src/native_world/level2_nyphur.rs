@@ -11,8 +11,8 @@ use super::{
 };
 #[cfg(test)]
 use super::{
-    LEVEL2_NYPHUR_FIREBALL_HOLDER_INDEX, LEVEL2_NYPHUR_POSSESSION_HOLDER_INDEX,
-    Level2DispatchEvent, NativeWorld, POSSESSION_PROJECTILE_LIFETIME_TICKS, PlayerCommand,
+    LEVEL2_NYPHUR_FIREBALL_HOLDER_INDEX, LEVEL2_NYPHUR_POSSESSION_HOLDER_INDEX, Mc2DispatchEvent,
+    NativeWorld, POSSESSION_PROJECTILE_LIFETIME_TICKS, PlayerCommand,
 };
 
 /// Pinned `sub_15790` spell-family order, including its zero-terminated tail

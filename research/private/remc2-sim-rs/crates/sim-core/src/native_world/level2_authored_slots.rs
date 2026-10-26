@@ -1605,8 +1605,17 @@ impl Level2EconomyState {
         }
         let source_entity_index = self.allocate_slot()?;
         self.initialize_bee_creature_at_slot(
-            source_entity_index, origin, position, parent_entity_index, parent_entity_id,
-            action, stage_var1, stage_var2, stage_target, max_life, terrain,
+            source_entity_index,
+            origin,
+            position,
+            parent_entity_index,
+            parent_entity_id,
+            action,
+            stage_var1,
+            stage_var2,
+            stage_target,
+            max_life,
+            terrain,
         )
     }
 
@@ -2233,8 +2242,8 @@ impl Level2EconomyState {
                 source.last_sound_id = 30;
             }
             let signed_term = 768_i32 * source.dword_0x10;
-            source.shift_rot_x = i16::try_from(signed_term / 4)
-                .expect("Level 2 action-58 shift rotation fits i16");
+            source.shift_rot_x =
+                i16::try_from(signed_term / 4).expect("Level 2 action-58 shift rotation fits i16");
             source.shift_rot_y = 512;
 
             // The scheduler applies sub_10C80 before these child allocations.
@@ -7910,7 +7919,7 @@ mod source_effect_allocator_tests {
         let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../../../generated/mc-cf02-campaign-package-v2-b/qualified-level2");
         let session = CampaignSession::open(path, CampaignSelection::LEVEL2).unwrap();
-        session.level2_compatibility().source_arena().clone()
+        session.simulation().source_arena().clone()
     }
 
     fn raw_effect(arena: &mut crate::campaign::source_arena::SourceArena) -> u16 {

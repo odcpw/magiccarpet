@@ -87,30 +87,36 @@ fn level_two_type_str_164_rejects_malformed_record_and_descriptor_inputs() {
     let original = fs::read(package.join("players.bin")).unwrap();
 
     let truncated = &original[..original.len() - 1];
-    assert!(parse_players(
-        truncated,
-        OwnerPackageProfile::Level2,
-        OwnerPackageSchema::V5
-    )
-    .is_err());
+    assert!(
+        parse_players(
+            truncated,
+            OwnerPackageProfile::Level2,
+            OwnerPackageSchema::V5
+        )
+        .is_err()
+    );
 
     let mut wrong_version = original.clone();
     wrong_version[4..6].copy_from_slice(&2_u16.to_le_bytes());
-    assert!(parse_players(
-        &wrong_version,
-        OwnerPackageProfile::Level2,
-        OwnerPackageSchema::V5
-    )
-    .is_err());
+    assert!(
+        parse_players(
+            &wrong_version,
+            OwnerPackageProfile::Level2,
+            OwnerPackageSchema::V5
+        )
+        .is_err()
+    );
 
     let mut wrong_record_size = original.clone();
     wrong_record_size[6..8].copy_from_slice(&573_u16.to_le_bytes());
-    assert!(parse_players(
-        &wrong_record_size,
-        OwnerPackageProfile::Level2,
-        OwnerPackageSchema::V5
-    )
-    .is_err());
+    assert!(
+        parse_players(
+            &wrong_record_size,
+            OwnerPackageProfile::Level2,
+            OwnerPackageSchema::V5
+        )
+        .is_err()
+    );
 
     let temp = TempLevel2V4Package::copy_from(&package);
     let manifest_path = temp.package.join("manifest.json");
@@ -131,7 +137,7 @@ fn level_two_type_str_164_rejects_malformed_record_and_descriptor_inputs() {
 fn level_two_public_castle_relation_selects_strict_shift_aabb_upkeep() {
     let inspection =
         NativeWorld::inspect_level2(level_two_fixture_path()).expect("qualified Level 2 package");
-    let configure = |session: &mut Level2ResetSession, player_height: i16, boost: bool| {
+    let configure = |session: &mut Mc2Simulation, player_height: i16, boost: bool| {
         let player_index = session.state.entity_index;
         let root_slot = session
             .economy_mut()
@@ -151,10 +157,7 @@ fn level_two_public_castle_relation_selects_strict_shift_aabb_upkeep() {
             .position;
         {
             let mut economy_view = session.economy_mut();
-            let castle = economy_view
-                .castle
-                .as_mut()
-                .expect("installed Castle root");
+            let castle = economy_view.castle.as_mut().expect("installed Castle root");
             castle.shift_yaw = -8_192;
             castle.shift_pitch = 1_664;
             castle.shift_roll = 1_664;
@@ -188,8 +191,7 @@ fn level_two_public_castle_relation_selects_strict_shift_aabb_upkeep() {
         shared.caster.control_flags = shared.player_entity.control_flags;
         shared.player_mana = 1_000;
         set_player_extents(
-            live
-                .economy
+            live.economy
                 .entities
                 .get_mut(usize::from(player_index))
                 .expect("local player entity"),
@@ -217,9 +219,11 @@ fn level_two_public_castle_relation_selects_strict_shift_aabb_upkeep() {
         on_castle.economy().player_castle_entity_index(),
         on_root_slot
     );
-    assert!(on_castle
-        .economy()
-        .player_castle_shift_aabb_overlap(on_player));
+    assert!(
+        on_castle
+            .economy()
+            .player_castle_shift_aabb_overlap(on_player)
+    );
     on_castle.step_outer_turn(PlayerCommand::default(), 0);
     assert_eq!(
         on_castle.shared_spells().player_entity.mana_regen,
@@ -290,9 +294,11 @@ fn level_two_public_castle_relation_selects_strict_shift_aabb_upkeep() {
         .iter()
         .find(|entity| entity.index == off_castle.state.entity_index)
         .expect("off-Castle player entity");
-    assert!(!off_castle
-        .economy()
-        .player_castle_shift_aabb_overlap(off_player));
+    assert!(
+        !off_castle
+            .economy()
+            .player_castle_shift_aabb_overlap(off_player)
+    );
     off_castle.step_outer_turn(PlayerCommand::default(), 0);
     assert_eq!(
         off_castle.shared_spells().player_entity.mana_regen,
@@ -396,8 +402,10 @@ fn level_two_bad_stones_reconstruct_action9_map_chain_and_presentation() {
     let terrain_hash = session.terrain_hash();
     let mission_hash = session.mission().state_hash();
     let baseline_phase = session.bad_stones()[0].entity.phase;
-    let expected_z =
-        FlightWorld::ground_height(session.canonical_terrain(), session.bad_stones()[0].entity.position);
+    let expected_z = FlightWorld::ground_height(
+        session.canonical_terrain(),
+        session.bad_stones()[0].entity.position,
+    );
     {
         let stone = &mut session.bad_stones[0];
         stone.entity.position.z = expected_z.wrapping_add(1);
@@ -513,19 +521,23 @@ fn level_two_authored_subtype45_runs_action51_and_reclaims_at_following_boundary
     assert!(hidden.active);
     assert!(!hidden.drawing_enabled);
     assert_eq!(hidden.source_byte_3e, source.source_byte_3e.wrapping_add(1));
-    assert!(session
-        .economy()
-        .map_chains()
-        .linked_entity_indices()
-        .contains(&source_slot));
+    assert!(
+        session
+            .economy()
+            .map_chains()
+            .linked_entity_indices()
+            .contains(&source_slot)
+    );
     assert!(!session.economy().free_slots.contains(&source_slot));
 
     session.step_outer_turn(PlayerCommand::default(), 0);
-    assert!(session
-        .economy()
-        .authored_model45()
-        .iter()
-        .all(|row| row.source_entity_index != source_slot));
+    assert!(
+        session
+            .economy()
+            .authored_model45()
+            .iter()
+            .all(|row| row.source_entity_index != source_slot)
+    );
 }
 
 #[test]
@@ -569,16 +581,20 @@ fn level_two_authored_class14_rows_dispatch_source_terrain_callbacks() {
         model3.source_entity_index
     );
     assert_ne!(model3.source_entity_index, model5.source_entity_index);
-    assert!(session
-        .economy()
-        .map_chains()
-        .linked_entity_indices()
-        .contains(&model3.source_entity_index));
-    assert!(session
-        .economy()
-        .map_chains()
-        .linked_entity_indices()
-        .contains(&model5.source_entity_index));
+    assert!(
+        session
+            .economy()
+            .map_chains()
+            .linked_entity_indices()
+            .contains(&model3.source_entity_index)
+    );
+    assert!(
+        session
+            .economy()
+            .map_chains()
+            .linked_entity_indices()
+            .contains(&model5.source_entity_index)
+    );
 
     // Deliberately perturb the live rows after their source-backed
     // allocation. A cursor implementation that only resynchronizes the
@@ -605,7 +621,7 @@ fn level_two_authored_class14_rows_dispatch_source_terrain_callbacks() {
     session.step_outer_turn(PlayerCommand::default(), 0);
     assert!(session.dispatch_events().iter().any(|event| matches!(
         event,
-        Level2DispatchEvent::DynamicArena {
+        Mc2DispatchEvent::DynamicArena {
             kind: Level2DynamicArenaKind::AuthoredClass14,
             source_slot,
             ..
@@ -613,7 +629,7 @@ fn level_two_authored_class14_rows_dispatch_source_terrain_callbacks() {
     )));
     assert!(session.dispatch_events().iter().any(|event| matches!(
         event,
-        Level2DispatchEvent::DynamicArena {
+        Mc2DispatchEvent::DynamicArena {
             kind: Level2DynamicArenaKind::AuthoredClass14,
             source_slot,
             ..
@@ -657,22 +673,26 @@ fn level_two_authored_class14_model5_collects_for_local_player_and_reclaims() {
 
     session.step_outer_turn(PlayerCommand::default(), 0);
 
-    assert!(session
-        .shared_spells()
-        .pickup_events()
-        .iter()
-        .any(|event| matches!(
-            event,
-            Level2SharedSpellEvent::ExperienceScrollCollected {
-                source_slot: observed,
-                player_entity_index,
-            } if *observed == source_slot && *player_entity_index == session.state.entity_index
-        )));
-    assert!(session
-        .shared_spells()
-        .activation_events()
-        .iter()
-        .any(|event| matches!(event, FlightEvent::PrepareSound { sound_id: 63, .. })));
+    assert!(
+        session
+            .shared_spells()
+            .pickup_events()
+            .iter()
+            .any(|event| matches!(
+                event,
+                Level2SharedSpellEvent::ExperienceScrollCollected {
+                    source_slot: observed,
+                    player_entity_index,
+                } if *observed == source_slot && *player_entity_index == session.state.entity_index
+            ))
+    );
+    assert!(
+        session
+            .shared_spells()
+            .activation_events()
+            .iter()
+            .any(|event| matches!(event, FlightEvent::PrepareSound { sound_id: 63, .. }))
+    );
     for family in 0..PLAYER_SPELL_COUNT {
         let expected = if enabled_before[family] == 0 {
             experience_before[family]
@@ -699,11 +719,13 @@ fn level_two_authored_class14_model5_collects_for_local_player_and_reclaims() {
     assert!(!session.economy().free_slots.contains(&source_slot));
 
     session.step_outer_turn(PlayerCommand::default(), 0);
-    assert!(!session
-        .economy()
-        .authored_class14()
-        .iter()
-        .any(|source| source.source_entity_index == source_slot));
+    assert!(
+        !session
+            .economy()
+            .authored_class14()
+            .iter()
+            .any(|source| source.source_entity_index == source_slot)
+    );
     assert!(!session.economy().map_chains().is_linked(source_slot));
     assert!(session.economy().free_slots.contains(&source_slot));
 }
@@ -726,11 +748,13 @@ fn level_two_authored_class14_model5_uses_strict_collision_boundaries() {
     };
     session.step_outer_turn(PlayerCommand::default(), 0);
     assert_eq!(*session.shared_spells().spell_experience(), before);
-    assert!(session
-        .economy()
-        .authored_class14()
-        .iter()
-        .any(|row| row.authored_index == 248 && row.active));
+    assert!(
+        session
+            .economy()
+            .authored_class14()
+            .iter()
+            .any(|row| row.authored_index == 248 && row.active)
+    );
 }
 
 #[test]
@@ -752,7 +776,9 @@ fn level_two_authored_class14_model5_scans_past_remote_collision_for_local_xp() 
         .find(|player| player.slot == 1)
         .expect("remote Level 2 player")
         .entity_index;
-    let remote = session.economy.entities
+    let remote = session
+        .economy
+        .entities
         .iter_mut()
         .find(|entity| entity.index == remote_entity_index)
         .expect("remote player entity");
@@ -775,17 +801,19 @@ fn level_two_authored_class14_model5_scans_past_remote_collision_for_local_xp() 
         session.shared_spells().spell_experience()[12],
         before + LEVEL2_EXPERIENCE_SCROLL_AWARD
     );
-    assert!(session
-        .shared_spells()
-        .pickup_events()
-        .iter()
-        .any(|event| matches!(
-            event,
-            Level2SharedSpellEvent::ExperienceScrollCollected {
-                source_slot: observed,
-                player_entity_index,
-            } if *observed == source_slot && *player_entity_index == remote_entity_index
-        )));
+    assert!(
+        session
+            .shared_spells()
+            .pickup_events()
+            .iter()
+            .any(|event| matches!(
+                event,
+                Level2SharedSpellEvent::ExperienceScrollCollected {
+                    source_slot: observed,
+                    player_entity_index,
+                } if *observed == source_slot && *player_entity_index == remote_entity_index
+            ))
+    );
     let hidden = session
         .economy()
         .authored_class14()
@@ -856,9 +884,11 @@ fn level_two_authored_model13_runs_source_callback_and_spawn_branch() {
         .expect("model-13 parent remains live");
     parent.life = 2;
     parent.entity_rng = seed;
-    assert!(session
-        .economy_mut()
-        .step_authored_model13_slot(source.source_entity_index));
+    assert!(
+        session
+            .economy_mut()
+            .step_authored_model13_slot(source.source_entity_index)
+    );
     let stepped_parent = session
         .economy()
         .authored_model13()
@@ -870,22 +900,26 @@ fn level_two_authored_model13_runs_source_callback_and_spawn_branch() {
     assert_eq!(stepped_parent.dword_0x10, 0);
     let child_count = session.economy().model13_spawned_children().len();
     assert!(child_count >= 4 && child_count % 4 == 0);
-    assert!(session
-        .economy()
-        .model13_spawned_children()
-        .iter()
-        .all(|child| {
-            child.parent_entity_index == source.source_entity_index
-                && child.parent_entity_id == source.entity_id
-                && (child.model, child.action, child.source_class) == (14, 14, 10)
-                && child.max_life == child.life
-                && child.entity_index == 9
-                && child.subtype == 14
-        }));
+    assert!(
+        session
+            .economy()
+            .model13_spawned_children()
+            .iter()
+            .all(|child| {
+                child.parent_entity_index == source.source_entity_index
+                    && child.parent_entity_id == source.entity_id
+                    && (child.model, child.action, child.source_class) == (14, 14, 10)
+                    && child.max_life == child.life
+                    && child.entity_index == 9
+                    && child.subtype == 14
+            })
+    );
     let child = session.economy().model13_spawned_children()[0];
-    assert!(session
-        .economy_mut()
-        .step_model13_spawned_child_slot(child.source_entity_index));
+    assert!(
+        session
+            .economy_mut()
+            .step_model13_spawned_child_slot(child.source_entity_index)
+    );
     let stepped_child = session
         .economy()
         .model13_spawned_children()
@@ -909,9 +943,11 @@ fn level_two_authored_model13_runs_source_callback_and_spawn_branch() {
     }
     let before_exhaustion = exhausted.clone();
     let terrain = session.canonical_terrain().clone();
-    assert!(exhausted
-        .allocate_authored_model13(366, Position::default(), &terrain)
-        .is_none());
+    assert!(
+        exhausted
+            .allocate_authored_model13(366, Position::default(), &terrain)
+            .is_none()
+    );
     assert_eq!(exhausted, before_exhaustion);
 
     session
@@ -921,9 +957,11 @@ fn level_two_authored_model13_runs_source_callback_and_spawn_branch() {
         .find(|candidate| candidate.source_entity_index == source.source_entity_index)
         .expect("model-13 parent for expiry")
         .life = -1;
-    assert!(session
-        .economy_mut()
-        .step_authored_model13_slot(source.source_entity_index));
+    assert!(
+        session
+            .economy_mut()
+            .step_authored_model13_slot(source.source_entity_index)
+    );
     let expired = session
         .economy()
         .authored_model13()
@@ -934,11 +972,13 @@ fn level_two_authored_model13_runs_source_callback_and_spawn_branch() {
     assert!(expired.active);
     assert!(!expired.drawing_enabled);
     session.economy_mut().reclaim_inactive_slots();
-    assert!(session
-        .economy()
-        .authored_model13()
-        .iter()
-        .any(|candidate| candidate.source_entity_index == source.source_entity_index));
+    assert!(
+        session
+            .economy()
+            .authored_model13()
+            .iter()
+            .any(|candidate| candidate.source_entity_index == source.source_entity_index)
+    );
 
     session.reset();
     assert!(session.economy().authored_model13().is_empty());
@@ -1010,7 +1050,7 @@ fn level_two_outer_turn_rescans_same_pass_castle_children() {
         .position(|event| {
             matches!(
                 event,
-                Level2DispatchEvent::Castle {
+                Mc2DispatchEvent::Castle {
                     source_slot,
                     ..
                 } if *source_slot == castle_slot
@@ -1020,7 +1060,7 @@ fn level_two_outer_turn_rescans_same_pass_castle_children() {
     let child_slot = events
         .iter()
         .find_map(|event| match event {
-            Level2DispatchEvent::DynamicArena {
+            Mc2DispatchEvent::DynamicArena {
                 source_slot,
                 kind: Level2DynamicArenaKind::CastleChild,
                 ..
@@ -1033,7 +1073,7 @@ fn level_two_outer_turn_rescans_same_pass_castle_children() {
         .position(|event| {
             matches!(
                 event,
-                Level2DispatchEvent::DynamicArena {
+                Mc2DispatchEvent::DynamicArena {
                     source_slot,
                     kind: Level2DynamicArenaKind::CastleChild,
                     ..
@@ -1045,7 +1085,7 @@ fn level_two_outer_turn_rescans_same_pass_castle_children() {
         .iter()
         .enumerate()
         .filter_map(|(index, event)| match event {
-            Level2DispatchEvent::DynamicArena {
+            Mc2DispatchEvent::DynamicArena {
                 source_slot,
                 kind: Level2DynamicArenaKind::CastleController,
                 ..
@@ -1069,11 +1109,13 @@ fn level_two_outer_turn_rescans_same_pass_castle_children() {
             && candidate.action == 44
     }));
     assert!(!session.economy().free_slots.contains(&child_slot));
-    assert!(!session
-        .economy()
-        .map_chains()
-        .linked_entity_indices()
-        .contains(&child_slot));
+    assert!(
+        !session
+            .economy()
+            .map_chains()
+            .linked_entity_indices()
+            .contains(&child_slot)
+    );
     let live_build_children = session
         .economy()
         .castle_children()
@@ -1256,7 +1298,8 @@ fn qualified_level_one_castle_build_reaches_every_owner_height_transactionally()
 
     let mut first_session = world.session();
     let mut second_session = world.session();
-    first_session.terrain
+    first_session
+        .terrain
         .apply_castle_update(
             CastleTerrainUpdate::ConstructionPass {
                 position: anchor,
@@ -1560,23 +1603,27 @@ fn qualified_level_one_house_footprints_drive_transactional_action_53_terrain() 
         .expect("second resident slot");
     let full_live_hash = session.live_world_hash_v2();
     let full_arena_hash = session.mission.source_arena_hash_v1();
-    assert!(apply_level1_source_effects(
-        &mut session.mission,
-        &mut session.live_world,
-        &[Level1SourceEffect::TryEnterResident {
-            resident_source_entity_index: full_resident,
-            house_source_entity_index: 1,
-        }],
-    )
-    .expect("full resident entry rejection")
-    .is_empty());
+    assert!(
+        apply_level1_source_effects(
+            &mut session.mission,
+            &mut session.live_world,
+            &[Level1SourceEffect::TryEnterResident {
+                resident_source_entity_index: full_resident,
+                house_source_entity_index: 1,
+            }],
+        )
+        .expect("full resident entry rejection")
+        .is_empty()
+    );
     assert_eq!(session.live_world_hash_v2(), full_live_hash);
     assert_eq!(session.mission.source_arena_hash_v1(), full_arena_hash);
-    assert!(session
-        .mission
-        .dynamic_residents()
-        .find(|resident| resident.source_entity_index == full_resident)
-        .is_some_and(|resident| resident.active));
+    assert!(
+        session
+            .mission
+            .dynamic_residents()
+            .find(|resident| resident.source_entity_index == full_resident)
+            .is_some_and(|resident| resident.active)
+    );
 
     let mut dead_session = world.session();
     let lethal = dead_session.live_world.houses()[0].life + 1;
@@ -1598,16 +1645,18 @@ fn qualified_level_one_house_footprints_drive_transactional_action_53_terrain() 
         .expect("dead-house resident slot");
     let dead_live_hash = dead_session.live_world_hash_v2();
     let dead_arena_hash = dead_session.mission.source_arena_hash_v1();
-    assert!(apply_level1_source_effects(
-        &mut dead_session.mission,
-        &mut dead_session.live_world,
-        &[Level1SourceEffect::TryEnterResident {
-            resident_source_entity_index: dead_resident,
-            house_source_entity_index: 1,
-        }],
-    )
-    .expect("dead resident entry rejection")
-    .is_empty());
+    assert!(
+        apply_level1_source_effects(
+            &mut dead_session.mission,
+            &mut dead_session.live_world,
+            &[Level1SourceEffect::TryEnterResident {
+                resident_source_entity_index: dead_resident,
+                house_source_entity_index: 1,
+            }],
+        )
+        .expect("dead resident entry rejection")
+        .is_empty()
+    );
     assert_eq!(dead_session.live_world_hash_v2(), dead_live_hash);
     assert_eq!(dead_session.mission.source_arena_hash_v1(), dead_arena_hash);
 }
@@ -1971,10 +2020,11 @@ fn level_two_direct_starting_spells_feed_requested_castle_route() {
         .spell_fire
         .as_ref()
         .expect("Level 2 spell-fire context");
-    assert!(fire
-        .holders
-        .iter()
-        .any(|holder| holder.model == CASTLE_SPELL_FAMILY));
+    assert!(
+        fire.holders
+            .iter()
+            .any(|holder| holder.model == CASTLE_SPELL_FAMILY)
+    );
     let requested_cast = PlayerCommand {
         opcode: 6,
         argument_1: 2,
@@ -2028,7 +2078,11 @@ fn level_two_direct_starting_spells_feed_requested_castle_route() {
         0,
         256,
     );
-    if session.canonical_terrain().ground_height(expected_launch_position) > expected_launch_position.z {
+    if session
+        .canonical_terrain()
+        .ground_height(expected_launch_position)
+        > expected_launch_position.z
+    {
         expected_launch_position = session.state.position;
     }
     expected_launch_position.z = expected_launch_position
@@ -2101,17 +2155,19 @@ fn level_two_direct_starting_spells_feed_requested_castle_route() {
     assert_eq!(flyer.minimum_speed, 384);
     assert_eq!((flyer.source_byte_43, flyer.source_byte_44), (3, 2));
     assert_eq!(flyer.target_castle_slot, 0);
-    assert!(session
-        .economy()
-        .events()
-        .iter()
-        .all(|event| { !matches!(event, Level2EconomyEvent::CastleBuilt { .. }) }));
+    assert!(
+        session
+            .economy()
+            .events()
+            .iter()
+            .all(|event| { !matches!(event, Level2EconomyEvent::CastleBuilt { .. }) })
+    );
 
     let request_family38_receipts = session
         .dispatch_events()
         .iter()
         .filter_map(|event| {
-            if let Level2DispatchEvent::DynamicArena {
+            if let Mc2DispatchEvent::DynamicArena {
                 source_slot,
                 kind: Level2DynamicArenaKind::CastleProjectile,
                 ..
@@ -2137,7 +2193,7 @@ fn level_two_direct_starting_spells_feed_requested_castle_route() {
     );
     assert!(!session.dispatch_events().iter().any(|event| matches!(
         event,
-        Level2DispatchEvent::DynamicArena {
+        Mc2DispatchEvent::DynamicArena {
             kind: Level2DynamicArenaKind::CastleRoot,
             ..
         }
@@ -2165,7 +2221,7 @@ fn level_two_direct_starting_spells_feed_requested_castle_route() {
     let following_family1_receipt = session.dispatch_events().iter().any(|event| {
         matches!(
             event,
-            Level2DispatchEvent::DynamicArena {
+            Mc2DispatchEvent::DynamicArena {
                 kind: Level2DynamicArenaKind::CastleRoot,
                 ..
             }
@@ -2174,7 +2230,7 @@ fn level_two_direct_starting_spells_feed_requested_castle_route() {
     let following_family38_receipt = session.dispatch_events().iter().any(|event| {
         matches!(
             event,
-            Level2DispatchEvent::DynamicArena {
+            Mc2DispatchEvent::DynamicArena {
                 kind: Level2DynamicArenaKind::CastleProjectile,
                 ..
             }
@@ -2200,16 +2256,18 @@ fn level_two_direct_starting_spells_feed_requested_castle_route() {
     );
     assert!(session.dispatch_events().iter().any(|event| matches!(
         event,
-        Level2DispatchEvent::DynamicArena {
+        Mc2DispatchEvent::DynamicArena {
             kind: Level2DynamicArenaKind::CastleChild,
             ..
         }
     )));
-    assert!(session
-        .economy()
-        .events()
-        .iter()
-        .all(|event| { !matches!(event, Level2EconomyEvent::CastleBuilt { .. }) }));
+    assert!(
+        session
+            .economy()
+            .events()
+            .iter()
+            .all(|event| { !matches!(event, Level2EconomyEvent::CastleBuilt { .. }) })
+    );
 
     session.step_outer_turn(PlayerCommand::default(), 0);
     let completed_root = session
@@ -2227,11 +2285,13 @@ fn level_two_direct_starting_spells_feed_requested_castle_route() {
         (completed_root.shift_yaw, completed_root.shift_fov),
         (-8_192, 0x4000)
     );
-    assert!(!session
-        .economy()
-        .events()
-        .iter()
-        .any(|event| matches!(event, Level2EconomyEvent::CastleBuilt { .. })));
+    assert!(
+        !session
+            .economy()
+            .events()
+            .iter()
+            .any(|event| matches!(event, Level2EconomyEvent::CastleBuilt { .. }))
+    );
 
     session.reset();
     assert_eq!(
@@ -2380,11 +2440,13 @@ fn level_two_castle_public_route_rejects_invalid_input_and_allocation_failures()
     );
     assert_eq!(no_cast.economy().player_castle_entity_index(), 0);
     assert!(no_cast.economy().castle().is_none());
-    assert!(no_cast
-        .economy()
-        .castle_projectiles()
-        .iter()
-        .all(|projectile| !projectile.active));
+    assert!(
+        no_cast
+            .economy()
+            .castle_projectiles()
+            .iter()
+            .all(|projectile| !projectile.active)
+    );
 
     let mut missing_holder = inspection
         .level2_reset_session()
@@ -2417,11 +2479,13 @@ fn level_two_castle_public_route_rejects_invalid_input_and_allocation_failures()
     missing_holder.step_outer_turn(request, 0);
     assert_eq!(missing_holder.economy().player_castle_entity_index(), 0);
     assert!(missing_holder.economy().castle().is_none());
-    assert!(missing_holder
-        .economy()
-        .castle_projectiles()
-        .iter()
-        .all(|projectile| !projectile.active));
+    assert!(
+        missing_holder
+            .economy()
+            .castle_projectiles()
+            .iter()
+            .all(|projectile| !projectile.active)
+    );
 
     let mut allocation_failed = inspection
         .level2_reset_session()
@@ -2468,11 +2532,13 @@ fn level_two_castle_public_route_rejects_invalid_input_and_allocation_failures()
     allocation_failed.step_outer_turn(request, 0);
     assert_eq!(allocation_failed.economy().player_castle_entity_index(), 0);
     assert!(allocation_failed.economy().castle().is_none());
-    assert!(allocation_failed
-        .economy()
-        .castle_projectiles()
-        .iter()
-        .all(|projectile| !projectile.active));
+    assert!(
+        allocation_failed
+            .economy()
+            .castle_projectiles()
+            .iter()
+            .all(|projectile| !projectile.active)
+    );
     let holder_after = allocation_failed
         .shared_spells()
         .dynamic_pickups
@@ -2531,7 +2597,8 @@ fn level_two_castle_public_route_rejects_invalid_input_and_allocation_failures()
         .find(|&(x, y)| {
             (0_u8..8).any(|row| {
                 (0_u8..8).any(|column| {
-                    site_rejected.canonical_terrain()
+                    site_rejected
+                        .canonical_terrain()
                         .angle_flags(crate::Tile {
                             x: x.wrapping_sub(8).wrapping_add(column),
                             y: y.wrapping_sub(8).wrapping_add(row),
@@ -2564,7 +2631,7 @@ fn level_two_castle_public_route_rejects_invalid_input_and_allocation_failures()
         .dispatch_events()
         .iter()
         .filter_map(|event| {
-            if let Level2DispatchEvent::DynamicArena {
+            if let Mc2DispatchEvent::DynamicArena {
                 source_slot,
                 kind: Level2DynamicArenaKind::CastleProjectile,
                 ..
@@ -2583,7 +2650,7 @@ fn level_two_castle_public_route_rejects_invalid_input_and_allocation_failures()
     assert!(
         !site_rejected.dispatch_events().iter().any(|event| matches!(
             event,
-            Level2DispatchEvent::DynamicArena {
+            Mc2DispatchEvent::DynamicArena {
                 kind: Level2DynamicArenaKind::CastleRoot,
                 ..
             }
@@ -2625,11 +2692,14 @@ fn level_two_castle_public_route_rejects_invalid_input_and_allocation_failures()
     site_rejected.step_outer_turn(PlayerCommand::default(), 0);
     assert_eq!(site_rejected.economy().player_castle_entity_index(), 0);
     assert!(site_rejected.economy().castle().is_none());
-    assert!(site_rejected
-        .economy()
-        .castle_projectiles()
-        .iter()
-        .all(|projectile| projectile.source_entity_index != hidden_projectile.source_entity_index));
+    assert!(
+        site_rejected
+            .economy()
+            .castle_projectiles()
+            .iter()
+            .all(|projectile| projectile.source_entity_index
+                != hidden_projectile.source_entity_index)
+    );
     assert!(
         site_rejected
             .economy()
@@ -2637,10 +2707,12 @@ fn level_two_castle_public_route_rejects_invalid_input_and_allocation_failures()
             .contains(&hidden_projectile.source_entity_index),
         "the following source prepass reclaims the hidden flyer"
     );
-    assert!(!site_rejected
-        .economy()
-        .map_chains()
-        .is_linked(hidden_projectile.source_entity_index));
+    assert!(
+        !site_rejected
+            .economy()
+            .map_chains()
+            .is_linked(hidden_projectile.source_entity_index)
+    );
     let holder_projections = site_rejected
         .shared_spells()
         .holders
@@ -2676,11 +2748,13 @@ fn level_two_castle_public_route_retries_root_and_child_failures_and_upgrades() 
     }
     assert_eq!(root_failed.economy().player_castle_entity_index(), 0);
     assert!(root_failed.economy().castle().is_none());
-    assert!(root_failed
-        .economy()
-        .castle_projectiles()
-        .iter()
-        .any(|projectile| projectile.active));
+    assert!(
+        root_failed
+            .economy()
+            .castle_projectiles()
+            .iter()
+            .any(|projectile| projectile.active)
+    );
     root_failed.economy_mut().free_slots = vec![
         *free_slots
             .last()
@@ -2730,11 +2804,13 @@ fn level_two_castle_public_route_retries_root_and_child_failures_and_upgrades() 
         "the initial Castle callback's allocation-failure return still receives the common source epilogue"
     );
     assert_eq!(child_failed.economy().player_castle_entity_index(), 0);
-    assert!(!child_failed
-        .economy()
-        .events()
-        .iter()
-        .any(|event| matches!(event, Level2EconomyEvent::CastleBuilt { .. })));
+    assert!(
+        !child_failed
+            .economy()
+            .events()
+            .iter()
+            .any(|event| matches!(event, Level2EconomyEvent::CastleBuilt { .. }))
+    );
     child_failed.economy_mut().free_slots = free_slots;
     for _ in 0..8 {
         child_failed.step_outer_turn(PlayerCommand::default(), 0);
@@ -2752,11 +2828,13 @@ fn level_two_castle_public_route_retries_root_and_child_failures_and_upgrades() 
         completed_root.source_entity_index
     );
     assert_eq!(completed_root.source_word_2e, 4);
-    assert!(!child_failed
-        .economy()
-        .events()
-        .iter()
-        .any(|event| matches!(event, Level2EconomyEvent::CastleBuilt { .. })));
+    assert!(
+        !child_failed
+            .economy()
+            .events()
+            .iter()
+            .any(|event| matches!(event, Level2EconomyEvent::CastleBuilt { .. }))
+    );
 
     let mut occupied = level_two_campaign_session_with_owner_cache(&gameplay_cache);
     occupied.select_level2_campaign_entry_stage();
@@ -2858,10 +2936,12 @@ fn level_two_castle_public_route_retries_root_and_child_failures_and_upgrades() 
         .find(|row| row.source_slot == construction_slot);
     match slot_owner {
         None => {
-            assert!(!following
-                .economy()
-                .map_chains()
-                .is_linked(construction_slot));
+            assert!(
+                !following
+                    .economy()
+                    .map_chains()
+                    .is_linked(construction_slot)
+            );
             assert!(following.economy().free_slots.contains(&construction_slot));
         }
         Some(row) => {
@@ -2870,10 +2950,12 @@ fn level_two_castle_public_route_retries_root_and_child_failures_and_upgrades() 
             assert_ne!(row.generation, construction_generation);
             assert_eq!(row.kind, Level2DynamicArenaKind::CastleDefender);
             assert!(!following.economy().free_slots.contains(&construction_slot));
-            assert!(following
-                .economy()
-                .map_chains()
-                .is_linked(construction_slot));
+            assert!(
+                following
+                    .economy()
+                    .map_chains()
+                    .is_linked(construction_slot)
+            );
         }
     }
     assert_eq!(
@@ -2927,44 +3009,71 @@ fn level_two_castle_public_route_retries_root_and_child_failures_and_upgrades() 
             .count(),
         1
     );
-    let upgrade_product_before = occupied.economy().castle_children().iter()
+    let upgrade_product_before = occupied
+        .economy()
+        .castle_children()
+        .iter()
         .find(|child| child.active && child.model == 43 && child.action == 45)
-        .copied().expect("the source landing constructs its actual 10/43 product");
-    let upgrade_product_generation = occupied.economy()
+        .copied()
+        .expect("the source landing constructs its actual 10/43 product");
+    let upgrade_product_generation = occupied
+        .economy()
         .slot_generation(upgrade_product_before.source_entity_index);
-    let product_dispatched = |session: &Level2ResetSession| session.dispatch_events().iter().any(|event| {
-        matches!(event, Level2DispatchEvent::DynamicArena {
+    let product_dispatched = |session: &Mc2Simulation| {
+        session.dispatch_events().iter().any(|event| {
+            matches!(event, Mc2DispatchEvent::DynamicArena {
             pass: 0, source_slot, kind: Level2DynamicArenaKind::CastleChild,
         } if *source_slot == upgrade_product_before.source_entity_index)
-    });
+        })
+    };
     let mut product_callback_prediction = None;
     if !product_dispatched(&occupied) {
         // Observe the exact source producer on an immutable execution clone
         // before the ordinary numeric pass can also consume its mailbox.
         let mut callback_probe = occupied.clone();
-        assert!(callback_probe.step_level2_dynamic_arena(0,
-            upgrade_product_before.source_entity_index, Level2DynamicArenaKind::CastleChild));
-        let probe_root = callback_probe.economy().castle().expect("real callback target");
+        assert!(callback_probe.step_level2_dynamic_arena(
+            0,
+            upgrade_product_before.source_entity_index,
+            Level2DynamicArenaKind::CastleChild
+        ));
+        let probe_root = callback_probe
+            .economy()
+            .castle()
+            .expect("real callback target");
         assert_eq!(probe_root.source_word_7c, 10);
         assert_eq!(probe_root.source_word_80, upgrade.owner_entity_index);
-        product_callback_prediction = callback_probe.economy().castle_children().iter()
+        product_callback_prediction = callback_probe
+            .economy()
+            .castle_children()
+            .iter()
             .find(|child| child.source_entity_index == upgrade_product_before.source_entity_index)
             .copied();
-        assert!(upgrade_product_before.source_entity_index < upgrade.source_entity_index,
+        assert!(
+            upgrade_product_before.source_entity_index < upgrade.source_entity_index,
             "only a real lower-slot product can await the next source scan: flyer={upgrade:?} product={upgrade_product_before:?} dispatch={:?}",
-            occupied.dispatch_events());
-        assert_eq!(upgrade_product_before.control_flags & ENTITY_DRAW_DISABLED_BIT, 0);
+            occupied.dispatch_events()
+        );
+        assert_eq!(
+            upgrade_product_before.control_flags & ENTITY_DRAW_DISABLED_BIT,
+            0
+        );
         assert_eq!(upgrade_product_before.life, 8);
         occupied.step_outer_turn(PlayerCommand::default(), 0);
-        assert_eq!(occupied.economy().slot_generation(upgrade_product_before.source_entity_index),
-            upgrade_product_generation);
+        assert_eq!(
+            occupied
+                .economy()
+                .slot_generation(upgrade_product_before.source_entity_index),
+            upgrade_product_generation
+        );
     }
-    assert!(product_dispatched(&occupied),
-        "the generation-qualified 10/43 product must run on its first reachable numeric source visit");
+    assert!(
+        product_dispatched(&occupied),
+        "the generation-qualified 10/43 product must run on its first reachable numeric source visit"
+    );
     assert!(
         occupied.dispatch_events().iter().all(|event| !matches!(
             event,
-            Level2DispatchEvent::DynamicArena {
+            Mc2DispatchEvent::DynamicArena {
                 kind: Level2DynamicArenaKind::CastleProjectile,
                 ..
             }
@@ -2974,8 +3083,10 @@ fn level_two_castle_public_route_retries_root_and_child_failures_and_upgrades() 
     let upgrade_spawn_position = upgrade.position;
     let landed_root = occupied.economy().castle().expect("live Castle root");
     let same_pass_consumer = if landed_root.source_word_7c == 0 {
-        assert!(upgrade_product_before.source_entity_index < root_slot,
-            "only an earlier source product can have its mailbox consumed by this root in the same pass");
+        assert!(
+            upgrade_product_before.source_entity_index < root_slot,
+            "only an earlier source product can have its mailbox consumed by this root in the same pass"
+        );
         assert_eq!((landed_root.action, landed_root.build_state), (5, 0));
         assert_eq!(landed_root.source_word_80, 0);
         assert_ne!(landed_root.control_flags & 0x40, 0);
@@ -3009,46 +3120,64 @@ fn level_two_castle_public_route_retries_root_and_child_failures_and_upgrades() 
         "the flyer terrain landing is carried unchanged into the higher-slot 10/43 product"
     );
     if let Some(predicted) = product_callback_prediction {
-        assert_eq!(*upgrade_product, predicted,
-            "the ordinary source visit must match the exact unmodified producer callback prediction");
+        assert_eq!(
+            *upgrade_product, predicted,
+            "the ordinary source visit must match the exact unmodified producer callback prediction"
+        );
     }
     assert_eq!(upgrade_product.parent_entity_index, root_slot);
     assert_ne!(upgrade_product.control_flags & ENTITY_DRAW_DISABLED_BIT, 0);
     assert_ne!(upgrade_product.control_flags & 0x2, 0);
-    assert!(occupied
-        .economy()
-        .map_chains()
-        .is_linked(upgrade_product_slot));
-    assert!(!occupied
-        .economy()
-        .free_slots
-        .contains(&upgrade_product_slot));
+    assert!(
+        occupied
+            .economy()
+            .map_chains()
+            .is_linked(upgrade_product_slot)
+    );
+    assert!(
+        !occupied
+            .economy()
+            .free_slots
+            .contains(&upgrade_product_slot)
+    );
     occupied.step_outer_turn(PlayerCommand::default(), 0);
     assert_eq!(occupied.economy().player_castle_entity_index(), root_slot);
     assert!(occupied.economy().castle_projectiles().is_empty());
-    assert!(occupied
-        .economy()
-        .castle_children()
-        .iter()
-        .all(|child| child.source_entity_index != upgrade_product_slot));
-    assert!(!occupied
-        .economy()
-        .map_chains()
-        .is_linked(upgrade_product_slot));
-    assert!(occupied
-        .economy()
-        .free_slots
-        .contains(&upgrade_product_slot));
-    let mailbox_root = same_pass_consumer.unwrap_or_else(|| occupied.economy().castle()
-        .expect("Castle root after its first mailbox-consumer visit"));
+    assert!(
+        occupied
+            .economy()
+            .castle_children()
+            .iter()
+            .all(|child| child.source_entity_index != upgrade_product_slot)
+    );
+    assert!(
+        !occupied
+            .economy()
+            .map_chains()
+            .is_linked(upgrade_product_slot)
+    );
+    assert!(
+        occupied
+            .economy()
+            .free_slots
+            .contains(&upgrade_product_slot)
+    );
+    let mailbox_root = same_pass_consumer.unwrap_or_else(|| {
+        occupied
+            .economy()
+            .castle()
+            .expect("Castle root after its first mailbox-consumer visit")
+    });
     assert_eq!((mailbox_root.action, mailbox_root.build_state), (5, 0));
     assert_ne!(mailbox_root.control_flags & 0x40, 0);
     assert_eq!(mailbox_root.source_word_80, 0);
-    assert!(!occupied
-        .economy()
-        .events()
-        .iter()
-        .any(|event| matches!(event, Level2EconomyEvent::CastleBuilt { .. })));
+    assert!(
+        !occupied
+            .economy()
+            .events()
+            .iter()
+            .any(|event| matches!(event, Level2EconomyEvent::CastleBuilt { .. }))
+    );
     let mut holder_cleared = false;
     for _ in 0..32 {
         occupied.step_outer_turn(PlayerCommand::default(), 0);
@@ -3130,7 +3259,7 @@ fn level_two_castle_upgrade_product_reclaims_at_next_entity_pass() {
         .dispatch_events()
         .iter()
         .find_map(|event| match event {
-            Level2DispatchEvent::DynamicArena {
+            Mc2DispatchEvent::DynamicArena {
                 pass,
                 source_slot,
                 kind: Level2DynamicArenaKind::CastleChild,
@@ -3156,7 +3285,7 @@ fn level_two_castle_upgrade_product_reclaims_at_next_entity_pass() {
             .filter(|event| {
                 matches!(
                     event,
-                    Level2DispatchEvent::DynamicArena {
+                    Mc2DispatchEvent::DynamicArena {
                         pass: 1,
                         source_slot,
                         ..

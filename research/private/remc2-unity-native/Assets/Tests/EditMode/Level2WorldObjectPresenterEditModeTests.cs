@@ -31,41 +31,41 @@ namespace MagicCarpet.Native.Tests
             var castle = EntityRow(115, 115, 3, 2, 5, 4096, 8192, 128);
 
             Assert.That(
-                Level2WorldObjectProjection.TryDescribe(
+                CampaignWorldObjectProjection.TryDescribe(
                     stone,
                     out var stoneDescription),
                 Is.True);
             Assert.That(
                 (stoneDescription.Kind, stoneDescription.AssetSelector),
-                Is.EqualTo((Level2WorldObjectKind.Scenery, (ushort)78)));
+                Is.EqualTo((CampaignWorldObjectKind.Scenery, (ushort)78)));
             Assert.That(
-                Level2WorldObjectProjection.TryDescribe(
+                CampaignWorldObjectProjection.TryDescribe(
                     dolmen,
                     out var dolmenDescription),
                 Is.True);
             Assert.That(dolmenDescription.AssetSelector, Is.EqualTo((ushort)79));
             Assert.That(
-                Level2WorldObjectProjection.TryDescribe(
+                CampaignWorldObjectProjection.TryDescribe(
                     badStone,
                     out var badStoneDescription),
                 Is.True);
             Assert.That(badStoneDescription.AssetSelector, Is.EqualTo((ushort)198));
             Assert.That(
-                Level2WorldObjectProjection.TryDescribe(
+                CampaignWorldObjectProjection.TryDescribe(
                     building,
                     out var buildingDescription),
                 Is.True);
             Assert.That(
                 (buildingDescription.Kind, buildingDescription.AssetSelector),
-                Is.EqualTo((Level2WorldObjectKind.Building, (ushort)96)));
+                Is.EqualTo((CampaignWorldObjectKind.Building, (ushort)96)));
             Assert.That(
-                Level2WorldObjectProjection.TryDescribe(
+                CampaignWorldObjectProjection.TryDescribe(
                     castle,
                     out var castleDescription),
                 Is.True);
             Assert.That(
                 (castleDescription.Kind, castleDescription.AssetSelector),
-                Is.EqualTo((Level2WorldObjectKind.Castle, (ushort)96)));
+                Is.EqualTo((CampaignWorldObjectKind.Castle, (ushort)96)));
 
             foreach (var switchRow in new[]
             {
@@ -75,7 +75,7 @@ namespace MagicCarpet.Native.Tests
             })
             {
                 Assert.That(
-                    Level2WorldObjectProjection.TryDescribe(switchRow, out _),
+                    CampaignWorldObjectProjection.TryDescribe(switchRow, out _),
                     Is.False,
                     "class-11 switch callbacks are not scenery projections");
             }
@@ -83,14 +83,14 @@ namespace MagicCarpet.Native.Tests
             var wrongBuilding = building;
             wrongBuilding.action = 51;
             Assert.That(
-                Level2WorldObjectProjection.TryDescribe(
+                CampaignWorldObjectProjection.TryDescribe(
                     wrongBuilding,
                     out _),
                 Is.False);
             var wrongCastle = castle;
             wrongCastle.model = 1;
             Assert.That(
-                Level2WorldObjectProjection.TryDescribe(
+                CampaignWorldObjectProjection.TryDescribe(
                     wrongCastle,
                     out _),
                 Is.False);
@@ -103,7 +103,7 @@ namespace MagicCarpet.Native.Tests
             var duplicate = first;
             duplicate.sourceId = 99;
             Assert.That(
-                Level2WorldObjectProjection.TryProjectRows(
+                CampaignWorldObjectProjection.TryProjectRows(
                     new[] { first, duplicate },
                     out _),
                 Is.False,
@@ -112,7 +112,7 @@ namespace MagicCarpet.Native.Tests
             var malformed = first;
             malformed.structSize = 51;
             Assert.That(
-                Level2WorldObjectProjection.TryProjectRows(
+                CampaignWorldObjectProjection.TryProjectRows(
                     new[] { malformed },
                     out _),
                 Is.False);
@@ -122,7 +122,7 @@ namespace MagicCarpet.Native.Tests
             unknown.model = 44;
             unknown.action = 52;
             Assert.That(
-                Level2WorldObjectProjection.TryProjectRows(
+                CampaignWorldObjectProjection.TryProjectRows(
                     new[] { unknown },
                     out var noPlaceholder),
                 Is.True);
@@ -132,10 +132,10 @@ namespace MagicCarpet.Native.Tests
         [Test]
         public void CastleLifecycleRequiresBoundGenerationAndReclaimsAfterDestroy()
         {
-            var state = default(Level2CastleLifecycleState);
+            var state = default(CampaignCastleLifecycleState);
             var built = CastleEvent(4, 7, 10, 115, owner: 38);
             Assert.That(
-                Level2WorldObjectProjection.TryApplyCastleEvent(
+                CampaignWorldObjectProjection.TryApplyCastleEvent(
                     built,
                     4,
                     12,
@@ -150,11 +150,11 @@ namespace MagicCarpet.Native.Tests
                     (ushort)38,
                     (byte)5,
                     true,
-                    Level2WorldObjectLifecycle.Built)));
+                    CampaignWorldObjectLifecycle.Built)));
 
             var stage = CastleEvent(4, 8, 14, 115, value0: 1, value1: 0);
             Assert.That(
-                Level2WorldObjectProjection.TryApplyCastleEvent(
+                CampaignWorldObjectProjection.TryApplyCastleEvent(
                     stage,
                     4,
                     13,
@@ -167,11 +167,11 @@ namespace MagicCarpet.Native.Tests
                     (byte)0,
                     (byte)6,
                     false,
-                    Level2WorldObjectLifecycle.StageDestroyed)));
+                    CampaignWorldObjectLifecycle.StageDestroyed)));
 
             var destroyed = CastleEvent(4, 9, 11, 115);
             Assert.That(
-                Level2WorldObjectProjection.TryApplyCastleEvent(
+                CampaignWorldObjectProjection.TryApplyCastleEvent(
                     destroyed,
                     4,
                     14,
@@ -181,11 +181,11 @@ namespace MagicCarpet.Native.Tests
             Assert.That(state.Active, Is.False);
             Assert.That(
                 state.Lifecycle,
-                Is.EqualTo(Level2WorldObjectLifecycle.Destroyed));
+                Is.EqualTo(CampaignWorldObjectLifecycle.Destroyed));
 
             var stale = CastleEvent(3, 10, 10, 115, owner: 38);
             Assert.That(
-                Level2WorldObjectProjection.TryApplyCastleEvent(
+                CampaignWorldObjectProjection.TryApplyCastleEvent(
                     stale,
                     4,
                     15,
@@ -194,7 +194,7 @@ namespace MagicCarpet.Native.Tests
                 Is.False);
             var unknown = CastleEvent(4, 11, 255, 115);
             Assert.That(
-                Level2WorldObjectProjection.TryApplyCastleEvent(
+                CampaignWorldObjectProjection.TryApplyCastleEvent(
                     unknown,
                     4,
                     16,
@@ -216,14 +216,14 @@ namespace MagicCarpet.Native.Tests
                     Level2Package,
                     Level2DayCache);
 
-                var initial = root.GetComponentsInChildren<Level2WorldObjectMarker>(true);
+                var initial = root.GetComponentsInChildren<CampaignWorldObjectMarker>(true);
                 Assert.That(initial, Has.Length.EqualTo(29));
                 AssertProjectionSet(initial, generation: 0, tick: 0);
                 Assert.That(
-                    initial.Count(marker => marker.Kind == Level2WorldObjectKind.Building),
+                    initial.Count(marker => marker.Kind == CampaignWorldObjectKind.Building),
                     Is.EqualTo(22));
                 Assert.That(
-                    initial.Count(marker => marker.Kind == Level2WorldObjectKind.Scenery),
+                    initial.Count(marker => marker.Kind == CampaignWorldObjectKind.Scenery),
                     Is.EqualTo(7));
 
                 var initialBySlot = initial.ToDictionary(marker => marker.SourceSlot);
@@ -231,7 +231,7 @@ namespace MagicCarpet.Native.Tests
                     marker => marker.SourceSlot,
                     marker => marker.gameObject.GetInstanceID());
                 runtime.QualificationDriveLevel2Frames(1);
-                var stepped = root.GetComponentsInChildren<Level2WorldObjectMarker>(true);
+                var stepped = root.GetComponentsInChildren<CampaignWorldObjectMarker>(true);
                 Assert.That(stepped, Has.Length.EqualTo(initial.Length));
                 AssertProjectionSet(
                     stepped,
@@ -245,7 +245,7 @@ namespace MagicCarpet.Native.Tests
                 }
 
                 runtime.QualificationResetLevel2Production();
-                var reset = root.GetComponentsInChildren<Level2WorldObjectMarker>(true);
+                var reset = root.GetComponentsInChildren<CampaignWorldObjectMarker>(true);
                 Assert.That(reset, Has.Length.EqualTo(initial.Length));
                 AssertProjectionSet(reset, generation: 1, tick: 0);
                 Assert.That(
@@ -257,7 +257,7 @@ namespace MagicCarpet.Native.Tests
 
                 runtime.QualificationDisposeNativeOwners();
                 Assert.That(
-                    root.GetComponentsInChildren<Level2WorldObjectMarker>(true),
+                    root.GetComponentsInChildren<CampaignWorldObjectMarker>(true),
                     Is.Empty);
                 Assert.That(
                     root.GetComponentsInChildren<Renderer>(true),
@@ -274,7 +274,7 @@ namespace MagicCarpet.Native.Tests
         }
 
         private static void AssertProjectionSet(
-            Level2WorldObjectMarker[] markers,
+            CampaignWorldObjectMarker[] markers,
             ulong generation,
             ulong tick)
         {

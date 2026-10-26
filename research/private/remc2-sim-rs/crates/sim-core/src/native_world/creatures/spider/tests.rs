@@ -408,7 +408,7 @@ fn mission_four_scheduler_advances_self_replacing_web_current_occupant() {
         crate::campaign::spec::CampaignSelection::ordinary(4).unwrap(),
     )
     .unwrap()
-    .level2_compatibility()
+    .simulation()
     .clone();
     let particles = session.session.definition.presentation.particles.clone();
     let (_, _, _, _, _, feature) = mission_four();
@@ -461,8 +461,10 @@ fn mission_four_scheduler_advances_self_replacing_web_current_occupant() {
     );
     assert_ne!(arena.slot_generation(slot), old.generation);
     assert!(arena.resolve(old).is_none());
-    assert!(!session.dispatch_events().iter().any(|event| matches!(
-        event,
-        crate::native_world::Level2DispatchEvent::Error { .. }
-    )));
+    assert!(
+        !session
+            .dispatch_events()
+            .iter()
+            .any(|event| matches!(event, crate::native_world::Mc2DispatchEvent::Error { .. }))
+    );
 }

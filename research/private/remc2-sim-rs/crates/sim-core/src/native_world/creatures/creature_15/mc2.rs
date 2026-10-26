@@ -379,7 +379,7 @@ pub(crate) fn runtime_identity(
 /// current visual field; descriptor83 is the actor's behavior descriptor.
 pub(crate) fn presentation_candidates(
     actors: &[CastleDefenderState],
-) -> impl Iterator<Item = (u16, u16, u16, i16, Position)> + '_ {
+) -> impl Iterator<Item = (u16, u16, u16, i16, Position, u32)> + '_ {
     actors
         .iter()
         .filter(|actor| actor.active && actor.control_flags & 0x421 == 0)
@@ -390,6 +390,7 @@ pub(crate) fn presentation_candidates(
                 actor.visual_index,
                 actor.yaw.cast_signed(),
                 actor.position,
+                actor.control_flags,
             )
         })
 }

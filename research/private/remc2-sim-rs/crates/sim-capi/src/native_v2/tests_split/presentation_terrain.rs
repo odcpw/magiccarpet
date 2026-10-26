@@ -486,7 +486,7 @@ fn c_header_compiles_and_locks_the_rust_layout() {
         &source,
         r#"
 #include <stddef.h>
-#include "mc_sim_level2.h"
+#include "mc_sim_campaign.h"
 
 _Static_assert(sizeof(McWorldInfoV2) == 72, "McWorldInfoV2 size");
 _Static_assert(sizeof(McCommandV2) == 32, "McCommandV2 size");
@@ -501,6 +501,10 @@ _Static_assert(sizeof(McCampaignAuthoredGroupEventV2) == 48, "McCampaignAuthored
 _Static_assert(sizeof(McCampaignEconomyEventV2) == 64, "McCampaignEconomyEventV2 size");
 _Static_assert(sizeof(McCampaignGoatEventV2) == 64, "McCampaignGoatEventV2 size");
 _Static_assert(sizeof(McCampaignStepSnapshotV2) == 112, "McCampaignStepSnapshotV2 size");
+_Static_assert(sizeof(McCampaignEntityPresentationV2) == 64, "campaign sprite size");
+_Static_assert(offsetof(McCampaignEntityPresentationV2, pixel_mode) == 48, "campaign sprite pixel operation offset");
+_Static_assert(offsetof(McCampaignEntityPresentationV2, draw_order) == 52, "campaign sprite source order offset");
+_Static_assert(offsetof(McCampaignEntityPresentationV2, reserved) == 60, "campaign sprite reserved offset");
 _Static_assert(offsetof(McCampaignStepInputV2, command) == 16, "campaign step command offset");
 _Static_assert(offsetof(McCampaignEventV2, source_slot) == 24, "campaign event source offset");
 _Static_assert(offsetof(McCampaignAuthoredGroupEventV2, authored_index) == 28, "campaign authored-group index offset");

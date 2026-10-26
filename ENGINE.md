@@ -14,9 +14,8 @@ architecture navigation. Update a row when its implementation moves. It is not
 a second progress tracker or proof that the mapped behavior already works.
 
 Reference: `upstream/magic-carpet-2-hd`, commit
-`6806c7204d17220ecc0430759f784aea8ee2ddb2`. The current source review was performed against
-port commit `7a95492`. No executable parity or complete playthrough was established
-by this source inspection.
+`6806c7204d17220ecc0430759f784aea8ee2ddb2`. Entries locate implementation
+owners; they do not certify complete function coverage or a complete playthrough.
 
 ## Runtime ownership
 
@@ -48,19 +47,19 @@ and presentation never become another simulation.
 | Typed session contract | `sim-session/src/lib.rs` | Guarded instance, generation, participant and actor-lifetime identities; commands, bounded observations and events. Split by domain as it grows. `mc-b9s`, `mc-bc0` |
 | Deterministic primitives and flight | `sim-core/src/lib.rs`, `sim-input`, `sim-collision` | Integer widths, wrapping arithmetic, flight and collision, with participant-owned state. Move source event tags/default bindings to the adapter. `mc-1pb.17`, `mc-1pb.18`, `mc-bc0` |
 | World and arena | `sim-core/src/campaign/{state,source_arena}.rs`, `native_world.rs` | One authoritative composition; allocation/incarnation and lifetime ordering. Domain state moves with its behavior, without a second mutable mirror. `mc-b9s.3`, `mc-b9s.4` |
-| MC2 adapter and schedule | `campaign/{spec,dispatch,schedule,source_facts,mc2_level_definition}.rs`, decoding in `native_world.rs`, source glue in `campaign/level2.rs` | Import source data, bind typed defaults and execute exact source phase/order. Retain source payload for fidelity; public IDs stay semantic. `mc-bhq.6`, `mc-6qf` and family beads |
-| Creature families | `native_world/creatures/{bee.rs,bee/,creature_22.rs,creature_22/,creature_24.rs,creature_24/,goat.rs,goat/,settlements.rs,worm/}`, `native_world/level2_class5/`, remaining bodies in `level1_mission.rs` and `campaign/level2.rs` | Family state, constructor/descendants, movement, combat/death, cleanup and live property/asset/observation bindings. Bee state and callbacks live in `creatures::bee`; `bee/mc2.rs` binds the shared arena, frozen memberships and StageVars. Model22 paired roots/parts and model24 Cave movement/contact use family kernels and StageVar logic with `mc2.rs` adapters over live `SourceArena.entities`. Settlement population state and Builder/Trader decisions live in `creatures::settlements`; `level2_class5/trader.rs` adapts the authored arena carrier. `mc-1pb`, Spider `mc-bhq.3` |
+| MC2 adapter and schedule | `campaign/{spec,dispatch,schedule,source_facts,mc2_level_definition,simulation}.rs`, decoding in `native_world.rs` | `Mc2Simulation` runs every campaign mission; `CampaignSession::simulation()` exposes its single authority. Import source data, bind typed defaults and execute exact source phase/order. Retain source payload for fidelity; public IDs stay semantic. `mc-bhq.6`, `mc-6qf` and family beads |
+| Creature families | `native_world/creatures/{bee.rs,bee/,creature_22.rs,creature_22/,creature_24.rs,creature_24/,goat.rs,goat/,settlements.rs,worm/}`, `native_world/level2_class5/`, remaining bodies in `level1_mission.rs` and `campaign/simulation.rs` | Family state, constructor/descendants, movement, combat/death, cleanup and live property/asset/observation bindings. Bee state and callbacks live in `creatures::bee`; `bee/mc2.rs` binds the shared arena, frozen memberships and StageVars. Model22 paired roots/parts and model24 Cave movement/contact use family kernels and StageVar logic with `mc2.rs` adapters over live `SourceArena.entities`. Settlement population state and Builder/Trader decisions live in `creatures::settlements`; `level2_class5/trader.rs` adapts the authored arena carrier. `mc-1pb`, Spider `mc-bhq.3` |
 | Spells and players | `spell_activation.rs`, `native_world/{level2_sessions,level2_nyphur}.rs`, shared spell bodies/carriers | Participant inventory/tiers/costs and each real spell's complete product lifetime. `mc-k5k`, Meteor `mc-bhq.4`, `mc-b9s.2` |
 | Shared actor combat | Existing damage/death transitions in `level1_mission.rs` and `native_world/level2_dynamic_economy.rs`, extracted into `combat::actors` | Producer-specific damage mailboxes, linked death, kill credit, collectible mana and reclaim, consumed by real families. `mc-1pb.24`; ordinary StealMana/Duel casts remain `mc-k5k.2`. |
 | Economy | `house.rs`, `villager.rs`, `native_world/creatures/settlements.rs`, `native_world/level2_dynamic_economy.rs`, existing economy carriers | Castles, mana, balloons and settlements; ownership/transfer/reclaim. House and imported Villager behavior retain their focused owners; settlement population callbacks borrow narrow source, population, RNG and feedback contexts. Remove unrelated state from the economy carrier as its owner is extracted. `mc-bhq.10`, `mc-1pb.16` |
 | Terrain and world systems | `legacy_terrain.rs`, `native_world/{terrain_strip,ballistic_scenery,countdown_switch}.rs`, `campaign/objectives.rs` | Separate terrain/cave, scenery, fields/effects, items, switches and objective owners. `mc-bhq`, `mc-6qf` |
 | Runtime and persistence | `sim-core/src/game_runtime.rs`, `game_runtime/campaign_menu.rs`, `campaign/backend.rs` | Game/mission/menu lifecycle, with separate content resolver, definition binding, persistence and projections. `mc-paj`, `mc-zdo.3`, `mc-zdo.4`, `mc-hkm.1` |
-| Presentation descriptors | `terrain_frame.rs`, existing `sim-*-tmap`/raster crates and live projections | Draw order, animation/direction and draw-consumed clocks; read authoritative state and use retained assets. `mc-oi6`, `mc-hkm.3` |
+| Presentation descriptors | `terrain_frame.rs`, `campaign/sprite_render.rs`, existing `sim-*-tmap`/raster crates and live projections; Unity `CampaignSpriteCompositor.cs` | Draw order, animation/direction and draw-consumed clocks; read authoritative state and use retained assets. Source sprite pixel operations and fog come from Rust; the indexed GPU compositor consumes live cell/map-chain order and retained TABLES bytes. `mc-oi6`, `mc-hkm.3` |
 | Network session | Planned focused transport and multiplayer domain modules | Admission, ordered participant commands, roster/turn authority, cancellation and typed peer events. Reuse the same simulation; MC2 wire formats remain optional adapters. `mc-bc0` |
 | Native boundary | `sim-capi/src/native_v2/` | Handle registry and bounded codecs into the same authority. `mc-b9s`, `mc-hkm.1`, `mc-bc0` |
 | Human client | `../remc2-unity-native/Assets/Scripts/` | `MagicCarpetRuntime` becomes composition/lifecycle wiring. Existing transports and `CampaignPresentationSurface` remain canonical; input, frontend, world, HUD and audio have instance-owned components. No gameplay or global current-game state in presenters. |
 
-Current coupling is real: `campaign/level2.rs` is included as a child of
+Current coupling is real: `campaign/simulation.rs` is included as a child of
 `native_world` and imports `super::*`; moving a file has not separated its state
 ownership. `SourceArena` also holds an economy carrier with several unrelated
 responsibilities. `campaign/backend.rs` mixes package resolution, replay and
@@ -100,7 +99,7 @@ In particular, preserve:
 ## Delivery paths
 
 `mc-zdo.5` remains the first opening milestone: normal startup and continuous
-Levels 1–3. `mc-xa7.1` assembles all 25 ordinary and five secret missions, their
+Levels 1–4. `mc-xa7.1` assembles all 25 ordinary and five secret missions, their
 interlevels and the actual ending. Shared mechanisms are ported once; mission
 content selects them. Independent family workers can proceed in parallel while
 shared scheduler/ABI/client integration has one writer at a time.

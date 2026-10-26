@@ -1,7 +1,7 @@
 use super::super::tests::level_two_fixture_path;
 use super::*;
 
-fn level_two_possession_lifecycle_session() -> Level2ResetSession {
+fn level_two_possession_lifecycle_session() -> Mc2Simulation {
     let package = level_two_fixture_path();
     let gameplay_cache = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../../../generated/level2-day-owner-cache/components/gameplay");

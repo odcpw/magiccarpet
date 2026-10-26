@@ -6,11 +6,11 @@ namespace MagicCarpet.Native
 {
     public sealed partial class MagicCarpetRuntime
     {
-        private sealed class Level2EntityPresenter
+        private sealed class CampaignEntityPresenter
         {
             private readonly MagicCarpetRuntime owner;
 
-            internal Level2EntityPresenter(MagicCarpetRuntime owner)
+            internal CampaignEntityPresenter(MagicCarpetRuntime owner)
             {
                 this.owner = owner;
             }
@@ -137,7 +137,7 @@ namespace MagicCarpet.Native
 
 namespace MagicCarpet.Native
 {
-    internal enum Level2EntityFamily : byte
+    internal enum CampaignEntityFamily : byte
     {
         Goat = 1,
         Villager = 2,
@@ -153,10 +153,10 @@ namespace MagicCarpet.Native
     /// frame. It is a view binding only: Rust owns the entity state and Unity
     /// owns the GameObject, indexed material, and transform copy.
     /// </summary>
-    internal readonly struct Level2EntityPresentation
+    internal readonly struct CampaignEntityPresentation
     {
-        internal Level2EntityPresentation(
-            Level2EntityFamily family,
+        internal CampaignEntityPresentation(
+            CampaignEntityFamily family,
             ulong generation,
             ulong tick,
             ushort entityIndex,
@@ -185,7 +185,7 @@ namespace MagicCarpet.Native
             GameObject = gameObject;
         }
 
-        internal Level2EntityFamily Family { get; }
+        internal CampaignEntityFamily Family { get; }
         internal ulong Generation { get; }
         internal ulong Tick { get; }
         internal ushort EntityIndex { get; }
@@ -210,7 +210,7 @@ namespace MagicCarpet.Native
     /// stale, duplicate, or unbound frame clears the registry instead of
     /// leaving a prior Unity view or creating a placeholder.
     /// </summary>
-    internal sealed class Level2EntityPresenter : IDisposable
+    internal sealed class CampaignEntityPresenter : IDisposable
     {
         private const int EntityCount = 1000;
         private const int GoatCount = 36;
@@ -256,24 +256,24 @@ namespace MagicCarpet.Native
         private readonly Dictionary<ushort, View> views = new();
         private readonly Dictionary<int, Material> materials = new();
         private readonly Dictionary<int, Texture2D> indexTextures = new();
-        private readonly Dictionary<int, Level2TextureDescriptor> textureRows = new();
+        private readonly Dictionary<int, CampaignTextureDescriptor> textureRows = new();
         private Mesh quad;
         private Mesh mirroredQuad;
         private Texture2D paletteTexture;
         private OwnerAssetCache loadedCache;
         private PresenterCleanup cleanup;
-        private Level2EntityPresentation[] presentations =
-            Array.Empty<Level2EntityPresentation>();
+        private CampaignEntityPresentation[] presentations =
+            Array.Empty<CampaignEntityPresentation>();
         private ulong observedGeneration = ulong.MaxValue;
         private ulong observedTick;
         private bool disposed;
 
-        internal Level2EntityPresenter()
+        internal CampaignEntityPresenter()
             : this(null)
         {
         }
 
-        internal Level2EntityPresenter(Transform parent)
+        internal CampaignEntityPresenter(Transform parent)
         {
             root = new GameObject(
                 "Level 2 Rust entity presentation").transform;
@@ -286,7 +286,7 @@ namespace MagicCarpet.Native
 
         internal Transform Root => root;
 
-        internal Level2EntityPresentation[] Presentations => presentations;
+        internal CampaignEntityPresentation[] Presentations => presentations;
 
         internal int LiveViewCount => views.Count;
 
@@ -383,7 +383,7 @@ namespace MagicCarpet.Native
                 }
 
                 var liveIds = new HashSet<ushort>();
-                var nextPresentations = new List<Level2EntityPresentation>(
+                var nextPresentations = new List<CampaignEntityPresentation>(
                     projections.Count);
                 foreach (var projection in projections)
                 {
@@ -441,7 +441,7 @@ namespace MagicCarpet.Native
                 DestroyObject(root.gameObject);
             }
 
-            presentations = Array.Empty<Level2EntityPresentation>();
+            presentations = Array.Empty<CampaignEntityPresentation>();
             disposed = true;
             LastPresentSucceeded = false;
         }
@@ -470,7 +470,7 @@ namespace MagicCarpet.Native
             // the registry without destroying child nodes again avoids
             // re-entering Unity's parent-destroy traversal.
             views.Clear();
-            presentations = Array.Empty<Level2EntityPresentation>();
+            presentations = Array.Empty<CampaignEntityPresentation>();
             DisposeAssets();
             DestroyObject(quad);
             DestroyObject(mirroredQuad);
@@ -556,7 +556,7 @@ namespace MagicCarpet.Native
                     out var mirrored);
                 projections.Add(
                     new Projection(
-                        Level2EntityFamily.Goat,
+                        CampaignEntityFamily.Goat,
                         generation,
                         tick,
                         goat.entityIndex,
@@ -634,7 +634,7 @@ namespace MagicCarpet.Native
                     out var mirrored);
                 projections.Add(
                     new Projection(
-                        Level2EntityFamily.Villager,
+                        CampaignEntityFamily.Villager,
                         generation,
                         tick,
                         entity.entityIndex,
@@ -737,7 +737,7 @@ namespace MagicCarpet.Native
         private static bool TryClass5Sprite(
             byte model,
             byte action,
-            out Level2EntityFamily family,
+            out CampaignEntityFamily family,
             out ushort renderParameter,
             out int baseTmap,
             out int logicalHeight,
@@ -746,35 +746,35 @@ namespace MagicCarpet.Native
             switch (model)
             {
                 case BeeModel when action >= 16 && action <= 23:
-                    family = Level2EntityFamily.Bee;
+                    family = CampaignEntityFamily.Bee;
                     renderParameter = 3;
                     baseTmap = 14;
                     logicalHeight = 150;
                     renderMode = 17;
                     return true;
                 case MultipartModel when action >= 25 && action <= 31:
-                    family = Level2EntityFamily.Multipart;
+                    family = CampaignEntityFamily.Multipart;
                     renderParameter = 88;
                     baseTmap = 30;
                     logicalHeight = 180;
                     renderMode = 17;
                     return true;
                 case ArcherModel when action >= 33 && action <= 39:
-                    family = Level2EntityFamily.Archer;
+                    family = CampaignEntityFamily.Archer;
                     renderParameter = 0;
                     baseTmap = 8;
                     logicalHeight = 250;
                     renderMode = 20;
                     return true;
                 case Model9 when action == 72 || action == 73:
-                    family = Level2EntityFamily.Model9;
+                    family = CampaignEntityFamily.Model9;
                     renderParameter = 220;
                     baseTmap = 158;
                     logicalHeight = 125;
                     renderMode = 0;
                     return true;
                 case TraderModel when action >= 112 && action <= 119:
-                    family = Level2EntityFamily.Trader;
+                    family = CampaignEntityFamily.Trader;
                     renderParameter = 219;
                     baseTmap = 138;
                     logicalHeight = 250;
@@ -913,7 +913,7 @@ namespace MagicCarpet.Native
 
             try
             {
-                var descriptor = JsonUtility.FromJson<Level2MaterialDescriptor>(
+                var descriptor = JsonUtility.FromJson<CampaignMaterialDescriptor>(
                     assetCache.ReadOutputText(
                         "components/material/materials/descriptor.json"));
                 if (descriptor == null ||
@@ -1090,7 +1090,7 @@ namespace MagicCarpet.Native
             view.Filter.sharedMesh = GetQuad(projection.Mirrored);
             view.Renderer.sharedMaterial = materials[projection.Selector];
             view.Renderer.enabled = projection.Visible;
-            view.Presentation = new Level2EntityPresentation(
+            view.Presentation = new CampaignEntityPresentation(
                 projection.Family,
                 projection.Generation,
                 projection.Tick,
@@ -1178,7 +1178,7 @@ namespace MagicCarpet.Native
             }
 
             views.Clear();
-            presentations = Array.Empty<Level2EntityPresentation>();
+            presentations = Array.Empty<CampaignEntityPresentation>();
         }
 
         private void DisposeAssets()
@@ -1259,30 +1259,30 @@ namespace MagicCarpet.Native
         }
 
         [Serializable]
-        private sealed class Level2MaterialDescriptor
+        private sealed class CampaignMaterialDescriptor
         {
             public string schema;
-            public Level2PaletteDescriptor palette;
-            public Level2TmapsDescriptor tmaps0;
+            public CampaignPaletteDescriptor palette;
+            public CampaignTmapsDescriptor tmaps0;
         }
 
         [Serializable]
-        private sealed class Level2PaletteDescriptor
+        private sealed class CampaignPaletteDescriptor
         {
             public int entries;
             public string rgb8_path;
         }
 
         [Serializable]
-        private sealed class Level2TmapsDescriptor
+        private sealed class CampaignTmapsDescriptor
         {
             public string bank;
             public string palette_asset_id;
-            public Level2TextureDescriptor[] textures;
+            public CampaignTextureDescriptor[] textures;
         }
 
         [Serializable]
-        private sealed class Level2TextureDescriptor
+        private sealed class CampaignTextureDescriptor
         {
             public int index;
             public int width;
@@ -1294,7 +1294,7 @@ namespace MagicCarpet.Native
         private readonly struct Projection
         {
             internal Projection(
-                Level2EntityFamily family,
+                CampaignEntityFamily family,
                 ulong generation,
                 ulong tick,
                 ushort entityIndex,
@@ -1321,7 +1321,7 @@ namespace MagicCarpet.Native
                 Visible = visible;
             }
 
-            internal Level2EntityFamily Family { get; }
+            internal CampaignEntityFamily Family { get; }
             internal ulong Generation { get; }
             internal ulong Tick { get; }
             internal ushort EntityIndex { get; }
@@ -1353,12 +1353,12 @@ namespace MagicCarpet.Native
             internal readonly Transform Visual;
             internal readonly MeshFilter Filter;
             internal readonly MeshRenderer Renderer;
-            internal Level2EntityPresentation Presentation;
+            internal CampaignEntityPresentation Presentation;
         }
 
         private sealed class PresenterCleanup : MonoBehaviour
         {
-            internal Level2EntityPresenter Presenter;
+            internal CampaignEntityPresenter Presenter;
 
             private void OnDestroy()
             {
@@ -1369,16 +1369,16 @@ namespace MagicCarpet.Native
 
     public sealed partial class MagicCarpetRuntime
     {
-        private global::MagicCarpet.Native.Level2EntityPresenter
+        private global::MagicCarpet.Native.CampaignEntityPresenter
             level2ProductionEntityPresenter;
-        private Level2EntityPresenterDriver level2EntityPresenterDriver;
+        private CampaignEntityPresenterDriver level2EntityPresenterDriver;
 
         private void OnEnable()
         {
             EnsureLevel2EntityPresenterDriver();
         }
 
-        internal Level2EntityPresentation[] QualificationLevel2EntityPresentations
+        internal CampaignEntityPresentation[] QualificationLevel2EntityPresentations
         {
             get
             {
@@ -1389,7 +1389,7 @@ namespace MagicCarpet.Native
                 }
 
                 return level2ProductionEntityPresenter?.Presentations ??
-                       Array.Empty<Level2EntityPresentation>();
+                       Array.Empty<CampaignEntityPresentation>();
             }
         }
 
@@ -1425,7 +1425,7 @@ namespace MagicCarpet.Native
             {
                 presenter?.Dispose();
                 presenter =
-                    new global::MagicCarpet.Native.Level2EntityPresenter(transform);
+                    new global::MagicCarpet.Native.CampaignEntityPresenter(transform);
                 level2ProductionEntityPresenter = presenter;
             }
             if (presenter == null)
@@ -1448,12 +1448,12 @@ namespace MagicCarpet.Native
             var driver = level2EntityPresenterDriver;
             if (driver == null)
             {
-                driver = gameObject.GetComponent<Level2EntityPresenterDriver>();
+                driver = gameObject.GetComponent<CampaignEntityPresenterDriver>();
             }
 
             if (driver == null)
             {
-                driver = gameObject.AddComponent<Level2EntityPresenterDriver>();
+                driver = gameObject.AddComponent<CampaignEntityPresenterDriver>();
             }
 
             if (driver == null)
@@ -1465,7 +1465,7 @@ namespace MagicCarpet.Native
             level2EntityPresenterDriver = driver;
         }
 
-        private sealed class Level2EntityPresenterDriver : MonoBehaviour
+        private sealed class CampaignEntityPresenterDriver : MonoBehaviour
         {
             internal MagicCarpetRuntime Owner;
 

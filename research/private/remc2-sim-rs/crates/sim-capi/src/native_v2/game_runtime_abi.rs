@@ -222,7 +222,7 @@ impl RuntimeRecord {
             }
             if let Some(record) = self.campaign_presentation.as_mut() {
                 record.generation = generation;
-                if let super::campaign_abi::CampaignSessionKind::Level2 {
+                if let super::campaign_abi::CampaignSessionKind::Campaign {
                     day_frame_state, ..
                 } = &mut record.kind
                 {
@@ -509,7 +509,7 @@ impl RuntimeRecord {
             if record.generation != generation {
                 return None;
             }
-            let super::campaign_abi::CampaignSessionKind::Level2 {
+            let super::campaign_abi::CampaignSessionKind::Campaign {
                 reset,
                 day_frame_assets,
                 day_frame_state,
@@ -556,9 +556,9 @@ impl RuntimeRecord {
         }
         self.campaign_presentation_dirty = false;
         Ok(super::campaign_abi::CampaignSessionRecord {
-            kind: super::campaign_abi::CampaignSessionKind::Level2 {
+            kind: super::campaign_abi::CampaignSessionKind::Campaign {
                 inspection,
-                reset: super::campaign_abi::CampaignLevel2Authority::Descriptor(campaign),
+                reset: super::campaign_abi::CampaignAuthority::Descriptor(campaign),
                 day_frame_assets: assets,
                 day_frame_state: state,
             },
@@ -2450,7 +2450,7 @@ mod tests {
                 .session()?
                 .backend()
                 .campaign_presentation_source()
-                .level2_compatibility()
+                .simulation()
                 .runtime();
             assert_eq!(state.objective_presentation_phase, 0);
             assert_eq!(state.objective_textbox_ticks, 200);

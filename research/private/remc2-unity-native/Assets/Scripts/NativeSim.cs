@@ -538,8 +538,12 @@ namespace MagicCarpet.Native
             internal ushort y;
             internal short z;
             internal short yaw;
-            [MarshalAs(UnmanagedType.ByValArray, SizeConst = 4)]
-            internal uint[] reserved;
+            internal byte pixelMode;
+            internal byte ownerColor;
+            internal ushort brightness;
+            internal uint drawOrder;
+            internal uint controlFlags;
+            internal uint reserved;
         }
 
         [StructLayout(LayoutKind.Sequential)]
@@ -3343,7 +3347,11 @@ namespace MagicCarpet.Native
             RequireOffset<CampaignEntitySnapshot>(nameof(CampaignEntitySnapshot.reserved), 36);
             RequireOffset<CampaignEntityPresentation>(nameof(CampaignEntityPresentation.entityIndex), 24);
             RequireOffset<CampaignEntityPresentation>(nameof(CampaignEntityPresentation.x), 40);
-            RequireOffset<CampaignEntityPresentation>(nameof(CampaignEntityPresentation.reserved), 48);
+            RequireOffset<CampaignEntityPresentation>(nameof(CampaignEntityPresentation.pixelMode), 48);
+            RequireOffset<CampaignEntityPresentation>(nameof(CampaignEntityPresentation.brightness), 50);
+            RequireOffset<CampaignEntityPresentation>(nameof(CampaignEntityPresentation.drawOrder), 52);
+            RequireOffset<CampaignEntityPresentation>(nameof(CampaignEntityPresentation.controlFlags), 56);
+            RequireOffset<CampaignEntityPresentation>(nameof(CampaignEntityPresentation.reserved), 60);
             RequireOffset<CampaignShieldSnapshot>(nameof(CampaignShieldSnapshot.parentStatusFlags), 48);
             RequireOffset<CampaignInvisibleSnapshot>(nameof(CampaignInvisibleSnapshot.parentStatusFlags), 52);
             RequireOffset<CampaignBeyondSightSnapshot>(nameof(CampaignBeyondSightSnapshot.experienceAwarded), 52);

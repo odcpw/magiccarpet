@@ -39,35 +39,33 @@ fn level_two_campaign_fixture_path() -> PathBuf {
 /// Open the production descriptor-backed fixture for gameplay tests that
 /// require semantic authored health, item rewards, or switch configuration.
 /// Raw reset/profile/hash inspection tests continue to use the export fixture.
-pub(super) fn level_two_campaign_session() -> Level2ResetSession {
+pub(super) fn level_two_campaign_session() -> Mc2Simulation {
     crate::campaign::CampaignSession::open(
         level_two_campaign_fixture_path(),
         crate::campaign::spec::CampaignSelection::LEVEL2,
     )
     .expect("qualified Level 2 semantic campaign fixture")
-    .level2_compatibility()
+    .simulation()
     .clone()
 }
 
 /// Keep explicit gameplay-cache fixtures on the same production descriptor
 /// path while preserving their authored BUILD footprints.
-fn level_two_campaign_session_with_owner_cache(
-    owner_cache: &std::path::Path,
-) -> Level2ResetSession {
+fn level_two_campaign_session_with_owner_cache(owner_cache: &std::path::Path) -> Mc2Simulation {
     crate::campaign::CampaignSession::open_with_owner_cache(
         level_two_campaign_fixture_path(),
         owner_cache,
         crate::campaign::spec::CampaignSelection::LEVEL2,
     )
     .expect("qualified Level 2 semantic campaign fixture with owner cache")
-    .level2_compatibility()
+    .simulation()
     .clone()
 }
 
 /// Fire one real reset-imported model-32 producer through its source
 /// objective relation. Tests that need an authored group must advance the
 /// package's producer; a live class-11 row alone is not an activation event.
-fn fire_level_two_model32_group(session: &mut Level2ResetSession, group: u16) -> u16 {
+fn fire_level_two_model32_group(session: &mut Mc2Simulation, group: u16) -> u16 {
     let (source_slot, stage_index) = session
         .economy
         .entities()
@@ -104,7 +102,7 @@ fn fire_level_two_model32_group(session: &mut Level2ResetSession, group: u16) ->
     assert!(
         session.dispatch_events().iter().any(|event| matches!(
             event,
-            Level2DispatchEvent::AuthoredGroupActivated {
+            Mc2DispatchEvent::AuthoredGroupActivated {
                 source_slot: event_source_slot,
                 group: event_group,
                 ..
@@ -237,7 +235,7 @@ fn level_two_switch_turns_until_cadence(phase: u8) -> usize {
 }
 
 fn level_two_reach_row42(
-    session: &mut Level2ResetSession,
+    session: &mut Mc2Simulation,
     local_player: u16,
     row11_position: Position,
     row42_position: Position,
@@ -278,7 +276,7 @@ fn level_two_model76_switch25_activation_turns(phase: u8) -> usize {
 }
 
 fn acquire_level_two_beyond_sight_from_ordinary_route(
-    session: &mut Level2ResetSession,
+    session: &mut Mc2Simulation,
 ) -> SpellHolderAcquisitionOutcome {
     let source_position = session.shared_spells().pickups()[0].position;
     session
@@ -290,7 +288,7 @@ fn acquire_level_two_beyond_sight_from_ordinary_route(
             .dispatch_events()
             .iter()
             .find_map(|event| match event {
-                Level2DispatchEvent::SpellAcquisition {
+                Mc2DispatchEvent::SpellAcquisition {
                     family: 12,
                     result: Some(outcome),
                     ..
@@ -307,7 +305,7 @@ fn acquire_level_two_beyond_sight_from_ordinary_route(
     );
 }
 
-fn level_two_acquired_family12_menu_session() -> (Level2ResetSession, u16) {
+fn level_two_acquired_family12_menu_session() -> (Mc2Simulation, u16) {
     let mut session = level_two_campaign_session();
     let source_slot = acquire_level_two_beyond_sight_from_ordinary_route(&mut session).source_slot;
     assert_eq!(
@@ -370,7 +368,7 @@ const LEVEL2_SCHEDULER_RNG_ROWS: [(&str, &str, &str); 11] = [
     ),
 ];
 
-fn configure_level2_scheduler_audio_rows(session: &mut Level2ResetSession) {
+fn configure_level2_scheduler_audio_rows(session: &mut Mc2Simulation) {
     let selected = [39_u16, 40, 42];
     for mut goat in session.goats().to_vec() {
         if selected.contains(&goat.entity_index) {
@@ -452,12 +450,12 @@ fn configure_level2_scheduler_audio_rows(session: &mut Level2ResetSession) {
         .expect("qualified action-14 audio branch");
 }
 
-fn level2_scheduler_bleat_slots(session: &Level2ResetSession) -> Vec<u16> {
+fn level2_scheduler_bleat_slots(session: &Mc2Simulation) -> Vec<u16> {
     session
         .dispatch_events()
         .iter()
         .filter_map(|event| match event {
-            Level2DispatchEvent::Goat {
+            Mc2DispatchEvent::Goat {
                 source_slot,
                 events,
                 ..

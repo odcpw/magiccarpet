@@ -4,11 +4,11 @@ namespace MagicCarpet.Native
 {
     public sealed partial class MagicCarpetRuntime
     {
-        private sealed class Level2AudioPresenter
+        private sealed class CampaignAudioPresenter
         {
             private readonly MagicCarpetRuntime owner;
 
-            internal Level2AudioPresenter(MagicCarpetRuntime owner)
+            internal CampaignAudioPresenter(MagicCarpetRuntime owner)
             {
                 this.owner = owner;
             }

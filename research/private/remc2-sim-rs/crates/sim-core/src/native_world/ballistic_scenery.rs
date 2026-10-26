@@ -141,7 +141,7 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
 
-    fn fixture() -> Level2ResetSession {
+    fn fixture() -> Mc2Simulation {
         let package = std::env::var_os("MC_LEVEL2_PACKAGE_V5").map_or_else(
             || {
                 PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -157,7 +157,7 @@ mod tests {
             .expect("qualified source session")
     }
 
-    fn ballistic_row(session: &Level2ResetSession) -> (EntitySnapshot, SessionTerrain) {
+    fn ballistic_row(session: &Mc2Simulation) -> (EntitySnapshot, SessionTerrain) {
         let mut source = session.session.state.live.economy.entities[100].clone();
         source.active = true;
         source.class = 2;

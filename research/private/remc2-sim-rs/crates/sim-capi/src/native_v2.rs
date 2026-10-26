@@ -135,10 +135,9 @@ use sim_core::{
     music::{DynamicMusicEnvelope, FadeCallback},
     native_world::{
         AssetRef, EntityAuthority, EntitySnapshot, Level2DayHudSnapshot, Level2DayHudSpellSlot,
-        Level2DispatchEvent, Level2EconomyEvent, Level2ResetSession, NativeWorld,
-        NativeWorldInspection, ParticleParameter, SessionTerrain, TerrainPlanes,
-        apply_level1_source_effects, level1_turn_start_source_views,
-        refresh_level1_current_source_view,
+        Level2EconomyEvent, Mc2DispatchEvent, Mc2Simulation, NativeWorld, NativeWorldInspection,
+        ParticleParameter, SessionTerrain, TerrainPlanes, apply_level1_source_effects,
+        level1_turn_start_source_views, refresh_level1_current_source_view,
     },
     positional_sound_should_replace, prepare_event_sound_command,
     presentation_frame::{

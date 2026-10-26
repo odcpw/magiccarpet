@@ -1,7 +1,7 @@
 use super::{mc2, *};
-use crate::native_world::Level2ResetSession;
+use crate::native_world::Mc2Simulation;
 
-fn source_session() -> Level2ResetSession {
+fn source_session() -> Mc2Simulation {
     let root = std::env::var_os("MC_ORDINARY_CAMPAIGN_PACKAGES").map_or_else(
         || {
             std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -14,14 +14,14 @@ fn source_session() -> Level2ResetSession {
         crate::campaign::spec::CampaignSelection::LEVEL2,
     )
     .expect("actual current Level2 package retains the29 source constructor counters")
-    .level2_compatibility()
+    .simulation()
     .clone()
 }
 
 /// Tests borrow the ordinary package-backed arena, allocator, terrain and
 /// retained particles; there is no alternate family Runtime implementation.
 fn with_runtime<R>(
-    session: &mut Level2ResetSession,
+    session: &mut Mc2Simulation,
     operation: impl FnOnce(&mut mc2::Context<'_>) -> R,
 ) -> R {
     let particles = session.session.definition.presentation.particles.clone();
@@ -52,7 +52,7 @@ fn with_runtime<R>(
     result
 }
 
-fn construct(session: &mut Level2ResetSession, length: Option<u8>) -> u16 {
+fn construct(session: &mut Mc2Simulation, length: Option<u8>) -> u16 {
     with_runtime(session, |runtime| {
         let position = Position {
             x: 0x4000,

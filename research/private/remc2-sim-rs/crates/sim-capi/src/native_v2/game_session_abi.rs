@@ -1293,9 +1293,7 @@ mod tests {
         let mut direct = DescriptorCampaignSession::open(&root, CampaignSelection::LEVEL2).unwrap();
         // The direct authority mirrors the campaign route's entry binding so
         // hash equality below stays discriminating.
-        direct
-            .level2_compatibility_mut()
-            .select_level2_campaign_entry_stage();
+        direct.simulation_mut().select_level2_campaign_entry_stage();
         // Journal-receipt equality against the direct authority is proven in
         // sim-core's campaign backend tests; this layer verifies the exact
         // transport encoding and its reset/replay determinism.

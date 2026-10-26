@@ -1,13 +1,9 @@
-#ifndef MC_SIM_LEVEL2_H
-#define MC_SIM_LEVEL2_H
+#ifndef MC_SIM_CAMPAIGN_H
+#define MC_SIM_CAMPAIGN_H
 
 /*
- * Additive Level 2 campaign declarations.
- *
- * Keep the sealed Level 1 header (`mc_sim.h`) byte-for-byte stable.  A caller
- * that needs the Level 2 campaign or economy declarations includes this
- * header after (or instead of) `mc_sim.h`; the legacy and Level 1 declarations
- * remain exactly those of the accepted Level 1 contract.
+ * Shared campaign simulation, economy and presentation declarations.
+ * Includes the common native types from mc_sim.h.
  */
 
 #include "mc_sim.h"
@@ -254,6 +250,39 @@ typedef struct McCampaignEntitySnapshotV2 {
     int16_t actual_speed;
     uint32_t reserved[4];
 } McCampaignEntitySnapshotV2;
+
+/* Source-selected sprite and ordered indexed-pixel metadata. */
+typedef struct McCampaignEntityPresentationV2 {
+    uint32_t abi_version;
+    uint32_t struct_size;
+    uint64_t generation;
+    uint64_t tick;
+    uint16_t entity_index;
+    uint16_t source_id;
+    uint16_t render_parameter_index;
+    uint16_t base_tmap;
+    uint16_t selected_tmap;
+    uint16_t logical_height;
+    uint8_t render_mode;
+    uint8_t orientation_sector;
+    uint8_t mirrored;
+    uint8_t reserved_0;
+    uint16_t x;
+    uint16_t y;
+    int16_t z;
+    int16_t yaw;
+    uint8_t pixel_mode;
+    uint8_t owner_color;
+    uint16_t brightness;
+    uint32_t draw_order;
+    uint32_t control_flags;
+    uint32_t reserved[1];
+} McCampaignEntityPresentationV2;
+
+int32_t mc_native_campaign_entity_presentations_copy(
+    uint64_t handle, uint64_t generation, uint64_t tick, int16_t camera_yaw,
+    McCampaignEntityPresentationV2 *buffer, uint32_t capacity,
+    uint32_t element_size, uint32_t *out_written);
 
 /* Additive Level 2 Goat row.  The sealed McGoatSnapshotV2 remains the
  * Level-1 contract; this same-size campaign row exposes the authored
@@ -867,4 +896,4 @@ int32_t mc_native_campaign_goat_events(
 }
 #endif
 
-#endif /* MC_SIM_LEVEL2_H */
+#endif /* MC_SIM_CAMPAIGN_H */

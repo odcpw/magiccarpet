@@ -57,7 +57,7 @@ use crate::{
     },
     level_definition::SpellKind,
     level1_mission::FIREBALL_LOGICAL_HEIGHT,
-    native_world::{Level2DispatchEvent, Level2SharedSpellEvent},
+    native_world::{Level2SharedSpellEvent, Mc2DispatchEvent},
 };
 
 /// The qualified campaign route runs the source single-pass schedule. Speed
@@ -2090,7 +2090,7 @@ impl GameAdapter for Mc2CampaignAdapter {
         // baseline instead of the raw package selector.
         if selection == CampaignSelection::LEVEL2 {
             package_campaign
-                .level2_compatibility_mut()
+                .simulation_mut()
                 .select_level2_campaign_entry_stage();
         }
         let mut campaign = package_campaign.clone();
@@ -2259,14 +2259,14 @@ impl GameSessionBackend for Mc2CampaignBackend {
     }
 
     fn completion_status(&self) -> GameCompletionStatus {
-        let exit = self.campaign.level2_compatibility().level_exit_sequence();
+        let exit = self.campaign.simulation().level_exit_sequence();
         if !exit.complete {
             GameCompletionStatus::InProgress
         } else if exit.result_code == 10 {
             GameCompletionStatus::Completed {
                 completion: GameCompletion {
                     state_hash: self.campaign.state_hash(),
-                    statistics: Some(self.campaign.level2_compatibility().completion_statistics()),
+                    statistics: Some(self.campaign.simulation().completion_statistics()),
                 },
             }
         } else {
@@ -2277,8 +2277,8 @@ impl GameSessionBackend for Mc2CampaignBackend {
     }
 
     fn snapshot(&self) -> Self::Snapshot {
-        let flight = &self.campaign.level2.state;
-        let compatibility = self.campaign.level2_compatibility();
+        let flight = &self.campaign.simulation.state;
+        let compatibility = self.campaign.simulation();
         let shared_spells = compatibility.shared_spells();
         let player_entity = shared_spells.player_entity();
         let level = compatibility
@@ -2319,7 +2319,7 @@ impl GameSessionBackend for Mc2CampaignBackend {
                 let kind = SemanticId::parse("spell.fireball.projectile")
                     .expect("compiled semantic Fireball projectile ID");
                 self.campaign
-                    .level2_compatibility()
+                    .simulation()
                     .economy()
                     .fireball_projectiles()
                     .iter()
@@ -2348,7 +2348,11 @@ impl GameSessionBackend for Mc2CampaignBackend {
             state_hash: self.campaign.state_hash(),
             terrain_hash: self.campaign.terrain_hash(),
             effect_journal_sha256: hex_digest(
-                self.campaign.level2.effect_journal().receipt().as_bytes(),
+                self.campaign
+                    .simulation
+                    .effect_journal()
+                    .receipt()
+                    .as_bytes(),
             ),
             player_pose: PlayerPose {
                 x: flight.position.x,
@@ -2374,7 +2378,7 @@ impl GameSessionBackend for Mc2CampaignBackend {
             player_spells: spells::observe(shared_spells),
             player_immobilized_ticks: u16::from(flight.immobilize_counter.cast_unsigned()),
             source_camera_fov: {
-                let exit = self.campaign.level2_compatibility().level_exit_sequence();
+                let exit = self.campaign.simulation().level_exit_sequence();
                 if exit.active || exit.complete {
                     exit.camera_fov
                 } else {
@@ -2443,7 +2447,7 @@ impl GameSessionBackend for Mc2CampaignBackend {
         let player_command = self.campaign_player_command(&command)?;
         let mut candidate = self.campaign.clone();
         candidate
-            .level2_compatibility_mut()
+            .simulation_mut()
             .advance_elapsed_centiseconds(command.elapsed_centiseconds);
         let _evidence = candidate.step_with_tuning(
             player_command,
@@ -2451,7 +2455,7 @@ impl GameSessionBackend for Mc2CampaignBackend {
             self.flight_binding.tuning(),
         );
         if let Some(message) = candidate.events().iter().find_map(|event| match event {
-            Level2DispatchEvent::Error { message, .. } => Some(message.clone()),
+            Mc2DispatchEvent::Error { message, .. } => Some(message.clone()),
             _ => None,
         }) {
             return Err(CampaignBackendError::StepRejected { message });
@@ -2469,7 +2473,7 @@ impl GameSessionBackend for Mc2CampaignBackend {
     fn paused_frame_timed(&mut self, elapsed_centiseconds: u32) -> Result<(), Self::Error> {
         let mut candidate = self.campaign.clone();
         candidate
-            .level2_compatibility_mut()
+            .simulation_mut()
             .advance_elapsed_centiseconds(elapsed_centiseconds);
         candidate.paused_frame();
         self.campaign = candidate;
@@ -2560,10 +2564,8 @@ impl Mc2CampaignBackend {
         for progress in &mut carry.progression {
             let family = mc2_spell_family(progress.spell).expect("exported semantic family");
             if carry.acquired.contains(&progress.spell) {
-                progress.persistent_experience = self
-                    .campaign
-                    .level2_compatibility()
-                    .bank_carried_spell_experience(
+                progress.persistent_experience =
+                    self.campaign.simulation().bank_carried_spell_experience(
                         family,
                         progress.persistent_experience,
                         progress.runtime_experience,
@@ -2587,7 +2589,7 @@ impl Mc2CampaignBackend {
     fn semantic_spell_carry_from_campaign(
         campaign: &CampaignSession,
     ) -> Result<Mc2SemanticSpellCarry, crate::game_runtime::RuntimeTransitionError> {
-        let shared = campaign.level2_compatibility().shared_spells();
+        let shared = campaign.simulation().shared_spells();
         let player = shared.local_player();
         let mut acquired = Vec::new();
         let mut progression = Vec::new();
@@ -2735,11 +2737,11 @@ impl Mc2CampaignBackend {
                 })
                 .collect::<Result<Vec<_>, crate::game_runtime::RuntimeTransitionError>>()?;
             campaign
-                .level2_compatibility_mut()
+                .simulation_mut()
                 .apply_carried_spell_families(&families, selected_family)
                 .and_then(|()| {
                     campaign
-                        .level2_compatibility_mut()
+                        .simulation_mut()
                         .apply_carried_spell_progression(&progression)
                 })
                 .map_err(
@@ -2763,11 +2765,7 @@ impl Mc2CampaignBackend {
             || carry.progression.iter().any(|entry| {
                 let family =
                     usize::from(mc2_spell_family(entry.spell).expect("validated carry family"));
-                let player = self
-                    .campaign
-                    .level2_compatibility()
-                    .shared_spells()
-                    .local_player();
+                let player = self.campaign.simulation().shared_spells().local_player();
                 player.persistent_spell_experience[family] != entry.persistent_experience
                     || player.runtime_spell_experience[family] != entry.runtime_experience
                     || player.spell_unlocked_levels[family] != entry.unlocked_tier
@@ -2850,7 +2848,7 @@ impl Mc2CampaignBackend {
     fn game_event(&self, record: &EffectRecord) -> Result<GameEvent, CampaignBackendError> {
         let (event_id, actor, participant) = match &record.effect {
             CampaignEffect::Dispatch(event) => match event {
-                Level2DispatchEvent::Error { .. } => ("session.dispatch_fault", None, None),
+                Mc2DispatchEvent::Error { .. } => ("session.dispatch_fault", None, None),
                 _ => {
                     let (_, _, _, _, source_slot) = event.campaign_projection();
                     (
@@ -2968,7 +2966,7 @@ impl Mc2CampaignBackend {
                 });
             }
             return spells::assigned_player_command(
-                self.campaign.level2_compatibility().shared_spells(),
+                self.campaign.simulation().shared_spells(),
                 assignment,
                 player_command,
             )
@@ -2985,7 +2983,7 @@ impl Mc2CampaignBackend {
                 ),
             });
         };
-        let compatibility = self.campaign.level2_compatibility();
+        let compatibility = self.campaign.simulation();
         let family = mc2_spell_family(kind).ok_or_else(|| CampaignBackendError::StepRejected {
             message: format!(
                 "spell selection {} has no bound private spell family",
@@ -3110,7 +3108,7 @@ pub(crate) mod tests {
             )
             .unwrap()
         };
-        let mut level2 = open("level2-day-block32-campaign-v2");
+        let mut simulation = open("level2-day-block32-campaign-v2");
         let learned = vec![
             SpellKind::Fireball,
             SpellKind::Shield,
@@ -3141,12 +3139,13 @@ pub(crate) mod tests {
                 },
             ],
         };
-        level2
+        simulation
             .backend_mut()
             .apply_semantic_spell_carry(&carry)
             .unwrap();
         let saved =
-            serde_json::to_vec(&level2.backend().initial_semantic_spell_carry().unwrap()).unwrap();
+            serde_json::to_vec(&simulation.backend().initial_semantic_spell_carry().unwrap())
+                .unwrap();
         let saved: Mc2SemanticSpellCarry = serde_json::from_slice(&saved).unwrap();
         let mut restored = open("level2-day-block32-campaign-v2");
         restored
@@ -3155,9 +3154,9 @@ pub(crate) mod tests {
             .unwrap();
         assert_eq!(
             restored.backend().campaign.state_hash(),
-            level2.backend().campaign.state_hash()
+            simulation.backend().campaign.state_hash()
         );
-        let mut carry = level2.backend().transition_spell_carry().unwrap();
+        let mut carry = simulation.backend().transition_spell_carry().unwrap();
         let resolver = Mc2RuntimePackageResolver::load(
             [
                 "mc-bhq8-level1-collision-v5-night",
@@ -3176,11 +3175,7 @@ pub(crate) mod tests {
             next.backend_mut()
                 .apply_semantic_spell_carry(&carry)
                 .unwrap();
-            let shared = next
-                .backend()
-                .campaign
-                .level2_compatibility()
-                .shared_spells();
+            let shared = next.backend().campaign.simulation().shared_spells();
             let player = shared.local_player();
             for kind in &learned {
                 let family = mc2_spell_family(*kind).unwrap();
@@ -3464,7 +3459,7 @@ pub(crate) mod tests {
             .unwrap()
             .backend()
             .campaign
-            .level2_compatibility()
+            .simulation()
             .shared_spells()
             .local_player()
             .turn;
@@ -3487,7 +3482,7 @@ pub(crate) mod tests {
                 .unwrap()
                 .backend()
                 .campaign
-                .level2_compatibility()
+                .simulation()
                 .shared_spells()
                 .local_player()
                 .turn,
@@ -3509,7 +3504,7 @@ pub(crate) mod tests {
                 .unwrap()
                 .backend()
                 .campaign
-                .level2_compatibility()
+                .simulation()
                 .completion_statistics()
                 .time_taken_seconds,
             3
@@ -3530,7 +3525,7 @@ pub(crate) mod tests {
                 .unwrap()
                 .backend()
                 .campaign
-                .level2_compatibility()
+                .simulation()
                 .completion_statistics()
                 .time_taken_seconds,
             3
@@ -3981,7 +3976,7 @@ pub(crate) mod tests {
         session: &GameSession<Mc2CampaignBackend>,
         expected: i32,
     ) {
-        let compatibility = session.backend().campaign.level2_compatibility();
+        let compatibility = session.backend().campaign.simulation();
         let shared = compatibility.shared_spells();
         let holder_index = shared.players()[0].enabled_spell_holders[0];
         let holder = shared
@@ -4028,7 +4023,7 @@ pub(crate) mod tests {
         session
             .backend()
             .campaign
-            .level2_compatibility()
+            .simulation()
             .economy()
             .fireball_projectiles()
             .iter()
@@ -5402,7 +5397,7 @@ pub(crate) mod tests {
         stage_index: usize,
         target_percent: i32,
     ) -> (i32, usize) {
-        let compatibility = session.backend_mut().campaign.level2_compatibility_mut();
+        let compatibility = session.backend_mut().campaign.simulation_mut();
         let player_count = usize::from(compatibility.session.state.live.core.runtime.player_count);
         let (objective_index, player_entity_index) = compatibility
             .session
@@ -5466,7 +5461,7 @@ pub(crate) mod tests {
         session: &mut GameSession<Mc2CampaignBackend>,
         target_percent: i32,
     ) -> i32 {
-        let compatibility = session.backend_mut().campaign.level2_compatibility_mut();
+        let compatibility = session.backend_mut().campaign.simulation_mut();
         let player_count = usize::from(compatibility.session.state.live.core.runtime.player_count);
         let player_entity_index = compatibility
             .session
@@ -5510,21 +5505,21 @@ pub(crate) mod tests {
         assert_eq!(backend.campaign.state_hash(), direct.state_hash());
         assert_eq!(backend.campaign.terrain_hash(), direct.terrain_hash());
         assert_eq!(
-            backend.campaign.level2.economy().reset_hash(),
-            direct.level2.economy().reset_hash()
+            backend.campaign.simulation.economy().reset_hash(),
+            direct.simulation.economy().reset_hash()
         );
         assert_eq!(
-            backend.campaign.level2.source_global_rng(),
-            direct.level2.source_global_rng()
+            backend.campaign.simulation.source_global_rng(),
+            direct.simulation.source_global_rng()
         );
         assert_eq!(
-            backend.campaign.level2.effect_journal(),
-            direct.level2.effect_journal()
+            backend.campaign.simulation.effect_journal(),
+            direct.simulation.effect_journal()
         );
         assert_eq!(backend.campaign.events(), direct.events());
         assert_eq!(
-            encode_reset_v1(&ResetState::from_level2(&backend.campaign.level2)),
-            encode_reset_v1(&ResetState::from_level2(&direct.level2))
+            encode_reset_v1(&ResetState::from_simulation(&backend.campaign.simulation)),
+            encode_reset_v1(&ResetState::from_simulation(&direct.simulation))
         );
     }
 
@@ -5543,9 +5538,7 @@ pub(crate) mod tests {
         let mut direct = CampaignSession::open(&root, CampaignSelection::LEVEL2).unwrap();
         // The direct authority mirrors the campaign route's entry binding so
         // the equality below stays discriminating for every later value.
-        direct
-            .level2_compatibility_mut()
-            .select_level2_campaign_entry_stage();
+        direct.simulation_mut().select_level2_campaign_entry_stage();
         assert_matches_direct(&neutral, &direct);
         let initial = neutral.snapshot();
         assert_eq!(initial.identity.generation, 1);
@@ -5554,7 +5547,7 @@ pub(crate) mod tests {
         assert_eq!(initial.value.terrain_hash, direct.terrain_hash());
         assert_eq!(
             initial.value.effect_journal_sha256,
-            hex_digest(direct.level2.effect_journal().receipt().as_bytes())
+            hex_digest(direct.simulation.effect_journal().receipt().as_bytes())
         );
 
         let command = GameCommand {
@@ -5958,10 +5951,7 @@ pub(crate) mod tests {
 
             assert_eq!(old.identity().definition_hash, base.definition_hash());
             assert_eq!(
-                old.backend()
-                    .campaign
-                    .level2_compatibility()
-                    .goat_behavior_config(),
+                old.backend().campaign.simulation().goat_behavior_config(),
                 GoatBehaviorConfig::LEVEL_ONE
             );
             let reopened = authored
@@ -5973,7 +5963,7 @@ pub(crate) mod tests {
                 authored
                     .backend()
                     .campaign
-                    .level2_compatibility()
+                    .simulation()
                     .goat_behavior_config(),
                 expected_vigilant
             );
@@ -5984,7 +5974,7 @@ pub(crate) mod tests {
                 authored
                     .backend()
                     .campaign
-                    .level2_compatibility()
+                    .simulation()
                     .goat_behavior_config(),
                 expected_vigilant
             );
@@ -6001,7 +5991,7 @@ pub(crate) mod tests {
                         .events()
                         .iter()
                         .filter_map(|event| match event {
-                            Level2DispatchEvent::Goat { events, .. } => Some(events.as_ref()),
+                            Mc2DispatchEvent::Goat { events, .. } => Some(events.as_ref()),
                             _ => None,
                         })
                         .flatten()
@@ -6021,17 +6011,14 @@ pub(crate) mod tests {
                 assert_eq!(authored_snapshot.player_pose, old_snapshot.player_pose);
                 assert_eq!(authored_snapshot.player_motion, old_snapshot.player_motion);
                 assert_eq!(
-                    authored_campaign.level2_compatibility().source_global_rng(),
-                    old_campaign.level2_compatibility().source_global_rng()
+                    authored_campaign.simulation().source_global_rng(),
+                    old_campaign.simulation().source_global_rng()
                 );
 
-                let player_entity_index = authored_campaign
-                    .level2_compatibility()
-                    .shared_spells()
-                    .players()[0]
-                    .entity_index;
-                let old_goats = old_campaign.level2_compatibility().goats();
-                let authored_goats = authored_campaign.level2_compatibility().goats();
+                let player_entity_index =
+                    authored_campaign.simulation().shared_spells().players()[0].entity_index;
+                let old_goats = old_campaign.simulation().goats();
+                let authored_goats = authored_campaign.simulation().goats();
                 let mut changed = 0;
                 for (old_goat, authored_goat) in old_goats.iter().zip(authored_goats) {
                     assert_eq!(
@@ -6115,7 +6102,7 @@ pub(crate) mod tests {
         let goat_slot = session
             .backend()
             .campaign
-            .level2_compatibility()
+            .simulation()
             .goats()
             .iter()
             .find(|candidate| candidate.position.x >> 8 == 110 && candidate.position.y >> 8 == 38)
@@ -6143,7 +6130,7 @@ pub(crate) mod tests {
         let published = store.active_definition().unwrap();
 
         let inspect = |session: &GameSession<Mc2CampaignBackend>| {
-            let compatibility = session.backend().campaign.level2_compatibility();
+            let compatibility = session.backend().campaign.simulation();
             let typed = compatibility
                 .goats()
                 .iter()
@@ -6159,16 +6146,11 @@ pub(crate) mod tests {
             )
         };
         let damage = |session: &mut GameSession<Mc2CampaignBackend>| {
-            let attacker = session
-                .backend()
-                .campaign
-                .level2_compatibility()
-                .state
-                .entity_index;
+            let attacker = session.backend().campaign.simulation().state.entity_index;
             session
                 .backend_mut()
                 .campaign
-                .level2_compatibility_mut()
+                .simulation_mut()
                 .submit_goat_damage(goat_slot, DAMAGE, attacker)
                 .unwrap();
             session
@@ -6245,7 +6227,7 @@ pub(crate) mod tests {
         let goat_slot = session
             .backend()
             .campaign
-            .level2_compatibility()
+            .simulation()
             .goats()
             .iter()
             .find(|candidate| {
@@ -6276,7 +6258,7 @@ pub(crate) mod tests {
         let published = store.active_definition().unwrap();
 
         let positions = |session: &GameSession<Mc2CampaignBackend>| {
-            let compatibility = session.backend().campaign.level2_compatibility();
+            let compatibility = session.backend().campaign.simulation();
             let typed = compatibility
                 .goats()
                 .iter()
@@ -6312,7 +6294,7 @@ pub(crate) mod tests {
                 .iter()
                 .any(|event| matches!(
                     event,
-                    Level2DispatchEvent::Goat { source_slot, .. } if *source_slot == goat_slot
+                    Mc2DispatchEvent::Goat { source_slot, .. } if *source_slot == goat_slot
                 ))
         );
 
@@ -6403,13 +6385,13 @@ pub(crate) mod tests {
         let published = store.active_definition().unwrap();
 
         let construct = |session: &mut GameSession<Mc2CampaignBackend>| {
-            let compatibility = session.backend_mut().campaign.level2_compatibility_mut();
+            let compatibility = session.backend_mut().campaign.simulation_mut();
             compatibility
                 .activate_authored_group_prerequisite_for_test(5)
                 .unwrap();
             assert!(compatibility.dispatch_events().iter().any(|event| matches!(
                 event,
-                Level2DispatchEvent::AuthoredGroupActivated {
+                Mc2DispatchEvent::AuthoredGroupActivated {
                     group: 5,
                     authored_indices,
                     ..
@@ -6466,7 +6448,7 @@ pub(crate) mod tests {
             session
                 .backend()
                 .campaign
-                .level2_compatibility()
+                .simulation()
                 .economy()
                 .map_chains()
                 .is_linked(authored_source.source_entity_index)
@@ -6478,7 +6460,7 @@ pub(crate) mod tests {
         let visited = session
             .backend()
             .campaign
-            .level2_compatibility()
+            .simulation()
             .goats()
             .iter()
             .find(|candidate| candidate.entity_index == authored_source.source_entity_index)
@@ -6541,19 +6523,15 @@ pub(crate) mod tests {
         let base_projectiles = session
             .backend()
             .campaign
-            .level2_compatibility()
+            .simulation()
             .economy()
             .fireball_projectiles()
             .to_vec();
-        let base_rng = session
-            .backend()
-            .campaign
-            .level2_compatibility()
-            .source_global_rng();
+        let base_rng = session.backend().campaign.simulation().source_global_rng();
         let base_effects = session
             .backend()
             .campaign
-            .level2_compatibility()
+            .simulation()
             .effect_journal()
             .records()
             .to_vec();
@@ -6561,7 +6539,7 @@ pub(crate) mod tests {
             session
                 .backend()
                 .campaign
-                .level2_compatibility()
+                .simulation()
                 .shared_spells()
                 .player_entity()
                 .mana_regen,
@@ -6595,18 +6573,14 @@ pub(crate) mod tests {
             session
                 .backend()
                 .campaign
-                .level2_compatibility()
+                .simulation()
                 .economy()
                 .fireball_projectiles(),
             base_projectiles.as_slice(),
             "mana cost must not rewrite projectile identity or trajectory"
         );
         assert_eq!(
-            session
-                .backend()
-                .campaign
-                .level2_compatibility()
-                .source_global_rng(),
+            session.backend().campaign.simulation().source_global_rng(),
             base_rng,
             "mana cost must not alter the accepted-cast RNG schedule"
         );
@@ -6614,7 +6588,7 @@ pub(crate) mod tests {
             session
                 .backend()
                 .campaign
-                .level2_compatibility()
+                .simulation()
                 .effect_journal()
                 .records(),
             base_effects.as_slice(),
@@ -6624,7 +6598,7 @@ pub(crate) mod tests {
             session
                 .backend()
                 .campaign
-                .level2_compatibility()
+                .simulation()
                 .shared_spells()
                 .player_entity()
                 .mana_regen,
@@ -6654,7 +6628,7 @@ pub(crate) mod tests {
             session
                 .backend()
                 .campaign
-                .level2_compatibility()
+                .simulation()
                 .economy()
                 .authored_class5()
                 .iter()
@@ -6664,7 +6638,7 @@ pub(crate) mod tests {
 
         fn aim_player_at_firefly(session: &mut GameSession<Mc2CampaignBackend>, source_slot: u16) {
             let (target, player_slot, player_fov, aim_yaw_offset) = {
-                let compatibility = session.backend().campaign.level2_compatibility();
+                let compatibility = session.backend().campaign.simulation();
                 (
                     compatibility
                         .economy()
@@ -6689,11 +6663,7 @@ pub(crate) mod tests {
                 384_i16.saturating_sub(target.actual_speed.max(0)),
             );
             player_position.z = crate::FlightWorld::ground_height(
-                session
-                    .backend()
-                    .campaign
-                    .level2_compatibility()
-                    .canonical_terrain(),
+                session.backend().campaign.simulation().canonical_terrain(),
                 player_position,
             )
             .wrapping_add(256);
@@ -6702,7 +6672,7 @@ pub(crate) mod tests {
             // than moving the pre-callback heading directly. The positioned
             // incoming-combat boundary skips only the player's flight once.
             let mut forecast = session.backend().campaign.clone();
-            let compatibility = forecast.level2_compatibility_mut();
+            let compatibility = forecast.simulation_mut();
             compatibility
                 .set_level2_entity_position(player_slot, player_position)
                 .expect("forecast retains the real player map carrier");
@@ -6713,7 +6683,7 @@ pub(crate) mod tests {
                 session.backend().flight_binding.tuning(),
             );
             let mut target_top = forecast
-                .level2_compatibility()
+                .simulation()
                 .economy()
                 .authored_class5()
                 .iter()
@@ -6734,7 +6704,7 @@ pub(crate) mod tests {
             // The auxiliary changes projectile aim, not the parent hand yaw.
             let hand_yaw = yaw.wrapping_sub(aim_yaw_offset).wrapping_sub(512);
             crate::move_entity(&mut player_position, hand_yaw.wrapping_add(1_024), 0, 256);
-            let compatibility = session.backend_mut().campaign.level2_compatibility_mut();
+            let compatibility = session.backend_mut().campaign.simulation_mut();
             compatibility
                 .set_level2_entity_position(player_slot, player_position)
                 .expect("position the real player at the proven incoming-combat boundary");
@@ -6749,7 +6719,7 @@ pub(crate) mod tests {
             let before_slots = session
                 .backend()
                 .campaign
-                .level2_compatibility()
+                .simulation()
                 .economy()
                 .fireball_projectiles()
                 .iter()
@@ -6769,7 +6739,7 @@ pub(crate) mod tests {
             let projectile_slot = session
                 .backend()
                 .campaign
-                .level2_compatibility()
+                .simulation()
                 .economy()
                 .fireball_projectiles()
                 .iter()
@@ -6794,7 +6764,7 @@ pub(crate) mod tests {
                     session
                         .backend()
                         .campaign
-                        .level2_compatibility()
+                        .simulation()
                         .economy()
                         .model17_spawned_children()
                         .iter()
@@ -6805,7 +6775,7 @@ pub(crate) mod tests {
                     session.backend().campaign.events()[event_start..]
                         .iter()
                         .find_map(|event| match event {
-                            Level2DispatchEvent::DynamicArena {
+                            Mc2DispatchEvent::DynamicArena {
                                 source_slot,
                                 kind:
                                     crate::native_world::Level2DynamicArenaKind::Model17SpawnedChild,
@@ -6823,7 +6793,7 @@ pub(crate) mod tests {
                 session
                     .backend()
                     .campaign
-                    .level2_compatibility()
+                    .simulation()
                     .economy()
                     .fireball_projectiles()
                     .iter()
@@ -6831,21 +6801,16 @@ pub(crate) mod tests {
                 session
                     .backend()
                     .campaign
-                    .level2_compatibility()
+                    .simulation()
                     .economy()
                     .model17_spawned_children()
             );
-            let player_slot = session
-                .backend()
-                .campaign
-                .level2_compatibility()
-                .state
-                .entity_index;
+            let player_slot = session.backend().campaign.simulation().state.entity_index;
             assert!(
                 session
                     .backend()
                     .campaign
-                    .level2_compatibility()
+                    .simulation()
                     .economy()
                     .events()
                     .iter()
@@ -6879,13 +6844,13 @@ pub(crate) mod tests {
         session
             .backend_mut()
             .campaign
-            .level2_compatibility_mut()
+            .simulation_mut()
             .activate_authored_group_prerequisite_for_test(6)
             .unwrap();
         let target = session
             .backend()
             .campaign
-            .level2_compatibility()
+            .simulation()
             .economy()
             .authored_class5()
             .iter()
@@ -6898,7 +6863,7 @@ pub(crate) mod tests {
             session
                 .backend()
                 .campaign
-                .level2_compatibility()
+                .simulation()
                 .economy()
                 .map_chains()
                 .is_linked(target_slot)
@@ -6908,19 +6873,14 @@ pub(crate) mod tests {
             !session
                 .backend_mut()
                 .campaign
-                .level2_compatibility_mut()
+                .simulation_mut()
                 .economy_mut()
                 .submit_authored_firefly_damage(target_slot, 500, target_slot),
             "the source/self owner is rejected before the mailbox is changed"
         );
         assert_eq!(firefly(&session, target_slot).unwrap().life, 600);
 
-        let player_slot = session
-            .backend()
-            .campaign
-            .level2_compatibility()
-            .state
-            .entity_index;
+        let player_slot = session.backend().campaign.simulation().state.entity_index;
         let (_first_projectile, _first_impact) = cast_until_damage(&mut session, target_slot, 350);
         let after_hit = firefly(&session, target_slot).unwrap();
         assert_eq!(after_hit.word_0x26, player_slot);
@@ -6973,7 +6933,7 @@ pub(crate) mod tests {
             !session
                 .backend()
                 .campaign
-                .level2_compatibility()
+                .simulation()
                 .economy()
                 .map_chains()
                 .is_linked(target_slot),
@@ -7018,7 +6978,7 @@ pub(crate) mod tests {
     }
 
     fn level_one_firefly_pursuit_command_for_test(
-        compatibility: &crate::native_world::Level2ResetSession,
+        compatibility: &crate::native_world::Mc2Simulation,
         tuning: crate::FlightTuning,
         target: crate::native_world::Level2AuthoredClass5Source,
         previous_target_position: Option<crate::Position>,
@@ -7170,7 +7130,7 @@ pub(crate) mod tests {
             session
                 .backend()
                 .campaign
-                .level2_compatibility()
+                .simulation()
                 .economy()
                 .authored_class5()
                 .iter()
@@ -7187,7 +7147,7 @@ pub(crate) mod tests {
         }
 
         fn public_firefly_wait_command(
-            compatibility: &crate::native_world::Level2ResetSession,
+            compatibility: &crate::native_world::Mc2Simulation,
         ) -> GameCommand {
             let state = compatibility.state;
             let nearest = compatibility
@@ -7232,7 +7192,7 @@ pub(crate) mod tests {
             session: &GameSession<Mc2CampaignBackend>,
             source_slot: u16,
         ) -> Option<GameCommand> {
-            let compatibility = session.backend().campaign.level2_compatibility();
+            let compatibility = session.backend().campaign.simulation();
             let mut command = public_firefly_wait_command(compatibility);
             command.select_spell = Some(SemanticId::parse("spell.fireball").unwrap());
             command.cast_selected = true;
@@ -7245,7 +7205,7 @@ pub(crate) mod tests {
                 CAMPAIGN_SPEED_INDEX,
                 tuning,
             );
-            let state = forecast.level2_compatibility().state;
+            let state = forecast.simulation().state;
             let mut launch = state.position;
             // cast_selected always sets the left direction bit, regardless of
             // the incoming player's retained direction flags.
@@ -7262,7 +7222,7 @@ pub(crate) mod tests {
             let mut best = None;
             for turn in 1..=8 {
                 let target = forecast
-                    .level2_compatibility()
+                    .simulation()
                     .economy()
                     .authored_class5()
                     .iter()
@@ -7285,7 +7245,7 @@ pub(crate) mod tests {
                 if !blocked && best.is_none_or(|(best_score, _, _)| score < best_score) {
                     best = Some((score, yaw, pitch));
                 }
-                let wait = public_firefly_wait_command(forecast.level2_compatibility());
+                let wait = public_firefly_wait_command(forecast.simulation());
                 forecast.step_with_tuning(
                     campaign_player_command(&wait),
                     CAMPAIGN_SPEED_INDEX,
@@ -7315,7 +7275,7 @@ pub(crate) mod tests {
             );
             for _ in 0..12 {
                 if before.iter().any(|(slot, life)| {
-                    shot.level2_compatibility()
+                    shot.simulation()
                         .economy()
                         .authored_class5()
                         .iter()
@@ -7325,7 +7285,7 @@ pub(crate) mod tests {
                 }) {
                     return Some(command);
                 }
-                let wait = public_firefly_wait_command(shot.level2_compatibility());
+                let wait = public_firefly_wait_command(shot.simulation());
                 shot.step_with_tuning(campaign_player_command(&wait), CAMPAIGN_SPEED_INDEX, tuning);
             }
             None
@@ -7340,20 +7300,14 @@ pub(crate) mod tests {
             saw_death_callback: &mut BTreeSet<u16>,
             saw_reclaimed: &mut BTreeSet<u16>,
         ) {
-            let compatibility = session.backend().campaign.level2_compatibility();
+            let compatibility = session.backend().campaign.simulation();
             let player = compatibility.shared_spells().player_entity();
             assert!(player.life >= 0, "Firefly driver died at tick {}: flight={:?}; damage={:?}",
                 session.identity().tick, compatibility.state,
                 compatibility.economy().events().iter().rev().filter(|event| matches!(event,
                     crate::native_world::Level2EconomyEvent::DamageApplied { target_entity_index, .. }
                     if *target_entity_index == player.index)).take(8).collect::<Vec<_>>());
-            for event in session
-                .backend()
-                .campaign
-                .level2_compatibility()
-                .economy()
-                .events()
-            {
+            for event in session.backend().campaign.simulation().economy().events() {
                 if let crate::native_world::Level2EconomyEvent::DeathBurstSpawned {
                     parent_entity_index,
                     ..
@@ -7394,7 +7348,7 @@ pub(crate) mod tests {
             session: &GameSession<Mc2CampaignBackend>,
             source_slot: u16,
         ) -> String {
-            let compatibility = session.backend().campaign.level2_compatibility();
+            let compatibility = session.backend().campaign.simulation();
             let shared = compatibility.shared_spells();
             let player = shared.player_entity();
             let local = shared.local_player();
@@ -7543,7 +7497,7 @@ pub(crate) mod tests {
             saw_reclaimed: &mut BTreeSet<u16>,
         ) -> Vec<(u16, i32, i32)> {
             for _ in 0..=24 {
-                let compatibility = session.backend().campaign.level2_compatibility();
+                let compatibility = session.backend().campaign.simulation();
                 let player = compatibility.state.entity_index;
                 let economy = compatibility.economy();
                 if !economy
@@ -7558,8 +7512,7 @@ pub(crate) mod tests {
                 {
                     break;
                 }
-                let wait =
-                    public_firefly_wait_command(session.backend().campaign.level2_compatibility());
+                let wait = public_firefly_wait_command(session.backend().campaign.simulation());
                 session.step(guard(session), wait).unwrap();
                 observe_lifecycle(
                     session,
@@ -7582,7 +7535,7 @@ pub(crate) mod tests {
                 else {
                     return Vec::new();
                 };
-                let state = session.backend().campaign.level2_compatibility().state;
+                let state = session.backend().campaign.simulation().state;
                 let dx = i32::from(
                     target
                         .position
@@ -7618,10 +7571,10 @@ pub(crate) mod tests {
                 let flight = if distance <= 3_072 {
                     // Preserve the verified-shot gate and its existing evasive
                     // fallback while the ordinary source forecast is blocked.
-                    public_firefly_wait_command(session.backend().campaign.level2_compatibility())
+                    public_firefly_wait_command(session.backend().campaign.simulation())
                 } else {
                     level_one_firefly_pursuit_command_for_test(
-                        session.backend().campaign.level2_compatibility(),
+                        session.backend().campaign.simulation(),
                         session.backend().flight_binding.tuning(),
                         target,
                         previous_target_position,
@@ -7654,7 +7607,7 @@ pub(crate) mod tests {
                 })
                 .collect::<Vec<_>>();
             session.step(guard(session), command).unwrap_or_else(|error| {
-                let state = session.backend().campaign.level2_compatibility();
+                let state = session.backend().campaign.simulation();
                 panic!("Firefly cast rejected at tick {}: {error:?}; flight={:?}; life={}; holders={:?}",
                     session.identity().tick, state.state, state.shared_spells().player_entity().life,
                     state.shared_spells().local_player().enabled_spell_holders);
@@ -7683,8 +7636,7 @@ pub(crate) mod tests {
                     // each exact recipient rather than dropping all but one.
                     return changed;
                 }
-                let wait =
-                    public_firefly_wait_command(session.backend().campaign.level2_compatibility());
+                let wait = public_firefly_wait_command(session.backend().campaign.simulation());
                 session.step(guard(session), wait).unwrap();
                 observe_lifecycle(
                     session,
@@ -7699,10 +7651,10 @@ pub(crate) mod tests {
             Vec::new()
         }
 
-        let compatibility = session.backend().campaign.level2_compatibility();
+        let compatibility = session.backend().campaign.simulation();
         assert!(compatibility.dispatch_events().iter().any(|event| matches!(
             event,
-            Level2DispatchEvent::AuthoredGroupActivated {
+            Mc2DispatchEvent::AuthoredGroupActivated {
                 group: 6,
                 authored_indices,
                 ..
@@ -7726,12 +7678,7 @@ pub(crate) mod tests {
         let mut saw_reclaimed = BTreeSet::new();
         let mut exact_impacts = 0;
         for attempt in 0..64 {
-            let player_position = session
-                .backend()
-                .campaign
-                .level2_compatibility()
-                .state
-                .position;
+            let player_position = session.backend().campaign.simulation().state.position;
             let Some(target_slot) = targets
                 .iter()
                 .filter_map(|(_, source_slot)| {
@@ -7769,8 +7716,7 @@ pub(crate) mod tests {
                     "Firefly public impact {exact_impacts}: tick={} source={damaged_slot} life={after}",
                     session.identity().tick
                 );
-                let wait =
-                    public_firefly_wait_command(session.backend().campaign.level2_compatibility());
+                let wait = public_firefly_wait_command(session.backend().campaign.simulation());
                 session.step(guard(&session), wait).unwrap();
                 observe_lifecycle(
                     &session,
@@ -7819,16 +7765,9 @@ pub(crate) mod tests {
             saw_reclaimed.iter().copied().collect::<Vec<_>>(),
             FIREFLY_ROWS
         );
-        let player_slot = session
-            .backend()
-            .campaign
-            .level2_compatibility()
-            .state
-            .entity_index;
+        let player_slot = session.backend().campaign.simulation().state.entity_index;
         assert!(
-            session.backend().campaign.level2_compatibility().entities()[usize::from(player_slot)]
-                .life
-                >= 0,
+            session.backend().campaign.simulation().entities()[usize::from(player_slot)].life >= 0,
             "public-command Firefly combat must leave the objective owner alive"
         );
 
@@ -7836,7 +7775,7 @@ pub(crate) mod tests {
             session
                 .backend_mut()
                 .campaign
-                .level2_compatibility_mut()
+                .simulation_mut()
                 .stage_level_one_final_objective_prerequisite_for_test()
                 .expect("stage only the separately proved earlier objective boundary");
         }
@@ -7845,14 +7784,14 @@ pub(crate) mod tests {
             session
                 .backend()
                 .campaign
-                .level2_compatibility()
+                .simulation()
                 .economy()
                 .authored_switch_producers()
                 .iter()
                 .any(|source| source.active && source.authored_index == 137)
         };
         let exit_gate = (!group_four_is_live(&session)).then(|| {
-            let compatibility = session.backend().campaign.level2_compatibility();
+            let compatibility = session.backend().campaign.simulation();
             assert_eq!(compatibility.runtime().objectives[0].stage_selectors[4], 1);
             assert_eq!(compatibility.runtime().objectives[0].is_level_end, 0);
             compatibility
@@ -7877,13 +7816,13 @@ pub(crate) mod tests {
                 .step(guard(&session), GameCommand::default())
                 .unwrap();
         }
-        let compatibility = session.backend().campaign.level2_compatibility();
+        let compatibility = session.backend().campaign.simulation();
         assert_eq!(compatibility.runtime().objectives[0].stage_selectors[4], 2);
         assert_eq!(compatibility.runtime().objectives[0].is_level_end, 1);
         if let Some(exit_gate) = exit_gate {
             assert!(compatibility.dispatch_events().iter().any(|event| matches!(
                 event,
-                Level2DispatchEvent::AuthoredGroupActivated {
+                Mc2DispatchEvent::AuthoredGroupActivated {
                     source_slot,
                     group: 4,
                     authored_indices,
@@ -7909,7 +7848,7 @@ pub(crate) mod tests {
             compatibility
                 .dispatch_events()
                 .iter()
-                .all(|event| !matches!(event, Level2DispatchEvent::Error { .. }))
+                .all(|event| !matches!(event, Mc2DispatchEvent::Error { .. }))
         );
     }
 
@@ -7931,7 +7870,7 @@ pub(crate) mod tests {
         // Castle state which the ordinary full-route Firefly consumer receives.
         complete_real_level_one_castle_route_to_group_six(&mut session);
         {
-            let compatibility = session.backend().campaign.level2_compatibility();
+            let compatibility = session.backend().campaign.simulation();
             let player = compatibility.shared_spells().player_entity();
             let castle = compatibility
                 .economy()
@@ -8147,7 +8086,7 @@ pub(crate) mod tests {
             session
                 .backend()
                 .campaign
-                .level2_compatibility()
+                .simulation()
                 .fireball_launch_sound_id,
             9,
             "publishing a package-reload edit cannot mutate an already-open session"
@@ -8157,7 +8096,7 @@ pub(crate) mod tests {
             session
                 .backend()
                 .campaign
-                .level2_compatibility()
+                .simulation()
                 .fireball_launch_sound_id,
             15
         );
@@ -8174,7 +8113,7 @@ pub(crate) mod tests {
             session
                 .backend()
                 .campaign
-                .level2_compatibility()
+                .simulation()
                 .effect_journal()
                 .records()
                 .iter()
@@ -8192,7 +8131,7 @@ pub(crate) mod tests {
             session
                 .backend()
                 .campaign
-                .level2_compatibility()
+                .simulation()
                 .fireball_launch_sound_id,
             15
         );
@@ -8276,7 +8215,7 @@ pub(crate) mod tests {
         let source = &baseline
             .backend()
             .campaign
-            .level2_compatibility()
+            .simulation()
             .economy()
             .fireball_projectiles()[0];
         assert_eq!(
@@ -8328,11 +8267,7 @@ pub(crate) mod tests {
         .unwrap();
 
         let initial = session.snapshot().value.player_vitals;
-        let shared = session
-            .backend()
-            .campaign
-            .level2_compatibility()
-            .shared_spells();
+        let shared = session.backend().campaign.simulation().shared_spells();
         assert_eq!(
             initial,
             PlayerVitals {
@@ -8384,14 +8319,10 @@ pub(crate) mod tests {
         session
             .backend_mut()
             .campaign
-            .level2_compatibility_mut()
+            .simulation_mut()
             .apply_carried_spell_families(&[0, 2], Some(2))
             .unwrap();
-        let shared = session
-            .backend()
-            .campaign
-            .level2_compatibility()
-            .shared_spells();
+        let shared = session.backend().campaign.simulation().shared_spells();
         let holder_slot = shared.local_player().enabled_spell_holders[2];
         let holder = shared
             .pickups()
@@ -8417,7 +8348,7 @@ pub(crate) mod tests {
             session
                 .backend()
                 .campaign
-                .level2_compatibility()
+                .simulation()
                 .shared_spells()
                 .player_entity()
                 .mana_regen,
@@ -8462,7 +8393,7 @@ pub(crate) mod tests {
                 session
                     .backend()
                     .campaign
-                    .level2_compatibility()
+                    .simulation()
                     .runtime()
                     .objective_textbox_ticks
             );
@@ -8471,7 +8402,7 @@ pub(crate) mod tests {
                 session
                     .backend()
                     .campaign
-                    .level2_compatibility()
+                    .simulation()
                     .level_exit_sequence()
                     .active
             );
@@ -8500,7 +8431,7 @@ pub(crate) mod tests {
         )
         .unwrap();
         let first_waypoint = {
-            let compatibility = session.backend().campaign.level2_compatibility();
+            let compatibility = session.backend().campaign.simulation();
             let stage = &compatibility.runtime().stages[0];
             crate::Position {
                 x: stage.axis_x.cast_unsigned(),
@@ -8512,7 +8443,7 @@ pub(crate) mod tests {
             if session.snapshot().value.objective_progress.completed_count == 1 {
                 break;
             }
-            let state = session.backend().campaign.level2_compatibility().state;
+            let state = session.backend().campaign.simulation().state;
             let desired =
                 i16::try_from(crate::heading_for_positions(state.position, first_waypoint))
                     .expect("source heading is 11-bit");
@@ -8550,7 +8481,7 @@ pub(crate) mod tests {
         session: &mut GameSession<Mc2CampaignBackend>,
         position: crate::Position,
     ) {
-        let compatibility = session.backend_mut().campaign.level2_compatibility_mut();
+        let compatibility = session.backend_mut().campaign.simulation_mut();
         let player_slot = compatibility.state.entity_index;
         compatibility
             .set_level2_entity_position(player_slot, position)
@@ -8567,16 +8498,16 @@ pub(crate) mod tests {
     ) -> bool {
         let backend = session.backend();
         let mut shot = backend.campaign.clone();
-        let attacker = shot.level2_compatibility().state.entity_index;
+        let attacker = shot.simulation().state.entity_index;
         // A pending earlier mailbox is not evidence for this new request.
         if bee.pending_attacker_entity_index == attacker && bee.pending_damage > 0 {
             return false;
         }
         let generation = shot
-            .level2_compatibility()
+            .simulation()
             .economy()
             .slot_generation(bee.source_entity_index);
-        let compatibility = shot.level2_compatibility_mut();
+        let compatibility = shot.simulation_mut();
         compatibility
             .set_level2_entity_position(attacker, player_position)
             .expect("forecast uses the same map-linked Bee launch boundary");
@@ -8587,7 +8518,7 @@ pub(crate) mod tests {
             ..GameCommand::default()
         };
         let tuning = backend.flight_binding.tuning();
-        let economy = shot.level2_compatibility().economy();
+        let economy = shot.simulation().economy();
         let carrier_occurrences_before = economy
             .fireball_projectiles()
             .iter()
@@ -8610,7 +8541,7 @@ pub(crate) mod tests {
         // Only ordinary production construction, acquisition, terrain,
         // collision, allocator and mailbox callbacks can admit the shot.
         for turn in 0..=24 {
-            let compatibility = shot.level2_compatibility();
+            let compatibility = shot.simulation();
             let player = compatibility.shared_spells().player_entity();
             let numeric = &compatibility.entities()[usize::from(attacker)];
             if player.life <= 0
@@ -8619,7 +8550,7 @@ pub(crate) mod tests {
                 || shot
                     .events()
                     .iter()
-                    .any(|event| matches!(event, Level2DispatchEvent::Error { .. }))
+                    .any(|event| matches!(event, Mc2DispatchEvent::Error { .. }))
             {
                 return false;
             }
@@ -8668,7 +8599,7 @@ pub(crate) mod tests {
         session: &mut GameSession<Mc2CampaignBackend>,
         bee: crate::native_world::BeeCreatureRuntime,
     ) {
-        let compatibility = session.backend().campaign.level2_compatibility();
+        let compatibility = session.backend().campaign.simulation();
         let player_slot = compatibility.state.entity_index;
         let player_fov = compatibility.state.entity_fov;
         let aim_yaw_offset = compatibility
@@ -8783,7 +8714,7 @@ pub(crate) mod tests {
                 session.identity().tick,
             ));
         assert!(clearance >= 2_048);
-        let compatibility = session.backend_mut().campaign.level2_compatibility_mut();
+        let compatibility = session.backend_mut().campaign.simulation_mut();
         compatibility
             .set_level2_entity_position(player_slot, player_position)
             .expect("Bee Fireball boundary remains map-linked");
@@ -8794,7 +8725,7 @@ pub(crate) mod tests {
         session: &GameSession<Mc2CampaignBackend>,
         phase: &str,
     ) {
-        let compatibility = session.backend().campaign.level2_compatibility();
+        let compatibility = session.backend().campaign.simulation();
         let player = compatibility.shared_spells().player_entity();
         let source = &compatibility.entities()[usize::from(player.index)];
         assert!(
@@ -8818,7 +8749,7 @@ pub(crate) mod tests {
             let player = session
                 .backend()
                 .campaign
-                .level2_compatibility()
+                .simulation()
                 .shared_spells()
                 .player_entity();
             (player.max_life, player.max_life / 250)
@@ -8827,7 +8758,7 @@ pub(crate) mod tests {
         let bound = usize::try_from(max_life / life_rate).unwrap() + 2;
         for _ in 0..bound {
             assert_real_level_two_bee_player_alive_for_test(session, "owned Castle healing");
-            let compatibility = session.backend().campaign.level2_compatibility();
+            let compatibility = session.backend().campaign.simulation();
             let player = compatibility.shared_spells().player_entity();
             let castle = compatibility
                 .economy()
@@ -8858,7 +8789,7 @@ pub(crate) mod tests {
         let player = session
             .backend()
             .campaign
-            .level2_compatibility()
+            .simulation()
             .shared_spells()
             .player_entity();
         assert_eq!(
@@ -8873,7 +8804,7 @@ pub(crate) mod tests {
         headings: &[i16],
         distance: i16,
     ) -> crate::Position {
-        let bees = campaign.level2_compatibility().economy().bee_creatures();
+        let bees = campaign.simulation().economy().bee_creatures();
         let (clearance, position) = headings
             .iter()
             .map(|&heading| {
@@ -8902,7 +8833,7 @@ pub(crate) mod tests {
     }
 
     fn retreat_real_bee_campaign_boundary_for_test(campaign: &mut CampaignSession) {
-        let compatibility = campaign.level2_compatibility();
+        let compatibility = campaign.simulation();
         let origin = compatibility.state.position;
         if compatibility.economy().bee_creatures().iter().all(|bee| {
             !bee.active
@@ -8918,7 +8849,7 @@ pub(crate) mod tests {
             &[0, 256, 512, 768, 1_024, 1_280, 1_536, 1_792],
             20_000,
         );
-        let compatibility = campaign.level2_compatibility_mut();
+        let compatibility = campaign.simulation_mut();
         let player_slot = compatibility.state.entity_index;
         compatibility
             .set_level2_entity_position(player_slot, position)
@@ -8927,7 +8858,7 @@ pub(crate) mod tests {
     }
 
     fn prepare_real_bee_public_impact_wait_for_test(campaign: &mut CampaignSession) {
-        let compatibility = campaign.level2_compatibility();
+        let compatibility = campaign.simulation();
         let player_slot = compatibility.state.entity_index;
         let economy = compatibility.economy();
         let constructor_completed = economy
@@ -8959,7 +8890,7 @@ pub(crate) mod tests {
         authored_index: u16,
     ) -> crate::native_world::BeeCreatureRuntime {
         let convergence_state = |session: &GameSession<Mc2CampaignBackend>| {
-            let compatibility = session.backend().campaign.level2_compatibility();
+            let compatibility = session.backend().campaign.simulation();
             let player = compatibility.shared_spells().player_entity();
             let source = &compatibility.entities()[usize::from(player.index)];
             let record = source.record_bytes();
@@ -9060,14 +8991,14 @@ pub(crate) mod tests {
             let bee = session
                 .backend()
                 .campaign
-                .level2_compatibility()
+                .simulation()
                 .economy()
                 .bee_creatures()
                 .iter()
                 .find(|bee| bee.authored_index() == Some(authored_index))
                 .copied()
                 .expect("production Bee remains before its public Fireball callback");
-            let state = session.backend().campaign.level2_compatibility().state;
+            let state = session.backend().campaign.simulation().state;
             let braking = state.target_speed != 0 || state.actual_speed != 0;
             if bee.action == 17 && bee.active && bee.drawing_enabled && bee.life >= 0 && !braking {
                 return bee;
@@ -9117,7 +9048,7 @@ pub(crate) mod tests {
                     },
                 )
                 .unwrap();
-            let compatibility = session.backend().campaign.level2_compatibility();
+            let compatibility = session.backend().campaign.simulation();
             let player = compatibility.shared_spells().player_entity();
             let source = &compatibility.entities()[usize::from(player.index)];
             if player.life <= 0 || source.life <= 0 || source.action != 0 {
@@ -9126,7 +9057,7 @@ pub(crate) mod tests {
                     .iter()
                     .rev()
                     .filter_map(|event| match event {
-                        crate::native_world::Level2DispatchEvent::Economy {
+                        crate::native_world::Mc2DispatchEvent::Economy {
                             pass,
                             source_slot,
                             event:
@@ -9156,7 +9087,7 @@ pub(crate) mod tests {
         let bee = session
             .backend()
             .campaign
-            .level2_compatibility()
+            .simulation()
             .economy()
             .bee_creatures()
             .iter()
@@ -9192,7 +9123,7 @@ pub(crate) mod tests {
                 session,
                 "first Bee public impact wait",
             );
-            let compatibility = session.backend().campaign.level2_compatibility();
+            let compatibility = session.backend().campaign.simulation();
             let current = compatibility
                 .economy()
                 .bee_creatures()
@@ -9271,7 +9202,7 @@ pub(crate) mod tests {
         boundary: &str,
         activation_cursor: u64,
     ) -> String {
-        let compatibility = session.backend().campaign.level2_compatibility();
+        let compatibility = session.backend().campaign.simulation();
         let shared = compatibility.shared_spells();
         let player = shared.player_entity();
         let local = shared.local_player();
@@ -9399,7 +9330,7 @@ pub(crate) mod tests {
                 session,
                 "Bee projectile cleanup or impact wait",
             );
-            let compatibility = session.backend().campaign.level2_compatibility();
+            let compatibility = session.backend().campaign.simulation();
             let economy = compatibility.economy();
             let player_slot = compatibility.state.entity_index;
             let has_player_projectile = economy
@@ -9421,7 +9352,7 @@ pub(crate) mod tests {
             let current_row = session
                 .backend()
                 .campaign
-                .level2_compatibility()
+                .simulation()
                 .economy()
                 .bee_creatures()
                 .iter()
@@ -9441,7 +9372,7 @@ pub(crate) mod tests {
             stable_aimed_bee = session
                 .backend()
                 .campaign
-                .level2_compatibility()
+                .simulation()
                 .economy()
                 .bee_creatures()
                 .iter()
@@ -9465,7 +9396,7 @@ pub(crate) mod tests {
             .authored_index()
             .expect("stable package Bee retains its authored row");
         let (attacker, before, projectile_slots_before, impact_occurrences_before) = {
-            let compatibility = session.backend().campaign.level2_compatibility();
+            let compatibility = session.backend().campaign.simulation();
             let economy = compatibility.economy();
             let shared = compatibility.shared_spells();
             let player = shared.local_player();
@@ -9550,7 +9481,7 @@ pub(crate) mod tests {
                     == session
                         .backend()
                         .campaign
-                        .level2_compatibility()
+                        .simulation()
                         .economy()
                         .slot_generation(*slot)
                 && *life == aimed_bee.life
@@ -9596,7 +9527,7 @@ pub(crate) mod tests {
                 session,
                 "Bee projectile cleanup or impact wait",
             );
-            let compatibility = session.backend().campaign.level2_compatibility();
+            let compatibility = session.backend().campaign.simulation();
             let economy = compatibility.economy();
             projectile_slot = projectile_slot.or_else(|| {
                 economy
@@ -9773,7 +9704,7 @@ pub(crate) mod tests {
         let current = session
             .backend()
             .campaign
-            .level2_compatibility()
+            .simulation()
             .economy()
             .bee_creatures()
             .iter()
@@ -9798,14 +9729,9 @@ pub(crate) mod tests {
     ) -> bool {
         // The preceding owning exchange already returned to its qualified
         // staged boundary. This discriminator only uses ordinary public input.
-        let player = session
-            .backend()
-            .campaign
-            .level2_compatibility()
-            .state
-            .entity_index;
+        let player = session.backend().campaign.simulation().state.entity_index;
         for _ in 0..=24 {
-            let economy = session.backend().campaign.level2_compatibility().economy();
+            let economy = session.backend().campaign.simulation().economy();
             if !economy
                 .fireball_projectiles()
                 .iter()
@@ -9818,7 +9744,7 @@ pub(crate) mod tests {
             }
             step_public_bee_command_for_test(session, GameCommand::default(), &mut BTreeSet::new());
         }
-        let compatibility = session.backend().campaign.level2_compatibility();
+        let compatibility = session.backend().campaign.simulation();
         let before = compatibility
             .economy()
             .bee_creatures()
@@ -9883,7 +9809,7 @@ pub(crate) mod tests {
         let mut saw_impact = false;
         let mut retired = false;
         for _ in 0..=24 {
-            let compatibility = session.backend().campaign.level2_compatibility();
+            let compatibility = session.backend().campaign.simulation();
             let economy = compatibility.economy();
             saw_flyer |= economy.fireball_projectiles().iter().any(|row| {
                 row.owner_entity_index == player
@@ -9961,26 +9887,26 @@ pub(crate) mod tests {
         session
             .backend_mut()
             .campaign
-            .level2_compatibility_mut()
+            .simulation_mut()
             .activate_authored_group_prerequisite_for_test(4)
             .unwrap();
         session
             .backend_mut()
             .campaign
-            .level2_compatibility_mut()
+            .simulation_mut()
             .activate_authored_group_prerequisite_for_test(21)
             .unwrap();
         session
             .backend_mut()
             .campaign
-            .level2_compatibility_mut()
+            .simulation_mut()
             .activate_authored_group_prerequisite_for_test(17)
             .unwrap();
         assert_eq!(
             session
                 .backend()
                 .campaign
-                .level2_compatibility()
+                .simulation()
                 .economy()
                 .bee_creatures()
                 .iter()
@@ -10001,7 +9927,7 @@ pub(crate) mod tests {
             }
         }
         let first_impact_occurrences = {
-            let economy = session.backend().campaign.level2_compatibility().economy();
+            let economy = session.backend().campaign.simulation().economy();
             economy
                 .model17_spawned_children()
                 .iter()
@@ -10024,7 +9950,7 @@ pub(crate) mod tests {
                 terminal.insert((receipt.authored_index, receipt.source_slot));
             }
         }
-        let economy = session.backend().campaign.level2_compatibility().economy();
+        let economy = session.backend().campaign.simulation().economy();
         assert!(first_impact_occurrences.iter().all(|&(slot, generation)| {
             economy.model17_spawned_children().iter().all(|impact| {
                 impact.source_entity_index != slot || economy.slot_generation(slot) != generation
@@ -10054,7 +9980,7 @@ pub(crate) mod tests {
             let live_rows = session
                 .backend()
                 .campaign
-                .level2_compatibility()
+                .simulation()
                 .economy()
                 .bee_creatures()
                 .iter()
@@ -10071,7 +9997,7 @@ pub(crate) mod tests {
             session
                 .backend()
                 .campaign
-                .level2_compatibility()
+                .simulation()
                 .economy()
                 .bee_creatures()
                 .iter()
@@ -10083,7 +10009,7 @@ pub(crate) mod tests {
             session
                 .backend()
                 .campaign
-                .level2_compatibility()
+                .simulation()
                 .economy()
                 .events()
                 .iter()
@@ -10100,7 +10026,7 @@ pub(crate) mod tests {
         let aimed_row = session
             .backend()
             .campaign
-            .level2_compatibility()
+            .simulation()
             .economy()
             .bee_creatures()
             .iter()
@@ -10117,7 +10043,7 @@ pub(crate) mod tests {
         let census = session
             .backend()
             .campaign
-            .level2_compatibility()
+            .simulation()
             .economy()
             .bee_creatures()
             .iter()
@@ -10127,7 +10053,7 @@ pub(crate) mod tests {
                     .map(|row| (row, bee.source_entity_index, bee.life, bee.action))
             })
             .collect::<Vec<_>>();
-        let economy = session.backend().campaign.level2_compatibility().economy();
+        let economy = session.backend().campaign.simulation().economy();
         let canonical_slots = economy
             .live_arena_slots()
             .into_iter()
@@ -10155,7 +10081,7 @@ pub(crate) mod tests {
         session: &GameSession<Mc2CampaignBackend>,
         boundary: &str,
     ) -> String {
-        let compatibility = session.backend().campaign.level2_compatibility();
+        let compatibility = session.backend().campaign.simulation();
         let shared = compatibility.shared_spells();
         let player = shared.player_entity();
         let local = shared.local_player();
@@ -10286,14 +10212,9 @@ pub(crate) mod tests {
         let acquired = session.backend().semantic_spell_state_for_test().unwrap().0;
         assert!(acquired.contains(&SpellKind::Castle));
         assert!(acquired.contains(&SpellKind::Possession));
-        let player_slot = session
-            .backend()
-            .campaign
-            .level2_compatibility()
-            .state
-            .entity_index;
+        let player_slot = session.backend().campaign.simulation().state.entity_index;
         for _ in 0..64 {
-            let state = session.backend().campaign.level2_compatibility().state;
+            let state = session.backend().campaign.simulation().state;
             if state.target_speed == 0 && state.actual_speed == 0 {
                 break;
             }
@@ -10313,13 +10234,13 @@ pub(crate) mod tests {
                 )
                 .unwrap();
         }
-        let state = session.backend().campaign.level2_compatibility().state;
+        let state = session.backend().campaign.simulation().state;
         assert_eq!((state.target_speed, state.actual_speed), (0, 0));
 
         // The imported row-11 overlap is the ordinary producer for the
         // group-1 authored model-39/512-mana spheres. No allocator is called.
         let switch_position = {
-            let compatibility = session.backend().campaign.level2_compatibility();
+            let compatibility = session.backend().campaign.simulation();
             let mut position = compatibility
                 .mission()
                 .authored_features()
@@ -10345,7 +10266,7 @@ pub(crate) mod tests {
         // The source map and footprint scan wrap at the tile seam. Search
         // every real tile rather than excluding the nearby seam component.
         let cast_site = {
-            let compatibility = session.backend().campaign.level2_compatibility();
+            let compatibility = session.backend().campaign.simulation();
             (0_u8..=255)
                 .flat_map(|y| (0_u8..=255).map(move |x| (x, y)))
                 .filter_map(|(x, y)| {
@@ -10382,7 +10303,7 @@ pub(crate) mod tests {
             CAMPAIGN_SPEED_INDEX,
             session.backend().flight_binding.tuning(),
         );
-        let compatibility = forecast.level2_compatibility();
+        let compatibility = forecast.simulation();
         let state = compatibility.state;
         let mut launch = state.position;
         // Public cast_selected chooses left256 even if the prior hand flags
@@ -10416,11 +10337,11 @@ pub(crate) mod tests {
         ));
         let mut saw_castle_projectile = false;
         for turn in 0..64 {
-            let compatibility = session.backend().campaign.level2_compatibility();
+            let compatibility = session.backend().campaign.simulation();
             saw_castle_projectile |= compatibility.dispatch_events().iter().any(|event| {
                 matches!(
                     event,
-                    Level2DispatchEvent::DynamicArena {
+                    Mc2DispatchEvent::DynamicArena {
                         kind: crate::native_world::Level2DynamicArenaKind::CastleProjectile,
                         ..
                     }
@@ -10452,7 +10373,7 @@ pub(crate) mod tests {
             session
                 .backend()
                 .campaign
-                .level2_compatibility()
+                .simulation()
                 .economy()
                 .castle()
                 .is_some_and(|castle| castle.active && castle.level == 1)
@@ -10468,7 +10389,7 @@ pub(crate) mod tests {
         session: &mut GameSession<Mc2CampaignBackend>,
     ) {
         let producer_snapshot = |session: &GameSession<Mc2CampaignBackend>, phase: &str| {
-            let compatibility = session.backend().campaign.level2_compatibility();
+            let compatibility = session.backend().campaign.simulation();
             let feature = compatibility
                 .mission()
                 .authored_features()
@@ -10544,7 +10465,7 @@ pub(crate) mod tests {
         let neutral_opportunity = session
             .backend()
             .campaign
-            .level2_compatibility()
+            .simulation()
             .economy()
             .spheres()
             .iter()
@@ -10565,7 +10486,7 @@ pub(crate) mod tests {
             if session
                 .backend()
                 .campaign
-                .level2_compatibility()
+                .simulation()
                 .economy()
                 .spheres()
                 .iter()
@@ -10586,7 +10507,7 @@ pub(crate) mod tests {
             if session
                 .backend()
                 .campaign
-                .level2_compatibility()
+                .simulation()
                 .economy()
                 .spheres()
                 .iter()
@@ -10620,7 +10541,7 @@ pub(crate) mod tests {
             )
             .unwrap();
         let (sphere, generation, event_start) = {
-            let compatibility = session.backend().campaign.level2_compatibility();
+            let compatibility = session.backend().campaign.simulation();
             let sphere = *compatibility
                 .economy()
                 .spheres()
@@ -10651,7 +10572,7 @@ pub(crate) mod tests {
             CAMPAIGN_SPEED_INDEX,
             session.backend().flight_binding.tuning(),
         );
-        let compatibility = forecast.level2_compatibility();
+        let compatibility = forecast.simulation();
         assert_eq!(
             compatibility
                 .economy()
@@ -10690,7 +10611,7 @@ pub(crate) mod tests {
         let mut saw_effect = false;
         let mut saw_claim = false;
         for _ in 0..32 {
-            let economy = session.backend().campaign.level2_compatibility().economy();
+            let economy = session.backend().campaign.simulation().economy();
             saw_projectile |= !economy.possession_projectiles().is_empty();
             saw_effect |= !economy.possession_effects().is_empty();
             saw_claim |= economy.events()[event_start..].iter().any(|event| matches!(event,
@@ -10708,7 +10629,7 @@ pub(crate) mod tests {
             "real Possession must deliver its flyer, effect and exact mana claim before Castle collection"
         );
         for _ in 0..32 {
-            let economy = session.backend().campaign.level2_compatibility().economy();
+            let economy = session.backend().campaign.simulation().economy();
             if economy.possession_projectiles().is_empty()
                 && economy.possession_effects().is_empty()
             {
@@ -10719,7 +10640,7 @@ pub(crate) mod tests {
                 .unwrap();
         }
         let claimed_mana = {
-            let economy = session.backend().campaign.level2_compatibility().economy();
+            let economy = session.backend().campaign.simulation().economy();
             assert!(
                 economy.possession_projectiles().is_empty()
                     && economy.possession_effects().is_empty()
@@ -10755,7 +10676,7 @@ pub(crate) mod tests {
             session
                 .backend()
                 .campaign
-                .level2_compatibility()
+                .simulation()
                 .shared_spells()
                 .player_entity()
                 .max_mana
@@ -10777,7 +10698,7 @@ pub(crate) mod tests {
         session: &GameSession<Mc2CampaignBackend>,
         family: usize,
     ) {
-        let compatibility = session.backend().campaign.level2_compatibility();
+        let compatibility = session.backend().campaign.simulation();
         let shared = compatibility.shared_spells();
         let holder_slot = shared.local_player().enabled_spell_holders[family];
         let holder = shared
@@ -10802,7 +10723,7 @@ pub(crate) mod tests {
     }
 
     fn recharge_real_level_two_castle_mana_for_test(session: &mut GameSession<Mc2CampaignBackend>) {
-        let compatibility = session.backend().campaign.level2_compatibility();
+        let compatibility = session.backend().campaign.simulation();
         let economy = compatibility.economy();
         let castle = economy.castle();
         let ready = castle.is_some_and(|castle| castle.active && castle.mana > 0);
@@ -10858,7 +10779,7 @@ pub(crate) mod tests {
         session: &mut GameSession<Mc2CampaignBackend>,
     ) {
         let castle_position = {
-            let compatibility = session.backend().campaign.level2_compatibility();
+            let compatibility = session.backend().campaign.simulation();
             let castle = compatibility
                 .economy()
                 .castle()
@@ -10873,7 +10794,7 @@ pub(crate) mod tests {
         fly_real_castle_charge_leg_for_test(session, castle_position, true);
         let mut saw_castle_rate = false;
         for _ in 0..64 {
-            let compatibility = session.backend().campaign.level2_compatibility();
+            let compatibility = session.backend().campaign.simulation();
             let player = compatibility.shared_spells().player_entity();
             assert!(
                 player.life >= 0,
@@ -10897,7 +10818,7 @@ pub(crate) mod tests {
             saw_castle_rate,
             "only observed Castle-rate upkeep completes recharge"
         );
-        let compatibility = session.backend().campaign.level2_compatibility();
+        let compatibility = session.backend().campaign.simulation();
         let player = compatibility.shared_spells().player_entity();
         assert!(
             compatibility
@@ -10916,7 +10837,7 @@ pub(crate) mod tests {
         stage_index: usize,
     ) {
         let stage_position = |session: &GameSession<Mc2CampaignBackend>, stage_index: usize| {
-            let compatibility = session.backend().campaign.level2_compatibility();
+            let compatibility = session.backend().campaign.simulation();
             let stage = &compatibility.runtime().stages[stage_index];
             crate::Position {
                 x: stage.axis_x.cast_unsigned(),
@@ -10926,18 +10847,13 @@ pub(crate) mod tests {
         };
         let target = stage_position(session, stage_index);
         for _ in 0..640 {
-            if session
-                .backend()
-                .campaign
-                .level2_compatibility()
-                .runtime()
-                .objectives[0]
-                .stage_selectors[stage_index]
+            if session.backend().campaign.simulation().runtime().objectives[0].stage_selectors
+                [stage_index]
                 == 2
             {
                 return;
             }
-            let state = session.backend().campaign.level2_compatibility().state;
+            let state = session.backend().campaign.simulation().state;
             let desired = i16::try_from(crate::heading_for_positions(state.position, target))
                 .expect("source heading is 11-bit");
             let correction = crate::turn_toward(state.yaw, desired, 127);
@@ -10953,7 +10869,7 @@ pub(crate) mod tests {
                 )
                 .unwrap();
         }
-        let compatibility = session.backend().campaign.level2_compatibility();
+        let compatibility = session.backend().campaign.simulation();
         panic!(
             "ordinary flight did not complete Level 2 stage {stage_index}: state={:?}, target={target:?}, selectors={:?}",
             compatibility.state,
@@ -10962,11 +10878,7 @@ pub(crate) mod tests {
     }
 
     fn nyphur_public_fireball_cost_for_test(session: &GameSession<Mc2CampaignBackend>) -> i32 {
-        let shared = session
-            .backend()
-            .campaign
-            .level2_compatibility()
-            .shared_spells();
+        let shared = session.backend().campaign.simulation().shared_spells();
         let holder_slot = shared.local_player().enabled_spell_holders[0];
         shared
             .pickups()
@@ -10983,7 +10895,7 @@ pub(crate) mod tests {
         cast: &GameCommand,
     ) -> bool {
         const NYPHUR_SLOT: u16 = 112;
-        let compatibility = session.backend().campaign.level2_compatibility();
+        let compatibility = session.backend().campaign.simulation();
         let generation = compatibility.economy().slot_generation(NYPHUR_SLOT);
         let player = compatibility.state.entity_index;
         let holders = compatibility
@@ -11027,7 +10939,7 @@ pub(crate) mod tests {
         // ordinary visits: a hit beyond its12 observations is not admitted.
         for visit in 0..12 {
             let before_step = forecast
-                .level2_compatibility()
+                .simulation()
                 .nyphur_common_upkeep()
                 .expect("the qualified Nyphur upkeep carrier remains addressable");
             let evidence = forecast.step_with_tuning(
@@ -11039,14 +10951,11 @@ pub(crate) mod tests {
                 CAMPAIGN_SPEED_INDEX,
                 session.backend().flight_binding.tuning(),
             );
-            let after = forecast.level2_compatibility();
+            let after = forecast.simulation();
             if after.shared_spells().player_entity().life < 0
                 || after.shared_spells().local_player().enabled_spell_holders != holders
                 || forecast.events().iter().any(|event| {
-                    matches!(
-                        event,
-                        crate::native_world::Level2DispatchEvent::Error { .. }
-                    )
+                    matches!(event, crate::native_world::Mc2DispatchEvent::Error { .. })
                 })
                 || evidence.iter().any(|step| {
                     matches!(
@@ -11143,7 +11052,7 @@ pub(crate) mod tests {
         movement: &GameCommand,
     ) -> Option<GameCommand> {
         const NYPHUR_SLOT: u16 = 112;
-        let compatibility = session.backend().campaign.level2_compatibility();
+        let compatibility = session.backend().campaign.simulation();
         let generation = compatibility.economy().slot_generation(NYPHUR_SLOT);
         // The ordinary player callback moves the parent before the later
         // holder callback constructs the hand launch. A4 offsets also add to
@@ -11154,7 +11063,7 @@ pub(crate) mod tests {
             CAMPAIGN_SPEED_INDEX,
             session.backend().flight_binding.tuning(),
         );
-        let state = motion.level2_compatibility().state;
+        let state = motion.simulation().state;
         let parent_position = evidence.first()?.committed;
         let mut launch = parent_position;
         // The left-hand constructor consumes the raw parent's yaw before A4
@@ -11173,7 +11082,7 @@ pub(crate) mod tests {
                     session.backend().flight_binding.tuning(),
                 );
             }
-            let future = motion.level2_compatibility();
+            let future = motion.simulation();
             let target = &future.entities()[usize::from(NYPHUR_SLOT)];
             if !target.active
                 || target.class != 3
@@ -11216,7 +11125,7 @@ pub(crate) mod tests {
     ) -> (i16, i16) {
         const NYPHUR_SLOT: u16 = 112;
         for _ in 0..1_280 {
-            let compatibility = session.backend().campaign.level2_compatibility();
+            let compatibility = session.backend().campaign.simulation();
             let target = compatibility
                 .entities()
                 .get(usize::from(NYPHUR_SLOT))
@@ -11272,26 +11181,21 @@ pub(crate) mod tests {
                 CAMPAIGN_SPEED_INDEX,
                 session.backend().flight_binding.tuning(),
             );
-            assert!(
-                predicted
-                    .level2_compatibility()
-                    .shared_spells()
-                    .player_entity()
-                    .life
-                    >= 0
-            );
+            assert!(predicted.simulation().shared_spells().player_entity().life >= 0);
             assert_eq!(
                 predicted
-                    .level2_compatibility()
+                    .simulation()
                     .shared_spells()
                     .local_player()
                     .enabled_spell_holders,
                 holders
             );
-            assert!(!predicted.events().iter().any(|event| matches!(
-                event,
-                crate::native_world::Level2DispatchEvent::Error { .. }
-            )));
+            assert!(
+                !predicted.events().iter().any(|event| matches!(
+                    event,
+                    crate::native_world::Mc2DispatchEvent::Error { .. }
+                ))
+            );
             assert!(evidence.iter().all(|step| !matches!(
                 step.movement_resolution,
                 "skipped" | "rejected" | "rejected-and-stopped" | "recovered-after-reject"
@@ -11300,7 +11204,7 @@ pub(crate) mod tests {
             session.step(guard(session), command).unwrap();
             assert_eq!(session.backend().campaign.state_hash(), hash);
         }
-        let compatibility = session.backend().campaign.level2_compatibility();
+        let compatibility = session.backend().campaign.simulation();
         panic!(
             "ordinary public Nyphur approach/aim found no source250 firing solution within1280 turns: player={:?}, rival={:?}, upkeep={:?}, holders={:?}",
             compatibility.state,
@@ -11317,7 +11221,7 @@ pub(crate) mod tests {
         session: &GameSession<Mc2CampaignBackend>,
         target: crate::Position,
     ) -> GameCommand {
-        let compatibility = session.backend().campaign.level2_compatibility();
+        let compatibility = session.backend().campaign.simulation();
         let state = compatibility.state;
         let desired = crate::heading_for_positions(state.position, target) as i16;
         let turn = i32::from(crate::turn_toward(state.yaw, desired, 24));
@@ -11382,7 +11286,7 @@ pub(crate) mod tests {
         session: &mut GameSession<Mc2CampaignBackend>,
     ) -> GameCommand {
         for _ in 0..1_280 {
-            let compatibility = session.backend().campaign.level2_compatibility();
+            let compatibility = session.backend().campaign.simulation();
             let target = compatibility.entities()[112].clone();
             assert!(target.active && target.class == 3 && target.model == 1);
             let command = source_public_creature_pursuit_command_for_test(session, target.position);
@@ -11404,17 +11308,19 @@ pub(crate) mod tests {
                 CAMPAIGN_SPEED_INDEX,
                 session.backend().flight_binding.tuning(),
             );
-            let after = predicted.level2_compatibility();
+            let after = predicted.simulation();
             assert!(after.shared_spells().player_entity().life >= 0);
             assert_eq!(
                 after.shared_spells().local_player().enabled_spell_holders,
                 holders
             );
             assert_eq!(after.economy().slot_generation(112), generation);
-            assert!(!predicted.events().iter().any(|event| matches!(
-                event,
-                crate::native_world::Level2DispatchEvent::Error { .. }
-            )));
+            assert!(
+                !predicted.events().iter().any(|event| matches!(
+                    event,
+                    crate::native_world::Mc2DispatchEvent::Error { .. }
+                ))
+            );
             assert!(
                 evidence.iter().all(|step| !matches!(
                     step.movement_resolution,
@@ -11427,7 +11333,7 @@ pub(crate) mod tests {
             session.step(guard(session), command).unwrap();
             assert_eq!(session.backend().campaign.state_hash(), hash);
         }
-        let compatibility = session.backend().campaign.level2_compatibility();
+        let compatibility = session.backend().campaign.simulation();
         panic!(
             "ordinary mobile Nyphur approach/aim found no source250 firing solution within1280 turns: tick={}, player={:?}, rival={:?}, upkeep={:?}",
             session.identity().tick,
@@ -11498,7 +11404,7 @@ pub(crate) mod tests {
                 .map(|id| id.as_str().to_owned())
         };
 
-        let compatibility = session.backend().campaign.level2_compatibility();
+        let compatibility = session.backend().campaign.simulation();
         assert_eq!(
             &compatibility.runtime().objectives[0].stage_selectors[..5],
             &[1, 1, 1, 1, 1]
@@ -11518,7 +11424,7 @@ pub(crate) mod tests {
         );
 
         fly_real_level_two_until_stage_complete_for_test(&mut session, 3);
-        let compatibility = session.backend().campaign.level2_compatibility();
+        let compatibility = session.backend().campaign.simulation();
         assert_eq!(
             &compatibility.runtime().objectives[0].stage_selectors[..5],
             &[1, 1, 1, 2, 1]
@@ -11543,10 +11449,10 @@ pub(crate) mod tests {
         session
             .step(guard(&session), GameCommand::default())
             .unwrap();
-        let compatibility = session.backend().campaign.level2_compatibility();
+        let compatibility = session.backend().campaign.simulation();
         assert!(compatibility.dispatch_events().iter().any(|event| matches!(
             event,
-            crate::native_world::Level2DispatchEvent::AuthoredGroupActivated {
+            crate::native_world::Mc2DispatchEvent::AuthoredGroupActivated {
                 source_slot: 32,
                 group: 8,
                 authored_indices,
@@ -11564,7 +11470,7 @@ pub(crate) mod tests {
         );
 
         fly_real_level_two_until_stage_complete_for_test(&mut session, 0);
-        let compatibility = session.backend().campaign.level2_compatibility();
+        let compatibility = session.backend().campaign.simulation();
         assert_eq!(
             &compatibility.runtime().objectives[0].stage_selectors[..5],
             &[2, 1, 1, 2, 1]
@@ -11583,10 +11489,7 @@ pub(crate) mod tests {
                 .iter()
                 .all(|event| !matches!(
                     event,
-                    crate::native_world::Level2DispatchEvent::AuthoredGroupActivated {
-                        group: 8,
-                        ..
-                    }
+                    crate::native_world::Mc2DispatchEvent::AuthoredGroupActivated { group: 8, .. }
                 ))
         );
 
@@ -11595,7 +11498,7 @@ pub(crate) mod tests {
             session
                 .backend()
                 .campaign
-                .level2_compatibility()
+                .simulation()
                 .players()
                 .iter()
                 .find(|player| player.entity_index == NYPHUR_SLOT)
@@ -11605,7 +11508,7 @@ pub(crate) mod tests {
             session
                 .backend()
                 .campaign
-                .level2_compatibility()
+                .simulation()
                 .entities()
                 .iter()
                 .find(|entity| {
@@ -11619,13 +11522,7 @@ pub(crate) mod tests {
 
         prepare_real_level_two_castle_recharge_for_test(&mut session);
         assert_eq!(
-            &session
-                .backend()
-                .campaign
-                .level2_compatibility()
-                .runtime()
-                .objectives[0]
-                .stage_selectors[..5],
+            &session.backend().campaign.simulation().runtime().objectives[0].stage_selectors[..5],
             &[2, 1, 1, 2, 1],
             "real mana collection and Castle recharge do not satisfy the rival objective"
         );
@@ -11640,7 +11537,7 @@ pub(crate) mod tests {
             if session
                 .backend()
                 .campaign
-                .level2_compatibility()
+                .simulation()
                 .shared_spells()
                 .player_mana()
                 < cost
@@ -11653,34 +11550,29 @@ pub(crate) mod tests {
             let life_before = session
                 .backend()
                 .campaign
-                .level2_compatibility()
+                .simulation()
                 .nyphur_common_upkeep()
                 .expect("qualified Nyphur common carrier")
                 .life;
             let nyphur_generation = session
                 .backend()
                 .campaign
-                .level2_compatibility()
+                .simulation()
                 .economy()
                 .slot_generation(112);
-            let player_attacker = session
-                .backend()
-                .campaign
-                .level2_compatibility()
-                .state
-                .entity_index;
+            let player_attacker = session.backend().campaign.simulation().state.entity_index;
             let mut saw_player_mailbox = false;
             let mut expected_damage_life = None;
             let mut last_upkeep_before_step = session
                 .backend()
                 .campaign
-                .level2_compatibility()
+                .simulation()
                 .nyphur_common_upkeep()
                 .unwrap();
             let projectile_slots_before = session
                 .backend()
                 .campaign
-                .level2_compatibility()
+                .simulation()
                 .economy()
                 .fireball_projectiles()
                 .iter()
@@ -11690,7 +11582,7 @@ pub(crate) mod tests {
                         session
                             .backend()
                             .campaign
-                            .level2_compatibility()
+                            .simulation()
                             .economy()
                             .slot_generation(projectile.source_entity_index),
                     )
@@ -11699,7 +11591,7 @@ pub(crate) mod tests {
             let impact_slots_before = session
                 .backend()
                 .campaign
-                .level2_compatibility()
+                .simulation()
                 .economy()
                 .model17_spawned_children()
                 .iter()
@@ -11709,7 +11601,7 @@ pub(crate) mod tests {
                         session
                             .backend()
                             .campaign
-                            .level2_compatibility()
+                            .simulation()
                             .economy()
                             .slot_generation(impact.source_entity_index),
                     )
@@ -11720,7 +11612,7 @@ pub(crate) mod tests {
             let mut projectile_slot = None;
             let mut saw_class10_impact = false;
             for _ in 0..12 {
-                let compatibility = session.backend().campaign.level2_compatibility();
+                let compatibility = session.backend().campaign.simulation();
                 projectile_slot = projectile_slot.or_else(|| {
                     compatibility
                         .economy()
@@ -11742,7 +11634,7 @@ pub(crate) mod tests {
                                 session
                                     .backend()
                                     .campaign
-                                    .level2_compatibility()
+                                    .simulation()
                                     .economy()
                                     .slot_generation(projectile.source_entity_index),
                             )
@@ -11817,7 +11709,7 @@ pub(crate) mod tests {
             let player_after_cast = session
                 .backend()
                 .campaign
-                .level2_compatibility()
+                .simulation()
                 .shared_spells()
                 .player_entity();
             assert!(
@@ -11832,8 +11724,7 @@ pub(crate) mod tests {
                 "ordinary semantic Fireball cast {cast_index} did not emit the source class-10/model-0 impact"
             );
             let consumed_attacker = u16::from_le_bytes(
-                session.backend().campaign.level2_compatibility().entities()[112].record_bytes()
-                    [42..44]
+                session.backend().campaign.simulation().entities()[112].record_bytes()[42..44]
                     .try_into()
                     .unwrap(),
             );
@@ -11845,7 +11736,7 @@ pub(crate) mod tests {
                 session
                     .backend()
                     .campaign
-                    .level2_compatibility()
+                    .simulation()
                     .economy()
                     .slot_generation(112),
                 nyphur_generation
@@ -11859,7 +11750,7 @@ pub(crate) mod tests {
                 "real250 source consumption precedes carried regeneration and max-life cap"
             );
             if std::env::var_os("MC_ROUTE_NYPHUR_TRACE").is_some() {
-                let compatibility = session.backend().campaign.level2_compatibility();
+                let compatibility = session.backend().campaign.simulation();
                 let upkeep = compatibility.nyphur_common_upkeep().unwrap();
                 eprintln!(
                     "Nyphur public cast={cast_index} approach_tick={approach_tick} cast_tick={cast_tick} consumed_tick={} life_before={life_before} life_after={impact_life:?} regen_after={} max_life={} player={:?} rival={:?} flyer={projectile_slot:?}",
@@ -11884,13 +11775,7 @@ pub(crate) mod tests {
             "lethal entity state alone must not satisfy the rival objective"
         );
         assert_eq!(
-            &session
-                .backend()
-                .campaign
-                .level2_compatibility()
-                .runtime()
-                .objectives[0]
-                .stage_selectors[..5],
+            &session.backend().campaign.simulation().runtime().objectives[0].stage_selectors[..5],
             &[2, 1, 1, 2, 1]
         );
 
@@ -11902,7 +11787,7 @@ pub(crate) mod tests {
                 .step(guard(&session), GameCommand::default())
                 .unwrap();
         }
-        let compatibility = session.backend().campaign.level2_compatibility();
+        let compatibility = session.backend().campaign.simulation();
         assert_eq!(nyphur_player_state(&session), Some(0));
         assert_eq!(
             &compatibility.runtime().objectives[0].stage_selectors[..5],
@@ -11993,11 +11878,11 @@ pub(crate) mod tests {
 
     impl LevelTwoBeeReplayObservationsForTest {
         pub(super) fn observe(&mut self, session: &GameSession<Mc2CampaignBackend>) {
-            use crate::native_world::{Level2DispatchEvent, Level2EconomyEvent};
+            use crate::native_world::{Level2EconomyEvent, Mc2DispatchEvent};
             if session.backend().campaign.definition().identity != CampaignSelection::LEVEL2 {
                 return;
             }
-            let compatibility = session.backend().campaign.level2_compatibility();
+            let compatibility = session.backend().campaign.simulation();
             let economy = compatibility.economy();
             let player = compatibility.state.entity_index;
             for bee in economy.bee_creatures() {
@@ -12071,7 +11956,7 @@ pub(crate) mod tests {
                 &records[records.partition_point(|record| record.sequence < self.next_sequence)..]
             {
                 match &record.effect {
-                    CampaignEffect::Dispatch(Level2DispatchEvent::AuthoredGroupActivated {
+                    CampaignEffect::Dispatch(Mc2DispatchEvent::AuthoredGroupActivated {
                         group,
                         authored_indices,
                         ..
@@ -12082,7 +11967,7 @@ pub(crate) mod tests {
                             self.groups.insert(*group);
                         }
                     }
-                    CampaignEffect::Dispatch(Level2DispatchEvent::Economy { event, .. }) => {
+                    CampaignEffect::Dispatch(Mc2DispatchEvent::Economy { event, .. }) => {
                         match event {
                             Level2EconomyEvent::DamageApplied {
                                 target_entity_index,
@@ -12215,7 +12100,7 @@ pub(crate) mod tests {
         history: Option<LevelTwoBeeReplayObservationsForTest>,
     ) {
         let mut session = session;
-        let compatibility = session.backend().campaign.level2_compatibility();
+        let compatibility = session.backend().campaign.simulation();
         assert_eq!(
             session.backend().campaign.definition().identity,
             CampaignSelection::LEVEL2
@@ -12261,7 +12146,7 @@ pub(crate) mod tests {
                 BTreeSet::from(PLAGUE_BEE_ROWS),
                 "resume retains all six actual production constructors, not only surviving rows"
             );
-            let economy = session.backend().campaign.level2_compatibility().economy();
+            let economy = session.backend().campaign.simulation().economy();
             for (&row, proof) in &history.occurrences {
                 let current = economy
                     .bee_creatures()
@@ -12308,7 +12193,7 @@ pub(crate) mod tests {
                 let bee_rows = session
                     .backend()
                     .campaign
-                    .level2_compatibility()
+                    .simulation()
                     .economy()
                     .bee_creatures()
                     .iter()
@@ -12321,7 +12206,7 @@ pub(crate) mod tests {
                     .step(guard(&session), GameCommand::default())
                     .unwrap();
             }
-            let compatibility = session.backend().campaign.level2_compatibility();
+            let compatibility = session.backend().campaign.simulation();
             assert_eq!(
                 compatibility
                     .economy()
@@ -12337,7 +12222,7 @@ pub(crate) mod tests {
             // visit's compatibility slice, which subsequent flight replaces.
             assert!(compatibility.effect_journal().records().iter().any(|record| matches!(
             &record.effect,
-            CampaignEffect::Dispatch(crate::native_world::Level2DispatchEvent::AuthoredGroupActivated {
+            CampaignEffect::Dispatch(crate::native_world::Mc2DispatchEvent::AuthoredGroupActivated {
                 group: 17,
                 authored_indices,
                 ..
@@ -12345,14 +12230,14 @@ pub(crate) mod tests {
         )));
             assert!(compatibility.effect_journal().records().iter().any(|record| matches!(
             &record.effect,
-            CampaignEffect::Dispatch(crate::native_world::Level2DispatchEvent::AuthoredGroupActivated {
+            CampaignEffect::Dispatch(crate::native_world::Mc2DispatchEvent::AuthoredGroupActivated {
                 group: 21,
                 authored_indices,
                 ..
             }) if authored_indices.as_ref() == [229, 230, 231]
         )));
         }
-        let compatibility = session.backend().campaign.level2_compatibility();
+        let compatibility = session.backend().campaign.simulation();
         assert_eq!(
             &compatibility.runtime().objectives[0].stage_selectors[..5],
             &[2, 2, 1, 2, 1],
@@ -12360,7 +12245,7 @@ pub(crate) mod tests {
         );
 
         for _ in 0..64 {
-            let state = session.backend().campaign.level2_compatibility().state;
+            let state = session.backend().campaign.simulation().state;
             if state.target_speed == 0 && state.actual_speed == 0 {
                 break;
             }
@@ -12381,7 +12266,7 @@ pub(crate) mod tests {
                 )
                 .unwrap();
         }
-        let stopped = session.backend().campaign.level2_compatibility().state;
+        let stopped = session.backend().campaign.simulation().state;
         assert_eq!(
             (stopped.target_speed, stopped.actual_speed),
             (0, 0),
@@ -12399,7 +12284,7 @@ pub(crate) mod tests {
             recharge_real_level_two_castle_mana_for_test(&mut session);
             heal_real_level_two_owned_castle_player_for_test(&mut session);
             let first_lives_before = {
-                let economy = session.backend().campaign.level2_compatibility().economy();
+                let economy = session.backend().campaign.simulation().economy();
                 economy
                     .bee_creatures()
                     .iter()
@@ -12442,7 +12327,7 @@ pub(crate) mod tests {
                 session
                     .backend()
                     .campaign
-                    .level2_compatibility()
+                    .simulation()
                     .economy()
                     .slot_generation(first_slot),
             );
@@ -12451,7 +12336,7 @@ pub(crate) mod tests {
                 first_receipt.life_after,
                 first_life_before.wrapping_sub(250)
             );
-            let economy = session.backend().campaign.level2_compatibility().economy();
+            let economy = session.backend().campaign.simulation().economy();
             for (row, (slot, generation, life)) in first_lives_before {
                 let current = economy
                     .bee_creatures()
@@ -12479,13 +12364,7 @@ pub(crate) mod tests {
         // Real class-10 overlap chooses current package recipients; ordinary
         // callbacks retain damage, death, hide, reclaim and objective timing.
         for _ in 0..ALL_PACKAGE_BEE_ROWS.len() {
-            if session
-                .backend()
-                .campaign
-                .level2_compatibility()
-                .runtime()
-                .objectives[0]
-                .stage_selectors[2]
+            if session.backend().campaign.simulation().runtime().objectives[0].stage_selectors[2]
                 == 2
             {
                 break;
@@ -12495,7 +12374,7 @@ pub(crate) mod tests {
                 next_bee = session
                     .backend()
                     .campaign
-                    .level2_compatibility()
+                    .simulation()
                     .economy()
                     .bee_creatures()
                     .iter()
@@ -12506,12 +12385,7 @@ pub(crate) mod tests {
                     })
                     .min();
                 if next_bee.is_some()
-                    || session
-                        .backend()
-                        .campaign
-                        .level2_compatibility()
-                        .runtime()
-                        .objectives[0]
+                    || session.backend().campaign.simulation().runtime().objectives[0]
                         .stage_selectors[2]
                         == 2
                 {
@@ -12528,12 +12402,7 @@ pub(crate) mod tests {
                 // bound, checking the selector before every ordinary step so
                 // the next objective stage cannot be consumed here.
                 for _ in 0..24 {
-                    if session
-                        .backend()
-                        .campaign
-                        .level2_compatibility()
-                        .runtime()
-                        .objectives[0]
+                    if session.backend().campaign.simulation().runtime().objectives[0]
                         .stage_selectors[2]
                         == 2
                     {
@@ -12542,7 +12411,7 @@ pub(crate) mod tests {
                     next_bee = session
                         .backend()
                         .campaign
-                        .level2_compatibility()
+                        .simulation()
                         .economy()
                         .bee_creatures()
                         .iter()
@@ -12559,13 +12428,8 @@ pub(crate) mod tests {
                         .step(guard(&session), GameCommand::default())
                         .unwrap();
                 }
-                if session
-                    .backend()
-                    .campaign
-                    .level2_compatibility()
-                    .runtime()
-                    .objectives[0]
-                    .stage_selectors[2]
+                if session.backend().campaign.simulation().runtime().objectives[0].stage_selectors
+                    [2]
                     == 2
                 {
                     break;
@@ -12600,7 +12464,7 @@ pub(crate) mod tests {
                 let requested_is_current = session
                     .backend()
                     .campaign
-                    .level2_compatibility()
+                    .simulation()
                     .economy()
                     .bee_creatures()
                     .iter()
@@ -12613,13 +12477,8 @@ pub(crate) mod tests {
                 if terminal_rows.contains(&authored_index) || !requested_is_current {
                     break;
                 }
-                if session
-                    .backend()
-                    .campaign
-                    .level2_compatibility()
-                    .runtime()
-                    .objectives[0]
-                    .stage_selectors[2]
+                if session.backend().campaign.simulation().runtime().objectives[0].stage_selectors
+                    [2]
                     == 2
                 {
                     break;
@@ -12628,7 +12487,7 @@ pub(crate) mod tests {
             let census = session
                 .backend()
                 .campaign
-                .level2_compatibility()
+                .simulation()
                 .economy()
                 .bee_creatures()
                 .iter()
@@ -12666,13 +12525,8 @@ pub(crate) mod tests {
             // this same bounded ordinary cleanup through sphere/burst output,
             // hide and following-pass reclaim even if the objective completed.
             for _ in 0..24 {
-                if session
-                    .backend()
-                    .campaign
-                    .level2_compatibility()
-                    .runtime()
-                    .objectives[0]
-                    .stage_selectors[2]
+                if session.backend().campaign.simulation().runtime().objectives[0].stage_selectors
+                    [2]
                     == 2
                 {
                     objective_completed = true;
@@ -12680,7 +12534,7 @@ pub(crate) mod tests {
                 if session
                     .backend()
                     .campaign
-                    .level2_compatibility()
+                    .simulation()
                     .economy()
                     .bee_creatures()
                     .iter()
@@ -12705,7 +12559,7 @@ pub(crate) mod tests {
             let current = session
                 .backend()
                 .campaign
-                .level2_compatibility()
+                .simulation()
                 .economy()
                 .bee_creatures()
                 .iter()
@@ -12733,7 +12587,7 @@ pub(crate) mod tests {
             BTreeSet::from([229, 230, 231, 236, 237]).is_subset(&reclaimed_rows),
             "the first five production plague Bees reach following-pass physical reclaim"
         );
-        let compatibility = session.backend().campaign.level2_compatibility();
+        let compatibility = session.backend().campaign.simulation();
         let live_bee_rows = compatibility
             .economy()
             .bee_creatures()
@@ -12797,7 +12651,7 @@ pub(crate) mod tests {
         )
         .unwrap();
         for attempt in 0..2 {
-            let compatibility = session.backend().campaign.level2_compatibility();
+            let compatibility = session.backend().campaign.simulation();
             for stage in 1..=3 {
                 assert!(compatibility.economy().has_castle_stage_footprint(stage));
             }
@@ -12805,7 +12659,7 @@ pub(crate) mod tests {
             let player = compatibility.shared_spells().player_entity();
             assert_eq!((player.mana, player.max_mana), (1_000, 1_000));
             build_real_level_two_castle_for_test(&mut session);
-            let compatibility = session.backend().campaign.level2_compatibility();
+            let compatibility = session.backend().campaign.simulation();
             let castle = compatibility.economy().castle().unwrap();
             assert!(castle.active && castle.level == 1);
             assert_eq!(castle.mana, 0);
@@ -12838,7 +12692,7 @@ pub(crate) mod tests {
                 session
                     .backend()
                     .campaign
-                    .level2_compatibility()
+                    .simulation()
                     .economy()
                     .has_castle_stage_footprint(stage)
             );
@@ -12846,31 +12700,19 @@ pub(crate) mod tests {
         let baseline = session
             .backend()
             .campaign
-            .level2_compatibility()
+            .simulation()
             .shared_spells()
             .player_entity();
         assert_eq!((baseline.mana, baseline.max_mana), (1_000, 1_000));
         // Row 11 is enabled by the same ordinary entry waypoint route as
         // the full combat driver; opening the package alone does not arm it.
         assert_eq!(
-            &session
-                .backend()
-                .campaign
-                .level2_compatibility()
-                .runtime()
-                .objectives[0]
-                .stage_selectors[..5],
+            &session.backend().campaign.simulation().runtime().objectives[0].stage_selectors[..5],
             &[1, 1, 1, 1, 1]
         );
         fly_real_level_two_until_stage_complete_for_test(&mut session, 3);
         assert_eq!(
-            &session
-                .backend()
-                .campaign
-                .level2_compatibility()
-                .runtime()
-                .objectives[0]
-                .stage_selectors[..5],
+            &session.backend().campaign.simulation().runtime().objectives[0].stage_selectors[..5],
             &[1, 1, 1, 2, 1]
         );
         session
@@ -12880,12 +12722,12 @@ pub(crate) mod tests {
             session
                 .backend()
                 .campaign
-                .level2_compatibility()
+                .simulation()
                 .dispatch_events()
                 .iter()
                 .any(|event| matches!(
                     event,
-                    crate::native_world::Level2DispatchEvent::AuthoredGroupActivated {
+                    crate::native_world::Mc2DispatchEvent::AuthoredGroupActivated {
                         source_slot: 32,
                         group: 8,
                         authored_indices,
@@ -12895,13 +12737,7 @@ pub(crate) mod tests {
         );
         fly_real_level_two_until_stage_complete_for_test(&mut session, 0);
         assert_eq!(
-            &session
-                .backend()
-                .campaign
-                .level2_compatibility()
-                .runtime()
-                .objectives[0]
-                .stage_selectors[..5],
+            &session.backend().campaign.simulation().runtime().objectives[0].stage_selectors[..5],
             &[2, 1, 1, 2, 1]
         );
         assert_eq!(
@@ -12909,7 +12745,7 @@ pub(crate) mod tests {
             2
         );
         prepare_real_level_two_castle_recharge_for_test(&mut session);
-        let compatibility = session.backend().campaign.level2_compatibility();
+        let compatibility = session.backend().campaign.simulation();
         let castle = compatibility
             .economy()
             .castle()
@@ -12932,7 +12768,7 @@ pub(crate) mod tests {
             Some(SpellKind::Fireball)
         );
         session.reset(guard(&session)).unwrap();
-        let reset = session.backend().campaign.level2_compatibility();
+        let reset = session.backend().campaign.simulation();
         for stage in 1..=3 {
             assert!(reset.economy().has_castle_stage_footprint(stage));
         }
@@ -12969,7 +12805,7 @@ pub(crate) mod tests {
         session
             .backend_mut()
             .campaign
-            .level2_compatibility_mut()
+            .simulation_mut()
             .apply_carried_spell_families(&[0], Some(0))
             .unwrap();
         session
@@ -12997,44 +12833,34 @@ pub(crate) mod tests {
         cast: GameCommand,
         require_motion: bool,
     ) -> (i32, crate::native_world::Level2NyphurCommonUpkeepSnapshot) {
-        let position_before_cast = session
-            .backend()
-            .campaign
-            .level2_compatibility()
-            .state
-            .position;
+        let position_before_cast = session.backend().campaign.simulation().state.position;
         let cast_index = 0;
         let life_before = session
             .backend()
             .campaign
-            .level2_compatibility()
+            .simulation()
             .nyphur_common_upkeep()
             .expect("qualified Nyphur common carrier")
             .life;
         let nyphur_generation = session
             .backend()
             .campaign
-            .level2_compatibility()
+            .simulation()
             .economy()
             .slot_generation(112);
-        let player_attacker = session
-            .backend()
-            .campaign
-            .level2_compatibility()
-            .state
-            .entity_index;
+        let player_attacker = session.backend().campaign.simulation().state.entity_index;
         let mut saw_player_mailbox = false;
         let mut expected_damage_life = None;
         let mut last_upkeep_before_step = session
             .backend()
             .campaign
-            .level2_compatibility()
+            .simulation()
             .nyphur_common_upkeep()
             .unwrap();
         let projectile_slots_before = session
             .backend()
             .campaign
-            .level2_compatibility()
+            .simulation()
             .economy()
             .fireball_projectiles()
             .iter()
@@ -13044,7 +12870,7 @@ pub(crate) mod tests {
                     session
                         .backend()
                         .campaign
-                        .level2_compatibility()
+                        .simulation()
                         .economy()
                         .slot_generation(projectile.source_entity_index),
                 )
@@ -13053,7 +12879,7 @@ pub(crate) mod tests {
         let impact_slots_before = session
             .backend()
             .campaign
-            .level2_compatibility()
+            .simulation()
             .economy()
             .model17_spawned_children()
             .iter()
@@ -13063,7 +12889,7 @@ pub(crate) mod tests {
                     session
                         .backend()
                         .campaign
-                        .level2_compatibility()
+                        .simulation()
                         .economy()
                         .slot_generation(impact.source_entity_index),
                 )
@@ -13071,7 +12897,7 @@ pub(crate) mod tests {
             .collect::<BTreeSet<_>>();
         session.step(guard(&session), cast).unwrap();
         if require_motion {
-            let state = session.backend().campaign.level2_compatibility().state;
+            let state = session.backend().campaign.simulation().state;
             assert_ne!(
                 state.actual_speed, 0,
                 "the admitted public cast occurs in source motion"
@@ -13082,7 +12908,7 @@ pub(crate) mod tests {
         let mut projectile_slot = None;
         let mut saw_class10_impact = false;
         for _ in 0..12 {
-            let compatibility = session.backend().campaign.level2_compatibility();
+            let compatibility = session.backend().campaign.simulation();
             projectile_slot = projectile_slot.or_else(|| {
                 compatibility
                     .economy()
@@ -13104,7 +12930,7 @@ pub(crate) mod tests {
                             session
                                 .backend()
                                 .campaign
-                                .level2_compatibility()
+                                .simulation()
                                 .economy()
                                 .slot_generation(projectile.source_entity_index),
                         )
@@ -13175,7 +13001,7 @@ pub(crate) mod tests {
         let player_after_cast = session
             .backend()
             .campaign
-            .level2_compatibility()
+            .simulation()
             .shared_spells()
             .player_entity();
         assert!(
@@ -13190,8 +13016,7 @@ pub(crate) mod tests {
             "ordinary semantic Fireball cast {cast_index} did not emit the source class-10/model-0 impact"
         );
         let consumed_attacker = u16::from_le_bytes(
-            session.backend().campaign.level2_compatibility().entities()[112].record_bytes()
-                [42..44]
+            session.backend().campaign.simulation().entities()[112].record_bytes()[42..44]
                 .try_into()
                 .unwrap(),
         );
@@ -13203,7 +13028,7 @@ pub(crate) mod tests {
             session
                 .backend()
                 .campaign
-                .level2_compatibility()
+                .simulation()
                 .economy()
                 .slot_generation(112),
             nyphur_generation
@@ -13228,7 +13053,7 @@ pub(crate) mod tests {
             let (life, before) =
                 assert_public_nyphur_fireball_receipt_for_test(&mut session, cast, false);
             if life < 0 {
-                let compatibility = session.backend().campaign.level2_compatibility();
+                let compatibility = session.backend().campaign.simulation();
                 let source = &compatibility.entities()[112];
                 let after = compatibility.nyphur_common_upkeep().unwrap();
                 let player = compatibility.state.entity_index;
@@ -13259,7 +13084,7 @@ pub(crate) mod tests {
                     session
                         .backend()
                         .campaign
-                        .level2_compatibility()
+                        .simulation()
                         .entities()
                         .get(112)
                         .filter(|entity| {
@@ -13306,7 +13131,7 @@ pub(crate) mod tests {
         session
             .backend()
             .campaign
-            .level2_compatibility()
+            .simulation()
             .entities()
             .get(usize::from(source_slot))
             .filter(|source| {
@@ -13336,7 +13161,7 @@ pub(crate) mod tests {
 
     impl SkeletonLifecycleObservation {
         fn new(session: &GameSession<Mc2CampaignBackend>, slot: u16) -> Self {
-            let compatibility = session.backend().campaign.level2_compatibility();
+            let compatibility = session.backend().campaign.simulation();
             Self {
                 generation: compatibility.economy().slot_generation(slot),
                 actions: BTreeSet::from([level_three_skeleton(session, slot).unwrap().action]),
@@ -13354,7 +13179,7 @@ pub(crate) mod tests {
         if session
             .backend()
             .campaign
-            .level2_compatibility()
+            .simulation()
             .economy()
             .slot_generation(slot)
             != original.generation
@@ -13372,7 +13197,7 @@ pub(crate) mod tests {
             if let Some(source) = session
                 .backend()
                 .campaign
-                .level2_compatibility()
+                .simulation()
                 .entities()
                 .get(usize::from(*source_slot))
                 .filter(|source| {
@@ -13385,7 +13210,7 @@ pub(crate) mod tests {
                 if session
                     .backend()
                     .campaign
-                    .level2_compatibility()
+                    .simulation()
                     .economy()
                     .slot_generation(*source_slot)
                     == observation.generation
@@ -13402,7 +13227,7 @@ pub(crate) mod tests {
         observed_actions: &mut BTreeMap<u16, SkeletonLifecycleObservation>,
     ) {
         observe_real_level_three_skeleton_actions_for_test(session, observed_actions);
-        let compatibility = session.backend().campaign.level2_compatibility();
+        let compatibility = session.backend().campaign.simulation();
         let event_start = compatibility.economy().events().len();
         let original_slots = observed_actions
             .iter()
@@ -13419,12 +13244,7 @@ pub(crate) mod tests {
             .map(|(slot, _)| *slot)
             .collect::<Vec<_>>();
         session.step(guard(session), command).unwrap();
-        let events = session
-            .backend()
-            .campaign
-            .level2_compatibility()
-            .economy()
-            .events();
+        let events = session.backend().campaign.simulation().economy().events();
         for slot in original_slots {
             let fresh = &events[event_start..];
             let Some((birth_offset, sphere_id, mana)) =
@@ -13534,7 +13354,7 @@ pub(crate) mod tests {
                 );
                 continue;
             }
-            let state = session.backend().campaign.level2_compatibility().state;
+            let state = session.backend().campaign.simulation().state;
             let dx = i32::from(
                 source
                     .position
@@ -13565,7 +13385,7 @@ pub(crate) mod tests {
         }
         panic!(
             "ordinary player flight did not reach Skeleton source slot {source_slot}: player={:?} source={:?} actions={:?}",
-            session.backend().campaign.level2_compatibility().state,
+            session.backend().campaign.simulation().state,
             observed_level_three_skeleton(session, source_slot, observed_actions),
             observed_actions[&source_slot].actions
         );
@@ -13578,7 +13398,7 @@ pub(crate) mod tests {
         observed_actions: &mut BTreeMap<u16, SkeletonLifecycleObservation>,
     ) -> Vec<SkeletonFireballDamageReceipt> {
         for _ in 0..=24 {
-            let compatibility = session.backend().campaign.level2_compatibility();
+            let compatibility = session.backend().campaign.simulation();
             let economy = compatibility.economy();
             let player_slot = compatibility.state.entity_index;
             let has_player_projectile = economy
@@ -13611,7 +13431,7 @@ pub(crate) mod tests {
             return Vec::new();
         };
         let (attacker, before, projectile_occurrences_before, impact_occurrences_before) = {
-            let compatibility = session.backend().campaign.level2_compatibility();
+            let compatibility = session.backend().campaign.simulation();
             let shared = compatibility.shared_spells();
             let player = shared.local_player();
             let holder_slot = player.enabled_spell_holders[0];
@@ -13713,7 +13533,7 @@ pub(crate) mod tests {
             CAMPAIGN_SPEED_INDEX,
             session.backend().flight_binding.tuning(),
         );
-        let forecast = cast_forecast.level2_compatibility();
+        let forecast = cast_forecast.simulation();
         let cast_state = forecast.state;
         let Some(scheduled_target) =
             forecast
@@ -13748,11 +13568,7 @@ pub(crate) mod tests {
             256,
         );
         if crate::FlightWorld::ground_height(
-            session
-                .backend()
-                .campaign
-                .level2_compatibility()
-                .canonical_terrain(),
+            session.backend().campaign.simulation().canonical_terrain(),
             launch_position,
         ) > launch_position.z
         {
@@ -13779,7 +13595,7 @@ pub(crate) mod tests {
         let mut impact_slot = None;
         for _ in 0..=24 {
             {
-                let compatibility = session.backend().campaign.level2_compatibility();
+                let compatibility = session.backend().campaign.simulation();
                 let economy = compatibility.economy();
                 if let Some(projectile) = economy.fireball_projectiles().iter().find(|projectile| {
                     projectile.owner_entity_index == attacker
@@ -13810,7 +13626,7 @@ pub(crate) mod tests {
                 }
             }
             for event in session.backend().campaign.events() {
-                if let Level2DispatchEvent::DynamicArena {
+                if let Mc2DispatchEvent::DynamicArena {
                     source_slot, kind, ..
                 } = event
                 {
@@ -13887,13 +13703,13 @@ pub(crate) mod tests {
         session
             .backend_mut()
             .campaign
-            .level2_compatibility_mut()
+            .simulation_mut()
             .apply_carried_spell_families(&[0], Some(0))
             .unwrap();
         let skeleton_slots = session
             .backend()
             .campaign
-            .level2_compatibility()
+            .simulation()
             .entities()
             .iter()
             .filter(|source| source.active && source.class == 5 && source.model == 9)
@@ -13925,12 +13741,7 @@ pub(crate) mod tests {
                 life_after: 750,
             }]
         );
-        let player = session
-            .backend()
-            .campaign
-            .level2_compatibility()
-            .state
-            .entity_index;
+        let player = session.backend().campaign.simulation().state.entity_index;
         let damaged = level_three_skeleton(&session, NEAREST_SKELETON_SLOT).unwrap();
         assert_eq!(
             (damaged.life, damaged.action, damaged.word_26()),
@@ -13966,7 +13777,7 @@ pub(crate) mod tests {
     pub(crate) fn drive_real_level_three_skeleton_horde_to_guardian_dragons_for_test(
         session: &mut GameSession<Mc2CampaignBackend>,
     ) {
-        let compatibility = session.backend().campaign.level2_compatibility();
+        let compatibility = session.backend().campaign.simulation();
         let original_generations = compatibility
             .entities()
             .iter()
@@ -13982,7 +13793,7 @@ pub(crate) mod tests {
             if session
                 .backend()
                 .campaign
-                .level2_compatibility()
+                .simulation()
                 .economy()
                 .slot_generation(source_slot)
                 != *original_generations.get(&source_slot)?
@@ -13992,7 +13803,7 @@ pub(crate) mod tests {
             session
                 .backend()
                 .campaign
-                .level2_compatibility()
+                .simulation()
                 .entities()
                 .get(usize::from(source_slot))
                 .filter(|source| {
@@ -14006,7 +13817,7 @@ pub(crate) mod tests {
         let skeleton_slots = session
             .backend()
             .campaign
-            .level2_compatibility()
+            .simulation()
             .entities()
             .iter()
             .filter(|source| source.active && source.class == 5 && source.model == 9)
@@ -14014,13 +13825,7 @@ pub(crate) mod tests {
             .collect::<Vec<_>>();
         assert_eq!(skeleton_slots.len(), 11);
         assert_eq!(
-            &session
-                .backend()
-                .campaign
-                .level2_compatibility()
-                .runtime()
-                .objectives[0]
-                .stage_selectors[..5],
+            &session.backend().campaign.simulation().runtime().objectives[0].stage_selectors[..5],
             &[1, 1, 1, 1, 1]
         );
         assert_eq!(
@@ -14063,7 +13868,7 @@ pub(crate) mod tests {
         let package_fireball_pickups = session
             .backend()
             .campaign
-            .level2_compatibility()
+            .simulation()
             .mission()
             .authored_features()
             .iter()
@@ -14079,7 +13884,7 @@ pub(crate) mod tests {
         // the real campaign transition.
 
         let (sphere_mana_before, economy_event_start) = {
-            let economy = session.backend().campaign.level2_compatibility().economy();
+            let economy = session.backend().campaign.simulation().economy();
             (
                 economy
                     .spheres()
@@ -14101,12 +13906,7 @@ pub(crate) mod tests {
                 .collect::<Vec<_>>();
             let Some(source_slot) = current_slots.iter().copied().min_by_key(|source_slot| {
                 let source = skeleton(session, *source_slot).unwrap();
-                let player = session
-                    .backend()
-                    .campaign
-                    .level2_compatibility()
-                    .state
-                    .position;
+                let player = session.backend().campaign.simulation().state.position;
                 let dx = i64::from(i32::from(
                     source.position.x.wrapping_sub(player.x).cast_signed(),
                 ));
@@ -14145,13 +13945,7 @@ pub(crate) mod tests {
         );
 
         for _ in 0..16 {
-            if session
-                .backend()
-                .campaign
-                .level2_compatibility()
-                .runtime()
-                .objectives[0]
-                .stage_selectors[0]
+            if session.backend().campaign.simulation().runtime().objectives[0].stage_selectors[0]
                 == 2
                 && skeleton_slots
                     .iter()
@@ -14174,7 +13968,7 @@ pub(crate) mod tests {
             assert!(BTreeSet::from([72, 74, 76, 77, 79]).is_subset(&observation.actions));
         }
 
-        let economy = session.backend().campaign.level2_compatibility().economy();
+        let economy = session.backend().campaign.simulation().economy();
         let death_outputs = observed_actions
             .values()
             .map(|observation| {
@@ -14233,7 +14027,7 @@ pub(crate) mod tests {
             )), "ordinary following-pass cleanup reclaims every original Skeleton burst occurrence");
         }
 
-        let compatibility = session.backend().campaign.level2_compatibility();
+        let compatibility = session.backend().campaign.simulation();
         assert_eq!(compatibility.runtime().objectives[0].stage_selectors[0], 2);
         assert_eq!(compatibility.runtime().objectives[0].text_selector, 1);
         assert!(
@@ -14242,10 +14036,7 @@ pub(crate) mod tests {
                 .iter()
                 .all(|event| !matches!(
                     event,
-                    crate::native_world::Level2DispatchEvent::AuthoredGroupActivated {
-                        group: 1,
-                        ..
-                    }
+                    crate::native_world::Mc2DispatchEvent::AuthoredGroupActivated { group: 1, .. }
                 ))
         );
         assert_eq!(
@@ -14311,7 +14102,7 @@ pub(crate) mod tests {
         session: &GameSession<Mc2CampaignBackend>,
     ) -> Vec<DragonFireballTarget> {
         level_three_dragon_fireball_targets_from_economy(
-            session.backend().campaign.level2_compatibility().economy(),
+            session.backend().campaign.simulation().economy(),
         )
     }
 
@@ -14390,12 +14181,7 @@ pub(crate) mod tests {
         desired_root: Option<u16>,
     ) -> Option<DragonFireballTarget> {
         let targets = level_three_dragon_fireball_targets(session);
-        let player = session
-            .backend()
-            .campaign
-            .level2_compatibility()
-            .state
-            .position;
+        let player = session.backend().campaign.simulation().state.position;
         targets
             .iter()
             .copied()
@@ -14430,7 +14216,7 @@ pub(crate) mod tests {
         session
             .backend_mut()
             .campaign
-            .level2_compatibility_mut()
+            .simulation_mut()
             .activate_authored_group_prerequisite_for_test(1)
             .unwrap();
         let targets = level_three_dragon_fireball_targets(&session);
@@ -14458,7 +14244,7 @@ pub(crate) mod tests {
             );
             assert_eq!(
                 level_three_dragon_launch_gap_for_test(
-                    session.backend().campaign.level2_compatibility(),
+                    session.backend().campaign.simulation(),
                     Some(root.source_slot),
                 )
                 .map(|(target, _, _)| target),
@@ -14471,7 +14257,7 @@ pub(crate) mod tests {
             );
             assert!(
                 level_three_dragon_launch_gap_for_test(
-                    session.backend().campaign.level2_compatibility(),
+                    session.backend().campaign.simulation(),
                     Some(body_slot),
                 )
                 .is_none(),
@@ -14489,15 +14275,10 @@ pub(crate) mod tests {
     }
 
     fn settle_level_three_dragon_damage_for_test(session: &mut GameSession<Mc2CampaignBackend>) {
-        let player = session
-            .backend()
-            .campaign
-            .level2_compatibility()
-            .state
-            .entity_index;
+        let player = session.backend().campaign.simulation().state.entity_index;
         let mut history = Vec::new();
         for _ in 0..=16 {
-            let economy = session.backend().campaign.level2_compatibility().economy();
+            let economy = session.backend().campaign.simulation().economy();
             let pending_roots = economy
                 .authored_class5()
                 .iter()
@@ -14588,14 +14369,14 @@ pub(crate) mod tests {
         session: &GameSession<Mc2CampaignBackend>,
         retreat_heading: i16,
     ) -> GameCommand {
-        let state = session.backend().campaign.level2_compatibility().state;
+        let state = session.backend().campaign.simulation().state;
         level_three_source_safe_flight_command(state, retreat_heading, false)
     }
 
     fn level_three_initial_dragon_retreat_heading(
         session: &GameSession<Mc2CampaignBackend>,
     ) -> i16 {
-        let state = session.backend().campaign.level2_compatibility().state;
+        let state = session.backend().campaign.simulation().state;
         level_three_dragon_fireball_targets(session)
             .into_iter()
             .filter(|target| target.source_slot == target.root_slot)
@@ -14628,7 +14409,7 @@ pub(crate) mod tests {
         phase: &str,
         public_requests: usize,
     ) -> String {
-        let compatibility = session.backend().campaign.level2_compatibility();
+        let compatibility = session.backend().campaign.simulation();
         let economy = compatibility.economy();
         let player = compatibility.shared_spells().player_entity();
         let raw_player =
@@ -14733,7 +14514,7 @@ pub(crate) mod tests {
         session: &GameSession<Mc2CampaignBackend>,
         turn: usize,
     ) -> String {
-        let compatibility = session.backend().campaign.level2_compatibility();
+        let compatibility = session.backend().campaign.simulation();
         let shared = compatibility.shared_spells();
         let player = shared.player_entity();
         let numeric = &compatibility.entities()[usize::from(player.index)];
@@ -14792,22 +14573,12 @@ pub(crate) mod tests {
             .into_iter()
             .filter(|target| target.source_slot == target.root_slot)
             .min_by_key(|root| {
-                let player = session
-                    .backend()
-                    .campaign
-                    .level2_compatibility()
-                    .state
-                    .position;
+                let player = session.backend().campaign.simulation().state.position;
                 let dx = i32::from(root.position.x.wrapping_sub(player.x).cast_signed());
                 let dy = i32::from(root.position.y.wrapping_sub(player.y).cast_signed());
                 dx.wrapping_mul(dx).wrapping_add(dy.wrapping_mul(dy))
             });
-        let player_position = session
-            .backend()
-            .campaign
-            .level2_compatibility()
-            .state
-            .position;
+        let player_position = session.backend().campaign.simulation().state.position;
         let initial_separation = initial_root
             .map(|root| {
                 let dx = i32::from(
@@ -14837,7 +14608,7 @@ pub(crate) mod tests {
         ));
         let mut prior_signature = None;
         for turn in 0..=retreat_bound {
-            let compatibility = session.backend().campaign.level2_compatibility();
+            let compatibility = session.backend().campaign.simulation();
             let player = compatibility.state.entity_index;
             let player_entity = compatibility.shared_spells().player_entity();
             let signature = (
@@ -14960,7 +14731,7 @@ pub(crate) mod tests {
             }
             let (_, command) = level_three_public_high_speed_retreat_command_for_test(session, None)
                 .unwrap_or_else(|| {
-                    let compatibility = session.backend().campaign.level2_compatibility();
+                    let compatibility = session.backend().campaign.simulation();
                     panic!(
                         "exact public retreat stencil exposes no safe progressing command: state={:#?} mailbox={:?} at_rest_lookahead={} candidates={:#?} chronology={chronology:#?}",
                         compatibility.state,
@@ -14971,7 +14742,7 @@ pub(crate) mod tests {
                 });
             step_level_three_public_macro_command(session, command);
         }
-        let compatibility = session.backend().campaign.level2_compatibility();
+        let compatibility = session.backend().campaign.simulation();
         panic!(
             "ordinary retreat did not clear the authored Dragon aggro/transient state: player={:?} life={} yaw={} roll={} roots={:?} projectiles={:?} impacts={:?}",
             compatibility.state.position,
@@ -15067,14 +14838,14 @@ pub(crate) mod tests {
         const TURN_AND_ACCELERATION_BOUND: usize = 5 + 7 + (1_024_usize + 5 - 10).div_ceil(4) + 5;
         let mut predicted = session.backend().campaign.clone();
         let holders = predicted
-            .level2_compatibility()
+            .simulation()
             .shared_spells()
             .local_player()
             .enabled_spell_holders[0];
         for _ in 0..TURN_AND_ACCELERATION_BOUND {
             let waypoint = waypoints[waypoint_index];
             let final_waypoint = waypoint_index + 1 == waypoints.len();
-            let compatibility = predicted.level2_compatibility();
+            let compatibility = predicted.simulation();
             let state = compatibility.state;
             let dx = i32::from(waypoint.x.wrapping_sub(state.position.x).cast_signed());
             let dy = i32::from(waypoint.y.wrapping_sub(state.position.y).cast_signed());
@@ -15095,15 +14866,14 @@ pub(crate) mod tests {
                 CAMPAIGN_SPEED_INDEX,
                 session.backend().flight_binding.tuning(),
             );
-            if predicted.events().iter().any(|event| {
-                matches!(
-                    event,
-                    crate::native_world::Level2DispatchEvent::Error { .. }
-                )
-            }) {
+            if predicted
+                .events()
+                .iter()
+                .any(|event| matches!(event, crate::native_world::Mc2DispatchEvent::Error { .. }))
+            {
                 return false;
             }
-            let after = predicted.level2_compatibility();
+            let after = predicted.simulation();
             let roots = level_three_dragon_fireball_targets_from_economy(after.economy())
                 .into_iter()
                 .filter(|target| target.source_slot == target.root_slot)
@@ -15164,7 +14934,7 @@ pub(crate) mod tests {
         session: &GameSession<Mc2CampaignBackend>,
         clearance: u32,
     ) -> Vec<String> {
-        let before = session.backend().campaign.level2_compatibility();
+        let before = session.backend().campaign.simulation();
         let center = level_three_source_retreat_roll_for_test(session).unwrap_or(0);
         let stencil = level_three_source_pursuit_roll_stencil_for_test(center);
         let signed_brake = if before.state.target_speed < 0 {
@@ -15174,7 +14944,7 @@ pub(crate) mod tests {
         } else {
             LongitudinalControl::Coast
         };
-        let actor = |compatibility: &crate::native_world::Level2ResetSession, slot: u16| {
+        let actor = |compatibility: &crate::native_world::Mc2Simulation, slot: u16| {
             compatibility
                 .entities()
                 .get(usize::from(slot))
@@ -15210,7 +14980,7 @@ pub(crate) mod tests {
                     CAMPAIGN_SPEED_INDEX,
                     session.backend().flight_binding.tuning(),
                 );
-                let after = predicted.level2_compatibility();
+                let after = predicted.simulation();
                 let player = before.shared_spells().player_entity().index;
                 let before_mailbox = level_three_player_raw_mailbox_for_test(before);
                 let after_mailbox = level_three_player_raw_mailbox_for_test(after);
@@ -15275,7 +15045,7 @@ pub(crate) mod tests {
             public_requests,
         );
         {
-            let compatibility = session.backend().campaign.level2_compatibility();
+            let compatibility = session.backend().campaign.simulation();
             let castle = compatibility
                 .economy()
                 .castle()
@@ -15296,14 +15066,14 @@ pub(crate) mod tests {
         let max_life = session
             .backend()
             .campaign
-            .level2_compatibility()
+            .simulation()
             .shared_spells()
             .player_entity()
             .max_life;
         if session
             .backend()
             .campaign
-            .level2_compatibility()
+            .simulation()
             .shared_spells()
             .player_entity()
             .life
@@ -15367,7 +15137,7 @@ pub(crate) mod tests {
             ROUTE_CLEARANCE,
         )
         .unwrap_or_else(|| {
-            let compatibility = session.backend().campaign.level2_compatibility();
+            let compatibility = session.backend().campaign.simulation();
             panic!(
                 "source-resolved Level 3 terrain has no Dragon-safe Castle route: player={:?} castle={:?} roots={:?} clearance={ROUTE_CLEARANCE} chronology={chronology:#?}",
                 compatibility.state.position,
@@ -15382,7 +15152,7 @@ pub(crate) mod tests {
         let root_count = session
             .backend()
             .campaign
-            .level2_compatibility()
+            .simulation()
             .economy()
             .authored_class5()
             .iter()
@@ -15402,7 +15172,7 @@ pub(crate) mod tests {
         let mut reached_castle = false;
         let mut prior_life = None;
         for turn in 0..recovery_budget {
-            let compatibility = session.backend().campaign.level2_compatibility();
+            let compatibility = session.backend().campaign.simulation();
             let player = compatibility.shared_spells().player_entity();
             if prior_life != Some(player.life) {
                 chronology.push(level_three_dragon_survival_snapshot_for_test(
@@ -15583,14 +15353,14 @@ pub(crate) mod tests {
         let seeded_life = session
             .backend()
             .campaign
-            .level2_compatibility()
+            .simulation()
             .shared_spells()
             .player_entity()
             .life;
         session
             .step(guard(session), GameCommand::default())
             .unwrap();
-        let compatibility = session.backend().campaign.level2_compatibility();
+        let compatibility = session.backend().campaign.simulation();
         let regen = max_life / 250;
         assert_eq!(
             compatibility.shared_spells().player_entity().life,
@@ -15602,7 +15372,7 @@ pub(crate) mod tests {
         let mut healing_trace = Vec::with_capacity(healing_bound + 1);
         for turn in 0..healing_bound {
             healing_trace.push(level_three_castle_healing_snapshot_for_test(session, turn));
-            let compatibility = session.backend().campaign.level2_compatibility();
+            let compatibility = session.backend().campaign.simulation();
             let player = compatibility.shared_spells().player_entity();
             if player.life == max_life {
                 assert_eq!(
@@ -15651,7 +15421,7 @@ pub(crate) mod tests {
             public_requests,
         )];
         let (holder_index, holder_cadence) = {
-            let compatibility = session.backend().campaign.level2_compatibility();
+            let compatibility = session.backend().campaign.simulation();
             let player = compatibility.shared_spells().local_player();
             let holder_index = player.enabled_spell_holders[0];
             let holder = compatibility
@@ -15670,7 +15440,7 @@ pub(crate) mod tests {
         let ready_bound = 24_usize.max(holder_cadence);
         let mut holder_ready = false;
         for _ in 0..=ready_bound {
-            let compatibility = session.backend().campaign.level2_compatibility();
+            let compatibility = session.backend().campaign.simulation();
             let player = compatibility.state.entity_index;
             let has_projectile = compatibility
                 .economy()
@@ -15712,7 +15482,7 @@ pub(crate) mod tests {
                 .unwrap();
         }
         if !holder_ready {
-            let compatibility = session.backend().campaign.level2_compatibility();
+            let compatibility = session.backend().campaign.simulation();
             let shared = compatibility.shared_spells();
             let player = shared.local_player();
             let holder = shared
@@ -15835,7 +15605,7 @@ pub(crate) mod tests {
         let mut aimed = None;
         for _ in 0..640 {
             let Some((target, _, gap)) = level_three_dragon_launch_gap_for_test(
-                session.backend().campaign.level2_compatibility(),
+                session.backend().campaign.simulation(),
                 desired_root,
             ) else {
                 if desired_root.is_some() {
@@ -15856,7 +15626,7 @@ pub(crate) mod tests {
                 desired_root,
             )
             .unwrap_or_else(|| {
-                let state = session.backend().campaign.level2_compatibility().state;
+                let state = session.backend().campaign.simulation().state;
                 panic!(
                     "exact public high-speed controller exposes no safe progressing command to Dragon target {:?} from {:?}",
                     (target.source_slot, target.generation, target.position),
@@ -15866,7 +15636,7 @@ pub(crate) mod tests {
             step_level_three_public_macro_command(session, command);
         }
         let aimed = aimed.unwrap_or_else(|| {
-            let compatibility = session.backend().campaign.level2_compatibility();
+            let compatibility = session.backend().campaign.simulation();
             panic!(
                 "ordinary player flight reaches one real Dragon body row: desired_root={desired_root:?} player=(position {:?}, life {}, speed ({},{})) roots={:?}",
                 compatibility.state.position,
@@ -15896,7 +15666,7 @@ pub(crate) mod tests {
             projectile_occurrences_before,
             impact_occurrences_before,
         ) = {
-            let compatibility = session.backend().campaign.level2_compatibility();
+            let compatibility = session.backend().campaign.simulation();
             let shared = compatibility.shared_spells();
             let player = shared.local_player();
             let holder_slot = player.enabled_spell_holders[0];
@@ -15967,15 +15737,14 @@ pub(crate) mod tests {
             CAMPAIGN_SPEED_INDEX,
             session.backend().flight_binding.tuning(),
         );
-        let cast_state = cast_forecast.level2_compatibility().state;
-        let scheduled_target = level_three_dragon_fireball_targets_from_economy(
-            cast_forecast.level2_compatibility().economy(),
-        )
-        .into_iter()
-        .find(|target| {
-            target.source_slot == aimed.source_slot && target.generation == aimed.generation
-        })
-        .unwrap_or(aimed);
+        let cast_state = cast_forecast.simulation().state;
+        let scheduled_target =
+            level_three_dragon_fireball_targets_from_economy(cast_forecast.simulation().economy())
+                .into_iter()
+                .find(|target| {
+                    target.source_slot == aimed.source_slot && target.generation == aimed.generation
+                })
+                .unwrap_or(aimed);
         let target_position = crate::Position {
             z: scheduled_target
                 .position
@@ -15991,11 +15760,7 @@ pub(crate) mod tests {
             256,
         );
         if crate::FlightWorld::ground_height(
-            session
-                .backend()
-                .campaign
-                .level2_compatibility()
-                .canonical_terrain(),
+            session.backend().campaign.simulation().canonical_terrain(),
             launch_position,
         ) > launch_position.z
         {
@@ -16044,7 +15809,7 @@ pub(crate) mod tests {
         let retreat_heading = level_three_initial_dragon_retreat_heading(session);
         let mut miss_trace = Vec::with_capacity(25);
         for flight_turn in 0..=24 {
-            let compatibility = session.backend().campaign.level2_compatibility();
+            let compatibility = session.backend().campaign.simulation();
             let economy = compatibility.economy();
             launched_projectile_slots.extend(
                 compatibility
@@ -16359,7 +16124,7 @@ pub(crate) mod tests {
             Mc2CampaignInputs::new(&root),
         )
         .unwrap();
-        let compatibility = session.backend_mut().campaign.level2_compatibility_mut();
+        let compatibility = session.backend_mut().campaign.simulation_mut();
         compatibility
             .apply_carried_spell_families(&[0, 2], Some(0))
             .unwrap();
@@ -16367,7 +16132,7 @@ pub(crate) mod tests {
         session
             .backend_mut()
             .campaign
-            .level2_compatibility_mut()
+            .simulation_mut()
             .activate_authored_group_prerequisite_for_test(1)
             .unwrap();
         assert_eq!(level_three_dragon_fireball_targets(&session).len(), 34);
@@ -16381,7 +16146,7 @@ pub(crate) mod tests {
         let holder = session
             .backend()
             .campaign
-            .level2_compatibility()
+            .simulation()
             .shared_spells()
             .local_player()
             .enabled_spell_holders[0];
@@ -16404,7 +16169,7 @@ pub(crate) mod tests {
                     .life_before
                     .wrapping_sub(crate::level1_mission::FIREBALL_PAYLOAD)
         }));
-        let compatibility = session.backend().campaign.level2_compatibility();
+        let compatibility = session.backend().campaign.simulation();
         assert!(compatibility.shared_spells().player_entity().life >= 0);
         assert_eq!(
             compatibility
@@ -16420,7 +16185,7 @@ pub(crate) mod tests {
             let root_is_terminal = session
                 .backend()
                 .campaign
-                .level2_compatibility()
+                .simulation()
                 .economy()
                 .authored_class5()
                 .iter()
@@ -16444,7 +16209,7 @@ pub(crate) mod tests {
                             .wrapping_sub(crate::level1_mission::FIREBALL_PAYLOAD)
                 }));
             }
-            let compatibility = session.backend().campaign.level2_compatibility();
+            let compatibility = session.backend().campaign.simulation();
             assert!(compatibility.shared_spells().player_entity().life >= 0);
             assert_eq!(
                 compatibility
@@ -16458,7 +16223,7 @@ pub(crate) mod tests {
         let terminal_root = session
             .backend()
             .campaign
-            .level2_compatibility()
+            .simulation()
             .economy()
             .authored_class5()
             .iter()
@@ -16513,7 +16278,7 @@ pub(crate) mod tests {
 
     impl GuardianReplayObservationsForTest {
         pub(super) fn observe(&mut self, session: &GameSession<Mc2CampaignBackend>) {
-            let compatibility = session.backend().campaign.level2_compatibility();
+            let compatibility = session.backend().campaign.simulation();
             let economy = compatibility.economy();
             let player = compatibility.state.entity_index;
             if self.roots.is_empty() {
@@ -16820,7 +16585,7 @@ pub(crate) mod tests {
                         })?;
                 }
             }
-            let compatibility = current.backend().campaign.level2_compatibility();
+            let compatibility = current.backend().campaign.simulation();
             if compatibility.shared_spells().player_entity().life < 0
                 || compatibility
                     .economy()
@@ -16831,10 +16596,7 @@ pub(crate) mod tests {
                             == compatibility.shared_spells().player_entity().index
                     })
                 || current.backend().campaign.events().iter().any(|event| {
-                    matches!(
-                        event,
-                        crate::native_world::Level2DispatchEvent::Error { .. }
-                    )
+                    matches!(event, crate::native_world::Mc2DispatchEvent::Error { .. })
                 })
             {
                 return Err(Mc2CampaignReplaySaveError::InvalidSave {
@@ -16849,7 +16611,7 @@ pub(crate) mod tests {
                             .iter()
                             .filter(|event| matches!(
                                 event,
-                                crate::native_world::Level2DispatchEvent::Error { .. }
+                                crate::native_world::Mc2DispatchEvent::Error { .. }
                             ))
                             .take(8)
                             .collect::<Vec<_>>()
@@ -17084,22 +16846,14 @@ pub(crate) mod tests {
         const REQUIRED_PUBLIC_HITS: usize = 17;
         const MAX_PUBLIC_CASTS_PER_DRAGON: usize = REQUIRED_PUBLIC_HITS * 4;
 
-        if session
-            .backend()
-            .campaign
-            .level2_compatibility()
-            .runtime()
-            .objectives[0]
-            .stage_selectors[0]
-            != 2
-        {
+        if session.backend().campaign.simulation().runtime().objectives[0].stage_selectors[0] != 2 {
             drive_real_level_three_skeleton_horde_to_guardian_dragons_for_test(session);
         }
         build_real_level_three_carried_castle_for_test(session);
         let dragons_already_materialized = session
             .backend()
             .campaign
-            .level2_compatibility()
+            .simulation()
             .economy()
             .authored_class5()
             .iter()
@@ -17114,12 +16868,12 @@ pub(crate) mod tests {
                 session
                     .backend()
                     .campaign
-                    .level2_compatibility()
+                    .simulation()
                     .dispatch_events()
                     .iter()
                     .any(|event| matches!(
                         event,
-                        crate::native_world::Level2DispatchEvent::AuthoredGroupActivated {
+                        crate::native_world::Mc2DispatchEvent::AuthoredGroupActivated {
                             source_slot: 127,
                             group: 1,
                             authored_indices,
@@ -17128,7 +16882,7 @@ pub(crate) mod tests {
                     ))
             );
         }
-        let compatibility = session.backend().campaign.level2_compatibility();
+        let compatibility = session.backend().campaign.simulation();
         let mut dragon_roots = history.as_ref().map_or_else(
             || {
                 compatibility
@@ -17207,7 +16961,7 @@ pub(crate) mod tests {
                 let root_is_terminal = session
                     .backend()
                     .campaign
-                    .level2_compatibility()
+                    .simulation()
                     .economy()
                     .authored_class5()
                     .iter()
@@ -17268,7 +17022,7 @@ pub(crate) mod tests {
             let terminal_root = session
                 .backend()
                 .campaign
-                .level2_compatibility()
+                .simulation()
                 .economy()
                 .authored_class5()
                 .iter()
@@ -17287,7 +17041,7 @@ pub(crate) mod tests {
                 session
                     .step(guard(session), GameCommand::default())
                     .unwrap();
-                let economy = session.backend().campaign.level2_compatibility().economy();
+                let economy = session.backend().campaign.simulation().economy();
                 if let Some(root) = economy
                     .authored_class5()
                     .iter()
@@ -17309,7 +17063,7 @@ pub(crate) mod tests {
             }
             assert!(observed_root_actions.contains(&DRAGON_PRE_KILL_ACTION));
             assert!(observed_root_actions.contains(&DRAGON_KILL_ACTION));
-            let economy = session.backend().campaign.level2_compatibility().economy();
+            let economy = session.backend().campaign.simulation().economy();
             assert!(
                 economy
                     .authored_class5()
@@ -17335,13 +17089,7 @@ pub(crate) mod tests {
                 "Dragon root {root_slot} retained body rows {remaining_parts:?}"
             );
             assert_eq!(
-                session
-                    .backend()
-                    .campaign
-                    .level2_compatibility()
-                    .runtime()
-                    .objectives[0]
-                    .stage_selectors[1],
+                session.backend().campaign.simulation().runtime().objectives[0].stage_selectors[1],
                 if dragon_index + 1 == dragon_source_slots.len() {
                     2
                 } else {
@@ -17352,7 +17100,7 @@ pub(crate) mod tests {
                 let fireball_holder = session
                     .backend()
                     .campaign
-                    .level2_compatibility()
+                    .simulation()
                     .shared_spells()
                     .local_player()
                     .enabled_spell_holders[0];
@@ -17370,7 +17118,7 @@ pub(crate) mod tests {
                 let player = session
                     .backend()
                     .campaign
-                    .level2_compatibility()
+                    .simulation()
                     .shared_spells()
                     .player_entity();
                 assert_eq!(player.life, player.max_life);
@@ -17378,7 +17126,7 @@ pub(crate) mod tests {
         }
         assert!(actual_damage_sources.is_subset(&expected_death_sources));
 
-        let compatibility = session.backend().campaign.level2_compatibility();
+        let compatibility = session.backend().campaign.simulation();
         let economy = compatibility.economy();
         let expected_output_count = expected_death_sources.len();
         let output_events = &economy.events()[event_count_before..];
@@ -17429,10 +17177,7 @@ pub(crate) mod tests {
                 .iter()
                 .all(|event| !matches!(
                     event,
-                    crate::native_world::Level2DispatchEvent::AuthoredGroupActivated {
-                        group: 5,
-                        ..
-                    }
+                    crate::native_world::Mc2DispatchEvent::AuthoredGroupActivated { group: 5, .. }
                 ))
         );
         let progress = session.snapshot().value.objective_progress;
@@ -17446,7 +17191,7 @@ pub(crate) mod tests {
     fn valid_level_three_castle_sites_for_test(
         session: &GameSession<Mc2CampaignBackend>,
     ) -> Vec<crate::Position> {
-        let compatibility = session.backend().campaign.level2_compatibility();
+        let compatibility = session.backend().campaign.simulation();
         let terrain = compatibility.canonical_terrain();
         let cast_yaw = compatibility.state.yaw;
         let entity_fov = compatibility.state.entity_fov;
@@ -17485,7 +17230,7 @@ pub(crate) mod tests {
     fn level_three_guardian_spawn_positions_for_test(
         session: &GameSession<Mc2CampaignBackend>,
     ) -> Vec<crate::Position> {
-        let compatibility = session.backend().campaign.level2_compatibility();
+        let compatibility = session.backend().campaign.simulation();
         let level = compatibility
             .semantic_level_definition()
             .expect("qualified Level 3 retains its semantic definition");
@@ -17562,7 +17307,7 @@ pub(crate) mod tests {
         dragon_clearance: u32,
     ) -> Option<(Vec<crate::Position>, usize, i16)> {
         const MAP_SIDE: usize = 256;
-        let compatibility = session.backend().campaign.level2_compatibility();
+        let compatibility = session.backend().campaign.simulation();
         let terrain = compatibility.canonical_terrain();
         let player = compatibility.state;
         let profile = compatibility.profile();
@@ -17659,7 +17404,7 @@ pub(crate) mod tests {
         session: &GameSession<Mc2CampaignBackend>,
         clearance: u32,
     ) -> Option<(Vec<crate::Position>, usize)> {
-        let compatibility = session.backend().campaign.level2_compatibility();
+        let compatibility = session.backend().campaign.simulation();
         let castle = compatibility.economy().castle().filter(|castle| {
             castle.active
                 && compatibility.economy().player_castle_entity_index()
@@ -17712,7 +17457,7 @@ pub(crate) mod tests {
         if let Some(castle) = session
             .backend()
             .campaign
-            .level2_compatibility()
+            .simulation()
             .economy()
             .castle()
             .filter(|castle| {
@@ -17720,7 +17465,7 @@ pub(crate) mod tests {
                     && session
                         .backend()
                         .campaign
-                        .level2_compatibility()
+                        .simulation()
                         .economy()
                         .player_castle_entity_index()
                         == castle.source_entity_index
@@ -17740,7 +17485,7 @@ pub(crate) mod tests {
             .unwrap();
         let mut reached_admitted_site = false;
         let (waypoints, route_edges, admitted_yaw) = {
-            let compatibility = session.backend().campaign.level2_compatibility();
+            let compatibility = session.backend().campaign.simulation();
             level_three_castle_route_in_current_component_for_test(
                 session,
                 compatibility.state.position,
@@ -17752,7 +17497,7 @@ pub(crate) mod tests {
             .saturating_add(waypoints.len().saturating_mul(8))
             .saturating_add(256);
         for _ in 0..command_budget {
-            let compatibility = session.backend().campaign.level2_compatibility();
+            let compatibility = session.backend().campaign.simulation();
             let state = compatibility.state;
             let direction_bits =
                 compatibility.shared_spells().player_entity().control_flags & 0x0300;
@@ -17817,7 +17562,7 @@ pub(crate) mod tests {
             command.pitch_axis = -127;
             session.step(guard(session), command).unwrap();
         }
-        let final_compatibility = session.backend().campaign.level2_compatibility();
+        let final_compatibility = session.backend().campaign.simulation();
         let final_state = final_compatibility.state;
         let final_site = waypoints[waypoint_index];
         let final_dx = i32::from(
@@ -17861,11 +17606,11 @@ pub(crate) mod tests {
             .unwrap();
         let mut saw_projectile = false;
         for _ in 0..64 {
-            let compatibility = session.backend().campaign.level2_compatibility();
+            let compatibility = session.backend().campaign.simulation();
             saw_projectile |= compatibility.dispatch_events().iter().any(|event| {
                 matches!(
                     event,
-                    crate::native_world::Level2DispatchEvent::DynamicArena {
+                    crate::native_world::Mc2DispatchEvent::DynamicArena {
                         kind: crate::native_world::Level2DynamicArenaKind::CastleProjectile,
                         ..
                     }
@@ -17889,7 +17634,7 @@ pub(crate) mod tests {
         let castle = session
             .backend()
             .campaign
-            .level2_compatibility()
+            .simulation()
             .economy()
             .castle()
             .expect("the carried Castle projectile constructs a real stage-one root");
@@ -17957,7 +17702,7 @@ pub(crate) mod tests {
         mut predicted: crate::FlightState,
         command: &GameCommand,
     ) -> (crate::FlightState, crate::StepEvidence) {
-        let compatibility = session.backend().campaign.level2_compatibility();
+        let compatibility = session.backend().campaign.simulation();
         assert!(
             level_three_public_macro_state_is_unmodified(predicted),
             "public command-macro prediction rejects modifiers, impulses, tether, and redirect-origin state: {predicted:?}"
@@ -18013,7 +17758,7 @@ pub(crate) mod tests {
         session: &mut GameSession<Mc2CampaignBackend>,
         command: GameCommand,
     ) -> crate::StepEvidence {
-        let before = session.backend().campaign.level2_compatibility().state;
+        let before = session.backend().campaign.simulation().state;
         assert!(level_three_public_macro_state_is_unmodified(before));
         let mut predicted_campaign = session.backend().campaign.clone();
         let evidence = predicted_campaign.step_with_tuning(
@@ -18022,20 +17767,20 @@ pub(crate) mod tests {
             session.backend().flight_binding.tuning(),
         );
         assert!(
-            !predicted_campaign.events().iter().any(|event| matches!(
-                event,
-                crate::native_world::Level2DispatchEvent::Error { .. }
-            )),
+            !predicted_campaign
+                .events()
+                .iter()
+                .any(|event| matches!(event, crate::native_world::Mc2DispatchEvent::Error { .. })),
             "public command-macro prediction must remain source-dispatch valid"
         );
-        let predicted = predicted_campaign.level2_compatibility().state;
+        let predicted = predicted_campaign.simulation().state;
         let predicted_hash = predicted_campaign.state_hash();
         let evidence = evidence
             .into_iter()
             .next()
             .expect("one public command advances the local player callback");
         session.step(guard(session), command).unwrap();
-        let actual = session.backend().campaign.level2_compatibility().state;
+        let actual = session.backend().campaign.simulation().state;
         assert_eq!(
             actual, predicted,
             "public GameSession step diverged from its exact command-macro prediction"
@@ -18049,7 +17794,7 @@ pub(crate) mod tests {
     }
 
     fn level_three_dragon_launch_gap_for_test(
-        compatibility: &crate::native_world::Level2ResetSession,
+        compatibility: &crate::native_world::Mc2Simulation,
         desired_root: Option<u16>,
     ) -> Option<(DragonFireballTarget, u32, u32)> {
         let state = compatibility.state;
@@ -18113,7 +17858,7 @@ pub(crate) mod tests {
     type LevelThreePublicRetreatScore = (std::cmp::Reverse<u32>, u32, u32, u32, u32, u32, u32);
 
     fn level_three_source_pursuit_roll_from_compatibility_for_test(
-        compatibility: &crate::native_world::Level2ResetSession,
+        compatibility: &crate::native_world::Mc2Simulation,
         desired_root: Option<u16>,
     ) -> Option<i8> {
         let (target, _, _) = level_three_dragon_launch_gap_for_test(compatibility, desired_root)?;
@@ -18127,7 +17872,7 @@ pub(crate) mod tests {
         desired_root: Option<u16>,
     ) -> Option<i8> {
         level_three_source_pursuit_roll_from_compatibility_for_test(
-            session.backend().campaign.level2_compatibility(),
+            session.backend().campaign.simulation(),
             desired_root,
         )
     }
@@ -18153,8 +17898,8 @@ pub(crate) mod tests {
         if std::env::var_os("MC_DRAGON_PURSUIT_DIAGNOSTIC").is_none() {
             return;
         }
-        let before = session.backend().campaign.level2_compatibility();
-        let after = predicted.level2_compatibility();
+        let before = session.backend().campaign.simulation();
+        let after = predicted.simulation();
         eprintln!(
             "Dragon pursuit candidate: tick={} command={command:?} state={:?}->{:?} life={}->{} holders={:?}->{:?} mailbox={:?}->{:?} speed_holder_before={:?} context_event_count={} damage_receipts={:?} attributed_damage={:?} movement={evidence:?} scores={:?}->{:?} unmodified={} errors={:?}",
             session.identity().tick,
@@ -18188,7 +17933,7 @@ pub(crate) mod tests {
                 .iter()
                 .filter(|event| matches!(
                     event,
-                    crate::native_world::Level2DispatchEvent::Error { .. }
+                    crate::native_world::Mc2DispatchEvent::Error { .. }
                 ))
                 .collect::<Vec<_>>(),
         );
@@ -18199,7 +17944,7 @@ pub(crate) mod tests {
         desired_root: Option<u16>,
         roll_axis: i8,
     ) -> Option<(LevelThreePublicPursuitScore, GameCommand)> {
-        let before = session.backend().campaign.level2_compatibility();
+        let before = session.backend().campaign.simulation();
         let command = GameCommand {
             longitudinal: LongitudinalControl::Accelerate,
             roll_axis,
@@ -18218,12 +17963,11 @@ pub(crate) mod tests {
             &predicted,
             &evidence,
         );
-        if predicted.events().iter().any(|event| {
-            matches!(
-                event,
-                crate::native_world::Level2DispatchEvent::Error { .. }
-            )
-        }) {
+        if predicted
+            .events()
+            .iter()
+            .any(|event| matches!(event, crate::native_world::Mc2DispatchEvent::Error { .. }))
+        {
             return None;
         }
         let evidence = evidence.into_iter().next()?;
@@ -18235,7 +17979,7 @@ pub(crate) mod tests {
         {
             return None;
         }
-        let compatibility = predicted.level2_compatibility();
+        let compatibility = predicted.simulation();
         if !level_three_public_macro_state_is_unmodified(compatibility.state)
             || level_three_source_attributed_retreat_damage_for_test(before, compatibility)
                 .is_none()
@@ -18248,7 +17992,7 @@ pub(crate) mod tests {
     }
 
     fn level_three_public_pursuit_score_for_test(
-        compatibility: &crate::native_world::Level2ResetSession,
+        compatibility: &crate::native_world::Mc2Simulation,
         desired_root: Option<u16>,
         roll_axis: i8,
     ) -> Option<LevelThreePublicPursuitScore> {
@@ -18283,7 +18027,7 @@ pub(crate) mod tests {
         longitudinal: LongitudinalControl,
         roll_axis: i8,
     ) -> Option<(LevelThreePublicPursuitScore, GameCommand)> {
-        let before = session.backend().campaign.level2_compatibility();
+        let before = session.backend().campaign.simulation();
         let before_state = before.state;
         let before_holders = before.shared_spells().local_player().enabled_spell_holders;
         let before_distance = level_three_dragon_launch_gap_for_test(before, desired_root)?.1;
@@ -18305,12 +18049,11 @@ pub(crate) mod tests {
             &predicted,
             &evidence,
         );
-        if predicted.events().iter().any(|event| {
-            matches!(
-                event,
-                crate::native_world::Level2DispatchEvent::Error { .. }
-            )
-        }) {
+        if predicted
+            .events()
+            .iter()
+            .any(|event| matches!(event, crate::native_world::Mc2DispatchEvent::Error { .. }))
+        {
             return None;
         }
         let evidence = evidence.into_iter().next()?;
@@ -18320,7 +18063,7 @@ pub(crate) mod tests {
         ) {
             return None;
         }
-        let after = predicted.level2_compatibility();
+        let after = predicted.simulation();
         if !level_three_public_macro_state_is_unmodified(after.state)
             || level_three_source_attributed_retreat_damage_for_test(before, after).is_none()
             || after.shared_spells().local_player().enabled_spell_holders != before_holders
@@ -18364,7 +18107,7 @@ pub(crate) mod tests {
     ) -> Option<(LevelThreePublicPursuitScore, GameCommand)> {
         const SOURCE_HALF_TURN_BOUND: usize = 7 + (1_024_usize + 5 - 10).div_ceil(4);
 
-        let before = session.backend().campaign.level2_compatibility();
+        let before = session.backend().campaign.simulation();
         if (before.state.target_speed, before.state.actual_speed) != (0, 0) {
             return None;
         }
@@ -18385,7 +18128,7 @@ pub(crate) mod tests {
             let mut survivors = Vec::new();
             let mut successes = Vec::new();
             for (initial_roll, feedback, mut turn_campaign) in sequences {
-                let turn = turn_campaign.level2_compatibility();
+                let turn = turn_campaign.simulation();
                 let roll_axis = if prefix == 1 || !feedback {
                     initial_roll
                 } else {
@@ -18408,10 +18151,7 @@ pub(crate) mod tests {
                     session.backend().flight_binding.tuning(),
                 );
                 if turn_campaign.events().iter().any(|event| {
-                    matches!(
-                        event,
-                        crate::native_world::Level2DispatchEvent::Error { .. }
-                    )
+                    matches!(event, crate::native_world::Mc2DispatchEvent::Error { .. })
                 }) {
                     continue;
                 }
@@ -18424,7 +18164,7 @@ pub(crate) mod tests {
                 ) {
                     continue;
                 }
-                let turn = turn_campaign.level2_compatibility();
+                let turn = turn_campaign.simulation();
                 if !level_three_public_macro_state_is_unmodified(turn.state)
                     || turn.shared_spells().player_entity().life < initial_life
                     || turn.shared_spells().local_player().enabled_spell_holders != initial_holders
@@ -18451,10 +18191,7 @@ pub(crate) mod tests {
                         session.backend().flight_binding.tuning(),
                     );
                     if accelerated_campaign.events().iter().any(|event| {
-                        matches!(
-                            event,
-                            crate::native_world::Level2DispatchEvent::Error { .. }
-                        )
+                        matches!(event, crate::native_world::Mc2DispatchEvent::Error { .. })
                     }) {
                         continue;
                     }
@@ -18471,7 +18208,7 @@ pub(crate) mod tests {
                     {
                         continue;
                     }
-                    let accelerated = accelerated_campaign.level2_compatibility();
+                    let accelerated = accelerated_campaign.simulation();
                     if !level_three_public_macro_state_is_unmodified(accelerated.state)
                         || accelerated.shared_spells().player_entity().life < initial_life
                         || accelerated
@@ -18520,7 +18257,7 @@ pub(crate) mod tests {
         session: &GameSession<Mc2CampaignBackend>,
         desired_root: Option<u16>,
     ) -> Option<(LevelThreePublicPursuitScore, GameCommand)> {
-        let before = session.backend().campaign.level2_compatibility();
+        let before = session.backend().campaign.simulation();
         let (target, _, _) = level_three_dragon_launch_gap_for_test(before, desired_root)?;
         let state = before.state;
         let desired = i16::try_from(crate::heading_for_positions(
@@ -18542,7 +18279,7 @@ pub(crate) mod tests {
             session.backend().flight_binding.tuning(),
         );
         if std::env::var_os("MC_DRAGON_PURSUIT_DIAGNOSTIC").is_some() {
-            let after = predicted.level2_compatibility();
+            let after = predicted.simulation();
             let same_target_sign = (state.target_speed >= 0 && after.state.target_speed >= 0)
                 || (state.target_speed <= 0 && after.state.target_speed <= 0);
             let same_actual_sign = (state.actual_speed >= 0 && after.state.actual_speed >= 0)
@@ -18582,18 +18319,17 @@ pub(crate) mod tests {
                     .iter()
                     .filter(|event| matches!(
                         event,
-                        crate::native_world::Level2DispatchEvent::Error { .. }
+                        crate::native_world::Mc2DispatchEvent::Error { .. }
                     ))
                     .collect::<Vec<_>>(),
                 level_three_public_macro_state_is_unmodified(after.state),
             );
         }
-        if predicted.events().iter().any(|event| {
-            matches!(
-                event,
-                crate::native_world::Level2DispatchEvent::Error { .. }
-            )
-        }) {
+        if predicted
+            .events()
+            .iter()
+            .any(|event| matches!(event, crate::native_world::Mc2DispatchEvent::Error { .. }))
+        {
             return None;
         }
         let evidence = evidence.into_iter().next()?;
@@ -18603,7 +18339,7 @@ pub(crate) mod tests {
         ) {
             return None;
         }
-        let after = predicted.level2_compatibility();
+        let after = predicted.simulation();
         if !level_three_public_macro_state_is_unmodified(after.state)
             || level_three_source_attributed_retreat_damage_for_test(before, after).is_none()
             || after.shared_spells().local_player().enabled_spell_holders
@@ -18658,7 +18394,7 @@ pub(crate) mod tests {
         {
             return Some(accelerating);
         }
-        let state = session.backend().campaign.level2_compatibility().state;
+        let state = session.backend().campaign.simulation().state;
         let signed_brake = if state.target_speed < 0 {
             LongitudinalControl::Accelerate
         } else if state.target_speed > 0 {
@@ -18691,7 +18427,7 @@ pub(crate) mod tests {
     }
 
     fn level_three_dragon_retreat_state_for_test(
-        compatibility: &crate::native_world::Level2ResetSession,
+        compatibility: &crate::native_world::Mc2Simulation,
     ) -> Option<(u32, u32, u32)> {
         let player = compatibility.shared_spells().player_entity();
         let roots = level_three_dragon_fireball_targets_from_economy(compatibility.economy())
@@ -18771,7 +18507,7 @@ pub(crate) mod tests {
     }
 
     fn level_three_public_retreat_score_for_test(
-        compatibility: &crate::native_world::Level2ResetSession,
+        compatibility: &crate::native_world::Mc2Simulation,
         attributed_damage: u32,
         roll_axis: i8,
     ) -> Option<LevelThreePublicRetreatScore> {
@@ -18794,7 +18530,7 @@ pub(crate) mod tests {
     }
 
     fn level_three_source_retreat_roll_from_compatibility_for_test(
-        compatibility: &crate::native_world::Level2ResetSession,
+        compatibility: &crate::native_world::Mc2Simulation,
     ) -> Option<i8> {
         let player = compatibility.state.position;
         let nearest_root =
@@ -18818,13 +18554,13 @@ pub(crate) mod tests {
         session: &GameSession<Mc2CampaignBackend>,
     ) -> Option<i8> {
         level_three_source_retreat_roll_from_compatibility_for_test(
-            session.backend().campaign.level2_compatibility(),
+            session.backend().campaign.simulation(),
         )
     }
 
     fn level_three_terminal_authored_dragon_mailbox_for_test(
-        before: &crate::native_world::Level2ResetSession,
-        after: &crate::native_world::Level2ResetSession,
+        before: &crate::native_world::Mc2Simulation,
+        after: &crate::native_world::Mc2Simulation,
         attacker: u16,
     ) -> bool {
         // A source-arrived player mailbox survives its producer's pre-kill.
@@ -18863,8 +18599,8 @@ pub(crate) mod tests {
     }
 
     fn level_three_source_attributed_retreat_damage_for_test(
-        before: &crate::native_world::Level2ResetSession,
-        after: &crate::native_world::Level2ResetSession,
+        before: &crate::native_world::Mc2Simulation,
+        after: &crate::native_world::Mc2Simulation,
     ) -> Option<u32> {
         let before_life = before.shared_spells().player_entity().life;
         let before_holders = before.shared_spells().local_player().enabled_spell_holders;
@@ -18917,7 +18653,7 @@ pub(crate) mod tests {
             .dispatch_events()
             .iter()
             .filter_map(|event| match event {
-                crate::native_world::Level2DispatchEvent::DynamicArena {
+                crate::native_world::Mc2DispatchEvent::DynamicArena {
                     source_slot,
                     kind: crate::native_world::Level2DynamicArenaKind::Model17SpawnedChild,
                     ..
@@ -19033,7 +18769,7 @@ pub(crate) mod tests {
                         .filter(|receipt| {
                             matches!(
                                 receipt,
-                                crate::native_world::Level2DispatchEvent::DynamicArena {
+                                crate::native_world::Mc2DispatchEvent::DynamicArena {
                                     source_slot,
                                     kind: crate::native_world::Level2DynamicArenaKind::Model17SpawnedChild,
                                     ..
@@ -19124,7 +18860,7 @@ pub(crate) mod tests {
     }
 
     fn level_three_imported_worm_attacker_for_test(
-        compatibility: &crate::native_world::Level2ResetSession,
+        compatibility: &crate::native_world::Mc2Simulation,
         attacker: u16,
         player: u16,
     ) -> bool {
@@ -19154,7 +18890,7 @@ pub(crate) mod tests {
     }
 
     fn level_three_imported_worm_attackers_for_test(
-        compatibility: &crate::native_world::Level2ResetSession,
+        compatibility: &crate::native_world::Mc2Simulation,
     ) -> BTreeSet<u16> {
         let player = compatibility.shared_spells().player_entity().index;
         compatibility
@@ -19235,7 +18971,7 @@ pub(crate) mod tests {
     }
 
     fn level_three_public_retreat_preserves_recovery_clearance_for_test(
-        compatibility: &crate::native_world::Level2ResetSession,
+        compatibility: &crate::native_world::Mc2Simulation,
         recovery_clearance: Option<u32>,
     ) -> bool {
         let Some(clearance) = recovery_clearance else {
@@ -19277,7 +19013,7 @@ pub(crate) mod tests {
         allow_braking_nonprogress: bool,
         recovery_clearance: Option<u32>,
     ) -> Option<(LevelThreePublicRetreatScore, GameCommand)> {
-        let before = session.backend().campaign.level2_compatibility();
+        let before = session.backend().campaign.simulation();
         let before_state = before.state;
         let command = GameCommand {
             longitudinal,
@@ -19290,12 +19026,11 @@ pub(crate) mod tests {
             CAMPAIGN_SPEED_INDEX,
             session.backend().flight_binding.tuning(),
         );
-        if predicted.events().iter().any(|event| {
-            matches!(
-                event,
-                crate::native_world::Level2DispatchEvent::Error { .. }
-            )
-        }) {
+        if predicted
+            .events()
+            .iter()
+            .any(|event| matches!(event, crate::native_world::Mc2DispatchEvent::Error { .. }))
+        {
             return None;
         }
         let evidence = evidence.into_iter().next()?;
@@ -19305,7 +19040,7 @@ pub(crate) mod tests {
         ) {
             return None;
         }
-        let compatibility = predicted.level2_compatibility();
+        let compatibility = predicted.simulation();
         if !level_three_public_retreat_preserves_recovery_clearance_for_test(
             compatibility,
             recovery_clearance,
@@ -19357,7 +19092,7 @@ pub(crate) mod tests {
     }
 
     fn level_three_player_raw_mailbox_for_test(
-        compatibility: &crate::native_world::Level2ResetSession,
+        compatibility: &crate::native_world::Mc2Simulation,
     ) -> (i32, u16) {
         let player = compatibility.shared_spells().player_entity().index;
         let raw = compatibility.entities()[usize::from(player)].record_bytes();
@@ -19370,7 +19105,7 @@ pub(crate) mod tests {
     fn level_three_public_retreat_candidate_census_for_test(
         session: &GameSession<Mc2CampaignBackend>,
     ) -> Vec<String> {
-        let before = session.backend().campaign.level2_compatibility();
+        let before = session.backend().campaign.simulation();
         let before_state = before.state;
         let center = level_three_source_retreat_roll_for_test(session).unwrap_or(0);
         let stencil = level_three_source_pursuit_roll_stencil_for_test(center);
@@ -19404,7 +19139,7 @@ pub(crate) mod tests {
                 let dispatch_error = predicted.events().iter().any(|event| {
                     matches!(
                         event,
-                        crate::native_world::Level2DispatchEvent::Error { .. }
+                        crate::native_world::Mc2DispatchEvent::Error { .. }
                     )
                 });
                 let Some(evidence) = evidence.first() else {
@@ -19412,7 +19147,7 @@ pub(crate) mod tests {
                         "{longitudinal:?}/{roll_axis}: reject=missing-player-evidence dispatch_error={dispatch_error}"
                     );
                 };
-                let after = predicted.level2_compatibility();
+                let after = predicted.simulation();
                 let progressed_xy =
                     (evidence.committed.x, evidence.committed.y) != (evidence.before.x, evidence.before.y);
                 let did_not_cross_target = (before_state.target_speed >= 0
@@ -19511,7 +19246,7 @@ pub(crate) mod tests {
         recovery_clearance: Option<u32>,
     ) -> Option<(LevelThreePublicRetreatScore, GameCommand)> {
         const SOURCE_HALF_TURN_BOUND: usize = 7 + (1_024_usize + 5 - 10).div_ceil(4);
-        let state = session.backend().campaign.level2_compatibility().state;
+        let state = session.backend().campaign.simulation().state;
         if (state.target_speed, state.actual_speed) != (0, 0) {
             return None;
         }
@@ -19537,7 +19272,7 @@ pub(crate) mod tests {
                     initial_roll
                 } else {
                     let Some(roll) = level_three_source_retreat_roll_from_compatibility_for_test(
-                        turn_campaign.level2_compatibility(),
+                        turn_campaign.simulation(),
                     ) else {
                         continue;
                     };
@@ -19555,10 +19290,7 @@ pub(crate) mod tests {
                     session.backend().flight_binding.tuning(),
                 );
                 if turn_campaign.events().iter().any(|event| {
-                    matches!(
-                        event,
-                        crate::native_world::Level2DispatchEvent::Error { .. }
-                    )
+                    matches!(event, crate::native_world::Mc2DispatchEvent::Error { .. })
                 }) {
                     continue;
                 }
@@ -19571,7 +19303,7 @@ pub(crate) mod tests {
                 ) {
                     continue;
                 }
-                let turn = turn_campaign.level2_compatibility();
+                let turn = turn_campaign.simulation();
                 if !level_three_public_retreat_preserves_recovery_clearance_for_test(
                     turn,
                     recovery_clearance,
@@ -19582,7 +19314,7 @@ pub(crate) mod tests {
                     continue;
                 }
                 let Some(turn_damage) = level_three_source_attributed_retreat_damage_for_test(
-                    before_turn.level2_compatibility(),
+                    before_turn.simulation(),
                     turn,
                 ) else {
                     continue;
@@ -19608,10 +19340,7 @@ pub(crate) mod tests {
                         session.backend().flight_binding.tuning(),
                     );
                     if accelerate_campaign.events().iter().any(|event| {
-                        matches!(
-                            event,
-                            crate::native_world::Level2DispatchEvent::Error { .. }
-                        )
+                        matches!(event, crate::native_world::Mc2DispatchEvent::Error { .. })
                     }) {
                         continue;
                     }
@@ -19628,7 +19357,7 @@ pub(crate) mod tests {
                     {
                         continue;
                     }
-                    let accelerated = accelerate_campaign.level2_compatibility();
+                    let accelerated = accelerate_campaign.simulation();
                     if !level_three_public_retreat_preserves_recovery_clearance_for_test(
                         accelerated,
                         recovery_clearance,
@@ -19697,7 +19426,7 @@ pub(crate) mod tests {
         {
             return Some(accelerating);
         }
-        let state = session.backend().campaign.level2_compatibility().state;
+        let state = session.backend().campaign.simulation().state;
         let signed_brake = if state.target_speed < 0 {
             LongitudinalControl::Accelerate
         } else if state.target_speed > 0 {
@@ -19733,16 +19462,13 @@ pub(crate) mod tests {
         precise: bool,
     ) -> Vec<(crate::StepEvidence, crate::FlightState)> {
         let commands = level_three_public_translation_macro_commands(precise);
-        let state = session.backend().campaign.level2_compatibility().state;
+        let state = session.backend().campaign.simulation().state;
         assert_eq!((state.target_speed, state.actual_speed), (0, 0));
         commands
             .into_iter()
             .map(|command| {
                 let evidence = step_level_three_public_macro_command(session, command);
-                (
-                    evidence,
-                    session.backend().campaign.level2_compatibility().state,
-                )
+                (evidence, session.backend().campaign.simulation().state)
             })
             .collect()
     }
@@ -19775,10 +19501,9 @@ pub(crate) mod tests {
         commands: &[GameCommand],
     ) -> Option<crate::Position> {
         let mut candidate = session.backend().campaign.clone();
-        let origin = candidate.level2_compatibility().state.position;
+        let origin = candidate.simulation().state.position;
         for command in commands {
-            if !level_three_public_macro_state_is_unmodified(candidate.level2_compatibility().state)
-            {
+            if !level_three_public_macro_state_is_unmodified(candidate.simulation().state) {
                 return None;
             }
             let evidence = candidate.step_with_tuning(
@@ -19786,12 +19511,11 @@ pub(crate) mod tests {
                 CAMPAIGN_SPEED_INDEX,
                 session.backend().flight_binding.tuning(),
             );
-            if candidate.events().iter().any(|event| {
-                matches!(
-                    event,
-                    crate::native_world::Level2DispatchEvent::Error { .. }
-                )
-            }) {
+            if candidate
+                .events()
+                .iter()
+                .any(|event| matches!(event, crate::native_world::Mc2DispatchEvent::Error { .. }))
+            {
                 return None;
             }
             let evidence = evidence.into_iter().next()?;
@@ -19804,7 +19528,7 @@ pub(crate) mod tests {
                 return None;
             }
         }
-        let completed = candidate.level2_compatibility().state;
+        let completed = candidate.simulation().state;
         ((completed.target_speed, completed.actual_speed) == (0, 0) && completed.position != origin)
             .then_some(completed.position)
     }
@@ -19879,12 +19603,12 @@ pub(crate) mod tests {
         // Source tangent headings can include 2048; live yaw and steering use
         // the equivalent 11-bit heading. Keep the final assertion canonical too.
         let desired = desired & 0x07ff;
-        let state = session.backend().campaign.level2_compatibility().state;
+        let state = session.backend().campaign.simulation().state;
         let commands = level_three_turn_at_rest_commands_for_test(session, state, desired);
         for command in commands {
             step_level_three_public_macro_command(session, command);
         }
-        let actual = session.backend().campaign.level2_compatibility().state;
+        let actual = session.backend().campaign.simulation().state;
         assert_eq!(
             (
                 actual.yaw,
@@ -19898,7 +19622,7 @@ pub(crate) mod tests {
 
     fn normalize_level_three_public_macro_to_rest(session: &mut GameSession<Mc2CampaignBackend>) {
         for _ in 0..=64 {
-            let state = session.backend().campaign.level2_compatibility().state;
+            let state = session.backend().campaign.simulation().state;
             assert!(
                 level_three_public_macro_state_is_unmodified(state),
                 "public rest normalization rejects modified motion state: {state:?}"
@@ -19932,7 +19656,7 @@ pub(crate) mod tests {
         }
         panic!(
             "ordinary public Coast/brake feedback did not normalize motion to rest: {:?}",
-            session.backend().campaign.level2_compatibility().state
+            session.backend().campaign.simulation().state
         );
     }
 
@@ -19948,7 +19672,7 @@ pub(crate) mod tests {
             Mc2CampaignInputs::new(&root),
         )
         .unwrap();
-        let before = session.backend().campaign.level2_compatibility().state;
+        let before = session.backend().campaign.simulation().state;
         assert_eq!(
             (
                 before.yaw,
@@ -19961,16 +19685,13 @@ pub(crate) mod tests {
         let hash = session.backend().campaign.state_hash();
         for heading in [2048, -2048, 4096] {
             turn_level_three_public_macro_to_heading(&mut session, heading);
-            assert_eq!(
-                session.backend().campaign.level2_compatibility().state,
-                before
-            );
+            assert_eq!(session.backend().campaign.simulation().state, before);
             assert_eq!(session.backend().campaign.state_hash(), hash);
         }
         // A neighboring heading must still execute the ordinary turn and meet
         // the exact terminal-state assertion rather than being treated as zero.
         turn_level_three_public_macro_to_heading(&mut session, 2049);
-        let turned = session.backend().campaign.level2_compatibility().state;
+        let turned = session.backend().campaign.simulation().state;
         assert_eq!(
             (
                 turned.yaw,
@@ -19997,12 +19718,12 @@ pub(crate) mod tests {
             Mc2CampaignInputs::new(&root),
         )
         .unwrap();
-        let initial = session.backend().campaign.level2_compatibility().state;
+        let initial = session.backend().campaign.simulation().state;
         assert!(level_three_public_macro_state_is_unmodified(initial));
         assert_eq!((initial.target_speed, initial.actual_speed), (0, 0));
 
         turn_level_three_public_macro_to_heading(&mut session, 512);
-        let turned = session.backend().campaign.level2_compatibility().state;
+        let turned = session.backend().campaign.simulation().state;
         assert_eq!((turned.yaw, turned.roll_accumulator), (512, 0));
 
         let ordinary = step_level_three_public_translation_macro(&mut session, false);
@@ -20020,7 +19741,7 @@ pub(crate) mod tests {
                 .collect::<Vec<_>>(),
             vec![(16, 16), (32, 32), (16, 16), (0, 0)]
         );
-        let after_ordinary = session.backend().campaign.level2_compatibility().state;
+        let after_ordinary = session.backend().campaign.simulation().state;
         assert_eq!(
             (after_ordinary.target_speed, after_ordinary.actual_speed),
             (0, 0)
@@ -20043,7 +19764,7 @@ pub(crate) mod tests {
                 .collect::<Vec<_>>(),
             vec![(16, 16), (0, 0)]
         );
-        let after_precision = session.backend().campaign.level2_compatibility().state;
+        let after_precision = session.backend().campaign.simulation().state;
         assert_eq!(
             (after_precision.target_speed, after_precision.actual_speed),
             (0, 0)
@@ -20068,14 +19789,9 @@ pub(crate) mod tests {
             y: 36_108,
             z: 2_769,
         };
-        let player = session
-            .backend()
-            .campaign
-            .level2_compatibility()
-            .state
-            .entity_index;
+        let player = session.backend().campaign.simulation().state.entity_index;
         {
-            let compatibility = session.backend_mut().campaign.level2_compatibility_mut();
+            let compatibility = session.backend_mut().campaign.simulation_mut();
             compatibility
                 .set_level2_entity_position(player, stalled)
                 .unwrap();
@@ -20087,13 +19803,8 @@ pub(crate) mod tests {
         }
 
         normalize_level_three_public_macro_to_rest(&mut session);
-        let macro_origin = session
-            .backend()
-            .campaign
-            .level2_compatibility()
-            .state
-            .position;
-        let start = session.backend().campaign.level2_compatibility().state;
+        let macro_origin = session.backend().campaign.simulation().state.position;
+        let start = session.backend().campaign.simulation().state;
         let mut selected = None;
         for offset in 0_i16..32 {
             for signed_offset in [offset, -offset] {
@@ -20121,7 +19832,7 @@ pub(crate) mod tests {
         for command in commands {
             step_level_three_public_macro_command(&mut session, command);
         }
-        let completed = session.backend().campaign.level2_compatibility().state;
+        let completed = session.backend().campaign.simulation().state;
         assert_eq!(completed.position, predicted_destination);
         assert_eq!((completed.target_speed, completed.actual_speed), (0, 0));
         assert_ne!(completed.position, macro_origin);
@@ -20164,7 +19875,7 @@ pub(crate) mod tests {
         session
             .backend_mut()
             .campaign
-            .level2_compatibility_mut()
+            .simulation_mut()
             .activate_authored_group_prerequisite_for_test(1)
             .unwrap();
         let root_slot = level_three_dragon_fireball_targets(&session)
@@ -20173,16 +19884,11 @@ pub(crate) mod tests {
             .min_by_key(|target| target.source_slot)
             .expect("one qualified guardian Dragon root is active")
             .source_slot;
-        let player = session
-            .backend()
-            .campaign
-            .level2_compatibility()
-            .state
-            .entity_index;
+        let player = session.backend().campaign.simulation().state.entity_index;
         session
             .backend_mut()
             .campaign
-            .level2_compatibility_mut()
+            .simulation_mut()
             .set_level2_entity_position(
                 player,
                 crate::Position {
@@ -20195,7 +19901,7 @@ pub(crate) mod tests {
         let initial_life = session
             .backend()
             .campaign
-            .level2_compatibility()
+            .simulation()
             .shared_spells()
             .player_entity()
             .life;
@@ -20205,7 +19911,7 @@ pub(crate) mod tests {
             .expect("the selected guardian root remains current")
             .position;
         let initial_gap = level_three_dragon_launch_gap_for_test(
-            session.backend().campaign.level2_compatibility(),
+            session.backend().campaign.simulation(),
             Some(root_slot),
         )
         .expect("one current body belongs to the selected guardian")
@@ -20217,7 +19923,7 @@ pub(crate) mod tests {
         let mut source_center_comparisons = 0_usize;
         for _ in 0..=640 {
             let (_, _, gap) = level_three_dragon_launch_gap_for_test(
-                session.backend().campaign.level2_compatibility(),
+                session.backend().campaign.simulation(),
                 Some(root_slot),
             )
             .expect("the moving guardian retains one current body");
@@ -20229,7 +19935,7 @@ pub(crate) mod tests {
                     .expect(
                         "one exact public high-speed command safely closes on the moving guardian",
                     );
-            let state = session.backend().campaign.level2_compatibility().state;
+            let state = session.backend().campaign.simulation().state;
             let signature = (state.actual_speed, state.yaw >> 7, gap >> 9);
             if representative_states.len() < 16 && representative_states.insert(signature) {
                 let source_roll =
@@ -20251,15 +19957,10 @@ pub(crate) mod tests {
                 source_center_comparisons += 1;
             }
             step_level_three_public_macro_command(&mut session, command);
-            saw_source_max_speed |= session
-                .backend()
-                .campaign
-                .level2_compatibility()
-                .state
-                .actual_speed
-                == crate::SPEED_LIMIT;
+            saw_source_max_speed |=
+                session.backend().campaign.simulation().state.actual_speed == crate::SPEED_LIMIT;
         }
-        let compatibility = session.backend().campaign.level2_compatibility();
+        let compatibility = session.backend().campaign.simulation();
         let (_, _, final_gap) =
             level_three_dragon_launch_gap_for_test(compatibility, Some(root_slot))
                 .expect("the selected guardian retains a current body at closure");
@@ -20309,7 +20010,7 @@ pub(crate) mod tests {
         session
             .backend_mut()
             .campaign
-            .level2_compatibility_mut()
+            .simulation_mut()
             .apply_carried_spell_families(&[0, 2], Some(0))
             .unwrap();
         drive_real_level_three_skeleton_horde_to_guardian_dragons_for_test(&mut session);
@@ -20317,16 +20018,11 @@ pub(crate) mod tests {
         session
             .step(guard(&session), GameCommand::default())
             .unwrap();
-        let player = session
-            .backend()
-            .campaign
-            .level2_compatibility()
-            .state
-            .entity_index;
+        let player = session.backend().campaign.simulation().state.entity_index;
         let desired_root = session
             .backend()
             .campaign
-            .level2_compatibility()
+            .simulation()
             .economy()
             .authored_dragon_parts()
             .iter()
@@ -20337,7 +20033,7 @@ pub(crate) mod tests {
             session
                 .backend()
                 .campaign
-                .level2_compatibility()
+                .simulation()
                 .economy()
                 .slot_generation(TARGET_SLOT),
             TARGET_GENERATION
@@ -20346,29 +20042,25 @@ pub(crate) mod tests {
             session
                 .backend_mut()
                 .campaign
-                .level2_compatibility_mut()
+                .simulation_mut()
                 .economy_mut()
                 .stage_dragon_part_position_for_test(TARGET_SLOT, TARGET_POSITION)
         );
         session
             .backend_mut()
             .campaign
-            .level2_compatibility_mut()
+            .simulation_mut()
             .set_level2_entity_position(player, PLAYER_POSITION)
             .unwrap();
         {
-            let state = &mut session
-                .backend_mut()
-                .campaign
-                .level2_compatibility_mut()
-                .state;
+            let state = &mut session.backend_mut().campaign.simulation_mut().state;
             state.yaw = 1_233;
             state.roll_accumulator = 0;
             state.target_speed = crate::SPEED_LIMIT;
             state.actual_speed = crate::SPEED_LIMIT;
         }
         let initial = level_three_dragon_launch_gap_for_test(
-            session.backend().campaign.level2_compatibility(),
+            session.backend().campaign.simulation(),
             Some(desired_root),
         )
         .expect("the exact staged target remains current");
@@ -20385,7 +20077,7 @@ pub(crate) mod tests {
 
         for _ in 0..=640 {
             let (_, _, gap) = level_three_dragon_launch_gap_for_test(
-                session.backend().campaign.level2_compatibility(),
+                session.backend().campaign.simulation(),
                 Some(desired_root),
             )
             .expect("the moving Dragon retains a current launch target");
@@ -20400,7 +20092,7 @@ pub(crate) mod tests {
             step_level_three_public_macro_command(&mut session, command);
         }
         let final_gap = level_three_dragon_launch_gap_for_test(
-            session.backend().campaign.level2_compatibility(),
+            session.backend().campaign.simulation(),
             Some(desired_root),
         )
         .expect("the selected Dragon retains a current launch target")
@@ -20427,15 +20119,10 @@ pub(crate) mod tests {
         session
             .backend_mut()
             .campaign
-            .level2_compatibility_mut()
+            .simulation_mut()
             .activate_authored_group_prerequisite_for_test(1)
             .unwrap();
-        let player = session
-            .backend()
-            .campaign
-            .level2_compatibility()
-            .state
-            .entity_index;
+        let player = session.backend().campaign.simulation().state.entity_index;
         let root = level_three_dragon_fireball_targets(&session)
             .into_iter()
             .filter(|target| target.source_slot == target.root_slot)
@@ -20449,15 +20136,11 @@ pub(crate) mod tests {
         session
             .backend_mut()
             .campaign
-            .level2_compatibility_mut()
+            .simulation_mut()
             .set_level2_entity_position(player, close_position)
             .unwrap();
         {
-            let state = &mut session
-                .backend_mut()
-                .campaign
-                .level2_compatibility_mut()
-                .state;
+            let state = &mut session.backend_mut().campaign.simulation_mut().state;
             state.yaw = 68;
             state.roll_accumulator = -5;
             state.target_speed = crate::SPEED_LIMIT;
@@ -20466,14 +20149,14 @@ pub(crate) mod tests {
         let initial_life = session
             .backend()
             .campaign
-            .level2_compatibility()
+            .simulation()
             .shared_spells()
             .player_entity()
             .life;
         let economy_event_start = session
             .backend()
             .campaign
-            .level2_compatibility()
+            .simulation()
             .economy()
             .events()
             .len();
@@ -20482,10 +20165,9 @@ pub(crate) mod tests {
             .filter(|target| target.source_slot == target.root_slot)
             .map(|target| target.source_slot)
             .collect::<BTreeSet<_>>();
-        let (initial_separation, _, _) = level_three_dragon_retreat_state_for_test(
-            session.backend().campaign.level2_compatibility(),
-        )
-        .expect("the close Dragon remains current");
+        let (initial_separation, _, _) =
+            level_three_dragon_retreat_state_for_test(session.backend().campaign.simulation())
+                .expect("the close Dragon remains current");
         assert!((700..=850).contains(&initial_separation));
 
         let mut saw_player_latch = false;
@@ -20496,10 +20178,8 @@ pub(crate) mod tests {
         let mut cleared = false;
         for turn in 0..=level_three_dragon_retreat_bound(initial_separation) {
             let (minimum_distance, player_latches, hostile_transients) =
-                level_three_dragon_retreat_state_for_test(
-                    session.backend().campaign.level2_compatibility(),
-                )
-                .expect("the authored moving Dragon remains current through retreat");
+                level_three_dragon_retreat_state_for_test(session.backend().campaign.simulation())
+                    .expect("the authored moving Dragon remains current through retreat");
             saw_player_latch |= player_latches != 0;
             saw_hostile_transient |= hostile_transients != 0;
             if minimum_distance > crate::level1_mission::PROJECTILE_ACQUISITION_RANGE
@@ -20511,7 +20191,7 @@ pub(crate) mod tests {
             }
             let (_, command) = level_three_public_high_speed_retreat_command_for_test(&session, None)
                 .unwrap_or_else(|| {
-                    let compatibility = session.backend().campaign.level2_compatibility();
+                    let compatibility = session.backend().campaign.simulation();
                     let center = level_three_source_retreat_roll_for_test(&session)
                         .expect("one current root supplies the retreat center");
                     let candidate_census =
@@ -20529,7 +20209,7 @@ pub(crate) mod tests {
                                     CAMPAIGN_SPEED_INDEX,
                                     session.backend().flight_binding.tuning(),
                                 );
-                                let predicted_compatibility = predicted.level2_compatibility();
+                                let predicted_compatibility = predicted.simulation();
                                 (
                                     roll_axis,
                                     evidence
@@ -20563,7 +20243,7 @@ pub(crate) mod tests {
             let before_life = session
                 .backend()
                 .campaign
-                .level2_compatibility()
+                .simulation()
                 .shared_spells()
                 .player_entity()
                 .life;
@@ -20571,7 +20251,7 @@ pub(crate) mod tests {
             let after_life = session
                 .backend()
                 .campaign
-                .level2_compatibility()
+                .simulation()
                 .shared_spells()
                 .player_entity()
                 .life;
@@ -20584,13 +20264,8 @@ pub(crate) mod tests {
                 attributed_hit_steps += 1;
             }
             minimum_player_life = minimum_player_life.min(after_life);
-            saw_source_max_speed |= session
-                .backend()
-                .campaign
-                .level2_compatibility()
-                .state
-                .actual_speed
-                == crate::SPEED_LIMIT;
+            saw_source_max_speed |=
+                session.backend().campaign.simulation().state.actual_speed == crate::SPEED_LIMIT;
         }
         assert!(
             cleared,
@@ -20599,7 +20274,7 @@ pub(crate) mod tests {
         assert!(saw_player_latch || saw_hostile_transient);
         assert!(saw_source_max_speed);
         assert!(minimum_player_life > 0);
-        let compatibility = session.backend().campaign.level2_compatibility();
+        let compatibility = session.backend().campaign.simulation();
         let attributed_hits = compatibility.economy().events()[economy_event_start..]
             .iter()
             .filter(|event| {
@@ -20639,19 +20314,14 @@ pub(crate) mod tests {
         session
             .backend_mut()
             .campaign
-            .level2_compatibility_mut()
+            .simulation_mut()
             .activate_authored_group_prerequisite_for_test(1)
             .unwrap();
-        let player = session
-            .backend()
-            .campaign
-            .level2_compatibility()
-            .state
-            .entity_index;
+        let player = session.backend().campaign.simulation().state.entity_index;
         session
             .backend_mut()
             .campaign
-            .level2_compatibility_mut()
+            .simulation_mut()
             .set_level2_entity_position(
                 player,
                 crate::Position {
@@ -20662,11 +20332,7 @@ pub(crate) mod tests {
             )
             .unwrap();
         {
-            let state = &mut session
-                .backend_mut()
-                .campaign
-                .level2_compatibility_mut()
-                .state;
+            let state = &mut session.backend_mut().campaign.simulation_mut().state;
             state.yaw = 1_233;
             state.roll_accumulator = 0;
             state.target_speed = crate::SPEED_LIMIT;
@@ -20685,7 +20351,7 @@ pub(crate) mod tests {
                     roll_axis,
                     ..GameCommand::default()
                 };
-                let before = session.backend().campaign.level2_compatibility();
+                let before = session.backend().campaign.simulation();
                 let before_life = before.shared_spells().player_entity().life;
                 let before_holders = before.shared_spells().local_player().enabled_spell_holders;
                 let mut predicted = session.backend().campaign.clone();
@@ -20695,7 +20361,7 @@ pub(crate) mod tests {
                     session.backend().flight_binding.tuning(),
                 );
                 let evidence = evidence.first().expect("one local player movement receipt");
-                let after = predicted.level2_compatibility();
+                let after = predicted.simulation();
                 let dx = i32::from(
                     evidence
                         .committed
@@ -20736,11 +20402,7 @@ pub(crate) mod tests {
         }
         let current_choice = level_three_public_high_speed_retreat_command_for_test(&session, None);
         {
-            let state = &mut session
-                .backend_mut()
-                .campaign
-                .level2_compatibility_mut()
-                .state;
+            let state = &mut session.backend_mut().campaign.simulation_mut().state;
             state.target_speed = 0;
             state.actual_speed = 0;
         }
@@ -21044,19 +20706,14 @@ pub(crate) mod tests {
         session
             .backend_mut()
             .campaign
-            .level2_compatibility_mut()
+            .simulation_mut()
             .activate_authored_group_prerequisite_for_test(1)
             .unwrap();
-        let player = session
-            .backend()
-            .campaign
-            .level2_compatibility()
-            .state
-            .entity_index;
+        let player = session.backend().campaign.simulation().state.entity_index;
         let skeleton_slots = session
             .backend()
             .campaign
-            .level2_compatibility()
+            .simulation()
             .entities()
             .iter()
             .filter(|entity| {
@@ -21070,7 +20727,7 @@ pub(crate) mod tests {
             session
                 .backend_mut()
                 .campaign
-                .level2_compatibility_mut()
+                .simulation_mut()
                 .stage_imported_skeleton_fireball_damage_for_test(*source_slot, player, 1_500)
                 .unwrap();
         }
@@ -21079,14 +20736,13 @@ pub(crate) mod tests {
                 .step(guard(&session), GameCommand::default())
                 .unwrap();
             if skeleton_slots.iter().all(|slot| {
-                !session.backend().campaign.level2_compatibility().entities()[usize::from(*slot)]
-                    .active
+                !session.backend().campaign.simulation().entities()[usize::from(*slot)].active
             }) {
                 break;
             }
         }
         assert!(skeleton_slots.iter().all(|slot| {
-            !session.backend().campaign.level2_compatibility().entities()[usize::from(*slot)].active
+            !session.backend().campaign.simulation().entities()[usize::from(*slot)].active
         }));
         let root = level_three_dragon_fireball_targets(&session)
             .into_iter()
@@ -21096,7 +20752,7 @@ pub(crate) mod tests {
         let root_yaw = session
             .backend()
             .campaign
-            .level2_compatibility()
+            .simulation()
             .economy()
             .authored_class5()
             .iter()
@@ -21108,7 +20764,7 @@ pub(crate) mod tests {
         session
             .backend_mut()
             .campaign
-            .level2_compatibility_mut()
+            .simulation_mut()
             .set_level2_entity_position(player, player_position)
             .unwrap();
         let reserved_slots = [skeleton_slots[0], skeleton_slots[1]];
@@ -21116,7 +20772,7 @@ pub(crate) mod tests {
             let mut economy = session
                 .backend_mut()
                 .campaign
-                .level2_compatibility_mut()
+                .simulation_mut()
                 .economy_mut();
             economy.exhaust_new_event_capacity_for_test();
             assert!(economy.restore_new_event_slot_for_test(reserved_slots[1]));
@@ -21131,7 +20787,7 @@ pub(crate) mod tests {
             launched = session
                 .backend()
                 .campaign
-                .level2_compatibility()
+                .simulation()
                 .economy()
                 .fireball_projectiles()
                 .iter()
@@ -21169,15 +20825,11 @@ pub(crate) mod tests {
         session
             .backend_mut()
             .campaign
-            .level2_compatibility_mut()
+            .simulation_mut()
             .set_level2_entity_position(player, collision_position)
             .unwrap();
         {
-            let state = &mut session
-                .backend_mut()
-                .campaign
-                .level2_compatibility_mut()
-                .state;
+            let state = &mut session.backend_mut().campaign.simulation_mut().state;
             state.target_speed = 0;
             state.actual_speed = 0;
             state.strafe_speed = 0;
@@ -21187,7 +20839,7 @@ pub(crate) mod tests {
             state.impulse_z = 0;
             state.skip_flight_once = true;
         }
-        let before = session.backend().campaign.level2_compatibility().clone();
+        let before = session.backend().campaign.simulation().clone();
         let event_start = before.economy().events().len();
         let projectile_generation = before
             .economy()
@@ -21195,7 +20847,7 @@ pub(crate) mod tests {
         session
             .step(guard(&session), GameCommand::default())
             .unwrap();
-        let after = session.backend().campaign.level2_compatibility().clone();
+        let after = session.backend().campaign.simulation().clone();
         let damage = after.economy().events()[event_start..]
             .iter()
             .find_map(|event| match event {
@@ -21228,7 +20880,7 @@ pub(crate) mod tests {
             .filter(|event| {
                 matches!(
                     event,
-                    crate::native_world::Level2DispatchEvent::DynamicArena {
+                    crate::native_world::Mc2DispatchEvent::DynamicArena {
                         source_slot,
                         kind: crate::native_world::Level2DynamicArenaKind::Model17SpawnedChild,
                         ..
@@ -21334,7 +20986,7 @@ pub(crate) mod tests {
             .expect("current frontier must reproduce every production receipt");
         let session = runtime.session_mut().unwrap();
         assert_eq!(session.identity().tick, 27_939);
-        let before = session.backend().campaign.level2_compatibility().clone();
+        let before = session.backend().campaign.simulation().clone();
         let (target, _, gap) = level_three_dragon_launch_gap_for_test(&before, Some(180))
             .expect("same live root180 remains the sole requested target");
         assert_eq!(
@@ -21386,7 +21038,7 @@ pub(crate) mod tests {
             &predicted,
             &evidence,
         );
-        let after = predicted.level2_compatibility();
+        let after = predicted.simulation();
         assert!(level_three_public_macro_state_is_unmodified(after.state));
         assert_eq!(before.shared_spells().player_entity().life, 9_120);
         assert_eq!(
@@ -21400,10 +21052,12 @@ pub(crate) mod tests {
             after.shared_spells().local_player().enabled_spell_holders,
             before.shared_spells().local_player().enabled_spell_holders
         );
-        assert!(!predicted.events().iter().any(|event| matches!(
-            event,
-            crate::native_world::Level2DispatchEvent::Error { .. }
-        )));
+        assert!(
+            !predicted
+                .events()
+                .iter()
+                .any(|event| matches!(event, crate::native_world::Mc2DispatchEvent::Error { .. }))
+        );
         let expected_hash = predicted.state_hash();
         step_level_three_public_macro_command(session, command);
         assert_eq!(session.identity().tick, 27_940);
@@ -21412,7 +21066,7 @@ pub(crate) mod tests {
             session
                 .backend()
                 .campaign
-                .level2_compatibility()
+                .simulation()
                 .economy()
                 .slot_generation(180),
             6
@@ -21438,7 +21092,7 @@ pub(crate) mod tests {
             .unwrap();
         let session = runtime.session_mut().unwrap();
         assert_eq!(session.identity().tick, 17_755);
-        let before = session.backend().campaign.level2_compatibility().clone();
+        let before = session.backend().campaign.simulation().clone();
         assert_eq!(level_three_player_raw_mailbox_for_test(&before), (500, 93));
         let imported_slot = &before.entities()[93];
         assert!(!imported_slot.active);
@@ -21454,7 +21108,7 @@ pub(crate) mod tests {
             CAMPAIGN_SPEED_INDEX,
             session.backend().flight_binding.tuning(),
         );
-        let diagnostic_after = diagnostic.level2_compatibility();
+        let diagnostic_after = diagnostic.simulation();
         eprintln!(
             "terminal Dragon mailbox boundary: generation={}->{} before_typed={:?} after_typed={:?} before_raw={:?} after_raw={:?} root_sidecar={} mailbox={:?}->{:?} attributed={:?}",
             before.economy().slot_generation(93),
@@ -21488,7 +21142,7 @@ pub(crate) mod tests {
             CAMPAIGN_SPEED_INDEX,
             session.backend().flight_binding.tuning(),
         );
-        let after = predicted.level2_compatibility();
+        let after = predicted.simulation();
         assert!(level_three_terminal_authored_dragon_mailbox_for_test(
             &before, after, 93
         ));
@@ -21511,7 +21165,7 @@ pub(crate) mod tests {
             session
                 .backend()
                 .campaign
-                .level2_compatibility()
+                .simulation()
                 .shared_spells()
                 .player_entity()
                 .life,
@@ -21699,7 +21353,7 @@ pub(crate) mod tests {
         origin.z = session
             .backend()
             .campaign
-            .level2_compatibility()
+            .simulation()
             .canonical_terrain()
             .ground_height(origin)
             .wrapping_add(256);
@@ -21815,7 +21469,7 @@ pub(crate) mod tests {
             Mc2CampaignInputs::new(&root),
         )
         .unwrap();
-        let compatibility = session.backend().campaign.level2_compatibility();
+        let compatibility = session.backend().campaign.simulation();
         let terrain = compatibility.canonical_terrain();
         let (origin, destination) = (0_u16..256)
             .find_map(|tile_y| {
@@ -21888,7 +21542,7 @@ pub(crate) mod tests {
         let castle_holder = session
             .backend()
             .campaign
-            .level2_compatibility()
+            .simulation()
             .shared_spells()
             .local_player()
             .enabled_spell_holders[2];
@@ -21899,13 +21553,13 @@ pub(crate) mod tests {
             session
                 .backend()
                 .campaign
-                .level2_compatibility()
+                .simulation()
                 .economy()
                 .castle()
                 .is_none()
         );
         let castle = build_real_level_three_carried_castle_for_test(&mut session);
-        let compatibility = session.backend().campaign.level2_compatibility();
+        let compatibility = session.backend().campaign.simulation();
         assert_eq!(compatibility.economy().player_castle_entity_index(), castle);
         assert_eq!(
             compatibility
@@ -21938,7 +21592,7 @@ pub(crate) mod tests {
         let fireball_holder = session
             .backend()
             .campaign
-            .level2_compatibility()
+            .simulation()
             .shared_spells()
             .local_player()
             .enabled_spell_holders[0];
@@ -21949,7 +21603,7 @@ pub(crate) mod tests {
             &mut chronology,
             0,
         );
-        let compatibility = session.backend().campaign.level2_compatibility();
+        let compatibility = session.backend().campaign.simulation();
         let player = compatibility.shared_spells().player_entity();
         assert_eq!(player.life, max_life);
         assert_eq!(
@@ -21979,7 +21633,7 @@ pub(crate) mod tests {
             .load_replay(&mut runtime, guard, 66, &bytes)
             .unwrap();
         let session = runtime.session_mut().unwrap();
-        let compatibility = session.backend().campaign.level2_compatibility();
+        let compatibility = session.backend().campaign.simulation();
         let player = compatibility.shared_spells().player_entity();
         assert!(player.life >= 0 && player.life < player.max_life);
         let max_life = player.max_life;
@@ -22008,10 +21662,10 @@ pub(crate) mod tests {
         session
             .step(guard(session), GameCommand::default())
             .unwrap();
-        let compatibility = session.backend().campaign.level2_compatibility();
+        let compatibility = session.backend().campaign.simulation();
         assert!(compatibility.dispatch_events().iter().any(|event| matches!(
             event,
-            crate::native_world::Level2DispatchEvent::AuthoredGroupActivated {
+            crate::native_world::Mc2DispatchEvent::AuthoredGroupActivated {
                 source_slot: 218,
                 group: 5,
                 authored_indices,
@@ -22034,7 +21688,7 @@ pub(crate) mod tests {
             session
                 .backend()
                 .campaign
-                .level2_compatibility()
+                .simulation()
                 .economy()
                 .authored_class5()
                 .iter()
@@ -22070,7 +21724,7 @@ pub(crate) mod tests {
         castle_overlap_required: bool,
         castle_launch_required: bool,
     ) {
-        let compatibility = session.backend().campaign.level2_compatibility();
+        let compatibility = session.backend().campaign.simulation();
         let (waypoints, edges, _) = level_three_source_route_to_sites_for_test(
             session,
             compatibility.state.position,
@@ -22085,7 +21739,7 @@ pub(crate) mod tests {
             .saturating_add(256);
         let mut waypoint_index = 0;
         for _ in 0..bound {
-            let compatibility = session.backend().campaign.level2_compatibility();
+            let compatibility = session.backend().campaign.simulation();
             let state = compatibility.state;
             let player = compatibility.shared_spells().player_entity();
             assert!(
@@ -22115,7 +21769,7 @@ pub(crate) mod tests {
                         CAMPAIGN_SPEED_INDEX,
                         session.backend().flight_binding.tuning(),
                     );
-                    let next = forecast.level2_compatibility();
+                    let next = forecast.simulation();
                     let state = next.state;
                     let mut launch = state.position;
                     crate::move_entity(&mut launch, state.yaw.wrapping_sub(512), 0, 256);
@@ -22170,7 +21824,7 @@ pub(crate) mod tests {
             let event_start = compatibility.economy().events().len();
             let observed_command = command.clone();
             session.step(guard(session), command).unwrap();
-            let after = session.backend().campaign.level2_compatibility();
+            let after = session.backend().campaign.simulation();
             let player_after = after.shared_spells().player_entity();
             if std::env::var_os("MC_CASTLE_FLIGHT_TRACE").is_some()
                 && player_after.life < life_before
@@ -22203,20 +21857,15 @@ pub(crate) mod tests {
         panic!(
             "public Castle-charge flight exhausted its source-route bound: target={target:?}              waypoint={waypoint_index}/{} edges={edges} state={:?} castle_overlap_required={castle_overlap_required} castle_launch_required={castle_launch_required}",
             waypoints.len(),
-            session.backend().campaign.level2_compatibility().state,
+            session.backend().campaign.simulation().state,
         );
     }
 
     fn claim_real_neutral_mana_sphere_for_castle_for_test(
         session: &mut GameSession<Mc2CampaignBackend>,
     ) -> (u16, i32, usize) {
-        let player_entity = session
-            .backend()
-            .campaign
-            .level2_compatibility()
-            .state
-            .entity_index;
-        let compatibility = session.backend().campaign.level2_compatibility();
+        let player_entity = session.backend().campaign.simulation().state.entity_index;
+        let compatibility = session.backend().campaign.simulation();
         let local_player = &compatibility.shared_spells().players()[0];
         let fireball_holder = local_player.enabled_spell_holders[0];
         let carried_fireball = compatibility
@@ -22245,13 +21894,13 @@ pub(crate) mod tests {
             session
                 .backend()
                 .campaign
-                .level2_compatibility()
+                .simulation()
                 .shared_spells()
                 .players()[0],
             session
                 .backend()
                 .campaign
-                .level2_compatibility()
+                .simulation()
                 .shared_spells()
                 .dynamic_pickups()
         );
@@ -22260,7 +21909,7 @@ pub(crate) mod tests {
                 let settled = session
                     .backend()
                     .campaign
-                    .level2_compatibility()
+                    .simulation()
                     .economy()
                     .spheres()
                     .iter()
@@ -22280,7 +21929,7 @@ pub(crate) mod tests {
             })
             .expect("one real death sphere must settle while still neutral");
         let (sphere_position, sphere_generation, mana) = {
-            let compatibility = session.backend().campaign.level2_compatibility();
+            let compatibility = session.backend().campaign.simulation();
             let sphere = compatibility
                 .economy()
                 .spheres()
@@ -22298,7 +21947,7 @@ pub(crate) mod tests {
             session
                 .backend()
                 .campaign
-                .level2_compatibility()
+                .simulation()
                 .economy()
                 .slot_generation(sphere_slot),
             sphere_generation,
@@ -22307,7 +21956,7 @@ pub(crate) mod tests {
         let event_count_before = session
             .backend()
             .campaign
-            .level2_compatibility()
+            .simulation()
             .economy()
             .events()
             .len();
@@ -22328,7 +21977,7 @@ pub(crate) mod tests {
             CAMPAIGN_SPEED_INDEX,
             session.backend().flight_binding.tuning(),
         );
-        let compatibility = forecast.level2_compatibility();
+        let compatibility = forecast.simulation();
         assert_eq!(
             compatibility.economy().slot_generation(sphere_slot),
             sphere_generation
@@ -22374,7 +22023,7 @@ pub(crate) mod tests {
             if session
                 .backend()
                 .campaign
-                .level2_compatibility()
+                .simulation()
                 .economy()
                 .spheres()
                 .iter()
@@ -22395,7 +22044,7 @@ pub(crate) mod tests {
             session
                 .backend()
                 .campaign
-                .level2_compatibility()
+                .simulation()
                 .economy()
                 .spheres()
                 .iter()
@@ -22412,7 +22061,7 @@ pub(crate) mod tests {
         sphere_slot: u16,
         event_start: usize,
     ) -> bool {
-        let economy = session.backend().campaign.level2_compatibility().economy();
+        let economy = session.backend().campaign.simulation().economy();
         let castle = economy
             .castle()
             .expect("the real owned Castle remains live");
@@ -22465,7 +22114,7 @@ pub(crate) mod tests {
         if real_owned_castle_collected_sphere_for_test(session, sphere_slot, event_start) {
             return;
         }
-        let compatibility = session.backend().campaign.level2_compatibility();
+        let compatibility = session.backend().campaign.simulation();
         let economy = compatibility.economy();
         assert_eq!(economy.slot_generation(sphere_slot), generation);
         let sphere = economy
@@ -22509,7 +22158,7 @@ pub(crate) mod tests {
             CAMPAIGN_SPEED_INDEX,
             session.backend().flight_binding.tuning(),
         );
-        let next = forecast.level2_compatibility();
+        let next = forecast.simulation();
         assert_eq!(next.economy().slot_generation(sphere_slot), generation);
         let target = next
             .possession_guidance_target_top_for_test(sphere_slot)
@@ -22538,7 +22187,7 @@ pub(crate) mod tests {
         let mut flyer = None;
         let mut saw_effect = false;
         for visit in 0..32 {
-            let compatibility = session.backend().campaign.level2_compatibility();
+            let compatibility = session.backend().campaign.simulation();
             let economy = compatibility.economy();
             assert!(compatibility.shared_spells().player_entity().life >= 0);
             flyer = flyer.or_else(|| {
@@ -22607,7 +22256,7 @@ pub(crate) mod tests {
         event_count_before: usize,
     ) -> i32 {
         let (castle_slot, castle_position) = {
-            let compatibility = session.backend().campaign.level2_compatibility();
+            let compatibility = session.backend().campaign.simulation();
             let castle = compatibility
                 .economy()
                 .castle()
@@ -22619,7 +22268,7 @@ pub(crate) mod tests {
         let sphere_generation = session
             .backend()
             .campaign
-            .level2_compatibility()
+            .simulation()
             .economy()
             .slot_generation(sphere_slot);
         // Stay near this real claim while its defender approaches. Leaving
@@ -22636,7 +22285,7 @@ pub(crate) mod tests {
             if elapsed >= 2_048 {
                 break;
             }
-            let economy = session.backend().campaign.level2_compatibility().economy();
+            let economy = session.backend().campaign.simulation().economy();
             if economy
                 .castle()
                 .is_some_and(|castle| castle.mana >= minimum_mana)
@@ -22683,7 +22332,7 @@ pub(crate) mod tests {
                 .step(guard(session), GameCommand::default())
                 .unwrap();
         }
-        let economy = session.backend().campaign.level2_compatibility().economy();
+        let economy = session.backend().campaign.simulation().economy();
         let deposited_mana = economy
             .castle()
             .map(|castle| castle.mana)
@@ -22720,21 +22369,21 @@ pub(crate) mod tests {
                 session
                     .backend()
                     .campaign
-                    .level2_compatibility()
+                    .simulation()
                     .shared_spells()
                     .player_entity()
                     .mana,
                 session
                     .backend()
                     .campaign
-                    .level2_compatibility()
+                    .simulation()
                     .shared_spells()
                     .player_entity()
                     .max_mana,
                 session
                     .backend()
                     .campaign
-                    .level2_compatibility()
+                    .simulation()
                     .shared_spells()
                     .player_entity()
                     .mana_regen,
@@ -22799,7 +22448,7 @@ pub(crate) mod tests {
         expected_level: u8,
     ) {
         let castle_position = {
-            let compatibility = session.backend().campaign.level2_compatibility();
+            let compatibility = session.backend().campaign.simulation();
             compatibility
                 .economy()
                 .castle()
@@ -22829,7 +22478,7 @@ pub(crate) mod tests {
             if session
                 .backend()
                 .campaign
-                .level2_compatibility()
+                .simulation()
                 .economy()
                 .castle()
                 .is_some_and(|castle| castle.level == expected_level)
@@ -22843,7 +22492,7 @@ pub(crate) mod tests {
         let castle = session
             .backend()
             .campaign
-            .level2_compatibility()
+            .simulation()
             .economy()
             .castle()
             .expect("the upgraded Castle remains live");
@@ -22879,13 +22528,7 @@ pub(crate) mod tests {
         session: &mut GameSession<Mc2CampaignBackend>,
     ) {
         assert_eq!(
-            &session
-                .backend()
-                .campaign
-                .level2_compatibility()
-                .runtime()
-                .objectives[0]
-                .stage_selectors[..5],
+            &session.backend().campaign.simulation().runtime().objectives[0].stage_selectors[..5],
             &[2, 2, 1, 1, 1],
         );
         activate_and_retire_real_level_three_group_five_archers_for_test(session);
@@ -22894,7 +22537,7 @@ pub(crate) mod tests {
                 let castle = session
                     .backend()
                     .campaign
-                    .level2_compatibility()
+                    .simulation()
                     .economy()
                     .castle()
                     .expect("the carried Castle remains live");
@@ -22915,13 +22558,7 @@ pub(crate) mod tests {
             upgrade_real_castle_for_test(session, expected_level + 1);
         }
         for _ in 0..40 {
-            if session
-                .backend()
-                .campaign
-                .level2_compatibility()
-                .runtime()
-                .objectives[0]
-                .stage_selectors[2]
+            if session.backend().campaign.simulation().runtime().objectives[0].stage_selectors[2]
                 == 2
             {
                 break;
@@ -22929,7 +22566,7 @@ pub(crate) mod tests {
             let mana_before = session
                 .backend()
                 .campaign
-                .level2_compatibility()
+                .simulation()
                 .economy()
                 .castle()
                 .expect("the carried Castle remains live")
@@ -22945,13 +22582,7 @@ pub(crate) mod tests {
             );
         }
         for _ in 0..4 {
-            if session
-                .backend()
-                .campaign
-                .level2_compatibility()
-                .runtime()
-                .objectives[0]
-                .stage_selectors[2]
+            if session.backend().campaign.simulation().runtime().objectives[0].stage_selectors[2]
                 == 2
             {
                 break;
@@ -22960,7 +22591,7 @@ pub(crate) mod tests {
                 .step(guard(&session), GameCommand::default())
                 .unwrap();
         }
-        let compatibility = session.backend().campaign.level2_compatibility();
+        let compatibility = session.backend().campaign.simulation();
         let economy = compatibility.economy();
         let castle = economy.castle().expect("the carried Castle remains live");
         assert_eq!(castle.level, 3);
@@ -23052,7 +22683,7 @@ pub(crate) mod tests {
             .unwrap();
         let session = runtime.session_mut().unwrap();
         assert_eq!(session.identity().tick, 4_745);
-        let before = session.backend().campaign.level2_compatibility();
+        let before = session.backend().campaign.simulation();
         assert_eq!(before.state.entity_index, 111);
         assert_eq!(level_three_player_raw_mailbox_for_test(before), (0, 0));
         let source = before
@@ -23066,7 +22697,7 @@ pub(crate) mod tests {
         let life_before = before.shared_spells().player_entity().life;
         let event_start = before.economy().events().len();
         step_public_bee_command_for_test(session, GameCommand::default(), &mut BTreeSet::new());
-        let after = session.backend().campaign.level2_compatibility();
+        let after = session.backend().campaign.simulation();
         assert_eq!(after.economy().slot_generation(29), 11);
         assert_eq!(
             after.shared_spells().player_entity().life,
@@ -23106,7 +22737,7 @@ pub(crate) mod tests {
             .unwrap();
         let session = runtime.session_mut().unwrap();
         assert_eq!(session.identity().tick, 10_622);
-        let compatibility = session.backend().campaign.level2_compatibility();
+        let compatibility = session.backend().campaign.simulation();
         let bee = *compatibility
             .economy()
             .bee_creatures()
@@ -23118,7 +22749,7 @@ pub(crate) mod tests {
         let initial = crate::distance_3d_wrapped(compatibility.state.position, bee.position);
         let mut nearest = initial;
         for _ in 0..64 {
-            let compatibility = session.backend().campaign.level2_compatibility();
+            let compatibility = session.backend().campaign.simulation();
             let bee = *compatibility
                 .economy()
                 .bee_creatures()
@@ -23213,8 +22844,8 @@ pub(crate) mod tests {
     }
 
     fn public_bee_source_attributed_damage_for_test(
-        before: &crate::native_world::Level2ResetSession,
-        after: &crate::native_world::Level2ResetSession,
+        before: &crate::native_world::Mc2Simulation,
+        after: &crate::native_world::Mc2Simulation,
     ) -> Option<u32> {
         use crate::native_world::Level2EconomyEvent;
 
@@ -23453,10 +23084,10 @@ pub(crate) mod tests {
         session
             .backend_mut()
             .campaign
-            .level2_compatibility_mut()
+            .simulation_mut()
             .activate_authored_group_prerequisite_for_test(3)
             .unwrap();
-        let compatibility = session.backend().campaign.level2_compatibility();
+        let compatibility = session.backend().campaign.simulation();
         let player = compatibility.state.entity_index;
         let mut prior = compatibility.economy().bee_creatures()[0];
         let slot = prior.source_entity_index;
@@ -23518,10 +23149,10 @@ pub(crate) mod tests {
         session
             .backend_mut()
             .campaign
-            .level2_compatibility_mut()
+            .simulation_mut()
             .activate_authored_group_prerequisite_for_test(3)
             .unwrap();
-        let compatibility = session.backend().campaign.level2_compatibility();
+        let compatibility = session.backend().campaign.simulation();
         let player = compatibility.shared_spells().player_entity().index;
         let mut source = *compatibility
             .economy()
@@ -23664,7 +23295,7 @@ pub(crate) mod tests {
         command: GameCommand,
         terminal_rows: &mut BTreeSet<u16>,
     ) {
-        let before = session.backend().campaign.level2_compatibility();
+        let before = session.backend().campaign.simulation();
         let holders = before.shared_spells().local_player().enabled_spell_holders;
         let mut predicted = session.backend().campaign.clone();
         let evidence = predicted.step_with_tuning(
@@ -23672,7 +23303,7 @@ pub(crate) mod tests {
             CAMPAIGN_SPEED_INDEX,
             session.backend().flight_binding.tuning(),
         );
-        let after = predicted.level2_compatibility();
+        let after = predicted.simulation();
         assert!(
             public_bee_source_attributed_damage_for_test(before, after).is_some(),
             "only a nonlethal, current-generation pending source Bee attack may reduce player life: tick={} command={command:?} life_before={} life_after={} raw_before={:?} raw_after={:?} regen_before={} source_bees_before={:?} source_bees_after={:?} player_damage_events={:?} motion={:?}",
@@ -23705,10 +23336,12 @@ pub(crate) mod tests {
             holders
         );
         assert!(public_bee_flight_state_is_unmodified_for_test(after.state));
-        assert!(!predicted.events().iter().any(|event| matches!(
-            event,
-            crate::native_world::Level2DispatchEvent::Error { .. }
-        )));
+        assert!(
+            !predicted
+                .events()
+                .iter()
+                .any(|event| matches!(event, crate::native_world::Mc2DispatchEvent::Error { .. }))
+        );
         assert!(evidence.iter().all(|step| !matches!(
             step.movement_resolution,
             "rejected" | "rejected-and-stopped" | "recovered-after-reject"
@@ -23718,13 +23351,13 @@ pub(crate) mod tests {
         session.step(guard(session), command).unwrap();
         assert_eq!(session.backend().campaign.state_hash(), predicted_hash);
         assert_eq!(
-            session.backend().campaign.level2_compatibility().state,
+            session.backend().campaign.simulation().state,
             predicted_state
         );
         for bee in session
             .backend()
             .campaign
-            .level2_compatibility()
+            .simulation()
             .economy()
             .bee_creatures()
         {
@@ -23796,7 +23429,7 @@ pub(crate) mod tests {
         stop: bool,
         pursuing: bool,
     ) -> GameCommand {
-        let compatibility = session.backend().campaign.level2_compatibility();
+        let compatibility = session.backend().campaign.simulation();
         let state = compatibility.state;
         let desired = crate::heading_for_positions(state.position, target) as i16;
         let heading_error = crate::turn_toward(state.yaw, desired, 1_024).unsigned_abs();
@@ -23897,7 +23530,7 @@ pub(crate) mod tests {
                 CAMPAIGN_SPEED_INDEX,
                 session.backend().flight_binding.tuning(),
             );
-            let after = predicted.level2_compatibility();
+            let after = predicted.simulation();
             let attributed_damage =
                 public_bee_source_attributed_damage_for_test(compatibility, after);
             if attributed_damage.is_none()
@@ -23908,10 +23541,7 @@ pub(crate) mod tests {
                         .enabled_spell_holders
                 || !public_bee_flight_state_is_unmodified_for_test(after.state)
                 || predicted.events().iter().any(|event| {
-                    matches!(
-                        event,
-                        crate::native_world::Level2DispatchEvent::Error { .. }
-                    )
+                    matches!(event, crate::native_world::Mc2DispatchEvent::Error { .. })
                 })
                 || evidence.iter().any(|step| {
                     matches!(
@@ -23938,7 +23568,7 @@ pub(crate) mod tests {
                     public_bee_flight_state_is_unmodified_for_test(after.state),
                     after.state,
                     evidence.iter().map(|step| (step.movement_resolution, step.before, step.proposed, step.committed)).collect::<Vec<_>>(),
-                    predicted.events().iter().filter(|event| matches!(event, crate::native_world::Level2DispatchEvent::Error { .. })).collect::<Vec<_>>(),
+                    predicted.events().iter().filter(|event| matches!(event, crate::native_world::Mc2DispatchEvent::Error { .. })).collect::<Vec<_>>(),
                     after.economy().bee_creatures().iter().map(|bee| (
                         bee.authored_index(), bee.source_entity_index,
                         after.economy().slot_generation(bee.source_entity_index),
@@ -24007,7 +23637,7 @@ pub(crate) mod tests {
             Mc2CampaignInputs::new(&root),
         )
         .unwrap();
-        let compatibility = session.backend().campaign.level2_compatibility();
+        let compatibility = session.backend().campaign.simulation();
         let mut target = compatibility.state.position;
         crate::move_entity(&mut target, compatibility.state.yaw, 0, 4_096);
         target.z = target.z.saturating_add(1_024);
@@ -24128,7 +23758,7 @@ pub(crate) mod tests {
     // Acquisition may select any current Bee; only a real250 consumption admits
     // a shot. A terrain impact without damage does not qualify a line of fire.
     fn public_bee_escape_command_for_test(
-        compatibility: &crate::native_world::Level2ResetSession,
+        compatibility: &crate::native_world::Mc2Simulation,
     ) -> GameCommand {
         let state = compatibility.state;
         let Some(target) = compatibility
@@ -24164,7 +23794,7 @@ pub(crate) mod tests {
     fn public_bee_clear_shot_for_test(
         session: &GameSession<Mc2CampaignBackend>,
     ) -> Option<GameCommand> {
-        let compatibility = session.backend().campaign.level2_compatibility();
+        let compatibility = session.backend().campaign.simulation();
         let player = compatibility.state.entity_index;
         let holders = compatibility
             .shared_spells()
@@ -24176,7 +23806,7 @@ pub(crate) mod tests {
         for lead in 1..=8 {
             aim_forecast.step_with_tuning(
                 campaign_player_command(&public_bee_escape_command_for_test(
-                    aim_forecast.level2_compatibility(),
+                    aim_forecast.simulation(),
                 )),
                 CAMPAIGN_SPEED_INDEX,
                 tuning,
@@ -24191,7 +23821,7 @@ pub(crate) mod tests {
                 CAMPAIGN_SPEED_INDEX,
                 tuning,
             );
-            let state = body.level2_compatibility().state;
+            let state = body.simulation().state;
             let mut launch = state.position;
             crate::move_entity(&mut launch, state.yaw.wrapping_sub(512), 0, 256);
             if crate::FlightWorld::ground_height(compatibility.canonical_terrain(), launch)
@@ -24201,7 +23831,7 @@ pub(crate) mod tests {
             }
             launch.z = launch.z.wrapping_add(state.entity_fov);
             for target in aim_forecast
-                .level2_compatibility()
+                .simulation()
                 .economy()
                 .bee_creatures()
                 .iter()
@@ -24239,7 +23869,7 @@ pub(crate) mod tests {
                     let mut hit = false;
                     let mut safe = true;
                     for callback in 0..=24 {
-                        let before = predicted.level2_compatibility().clone();
+                        let before = predicted.simulation().clone();
                         let input = if callback == 0 {
                             session.backend().campaign_player_command(&command).unwrap()
                         } else {
@@ -24247,7 +23877,7 @@ pub(crate) mod tests {
                         };
                         let evidence =
                             predicted.step_with_tuning(input, CAMPAIGN_SPEED_INDEX, tuning);
-                        let after = predicted.level2_compatibility();
+                        let after = predicted.simulation();
                         safe &= public_bee_source_attributed_damage_for_test(&before, after)
                             .is_some()
                             && after.shared_spells().player_entity().life > 0
@@ -24255,10 +23885,7 @@ pub(crate) mod tests {
                                 == holders
                             && public_bee_flight_state_is_unmodified_for_test(after.state)
                             && !predicted.events().iter().any(|event| {
-                                matches!(
-                                    event,
-                                    crate::native_world::Level2DispatchEvent::Error { .. }
-                                )
+                                matches!(event, crate::native_world::Mc2DispatchEvent::Error { .. })
                             })
                             && evidence.iter().all(|step| {
                                 !matches!(
@@ -24289,7 +23916,7 @@ pub(crate) mod tests {
                                     .iter()
                                     .filter(|event| matches!(
                                         event,
-                                        crate::native_world::Level2DispatchEvent::Error { .. }
+                                        crate::native_world::Mc2DispatchEvent::Error { .. }
                                     ))
                                     .collect::<Vec<_>>(),
                                 after
@@ -24401,7 +24028,7 @@ pub(crate) mod tests {
     }
 
     pub(super) fn public_bee_needs_castle_recovery_for_test(
-        compatibility: &crate::native_world::Level2ResetSession,
+        compatibility: &crate::native_world::Mc2Simulation,
         cost: i32,
     ) -> bool {
         let player = compatibility.shared_spells().player_entity();
@@ -24496,7 +24123,7 @@ pub(crate) mod tests {
     ) {
         let mut clearing_contact = true;
         for _ in 0..1_280 {
-            let compatibility = session.backend().campaign.level2_compatibility();
+            let compatibility = session.backend().campaign.simulation();
             let player = compatibility.shared_spells().player_entity();
             let overlap = compatibility
                 .economy()
@@ -24534,7 +24161,7 @@ pub(crate) mod tests {
             step_public_bee_command_for_test(session, command, terminal_rows);
         }
         for _ in 0..64 {
-            let compatibility = session.backend().campaign.level2_compatibility();
+            let compatibility = session.backend().campaign.simulation();
             assert!(
                 compatibility.economy().player_castle_shift_aabb_overlap(
                     compatibility.shared_spells().player_entity()
@@ -24553,12 +24180,12 @@ pub(crate) mod tests {
             session
                 .backend()
                 .campaign
-                .level2_compatibility()
+                .simulation()
                 .shared_spells()
                 .player_mana()
                 >= cost
         );
-        let recovered = session.backend().campaign.level2_compatibility();
+        let recovered = session.backend().campaign.simulation();
         assert!(
             recovered.shared_spells().player_entity().life
                 >= recovered.shared_spells().player_entity().max_life
@@ -24566,7 +24193,7 @@ pub(crate) mod tests {
         assert_eq!(level_three_player_raw_mailbox_for_test(recovered), (0, 0));
         assert!(
             !public_bee_needs_castle_recovery_for_test(
-                session.backend().campaign.level2_compatibility(),
+                session.backend().campaign.simulation(),
                 cost
             ),
             "real Castle recovery must clear the entire contact payload and heal before the next shot"
@@ -24581,18 +24208,14 @@ pub(crate) mod tests {
         let holder_index = session
             .backend()
             .campaign
-            .level2_compatibility()
+            .simulation()
             .shared_spells()
             .local_player()
             .enabled_spell_holders[0];
         // Readiness and mana come from the acquired source holder. If needed,
         // fly to the existing owned Castle and observe its real upkeep.
         let cost = {
-            let shared = session
-                .backend()
-                .campaign
-                .level2_compatibility()
-                .shared_spells();
+            let shared = session.backend().campaign.simulation().shared_spells();
             shared
                 .pickups()
                 .iter()
@@ -24602,14 +24225,12 @@ pub(crate) mod tests {
                 .expect("carried Fireball holder")
                 .mana_cost
         };
-        if public_bee_needs_castle_recovery_for_test(
-            session.backend().campaign.level2_compatibility(),
-            cost,
-        ) {
+        if public_bee_needs_castle_recovery_for_test(session.backend().campaign.simulation(), cost)
+        {
             recover_public_bee_at_owned_castle_for_test(session, cost, terminal_rows);
         }
         for _ in 0..=24 {
-            let compatibility = session.backend().campaign.level2_compatibility();
+            let compatibility = session.backend().campaign.simulation();
             let player = compatibility.state.entity_index;
             let shared = compatibility.shared_spells();
             let holder = shared
@@ -24635,9 +24256,8 @@ pub(crate) mod tests {
             {
                 break;
             }
-            let command = public_bee_escape_command_for_test(
-                session.backend().campaign.level2_compatibility(),
-            );
+            let command =
+                public_bee_escape_command_for_test(session.backend().campaign.simulation());
             step_public_bee_command_for_test(session, command, terminal_rows);
         }
         let mut aimed = None;
@@ -24649,7 +24269,7 @@ pub(crate) mod tests {
         let mut attempted_sites = BTreeSet::new();
         let trace_navigation = std::env::var_os("MC_PUBLIC_BEE_NAVIGATION_DIAGNOSTIC").is_some();
         for _ in 0..640 {
-            let compatibility = session.backend().campaign.level2_compatibility();
+            let compatibility = session.backend().campaign.simulation();
             let Some(bee) = compatibility
                 .economy()
                 .bee_creatures()
@@ -24869,14 +24489,14 @@ pub(crate) mod tests {
             step_public_bee_command_for_test(session, command, terminal_rows);
         }
         let _bee = aimed.unwrap_or_else(|| {
-            let compatibility = session.backend().campaign.level2_compatibility();
+            let compatibility = session.backend().campaign.simulation();
             panic!(
                 "ordinary public flight reaches a current living final Bee within640 steps: state={:?} bee={:?}",
                 compatibility.state,
                 compatibility.economy().bee_creatures().iter().find(|bee| bee.authored_index() == Some(authored_index)),
             );
         });
-        let compatibility = session.backend().campaign.level2_compatibility();
+        let compatibility = session.backend().campaign.simulation();
         let state = compatibility.state;
         let player = state.entity_index;
         let before = compatibility
@@ -24929,7 +24549,7 @@ pub(crate) mod tests {
         let mut saw_impact = false;
         let mut receipts = Vec::new();
         for _ in 0..=24 {
-            let economy = session.backend().campaign.level2_compatibility().economy();
+            let economy = session.backend().campaign.simulation().economy();
             saw_projectile |= economy.fireball_projectiles().iter().any(|row| {
                 row.owner_entity_index == player
                     && !prior_projectiles.contains(&(
@@ -24973,7 +24593,7 @@ pub(crate) mod tests {
                     "damage needs real new player flyer and impact"
                 );
                 if trace_navigation {
-                    let compatibility = session.backend().campaign.level2_compatibility();
+                    let compatibility = session.backend().campaign.simulation();
                     eprintln!(
                         "BEE_EXCHANGE_HIT tick={} requested={} life={} mailbox={:?} receipts={:?}",
                         session.identity().tick,
@@ -24985,9 +24605,8 @@ pub(crate) mod tests {
                 }
                 return receipts;
             }
-            let command = public_bee_escape_command_for_test(
-                session.backend().campaign.level2_compatibility(),
-            );
+            let command =
+                public_bee_escape_command_for_test(session.backend().campaign.simulation());
             step_public_bee_command_for_test(session, command, terminal_rows);
         }
         assert!(
@@ -25005,13 +24624,7 @@ pub(crate) mod tests {
         const BEE_ROWS: [u16; 6] = [149, 150, 152, 153, 154, 155];
 
         assert_eq!(
-            &session
-                .backend()
-                .campaign
-                .level2_compatibility()
-                .runtime()
-                .objectives[0]
-                .stage_selectors[..5],
+            &session.backend().campaign.simulation().runtime().objectives[0].stage_selectors[..5],
             &[2, 2, 2, 1, 1]
         );
         assert_eq!(
@@ -25036,13 +24649,13 @@ pub(crate) mod tests {
             saw_group_two |= session
                 .backend()
                 .campaign
-                .level2_compatibility()
+                .simulation()
                 .dispatch_events()
                 .iter()
                 .any(|event| {
                     matches!(
                         event,
-                        crate::native_world::Level2DispatchEvent::AuthoredGroupActivated {
+                        crate::native_world::Mc2DispatchEvent::AuthoredGroupActivated {
                             source_slot: 128,
                             group: 2,
                             authored_indices,
@@ -25060,7 +24673,7 @@ pub(crate) mod tests {
         );
 
         let target = {
-            let compatibility = session.backend().campaign.level2_compatibility();
+            let compatibility = session.backend().campaign.simulation();
             let stage = &compatibility.runtime().stages[REVEALED_WAY_STAGE];
             crate::Position {
                 x: stage.axis_x.cast_unsigned(),
@@ -25069,18 +24682,13 @@ pub(crate) mod tests {
             }
         };
         for _ in 0..1_280 {
-            if session
-                .backend()
-                .campaign
-                .level2_compatibility()
-                .runtime()
-                .objectives[0]
-                .stage_selectors[REVEALED_WAY_STAGE]
+            if session.backend().campaign.simulation().runtime().objectives[0].stage_selectors
+                [REVEALED_WAY_STAGE]
                 == 2
             {
                 break;
             }
-            let state = session.backend().campaign.level2_compatibility().state;
+            let state = session.backend().campaign.simulation().state;
             let desired = i16::try_from(crate::heading_for_positions(state.position, target))
                 .expect("source heading is 11-bit");
             let correction = crate::turn_toward(state.yaw, desired, 127);
@@ -25096,7 +24704,7 @@ pub(crate) mod tests {
                 )
                 .unwrap();
         }
-        let compatibility = session.backend().campaign.level2_compatibility();
+        let compatibility = session.backend().campaign.simulation();
         assert_eq!(
             compatibility.runtime().objectives[0].stage_selectors[REVEALED_WAY_STAGE],
             2,
@@ -25118,7 +24726,7 @@ pub(crate) mod tests {
             let bee_rows = session
                 .backend()
                 .campaign
-                .level2_compatibility()
+                .simulation()
                 .economy()
                 .bee_creatures()
                 .iter()
@@ -25131,10 +24739,10 @@ pub(crate) mod tests {
                 .step(guard(session), GameCommand::default())
                 .unwrap();
         }
-        let compatibility = session.backend().campaign.level2_compatibility();
+        let compatibility = session.backend().campaign.simulation();
         assert!(compatibility.dispatch_events().iter().any(|event| matches!(
             event,
-            crate::native_world::Level2DispatchEvent::AuthoredGroupActivated {
+            crate::native_world::Mc2DispatchEvent::AuthoredGroupActivated {
                 source_slot: 129,
                 group: 3,
                 authored_indices,
@@ -25171,7 +24779,7 @@ pub(crate) mod tests {
                 let bee = session
                     .backend()
                     .campaign
-                    .level2_compatibility()
+                    .simulation()
                     .economy()
                     .bee_creatures()
                     .iter()
@@ -25208,7 +24816,7 @@ pub(crate) mod tests {
                 let remaining = session
                     .backend()
                     .campaign
-                    .level2_compatibility()
+                    .simulation()
                     .economy()
                     .bee_creatures();
                 if remaining
@@ -25218,9 +24826,8 @@ pub(crate) mod tests {
                     reclaimed_rows.insert(authored_index);
                     break;
                 }
-                let command = public_bee_escape_command_for_test(
-                    session.backend().campaign.level2_compatibility(),
-                );
+                let command =
+                    public_bee_escape_command_for_test(session.backend().campaign.simulation());
                 step_public_bee_command_for_test(session, command, &mut terminal_rows);
             }
         }
@@ -25230,7 +24837,7 @@ pub(crate) mod tests {
             if session
                 .backend()
                 .campaign
-                .level2_compatibility()
+                .simulation()
                 .economy()
                 .bee_creatures()
                 .iter()
@@ -25242,7 +24849,7 @@ pub(crate) mod tests {
                 .step(guard(session), GameCommand::default())
                 .unwrap();
         }
-        let compatibility = session.backend().campaign.level2_compatibility();
+        let compatibility = session.backend().campaign.simulation();
         let remaining = compatibility
             .economy()
             .bee_creatures()
@@ -25278,12 +24885,11 @@ pub(crate) mod tests {
         let terrain_before_close = session
             .backend()
             .campaign
-            .level2_compatibility()
+            .simulation()
             .canonical_terrain()
             .planes()
             .clone();
-        let controller_before =
-            session.backend().campaign.level2_compatibility().entities()[94].clone();
+        let controller_before = session.backend().campaign.simulation().entities()[94].clone();
         assert_eq!(
             (
                 controller_before.class,
@@ -25304,13 +24910,13 @@ pub(crate) mod tests {
         session
             .backend_mut()
             .campaign
-            .level2_compatibility_mut()
+            .simulation_mut()
             .activate_authored_group_prerequisite_for_test(2)
             .unwrap();
         let close_slot = session
             .backend()
             .campaign
-            .level2_compatibility()
+            .simulation()
             .economy()
             .terrain_strip_close_triggers()
             .iter()
@@ -25319,7 +24925,7 @@ pub(crate) mod tests {
             .source_entity_index;
         let mut close_terminal_rows = BTreeSet::new();
         for _ in 0..=50 {
-            let compatibility = session.backend().campaign.level2_compatibility();
+            let compatibility = session.backend().campaign.simulation();
             if compatibility.entities()[94].life == 4
                 && compatibility.entities()[94].subspell_index == 0
                 && compatibility
@@ -25336,7 +24942,7 @@ pub(crate) mod tests {
                 &mut close_terminal_rows,
             );
         }
-        let compatibility = session.backend().campaign.level2_compatibility();
+        let compatibility = session.backend().campaign.simulation();
         assert_eq!(
             (
                 compatibility.entities()[94].life,
@@ -25386,7 +24992,7 @@ pub(crate) mod tests {
         session
             .backend_mut()
             .campaign
-            .level2_compatibility_mut()
+            .simulation_mut()
             .apply_carried_spell_families(&[0, 2], Some(0))
             .unwrap();
         build_real_level_three_carried_castle_for_test(&mut session);
@@ -25394,13 +25000,13 @@ pub(crate) mod tests {
         session
             .backend_mut()
             .campaign
-            .level2_compatibility_mut()
+            .simulation_mut()
             .activate_authored_group_prerequisite_for_test(3)
             .unwrap();
         let mut classified = *session
             .backend()
             .campaign
-            .level2_compatibility()
+            .simulation()
             .economy()
             .bee_creatures()
             .iter()
@@ -25423,14 +25029,14 @@ pub(crate) mod tests {
         let bee_event_start = session
             .backend()
             .campaign
-            .level2_compatibility()
+            .simulation()
             .economy()
             .events()
             .len();
         let player_index = session
             .backend()
             .campaign
-            .level2_compatibility()
+            .simulation()
             .shared_spells()
             .player_entity()
             .index;
@@ -25448,7 +25054,7 @@ pub(crate) mod tests {
         // the separate live200 producer by ordinary approach and its following
         // player consumption, rather than requiring the shot to cause contact.
         for _ in 0..24 {
-            let compatibility = session.backend().campaign.level2_compatibility();
+            let compatibility = session.backend().campaign.simulation();
             if compatibility.economy().events()[bee_event_start..]
                 .iter()
                 .any(|event| {
@@ -25484,12 +25090,7 @@ pub(crate) mod tests {
             step_public_bee_command_for_test(&mut session, command, &mut terminal);
         }
         assert!(
-            session
-                .backend()
-                .campaign
-                .level2_compatibility()
-                .economy()
-                .events()[bee_event_start..]
+            session.backend().campaign.simulation().economy().events()[bee_event_start..]
                 .iter()
                 .any(|event| matches!(
                     event,
@@ -25508,7 +25109,7 @@ pub(crate) mod tests {
             session
                 .backend()
                 .campaign
-                .level2_compatibility()
+                .simulation()
                 .shared_spells()
                 .player_entity()
                 .life
@@ -25531,7 +25132,7 @@ pub(crate) mod tests {
         session
             .backend_mut()
             .campaign
-            .level2_compatibility_mut()
+            .simulation_mut()
             .apply_carried_spell_families(&[0, 1, 2, 3], Some(2))
             .unwrap();
 
@@ -25566,7 +25167,7 @@ pub(crate) mod tests {
             session
                 .backend()
                 .campaign
-                .level2_compatibility()
+                .simulation()
                 .shared_spells()
                 .player_entity()
                 .mana,
@@ -25575,7 +25176,7 @@ pub(crate) mod tests {
         let mana_regen_before = session
             .backend()
             .campaign
-            .level2_compatibility()
+            .simulation()
             .shared_spells()
             .player_entity()
             .mana_regen;
@@ -25588,7 +25189,7 @@ pub(crate) mod tests {
                 },
             )
             .unwrap();
-        let compatibility = session.backend().campaign.level2_compatibility();
+        let compatibility = session.backend().campaign.simulation();
         assert_eq!(player_spell_projectile_count(&session), 0);
         assert_eq!(
             compatibility.shared_spells().player_entity().mana_regen,
@@ -25726,7 +25327,7 @@ pub(crate) mod tests {
             existing
                 .backend()
                 .compatibility_campaign()
-                .level2_compatibility()
+                .simulation()
                 .entities()[TRIGGER_SLOT]
                 .position,
             crate::Position {
@@ -25748,7 +25349,7 @@ pub(crate) mod tests {
                 .iter()
                 .any(|event| matches!(
                     event,
-                    Level2DispatchEvent::AuthoredGroupActivated { group: 1, .. }
+                    Mc2DispatchEvent::AuthoredGroupActivated { group: 1, .. }
                 ))
         );
 
@@ -25772,7 +25373,7 @@ pub(crate) mod tests {
         );
         assert_eq!(
             active_campaign
-                .level2_compatibility()
+                .simulation()
                 .semantic_level_definition()
                 .unwrap()
                 .entity(&start_trigger)
@@ -25780,7 +25381,7 @@ pub(crate) mod tests {
                 .position(),
             moved_tile
         );
-        let moved_source = &active_campaign.level2_compatibility().entities()[TRIGGER_SLOT];
+        let moved_source = &active_campaign.simulation().entities()[TRIGGER_SLOT];
         let moved_position = crate::Position {
             x: 38_528,
             y: 25_728,
@@ -25788,10 +25389,7 @@ pub(crate) mod tests {
         };
         assert_eq!(moved_source.position, moved_position);
         assert_eq!(moved_source.phase, 49);
-        let map_chains = active_campaign
-            .level2_compatibility()
-            .economy()
-            .map_chains();
+        let map_chains = active_campaign.simulation().economy().map_chains();
         assert!(map_chains.is_linked(TRIGGER_SLOT as u16));
         assert_eq!(
             map_chains.tile_of(TRIGGER_SLOT as u16),
@@ -25809,7 +25407,7 @@ pub(crate) mod tests {
         );
         assert_eq!(
             active_campaign
-                .level2
+                .simulation
                 .session
                 .state
                 .live
@@ -25842,7 +25440,7 @@ pub(crate) mod tests {
                     .iter()
                     .any(|event| matches!(
                         event,
-                        Level2DispatchEvent::AuthoredGroupActivated { group: 1, .. }
+                        Mc2DispatchEvent::AuthoredGroupActivated { group: 1, .. }
                     ))
             );
         }
@@ -25854,7 +25452,7 @@ pub(crate) mod tests {
             .events()
             .iter()
             .filter_map(|event| match event {
-                Level2DispatchEvent::AuthoredGroupActivated {
+                Mc2DispatchEvent::AuthoredGroupActivated {
                     source_slot,
                     group: 1,
                     authored_indices,
@@ -25868,9 +25466,9 @@ pub(crate) mod tests {
             !campaign
                 .events()
                 .iter()
-                .any(|event| matches!(event, Level2DispatchEvent::Error { .. }))
+                .any(|event| matches!(event, Mc2DispatchEvent::Error { .. }))
         );
-        let hidden = &campaign.level2_compatibility().entities()[TRIGGER_SLOT];
+        let hidden = &campaign.simulation().entities()[TRIGGER_SLOT];
         assert!(hidden.active);
         assert!(hidden.drawing_disabled());
         assert_eq!(hidden.phase, 57);
@@ -25881,14 +25479,14 @@ pub(crate) mod tests {
         let reclaimed = &existing
             .backend()
             .compatibility_campaign()
-            .level2_compatibility()
+            .simulation()
             .entities()[TRIGGER_SLOT];
         assert!(!reclaimed.active);
         assert!(
             !existing
                 .backend()
                 .compatibility_campaign()
-                .level2_compatibility()
+                .simulation()
                 .economy()
                 .map_chains()
                 .is_linked(TRIGGER_SLOT as u16)
@@ -25897,14 +25495,14 @@ pub(crate) mod tests {
         existing.reset(guard(&existing)).unwrap();
         let reset_campaign = existing.backend().compatibility_campaign();
         assert_eq!(reset_campaign.state_hash(), moved_reset_hash);
-        let reset_trigger = &reset_campaign.level2_compatibility().entities()[TRIGGER_SLOT];
+        let reset_trigger = &reset_campaign.simulation().entities()[TRIGGER_SLOT];
         assert!(reset_trigger.active);
         assert!(!reset_trigger.drawing_disabled());
         assert_eq!(reset_trigger.phase, 49);
         assert_eq!(reset_trigger.position, moved_position);
         assert_eq!(
             reset_campaign
-                .level2
+                .simulation
                 .session
                 .state
                 .live
@@ -25928,7 +25526,7 @@ pub(crate) mod tests {
                 .iter()
                 .any(|event| matches!(
                     event,
-                    Level2DispatchEvent::AuthoredGroupActivated {
+                    Mc2DispatchEvent::AuthoredGroupActivated {
                         source_slot: 48,
                         group: 1,
                         authored_indices,
@@ -26001,13 +25599,13 @@ pub(crate) mod tests {
         let published = store.active_definition().unwrap();
 
         let construct_group_two = |session: &mut GameSession<Mc2CampaignBackend>| {
-            let compatibility = session.backend_mut().campaign.level2_compatibility_mut();
+            let compatibility = session.backend_mut().campaign.simulation_mut();
             compatibility
                 .activate_authored_group_prerequisite_for_test(2)
                 .unwrap();
             assert!(compatibility.dispatch_events().iter().any(|event| matches!(
                 event,
-                Level2DispatchEvent::AuthoredGroupActivated {
+                Mc2DispatchEvent::AuthoredGroupActivated {
                     group: 2,
                     authored_indices,
                     ..
@@ -26037,7 +25635,7 @@ pub(crate) mod tests {
             .unwrap();
         assert_eq!(reopened.identity.generation, 2);
         assert_eq!(reopened.identity.definition_revision, 2);
-        let compatibility = session.backend().campaign.level2_compatibility();
+        let compatibility = session.backend().campaign.simulation();
         assert_eq!(
             compatibility
                 .mission()
@@ -26068,7 +25666,7 @@ pub(crate) mod tests {
         let players = session
             .backend()
             .campaign
-            .level2_compatibility()
+            .simulation()
             .session
             .state
             .live
@@ -26085,7 +25683,7 @@ pub(crate) mod tests {
             session
                 .backend_mut()
                 .campaign
-                .level2_compatibility_mut()
+                .simulation_mut()
                 .set_level2_entity_position(*player, authored_trigger.position)
                 .unwrap();
         }
@@ -26102,7 +25700,7 @@ pub(crate) mod tests {
                 .iter()
                 .all(|event| !matches!(
                     event,
-                    Level2DispatchEvent::AuthoredGroupActivated {
+                    Mc2DispatchEvent::AuthoredGroupActivated {
                         source_slot: actual,
                         group: 8,
                         ..
@@ -26119,7 +25717,7 @@ pub(crate) mod tests {
             session
                 .backend_mut()
                 .campaign
-                .level2_compatibility_mut()
+                .simulation_mut()
                 .set_level2_entity_position(*player, outside)
                 .unwrap();
         }
@@ -26130,7 +25728,7 @@ pub(crate) mod tests {
             if session.backend().campaign.events().iter().any(|event| {
                 matches!(
                     event,
-                    Level2DispatchEvent::AuthoredGroupActivated {
+                    Mc2DispatchEvent::AuthoredGroupActivated {
                         source_slot: actual,
                         group: 8,
                         authored_indices,
@@ -26149,7 +25747,7 @@ pub(crate) mod tests {
                 .iter()
                 .any(|event| matches!(
                     event,
-                    Level2DispatchEvent::AuthoredGroupActivated {
+                    Mc2DispatchEvent::AuthoredGroupActivated {
                         source_slot: actual,
                         group: 8,
                         authored_indices,
@@ -26165,13 +25763,13 @@ pub(crate) mod tests {
                 .iter()
                 .all(|event| !matches!(
                     event,
-                    Level2DispatchEvent::Error { source_slot: actual, .. } if *actual == source_slot
+                    Mc2DispatchEvent::Error { source_slot: actual, .. } if *actual == source_slot
                 ))
         );
 
         session.reset(guard(&session)).unwrap();
         assert_eq!(session.backend().campaign.state_hash(), authored_reset_hash);
-        let reset = session.backend().campaign.level2_compatibility();
+        let reset = session.backend().campaign.simulation();
         assert!(reset.economy().authored_switch_producers().is_empty());
         assert_eq!(
             reset
@@ -26252,13 +25850,13 @@ pub(crate) mod tests {
         let published = store.active_definition().unwrap();
 
         let construct_group_four = |session: &mut GameSession<Mc2CampaignBackend>| {
-            let compatibility = session.backend_mut().campaign.level2_compatibility_mut();
+            let compatibility = session.backend_mut().campaign.simulation_mut();
             compatibility
                 .activate_authored_group_prerequisite_for_test(4)
                 .unwrap();
             assert!(compatibility.dispatch_events().iter().any(|event| matches!(
                 event,
-                Level2DispatchEvent::AuthoredGroupActivated {
+                Mc2DispatchEvent::AuthoredGroupActivated {
                     group: 4,
                     authored_indices,
                     ..
@@ -26300,7 +25898,7 @@ pub(crate) mod tests {
             .unwrap();
         assert_eq!(reopened.identity.generation, 2);
         assert_eq!(reopened.identity.definition_revision, 2);
-        let compatibility = session.backend().campaign.level2_compatibility();
+        let compatibility = session.backend().campaign.simulation();
         assert_eq!(
             compatibility
                 .mission()
@@ -26322,7 +25920,7 @@ pub(crate) mod tests {
                 .iter()
                 .all(|child| child.position == authored_worm.position)
         );
-        let compatibility = session.backend().campaign.level2_compatibility();
+        let compatibility = session.backend().campaign.simulation();
         assert_eq!(
             compatibility
                 .economy()
@@ -26344,7 +25942,7 @@ pub(crate) mod tests {
         session
             .step(guard(&session), GameCommand::default())
             .unwrap();
-        let compatibility = session.backend().campaign.level2_compatibility();
+        let compatibility = session.backend().campaign.simulation();
         let visited = compatibility
             .economy()
             .authored_class5()
@@ -26372,7 +25970,7 @@ pub(crate) mod tests {
                 .iter()
                 .any(|event| matches!(
                     event,
-                    Level2DispatchEvent::DynamicArena {
+                    Mc2DispatchEvent::DynamicArena {
                         source_slot,
                         kind: crate::native_world::Level2DynamicArenaKind::AuthoredClass5,
                         ..
@@ -26387,14 +25985,14 @@ pub(crate) mod tests {
                 .iter()
                 .all(|event| !matches!(
                     event,
-                    Level2DispatchEvent::Error { source_slot, .. }
+                    Mc2DispatchEvent::Error { source_slot, .. }
                         if *source_slot == visited.source_entity_index
                 ))
         );
 
         session.reset(guard(&session)).unwrap();
         assert_eq!(session.backend().campaign.state_hash(), authored_reset_hash);
-        let reset = session.backend().campaign.level2_compatibility();
+        let reset = session.backend().campaign.simulation();
         assert!(reset.economy().authored_class5().is_empty());
         assert_eq!(
             reset
@@ -26488,7 +26086,7 @@ pub(crate) mod tests {
         let published = store.active_definition().unwrap();
 
         let family = |session: &GameSession<Mc2CampaignBackend>| {
-            session.backend().campaign.level2_compatibility().entities()
+            session.backend().campaign.simulation().entities()
                 [usize::from(ROOT_SLOT)..=usize::from(ROOT_SLOT) + BODY_COUNT]
                 .to_vec()
         };
@@ -26537,7 +26135,7 @@ pub(crate) mod tests {
             assert_eq!(authored.position.y, package.position.y);
             assert_eq!(authored.position.z, package.position.z);
         }
-        let compatibility = session.backend().campaign.level2_compatibility();
+        let compatibility = session.backend().campaign.simulation();
         assert!(authored_family.iter().all(|entity| {
             compatibility.economy().map_chains().tile_of(entity.index) == AUTHORED_MAP_TILE
         }));
@@ -26587,7 +26185,7 @@ pub(crate) mod tests {
                 session
                     .backend()
                     .campaign
-                    .level2_compatibility()
+                    .simulation()
                     .economy()
                     .map_chains()
                     .tile_of(visited.index),
@@ -26597,7 +26195,7 @@ pub(crate) mod tests {
         assert!(session.backend().campaign.events().iter().all(|event| {
             !matches!(
                 event,
-                Level2DispatchEvent::Error { source_slot, .. }
+                Mc2DispatchEvent::Error { source_slot, .. }
                     if (ROOT_SLOT..=LAST_BODY_SLOT).contains(source_slot)
             )
         }));
@@ -26699,7 +26297,7 @@ pub(crate) mod tests {
         )
         .unwrap();
         let construct_dynamic = |session: &mut GameSession<Mc2CampaignBackend>| {
-            let compatibility = session.backend_mut().campaign.level2_compatibility_mut();
+            let compatibility = session.backend_mut().campaign.simulation_mut();
             compatibility
                 .activate_authored_group_prerequisite_for_test(4)
                 .unwrap();
@@ -26721,16 +26319,11 @@ pub(crate) mod tests {
             (root, children)
         };
         let damage_dynamic = |session: &mut GameSession<Mc2CampaignBackend>| {
-            let attacker = session
-                .backend()
-                .campaign
-                .level2_compatibility()
-                .state
-                .entity_index;
+            let attacker = session.backend().campaign.simulation().state.entity_index;
             let (_, child_slot) = session
                 .backend_mut()
                 .campaign
-                .level2_compatibility_mut()
+                .simulation_mut()
                 .economy_mut()
                 .stage_authored_worm_child_mailbox_for_test(DYNAMIC_RECORD, 12, attacker, DAMAGE)
                 .unwrap();
@@ -26740,7 +26333,7 @@ pub(crate) mod tests {
             let child = session
                 .backend()
                 .campaign
-                .level2_compatibility()
+                .simulation()
                 .economy()
                 .authored_class5_model3_children()
                 .iter()
@@ -26753,7 +26346,7 @@ pub(crate) mod tests {
             let root = session
                 .backend()
                 .campaign
-                .level2_compatibility()
+                .simulation()
                 .economy()
                 .authored_class5()
                 .iter()
@@ -26898,33 +26491,27 @@ pub(crate) mod tests {
         )
         .unwrap();
         let imported_family = |session: &GameSession<Mc2CampaignBackend>| {
-            session.backend().campaign.level2_compatibility().entities()
+            session.backend().campaign.simulation().entities()
                 [usize::from(IMPORTED_ROOT)..=usize::from(IMPORTED_ROOT) + BODY_COUNT]
                 .to_vec()
         };
         let damage_imported = |session: &mut GameSession<Mc2CampaignBackend>| {
-            let attacker = session
-                .backend()
-                .campaign
-                .level2_compatibility()
-                .state
-                .entity_index;
+            let attacker = session.backend().campaign.simulation().state.entity_index;
             let child_slot = session
                 .backend_mut()
                 .campaign
-                .level2_compatibility_mut()
+                .simulation_mut()
                 .stage_imported_worm_child_mailbox_for_test(IMPORTED_ROOT, 0, attacker, DAMAGE)
                 .unwrap();
             session
                 .step(guard(session), GameCommand::default())
                 .unwrap();
-            let child = session.backend().campaign.level2_compatibility().entities()
-                [usize::from(child_slot)]
-            .clone();
+            let child =
+                session.backend().campaign.simulation().entities()[usize::from(child_slot)].clone();
             session
                 .step(guard(session), GameCommand::default())
                 .unwrap();
-            let root = session.backend().campaign.level2_compatibility().entities()
+            let root = session.backend().campaign.simulation().entities()
                 [usize::from(IMPORTED_ROOT)]
             .clone();
             (child, root)
@@ -27090,7 +26677,7 @@ pub(crate) mod tests {
         let published = store.active_definition().unwrap();
 
         let construct_group_three = |session: &mut GameSession<Mc2CampaignBackend>| {
-            let compatibility = session.backend_mut().campaign.level2_compatibility_mut();
+            let compatibility = session.backend_mut().campaign.simulation_mut();
             compatibility
                 .activate_authored_group_prerequisite_for_test(3)
                 .unwrap();
@@ -27103,7 +26690,7 @@ pub(crate) mod tests {
             assert!(
                 events.iter().any(|event| matches!(
                     event,
-                    Level2DispatchEvent::AuthoredGroupActivated {
+                    Mc2DispatchEvent::AuthoredGroupActivated {
                         group: 3,
                         authored_indices,
                         ..
@@ -27141,7 +26728,7 @@ pub(crate) mod tests {
             ),
             (2, 2)
         );
-        let compatibility = session.backend().campaign.level2_compatibility();
+        let compatibility = session.backend().campaign.simulation();
         assert_eq!(
             compatibility
                 .mission()
@@ -27165,7 +26752,7 @@ pub(crate) mod tests {
         session
             .step(guard(&session), GameCommand::default())
             .unwrap();
-        let compatibility = session.backend().campaign.level2_compatibility();
+        let compatibility = session.backend().campaign.simulation();
         let visited = compatibility
             .economy()
             .authored_class5()
@@ -27194,7 +26781,7 @@ pub(crate) mod tests {
                 .iter()
                 .any(|event| matches!(
                     event,
-                    Level2DispatchEvent::DynamicArena {
+                    Mc2DispatchEvent::DynamicArena {
                         source_slot: actual,
                         kind: crate::native_world::Level2DynamicArenaKind::AuthoredClass5,
                         ..
@@ -27209,7 +26796,7 @@ pub(crate) mod tests {
                 .iter()
                 .all(|event| !matches!(
                     event,
-                    Level2DispatchEvent::Error {
+                    Mc2DispatchEvent::Error {
                         source_slot: actual,
                         ..
                     } if *actual == source_slot
@@ -27222,7 +26809,7 @@ pub(crate) mod tests {
             session
                 .backend()
                 .campaign
-                .level2_compatibility()
+                .simulation()
                 .economy()
                 .authored_class5()
                 .is_empty()
@@ -27303,7 +26890,7 @@ pub(crate) mod tests {
         let published = store.active_definition().unwrap();
 
         let construct_group_three = |session: &mut GameSession<Mc2CampaignBackend>| {
-            let compatibility = session.backend_mut().campaign.level2_compatibility_mut();
+            let compatibility = session.backend_mut().campaign.simulation_mut();
             compatibility
                 .activate_authored_group_prerequisite_for_test(3)
                 .unwrap();
@@ -27320,7 +26907,7 @@ pub(crate) mod tests {
                 session
                     .backend_mut()
                     .campaign
-                    .level2_compatibility_mut()
+                    .simulation_mut()
                     .economy_mut()
                     .stage_trader_mailbox_damage_for_test(source_slot, 1, DAMAGE)
             );
@@ -27329,7 +26916,7 @@ pub(crate) mod tests {
             session
                 .backend()
                 .campaign
-                .level2_compatibility()
+                .simulation()
                 .economy()
                 .authored_class5()
                 .iter()
@@ -27455,7 +27042,7 @@ pub(crate) mod tests {
             session
                 .backend()
                 .campaign
-                .level2_compatibility()
+                .simulation()
                 .ordinary()
                 .villagers()
                 .iter()
@@ -27467,7 +27054,7 @@ pub(crate) mod tests {
             session
                 .backend_mut()
                 .campaign
-                .level2_compatibility_mut()
+                .simulation_mut()
                 .ordinary_mut()
                 .inject_villager_damage(source_slot, DAMAGE, 1)
                 .unwrap();
@@ -27531,8 +27118,7 @@ pub(crate) mod tests {
                 AUTHORED_MAX_LIFE.cast_signed()
             )
         );
-        let raw =
-            &session.backend().campaign.level2_compatibility().entities()[usize::from(source_slot)];
+        let raw = &session.backend().campaign.simulation().entities()[usize::from(source_slot)];
         assert_eq!((raw.max_life, raw.life), (authored.max_life, authored.life));
         let authored_reset_hash = session.backend().campaign.state_hash();
 
@@ -27551,7 +27137,7 @@ pub(crate) mod tests {
         let reset = villager_state(&session);
         assert_eq!(reset, authored);
         let raw_reset =
-            &session.backend().campaign.level2_compatibility().entities()[usize::from(source_slot)];
+            &session.backend().campaign.simulation().entities()[usize::from(source_slot)];
         assert_eq!(
             (raw_reset.max_life, raw_reset.life),
             (reset.max_life, reset.life)
@@ -27603,7 +27189,7 @@ pub(crate) mod tests {
         let mut package_occurrences = session
             .backend()
             .campaign
-            .level2_compatibility()
+            .simulation()
             .ordinary()
             .villagers()
             .iter()
@@ -27665,7 +27251,7 @@ pub(crate) mod tests {
             session
                 .backend()
                 .campaign
-                .level2_compatibility()
+                .simulation()
                 .ordinary()
                 .villagers()
                 .iter()
@@ -27718,7 +27304,7 @@ pub(crate) mod tests {
             (authored_tile.x, authored_tile.y)
         );
         assert_eq!(authored.entity_index, source_slot);
-        let compatibility = session.backend().campaign.level2_compatibility();
+        let compatibility = session.backend().campaign.simulation();
         assert_eq!(
             compatibility.entities()[usize::from(source_slot)].position,
             authored.position
@@ -27749,7 +27335,7 @@ pub(crate) mod tests {
                 .iter()
                 .any(|event| matches!(
                     event,
-                    Level2DispatchEvent::Villager {
+                    Mc2DispatchEvent::Villager {
                         source_slot: actual,
                         ..
                     } if *actual == source_slot
@@ -27761,8 +27347,7 @@ pub(crate) mod tests {
         let reset = villager_state(&session);
         assert_eq!(reset, authored);
         assert_eq!(
-            session.backend().campaign.level2_compatibility().entities()[usize::from(source_slot)]
-                .position,
+            session.backend().campaign.simulation().entities()[usize::from(source_slot)].position,
             authored.position
         );
 
@@ -27836,7 +27421,7 @@ pub(crate) mod tests {
         let package_house = session
             .backend()
             .campaign
-            .level2_compatibility()
+            .simulation()
             .ordinary()
             .houses()
             .iter()
@@ -27893,7 +27478,7 @@ pub(crate) mod tests {
             session
                 .backend()
                 .campaign
-                .level2_compatibility()
+                .simulation()
                 .ordinary()
                 .houses()
                 .iter()
@@ -27916,7 +27501,7 @@ pub(crate) mod tests {
         let authored = session
             .backend()
             .campaign
-            .level2_compatibility()
+            .simulation()
             .ordinary()
             .houses()
             .iter()
@@ -27927,7 +27512,7 @@ pub(crate) mod tests {
             (authored.position.x >> 8, authored.position.y >> 8),
             (authored_tile.x, authored_tile.y)
         );
-        let compatibility = session.backend().campaign.level2_compatibility();
+        let compatibility = session.backend().campaign.simulation();
         assert_eq!(
             compatibility.entities()[usize::from(source_slot)].position,
             authored.position
@@ -27947,7 +27532,7 @@ pub(crate) mod tests {
         let visited = session
             .backend()
             .campaign
-            .level2_compatibility()
+            .simulation()
             .ordinary()
             .houses()
             .iter()
@@ -27967,7 +27552,7 @@ pub(crate) mod tests {
                 .iter()
                 .any(|event| matches!(
                     event,
-                    Level2DispatchEvent::House {
+                    Mc2DispatchEvent::House {
                         source_slot: actual,
                         ..
                     } if *actual == source_slot
@@ -27980,7 +27565,7 @@ pub(crate) mod tests {
             session
                 .backend()
                 .campaign
-                .level2_compatibility()
+                .simulation()
                 .ordinary()
                 .houses()
                 .iter()
@@ -27989,8 +27574,7 @@ pub(crate) mod tests {
             Some(authored)
         );
         assert_eq!(
-            session.backend().campaign.level2_compatibility().entities()[usize::from(source_slot)]
-                .position,
+            session.backend().campaign.simulation().entities()[usize::from(source_slot)].position,
             authored.position
         );
 
@@ -28027,7 +27611,7 @@ pub(crate) mod tests {
                 binding => panic!("group-13 trigger has the wrong runtime binding: {binding:?}"),
             };
             let (player_slot, trigger_position) = {
-                let compatibility = session.backend().campaign.level2_compatibility();
+                let compatibility = session.backend().campaign.simulation();
                 (
                     compatibility.state.entity_index,
                     compatibility.entities()[usize::from(trigger_slot)].position,
@@ -28036,7 +27620,7 @@ pub(crate) mod tests {
             session
                 .backend_mut()
                 .campaign
-                .level2_compatibility_mut()
+                .simulation_mut()
                 .set_level2_entity_position(player_slot, trigger_position)
                 .unwrap();
 
@@ -28047,7 +27631,7 @@ pub(crate) mod tests {
                 if session.backend().campaign.events().iter().any(|event| {
                     matches!(
                         event,
-                        Level2DispatchEvent::AuthoredGroupActivated {
+                        Mc2DispatchEvent::AuthoredGroupActivated {
                             source_slot,
                             group: GROUP,
                             authored_indices,
@@ -28059,11 +27643,11 @@ pub(crate) mod tests {
                     break;
                 }
             }
-            let compatibility = session.backend().campaign.level2_compatibility();
+            let compatibility = session.backend().campaign.simulation();
             assert!(compatibility.dispatch_events().iter().any(|event| {
                 matches!(
                     event,
-                    Level2DispatchEvent::AuthoredGroupActivated {
+                    Mc2DispatchEvent::AuthoredGroupActivated {
                         source_slot,
                         group: GROUP,
                         authored_indices,
@@ -28076,7 +27660,7 @@ pub(crate) mod tests {
                 compatibility
                     .dispatch_events()
                     .iter()
-                    .all(|event| { !matches!(event, Level2DispatchEvent::Error { .. }) })
+                    .all(|event| { !matches!(event, Mc2DispatchEvent::Error { .. }) })
             );
             compatibility
                 .economy()
@@ -28088,7 +27672,7 @@ pub(crate) mod tests {
             session: &GameSession<Mc2CampaignBackend>,
             tile: TilePosition,
         ) -> crate::Position {
-            let compatibility = session.backend().campaign.level2_compatibility();
+            let compatibility = session.backend().campaign.simulation();
             crate::house::authored_level_one_house_position(
                 crate::Position {
                     x: tile.x << 8,
@@ -28106,7 +27690,7 @@ pub(crate) mod tests {
             session
                 .backend()
                 .campaign
-                .level2_compatibility()
+                .simulation()
                 .ordinary()
                 .houses()
                 .iter()
@@ -28193,7 +27777,7 @@ pub(crate) mod tests {
             .unwrap();
         assert_eq!(reopened.identity.generation, 2);
         assert_eq!(reopened.identity.definition_revision, 2);
-        let compatibility = session.backend().campaign.level2_compatibility();
+        let compatibility = session.backend().campaign.simulation();
         assert_eq!(
             compatibility
                 .mission()
@@ -28222,7 +27806,7 @@ pub(crate) mod tests {
             session
                 .backend()
                 .campaign
-                .level2_compatibility()
+                .simulation()
                 .economy()
                 .map_chains()
                 .is_linked(authored_slot)
@@ -28232,7 +27816,7 @@ pub(crate) mod tests {
         let mut saw_construction_pass = session.backend().campaign.events().iter().any(|event| {
             matches!(
                 event,
-                Level2DispatchEvent::House {
+                Mc2DispatchEvent::House {
                     source_slot,
                     events,
                     ..
@@ -28255,7 +27839,7 @@ pub(crate) mod tests {
             saw_construction_pass |= session.backend().campaign.events().iter().any(|event| {
                 matches!(
                     event,
-                    Level2DispatchEvent::House {
+                    Mc2DispatchEvent::House {
                         source_slot,
                         events,
                         ..
@@ -28276,11 +27860,7 @@ pub(crate) mod tests {
             (live.position.x, live.position.y),
             (authored_position.x, authored_position.y)
         );
-        let terrain = session
-            .backend()
-            .campaign
-            .level2_compatibility()
-            .canonical_terrain();
+        let terrain = session.backend().campaign.simulation().canonical_terrain();
         assert_ne!(live.position.z, authored_position.z);
         assert_eq!(
             live.position.z,
@@ -28289,7 +27869,7 @@ pub(crate) mod tests {
         assert!(session.backend().campaign.events().iter().any(|event| {
             matches!(
                 event,
-                Level2DispatchEvent::House {
+                Mc2DispatchEvent::House {
                     source_slot,
                     events,
                     ..
@@ -28304,7 +27884,7 @@ pub(crate) mod tests {
             session
                 .backend()
                 .campaign
-                .level2_compatibility()
+                .simulation()
                 .economy()
                 .map_chains()
                 .is_linked(authored_slot)
@@ -28312,7 +27892,7 @@ pub(crate) mod tests {
 
         session.reset(guard(&session)).unwrap();
         assert_eq!(session.backend().campaign.state_hash(), authored_reset_hash);
-        let reset = session.backend().campaign.level2_compatibility();
+        let reset = session.backend().campaign.simulation();
         assert_eq!(
             reset.economy().authored_house_source_slot(HOUSE_RECORD),
             None
@@ -28375,7 +27955,7 @@ pub(crate) mod tests {
                 binding => panic!("group-13 trigger has the wrong runtime binding: {binding:?}"),
             };
             let (player_slot, trigger_position) = {
-                let compatibility = session.backend().campaign.level2_compatibility();
+                let compatibility = session.backend().campaign.simulation();
                 (
                     compatibility.state.entity_index,
                     compatibility.entities()[usize::from(trigger_slot)].position,
@@ -28384,7 +27964,7 @@ pub(crate) mod tests {
             session
                 .backend_mut()
                 .campaign
-                .level2_compatibility_mut()
+                .simulation_mut()
                 .set_level2_entity_position(player_slot, trigger_position)
                 .unwrap();
             for _ in 0..8 {
@@ -28394,7 +27974,7 @@ pub(crate) mod tests {
                 if session.backend().campaign.events().iter().any(|event| {
                     matches!(
                         event,
-                        Level2DispatchEvent::AuthoredGroupActivated {
+                        Mc2DispatchEvent::AuthoredGroupActivated {
                             source_slot,
                             group: GROUP,
                             authored_indices,
@@ -28409,7 +27989,7 @@ pub(crate) mod tests {
             session
                 .backend()
                 .campaign
-                .level2_compatibility()
+                .simulation()
                 .economy()
                 .authored_house_source_slot(HOUSE_RECORD)
                 .expect("the real group-13 producer constructs House record 107")
@@ -28422,7 +28002,7 @@ pub(crate) mod tests {
             session
                 .backend()
                 .campaign
-                .level2_compatibility()
+                .simulation()
                 .ordinary()
                 .houses()
                 .iter()
@@ -28540,7 +28120,7 @@ pub(crate) mod tests {
         session
             .backend_mut()
             .campaign
-            .level2_compatibility_mut()
+            .simulation_mut()
             .ordinary_mut()
             .inject_house_damage(package_slot, 25_000, 1)
             .unwrap();
@@ -28564,7 +28144,7 @@ pub(crate) mod tests {
         session
             .backend_mut()
             .campaign
-            .level2_compatibility_mut()
+            .simulation_mut()
             .ordinary_mut()
             .inject_house_damage(authored_slot, 25_000, 1)
             .unwrap();
@@ -28612,7 +28192,7 @@ pub(crate) mod tests {
                 binding => panic!("group-13 trigger has the wrong runtime binding: {binding:?}"),
             };
             let (player_slot, trigger_position) = {
-                let compatibility = session.backend().campaign.level2_compatibility();
+                let compatibility = session.backend().campaign.simulation();
                 (
                     compatibility.state.entity_index,
                     compatibility.entities()[usize::from(trigger_slot)].position,
@@ -28621,7 +28201,7 @@ pub(crate) mod tests {
             session
                 .backend_mut()
                 .campaign
-                .level2_compatibility_mut()
+                .simulation_mut()
                 .set_level2_entity_position(player_slot, trigger_position)
                 .unwrap();
             for _ in 0..8 {
@@ -28631,7 +28211,7 @@ pub(crate) mod tests {
                 if session.backend().campaign.events().iter().any(|event| {
                     matches!(
                         event,
-                        Level2DispatchEvent::AuthoredGroupActivated {
+                        Mc2DispatchEvent::AuthoredGroupActivated {
                             source_slot,
                             group: GROUP,
                             authored_indices,
@@ -28646,7 +28226,7 @@ pub(crate) mod tests {
             session
                 .backend()
                 .campaign
-                .level2_compatibility()
+                .simulation()
                 .economy()
                 .authored_house_source_slot(HOUSE_RECORD)
                 .expect("the real group-13 producer constructs House record 107")
@@ -28659,7 +28239,7 @@ pub(crate) mod tests {
             session
                 .backend()
                 .campaign
-                .level2_compatibility()
+                .simulation()
                 .ordinary()
                 .houses()
                 .iter()
@@ -28775,7 +28355,7 @@ pub(crate) mod tests {
         session
             .backend_mut()
             .campaign
-            .level2_compatibility_mut()
+            .simulation_mut()
             .ordinary_mut()
             .inject_house_damage(package_slot, 5_000, 1)
             .unwrap();
@@ -28797,7 +28377,7 @@ pub(crate) mod tests {
         session
             .backend_mut()
             .campaign
-            .level2_compatibility_mut()
+            .simulation_mut()
             .ordinary_mut()
             .inject_house_damage(authored_slot, 5_000, 1)
             .unwrap();
@@ -28882,13 +28462,13 @@ pub(crate) mod tests {
         let published = store.active_definition().unwrap();
 
         let construct_group_six = |session: &mut GameSession<Mc2CampaignBackend>| {
-            let compatibility = session.backend_mut().campaign.level2_compatibility_mut();
+            let compatibility = session.backend_mut().campaign.simulation_mut();
             compatibility
                 .activate_authored_group_prerequisite_for_test(6)
                 .unwrap();
             assert!(compatibility.dispatch_events().iter().any(|event| matches!(
                 event,
-                Level2DispatchEvent::AuthoredGroupActivated {
+                Mc2DispatchEvent::AuthoredGroupActivated {
                     group: 6,
                     authored_indices,
                     ..
@@ -28919,7 +28499,7 @@ pub(crate) mod tests {
             .unwrap();
         assert_eq!(reopened.identity.generation, 2);
         assert_eq!(reopened.identity.definition_revision, 2);
-        let compatibility = session.backend().campaign.level2_compatibility();
+        let compatibility = session.backend().campaign.simulation();
         assert_eq!(
             compatibility
                 .mission()
@@ -28951,7 +28531,7 @@ pub(crate) mod tests {
             session
                 .backend()
                 .campaign
-                .level2_compatibility()
+                .simulation()
                 .economy()
                 .map_chains()
                 .is_linked(source_slot)
@@ -28960,7 +28540,7 @@ pub(crate) mod tests {
         session
             .step(guard(&session), GameCommand::default())
             .unwrap();
-        let compatibility = session.backend().campaign.level2_compatibility();
+        let compatibility = session.backend().campaign.simulation();
         let visited = compatibility
             .economy()
             .authored_class5()
@@ -28983,7 +28563,7 @@ pub(crate) mod tests {
                 .iter()
                 .any(|event| matches!(
                     event,
-                    Level2DispatchEvent::DynamicArena {
+                    Mc2DispatchEvent::DynamicArena {
                         source_slot: actual,
                         kind: crate::native_world::Level2DynamicArenaKind::AuthoredClass5,
                         ..
@@ -28998,7 +28578,7 @@ pub(crate) mod tests {
                 .iter()
                 .all(|event| !matches!(
                     event,
-                    Level2DispatchEvent::Error {
+                    Mc2DispatchEvent::Error {
                         source_slot: actual,
                         ..
                     } if *actual == source_slot
@@ -29007,7 +28587,7 @@ pub(crate) mod tests {
 
         session.reset(guard(&session)).unwrap();
         assert_eq!(session.backend().campaign.state_hash(), authored_reset_hash);
-        let reset = session.backend().campaign.level2_compatibility();
+        let reset = session.backend().campaign.simulation();
         assert!(reset.economy().authored_class5().is_empty());
         assert_eq!(
             reset
@@ -29122,13 +28702,13 @@ pub(crate) mod tests {
         );
 
         let construct_group_six = |session: &mut GameSession<Mc2CampaignBackend>| {
-            let compatibility = session.backend_mut().campaign.level2_compatibility_mut();
+            let compatibility = session.backend_mut().campaign.simulation_mut();
             compatibility
                 .activate_authored_group_prerequisite_for_test(6)
                 .unwrap();
             assert!(compatibility.dispatch_events().iter().any(|event| matches!(
                 event,
-                Level2DispatchEvent::AuthoredGroupActivated {
+                Mc2DispatchEvent::AuthoredGroupActivated {
                     group: 6,
                     authored_indices,
                     ..
@@ -29144,7 +28724,7 @@ pub(crate) mod tests {
         };
         let apply_two_impacts = |session: &mut GameSession<Mc2CampaignBackend>, source_slot| {
             let (position, attacker) = {
-                let compatibility = session.backend().campaign.level2_compatibility();
+                let compatibility = session.backend().campaign.simulation();
                 let source = compatibility
                     .economy()
                     .authored_class5()
@@ -29157,7 +28737,7 @@ pub(crate) mod tests {
                 session
                     .backend_mut()
                     .campaign
-                    .level2_compatibility_mut()
+                    .simulation_mut()
                     .apply_fireball_impact_to_firefly_for_test(position, attacker, 500);
             }
             session
@@ -29166,7 +28746,7 @@ pub(crate) mod tests {
             session
                 .backend()
                 .campaign
-                .level2_compatibility()
+                .simulation()
                 .economy()
                 .authored_class5()
                 .iter()
@@ -29302,13 +28882,13 @@ pub(crate) mod tests {
         let published = store.active_definition().unwrap();
 
         let construct_group_three = |session: &mut GameSession<Mc2CampaignBackend>| {
-            let compatibility = session.backend_mut().campaign.level2_compatibility_mut();
+            let compatibility = session.backend_mut().campaign.simulation_mut();
             compatibility
                 .activate_authored_group_prerequisite_for_test(3)
                 .unwrap();
             assert!(compatibility.dispatch_events().iter().any(|event| matches!(
                 event,
-                Level2DispatchEvent::AuthoredGroupActivated {
+                Mc2DispatchEvent::AuthoredGroupActivated {
                     group: 3,
                     authored_indices,
                     ..
@@ -29323,17 +28903,12 @@ pub(crate) mod tests {
                 .unwrap()
         };
         let apply_mailbox_damage = |session: &mut GameSession<Mc2CampaignBackend>, source_slot| {
-            let attacker = session
-                .backend()
-                .campaign
-                .level2_compatibility()
-                .state
-                .entity_index;
+            let attacker = session.backend().campaign.simulation().state.entity_index;
             assert!(
                 session
                     .backend_mut()
                     .campaign
-                    .level2_compatibility_mut()
+                    .simulation_mut()
                     .economy_mut()
                     .stage_archer_mailbox_damage_for_test(source_slot, attacker, DAMAGE)
             );
@@ -29343,7 +28918,7 @@ pub(crate) mod tests {
             session
                 .backend()
                 .campaign
-                .level2_compatibility()
+                .simulation()
                 .economy()
                 .authored_class5()
                 .iter()
@@ -29514,13 +29089,13 @@ pub(crate) mod tests {
         let published = store.active_definition().unwrap();
 
         let construct_group_twenty = |session: &mut GameSession<Mc2CampaignBackend>| {
-            let compatibility = session.backend_mut().campaign.level2_compatibility_mut();
+            let compatibility = session.backend_mut().campaign.simulation_mut();
             compatibility
                 .activate_authored_group_prerequisite_for_test(20)
                 .unwrap();
             assert!(compatibility.dispatch_events().iter().any(|event| matches!(
                 event,
-                Level2DispatchEvent::AuthoredGroupActivated { group: 20, .. }
+                Mc2DispatchEvent::AuthoredGroupActivated { group: 20, .. }
             )));
             compatibility
                 .economy()
@@ -29638,13 +29213,13 @@ pub(crate) mod tests {
         let published = store.active_definition().unwrap();
 
         let construct_group_one = |session: &mut GameSession<Mc2CampaignBackend>| {
-            let compatibility = session.backend_mut().campaign.level2_compatibility_mut();
+            let compatibility = session.backend_mut().campaign.simulation_mut();
             compatibility
                 .activate_authored_group_prerequisite_for_test(1)
                 .unwrap();
             assert!(compatibility.dispatch_events().iter().any(|event| matches!(
                 event,
-                Level2DispatchEvent::AuthoredGroupActivated {
+                Mc2DispatchEvent::AuthoredGroupActivated {
                     group: 1,
                     authored_indices,
                     ..
@@ -29668,17 +29243,12 @@ pub(crate) mod tests {
             (root, parts)
         };
         let apply_body_damage = |session: &mut GameSession<Mc2CampaignBackend>, body_slot| {
-            let attacker = session
-                .backend()
-                .campaign
-                .level2_compatibility()
-                .state
-                .entity_index;
+            let attacker = session.backend().campaign.simulation().state.entity_index;
             assert!(
                 session
                     .backend_mut()
                     .campaign
-                    .level2_compatibility_mut()
+                    .simulation_mut()
                     .economy_mut()
                     .stage_dragon_mailbox_damage_for_test(body_slot, attacker, DAMAGE)
             );
@@ -29688,7 +29258,7 @@ pub(crate) mod tests {
             session
                 .backend()
                 .campaign
-                .level2_compatibility()
+                .simulation()
                 .economy()
                 .authored_dragon_parts()
                 .iter()
@@ -29900,13 +29470,13 @@ pub(crate) mod tests {
         let published = store.active_definition().unwrap();
 
         let construct_group_twenty_one = |session: &mut GameSession<Mc2CampaignBackend>| {
-            let compatibility = session.backend_mut().campaign.level2_compatibility_mut();
+            let compatibility = session.backend_mut().campaign.simulation_mut();
             compatibility
                 .activate_authored_group_prerequisite_for_test(21)
                 .unwrap();
             assert!(compatibility.dispatch_events().iter().any(|event| matches!(
                 event,
-                Level2DispatchEvent::AuthoredGroupActivated {
+                Mc2DispatchEvent::AuthoredGroupActivated {
                     group: 21,
                     authored_indices,
                     ..
@@ -29921,17 +29491,12 @@ pub(crate) mod tests {
                 .unwrap()
         };
         let apply_damage = |session: &mut GameSession<Mc2CampaignBackend>, source_slot| {
-            let attacker = session
-                .backend()
-                .campaign
-                .level2_compatibility()
-                .state
-                .entity_index;
+            let attacker = session.backend().campaign.simulation().state.entity_index;
             assert!(
                 session
                     .backend_mut()
                     .campaign
-                    .level2_compatibility_mut()
+                    .simulation_mut()
                     .economy_mut()
                     .stage_bee_mailbox_damage_for_test(source_slot, attacker, DAMAGE)
             );
@@ -29941,7 +29506,7 @@ pub(crate) mod tests {
             session
                 .backend()
                 .campaign
-                .level2_compatibility()
+                .simulation()
                 .economy()
                 .bee_creatures()
                 .iter()
@@ -29955,7 +29520,7 @@ pub(crate) mod tests {
                 let source = session
                     .backend()
                     .campaign
-                    .level2_compatibility()
+                    .simulation()
                     .economy()
                     .bee_creatures()
                     .iter()
@@ -29978,16 +29543,11 @@ pub(crate) mod tests {
                         z: source.position.z,
                     }
                 };
-                let player = session
-                    .backend()
-                    .campaign
-                    .level2_compatibility()
-                    .state
-                    .entity_index;
+                let player = session.backend().campaign.simulation().state.entity_index;
                 session
                     .backend_mut()
                     .campaign
-                    .level2_compatibility_mut()
+                    .simulation_mut()
                     .set_level2_entity_position(player, player_position)
                     .unwrap();
                 session
@@ -30178,7 +29738,7 @@ pub(crate) mod tests {
             let source = &session
                 .backend()
                 .campaign
-                .level2_compatibility()
+                .simulation()
                 .session
                 .state
                 .live
@@ -30200,7 +29760,7 @@ pub(crate) mod tests {
                 let action = session
                     .backend()
                     .campaign
-                    .level2_compatibility()
+                    .simulation()
                     .session
                     .state
                     .live
@@ -30217,16 +29777,11 @@ pub(crate) mod tests {
             panic!("real reset Skeleton did not reach its damage-consuming action")
         };
         let apply_damage = |session: &mut GameSession<Mc2CampaignBackend>| {
-            let attacker = session
-                .backend()
-                .campaign
-                .level2_compatibility()
-                .state
-                .entity_index;
+            let attacker = session.backend().campaign.simulation().state.entity_index;
             session
                 .backend_mut()
                 .campaign
-                .level2_compatibility_mut()
+                .simulation_mut()
                 .stage_imported_skeleton_fireball_damage_for_test(SKELETON_SLOT, attacker, DAMAGE)
                 .unwrap();
             session
@@ -30235,7 +29790,7 @@ pub(crate) mod tests {
             session
                 .backend()
                 .campaign
-                .level2_compatibility()
+                .simulation()
                 .session
                 .state
                 .live
@@ -30330,13 +29885,13 @@ pub(crate) mod tests {
         let published = store.active_definition().unwrap();
 
         let construct_group_twenty_two = |session: &mut GameSession<Mc2CampaignBackend>| {
-            let compatibility = session.backend_mut().campaign.level2_compatibility_mut();
+            let compatibility = session.backend_mut().campaign.simulation_mut();
             compatibility
                 .activate_authored_group_prerequisite_for_test(22)
                 .unwrap();
             assert!(compatibility.dispatch_events().iter().any(|event| matches!(
                 event,
-                Level2DispatchEvent::AuthoredGroupActivated { group: 22, .. }
+                Mc2DispatchEvent::AuthoredGroupActivated { group: 22, .. }
             )));
             assert_eq!(
                 compatibility
@@ -30482,9 +30037,8 @@ pub(crate) mod tests {
             Mc2CampaignInputs::new(&root),
         )
         .unwrap();
-        let package_source = session.backend().campaign.level2_compatibility().entities()
-            [usize::from(SKELETON_SLOT)]
-        .clone();
+        let package_source =
+            session.backend().campaign.simulation().entities()[usize::from(SKELETON_SLOT)].clone();
         assert_eq!(
             (
                 package_source.class,
@@ -30524,9 +30078,7 @@ pub(crate) mod tests {
         assert_eq!(published.revision(), 2);
         assert_eq!(session.identity().definition_hash, base.definition_hash());
         assert_eq!(
-            session.backend().campaign.level2_compatibility().entities()
-                [usize::from(SKELETON_SLOT)]
-            .position,
+            session.backend().campaign.simulation().entities()[usize::from(SKELETON_SLOT)].position,
             package_source.position,
             "publication must not mutate the already-open package authority"
         );
@@ -30543,7 +30095,7 @@ pub(crate) mod tests {
         };
         let authored_reset_hash = session.backend().campaign.state_hash();
         {
-            let compatibility = session.backend().campaign.level2_compatibility();
+            let compatibility = session.backend().campaign.simulation();
             let source = &compatibility.entities()[usize::from(SKELETON_SLOT)];
             assert_eq!(source.position, authored_position);
             assert_eq!((source.class, source.model, source.action), (5, 9, 72));
@@ -30560,9 +30112,7 @@ pub(crate) mod tests {
         }
 
         for _ in 0..24 {
-            if session.backend().campaign.level2_compatibility().entities()
-                [usize::from(SKELETON_SLOT)]
-            .action
+            if session.backend().campaign.simulation().entities()[usize::from(SKELETON_SLOT)].action
                 == 79
             {
                 break;
@@ -30571,9 +30121,8 @@ pub(crate) mod tests {
                 .step(guard(&session), GameCommand::default())
                 .unwrap();
         }
-        let movement_start = session.backend().campaign.level2_compatibility().entities()
-            [usize::from(SKELETON_SLOT)]
-        .clone();
+        let movement_start =
+            session.backend().campaign.simulation().entities()[usize::from(SKELETON_SLOT)].clone();
         assert_eq!(
             movement_start.action, 79,
             "the real reset Skeleton must reach its ordinary movement callback"
@@ -30581,7 +30130,7 @@ pub(crate) mod tests {
         session
             .step(guard(&session), GameCommand::default())
             .unwrap();
-        let compatibility = session.backend().campaign.level2_compatibility();
+        let compatibility = session.backend().campaign.simulation();
         let moved = &compatibility.entities()[usize::from(SKELETON_SLOT)];
         assert_eq!((moved.class, moved.model), (5, 9));
         assert!(moved.active && !moved.drawing_disabled());
@@ -30604,7 +30153,7 @@ pub(crate) mod tests {
                 .iter()
                 .all(|event| !matches!(
                     event,
-                    Level2DispatchEvent::Error {
+                    Mc2DispatchEvent::Error {
                         source_slot: SKELETON_SLOT,
                         ..
                     }
@@ -30613,8 +30162,7 @@ pub(crate) mod tests {
 
         session.reset(guard(&session)).unwrap();
         assert_eq!(session.backend().campaign.state_hash(), authored_reset_hash);
-        let reset = &session.backend().campaign.level2_compatibility().entities()
-            [usize::from(SKELETON_SLOT)];
+        let reset = &session.backend().campaign.simulation().entities()[usize::from(SKELETON_SLOT)];
         assert_eq!(reset.position, authored_position);
         assert_eq!((reset.class, reset.model, reset.action), (5, 9, 72));
 
@@ -30703,7 +30251,7 @@ pub(crate) mod tests {
         );
 
         let move_player_outside_group_one = |session: &mut GameSession<Mc2CampaignBackend>| {
-            let compatibility = session.backend().campaign.level2_compatibility();
+            let compatibility = session.backend().campaign.simulation();
             let player = compatibility.state.entity_index;
             let outside = crate::Position {
                 x: 0,
@@ -30713,7 +30261,7 @@ pub(crate) mod tests {
             session
                 .backend_mut()
                 .campaign
-                .level2_compatibility_mut()
+                .simulation_mut()
                 .set_level2_entity_position(player, outside)
                 .unwrap();
         };
@@ -30731,7 +30279,7 @@ pub(crate) mod tests {
                     .iter()
                     .any(|event| matches!(
                         event,
-                        Level2DispatchEvent::AuthoredGroupActivated {
+                        Mc2DispatchEvent::AuthoredGroupActivated {
                             source_slot: PRODUCER_SLOT,
                             group: 1,
                             authored_indices,
@@ -30746,7 +30294,7 @@ pub(crate) mod tests {
         let package_pickup = session
             .backend()
             .campaign
-            .level2_compatibility()
+            .simulation()
             .economy()
             .spell_pickups()
             .iter()
@@ -30768,7 +30316,7 @@ pub(crate) mod tests {
             .unwrap();
         assert_eq!(reopened.identity.generation, 2);
         assert_eq!(reopened.identity.definition_revision, 2);
-        let compatibility = session.backend().campaign.level2_compatibility();
+        let compatibility = session.backend().campaign.simulation();
         assert_eq!(
             compatibility
                 .mission()
@@ -30783,7 +30331,7 @@ pub(crate) mod tests {
 
         move_player_outside_group_one(&mut session);
         step_until_group_one(&mut session);
-        let compatibility = session.backend().campaign.level2_compatibility();
+        let compatibility = session.backend().campaign.simulation();
         let authored_pickup = compatibility
             .economy()
             .spell_pickups()
@@ -30822,7 +30370,7 @@ pub(crate) mod tests {
         session
             .backend_mut()
             .campaign
-            .level2_compatibility_mut()
+            .simulation_mut()
             .set_level2_entity_position(player, package_position)
             .unwrap();
         for _ in 0..4 {
@@ -30838,7 +30386,7 @@ pub(crate) mod tests {
                 .iter()
                 .any(|event| matches!(
                     event,
-                    Level2DispatchEvent::SpellAcquisition {
+                    Mc2DispatchEvent::SpellAcquisition {
                         source_slot: slot,
                         family: CASTLE_FAMILY,
                         result: Some(_),
@@ -30851,7 +30399,7 @@ pub(crate) mod tests {
         session
             .backend_mut()
             .campaign
-            .level2_compatibility_mut()
+            .simulation_mut()
             .set_level2_entity_position(player, authored_pickup.position)
             .unwrap();
         for _ in 0..4 {
@@ -30861,7 +30409,7 @@ pub(crate) mod tests {
             if session.backend().campaign.events().iter().any(|event| {
                 matches!(
                     event,
-                    Level2DispatchEvent::SpellAcquisition {
+                    Mc2DispatchEvent::SpellAcquisition {
                         source_slot: slot,
                         family: CASTLE_FAMILY,
                         result: Some(_),
@@ -30880,7 +30428,7 @@ pub(crate) mod tests {
                 .iter()
                 .any(|event| matches!(
                     event,
-                    Level2DispatchEvent::SpellAcquisition {
+                    Mc2DispatchEvent::SpellAcquisition {
                         source_slot: slot,
                         family: CASTLE_FAMILY,
                         result: Some(_),
@@ -30889,7 +30437,7 @@ pub(crate) mod tests {
                 ))
         );
         assert_eq!(
-            session.backend().campaign.level2_compatibility().players()[0].enabled_spell_holders
+            session.backend().campaign.simulation().players()[0].enabled_spell_holders
                 [usize::from(CASTLE_FAMILY)],
             source_slot,
             "the ordinary acquisition callback must publish the authored pickup as the player's Castle holder"
@@ -30897,7 +30445,7 @@ pub(crate) mod tests {
 
         session.reset(guard(&session)).unwrap();
         assert_eq!(session.backend().campaign.state_hash(), authored_reset_hash);
-        let reset = session.backend().campaign.level2_compatibility();
+        let reset = session.backend().campaign.simulation();
         assert!(reset.shared_spells().dynamic_pickups().is_empty());
         assert_eq!(
             reset
@@ -30933,16 +30481,11 @@ pub(crate) mod tests {
             Mc2CampaignInputs::new(&root),
         )
         .unwrap();
-        let player_entity = session
-            .backend()
-            .campaign
-            .level2_compatibility()
-            .state
-            .entity_index;
+        let player_entity = session.backend().campaign.simulation().state.entity_index;
         let goat = session
             .backend()
             .campaign
-            .level2_compatibility()
+            .simulation()
             .goats()
             .iter()
             .find(|goat| goat.entity_index == GOAT_SLOT)
@@ -30954,7 +30497,7 @@ pub(crate) mod tests {
             session
                 .backend_mut()
                 .campaign
-                .level2_compatibility_mut()
+                .simulation_mut()
                 .apply_fireball_impact_to_firefly_for_test(
                     goat.position,
                     player_entity,
@@ -30965,7 +30508,7 @@ pub(crate) mod tests {
             session
                 .backend()
                 .campaign
-                .level2_compatibility()
+                .simulation()
                 .goats()
                 .iter()
                 .find(|goat| goat.entity_index == GOAT_SLOT)
@@ -30982,7 +30525,7 @@ pub(crate) mod tests {
             sphere_slot = session
                 .backend()
                 .campaign
-                .level2_compatibility()
+                .simulation()
                 .economy()
                 .events()
                 .iter()
@@ -31004,7 +30547,7 @@ pub(crate) mod tests {
             "typed Goat death must feed its ordinary 300-mana model-39 producer"
         );
         let produced_slot = sphere_slot.unwrap();
-        let birth_economy = session.backend().campaign.level2_compatibility().economy();
+        let birth_economy = session.backend().campaign.simulation().economy();
         let produced_generation = birth_economy.slot_generation(produced_slot);
         assert!(
             birth_economy.spheres().iter().any(|sphere| {
@@ -31021,7 +30564,7 @@ pub(crate) mod tests {
         session
             .step(guard(&session), GameCommand::default())
             .unwrap();
-        let published_economy = session.backend().campaign.level2_compatibility().economy();
+        let published_economy = session.backend().campaign.simulation().economy();
         assert_eq!(
             published_economy.slot_generation(produced_slot),
             produced_generation
@@ -31040,13 +30583,13 @@ pub(crate) mod tests {
         let source_slots = session
             .backend()
             .package_campaign
-            .level2_compatibility()
+            .simulation()
             .goats()
             .iter()
             .filter(|goat| goat.mana == 300)
             .map(|goat| goat.entity_index)
             .collect::<BTreeSet<_>>();
-        let economy = session.backend().campaign.level2_compatibility().economy();
+        let economy = session.backend().campaign.simulation().economy();
         let mut seen = BTreeSet::new();
         let mut selected_receipt = None;
         for (event_index, event) in economy.events().iter().enumerate() {
@@ -31132,7 +30675,7 @@ pub(crate) mod tests {
         )
         .unwrap();
         let (house, player, color) = {
-            let state = session.backend().campaign.level2_compatibility();
+            let state = session.backend().campaign.simulation();
             let house = *state
                 .ordinary()
                 .houses()
@@ -31171,7 +30714,7 @@ pub(crate) mod tests {
         session
             .backend_mut()
             .campaign
-            .level2_compatibility_mut()
+            .simulation_mut()
             .set_level2_entity_position(player, position)
             .unwrap();
         session
@@ -31184,7 +30727,7 @@ pub(crate) mod tests {
             )
             .unwrap();
         let (yaw, pitch) = {
-            let state = session.backend().campaign.level2_compatibility();
+            let state = session.backend().campaign.simulation();
             let mut launch = state.state.position;
             launch.z = launch.z.wrapping_add(state.state.entity_fov);
             let target = Position {
@@ -31199,7 +30742,7 @@ pub(crate) mod tests {
         session
             .backend_mut()
             .campaign
-            .level2_compatibility_mut()
+            .simulation_mut()
             .set_level2_player_aim_for_test(yaw, pitch);
         session
             .step(
@@ -31214,7 +30757,7 @@ pub(crate) mod tests {
         let mut saw_effect = false;
         let mut saw_house_callback = false;
         for _ in 0..32 {
-            let state = session.backend().campaign.level2_compatibility();
+            let state = session.backend().campaign.simulation();
             saw_flyer |= state
                 .economy()
                 .possession_projectiles()
@@ -31226,7 +30769,7 @@ pub(crate) mod tests {
                 .iter()
                 .any(|row| row.source_id_entity_index == player);
             saw_house_callback |= state.dispatch_events().iter().any(|event| match event {
-                Level2DispatchEvent::House { events, .. } => events.iter().any(|event| {
+                Mc2DispatchEvent::House { events, .. } => events.iter().any(|event| {
                     matches!(event,
                     crate::house::HouseStepEvent::Possessed {
                         entity_index, owner_entity_index, payload: 0, .. }
@@ -31251,7 +30794,7 @@ pub(crate) mod tests {
                 .step(guard(&session), GameCommand::default())
                 .unwrap();
         }
-        let state = session.backend().campaign.level2_compatibility();
+        let state = session.backend().campaign.simulation();
         let owned = state
             .ordinary()
             .houses()
@@ -31295,12 +30838,7 @@ pub(crate) mod tests {
         )
         .unwrap();
 
-        let player_entity = session
-            .backend()
-            .campaign
-            .level2_compatibility()
-            .state
-            .entity_index;
+        let player_entity = session.backend().campaign.simulation().state.entity_index;
         // The full lifecycle test proves the real waypoint -> row-99 route.
         // This bounded producer isolation starts at its separately-proven
         // package group-3 output so failures localise to death-sphere,
@@ -31308,14 +30846,14 @@ pub(crate) mod tests {
         session
             .backend_mut()
             .campaign
-            .level2_compatibility_mut()
+            .simulation_mut()
             .activate_authored_group_prerequisite_for_test(3)
             .expect("focused producer setup materializes the package Archer group");
         assert_eq!(
             session
                 .backend()
                 .campaign
-                .level2_compatibility()
+                .simulation()
                 .economy()
                 .owner_mana_global(),
             19_577,
@@ -31324,7 +30862,7 @@ pub(crate) mod tests {
         let archer = session
             .backend()
             .campaign
-            .level2_compatibility()
+            .simulation()
             .economy()
             .authored_class5()
             .iter()
@@ -31335,7 +30873,7 @@ pub(crate) mod tests {
             session
                 .backend_mut()
                 .campaign
-                .level2_compatibility_mut()
+                .simulation_mut()
                 .economy_mut()
                 .stage_archer_mailbox_damage_for_test(
                     archer.source_entity_index,
@@ -31351,7 +30889,7 @@ pub(crate) mod tests {
             target_slot = session
                 .backend()
                 .campaign
-                .level2_compatibility()
+                .simulation()
                 .economy()
                 .events()
                 .iter()
@@ -31374,7 +30912,7 @@ pub(crate) mod tests {
             let settled = session
                 .backend()
                 .campaign
-                .level2_compatibility()
+                .simulation()
                 .economy()
                 .spheres()
                 .iter()
@@ -31394,7 +30932,7 @@ pub(crate) mod tests {
         let target_position = session
             .backend()
             .campaign
-            .level2_compatibility()
+            .simulation()
             .economy()
             .spheres()
             .iter()
@@ -31410,7 +30948,7 @@ pub(crate) mod tests {
         let settled_sphere = session
             .backend()
             .campaign
-            .level2_compatibility()
+            .simulation()
             .economy()
             .spheres()
             .iter()
@@ -31425,7 +30963,7 @@ pub(crate) mod tests {
             (0, 0, 0),
             "focused possession geometry starts from an ordinarily settled death sphere"
         );
-        let compatibility = session.backend().campaign.level2_compatibility();
+        let compatibility = session.backend().campaign.simulation();
         let before_poll = compatibility.state_hash();
         let neutral = compatibility.campaign_entity_presentations(0).unwrap();
         let neutral = neutral
@@ -31445,7 +30983,7 @@ pub(crate) mod tests {
         session
             .backend_mut()
             .campaign
-            .level2_compatibility_mut()
+            .simulation_mut()
             .set_level2_entity_position(player_entity, target_position)
             .unwrap();
         session
@@ -31461,7 +30999,7 @@ pub(crate) mod tests {
             session
                 .backend()
                 .campaign
-                .level2_compatibility()
+                .simulation()
                 .shared_spells()
                 .players()[0]
                 .selected_spell_ui_index,
@@ -31469,7 +31007,7 @@ pub(crate) mod tests {
             "semantic Possession selection must reach source UI family one"
         );
         let (sphere_position, target_top, player_yaw, player_fov, aim_yaw_offset) = {
-            let compatibility = session.backend().campaign.level2_compatibility();
+            let compatibility = session.backend().campaign.simulation();
             (
                 compatibility
                     .economy()
@@ -31505,7 +31043,7 @@ pub(crate) mod tests {
         // sphere-guidance top and the real projectile/effect claim lifecycle.
         let hand_yaw = launch_yaw.wrapping_sub(aim_yaw_offset).wrapping_sub(512);
         crate::move_entity(&mut target_position, hand_yaw.wrapping_add(1_024), 0, 256);
-        let compatibility = session.backend_mut().campaign.level2_compatibility_mut();
+        let compatibility = session.backend_mut().campaign.simulation_mut();
         compatibility
             .set_level2_entity_position(player_entity, target_position)
             .unwrap();
@@ -31526,7 +31064,7 @@ pub(crate) mod tests {
         let mut first_projectile = None;
         let mut first_effect = None;
         for _ in 0..32 {
-            let economy = session.backend().campaign.level2_compatibility().economy();
+            let economy = session.backend().campaign.simulation().economy();
             saw_projectile |= !economy.possession_projectiles().is_empty();
             saw_effect |= !economy.possession_effects().is_empty();
             first_projectile =
@@ -31548,7 +31086,7 @@ pub(crate) mod tests {
             let economy = session
                 .backend()
                 .campaign
-                .level2_compatibility()
+                .simulation()
                 .economy();
             panic!(
                 "ordinary Possession did not claim the Archer sphere: saw_projectile={saw_projectile}, saw_effect={saw_effect}, first_projectile={first_projectile:?}, first_effect={first_effect:?}, projectile={:?}, effect={:?}, sphere={:?}",
@@ -31563,14 +31101,14 @@ pub(crate) mod tests {
         let claimed_generation = session
             .backend()
             .campaign
-            .level2_compatibility()
+            .simulation()
             .economy()
             .slot_generation(claimed_slot);
         assert!(
             session
                 .backend()
                 .campaign
-                .level2_compatibility()
+                .simulation()
                 .economy()
                 .events()
                 .iter()
@@ -31586,7 +31124,7 @@ pub(crate) mod tests {
             session
                 .backend()
                 .campaign
-                .level2_compatibility()
+                .simulation()
                 .economy()
                 .spheres()
                 .iter()
@@ -31595,7 +31133,7 @@ pub(crate) mod tests {
             Some((player_entity, player_entity)),
             "the selected real sphere must publish the claimed source player relation"
         );
-        let compatibility = session.backend().campaign.level2_compatibility();
+        let compatibility = session.backend().campaign.simulation();
         let claimed = compatibility.campaign_entity_presentations(0).unwrap();
         let claimed = claimed
             .iter()
@@ -31613,7 +31151,7 @@ pub(crate) mod tests {
         let claimed_position = session
             .backend()
             .campaign
-            .level2_compatibility()
+            .simulation()
             .economy()
             .spheres()
             .iter()
@@ -31635,7 +31173,7 @@ pub(crate) mod tests {
         let castle_slot = session
             .backend_mut()
             .campaign
-            .level2_compatibility_mut()
+            .simulation_mut()
             .economy_mut()
             .build_castle(castle_position, player_entity)
             .expect("focused producer isolation stages a stable stage-one Castle root");
@@ -31648,7 +31186,7 @@ pub(crate) mod tests {
         let castle_sprites = session
             .backend()
             .campaign
-            .level2_compatibility()
+            .simulation()
             .campaign_entity_presentations(0)
             .unwrap();
         let castle_sprite = castle_sprites
@@ -31664,7 +31202,7 @@ pub(crate) mod tests {
         );
         assert_eq!(castle_sprite.source_id, player_entity);
         for _ in 0..128 {
-            let compatibility = session.backend().campaign.level2_compatibility();
+            let compatibility = session.backend().campaign.simulation();
             let economy = compatibility.economy();
             if let Some(carrier) = economy.castle_children().iter().find(|carrier| {
                 carrier.active
@@ -31738,27 +31276,22 @@ pub(crate) mod tests {
             session
                 .backend()
                 .campaign
-                .level2_compatibility()
+                .simulation()
                 .economy()
                 .castle_children(),
             session
                 .backend()
                 .campaign
-                .level2_compatibility()
+                .simulation()
                 .economy()
                 .spheres()
                 .iter()
                 .find(|sphere| sphere.source_entity_index == claimed_slot),
+            session.backend().campaign.simulation().economy().castle(),
             session
                 .backend()
                 .campaign
-                .level2_compatibility()
-                .economy()
-                .castle(),
-            session
-                .backend()
-                .campaign
-                .level2_compatibility()
+                .simulation()
                 .economy()
                 .events()
                 .iter()
@@ -31767,7 +31300,7 @@ pub(crate) mod tests {
                 .collect::<Vec<_>>()
         );
         assert!(saw_balloon_sprite);
-        let compatibility = session.backend().campaign.level2_compatibility();
+        let compatibility = session.backend().campaign.simulation();
         assert!(
             compatibility
                 .economy()
@@ -31805,7 +31338,7 @@ pub(crate) mod tests {
             session
                 .backend()
                 .campaign
-                .level2_compatibility()
+                .simulation()
                 .economy()
                 .castle()
                 .is_some_and(|castle| castle.mana >= deposited),
@@ -31815,7 +31348,7 @@ pub(crate) mod tests {
             session
                 .backend()
                 .campaign
-                .level2_compatibility()
+                .simulation()
                 .economy()
                 .owner_mana_global(),
             20_077,
@@ -31864,7 +31397,7 @@ pub(crate) mod tests {
             session
                 .backend()
                 .package_campaign
-                .level2_compatibility()
+                .simulation()
                 .economy()
                 .owner_mana_global(),
             RESET_WORLD_MANA,
@@ -31874,17 +31407,12 @@ pub(crate) mod tests {
         let castle_id = SemanticId::parse("spell.castle").unwrap();
         let fireball_id = SemanticId::parse("spell.fireball").unwrap();
         let possession_id = SemanticId::parse("spell.possession").unwrap();
-        let player_entity = session
-            .backend()
-            .campaign
-            .level2_compatibility()
-            .state
-            .entity_index;
+        let player_entity = session.backend().campaign.simulation().state.entity_index;
 
         let goat_source_slots = session
             .backend()
             .package_campaign
-            .level2_compatibility()
+            .simulation()
             .goats()
             .iter()
             .filter(|goat| goat.mana == 300)
@@ -31900,7 +31428,7 @@ pub(crate) mod tests {
             |session: &GameSession<Mc2CampaignBackend>,
              event_cursor: &mut usize,
              seen: &mut BTreeSet<(usize, u16, u16)>| {
-                let economy = session.backend().campaign.level2_compatibility().economy();
+                let economy = session.backend().campaign.simulation().economy();
                 let event_end = economy.events().len();
                 for (offset, event) in economy.events()[*event_cursor..event_end]
                     .iter()
@@ -31936,7 +31464,7 @@ pub(crate) mod tests {
 
         let step_toward = |session: &mut GameSession<Mc2CampaignBackend>,
                            target: crate::Position| {
-            let state = session.backend().campaign.level2_compatibility().state;
+            let state = session.backend().campaign.simulation().state;
             let desired = i16::try_from(crate::heading_for_positions(state.position, target))
                 .expect("source heading is 11-bit");
             let correction = crate::turn_toward(state.yaw, desired, 127);
@@ -31953,7 +31481,7 @@ pub(crate) mod tests {
                 .unwrap();
         };
         let stage_position = |session: &GameSession<Mc2CampaignBackend>, stage_index: usize| {
-            let compatibility = session.backend().campaign.level2_compatibility();
+            let compatibility = session.backend().campaign.simulation();
             let stage = &compatibility.runtime().stages[stage_index];
             crate::Position {
                 x: stage.axis_x.cast_unsigned(),
@@ -31965,7 +31493,7 @@ pub(crate) mod tests {
                                      event_start: usize,
                                      producer_slot: u16,
                                      expected_mana: i32| {
-            let economy = session.backend().campaign.level2_compatibility().economy();
+            let economy = session.backend().campaign.simulation().economy();
             economy.events()[event_start..]
                 .iter()
                 .find_map(|event| match event {
@@ -31997,7 +31525,7 @@ pub(crate) mod tests {
                 let event_start = session
                     .backend()
                     .campaign
-                    .level2_compatibility()
+                    .simulation()
                     .economy()
                     .events()
                     .len();
@@ -32005,7 +31533,7 @@ pub(crate) mod tests {
                     let archer = session
                         .backend()
                         .campaign
-                        .level2_compatibility()
+                        .simulation()
                         .economy()
                         .authored_class5()
                         .iter()
@@ -32018,7 +31546,7 @@ pub(crate) mod tests {
                         break;
                     }
                     for _ in 0..640 {
-                        let compatibility = session.backend().campaign.level2_compatibility();
+                        let compatibility = session.backend().campaign.simulation();
                         let archer = compatibility
                             .economy()
                             .authored_class5()
@@ -32068,7 +31596,7 @@ pub(crate) mod tests {
                             .unwrap();
                     }
                     let (aim_yaw, aim_pitch, state_yaw, display_pitch) = {
-                        let compatibility = session.backend().campaign.level2_compatibility();
+                        let compatibility = session.backend().campaign.simulation();
                         let archer = compatibility
                             .economy()
                             .authored_class5()
@@ -32136,7 +31664,7 @@ pub(crate) mod tests {
                                  reselect_current_neutral: bool| {
             let mut sphere_slot = occurrence.slot;
             for _ in 0..128 {
-                let economy = session.backend().campaign.level2_compatibility().economy();
+                let economy = session.backend().campaign.simulation().economy();
                 assert_eq!(
                     economy.slot_generation(sphere_slot),
                     occurrence.generation,
@@ -32162,7 +31690,7 @@ pub(crate) mod tests {
             let event_start = session
                 .backend()
                 .campaign
-                .level2_compatibility()
+                .simulation()
                 .economy()
                 .events()
                 .len();
@@ -32176,7 +31704,7 @@ pub(crate) mod tests {
                 )
                 .unwrap();
             if reselect_current_neutral {
-                let economy = session.backend().campaign.level2_compatibility().economy();
+                let economy = session.backend().campaign.simulation().economy();
                 let mut neutral = economy
                     .spheres()
                     .iter()
@@ -32201,7 +31729,7 @@ pub(crate) mod tests {
                 };
             }
             let (sphere_position, target_top, player_yaw, player_fov, player_speed, aim_yaw_offset) = {
-                let compatibility = session.backend().campaign.level2_compatibility();
+                let compatibility = session.backend().campaign.simulation();
                 assert_eq!(
                     compatibility.economy().slot_generation(sphere_slot),
                     occurrence.generation,
@@ -32257,7 +31785,7 @@ pub(crate) mod tests {
                 0,
                 256,
             );
-            let compatibility = session.backend_mut().campaign.level2_compatibility_mut();
+            let compatibility = session.backend_mut().campaign.simulation_mut();
             compatibility
                 .set_level2_entity_position(player_entity, possession_cast_position)
                 .unwrap();
@@ -32275,7 +31803,7 @@ pub(crate) mod tests {
             let mut saw_effect = false;
             let mut claimed_slot = None;
             for _ in 0..32 {
-                let economy = session.backend().campaign.level2_compatibility().economy();
+                let economy = session.backend().campaign.simulation().economy();
                 saw_projectile |= !economy.possession_projectiles().is_empty();
                 saw_effect |= !economy.possession_effects().is_empty();
                 let live_claim = economy
@@ -32370,7 +31898,7 @@ pub(crate) mod tests {
                     session
                         .backend()
                         .campaign
-                        .level2_compatibility()
+                        .simulation()
                         .economy()
                         .events()
                 )
@@ -32378,7 +31906,7 @@ pub(crate) mod tests {
             if let Some(sphere) = session
                 .backend()
                 .campaign
-                .level2_compatibility()
+                .simulation()
                 .economy()
                 .spheres()
                 .iter()
@@ -32391,7 +31919,7 @@ pub(crate) mod tests {
                 );
             }
             for _ in 0..32 {
-                let economy = session.backend().campaign.level2_compatibility().economy();
+                let economy = session.backend().campaign.simulation().economy();
                 if economy.possession_projectiles().is_empty()
                     && economy.possession_effects().is_empty()
                 {
@@ -32401,7 +31929,7 @@ pub(crate) mod tests {
                     .step(guard(session), GameCommand::default())
                     .unwrap();
             }
-            let economy = session.backend().campaign.level2_compatibility().economy();
+            let economy = session.backend().campaign.simulation().economy();
             assert!(
                 economy.possession_projectiles().is_empty()
                     && economy.possession_effects().is_empty(),
@@ -32413,13 +31941,8 @@ pub(crate) mod tests {
         for stage_index in 0..=1 {
             let target = stage_position(&session, stage_index);
             for _ in 0..512 {
-                if session
-                    .backend()
-                    .campaign
-                    .level2_compatibility()
-                    .runtime()
-                    .objectives[0]
-                    .stage_selectors[stage_index]
+                if session.backend().campaign.simulation().runtime().objectives[0].stage_selectors
+                    [stage_index]
                     == 2
                 {
                     break;
@@ -32427,13 +31950,8 @@ pub(crate) mod tests {
                 step_toward(&mut session, target);
             }
             assert_eq!(
-                session
-                    .backend()
-                    .campaign
-                    .level2_compatibility()
-                    .runtime()
-                    .objectives[0]
-                    .stage_selectors[stage_index],
+                session.backend().campaign.simulation().runtime().objectives[0].stage_selectors
+                    [stage_index],
                 2,
                 "ordinary player flight must complete prerequisite waypoint {stage_index}"
             );
@@ -32443,7 +31961,7 @@ pub(crate) mod tests {
             let authored_archers = session
                 .backend()
                 .campaign
-                .level2_compatibility()
+                .simulation()
                 .economy()
                 .authored_class5()
                 .iter()
@@ -32460,7 +31978,7 @@ pub(crate) mod tests {
             session
                 .backend()
                 .campaign
-                .level2_compatibility()
+                .simulation()
                 .economy()
                 .authored_class5()
                 .iter()
@@ -32471,7 +31989,7 @@ pub(crate) mod tests {
             "the following-pass row-99 producer must construct the four package Archers"
         );
         let castle_cast_aim = {
-            let state = session.backend().campaign.level2_compatibility().state;
+            let state = session.backend().campaign.simulation().state;
             (state.yaw, state.display_pitch)
         };
 
@@ -32495,7 +32013,7 @@ pub(crate) mod tests {
         let castle_pickup = session
             .backend()
             .campaign
-            .level2_compatibility()
+            .simulation()
             .economy()
             .spell_pickups()
             .iter()
@@ -32509,7 +32027,7 @@ pub(crate) mod tests {
         let archers = session
             .backend()
             .campaign
-            .level2_compatibility()
+            .simulation()
             .economy()
             .authored_class5()
             .iter()
@@ -32529,21 +32047,21 @@ pub(crate) mod tests {
             session
                 .backend()
                 .campaign
-                .level2_compatibility()
+                .simulation()
                 .economy()
                 .owner_mana_global(),
             known_world_mana(1, seen_goat_occurrences.len()),
             "the first Archer adds exactly 500 mana plus explicitly recorded Goat births"
         );
         let pickup_slot = castle_pickup.source_entity_index;
-        if session.backend().campaign.level2_compatibility().players()[0].enabled_spell_holders
+        if session.backend().campaign.simulation().players()[0].enabled_spell_holders
             [usize::from(CASTLE_FAMILY)]
             != pickup_slot
         {
             session
                 .backend_mut()
                 .campaign
-                .level2_compatibility_mut()
+                .simulation_mut()
                 .set_level2_entity_position(player_entity, castle_pickup.position)
                 .unwrap();
             for _ in 0..4 {
@@ -32553,7 +32071,7 @@ pub(crate) mod tests {
                 if session.backend().campaign.events().iter().any(|event| {
                     matches!(
                         event,
-                        Level2DispatchEvent::SpellAcquisition {
+                        Mc2DispatchEvent::SpellAcquisition {
                             source_slot,
                             family: CASTLE_FAMILY,
                             result: Some(_),
@@ -32566,7 +32084,7 @@ pub(crate) mod tests {
             }
         }
         assert_eq!(
-            session.backend().campaign.level2_compatibility().players()[0].enabled_spell_holders
+            session.backend().campaign.simulation().players()[0].enabled_spell_holders
                 [usize::from(CASTLE_FAMILY)],
             pickup_slot
         );
@@ -32574,7 +32092,7 @@ pub(crate) mod tests {
         // Position only at the existing production placement predicate
         // boundary. The test does not mutate terrain or Castle state.
         let cast_site = {
-            let compatibility = session.backend().campaign.level2_compatibility();
+            let compatibility = session.backend().campaign.simulation();
             let terrain = compatibility.canonical_terrain();
             (16_u8..240)
                 .flat_map(|y| (16_u8..240).map(move |x| (x, y)))
@@ -32603,7 +32121,7 @@ pub(crate) mod tests {
                 })
                 .expect("qualified Level 1 terrain contains a valid Castle footprint")
         };
-        let compatibility = session.backend_mut().campaign.level2_compatibility_mut();
+        let compatibility = session.backend_mut().campaign.simulation_mut();
         compatibility
             .set_level2_entity_position(player_entity, cast_site)
             .unwrap();
@@ -32618,7 +32136,7 @@ pub(crate) mod tests {
                 },
             )
             .unwrap();
-        let compatibility = session.backend().campaign.level2_compatibility();
+        let compatibility = session.backend().campaign.simulation();
         assert_eq!(
             compatibility.shared_spells().players()[0].selected_spell_ui_index,
             2
@@ -32637,19 +32155,19 @@ pub(crate) mod tests {
             saw_castle_projectile |= session
                 .backend()
                 .campaign
-                .level2_compatibility()
+                .simulation()
                 .dispatch_events()
                 .iter()
                 .any(|event| {
                     matches!(
                         event,
-                        Level2DispatchEvent::DynamicArena {
+                        Mc2DispatchEvent::DynamicArena {
                             kind: crate::native_world::Level2DynamicArenaKind::CastleProjectile,
                             ..
                         }
                     )
                 });
-            let economy = session.backend().campaign.level2_compatibility().economy();
+            let economy = session.backend().campaign.simulation().economy();
             if economy.castle().is_some_and(|castle| {
                 castle.level == 1
                     && economy.player_castle_entity_index() == castle.source_entity_index
@@ -32667,7 +32185,7 @@ pub(crate) mod tests {
         let castle_slot = session
             .backend()
             .campaign
-            .level2_compatibility()
+            .simulation()
             .economy()
             .castle()
             .map(|castle| castle.source_entity_index)
@@ -32676,7 +32194,7 @@ pub(crate) mod tests {
             session
                 .backend()
                 .campaign
-                .level2_compatibility()
+                .simulation()
                 .economy()
                 .player_castle_entity_index(),
             castle_slot
@@ -32692,7 +32210,7 @@ pub(crate) mod tests {
                 capture_goat_occurrences(session, goat_event_cursor, seen_goat_occurrences);
                 let sphere_slot = occurrence.slot;
                 let positions = {
-                    let economy = session.backend().campaign.level2_compatibility().economy();
+                    let economy = session.backend().campaign.simulation().economy();
                     let castle = economy
                         .castle()
                         .expect("Castle remains live before mana collection");
@@ -32751,7 +32269,7 @@ pub(crate) mod tests {
                         .unwrap_or(usize::MAX)
                         .saturating_add(192);
                     for _ in 0..bound {
-                        let economy = session.backend().campaign.level2_compatibility().economy();
+                        let economy = session.backend().campaign.simulation().economy();
                         let deposited = economy
                             .castle()
                             .is_some_and(|castle| castle.mana == expected_mana);
@@ -32770,7 +32288,7 @@ pub(crate) mod tests {
                         capture_goat_occurrences(session, goat_event_cursor, seen_goat_occurrences);
                     }
                 }
-                let economy = session.backend().campaign.level2_compatibility().economy();
+                let economy = session.backend().campaign.simulation().economy();
                 assert_eq!(
                     economy.castle().map(|castle| castle.mana),
                     Some(expected_mana),
@@ -32818,7 +32336,7 @@ pub(crate) mod tests {
                 session
                     .backend()
                     .campaign
-                    .level2_compatibility()
+                    .simulation()
                     .economy()
                     .owner_mana_global(),
                 expected_global,
@@ -32846,7 +32364,7 @@ pub(crate) mod tests {
             session
                 .backend()
                 .campaign
-                .level2_compatibility()
+                .simulation()
                 .economy()
                 .owner_mana_global(),
             known_world_mana(ARCHER_ROWS.len(), seen_goat_occurrences.len())
@@ -32856,7 +32374,7 @@ pub(crate) mod tests {
             if session
                 .backend()
                 .campaign
-                .level2_compatibility()
+                .simulation()
                 .economy()
                 .authored_model32()
                 .iter()
@@ -32872,7 +32390,7 @@ pub(crate) mod tests {
         let row190_slot = session
             .backend()
             .campaign
-            .level2_compatibility()
+            .simulation()
             .economy()
             .authored_model32()
             .iter()
@@ -32880,13 +32398,7 @@ pub(crate) mod tests {
             .map(|row| row.source_entity_index)
             .expect("the ordinary Archer objective route materializes row 190");
         assert_eq!(
-            session
-                .backend()
-                .campaign
-                .level2_compatibility()
-                .runtime()
-                .objectives[0]
-                .stage_selectors[3],
+            session.backend().campaign.simulation().runtime().objectives[0].stage_selectors[3],
             1,
             "row 190 waits on the package Castle-mana objective"
         );
@@ -32898,7 +32410,7 @@ pub(crate) mod tests {
         let castle_position = session
             .backend()
             .campaign
-            .level2_compatibility()
+            .simulation()
             .economy()
             .castle()
             .expect("the ordinary Castle root remains live")
@@ -32912,7 +32424,7 @@ pub(crate) mod tests {
             if undeposited_goat_mana != 0 {
                 let mut occurrence = None;
                 for _ in 0..128 {
-                    let economy = session.backend().campaign.level2_compatibility().economy();
+                    let economy = session.backend().campaign.simulation().economy();
                     let current_undeposited_goat_mana = 300
                         * i32::try_from(seen_goat_occurrences.len())
                             .expect("package Goat occurrence census fits i32")
@@ -32957,7 +32469,7 @@ pub(crate) mod tests {
                 }
                 let occurrence =
                     occurrence.expect("a current neutral Goat bundle settles after merge/reclaim");
-                let economy = session.backend().campaign.level2_compatibility().economy();
+                let economy = session.backend().campaign.simulation().economy();
                 assert_eq!(
                     economy.slot_generation(occurrence.slot),
                     occurrence.generation,
@@ -32993,7 +32505,7 @@ pub(crate) mod tests {
                     &mut seen_goat_occurrences,
                 );
                 deposited_goat_mana += occurrence.mana;
-                let economy = session.backend().campaign.level2_compatibility().economy();
+                let economy = session.backend().campaign.simulation().economy();
                 assert_eq!(
                     economy.owner_mana_global(),
                     known_world_mana(ARCHER_ROWS.len(), seen_goat_occurrences.len()),
@@ -33008,7 +32520,7 @@ pub(crate) mod tests {
             }
 
             let (selector, percent) = {
-                let compatibility = session.backend().campaign.level2_compatibility();
+                let compatibility = session.backend().campaign.simulation();
                 let economy = compatibility.economy();
                 (
                     compatibility.runtime().objectives[0].stage_selectors[3],
@@ -33035,7 +32547,7 @@ pub(crate) mod tests {
             }
 
             let goat = {
-                let compatibility = session.backend().campaign.level2_compatibility();
+                let compatibility = session.backend().campaign.simulation();
                 let mut candidates = compatibility
                     .goats()
                     .iter()
@@ -33083,7 +32595,7 @@ pub(crate) mod tests {
                 session
                     .backend()
                     .campaign
-                    .level2_compatibility()
+                    .simulation()
                     .fireball_impact_goat_overlap_slots_for_test(
                         goat.position,
                         player_entity,
@@ -33095,7 +32607,7 @@ pub(crate) mod tests {
             let event_start = session
                 .backend()
                 .campaign
-                .level2_compatibility()
+                .simulation()
                 .economy()
                 .events()
                 .len();
@@ -33103,7 +32615,7 @@ pub(crate) mod tests {
                 session
                     .backend_mut()
                     .campaign
-                    .level2_compatibility_mut()
+                    .simulation_mut()
                     .apply_fireball_impact_to_firefly_for_test(goat.position, player_entity, 500);
             }
             for _ in 0..32 {
@@ -33123,12 +32635,7 @@ pub(crate) mod tests {
                 }
             }
             assert!(
-                session
-                    .backend()
-                    .campaign
-                    .level2_compatibility()
-                    .economy()
-                    .events()[event_start..]
+                session.backend().campaign.simulation().economy().events()[event_start..]
                     .iter()
                     .any(|event| matches!(
                         event,
@@ -33142,7 +32649,7 @@ pub(crate) mod tests {
             );
         }
         capture_goat_occurrences(&session, &mut goat_event_cursor, &mut seen_goat_occurrences);
-        let economy = session.backend().campaign.level2_compatibility().economy();
+        let economy = session.backend().campaign.simulation().economy();
         assert!(!economy.spheres().iter().any(|sphere| {
             sphere.active
                 && !sphere.pending_delete
@@ -33173,13 +32680,7 @@ pub(crate) mod tests {
             "the source objective quotient must use the exact live census"
         );
         assert_eq!(
-            session
-                .backend()
-                .campaign
-                .level2_compatibility()
-                .runtime()
-                .objectives[0]
-                .stage_selectors[3],
+            session.backend().campaign.simulation().runtime().objectives[0].stage_selectors[3],
             match exact_percent {
                 0..=14 => 1,
                 _ => 2,
@@ -33187,13 +32688,7 @@ pub(crate) mod tests {
             "the package selector must follow the exact integer threshold"
         );
         assert_eq!(
-            session
-                .backend()
-                .campaign
-                .level2_compatibility()
-                .runtime()
-                .objectives[0]
-                .stage_selectors[3],
+            session.backend().campaign.simulation().runtime().objectives[0].stage_selectors[3],
             2
         );
 
@@ -33208,7 +32703,7 @@ pub(crate) mod tests {
                 .iter()
                 .any(|event| matches!(
                     event,
-                    Level2DispatchEvent::AuthoredGroupActivated {
+                    Mc2DispatchEvent::AuthoredGroupActivated {
                         source_slot,
                         group: 6,
                         authored_indices,
@@ -33294,7 +32789,7 @@ pub(crate) mod tests {
         let published = store.active_definition().unwrap();
 
         let run_group_one = |session: &mut GameSession<Mc2CampaignBackend>| {
-            let compatibility = session.backend().campaign.level2_compatibility();
+            let compatibility = session.backend().campaign.simulation();
             let player = compatibility.state.entity_index;
             let outside = crate::Position {
                 x: 0,
@@ -33304,7 +32799,7 @@ pub(crate) mod tests {
             session
                 .backend_mut()
                 .campaign
-                .level2_compatibility_mut()
+                .simulation_mut()
                 .set_level2_entity_position(player, outside)
                 .unwrap();
             for _ in 0..8 {
@@ -33320,7 +32815,7 @@ pub(crate) mod tests {
                     .iter()
                     .any(|event| matches!(
                         event,
-                        Level2DispatchEvent::AuthoredGroupActivated {
+                        Mc2DispatchEvent::AuthoredGroupActivated {
                             source_slot: PRODUCER_SLOT,
                             group: 1,
                             authored_indices,
@@ -33341,7 +32836,7 @@ pub(crate) mod tests {
         let package_tree = session
             .backend()
             .campaign
-            .level2_compatibility()
+            .simulation()
             .economy()
             .authored_trees()
             .iter()
@@ -33356,7 +32851,7 @@ pub(crate) mod tests {
             .unwrap();
         assert_eq!(reopened.identity.generation, 2);
         assert_eq!(reopened.identity.definition_revision, 2);
-        let compatibility = session.backend().campaign.level2_compatibility();
+        let compatibility = session.backend().campaign.simulation();
         assert_eq!(
             compatibility
                 .mission()
@@ -33370,7 +32865,7 @@ pub(crate) mod tests {
         let authored_reset_hash = session.backend().campaign.state_hash();
 
         run_group_one(&mut session);
-        let compatibility = session.backend().campaign.level2_compatibility();
+        let compatibility = session.backend().campaign.simulation();
         let authored_tree = compatibility
             .economy()
             .authored_trees()
@@ -33421,7 +32916,7 @@ pub(crate) mod tests {
 
         session.reset(guard(&session)).unwrap();
         assert_eq!(session.backend().campaign.state_hash(), authored_reset_hash);
-        let reset = session.backend().campaign.level2_compatibility();
+        let reset = session.backend().campaign.simulation();
         assert!(reset.economy().authored_trees().is_empty());
         assert_eq!(
             reset
@@ -33477,12 +32972,10 @@ pub(crate) mod tests {
             Mc2CampaignInputs::new(&root),
         )
         .unwrap();
-        let package_position = session.backend().campaign.level2_compatibility().entities()
-            [usize::from(PICKUP_SLOT)]
-        .position;
+        let package_position =
+            session.backend().campaign.simulation().entities()[usize::from(PICKUP_SLOT)].position;
         assert_eq!(
-            session.backend().campaign.level2_compatibility().entities()[usize::from(PICKUP_SLOT)]
-                .position,
+            session.backend().campaign.simulation().entities()[usize::from(PICKUP_SLOT)].position,
             package_position
         );
 
@@ -33518,8 +33011,7 @@ pub(crate) mod tests {
         );
         assert_eq!(session.identity().definition_hash, base.definition_hash());
         assert_eq!(
-            session.backend().campaign.level2_compatibility().entities()[usize::from(PICKUP_SLOT)]
-                .position,
+            session.backend().campaign.simulation().entities()[usize::from(PICKUP_SLOT)].position,
             package_position,
             "publication must not mutate the already-open package authority"
         );
@@ -33534,7 +33026,7 @@ pub(crate) mod tests {
         };
         let authored_reset_hash = session.backend().campaign.state_hash();
         {
-            let live = &session.backend().campaign.level2.session.state.live;
+            let live = &session.backend().campaign.simulation.session.state.live;
             assert_eq!(
                 live.economy.entities[usize::from(PICKUP_SLOT)].position,
                 authored_position
@@ -33557,7 +33049,7 @@ pub(crate) mod tests {
         let player = session
             .backend()
             .campaign
-            .level2_compatibility()
+            .simulation()
             .session
             .state
             .live
@@ -33567,7 +33059,7 @@ pub(crate) mod tests {
         session
             .backend_mut()
             .campaign
-            .level2_compatibility_mut()
+            .simulation_mut()
             .set_level2_entity_position(player, package_position)
             .unwrap();
         for _ in 0..4 {
@@ -33576,15 +33068,14 @@ pub(crate) mod tests {
                 .unwrap();
         }
         assert_eq!(
-            session.backend().campaign.level2_compatibility().entities()[usize::from(PICKUP_SLOT)]
-                .action,
+            session.backend().campaign.simulation().entities()[usize::from(PICKUP_SLOT)].action,
             19,
             "a definition-only fake would still acquire at the package position"
         );
         assert!(!session.backend().campaign.events().iter().any(|event| {
             matches!(
                 event,
-                Level2DispatchEvent::SpellAcquisition {
+                Mc2DispatchEvent::SpellAcquisition {
                     source_slot: PICKUP_SLOT,
                     family: SHIELD_FAMILY,
                     result: Some(_),
@@ -33596,16 +33087,14 @@ pub(crate) mod tests {
         session
             .backend_mut()
             .campaign
-            .level2_compatibility_mut()
+            .simulation_mut()
             .set_level2_entity_position(player, authored_position)
             .unwrap();
         for _ in 0..4 {
             session
                 .step(guard(&session), GameCommand::default())
                 .unwrap();
-            if session.backend().campaign.level2_compatibility().entities()
-                [usize::from(PICKUP_SLOT)]
-            .action
+            if session.backend().campaign.simulation().entities()[usize::from(PICKUP_SLOT)].action
                 == 18
             {
                 break;
@@ -33614,7 +33103,7 @@ pub(crate) mod tests {
         assert!(session.backend().campaign.events().iter().any(|event| {
             matches!(
                 event,
-                Level2DispatchEvent::SpellAcquisition {
+                Mc2DispatchEvent::SpellAcquisition {
                     source_slot: PICKUP_SLOT,
                     family: SHIELD_FAMILY,
                     result: Some(_),
@@ -33623,8 +33112,7 @@ pub(crate) mod tests {
             )
         }));
         assert_eq!(
-            session.backend().campaign.level2_compatibility().entities()[usize::from(PICKUP_SLOT)]
-                .action,
+            session.backend().campaign.simulation().entities()[usize::from(PICKUP_SLOT)].action,
             18
         );
 
@@ -33668,7 +33156,7 @@ pub(crate) mod tests {
 
         session.reset(guard(&session)).unwrap();
         assert_eq!(session.backend().campaign.state_hash(), authored_reset_hash);
-        let reset_live = &session.backend().campaign.level2.session.state.live;
+        let reset_live = &session.backend().campaign.simulation.session.state.live;
         assert_eq!(
             reset_live.economy.entities[usize::from(PICKUP_SLOT)].position,
             authored_position
@@ -33725,9 +33213,8 @@ pub(crate) mod tests {
             Mc2CampaignInputs::new(&root),
         )
         .unwrap();
-        let package_position = session.backend().campaign.level2_compatibility().entities()
-            [usize::from(STONE_SLOT)]
-        .position;
+        let package_position =
+            session.backend().campaign.simulation().entities()[usize::from(STONE_SLOT)].position;
 
         let change_set = ChangeSetBuilder::new(
             "campaign-stone-placement-authoring",
@@ -33752,8 +33239,7 @@ pub(crate) mod tests {
         assert_eq!(published.revision(), 2);
         assert_eq!(session.identity().definition_hash, base.definition_hash());
         assert_eq!(
-            session.backend().campaign.level2_compatibility().entities()[usize::from(STONE_SLOT)]
-                .position,
+            session.backend().campaign.simulation().entities()[usize::from(STONE_SLOT)].position,
             package_position,
             "publication must not mutate the already-open package authority"
         );
@@ -33766,7 +33252,7 @@ pub(crate) mod tests {
             y: (authored_tile.y << 8) | (package_position.y & 0xff),
             z: package_position.z,
         };
-        let compatibility = session.backend().campaign.level2_compatibility();
+        let compatibility = session.backend().campaign.simulation();
         let target_ground =
             crate::FlightWorld::ground_height(compatibility.canonical_terrain(), authored_position);
         assert_ne!(
@@ -33792,8 +33278,7 @@ pub(crate) mod tests {
         session
             .step(guard(&session), GameCommand::default())
             .unwrap();
-        let stepped =
-            &session.backend().campaign.level2_compatibility().entities()[usize::from(STONE_SLOT)];
+        let stepped = &session.backend().campaign.simulation().entities()[usize::from(STONE_SLOT)];
         assert_eq!(stepped.position.x, authored_position.x);
         assert_eq!(stepped.position.y, authored_position.y);
         assert_eq!(stepped.position.z, target_ground);
@@ -33801,8 +33286,7 @@ pub(crate) mod tests {
 
         session.reset(guard(&session)).unwrap();
         assert_eq!(session.backend().campaign.state_hash(), authored_reset_hash);
-        let reset =
-            &session.backend().campaign.level2_compatibility().entities()[usize::from(STONE_SLOT)];
+        let reset = &session.backend().campaign.simulation().entities()[usize::from(STONE_SLOT)];
         assert_eq!(reset.position, authored_position);
         assert_eq!(reset.action, 3);
 
@@ -33843,9 +33327,8 @@ pub(crate) mod tests {
             Mc2CampaignInputs::new(&root),
         )
         .unwrap();
-        let package_position = session.backend().campaign.level2_compatibility().entities()
-            [usize::from(TREE_SLOT)]
-        .position;
+        let package_position =
+            session.backend().campaign.simulation().entities()[usize::from(TREE_SLOT)].position;
 
         let change_set = ChangeSetBuilder::new(
             "campaign-tree-placement-authoring",
@@ -33869,8 +33352,7 @@ pub(crate) mod tests {
         let published = store.active_definition().unwrap();
         assert_eq!(session.identity().definition_hash, base.definition_hash());
         assert_eq!(
-            session.backend().campaign.level2_compatibility().entities()[usize::from(TREE_SLOT)]
-                .position,
+            session.backend().campaign.simulation().entities()[usize::from(TREE_SLOT)].position,
             package_position
         );
 
@@ -33882,7 +33364,7 @@ pub(crate) mod tests {
             y: (authored_tile.y << 8) | (package_position.y & 0xff),
             z: package_position.z,
         };
-        let compatibility = session.backend().campaign.level2_compatibility();
+        let compatibility = session.backend().campaign.simulation();
         let target_ground =
             crate::FlightWorld::ground_height(compatibility.canonical_terrain(), authored_position);
         assert_ne!(target_ground, package_position.z);
@@ -33910,8 +33392,7 @@ pub(crate) mod tests {
         session
             .step(guard(&session), GameCommand::default())
             .unwrap();
-        let stepped =
-            &session.backend().campaign.level2_compatibility().entities()[usize::from(TREE_SLOT)];
+        let stepped = &session.backend().campaign.simulation().entities()[usize::from(TREE_SLOT)];
         assert_eq!(stepped.position.x, authored_position.x);
         assert_eq!(stepped.position.y, authored_position.y);
         assert_eq!(stepped.position.z, target_ground);
@@ -33919,8 +33400,7 @@ pub(crate) mod tests {
 
         session.reset(guard(&session)).unwrap();
         assert_eq!(session.backend().campaign.state_hash(), authored_reset_hash);
-        let reset =
-            &session.backend().campaign.level2_compatibility().entities()[usize::from(TREE_SLOT)];
+        let reset = &session.backend().campaign.simulation().entities()[usize::from(TREE_SLOT)];
         assert_eq!(reset.position, authored_position);
         assert_eq!(reset.action, 0);
 
@@ -33964,9 +33444,8 @@ pub(crate) mod tests {
             Mc2CampaignInputs::new(&root),
         )
         .unwrap();
-        let package_position = session.backend().campaign.level2_compatibility().entities()
-            [usize::from(TRIGGER_SLOT)]
-        .position;
+        let package_position =
+            session.backend().campaign.simulation().entities()[usize::from(TRIGGER_SLOT)].position;
 
         let change_set = ChangeSetBuilder::new(
             "campaign-l3-area-trigger-placement",
@@ -34008,7 +33487,7 @@ pub(crate) mod tests {
         let player = session
             .backend()
             .campaign
-            .level2_compatibility()
+            .simulation()
             .session
             .state
             .live
@@ -34018,7 +33497,7 @@ pub(crate) mod tests {
         session
             .backend_mut()
             .campaign
-            .level2_compatibility_mut()
+            .simulation_mut()
             .set_level2_entity_position(player, authored_position)
             .unwrap();
         for _ in 0..8 {
@@ -34029,12 +33508,11 @@ pub(crate) mod tests {
         assert!(session.backend().campaign.events().iter().all(|event| {
             !matches!(
                 event,
-                Level2DispatchEvent::AuthoredGroupActivated { group: 8, .. }
+                Mc2DispatchEvent::AuthoredGroupActivated { group: 8, .. }
             )
         }));
         assert_eq!(
-            session.backend().campaign.level2_compatibility().entities()[usize::from(TRIGGER_SLOT)]
-                .position,
+            session.backend().campaign.simulation().entities()[usize::from(TRIGGER_SLOT)].position,
             package_position,
             "publication must not mutate the already-open package authority"
         );
@@ -34046,7 +33524,7 @@ pub(crate) mod tests {
         assert_eq!(reopened.identity.definition_revision, 2);
         let authored_reset_hash = session.backend().campaign.state_hash();
         {
-            let live = &session.backend().campaign.level2.session.state.live;
+            let live = &session.backend().campaign.simulation.session.state.live;
             assert_eq!(
                 live.economy.entities[usize::from(TRIGGER_SLOT)].position,
                 authored_position
@@ -34068,7 +33546,7 @@ pub(crate) mod tests {
         session
             .backend_mut()
             .campaign
-            .level2_compatibility_mut()
+            .simulation_mut()
             .set_level2_entity_position(player, package_position)
             .unwrap();
         for _ in 0..8 {
@@ -34079,14 +33557,14 @@ pub(crate) mod tests {
         assert!(session.backend().campaign.events().iter().all(|event| {
             !matches!(
                 event,
-                Level2DispatchEvent::AuthoredGroupActivated { group: 8, .. }
+                Mc2DispatchEvent::AuthoredGroupActivated { group: 8, .. }
             )
         }));
 
         session
             .backend_mut()
             .campaign
-            .level2_compatibility_mut()
+            .simulation_mut()
             .set_level2_entity_position(player, authored_position)
             .unwrap();
         for _ in 0..8 {
@@ -34096,7 +33574,7 @@ pub(crate) mod tests {
             if session.backend().campaign.events().iter().any(|event| {
                 matches!(
                     event,
-                    Level2DispatchEvent::AuthoredGroupActivated {
+                    Mc2DispatchEvent::AuthoredGroupActivated {
                         source_slot: TRIGGER_SLOT,
                         group: 8,
                         authored_indices,
@@ -34107,11 +33585,11 @@ pub(crate) mod tests {
                 break;
             }
         }
-        let compatibility = session.backend().campaign.level2_compatibility();
+        let compatibility = session.backend().campaign.simulation();
         assert!(compatibility.dispatch_events().iter().any(|event| {
             matches!(
                 event,
-                Level2DispatchEvent::AuthoredGroupActivated {
+                Mc2DispatchEvent::AuthoredGroupActivated {
                     source_slot: TRIGGER_SLOT,
                     group: 8,
                     authored_indices,
@@ -34123,7 +33601,7 @@ pub(crate) mod tests {
             compatibility
                 .dispatch_events()
                 .iter()
-                .all(|event| !matches!(event, Level2DispatchEvent::Error { .. }))
+                .all(|event| !matches!(event, Mc2DispatchEvent::Error { .. }))
         );
         let live = &compatibility.session.state.live;
         assert_eq!(
@@ -34149,7 +33627,7 @@ pub(crate) mod tests {
 
         session.reset(guard(&session)).unwrap();
         assert_eq!(session.backend().campaign.state_hash(), authored_reset_hash);
-        let reset = &session.backend().campaign.level2.session.state.live;
+        let reset = &session.backend().campaign.simulation.session.state.live;
         assert_eq!(
             reset.economy.entities[usize::from(TRIGGER_SLOT)].position,
             authored_position
@@ -34174,7 +33652,7 @@ pub(crate) mod tests {
         const GROUP8_ROWS: &[u16] = &[208, 209, 210, 211, 212, 213, 214, 215];
 
         fn place_player_at_package_boundary(session: &mut GameSession<Mc2CampaignBackend>) {
-            let compatibility = session.backend().campaign.level2_compatibility();
+            let compatibility = session.backend().campaign.simulation();
             let player = compatibility.state.entity_index;
             let trigger_position = compatibility.entities()[usize::from(TRIGGER_SLOT)].position;
             let player_half_width = i16::from_le_bytes(
@@ -34187,7 +33665,7 @@ pub(crate) mod tests {
             session
                 .backend_mut()
                 .campaign
-                .level2_compatibility_mut()
+                .simulation_mut()
                 .set_level2_entity_position(
                     player,
                     crate::Position {
@@ -34207,7 +33685,7 @@ pub(crate) mod tests {
                 if session.backend().campaign.events().iter().any(|event| {
                     matches!(
                         event,
-                        Level2DispatchEvent::AuthoredGroupActivated {
+                        Mc2DispatchEvent::AuthoredGroupActivated {
                             source_slot: TRIGGER_SLOT,
                             group: 8,
                             authored_indices,
@@ -34315,7 +33793,7 @@ pub(crate) mod tests {
         let package_root = session
             .backend()
             .campaign
-            .level2_compatibility()
+            .simulation()
             .session
             .state
             .live
@@ -34332,7 +33810,7 @@ pub(crate) mod tests {
             .reopen(guard(&session), Arc::new(published))
             .unwrap();
         let authored_reset_hash = session.backend().campaign.state_hash();
-        let compatibility = session.backend().campaign.level2_compatibility();
+        let compatibility = session.backend().campaign.simulation();
         let authored_root = compatibility
             .session
             .state
@@ -34345,13 +33823,12 @@ pub(crate) mod tests {
         assert_eq!(authored_root.word_10, 4);
         place_player_at_package_boundary(&mut session);
         assert!(step_until_group8(&mut session));
-        let fired = &session.backend().campaign.level2_compatibility().entities()
-            [usize::from(TRIGGER_SLOT)];
+        let fired = &session.backend().campaign.simulation().entities()[usize::from(TRIGGER_SLOT)];
         assert!(fired.active && fired.drawing_disabled());
 
         session.reset(guard(&session)).unwrap();
         assert_eq!(session.backend().campaign.state_hash(), authored_reset_hash);
-        let reset = session.backend().campaign.level2_compatibility();
+        let reset = session.backend().campaign.simulation();
         assert_eq!(
             reset
                 .session
@@ -34388,13 +33865,13 @@ pub(crate) mod tests {
             session
                 .backend_mut()
                 .campaign
-                .level2_compatibility_mut()
+                .simulation_mut()
                 .activate_authored_group_prerequisite_for_test(5)
                 .unwrap();
             let scroll = session
                 .backend()
                 .campaign
-                .level2_compatibility()
+                .simulation()
                 .economy()
                 .authored_class14()
                 .iter()
@@ -34402,7 +33879,7 @@ pub(crate) mod tests {
                 .copied()
                 .unwrap();
             assert_eq!(scroll.experience_award, Some(expected_award));
-            let compatibility = session.backend().campaign.level2_compatibility();
+            let compatibility = session.backend().campaign.simulation();
             let before = *compatibility.shared_spells().spell_experience();
             let local_player = compatibility
                 .shared_spells()
@@ -34415,13 +33892,13 @@ pub(crate) mod tests {
             session
                 .backend_mut()
                 .campaign
-                .level2_compatibility_mut()
+                .simulation_mut()
                 .set_level2_entity_position(player_entity, scroll.position)
                 .unwrap();
             session
                 .step(guard(session), GameCommand::default())
                 .unwrap();
-            let compatibility = session.backend().campaign.level2_compatibility();
+            let compatibility = session.backend().campaign.simulation();
             let after = *compatibility.shared_spells().spell_experience();
             for family in 0..after.len() {
                 if enabled[family] == 0 {
@@ -34522,7 +33999,7 @@ pub(crate) mod tests {
             session
                 .backend()
                 .campaign
-                .level2_compatibility()
+                .simulation()
                 .economy()
                 .authored_class14()
                 .is_empty()
@@ -34603,13 +34080,13 @@ pub(crate) mod tests {
         session
             .backend_mut()
             .campaign
-            .level2_compatibility_mut()
+            .simulation_mut()
             .activate_authored_group_prerequisite_for_test(5)
             .unwrap();
         let package_scroll = session
             .backend()
             .campaign
-            .level2_compatibility()
+            .simulation()
             .economy()
             .authored_class14()
             .iter()
@@ -34623,12 +34100,7 @@ pub(crate) mod tests {
             ),
             (package_tile.x, package_tile.y)
         );
-        let player = session
-            .backend()
-            .campaign
-            .level2_compatibility()
-            .state
-            .entity_index;
+        let player = session.backend().campaign.simulation().state.entity_index;
         let authored_position = crate::Position {
             x: authored_tile.x << 8,
             y: authored_tile.y << 8,
@@ -34637,7 +34109,7 @@ pub(crate) mod tests {
         session
             .backend_mut()
             .campaign
-            .level2_compatibility_mut()
+            .simulation_mut()
             .set_level2_entity_position(player, authored_position)
             .unwrap();
         session
@@ -34647,7 +34119,7 @@ pub(crate) mod tests {
             session
                 .backend()
                 .campaign
-                .level2_compatibility()
+                .simulation()
                 .shared_spells()
                 .pickup_events()
                 .iter()
@@ -34664,7 +34136,7 @@ pub(crate) mod tests {
             .unwrap();
         assert_eq!(reopened.identity.generation, 2);
         assert_eq!(reopened.identity.definition_revision, 2);
-        let compatibility = session.backend().campaign.level2_compatibility();
+        let compatibility = session.backend().campaign.simulation();
         let authored_feature = compatibility
             .mission()
             .authored_features()
@@ -34680,13 +34152,13 @@ pub(crate) mod tests {
         session
             .backend_mut()
             .campaign
-            .level2_compatibility_mut()
+            .simulation_mut()
             .activate_authored_group_prerequisite_for_test(5)
             .unwrap();
         let authored_scroll = session
             .backend()
             .campaign
-            .level2_compatibility()
+            .simulation()
             .economy()
             .authored_class14()
             .iter()
@@ -34703,19 +34175,19 @@ pub(crate) mod tests {
         let experience_before = *session
             .backend()
             .campaign
-            .level2_compatibility()
+            .simulation()
             .shared_spells()
             .spell_experience();
         session
             .backend_mut()
             .campaign
-            .level2_compatibility_mut()
+            .simulation_mut()
             .set_level2_entity_position(player, authored_scroll.position)
             .unwrap();
         session
             .step(guard(&session), GameCommand::default())
             .unwrap();
-        let compatibility = session.backend().campaign.level2_compatibility();
+        let compatibility = session.backend().campaign.simulation();
         assert!(
             compatibility
                 .shared_spells()
@@ -34755,7 +34227,7 @@ pub(crate) mod tests {
         session
             .step(guard(&session), GameCommand::default())
             .unwrap();
-        let compatibility = session.backend().campaign.level2_compatibility();
+        let compatibility = session.backend().campaign.simulation();
         assert!(
             !compatibility
                 .economy()
@@ -34772,7 +34244,7 @@ pub(crate) mod tests {
 
         session.reset(guard(&session)).unwrap();
         assert_eq!(session.backend().campaign.state_hash(), authored_reset_hash);
-        let reset = session.backend().campaign.level2_compatibility();
+        let reset = session.backend().campaign.simulation();
         assert_eq!(
             reset
                 .mission()
@@ -34858,13 +34330,13 @@ pub(crate) mod tests {
         session
             .backend_mut()
             .campaign
-            .level2_compatibility_mut()
+            .simulation_mut()
             .activate_authored_group_prerequisite_for_test(4)
             .unwrap();
         let package_portal = session
             .backend()
             .campaign
-            .level2_compatibility()
+            .simulation()
             .economy()
             .authored_class14()
             .iter()
@@ -34886,7 +34358,7 @@ pub(crate) mod tests {
             .unwrap();
         assert_eq!(reopened.identity.generation, 2);
         assert_eq!(reopened.identity.definition_revision, 2);
-        let compatibility = session.backend().campaign.level2_compatibility();
+        let compatibility = session.backend().campaign.simulation();
         assert_eq!(
             compatibility
                 .mission()
@@ -34901,10 +34373,10 @@ pub(crate) mod tests {
         session
             .backend_mut()
             .campaign
-            .level2_compatibility_mut()
+            .simulation_mut()
             .activate_authored_group_prerequisite_for_test(4)
             .unwrap();
-        let compatibility = session.backend().campaign.level2_compatibility();
+        let compatibility = session.backend().campaign.simulation();
         let authored_portal = compatibility
             .economy()
             .authored_class14()
@@ -34932,7 +34404,7 @@ pub(crate) mod tests {
         session
             .backend_mut()
             .campaign
-            .level2_compatibility_mut()
+            .simulation_mut()
             .set_level2_entity_position(player, trigger.position)
             .unwrap();
         let turns_until_cadence = usize::from((8_u8.wrapping_sub(trigger.phase & 7)) & 7) + 1;
@@ -34944,7 +34416,7 @@ pub(crate) mod tests {
         let exit = session
             .backend()
             .campaign
-            .level2_compatibility()
+            .simulation()
             .level_exit_sequence();
         assert!(exit.active);
         assert!(!exit.complete);
@@ -34957,7 +34429,7 @@ pub(crate) mod tests {
             let state = &mut session
                 .backend_mut()
                 .campaign
-                .level2_compatibility_mut()
+                .simulation_mut()
                 .session
                 .state
                 .live
@@ -34972,7 +34444,7 @@ pub(crate) mod tests {
             session
                 .backend()
                 .campaign
-                .level2_compatibility()
+                .simulation()
                 .level_exit_sequence()
                 .phase,
             1
@@ -34984,18 +34456,13 @@ pub(crate) mod tests {
             session
                 .backend()
                 .campaign
-                .level2_compatibility()
+                .simulation()
                 .level_exit_sequence()
                 .phase,
             3
         );
 
-        let player_position = session
-            .backend()
-            .campaign
-            .level2_compatibility()
-            .state
-            .position;
+        let player_position = session.backend().campaign.simulation().state.position;
         let package_target = crate::Position {
             x: package_tile.x << 8,
             y: package_tile.y << 8,
@@ -35015,7 +34482,7 @@ pub(crate) mod tests {
         session
             .backend_mut()
             .campaign
-            .level2_compatibility_mut()
+            .simulation_mut()
             .session
             .state
             .live
@@ -35028,13 +34495,13 @@ pub(crate) mod tests {
         session
             .step(guard(&session), GameCommand::default())
             .unwrap();
-        let compatibility = session.backend().campaign.level2_compatibility();
+        let compatibility = session.backend().campaign.simulation();
         assert_eq!(compatibility.level_exit_sequence().phase, 3);
         assert_eq!(compatibility.state.yaw, expected_yaw);
 
         session.reset(guard(&session)).unwrap();
         assert_eq!(session.backend().campaign.state_hash(), authored_reset_hash);
-        let reset = session.backend().campaign.level2_compatibility();
+        let reset = session.backend().campaign.simulation();
         assert_eq!(
             reset.level_exit_sequence(),
             crate::native_world::LevelExitSequence::default()
@@ -35069,13 +34536,13 @@ pub(crate) mod tests {
             session
                 .backend_mut()
                 .campaign
-                .level2_compatibility_mut()
+                .simulation_mut()
                 .activate_authored_group_prerequisite_for_test(4)
                 .unwrap();
             session
                 .backend()
                 .campaign
-                .level2_compatibility()
+                .simulation()
                 .economy()
                 .authored_switch_producers()
                 .iter()
@@ -35088,16 +34555,11 @@ pub(crate) mod tests {
             session: &mut GameSession<Mc2CampaignBackend>,
             trigger: crate::native_world::Level2AuthoredSwitchProducerSource,
         ) {
-            let player = session
-                .backend()
-                .campaign
-                .level2_compatibility()
-                .state
-                .entity_index;
+            let player = session.backend().campaign.simulation().state.entity_index;
             session
                 .backend_mut()
                 .campaign
-                .level2_compatibility_mut()
+                .simulation_mut()
                 .set_level2_entity_position(
                     player,
                     crate::Position {
@@ -35231,7 +34693,7 @@ pub(crate) mod tests {
             session
                 .backend()
                 .campaign
-                .level2_compatibility()
+                .simulation()
                 .level_exit_sequence(),
             crate::native_world::LevelExitSequence::default(),
             "already-open package session retains the two-tile strict overlap"
@@ -35245,7 +34707,7 @@ pub(crate) mod tests {
         assert_eq!(authored_trigger.word_10, 4);
         place_player_three_tiles_away(&mut session, authored_trigger);
         step_to_trigger_cadence(&mut session, authored_trigger);
-        let compatibility = session.backend().campaign.level2_compatibility();
+        let compatibility = session.backend().campaign.simulation();
         assert!(compatibility.level_exit_sequence().active);
         assert!(
             compatibility
@@ -35267,7 +34729,7 @@ pub(crate) mod tests {
             session
                 .backend()
                 .campaign
-                .level2_compatibility()
+                .simulation()
                 .level_exit_sequence()
                 .active
         );
@@ -35288,13 +34750,13 @@ pub(crate) mod tests {
             session
                 .backend_mut()
                 .campaign
-                .level2_compatibility_mut()
+                .simulation_mut()
                 .activate_authored_group_prerequisite_for_test(2)
                 .unwrap();
             session
                 .backend()
                 .campaign
-                .level2_compatibility()
+                .simulation()
                 .economy()
                 .authored_switch_producers()
                 .iter()
@@ -35308,16 +34770,11 @@ pub(crate) mod tests {
             trigger: crate::native_world::Level2AuthoredSwitchProducerSource,
             tiles: u16,
         ) {
-            let player = session
-                .backend()
-                .campaign
-                .level2_compatibility()
-                .state
-                .entity_index;
+            let player = session.backend().campaign.simulation().state.entity_index;
             session
                 .backend_mut()
                 .campaign
-                .level2_compatibility_mut()
+                .simulation_mut()
                 .set_level2_entity_position(
                     player,
                     crate::Position {
@@ -35336,7 +34793,7 @@ pub(crate) mod tests {
                 if session.backend().campaign.events().iter().any(|event| {
                     matches!(
                         event,
-                        Level2DispatchEvent::AuthoredGroupActivated {
+                        Mc2DispatchEvent::AuthoredGroupActivated {
                             group: 8,
                             authored_indices,
                             ..
@@ -35463,7 +34920,7 @@ pub(crate) mod tests {
         let authored_trigger = session
             .backend()
             .campaign
-            .level2_compatibility()
+            .simulation()
             .economy()
             .authored_switch_producers()
             .iter()
@@ -35476,7 +34933,7 @@ pub(crate) mod tests {
             session
                 .backend()
                 .campaign
-                .level2_compatibility()
+                .simulation()
                 .economy()
                 .authored_switch_producers()
                 .iter()
@@ -35490,7 +34947,7 @@ pub(crate) mod tests {
             session
                 .backend()
                 .campaign
-                .level2_compatibility()
+                .simulation()
                 .economy()
                 .authored_switch_producers()
                 .iter()
@@ -35506,7 +34963,7 @@ pub(crate) mod tests {
         let reset_trigger = session
             .backend()
             .campaign
-            .level2_compatibility()
+            .simulation()
             .economy()
             .authored_switch_producers()
             .iter()
@@ -35553,7 +35010,7 @@ pub(crate) mod tests {
             session
                 .backend()
                 .campaign
-                .level2
+                .simulation
                 .session
                 .state
                 .live
@@ -35573,23 +35030,12 @@ pub(crate) mod tests {
             original,
             authored.clone(),
         );
-        let player_slot = session
-            .backend()
-            .campaign
-            .level2_compatibility()
-            .state
-            .entity_index;
-        let z = session
-            .backend()
-            .campaign
-            .level2_compatibility()
-            .state
-            .position
-            .z;
+        let player_slot = session.backend().campaign.simulation().state.entity_index;
+        let z = session.backend().campaign.simulation().state.position.z;
         session
             .backend_mut()
             .campaign
-            .level2_compatibility_mut()
+            .simulation_mut()
             .set_level2_entity_position(
                 player_slot,
                 crate::Position {
@@ -35606,7 +35052,7 @@ pub(crate) mod tests {
             session
                 .backend()
                 .campaign
-                .level2
+                .simulation
                 .session
                 .state
                 .live
@@ -35637,7 +35083,7 @@ pub(crate) mod tests {
             session
                 .backend()
                 .campaign
-                .level2_compatibility()
+                .simulation()
                 .semantic_level_definition()
                 .unwrap()
                 .objective(&objective)
@@ -35648,7 +35094,7 @@ pub(crate) mod tests {
         let stage = &session
             .backend()
             .campaign
-            .level2
+            .simulation
             .session
             .state
             .live
@@ -35661,16 +35107,11 @@ pub(crate) mod tests {
             (TilePosition { x: 154, y: 229 }, 1),
             (TilePosition { x: 120, y: 120 }, 2),
         ] {
-            let player_slot = session
-                .backend()
-                .campaign
-                .level2_compatibility()
-                .state
-                .entity_index;
+            let player_slot = session.backend().campaign.simulation().state.entity_index;
             session
                 .backend_mut()
                 .campaign
-                .level2_compatibility_mut()
+                .simulation_mut()
                 .set_level2_entity_position(
                     player_slot,
                     crate::Position {
@@ -35687,7 +35128,7 @@ pub(crate) mod tests {
                 session
                     .backend()
                     .campaign
-                    .level2
+                    .simulation
                     .session
                     .state
                     .live
@@ -35704,7 +35145,7 @@ pub(crate) mod tests {
             session
                 .backend()
                 .campaign
-                .level2_compatibility()
+                .simulation()
                 .semantic_level_definition()
                 .unwrap()
                 .objective(&objective)
@@ -35712,16 +35153,11 @@ pub(crate) mod tests {
                 .condition(),
             authored
         );
-        let player_slot = session
-            .backend()
-            .campaign
-            .level2_compatibility()
-            .state
-            .entity_index;
+        let player_slot = session.backend().campaign.simulation().state.entity_index;
         session
             .backend_mut()
             .campaign
-            .level2_compatibility_mut()
+            .simulation_mut()
             .set_level2_entity_position(
                 player_slot,
                 crate::Position {
@@ -35738,7 +35174,7 @@ pub(crate) mod tests {
             session
                 .backend()
                 .campaign
-                .level2
+                .simulation
                 .session
                 .state
                 .live
@@ -35815,7 +35251,7 @@ pub(crate) mod tests {
             session
                 .step(guard(&session), GameCommand::default())
                 .unwrap();
-            let compatibility = session.backend().campaign.level2_compatibility();
+            let compatibility = session.backend().campaign.simulation();
             let player_entity_index = compatibility
                 .session
                 .state
@@ -35837,7 +35273,7 @@ pub(crate) mod tests {
                 session
                     .backend()
                     .campaign
-                    .level2
+                    .simulation
                     .session
                     .state
                     .live
@@ -35857,7 +35293,7 @@ pub(crate) mod tests {
                 session
                     .backend()
                     .campaign
-                    .level2_compatibility()
+                    .simulation()
                     .semantic_level_definition()
                     .unwrap()
                     .objective(&objective)
@@ -35876,7 +35312,7 @@ pub(crate) mod tests {
                 session
                     .backend()
                     .campaign
-                    .level2
+                    .simulation
                     .session
                     .state
                     .live
@@ -35896,7 +35332,7 @@ pub(crate) mod tests {
             session
                 .step(guard(&session), GameCommand::default())
                 .unwrap();
-            let compatibility = session.backend().campaign.level2_compatibility();
+            let compatibility = session.backend().campaign.simulation();
             let player_entity_index = compatibility
                 .session
                 .state
@@ -35918,7 +35354,7 @@ pub(crate) mod tests {
                 session
                     .backend()
                     .campaign
-                    .level2
+                    .simulation
                     .session
                     .state
                     .live
@@ -35937,7 +35373,7 @@ pub(crate) mod tests {
                     .iter()
                     .all(|event| !matches!(
                         event,
-                        Level2DispatchEvent::AuthoredGroupActivated { group: emitted, .. }
+                        Mc2DispatchEvent::AuthoredGroupActivated { group: emitted, .. }
                             if *emitted == group
                     ))
             );
@@ -35952,7 +35388,7 @@ pub(crate) mod tests {
                     .iter()
                     .any(|event| matches!(
                         event,
-                        Level2DispatchEvent::AuthoredGroupActivated {
+                        Mc2DispatchEvent::AuthoredGroupActivated {
                             group: emitted,
                             authored_indices,
                             ..
@@ -35965,7 +35401,7 @@ pub(crate) mod tests {
                 session
                     .backend()
                     .campaign
-                    .level2_compatibility()
+                    .simulation()
                     .semantic_level_definition()
                     .unwrap()
                     .objective(&objective)
@@ -35984,7 +35420,7 @@ pub(crate) mod tests {
                 session
                     .backend()
                     .campaign
-                    .level2
+                    .simulation
                     .session
                     .state
                     .live
@@ -36047,13 +35483,7 @@ pub(crate) mod tests {
             .step(guard(&session), GameCommand::default())
             .unwrap();
         assert_eq!(
-            session
-                .backend()
-                .campaign
-                .level2_compatibility()
-                .runtime()
-                .objectives[0]
-                .stage_selectors[0],
+            session.backend().campaign.simulation().runtime().objectives[0].stage_selectors[0],
             1,
             "the already-open package generation must retain its Skeleton objective"
         );
@@ -36065,7 +35495,7 @@ pub(crate) mod tests {
                 .iter()
                 .all(|event| !matches!(
                     event,
-                    Level2DispatchEvent::AuthoredGroupActivated { group: 1, .. }
+                    Mc2DispatchEvent::AuthoredGroupActivated { group: 1, .. }
                 ))
         );
 
@@ -36077,7 +35507,7 @@ pub(crate) mod tests {
             session
                 .backend()
                 .campaign
-                .level2_compatibility()
+                .simulation()
                 .semantic_level_definition()
                 .unwrap()
                 .objective(&objective)
@@ -36093,13 +35523,8 @@ pub(crate) mod tests {
                 .unwrap();
             if pass == 0 {
                 assert_eq!(
-                    session
-                        .backend()
-                        .campaign
-                        .level2_compatibility()
-                        .runtime()
-                        .objectives[0]
-                        .stage_selectors[0],
+                    session.backend().campaign.simulation().runtime().objectives[0].stage_selectors
+                        [0],
                     2
                 );
                 assert!(
@@ -36110,7 +35535,7 @@ pub(crate) mod tests {
                         .iter()
                         .all(|event| !matches!(
                             event,
-                            Level2DispatchEvent::AuthoredGroupActivated { group: 1, .. }
+                            Mc2DispatchEvent::AuthoredGroupActivated { group: 1, .. }
                         ))
                 );
             }
@@ -36123,7 +35548,7 @@ pub(crate) mod tests {
                 .iter()
                 .any(|event| matches!(
                     event,
-                    Level2DispatchEvent::AuthoredGroupActivated {
+                    Mc2DispatchEvent::AuthoredGroupActivated {
                         source_slot: GATE_SLOT,
                         group: 1,
                         authored_indices,
@@ -36132,13 +35557,7 @@ pub(crate) mod tests {
                 ))
         );
         assert_eq!(
-            session
-                .backend()
-                .campaign
-                .level2_compatibility()
-                .runtime()
-                .objectives[0]
-                .stage_selectors[1],
+            session.backend().campaign.simulation().runtime().objectives[0].stage_selectors[1],
             1,
             "the objective-done pause must defer the next semantic predicate"
         );
@@ -36149,7 +35568,7 @@ pub(crate) mod tests {
             session
                 .backend()
                 .campaign
-                .level2_compatibility()
+                .simulation()
                 .semantic_level_definition()
                 .unwrap()
                 .objective(&objective)
@@ -36161,13 +35580,7 @@ pub(crate) mod tests {
             .step(guard(&session), GameCommand::default())
             .unwrap();
         assert_eq!(
-            session
-                .backend()
-                .campaign
-                .level2_compatibility()
-                .runtime()
-                .objectives[0]
-                .stage_selectors[0],
+            session.backend().campaign.simulation().runtime().objectives[0].stage_selectors[0],
             2
         );
         assert!(
@@ -36178,7 +35591,7 @@ pub(crate) mod tests {
                 .iter()
                 .all(|event| !matches!(
                     event,
-                    Level2DispatchEvent::AuthoredGroupActivated { group: 1, .. }
+                    Mc2DispatchEvent::AuthoredGroupActivated { group: 1, .. }
                 ))
         );
         session
@@ -36192,7 +35605,7 @@ pub(crate) mod tests {
                 .iter()
                 .any(|event| matches!(
                     event,
-                    Level2DispatchEvent::AuthoredGroupActivated {
+                    Mc2DispatchEvent::AuthoredGroupActivated {
                         source_slot: GATE_SLOT,
                         group: 1,
                         authored_indices,
@@ -36237,7 +35650,7 @@ pub(crate) mod tests {
         );
 
         {
-            let compatibility = session.backend_mut().campaign.level2_compatibility_mut();
+            let compatibility = session.backend_mut().campaign.simulation_mut();
             compatibility
                 .activate_authored_group_prerequisite_for_test(4)
                 .unwrap();
@@ -36254,7 +35667,7 @@ pub(crate) mod tests {
             session
                 .backend()
                 .campaign
-                .level2_compatibility()
+                .simulation()
                 .economy()
                 .authored_switch_producers()
                 .iter()
@@ -36271,7 +35684,7 @@ pub(crate) mod tests {
         let semantic_level = session
             .backend()
             .campaign
-            .level2_compatibility()
+            .simulation()
             .semantic_level_definition()
             .unwrap();
         for (id, expected) in [(WORM_ID, 8), (ARCHER_ID, 16)] {
@@ -36289,7 +35702,7 @@ pub(crate) mod tests {
         }
 
         let countdown_slot = {
-            let compatibility = session.backend_mut().campaign.level2_compatibility_mut();
+            let compatibility = session.backend_mut().campaign.simulation_mut();
             compatibility
                 .activate_authored_group_prerequisite_for_test(4)
                 .unwrap();
@@ -36308,7 +35721,7 @@ pub(crate) mod tests {
             session
                 .backend()
                 .campaign
-                .level2_compatibility()
+                .simulation()
                 .economy()
                 .authored_switch_producers()
                 .iter()
@@ -36322,7 +35735,7 @@ pub(crate) mod tests {
             session
                 .backend_mut()
                 .campaign
-                .level2_compatibility_mut()
+                .simulation_mut()
                 .economy_mut()
                 .retire_authored_multipart_prerequisite_for_test(307)
         );
@@ -36333,7 +35746,7 @@ pub(crate) mod tests {
             session
                 .backend()
                 .campaign
-                .level2_compatibility()
+                .simulation()
                 .economy()
                 .authored_switch_producers()
                 .iter()
@@ -36350,7 +35763,7 @@ pub(crate) mod tests {
                 session
                     .backend()
                     .campaign
-                    .level2_compatibility()
+                    .simulation()
                     .economy()
                     .authored_switch_producers()
                     .iter()
@@ -36363,14 +35776,14 @@ pub(crate) mod tests {
         let journal_start = session
             .backend()
             .campaign
-            .level2_compatibility()
+            .simulation()
             .effect_journal()
             .records()
             .len();
         session
             .step(guard(&session), GameCommand::default())
             .unwrap();
-        let compatibility = session.backend().campaign.level2_compatibility();
+        let compatibility = session.backend().campaign.simulation();
         let records = &compatibility.effect_journal().records()[journal_start..];
         let sound = records
             .iter()
@@ -36391,7 +35804,7 @@ pub(crate) mod tests {
                 matches!(
                     &record.effect,
                     crate::campaign::journal::CampaignEffect::Dispatch(
-                        Level2DispatchEvent::AuthoredGroupActivated {
+                        Mc2DispatchEvent::AuthoredGroupActivated {
                             source_slot,
                             group: 34,
                             authored_indices,
@@ -36406,7 +35819,7 @@ pub(crate) mod tests {
             compatibility
                 .dispatch_events()
                 .iter()
-                .all(|event| !matches!(event, Level2DispatchEvent::Error { .. }))
+                .all(|event| !matches!(event, Mc2DispatchEvent::Error { .. }))
         );
         session
             .step(guard(&session), GameCommand::default())
@@ -36415,7 +35828,7 @@ pub(crate) mod tests {
             session
                 .backend()
                 .campaign
-                .level2_compatibility()
+                .simulation()
                 .economy()
                 .authored_switch_producers()
                 .iter()
@@ -36424,7 +35837,7 @@ pub(crate) mod tests {
 
         session.reset(guard(&session)).unwrap();
         {
-            let compatibility = session.backend_mut().campaign.level2_compatibility_mut();
+            let compatibility = session.backend_mut().campaign.simulation_mut();
             compatibility
                 .activate_authored_group_prerequisite_for_test(4)
                 .unwrap();
@@ -36441,7 +35854,7 @@ pub(crate) mod tests {
             session
                 .backend()
                 .campaign
-                .level2_compatibility()
+                .simulation()
                 .economy()
                 .authored_switch_producers()
                 .iter()
@@ -36528,7 +35941,7 @@ pub(crate) mod tests {
             session
                 .backend_mut()
                 .campaign
-                .level2_compatibility_mut()
+                .simulation_mut()
                 .hide_imported_stage_worm_roots_for_test(),
             5
         );
@@ -36539,7 +35952,7 @@ pub(crate) mod tests {
                 .unwrap();
             assert_eq!(
                 countdown_timer(
-                    &session.backend().campaign.level2_compatibility().entities()[COUNTDOWN_SLOT],
+                    &session.backend().campaign.simulation().entities()[COUNTDOWN_SLOT],
                 ),
                 expected
             );
@@ -36547,12 +35960,12 @@ pub(crate) mod tests {
         session
             .step(guard(&session), GameCommand::default())
             .unwrap();
-        let compatibility = session.backend().campaign.level2_compatibility();
+        let compatibility = session.backend().campaign.simulation();
         let source = &compatibility.entities()[COUNTDOWN_SLOT];
         assert!(source.active && source.drawing_disabled());
         assert!(compatibility.dispatch_events().iter().any(|event| matches!(
             event,
-            Level2DispatchEvent::AuthoredGroupActivated {
+            Mc2DispatchEvent::AuthoredGroupActivated {
                 source_slot: 247,
                 group: 11,
                 authored_indices,
@@ -36563,16 +35976,14 @@ pub(crate) mod tests {
             compatibility
                 .dispatch_events()
                 .iter()
-                .all(|event| !matches!(event, Level2DispatchEvent::Error { .. }))
+                .all(|event| !matches!(event, Mc2DispatchEvent::Error { .. }))
         );
         session
             .step(guard(&session), GameCommand::default())
             .unwrap();
-        assert!(
-            !session.backend().campaign.level2_compatibility().entities()[COUNTDOWN_SLOT].active
-        );
+        assert!(!session.backend().campaign.simulation().entities()[COUNTDOWN_SLOT].active);
         session.reset(guard(&session)).unwrap();
-        let reset = session.backend().campaign.level2_compatibility();
+        let reset = session.backend().campaign.simulation();
         assert_eq!(countdown_timer(&reset.entities()[COUNTDOWN_SLOT]), 0);
         let entity = sim_definition::adapter::stable_entity_id(WORM_ID).unwrap();
         assert_eq!(

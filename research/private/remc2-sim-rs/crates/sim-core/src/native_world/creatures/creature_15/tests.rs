@@ -1,6 +1,6 @@
 use super::*;
 
-fn expiring_defender(mode: u8) -> (crate::native_world::Level2ResetSession, u16) {
+fn expiring_defender(mode: u8) -> (crate::native_world::Mc2Simulation, u16) {
     let mut session = crate::native_world::tests::level_two_campaign_session();
     let castle = session
         .economy_mut()
@@ -41,7 +41,7 @@ fn expiring_defender(mode: u8) -> (crate::native_world::Level2ResetSession, u16)
     (session, slot)
 }
 
-fn expire(session: &mut crate::native_world::Level2ResetSession, slot: u16) {
+fn expire(session: &mut crate::native_world::Mc2Simulation, slot: u16) {
     let particles = session.session.definition.presentation.particles.clone();
     let membership = session
         .economy

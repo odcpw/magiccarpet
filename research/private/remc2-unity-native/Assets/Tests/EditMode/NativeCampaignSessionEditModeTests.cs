@@ -9,6 +9,116 @@ namespace MagicCarpet.Native.Tests
     public sealed class NativeCampaignSessionEditModeTests
     {
         [Test]
+        public void SourceSpriteCompositorUsesPriorIndexedDestinationFogOrderAndTerrainCoverage()
+        {
+            Assert.That(SystemInfo.graphicsDeviceType,
+                Is.Not.EqualTo(UnityEngine.Rendering.GraphicsDeviceType.Null));
+            var shader = Resources.Load<Shader>("EntitySprite");
+            Assert.That(shader, Is.Not.Null);
+            Assert.That(shader.isSupported, Is.True);
+            var root = new GameObject("source indexed sprite compositor");
+            var camera = root.AddComponent<Camera>();
+            camera.enabled = false;
+            camera.transform.position = new Vector3(0f, .5f, -5f);
+            camera.orthographic = true;
+            camera.orthographicSize = 1f;
+            camera.aspect = 1.6f;
+            camera.nearClipPlane = .01f;
+            camera.farClipPlane = 10f;
+            camera.cullingMask = 0;
+            camera.clearFlags = CameraClearFlags.Nothing;
+            var output = new RenderTexture(320, 200, 0, RenderTextureFormat.ARGB32, RenderTextureReadWrite.Linear);
+            var capture = new Texture2D(320, 200, TextureFormat.RGBA32, false, true);
+            var tables = new Texture2D(256, 326, TextureFormat.R8, false, true) { filterMode = FilterMode.Point };
+            var orders = new Texture2D(320, 200, TextureFormat.RGBA32, false, true) { filterMode = FilterMode.Point };
+            var mesh = new Mesh();
+            mesh.vertices = new[] { new Vector3(-.5f, -.5f, 0f), new Vector3(.5f, -.5f, 0f),
+                new Vector3(-.5f, .5f, 0f), new Vector3(.5f, .5f, 0f) };
+            mesh.uv = new[] { Vector2.zero, Vector2.right, Vector2.up, Vector2.one };
+            mesh.triangles = new[] { 0, 2, 1, 2, 3, 1 };
+            mesh.RecalculateBounds();
+            var materials = new Material[3];
+            var textures = new Texture2D[3];
+            var markers = new CampaignEntitySurfaceMarker[3];
+            var previousTarget = RenderTexture.active;
+            var previousFog = RenderSettings.fog;
+            CampaignSpriteCompositor compositor = null;
+            try
+            {
+                var bytes = new byte[83456];
+                for (var i = 0; i < bytes.Length; i++) bytes[i] = (byte)i;
+                bytes[256 + 7] = 27; // Fog operation must precede destination blend.
+                bytes[0x4000 + (27 << 8) + 9] = 55;
+                bytes[0x4000 + (12 << 8) + 9] = 99;
+                bytes[0x4000 + (10 << 8) + 9] = 99;
+                tables.LoadRawTextureData(bytes); tables.Apply();
+                var ranks = new Color32[320 * 200];
+                for (var y = 0; y < 200; y++)
+                    for (var x = 0; x < 320; x++)
+                        ranks[y * 320 + x] = new Color32((byte)(x < 160 ? 101 : 100), 0, 0, 255);
+                orders.SetPixels32(ranks); orders.Apply();
+                output.Create(); camera.targetTexture = output;
+                RenderTexture.active = output;
+                GL.Clear(true, true, new Color(10f / 255f, 0f, 0f, 1f));
+                RenderSettings.fog = false;
+                compositor = new CampaignSpriteCompositor(camera, output);
+                for (var i = 0; i < 3; i++)
+                {
+                    textures[i] = new Texture2D(1, 1, TextureFormat.R8, false, true);
+                    textures[i].LoadRawTextureData(new[] { (byte)(i == 0 ? 12 : i == 1 ? 7 : 9) });
+                    textures[i].Apply();
+                    materials[i] = new Material(shader);
+                    materials[i].SetTexture("_Indices", textures[i]);
+                    materials[i].SetTexture("_SpriteTables", tables);
+                    materials[i].SetFloat("_OutputIndices", 1f);
+                    materials[i].SetFloat("_ZWrite", 0f);
+                    materials[i].SetFloat("_ZTest", (float)UnityEngine.Rendering.CompareFunction.Always);
+                    var node = new GameObject("source sprite " + i);
+                    markers[i] = node.AddComponent<CampaignEntitySurfaceMarker>();
+                    markers[i].Bind(new NativeSim.CampaignEntitySnapshot {
+                        entityIndex = (ushort)(i + 1), active = 1, y = 256
+                    }, 1, 1);
+                    markers[i].transform.position = Vector3.zero;
+                    markers[i].BindSprite(new NativeSim.CampaignEntityPresentation {
+                        entityIndex = (ushort)(i + 1), logicalHeight = 64,
+                        pixelMode = (byte)(i == 0 ? 0 : i == 1 ? 1 : 3),
+                        brightness = (ushort)(i == 1 ? 256 : 8192), drawOrder = (uint)i
+                    }, new OwnerAssetCache.Level3Texture { width = 1, height = 1 }, mesh, materials[i], true);
+                    markers[i].BindCaveOcclusion(orders, 100);
+                }
+                var cellOrders = new ushort[65536]; cellOrders[256] = 100;
+                compositor.SetSprites(new[] { markers[2], markers[0], markers[1] }, cellOrders);
+                compositor.PrepareView();
+                camera.Render();
+                RenderTexture.active = output;
+                capture.ReadPixels(new Rect(0, 0, 320, 200), 0, 0); capture.Apply();
+                var pixels = capture.GetPixels32();
+                Assert.That(pixels[100 * 320 + 180].r, Is.EqualTo(55),
+                    "source map order must blend against the preceding fogged sprite, not terrain or a frame-wide grab");
+                Assert.That(pixels[100 * 320 + 140].r, Is.EqualTo(10),
+                    "later terrain clips covered sprite fragments before every indexed operation");
+                Assert.That(compositor.DrawCount, Is.EqualTo(3));
+                Assert.That(compositor.DestinationCopyCount, Is.EqualTo(1),
+                    "ordinary/fogged copies do not require an indexed destination snapshot");
+                Assert.That(CampaignSpriteCompositor.ResolvePixelMode(7, 0x00800000, 5), Is.EqualTo(5));
+            }
+            finally
+            {
+                compositor?.Dispose(); camera.targetTexture = null;
+                RenderTexture.active = previousTarget; RenderSettings.fog = previousFog;
+                foreach (var marker in markers)
+                    if (marker != null) UnityEngine.Object.DestroyImmediate(marker.gameObject);
+                foreach (var material in materials)
+                    if (material != null) UnityEngine.Object.DestroyImmediate(material);
+                foreach (var texture in textures)
+                    if (texture != null) UnityEngine.Object.DestroyImmediate(texture);
+                output.Release();
+                foreach (var resource in new UnityEngine.Object[] { tables, orders, output, capture, mesh, root })
+                    UnityEngine.Object.DestroyImmediate(resource);
+            }
+        }
+
+        [Test]
         public void DescriptorCampaignStartupAdmitsParticipantsRatherThanStorageCapacity()
         {
             var root = new GameObject("descriptor campaign startup census");
@@ -70,7 +180,7 @@ namespace MagicCarpet.Native.Tests
             var root = new GameObject("source-slot presentation lifecycle");
             try
             {
-                var marker = root.AddComponent<Level3EntitySurfaceMarker>();
+                var marker = root.AddComponent<CampaignEntitySurfaceMarker>();
                 var entity = new NativeSim.CampaignEntitySnapshot
                 {
                     entityIndex = 42, classId = 5, model = 9, active = 1
@@ -1064,7 +1174,7 @@ namespace MagicCarpet.Native.Tests
                     Assert.That(upperRight.y, Is.EqualTo(1f).Within(0.0001f));
                     var view = new EngineSessionTransport.Pose { x = 65530, y = 65530, z = 1000 };
                     surface.PresentView(view);
-                    var markers = surface.Root.GetComponentsInChildren<Level3EntitySurfaceMarker>();
+                    var markers = surface.Root.GetComponentsInChildren<CampaignEntitySurfaceMarker>();
                     var spriteMesh = markers.First(row => row.SpriteReady)
                         .GetComponentInChildren<MeshFilter>().sharedMesh;
                     Assert.That(spriteMesh.uv[0].y, Is.EqualTo(1f),
@@ -1099,13 +1209,13 @@ namespace MagicCarpet.Native.Tests
                     surface.Present(session, cache);
                     Assert.That((surface.Generation, surface.Tick), Is.EqualTo((0ul, 1ul)));
                     Assert.That(
-                        surface.Root.GetComponentsInChildren<Level3EntitySurfaceMarker>()
+                        surface.Root.GetComponentsInChildren<CampaignEntitySurfaceMarker>()
                             .All(marker =>
                                 marker.Generation == session.Generation &&
                                 marker.Tick == session.Tick),
                         Is.True);
                     Assert.That(
-                        surface.Root.GetComponentsInChildren<Level3EntitySurfaceMarker>()
+                        surface.Root.GetComponentsInChildren<CampaignEntitySurfaceMarker>()
                             .Where(marker => marker.SpriteReady)
                             .All(marker => cache.Level3Materials.tmaps0.selectors
                                 .Contains(marker.AssetSelector)),
@@ -1121,7 +1231,7 @@ namespace MagicCarpet.Native.Tests
 
             Assert.That(NativeCampaignSession.ActiveSessionCount, Is.Zero);
             Assert.That(
-                UnityEngine.Object.FindObjectsByType<Level3EntitySurfaceMarker>(
+                UnityEngine.Object.FindObjectsByType<CampaignEntitySurfaceMarker>(
                     FindObjectsInactive.Include,
                     FindObjectsSortMode.None),
                 Is.Empty);
@@ -1691,7 +1801,7 @@ namespace MagicCarpet.Native.Tests
                             flags: (sbyte)(frame == 0 ? 0x40 : 0),
                             requestedSpell: frame == 0 ? family : (short)NativeSim.NoRequestedSpell);
                         surface.Present(session, cache);
-                        var markers = root.GetComponentsInChildren<Level3EntitySurfaceMarker>();
+                        var markers = root.GetComponentsInChildren<CampaignEntitySurfaceMarker>();
                         // Keep the ordinary viewer pose behind the flyer. A
                         // stationary camera correctly loses its distant impact
                         // to Rust's source draw-distance gate after 13 frames.
@@ -1722,7 +1832,7 @@ namespace MagicCarpet.Native.Tests
                     Assert.That(sawFlyer, Is.True, $"family {family} must reach a real Unity sprite");
                     if (family == 0) Assert.That(sawImpact, Is.True,
                         "Fireball expiry must reach a visible Unity impact sprite");
-                    Assert.That(root.GetComponentsInChildren<Level3EntitySurfaceMarker>()
+                    Assert.That(root.GetComponentsInChildren<CampaignEntitySurfaceMarker>()
                         .Any(marker => marker.ClassId == 9 && marker.Model == family), Is.False,
                         "reclaimed projectiles must not leave stale Unity markers");
                 }
@@ -2072,7 +2182,7 @@ namespace MagicCarpet.Native.Tests
         private static (NativeSim.CampaignStepSnapshot snapshot,
             NativeSim.CampaignEvent[] events) StepLevel2SpellPresentation(
             NativeCampaignSession session,
-            Level2SpellPresenter presenter,
+            CampaignSpellPresenter presenter,
             ushort playerX,
             ushort playerY,
             short playerZ,
@@ -2102,7 +2212,7 @@ namespace MagicCarpet.Native.Tests
         private static NativeSim.CampaignSpellPickupSnapshot
             MaterializeLevel2SpellSource(
                 NativeCampaignSession session,
-                Level2SpellPresenter presenter,
+                CampaignSpellPresenter presenter,
                 byte family,
                 ushort authoredIndex,
                 ushort objectiveX,
@@ -2140,7 +2250,7 @@ namespace MagicCarpet.Native.Tests
             NativeSim.CampaignEvent[] events,
             NativeSim.CampaignEvent acquisition) AcquireLevel2SpellSource(
                 NativeCampaignSession session,
-                Level2SpellPresenter presenter,
+                CampaignSpellPresenter presenter,
                 NativeSim.CampaignSpellPickupSnapshot source,
                 int sourcePassBound,
                 sbyte neutralFlags = 1)
@@ -2172,7 +2282,7 @@ namespace MagicCarpet.Native.Tests
         }
 
         private static void AssertPresentedLevel2Spell(
-            Level2SpellPresenter presenter,
+            CampaignSpellPresenter presenter,
             byte family,
             NativeSim.CampaignStepSnapshot snapshot,
             NativeSim.CampaignEvent acquisition,
@@ -2189,7 +2299,7 @@ namespace MagicCarpet.Native.Tests
         }
 
         private static void AssertNoPresentedLevel2Spell(
-            Level2SpellPresenter presenter,
+            CampaignSpellPresenter presenter,
             byte family)
         {
             Assert.That(
@@ -2261,7 +2371,7 @@ namespace MagicCarpet.Native.Tests
 
         private static (ushort x, ushort y, short z, ulong rootTick) DriveLevel2OrdinaryManaWindow(
             NativeCampaignSession session,
-            Level2SpellPresenter presenter,
+            CampaignSpellPresenter presenter,
             int requiredMana,
             int sourcePassBound)
         {
@@ -2583,7 +2693,7 @@ namespace MagicCarpet.Native.Tests
 
         private static void DriveLevel2FirstCastleDefenderReturn(
             NativeCampaignSession session,
-            Level2SpellPresenter presenter,
+            CampaignSpellPresenter presenter,
             (ushort x, ushort y, short z) position,
             int requiredMana,
             int sourcePassBound,
@@ -3467,7 +3577,7 @@ namespace MagicCarpet.Native.Tests
         public void Level2SpellPresenterPresentsRustOwnedShieldAndFailsClosed()
         {
             using var session = NativeCampaignSession.OpenLevel2(Level2Package);
-            var presenter = new Level2SpellPresenter();
+            var presenter = new CampaignSpellPresenter();
             presenter.Reset(session.Generation);
             var sourcePassBound = checked((int)session.WorldInfo().entityCount);
             Assert.That(sourcePassBound, Is.GreaterThan(0));
@@ -3526,7 +3636,7 @@ namespace MagicCarpet.Native.Tests
             Assert.That(acquisitionIndex, Is.GreaterThanOrEqualTo(0));
             var sourceLessEvents = (NativeSim.CampaignEvent[])acquired.events.Clone();
             sourceLessEvents[acquisitionIndex].sourceSlot = 0;
-            var sourceLess = new Level2SpellPresenter();
+            var sourceLess = new CampaignSpellPresenter();
             sourceLess.Present(
                 acquired.snapshot,
                 sourceLessEvents,
@@ -3538,7 +3648,7 @@ namespace MagicCarpet.Native.Tests
 
             var unknownFamilyEvents = (NativeSim.CampaignEvent[])acquired.events.Clone();
             unknownFamilyEvents[acquisitionIndex].family = 99;
-            var unknownFamily = new Level2SpellPresenter();
+            var unknownFamily = new CampaignSpellPresenter();
             unknownFamily.Present(
                 acquired.snapshot,
                 unknownFamilyEvents,
@@ -3553,7 +3663,7 @@ namespace MagicCarpet.Native.Tests
             duplicateOrdinalEvents[duplicateOrdinalEvents.Length - 1] = acquired.acquisition;
             var duplicateOrdinalStep = acquired.snapshot;
             duplicateOrdinalStep.eventCount = (uint)duplicateOrdinalEvents.Length;
-            var duplicateOrdinal = new Level2SpellPresenter();
+            var duplicateOrdinal = new CampaignSpellPresenter();
             duplicateOrdinal.Present(
                 duplicateOrdinalStep,
                 duplicateOrdinalEvents,
@@ -3817,7 +3927,7 @@ namespace MagicCarpet.Native.Tests
             // cache-backed Level 2 route. This is runtime input, not a test
             // fixture: the ordinary Castle/economy chain depends on it.
             using var session = NativeCampaignSession.OpenLevel2(Level2Package, Level2DayCache);
-            var presenter = new Level2SpellPresenter();
+            var presenter = new CampaignSpellPresenter();
             presenter.Reset(session.Generation);
             var sourcePassBound = checked((int)session.WorldInfo().entityCount * 8);
             var castlePosition = DriveLevel2OrdinaryManaWindow(
@@ -3935,7 +4045,7 @@ namespace MagicCarpet.Native.Tests
             // The cache-backed session is the production Level 2 route used
             // by the existing public Castle/economy predecessor.
             using var session = NativeCampaignSession.OpenLevel2(Level2Package, Level2DayCache);
-            var presenter = new Level2SpellPresenter();
+            var presenter = new CampaignSpellPresenter();
             presenter.Reset(session.Generation);
             var sourcePassBound = checked((int)session.WorldInfo().entityCount * 8);
             var castlePosition = DriveLevel2OrdinaryManaWindow(

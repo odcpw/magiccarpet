@@ -51,8 +51,8 @@ fn exactly_one_session_baseline_and_no_obsolete_twins() -> Result<(), String> {
     }
 
     for (source, struct_name) in [
-        (NATIVE_WORLD, "Level2LiveState"),
-        (NATIVE_WORLD, "Level2ResetSession"),
+        (NATIVE_WORLD, "Mc2LiveState"),
+        (NATIVE_WORLD, "Mc2Simulation"),
         (NATIVE_WORLD, "Level2EconomyState"),
         (NATIVE_WORLD, "Level2SharedSpellResetSession"),
         (NATIVE_WORLD, "Level2OrdinaryResetSession"),
@@ -100,9 +100,9 @@ fn canonical_shell_shapes_are_exact() -> Result<(), String> {
             "CampaignState",
         ),
         (
-            source_fields(NATIVE_WORLD, "Level2ResetSession")?,
+            source_fields(NATIVE_WORLD, "Mc2Simulation")?,
             expected_facade,
-            "Level2ResetSession",
+            "Mc2Simulation",
         ),
     ] {
         if actual != expected {

@@ -522,21 +522,21 @@ namespace MagicCarpet.Native.Tests
             try
             {
                 var initial = transport.CampaignSnapshot();
-                var fireball = Level2SpellPresenter.SpellForKey(initial.value, 1);
+                var fireball = CampaignSpellPresenter.SpellForKey(initial.value, 1);
                 Assert.That(fireball.id, Is.EqualTo("spell.fireball"));
                 Assert.That(fireball.acquired, Is.True);
                 Assert.That(fireball.tier, Is.Zero);
                 Assert.That(fireball.mana_cost, Is.EqualTo(100));
                 Assert.That(fireball.hand, Is.EqualTo("left"));
                 Assert.That(fireball.availability, Is.EqualTo("ready"));
-                Assert.That(Level2SpellPresenter.FindSpell(initial.value, "spell.castle").acquired, Is.False);
-                Assert.That(Level2SpellPresenter.SpellMenuText(initial.value), Does.Contain("Fireball"));
+                Assert.That(CampaignSpellPresenter.FindSpell(initial.value, "spell.castle").acquired, Is.False);
+                Assert.That(CampaignSpellPresenter.SpellMenuText(initial.value), Does.Contain("Fireball"));
                 for (var read = 0; read < 3; read++)
                     Assert.That(JsonUtility.ToJson(transport.CampaignSnapshot()),
                         Is.EqualTo(JsonUtility.ToJson(initial)));
 
                 var selected = transport.CampaignStep(0, 0, 0, 0, 0, fireball.id);
-                Assert.That(Level2SpellPresenter.FindSpell(selected.value, fireball.id).selected, Is.True);
+                Assert.That(CampaignSpellPresenter.FindSpell(selected.value, fireball.id).selected, Is.True);
                 var cast = transport.CampaignStep(0, 0, 0x40, 0, 0);
                 Assert.That(cast.value.presentation_entities.Any(
                     entity => entity.kind == "spell.fireball.projectile"), Is.True);
@@ -545,7 +545,7 @@ namespace MagicCarpet.Native.Tests
                 Assert.That(reset.identity.generation, Is.EqualTo("2"));
                 Assert.That(reset.identity.tick, Is.EqualTo("0"));
                 Assert.That(reset.value.state_hash, Is.EqualTo(initial.value.state_hash));
-                Assert.That(JsonUtility.ToJson(Level2SpellPresenter.FindSpell(reset.value, fireball.id)),
+                Assert.That(JsonUtility.ToJson(CampaignSpellPresenter.FindSpell(reset.value, fireball.id)),
                     Is.EqualTo(JsonUtility.ToJson(fireball)));
             }
             finally

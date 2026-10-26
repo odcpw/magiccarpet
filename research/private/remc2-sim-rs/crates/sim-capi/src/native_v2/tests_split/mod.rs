@@ -3405,7 +3405,7 @@ fn drive_level2_public_group1_possession_claims_with_expected(
         .expect("armed Possession target remains visible through the public ABI");
     let (yaw, pitch, actual_speed, entity_fov, a4_yaw, a4_pitch) =
         with_campaign_session(handle, |session| {
-            let CampaignSessionKind::Level2 { reset, .. } = &session.kind else {
+            let CampaignSessionKind::Campaign { reset, .. } = &session.kind else {
                 return Err(AbiError::new(
                     MC_STATUS_INVALID_ARGUMENT,
                     "Possession proof requires a Level 2 campaign session",
@@ -3442,7 +3442,7 @@ fn drive_level2_public_group1_possession_claims_with_expected(
     };
     let launch_command = player_command(input.command).expect("valid public Possession command");
     let launch_player_speed = with_campaign_session(handle, |session| {
-        let CampaignSessionKind::Level2 { reset, .. } = &session.kind else {
+        let CampaignSessionKind::Campaign { reset, .. } = &session.kind else {
             return Err(AbiError::new(
                 MC_STATUS_INVALID_ARGUMENT,
                 "Possession proof requires a Level 2 campaign session",
@@ -3556,7 +3556,7 @@ fn drive_level2_public_group1_possession_claims_with_expected(
     };
     let (corrected_player_position, predicted_player_position) =
         with_campaign_session(handle, |session| {
-            let CampaignSessionKind::Level2 { reset, .. } = &session.kind else {
+            let CampaignSessionKind::Campaign { reset, .. } = &session.kind else {
                 return Err(AbiError::new(
                     MC_STATUS_INVALID_ARGUMENT,
                     "Possession proof requires a Level 2 campaign session",
@@ -3596,7 +3596,7 @@ fn drive_level2_public_group1_possession_claims_with_expected(
     let (armed_snapshot, arm_events) = step_level2_campaign_public(handle, input);
     assert_eq!(
         with_campaign_session(handle, |session| {
-            let CampaignSessionKind::Level2 { reset, .. } = &session.kind else {
+            let CampaignSessionKind::Campaign { reset, .. } = &session.kind else {
                 return Err(AbiError::new(
                     MC_STATUS_INVALID_ARGUMENT,
                     "Possession proof requires a Level 2 campaign session",
@@ -3617,7 +3617,7 @@ fn drive_level2_public_group1_possession_claims_with_expected(
         .filter(|event| event.kind == 8 && event.family == 39)
         .collect::<Vec<_>>();
     let (possession_holder_slot, live_projectiles) = with_campaign_session(handle, |session| {
-        let CampaignSessionKind::Level2 { reset, .. } = &session.kind else {
+        let CampaignSessionKind::Campaign { reset, .. } = &session.kind else {
             return Err(AbiError::new(
                 MC_STATUS_INVALID_ARGUMENT,
                 "Possession proof requires a Level 2 campaign session",
@@ -3711,7 +3711,7 @@ fn drive_level2_public_group1_possession_claims_with_expected(
             saw_effect,
             "strict model-39 flight collision allocates a typed model-12 effect: target={target:?}, launch={launch_position:?}, predicted_player={predicted_player_position:?}, runtime={:?}",
             with_campaign_session(handle, |session| {
-                let CampaignSessionKind::Level2 { reset, .. } = &session.kind else {
+                let CampaignSessionKind::Campaign { reset, .. } = &session.kind else {
                     unreachable!()
                 };
                 Ok(reset.economy().possession_projectiles().to_vec())

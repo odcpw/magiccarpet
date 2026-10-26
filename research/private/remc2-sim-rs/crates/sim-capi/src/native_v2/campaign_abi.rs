@@ -250,12 +250,12 @@ pub(super) fn with_projection_session_mut<T>(
 }
 
 #[derive(Clone, Debug)]
-pub(super) enum CampaignLevel2Authority {
-    Legacy(Level2ResetSession),
+pub(super) enum CampaignAuthority {
+    Legacy(Mc2Simulation),
     Descriptor(DescriptorCampaignSession),
 }
 
-impl CampaignLevel2Authority {
+impl CampaignAuthority {
     fn descriptor(&self) -> AbiResult<&DescriptorCampaignSession> {
         match self {
             Self::Descriptor(session) => Ok(session),
@@ -276,9 +276,7 @@ impl CampaignLevel2Authority {
     fn exposed_player_count(&self, inspection: &NativeWorldInspection) -> usize {
         match self {
             Self::Legacy(_) => inspection.players().len(),
-            Self::Descriptor(session) => {
-                usize::from(session.level2_compatibility().runtime().player_count)
-            }
+            Self::Descriptor(session) => usize::from(session.simulation().runtime().player_count),
         }
     }
 
@@ -301,27 +299,27 @@ impl CampaignLevel2Authority {
     }
 }
 
-impl std::ops::Deref for CampaignLevel2Authority {
-    type Target = Level2ResetSession;
+impl std::ops::Deref for CampaignAuthority {
+    type Target = Mc2Simulation;
 
     fn deref(&self) -> &Self::Target {
         match self {
             Self::Legacy(session) => session,
-            Self::Descriptor(session) => session.level2_compatibility(),
+            Self::Descriptor(session) => session.simulation(),
         }
     }
 }
 
-impl std::ops::DerefMut for CampaignLevel2Authority {
+impl std::ops::DerefMut for CampaignAuthority {
     fn deref_mut(&mut self) -> &mut Self::Target {
         match self {
             Self::Legacy(session) => session,
-            Self::Descriptor(session) => session.level2_compatibility_mut(),
+            Self::Descriptor(session) => session.simulation_mut(),
         }
     }
 }
 
-impl CampaignLevel2Authority {
+impl CampaignAuthority {
     pub(super) fn definition_identity(&self) -> CampaignSelection {
         match self {
             Self::Legacy(_) => CampaignSelection::LEVEL2,
@@ -335,9 +333,9 @@ pub(super) enum CampaignSessionKind {
     Level1 {
         world: Arc<NativeWorld>,
     },
-    Level2 {
+    Campaign {
         inspection: Arc<NativeWorldInspection>,
-        reset: CampaignLevel2Authority,
+        reset: CampaignAuthority,
         day_frame_assets: Option<Arc<DayIndexedFrameAssets>>,
         day_frame_state: DayIndexedFrameState,
     },
@@ -556,9 +554,9 @@ pub(super) fn with_campaign_session<T>(
     let (backend, generation) = guard.campaign_backend_and_generation()?;
     let campaign = backend.campaign_presentation_source().clone();
     let record = CampaignSessionRecord {
-        kind: CampaignSessionKind::Level2 {
+        kind: CampaignSessionKind::Campaign {
             inspection: Arc::new(campaign.inspection().clone()),
-            reset: CampaignLevel2Authority::Descriptor(campaign),
+            reset: CampaignAuthority::Descriptor(campaign),
             day_frame_assets: None,
             day_frame_state: DayIndexedFrameState::new(generation),
         },
@@ -760,7 +758,7 @@ pub(super) fn open_campaign_session(
         // descriptor-backed reset byte-exact.
         if campaign.definition().identity == CampaignSelection::LEVEL2 {
             campaign
-                .level2_compatibility_mut()
+                .simulation_mut()
                 .select_level2_campaign_entry_stage();
         }
         let generation = campaign.generation();
@@ -783,9 +781,9 @@ pub(super) fn open_campaign_session(
             &campaign_package_sha256,
         )?;
         CampaignSessionRecord {
-            kind: CampaignSessionKind::Level2 {
+            kind: CampaignSessionKind::Campaign {
                 inspection,
-                reset: CampaignLevel2Authority::Descriptor(campaign),
+                reset: CampaignAuthority::Descriptor(campaign),
                 day_frame_assets,
                 day_frame_state: DayIndexedFrameState::new(generation),
             },
@@ -825,9 +823,9 @@ pub(super) fn open_campaign_session(
                     .map(Arc::new);
             let day_music = load_optional_level2_day_music(asset_cache_path.as_deref())?;
             CampaignSessionRecord {
-                kind: CampaignSessionKind::Level2 {
+                kind: CampaignSessionKind::Campaign {
                     inspection: Arc::new(inspection),
-                    reset: CampaignLevel2Authority::Legacy(reset),
+                    reset: CampaignAuthority::Legacy(reset),
                     day_frame_assets,
                     day_frame_state: DayIndexedFrameState::new(0),
                 },
@@ -879,7 +877,7 @@ pub extern "C" fn mc_native_campaign_session_destroy(handle: u64) -> i32 {
 pub extern "C" fn mc_native_campaign_session_reset(handle: u64) -> i32 {
     boundary(|| {
         with_campaign_session_mut(handle, |session| {
-            if let CampaignSessionKind::Level2 {
+            if let CampaignSessionKind::Campaign {
                 reset,
                 day_frame_state,
                 ..
@@ -887,7 +885,7 @@ pub extern "C" fn mc_native_campaign_session_reset(handle: u64) -> i32 {
             {
                 reset.reset_authority();
                 session.generation = session.generation.wrapping_add(1);
-                if let CampaignLevel2Authority::Descriptor(campaign) = reset {
+                if let CampaignAuthority::Descriptor(campaign) = reset {
                     debug_assert_eq!(campaign.generation(), session.generation);
                 }
                 day_frame_state.reset(session.generation);
@@ -912,7 +910,7 @@ pub extern "C" fn mc_native_campaign_shield_state(
 ) -> i32 {
     boundary_value(out_state, out_state_size, || {
         with_campaign_session(handle, |session| {
-            let CampaignSessionKind::Level2 { reset, .. } = &session.kind else {
+            let CampaignSessionKind::Campaign { reset, .. } = &session.kind else {
                 return Err(AbiError::new(
                     MC_STATUS_INVALID_ARGUMENT,
                     "campaign Shield state requires a Level 2 campaign session",
@@ -952,7 +950,7 @@ pub extern "C" fn mc_native_campaign_shield_activate(
             ));
         }
         with_campaign_session_mut(handle, |session| {
-            let CampaignSessionKind::Level2 { reset, .. } = &mut session.kind else {
+            let CampaignSessionKind::Campaign { reset, .. } = &mut session.kind else {
                 return Err(AbiError::new(
                     MC_STATUS_INVALID_ARGUMENT,
                     "campaign Shield activation requires a Level 2 campaign session",
@@ -994,7 +992,7 @@ pub extern "C" fn mc_native_campaign_shield_damage_submit(
 ) -> i32 {
     boundary(|| {
         with_campaign_session_mut(handle, |session| {
-            let CampaignSessionKind::Level2 { reset, .. } = &mut session.kind else {
+            let CampaignSessionKind::Campaign { reset, .. } = &mut session.kind else {
                 return Err(AbiError::new(
                     MC_STATUS_INVALID_ARGUMENT,
                     "campaign Shield damage requires a Level 2 campaign session",
@@ -1033,7 +1031,7 @@ pub extern "C" fn mc_native_campaign_invisible_state(
 ) -> i32 {
     boundary_value(out_state, out_state_size, || {
         with_campaign_session(handle, |session| {
-            let CampaignSessionKind::Level2 { reset, .. } = &session.kind else {
+            let CampaignSessionKind::Campaign { reset, .. } = &session.kind else {
                 return Err(AbiError::new(
                     MC_STATUS_INVALID_ARGUMENT,
                     "campaign Invisible state requires a Level 2 campaign session",
@@ -1073,7 +1071,7 @@ pub extern "C" fn mc_native_campaign_invisible_activate(
             ));
         }
         with_campaign_session_mut(handle, |session| {
-            let CampaignSessionKind::Level2 { reset, .. } = &mut session.kind else {
+            let CampaignSessionKind::Campaign { reset, .. } = &mut session.kind else {
                 return Err(AbiError::new(
                     MC_STATUS_INVALID_ARGUMENT,
                     "campaign Invisible activation requires a Level 2 campaign session",
@@ -1114,7 +1112,7 @@ pub extern "C" fn mc_native_campaign_beyond_sight_state(
 ) -> i32 {
     boundary_value(out_state, out_state_size, || {
         with_campaign_session(handle, |session| {
-            let CampaignSessionKind::Level2 { reset, .. } = &session.kind else {
+            let CampaignSessionKind::Campaign { reset, .. } = &session.kind else {
                 return Err(AbiError::new(
                     MC_STATUS_INVALID_ARGUMENT,
                     "campaign Beyond Sight state requires a Level 2 campaign session",
@@ -1154,7 +1152,7 @@ pub extern "C" fn mc_native_campaign_beyond_sight_activate(
             ));
         }
         with_campaign_session_mut(handle, |session| {
-            let CampaignSessionKind::Level2 { reset, .. } = &mut session.kind else {
+            let CampaignSessionKind::Campaign { reset, .. } = &mut session.kind else {
                 return Err(AbiError::new(
                     MC_STATUS_INVALID_ARGUMENT,
                     "campaign Beyond Sight activation requires a Level 2 campaign session",
@@ -1195,7 +1193,7 @@ pub extern "C" fn mc_native_campaign_opponent_state(
 ) -> i32 {
     boundary_value(out_state, out_state_size, || {
         with_campaign_session(handle, |session| {
-            let CampaignSessionKind::Level2 { reset, .. } = &session.kind else {
+            let CampaignSessionKind::Campaign { reset, .. } = &session.kind else {
                 return Err(AbiError::new(
                     MC_STATUS_INVALID_ARGUMENT,
                     "campaign opponent state requires a Level 2 campaign session",
@@ -1244,7 +1242,7 @@ pub extern "C" fn mc_native_campaign_day_hud_state(
 ) -> i32 {
     boundary_value(out_state, out_state_size, || {
         with_campaign_session(handle, |session| {
-            let CampaignSessionKind::Level2 { reset, .. } = &session.kind else {
+            let CampaignSessionKind::Campaign { reset, .. } = &session.kind else {
                 return Err(AbiError::new(
                     MC_STATUS_INVALID_ARGUMENT,
                     "campaign Day HUD state requires a Level 2 campaign session",
@@ -1321,7 +1319,7 @@ pub(super) fn with_level2_campaign_day_music<T>(
     expected_tick: u64,
     operation: impl FnOnce(CampaignDayMusicLifecycle) -> AbiResult<T>,
 ) -> AbiResult<T> {
-    let CampaignSessionKind::Level2 { reset, .. } = &session.kind else {
+    let CampaignSessionKind::Campaign { reset, .. } = &session.kind else {
         return Err(AbiError::new(
             MC_STATUS_INVALID_ARGUMENT,
             "campaign Day music requires a Level 2 campaign session",
@@ -1444,7 +1442,7 @@ pub(super) fn campaign_minimap_projection(
     generation: u64,
     expected_tick: u64,
 ) -> AbiResult<(Level2MinimapPlan, u16)> {
-    let CampaignSessionKind::Level2 { reset, .. } = &session.kind else {
+    let CampaignSessionKind::Campaign { reset, .. } = &session.kind else {
         return Err(AbiError::new(
             MC_STATUS_INVALID_ARGUMENT,
             "campaign minimap projection requires a Level 2 campaign session",
@@ -1751,7 +1749,7 @@ pub extern "C" fn mc_native_campaign_session_step(
         validate_embedded_command(&input.command)?;
         let command = player_command(input.command)?;
         with_campaign_session_mut(handle, |session| {
-            let CampaignSessionKind::Level2 { reset, .. } = &session.kind else {
+            let CampaignSessionKind::Campaign { reset, .. } = &session.kind else {
                 return Err(AbiError::new(
                     MC_STATUS_INVALID_ARGUMENT,
                     "campaign step requires a Level 2 campaign session",
@@ -1803,7 +1801,7 @@ pub extern "C" fn mc_native_campaign_session_step(
                     day_music,
                     effect_state_hashes,
                 } = &mut candidate_record;
-                let CampaignSessionKind::Level2 { reset, .. } = kind else {
+                let CampaignSessionKind::Campaign { reset, .. } = kind else {
                     unreachable!("candidate preserves the validated Level 2 variant")
                 };
                 let effect_head_before = reset
@@ -1932,7 +1930,7 @@ pub extern "C" fn mc_native_campaign_events_copy_since(
         let query = read_versioned_input(query, "campaign effect query")?;
         validate_reserved(&query.reserved, "campaign effect query")?;
         with_campaign_session(handle, |session| {
-            let CampaignSessionKind::Level2 { reset, .. } = &session.kind else {
+            let CampaignSessionKind::Campaign { reset, .. } = &session.kind else {
                 return Err(AbiError::new(
                     MC_STATUS_INVALID_ARGUMENT,
                     "generic campaign effects require a descriptor-backed session",
@@ -2096,7 +2094,7 @@ pub extern "C" fn mc_native_campaign_presentation_frame_copy(
                     ),
                 ));
             }
-            let CampaignSessionKind::Level2 {
+            let CampaignSessionKind::Campaign {
                 inspection,
                 reset,
                 day_frame_assets,
@@ -2211,7 +2209,7 @@ pub extern "C" fn mc_native_campaign_economy_events(
             "campaign economy event",
         )?;
         with_campaign_session(handle, |session| {
-            let CampaignSessionKind::Level2 { reset, .. } = &session.kind else {
+            let CampaignSessionKind::Campaign { reset, .. } = &session.kind else {
                 return Err(AbiError::new(
                     MC_STATUS_INVALID_ARGUMENT,
                     "campaign economy events require a Level 2 campaign session",
@@ -2222,7 +2220,7 @@ pub extern "C" fn mc_native_campaign_economy_events(
                 .iter()
                 .enumerate()
                 .filter_map(|(ordinal, dispatch)| match dispatch {
-                    Level2DispatchEvent::Economy {
+                    Mc2DispatchEvent::Economy {
                         pass,
                         source_slot,
                         event,
@@ -2260,7 +2258,7 @@ pub extern "C" fn mc_native_campaign_authored_group_events(
             "campaign authored-group event",
         )?;
         with_campaign_session(handle, |session| {
-            let CampaignSessionKind::Level2 { reset, .. } = &session.kind else {
+            let CampaignSessionKind::Campaign { reset, .. } = &session.kind else {
                 return Err(AbiError::new(
                     MC_STATUS_INVALID_ARGUMENT,
                     "campaign authored-group events require a Level 2 campaign session",
@@ -2268,7 +2266,7 @@ pub extern "C" fn mc_native_campaign_authored_group_events(
             };
             let mut rows = Vec::new();
             for (ordinal, dispatch) in reset.dispatch_events().iter().enumerate() {
-                let Level2DispatchEvent::AuthoredGroupActivated {
+                let Mc2DispatchEvent::AuthoredGroupActivated {
                     pass,
                     source_slot,
                     group,
@@ -2318,7 +2316,7 @@ pub extern "C" fn mc_native_campaign_goat_events(
         require_output(out_event_count, "campaign goat event count")?;
         require_element_size::<McCampaignGoatEventV2>(event_element_size, "campaign goat event")?;
         with_campaign_session(handle, |session| {
-            let CampaignSessionKind::Level2 { reset, .. } = &session.kind else {
+            let CampaignSessionKind::Campaign { reset, .. } = &session.kind else {
                 return Err(AbiError::new(
                     MC_STATUS_INVALID_ARGUMENT,
                     "campaign goat events require a Level 2 campaign session",
@@ -2326,7 +2324,7 @@ pub extern "C" fn mc_native_campaign_goat_events(
             };
             let mut rows = Vec::new();
             for (ordinal, dispatch) in reset.dispatch_events().iter().enumerate() {
-                let Level2DispatchEvent::Goat {
+                let Mc2DispatchEvent::Goat {
                     pass,
                     source_slot,
                     events,
@@ -2372,7 +2370,7 @@ pub extern "C" fn mc_native_campaign_world_info(
                         world.runtime().objectives.len(),
                         state_hash(world.reset_state()),
                     ),
-                    CampaignSessionKind::Level2 {
+                    CampaignSessionKind::Campaign {
                         inspection, reset, ..
                     } => (
                         inspection.metadata(),
@@ -2448,7 +2446,7 @@ pub(super) fn with_level2_campaign_day_frame<T>(
             ),
         ));
     }
-    let CampaignSessionKind::Level2 {
+    let CampaignSessionKind::Campaign {
         reset,
         day_frame_state,
         ..
@@ -2512,7 +2510,7 @@ pub extern "C" fn mc_native_campaign_day_indexed_frame_render(
                     ),
                 ));
             }
-            let CampaignSessionKind::Level2 {
+            let CampaignSessionKind::Campaign {
                 inspection,
                 reset,
                 day_frame_assets,
@@ -2742,7 +2740,7 @@ pub extern "C" fn mc_native_campaign_cave_occlusion_copy(
 pub(super) fn with_level2_campaign_terrain<T>(
     handle: u64,
     generation: u64,
-    operation: impl FnOnce(&Level2ResetSession) -> AbiResult<T>,
+    operation: impl FnOnce(&Mc2Simulation) -> AbiResult<T>,
 ) -> AbiResult<T> {
     with_campaign_session(handle, |session| {
         if generation != session.generation {
@@ -2754,7 +2752,7 @@ pub(super) fn with_level2_campaign_terrain<T>(
                 ),
             ));
         }
-        let CampaignSessionKind::Level2 { reset, .. } = &session.kind else {
+        let CampaignSessionKind::Campaign { reset, .. } = &session.kind else {
             return Err(AbiError::new(
                 MC_STATUS_INVALID_ARGUMENT,
                 "campaign terrain requires a Level 2 campaign session",
@@ -2852,7 +2850,7 @@ pub extern "C" fn mc_native_campaign_player_count(handle: u64, out_count: *mut u
         with_campaign_session(handle, |session| {
             let count = match &session.kind {
                 CampaignSessionKind::Level1 { world } => world.players().len(),
-                CampaignSessionKind::Level2 {
+                CampaignSessionKind::Campaign {
                     inspection, reset, ..
                 } => reset.exposed_player_count(inspection),
             };
@@ -2868,7 +2866,7 @@ pub extern "C" fn mc_native_campaign_objective_count(handle: u64, out_count: *mu
         with_campaign_session(handle, |session| {
             let count = match &session.kind {
                 CampaignSessionKind::Level1 { world } => world.runtime().objectives.len(),
-                CampaignSessionKind::Level2 {
+                CampaignSessionKind::Campaign {
                     inspection, reset, ..
                 } => reset.exposed_objective_count(inspection),
             };
@@ -2884,7 +2882,7 @@ pub extern "C" fn mc_native_campaign_entity_count(handle: u64, out_count: *mut u
         with_campaign_session(handle, |session| {
             let count = match &session.kind {
                 CampaignSessionKind::Level1 { world } => world.entities().len(),
-                CampaignSessionKind::Level2 { inspection, .. } => inspection.entities().len(),
+                CampaignSessionKind::Campaign { inspection, .. } => inspection.entities().len(),
             };
             u32::try_from(count)
                 .map_err(|_| AbiError::new(MC_STATUS_BOUNDS, "entity count exceeds u32"))
@@ -2914,7 +2912,7 @@ pub extern "C" fn mc_native_campaign_players_copy(
                     world.players().len(),
                     usize::from(world.runtime().player_count),
                 ),
-                CampaignSessionKind::Level2 {
+                CampaignSessionKind::Campaign {
                     inspection, reset, ..
                 } => {
                     // Level 2 menu selection, XP unlock projection, and hand
@@ -2976,7 +2974,7 @@ pub extern "C" fn mc_native_campaign_objectives_copy(
         with_campaign_session(handle, |session| {
             let objectives = match &session.kind {
                 CampaignSessionKind::Level1 { world } => &world.runtime().objectives[..],
-                CampaignSessionKind::Level2 {
+                CampaignSessionKind::Campaign {
                     inspection, reset, ..
                 } => reset
                     .runtime()
@@ -3043,7 +3041,7 @@ pub extern "C" fn mc_native_campaign_objective_stage_state(
 ) -> i32 {
     boundary_value(out_state, out_state_size, || {
         with_campaign_session(handle, |session| {
-            let CampaignSessionKind::Level2 { reset, .. } = &session.kind else {
+            let CampaignSessionKind::Campaign { reset, .. } = &session.kind else {
                 return Err(AbiError::new(
                     MC_STATUS_INVALID_ARGUMENT,
                     "campaign objective stage state requires a Level 2 campaign session",
@@ -3112,7 +3110,7 @@ pub extern "C" fn mc_native_campaign_entities_copy(
                     .iter()
                     .map(campaign_entity_snapshot)
                     .collect::<Vec<_>>(),
-                CampaignSessionKind::Level2 { reset, .. } => {
+                CampaignSessionKind::Campaign { reset, .. } => {
                     let mut rows = reset
                         .entities()
                         .iter()
@@ -3587,7 +3585,7 @@ pub extern "C" fn mc_native_campaign_entity_presentations_copy(
             "campaign entity presentation element",
         )?;
         with_campaign_session(handle, |session| {
-            let CampaignSessionKind::Level2 { reset, .. } = &session.kind else {
+            let CampaignSessionKind::Campaign { reset, .. } = &session.kind else {
                 return Err(AbiError::new(
                     MC_STATUS_INVALID_ARGUMENT,
                     "campaign entity presentation requires a descriptor campaign session",
@@ -3655,7 +3653,12 @@ pub extern "C" fn mc_native_campaign_entity_presentations_copy(
                     y: row.position.y,
                     z: row.position.z,
                     yaw: row.yaw,
-                    reserved: [0; 4],
+                    pixel_mode: row.pixel_mode,
+                    owner_color: row.owner_color,
+                    brightness: row.brightness,
+                    draw_order: row.draw_order,
+                    control_flags: row.control_flags,
+                    reserved: [0; 1],
                 };
                 unsafe { buffer.add(ordinal).write_unaligned(value) };
             }
@@ -3685,7 +3688,7 @@ pub extern "C" fn mc_native_campaign_goats_copy(
     boundary_value(out_batch, out_batch_size, || {
         require_element_size::<McCampaignGoatSnapshotV2>(element_size, "campaign Goat element")?;
         with_campaign_session(handle, |session| {
-            let CampaignSessionKind::Level2 { reset, .. } = &session.kind else {
+            let CampaignSessionKind::Campaign { reset, .. } = &session.kind else {
                 return Err(AbiError::new(
                     MC_STATUS_INVALID_ARGUMENT,
                     "campaign Goat snapshots require a Level 2 campaign session",
@@ -3757,7 +3760,7 @@ pub extern "C" fn mc_native_campaign_goat_damage_submit(
 ) -> i32 {
     boundary(|| {
         with_campaign_session_mut(handle, |session| {
-            let CampaignSessionKind::Level2 { reset, .. } = &mut session.kind else {
+            let CampaignSessionKind::Campaign { reset, .. } = &mut session.kind else {
                 return Err(AbiError::new(
                     MC_STATUS_INVALID_ARGUMENT,
                     "campaign Goat damage requires a Level 2 campaign session",
@@ -3800,7 +3803,7 @@ pub extern "C" fn mc_native_campaign_spell_pickups_copy(
             "campaign spell pickup element",
         )?;
         with_campaign_session(handle, |session| {
-            let CampaignSessionKind::Level2 { reset, .. } = &session.kind else {
+            let CampaignSessionKind::Campaign { reset, .. } = &session.kind else {
                 return Err(AbiError::new(
                     MC_STATUS_INVALID_ARGUMENT,
                     "campaign spell pickups require a Level 2 campaign session",
@@ -3887,7 +3890,7 @@ pub extern "C" fn mc_native_campaign_mana_spheres_copy(
             "campaign mana sphere element",
         )?;
         with_campaign_session(handle, |session| {
-            let CampaignSessionKind::Level2 { reset, .. } = &session.kind else {
+            let CampaignSessionKind::Campaign { reset, .. } = &session.kind else {
                 return Err(AbiError::new(
                     MC_STATUS_INVALID_ARGUMENT,
                     "campaign mana spheres require a Level 2 campaign session",
@@ -3970,7 +3973,7 @@ pub extern "C" fn mc_native_campaign_mana_carriers_copy(
             "campaign mana carrier element",
         )?;
         with_campaign_session(handle, |session| {
-            let CampaignSessionKind::Level2 { reset, .. } = &session.kind else {
+            let CampaignSessionKind::Campaign { reset, .. } = &session.kind else {
                 return Err(AbiError::new(
                     MC_STATUS_INVALID_ARGUMENT,
                     "campaign mana carriers require a Level 2 campaign session",

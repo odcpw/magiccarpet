@@ -507,9 +507,9 @@ pub use world_types::*;
 
 pub(crate) mod area_damage;
 mod ballistic_scenery;
-#[path = "campaign/level2.rs"]
-mod campaign;
-pub(crate) use campaign::CarriedSpellProgress;
+#[path = "campaign/simulation.rs"]
+mod simulation;
+pub(crate) use simulation::CarriedSpellProgress;
 mod campaign_shared_families;
 pub(crate) use crate::world::terrain::cave_features;
 mod cave_spells;
@@ -719,6 +719,14 @@ pub struct CampaignEntityPresentation {
     pub mirrored: bool,
     pub position: Position,
     pub yaw: i16,
+    /// Source TABLES operation, before the control-flag override.
+    pub pixel_mode: u8,
+    /// Palette index used by source owner-colour operations 4 and 5.
+    pub owner_color: u8,
+    pub brightness: u16,
+    /// Ordinal within the source tile's live map chain.
+    pub draw_order: u32,
+    pub control_flags: u32,
 }
 
 /// Level 2's shared spell/economy reset projection. The two active authored
@@ -2824,7 +2832,7 @@ pub(crate) struct Level2ImportedSwitchRootState {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct Level2LiveState {
+pub struct Mc2LiveState {
     pub(crate) core: crate::campaign::state::CanonicalRuntimeState,
     pub(crate) terrain: SessionTerrain,
     pub(crate) economy: crate::campaign::source_arena::SourceArena,
@@ -2914,7 +2922,7 @@ pub struct Level2LiveState {
     pub(crate) level2_model45_activated: BTreeSet<u16>,
 }
 
-impl Level2LiveState {
+impl Mc2LiveState {
     pub(crate) fn reset_scratch(
         &self,
         generation: u64,
@@ -2942,7 +2950,7 @@ impl Level2LiveState {
     }
 }
 
-impl std::ops::Deref for Level2LiveState {
+impl std::ops::Deref for Mc2LiveState {
     type Target = crate::campaign::state::CanonicalRuntimeState;
 
     fn deref(&self) -> &Self::Target {
@@ -2950,26 +2958,26 @@ impl std::ops::Deref for Level2LiveState {
     }
 }
 
-impl std::ops::DerefMut for Level2LiveState {
+impl std::ops::DerefMut for Mc2LiveState {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.core
     }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct Level2ResetSession {
+pub struct Mc2Simulation {
     pub(crate) session: crate::campaign::state::CampaignSession,
 }
 
-impl std::ops::Deref for Level2ResetSession {
-    type Target = Level2LiveState;
+impl std::ops::Deref for Mc2Simulation {
+    type Target = Mc2LiveState;
 
     fn deref(&self) -> &Self::Target {
         &self.session.state.live
     }
 }
 
-impl std::ops::DerefMut for Level2ResetSession {
+impl std::ops::DerefMut for Mc2Simulation {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.session.state.live
     }
@@ -2982,7 +2990,7 @@ impl std::ops::DerefMut for Level2ResetSession {
 /// the A4.1 seam; dynamic arena scanning and shared terrain authority remain
 /// separate follow-on slices.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub enum Level2DispatchEvent {
+pub enum Mc2DispatchEvent {
     SharedPickup {
         pass: u8,
         source_slot: u16,
@@ -3112,7 +3120,7 @@ struct Level2DynamicArenaCursorRow {
     pub kind: Level2DynamicArenaKind,
 }
 
-impl Level2DispatchEvent {
+impl Mc2DispatchEvent {
     /// The lossless scalar projection used by the additive campaign C ABI.
     /// Keeping this mapping in sim-core makes the Rust digest and exported
     /// event rows derive from one source instead of hashing Rust `Debug`

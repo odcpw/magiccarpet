@@ -2,7 +2,7 @@
 
 pub use sim_render_camera::*;
 
-use crate::{FlightState, native_world::Level2ResetSession};
+use crate::{FlightState, native_world::Mc2Simulation};
 
 /// `sub_57B20` stores this view before `UpdateEntities`; `DrawWorld_411A0`
 /// then adds 128 to eye height. In particular the view uses signed player
@@ -27,7 +27,7 @@ pub(crate) fn source_player_view(
     }
 }
 
-impl Level2ResetSession {
+impl Mc2Simulation {
     pub(crate) fn source_camera_pose(&self) -> sim_session::CameraPose {
         self.session
             .state

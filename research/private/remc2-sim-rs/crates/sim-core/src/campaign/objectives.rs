@@ -7,6 +7,18 @@
 
 use crate::native_world::RuntimeObjective;
 
+/// `sub_58F00_game_objectives` owns one objective row in single-player,
+/// regardless of how many AI players the mission retains. Only its explicit
+/// multiplayer setting admits `NumberOfPlayers` objective owners.
+#[must_use]
+pub(crate) const fn objective_owner_count(multiplayer: bool, source_player_count: u8) -> usize {
+    if multiplayer {
+        source_player_count as usize
+    } else {
+        1
+    }
+}
+
 /// Source objective condition 8 reads the declared player-array extent and
 /// excludes its current owner. Actor life, player colour and records beyond
 /// `NumberOfPlayers` do not participate in this predicate. The caller retains
@@ -74,6 +86,15 @@ mod tests {
     use crate::campaign::{CampaignSelection, CampaignSession};
 
     #[test]
+    fn objective_authority_uses_mode_instead_of_ai_player_count() {
+        assert_eq!(super::objective_owner_count(false, 2), 1);
+        assert_eq!(super::objective_owner_count(false, 8), 1);
+        assert_eq!(super::objective_owner_count(true, 2), 2);
+        assert_eq!(super::objective_owner_count(true, 8), 8);
+        assert_eq!(super::objective_owner_count(true, 0), 0);
+    }
+
+    #[test]
     fn condition_eight_uses_only_declared_other_player_flags() {
         use super::all_other_players_banished as achieved;
 
@@ -124,7 +145,7 @@ mod tests {
         );
     }
 
-    fn level_two_session() -> crate::native_world::Level2ResetSession {
+    fn level_two_session() -> crate::native_world::Mc2Simulation {
         let package = std::env::var_os("MC_CAMPAIGN_PACKAGE").map_or_else(
             || {
                 PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -134,8 +155,42 @@ mod tests {
         );
         CampaignSession::open(package, CampaignSelection::LEVEL2)
             .expect("qualified Level 2 package")
-            .level2_compatibility()
+            .simulation()
             .clone()
+    }
+
+    #[test]
+    fn single_player_reach_objective_does_not_advance_rival_objectives() {
+        let mut session = level_two_session();
+        assert_eq!(session.runtime().player_count, 2);
+        let local_color = usize::from(session.players()[0].player_color_index());
+        let rival = &session.players()[1];
+        assert!(rival.is_ai);
+        assert!(rival.active_player_index >= 0);
+        let rival_color = usize::from(rival.player_color_index());
+        assert_ne!(local_color, rival_color);
+        let rival_before = session.runtime().objectives[rival_color];
+        assert_eq!(rival_before.stage_selectors[0], 1);
+        let target = &session.runtime().stages[0];
+        assert_eq!(target.kind, 5, "ordinary first reach-location producer");
+        let (target_x, target_y) = (target.axis_x as u16, target.axis_y as u16);
+        session.state.position.x = target_x;
+        session.state.position.y = target_y;
+
+        session.step_outer_turn(PlayerCommand::default(), 0);
+
+        assert!(
+            session
+                .dispatch_events()
+                .iter()
+                .all(|event| !matches!(event, crate::native_world::Mc2DispatchEvent::Error { .. }))
+        );
+        assert_eq!(
+            session.runtime().objectives[local_color].stage_selectors[0],
+            2
+        );
+        assert_eq!(session.runtime().objectives[local_color].text_selector, 1);
+        assert_eq!(session.runtime().objectives[rival_color], rival_before);
     }
 
     #[test]

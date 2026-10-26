@@ -570,7 +570,7 @@ fn level2_campaign_step_is_revisioned_reset_safe_and_keeps_level1_abi_untouched(
     assert_eq!(initial_sphere_batch.generation, 0);
     assert_eq!(initial_sphere_batch.tick, 0);
     let (sphere_id, carrier_slots) = with_campaign_session_mut(handle, |session| {
-        let CampaignSessionKind::Level2 { reset, .. } = &mut session.kind else {
+        let CampaignSessionKind::Campaign { reset, .. } = &mut session.kind else {
             unreachable!("campaign fixture opened as Level 2")
         };
         let terrain = reset.canonical_terrain().clone();
@@ -906,7 +906,7 @@ fn level2_campaign_step_is_revisioned_reset_safe_and_keeps_level1_abi_untouched(
         canonical_events.update(event.source_slot.to_le_bytes());
     }
     let nyphur_dispatch_traces = with_campaign_session(handle, |session| {
-        let CampaignSessionKind::Level2 { reset, .. } = &session.kind else {
+        let CampaignSessionKind::Campaign { reset, .. } = &session.kind else {
             unreachable!("campaign fixture opened as Level 2")
         };
         Ok(reset.nyphur_dispatch_traces().to_vec())
@@ -931,7 +931,7 @@ fn level2_campaign_step_is_revisioned_reset_safe_and_keeps_level1_abi_untouched(
         canonical_events.finalize().as_slice()
     );
     let composite_hash = with_campaign_session(handle, |session| {
-        let CampaignSessionKind::Level2 { reset, .. } = &session.kind else {
+        let CampaignSessionKind::Campaign { reset, .. } = &session.kind else {
             unreachable!("campaign fixture opened as Level 2")
         };
         Ok(reset.campaign_state_hash())
@@ -1299,7 +1299,7 @@ fn level2_campaign_public_requested_castle_step_reaches_day_construction() {
             .all(|event| event.abi_version == MC_NATIVE_ABI_VERSION)
     );
     let first_step_flyer = with_campaign_session(handle, |session| {
-        let CampaignSessionKind::Level2 { reset, .. } = &session.kind else {
+        let CampaignSessionKind::Campaign { reset, .. } = &session.kind else {
             return Err(AbiError::new(
                 MC_STATUS_INVALID_ARGUMENT,
                 "Castle proof requires a Level 2 campaign session",
@@ -1382,7 +1382,7 @@ fn level2_campaign_public_requested_castle_step_reaches_day_construction() {
         "the following landing callback allocates the Castle root"
     );
     let second_step_relation = with_campaign_session(handle, |session| {
-        let CampaignSessionKind::Level2 { reset, .. } = &session.kind else {
+        let CampaignSessionKind::Campaign { reset, .. } = &session.kind else {
             return Err(AbiError::new(
                 MC_STATUS_INVALID_ARGUMENT,
                 "Castle proof requires a Level 2 campaign session",
@@ -1429,7 +1429,7 @@ fn level2_campaign_public_requested_castle_step_reaches_day_construction() {
         "the higher-slot Castle root receives its construction callback in the landing pass"
     );
     let seed_relation = with_campaign_session(handle, |session| {
-        let CampaignSessionKind::Level2 { reset, .. } = &session.kind else {
+        let CampaignSessionKind::Campaign { reset, .. } = &session.kind else {
             return Err(AbiError::new(
                 MC_STATUS_INVALID_ARGUMENT,
                 "Castle proof requires a Level 2 campaign session",
@@ -1463,7 +1463,7 @@ fn level2_campaign_public_requested_castle_step_reaches_day_construction() {
             .any(|event| { event.kind == 7 && event.source_slot == root_event.source_slot })
     );
     let construction_relation = with_campaign_session(handle, |session| {
-        let CampaignSessionKind::Level2 { reset, .. } = &session.kind else {
+        let CampaignSessionKind::Campaign { reset, .. } = &session.kind else {
             return Err(AbiError::new(
                 MC_STATUS_INVALID_ARGUMENT,
                 "Castle proof requires a Level 2 campaign session",
@@ -1500,7 +1500,7 @@ fn level2_campaign_public_requested_castle_step_reaches_day_construction() {
 fn level2_campaign_public_family0_fireball_allocates_and_dispatches_projectile() {
     let handle = open_level2_campaign_handle_with_asset_cache(&qualified_level2_day_owner_cache());
     let (entity_fov, player_entity_index) = with_campaign_session(handle, |session| {
-        let CampaignSessionKind::Level2 { reset, .. } = &session.kind else {
+        let CampaignSessionKind::Campaign { reset, .. } = &session.kind else {
             return Err(AbiError::new(
                 MC_STATUS_INVALID_ARGUMENT,
                 "Fireball proof requires a Level 2 campaign session",
@@ -1532,7 +1532,7 @@ fn level2_campaign_public_family0_fireball_allocates_and_dispatches_projectile()
         },
     );
     let projectile = with_campaign_session(handle, |session| {
-        let CampaignSessionKind::Level2 { reset, .. } = &session.kind else {
+        let CampaignSessionKind::Campaign { reset, .. } = &session.kind else {
             return Err(AbiError::new(
                 MC_STATUS_INVALID_ARGUMENT,
                 "Fireball proof requires a Level 2 campaign session",
@@ -1577,8 +1577,14 @@ fn campaign_spell_sprites_follow_public_cast_movement_impact_and_reclaim() {
         let mut input = McCampaignStepInputV2 {
             abi_version: MC_NATIVE_ABI_VERSION,
             struct_size: struct_size::<McCampaignStepInputV2>(),
-            command: McCommandV2 { flags: 0x40, requested_spell: family, ..valid_command() },
-            player_x: 384, player_y: 62_080, player_z: 8_000,
+            command: McCommandV2 {
+                flags: 0x40,
+                requested_spell: family,
+                ..valid_command()
+            },
+            player_x: 384,
+            player_y: 62_080,
+            player_z: 8_000,
             ..McCampaignStepInputV2::default()
         };
         let mut first_position = None;
@@ -1590,65 +1596,130 @@ fn campaign_spell_sprites_follow_public_cast_movement_impact_and_reclaim() {
             let (snapshot, _) = step_level2_campaign_public(handle, input);
             input.command = valid_command();
             let entities = campaign_entities_public(handle);
-            let (tick, expected, hidden_pulses, hash_before) = with_campaign_session(handle, |session| {
-                let CampaignSessionKind::Level2 { reset, .. } = &session.kind else { unreachable!() };
-                let mut expected = Vec::new();
-                for source in reset.economy().fireball_projectiles() {
-                    expected.push((source.source_entity_index, source.position,
-                        source.active && !source.drawing_disabled && source.control_flags & 0x21 == 0, 340_u16));
-                }
-                for source in reset.economy().possession_projectiles() {
-                    expected.push((source.source_entity_index, source.position, source.active, 209));
-                }
-                for source in reset.economy().model17_spawned_children() {
-                    expected.push((source.source_entity_index, source.position,
-                        source.active && source.control_flags & 0x21 == 0, 7));
-                }
-                let hidden = reset.economy().possession_effects().iter()
-                    .map(|source| source.source_entity_index).collect::<Vec<_>>();
-                let hash = reset.campaign_state_hash();
-                let selectors = reset.campaign_entity_presentations(0).unwrap();
-                for (slot, position, drawable, particle) in &expected {
-                    let row = selectors.iter().find(|row| row.entity_index == *slot);
-                    assert_eq!(row.is_some(), *drawable, "source slot {slot}, particle {particle}");
-                    if let Some(row) = row {
-                        assert_eq!((row.position, row.render_parameter_index), (*position, *particle));
+            let (tick, expected, hidden_pulses, hash_before) =
+                with_campaign_session(handle, |session| {
+                    let CampaignSessionKind::Campaign { reset, .. } = &session.kind else {
+                        unreachable!()
+                    };
+                    let mut expected = Vec::new();
+                    for source in reset.economy().fireball_projectiles() {
+                        expected.push((
+                            source.source_entity_index,
+                            source.position,
+                            source.active
+                                && !source.drawing_disabled
+                                && source.control_flags & 0x21 == 0,
+                            340_u16,
+                        ));
                     }
-                }
-                for slot in &hidden {
-                    assert!(selectors.iter().all(|row| row.entity_index != *slot),
-                        "the ownership mailbox pulse remains source-hidden");
-                }
-                assert_eq!(reset.campaign_state_hash(), hash, "selector polling is observational");
-                Ok((reset.campaign_tick(), expected, hidden, hash))
-            }).unwrap();
+                    for source in reset.economy().possession_projectiles() {
+                        expected.push((
+                            source.source_entity_index,
+                            source.position,
+                            source.active,
+                            209,
+                        ));
+                    }
+                    for source in reset.economy().model17_spawned_children() {
+                        expected.push((
+                            source.source_entity_index,
+                            source.position,
+                            source.active && source.control_flags & 0x21 == 0,
+                            7,
+                        ));
+                    }
+                    let hidden = reset
+                        .economy()
+                        .possession_effects()
+                        .iter()
+                        .map(|source| source.source_entity_index)
+                        .collect::<Vec<_>>();
+                    let hash = reset.campaign_state_hash();
+                    let selectors = reset.campaign_entity_presentations(0).unwrap();
+                    for (slot, position, drawable, particle) in &expected {
+                        let row = selectors.iter().find(|row| row.entity_index == *slot);
+                        assert_eq!(
+                            row.is_some(),
+                            *drawable,
+                            "source slot {slot}, particle {particle}"
+                        );
+                        if let Some(row) = row {
+                            assert_eq!(
+                                (row.position, row.render_parameter_index),
+                                (*position, *particle)
+                            );
+                        }
+                    }
+                    for slot in &hidden {
+                        assert!(
+                            selectors.iter().all(|row| row.entity_index != *slot),
+                            "the ownership mailbox pulse remains source-hidden"
+                        );
+                    }
+                    assert_eq!(
+                        reset.campaign_state_hash(),
+                        hash,
+                        "selector polling is observational"
+                    );
+                    Ok((reset.campaign_tick(), expected, hidden, hash))
+                })
+                .unwrap();
             let mut sprites = vec![McCampaignEntityPresentationV2::default(); entities.len()];
             let mut written = 0;
-            assert_eq!(mc_native_campaign_entity_presentations_copy(handle,
-                snapshot.generation, tick, 0, sprites.as_mut_ptr(), sprites.len() as u32,
-                struct_size::<McCampaignEntityPresentationV2>(), &raw mut written), MC_STATUS_OK);
+            assert_eq!(
+                mc_native_campaign_entity_presentations_copy(
+                    handle,
+                    snapshot.generation,
+                    tick,
+                    0,
+                    sprites.as_mut_ptr(),
+                    sprites.len() as u32,
+                    struct_size::<McCampaignEntityPresentationV2>(),
+                    &raw mut written
+                ),
+                MC_STATUS_OK
+            );
             sprites.truncate(written as usize);
             for (slot, position, drawable, particle) in &expected {
                 let entity = &entities[usize::from(*slot)];
                 assert_eq!(entity.authority, MC_AUTHORITY_CAMPAIGN_LIVE);
-                assert_eq!((entity.x, entity.y, entity.z), (position.x, position.y, position.z));
-                if *drawable { assert_eq!(entity.active, 1); }
-                if *particle == 7 { impact_seen = true; }
-                else if *drawable {
+                assert_eq!(
+                    (entity.x, entity.y, entity.z),
+                    (position.x, position.y, position.z)
+                );
+                if *drawable {
+                    assert_eq!(entity.active, 1);
+                }
+                if *particle == 7 {
+                    impact_seen = true;
+                } else if *drawable {
                     let first = first_position.get_or_insert(*position);
                     moved |= *first != *position;
                     visible |= sprites.iter().any(|sprite| sprite.entity_index == *slot);
                 }
             }
-            reclaimed |= first_position.is_some() && expected.is_empty() && hidden_pulses.is_empty();
+            reclaimed |=
+                first_position.is_some() && expected.is_empty() && hidden_pulses.is_empty();
             with_campaign_session(handle, |session| {
-                let CampaignSessionKind::Level2 { reset, .. } = &session.kind else { unreachable!() };
-                assert_eq!(reset.campaign_state_hash(), hash_before, "ABI polling is observational");
+                let CampaignSessionKind::Campaign { reset, .. } = &session.kind else {
+                    unreachable!()
+                };
+                assert_eq!(
+                    reset.campaign_state_hash(),
+                    hash_before,
+                    "ABI polling is observational"
+                );
                 Ok(())
-            }).unwrap();
+            })
+            .unwrap();
         }
-        assert!(first_position.is_some() && moved && visible && reclaimed, "family {family} must render a moving flyer and reclaim it");
-        if family == 0 { assert!(impact_seen, "Fireball expiry constructs its real impact"); }
+        assert!(
+            first_position.is_some() && moved && visible && reclaimed,
+            "family {family} must render a moving flyer and reclaim it"
+        );
+        if family == 0 {
+            assert!(impact_seen, "Fireball expiry constructs its real impact");
+        }
         assert_eq!(mc_native_campaign_session_destroy(handle), MC_STATUS_OK);
     }
 }
@@ -1657,7 +1728,7 @@ fn campaign_spell_sprites_follow_public_cast_movement_impact_and_reclaim() {
 fn level2_campaign_common_entities_project_remaining_live_class5_rows() {
     let handle = open_level2_campaign_handle_with_asset_cache(&qualified_level2_day_owner_cache());
     with_campaign_session_mut(handle, |session| {
-        let CampaignSessionKind::Level2 { reset, .. } = &mut session.kind else {
+        let CampaignSessionKind::Campaign { reset, .. } = &mut session.kind else {
             return Err(AbiError::new(
                 MC_STATUS_INVALID_ARGUMENT,
                 "class-5 projection proof requires a Level 2 campaign session",
@@ -1682,7 +1753,7 @@ fn level2_campaign_common_entities_project_remaining_live_class5_rows() {
     );
 
     let sources = with_campaign_session(handle, |session| {
-        let CampaignSessionKind::Level2 { reset, .. } = &session.kind else {
+        let CampaignSessionKind::Campaign { reset, .. } = &session.kind else {
             return Err(AbiError::new(
                 MC_STATUS_INVALID_ARGUMENT,
                 "class-5 projection proof requires a Level 2 campaign session",
@@ -1698,11 +1769,23 @@ fn level2_campaign_common_entities_project_remaining_live_class5_rows() {
         assert_eq!(row.entity_index, source.source_entity_index);
         assert_eq!(row.source_id, source.source_entity_index);
         assert_eq!(row.authority, MC_AUTHORITY_CAMPAIGN_LIVE);
-        assert_eq!(row.active, u8::from(source.active && source.drawing_enabled));
-        assert_eq!((row.class_id, row.model, row.action), (5, source.model, source.action));
+        assert_eq!(
+            row.active,
+            u8::from(source.active && source.drawing_enabled)
+        );
+        assert_eq!(
+            (row.class_id, row.model, row.action),
+            (5, source.model, source.action)
+        );
         assert_eq!(row.phase, source.source_byte_3e);
-        assert_eq!((row.x, row.y, row.z), (source.position.x, source.position.y, source.position.z));
-        assert_eq!((row.yaw, row.pitch, row.fov), (source.yaw, source.pitch, source.fov));
+        assert_eq!(
+            (row.x, row.y, row.z),
+            (source.position.x, source.position.y, source.position.z)
+        );
+        assert_eq!(
+            (row.yaw, row.pitch, row.fov),
+            (source.yaw, source.pitch, source.fov)
+        );
         assert_eq!(row.actual_speed, source.actual_speed);
         assert_eq!(row.reserved, [0; 4]);
     }
@@ -1726,7 +1809,7 @@ fn level2_campaign_public_castle_requires_mana_then_emits_family38() {
     };
     let castle_holder_values = || {
         with_campaign_session(handle, |session| {
-            let CampaignSessionKind::Level2 { reset, .. } = &session.kind else {
+            let CampaignSessionKind::Campaign { reset, .. } = &session.kind else {
                 return Err(AbiError::new(
                     MC_STATUS_INVALID_ARGUMENT,
                     "Castle proof requires a Level 2 campaign session",

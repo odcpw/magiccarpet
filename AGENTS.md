@@ -29,7 +29,7 @@ secret missions to the real ending. Port shared source systems; missions
 configure and exercise them. Keep one worker on opening delivery `mc-zdo.5`
 using `br ready --json --label first-playable` and
 `bv --robot-next --label first-playable` until normal startup and continuous
-Levels 1–3 work. Other workers may take independent ready families in parallel.
+Levels 1–4 work. Other workers may take independent ready families in parallel.
 This first milestone does not close full source fidelity or full-game assembly
 `mc-xa7.1`.
 Each family owns its real runtime integration, typed properties/rules and

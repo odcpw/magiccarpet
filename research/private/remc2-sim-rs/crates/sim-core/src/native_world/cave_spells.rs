@@ -847,7 +847,7 @@ mod tests {
     use super::*;
     use crate::{
         PlayerCommand,
-        native_world::{Level2DispatchEvent, NativeWorld},
+        native_world::{Mc2DispatchEvent, NativeWorld},
     };
 
     #[test]
@@ -888,7 +888,7 @@ mod tests {
             )
             .unwrap();
         let compatibility = game.backend_mut().compatibility_campaign_mut_for_test();
-        let session = compatibility.level2_compatibility_mut();
+        let session = compatibility.simulation_mut();
         assert_eq!(session.canonical_terrain().map_type, MapType::Cave);
         // Stage resources and casting clearance only; keep the source mana,
         // castle admission, constructor, command and lifetime paths intact.
@@ -975,10 +975,7 @@ mod tests {
         let mut effect = None;
         let mut hidden = false;
         for _ in 0..96 {
-            let session = game
-                .backend()
-                .compatibility_campaign()
-                .level2_compatibility();
+            let session = game.backend().compatibility_campaign().simulation();
             for row in session
                 .entities()
                 .iter()
@@ -992,10 +989,7 @@ mod tests {
             }
             game.step(guard(&game), GameCommand::default()).unwrap();
         }
-        let session = game
-            .backend()
-            .compatibility_campaign()
-            .level2_compatibility();
+        let session = game.backend().compatibility_campaign().simulation();
         let slot = effect.expect("semantic CaveIn cast delivers the source collapse");
         assert!(hidden && !session.entities()[usize::from(slot)].active);
         assert_ne!(
@@ -1120,11 +1114,11 @@ mod tests {
                 .economy_mut()
                 .set_castle_mana_prerequisite_for_test(castle, 300_000)
         );
-        let no_errors = |session: &crate::native_world::Level2ResetSession| {
+        let no_errors = |session: &crate::native_world::Mc2Simulation| {
             let errors = session
                 .dispatch_events()
                 .iter()
-                .filter(|e| matches!(e, Level2DispatchEvent::Error { .. }))
+                .filter(|e| matches!(e, Mc2DispatchEvent::Error { .. }))
                 .collect::<Vec<_>>();
             assert!(errors.is_empty(), "{errors:?}");
         };

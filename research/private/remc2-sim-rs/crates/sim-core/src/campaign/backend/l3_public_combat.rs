@@ -43,7 +43,7 @@ pub(crate) struct PublicCombatReceipt {
 }
 
 fn targets(session: &GameSession<Mc2CampaignBackend>, family: CombatFamily) -> Vec<Target> {
-    let economy = session.backend().campaign.level2_compatibility().economy();
+    let economy = session.backend().campaign.simulation().economy();
     match family {
         CombatFamily::Archer => economy
             .authored_class5()
@@ -92,7 +92,7 @@ fn clear_fireball_path(
     target: &Target,
     family: CombatFamily,
 ) -> bool {
-    let compatibility = session.backend().campaign.level2_compatibility();
+    let compatibility = session.backend().campaign.simulation();
     launch.z = launch.z.wrapping_add(compatibility.state.entity_fov);
     let mut aim = target.position;
     aim.z = aim
@@ -114,19 +114,19 @@ fn step(session: &mut GameSession<Mc2CampaignBackend>, command: GameCommand) {
     let bees_before = session
         .backend()
         .campaign
-        .level2_compatibility()
+        .simulation()
         .economy()
         .bee_creatures()
         .to_vec();
     let player = session
         .backend()
         .campaign
-        .level2_compatibility()
+        .simulation()
         .shared_spells()
         .player_entity();
     assert!(player.life >= 0, "public combat player died: {player:?}");
     session.step(guard(session), command).unwrap();
-    let economy = session.backend().campaign.level2_compatibility().economy();
+    let economy = session.backend().campaign.simulation().economy();
     for previous in bees_before
         .iter()
         .filter(|bee| bee.life >= 0 && bee.drawing_enabled)
@@ -156,7 +156,7 @@ fn combat_wait_command(
     session: &GameSession<Mc2CampaignBackend>,
     family: CombatFamily,
 ) -> GameCommand {
-    let state = session.backend().campaign.level2_compatibility().state;
+    let state = session.backend().campaign.simulation().state;
     if family == CombatFamily::Archer {
         return GameCommand {
             longitudinal: if state.actual_speed > 0 {
@@ -179,11 +179,7 @@ fn combat_wait_command(
     let away = (crate::heading_for_positions(state.position, target.position) as i16)
         .wrapping_add(1024)
         & 2047;
-    let shared = session
-        .backend()
-        .campaign
-        .level2_compatibility()
-        .shared_spells();
+    let shared = session.backend().campaign.simulation().shared_spells();
     let speed_active = shared
         .pickups()
         .iter()
@@ -212,7 +208,7 @@ pub(crate) fn fire_public_combat_for_test(
     family: CombatFamily,
 ) -> Vec<PublicCombatReceipt> {
     if family == CombatFamily::Bee {
-        let compatibility = session.backend().campaign.level2_compatibility();
+        let compatibility = session.backend().campaign.simulation();
         let shared = compatibility.shared_spells();
         let speed_slot = shared.local_player().enabled_spell_holders[3];
         let can_start_speed = shared
@@ -240,7 +236,7 @@ pub(crate) fn fire_public_combat_for_test(
     }
     // Finish the preceding impact's eight-life tail and following-pass reclaim.
     for _ in 0..64 {
-        let compatibility = session.backend().campaign.level2_compatibility();
+        let compatibility = session.backend().campaign.simulation();
         let player = compatibility.state.entity_index;
         let economy = compatibility.economy();
         let shared = compatibility.shared_spells();
@@ -269,7 +265,7 @@ pub(crate) fn fire_public_combat_for_test(
     }
 
     for _ in 0..640 {
-        let state = session.backend().campaign.level2_compatibility().state;
+        let state = session.backend().campaign.simulation().state;
         let Some(target) = targets(session, family)
             .into_iter()
             .filter(|target| target.life >= 0 && target.drawing)
@@ -320,8 +316,8 @@ pub(crate) fn fire_public_combat_for_test(
         CAMPAIGN_SPEED_INDEX,
         session.backend().flight_binding.tuning(),
     );
-    let compatibility = session.backend().campaign.level2_compatibility();
-    let state = forecast.level2_compatibility().state;
+    let compatibility = session.backend().campaign.simulation();
+    let state = forecast.simulation().state;
     let target = before
         .iter()
         .filter(|target| target.life >= 0 && target.drawing)
@@ -384,7 +380,7 @@ pub(crate) fn fire_public_combat_for_test(
         let mut best = None;
         for turn in 1..=12_u32 {
             if let Some(bee) = forecast
-                .level2_compatibility()
+                .simulation()
                 .economy()
                 .bee_creatures()
                 .iter()
@@ -429,7 +425,7 @@ pub(crate) fn fire_public_combat_for_test(
             );
         }
         if let Some(archer) = forecast
-            .level2_compatibility()
+            .simulation()
             .economy()
             .authored_class5()
             .iter()
@@ -459,7 +455,7 @@ pub(crate) fn fire_public_combat_for_test(
     let mut projectile_slot = None;
     let mut impact_occurrence = None;
     for _ in 0..32 {
-        let economy = session.backend().campaign.level2_compatibility().economy();
+        let economy = session.backend().campaign.simulation().economy();
         if let Some(projectile) = economy.fireball_projectiles().iter().find(|row| {
             row.owner_entity_index == attacker
                 && row.source_subspell_index == crate::level1_mission::FIREBALL_PAYLOAD as u16
@@ -527,12 +523,7 @@ pub(crate) fn fire_public_combat_for_test(
     }
     eprintln!(
         "public {family:?} missed: player={:?}, target={target:?}, launch={launch:?}, aim={aim:?}, projectile={projectile_slot:?}, impact={impact_occurrence:?}",
-        session
-            .backend()
-            .campaign
-            .level2_compatibility()
-            .state
-            .position
+        session.backend().campaign.simulation().state.position
     );
     Vec::new()
 }
@@ -609,7 +600,7 @@ pub(crate) fn retire_public_combat_for_test(
         "ordinary following-pass reclaim"
     );
     if family == CombatFamily::Archer {
-        let economy = session.backend().campaign.level2_compatibility().economy();
+        let economy = session.backend().campaign.simulation().economy();
         for row in initial {
             assert!(economy.events().iter().any(|event| matches!(event,
                 crate::native_world::Level2EconomyEvent::ManaSphereSpawned { source_entity_index, mana: 500, .. }
@@ -632,14 +623,14 @@ fn staged_group_boundary(group: u16) -> GameSession<Mc2CampaignBackend> {
     session
         .backend_mut()
         .campaign
-        .level2_compatibility_mut()
+        .simulation_mut()
         .apply_carried_spell_families(&[0, 1, 2, 3], Some(0))
         .unwrap();
     if group == 3 {
         super::tests::build_real_level_three_carried_castle_for_test(&mut session);
         super::tests::close_real_level_three_strip_for_staged_bees_for_test(&mut session);
     }
-    let compatibility = session.backend_mut().campaign.level2_compatibility_mut();
+    let compatibility = session.backend_mut().campaign.simulation_mut();
     compatibility
         .activate_authored_group_prerequisite_for_test(group)
         .unwrap();
@@ -667,7 +658,7 @@ fn archer_projectile_does_not_join_its_shooters_health_chain() {
     for _ in 0..180 {
         let command = combat_wait_command(&session, CombatFamily::Archer);
         step(&mut session, command);
-        let economy = session.backend().campaign.level2_compatibility().economy();
+        let economy = session.backend().campaign.simulation().economy();
         if let Some(child) = economy
             .authored_class5_archer_children()
             .iter()
@@ -700,7 +691,7 @@ fn archer_projectile_does_not_join_its_shooters_health_chain() {
 /// that selects the player and mode10. No combat state is staged here.
 fn publicly_provoked_archer_boundary() -> (GameSession<Mc2CampaignBackend>, Target) {
     let mut session = staged_group_boundary(5);
-    let compatibility = session.backend().campaign.level2_compatibility();
+    let compatibility = session.backend().campaign.simulation();
     let stage = &compatibility.runtime().stage_variables[1];
     assert_eq!((stage.kind, stage.flags), (4, 3));
     assert_eq!(
@@ -724,7 +715,7 @@ fn publicly_provoked_archer_boundary() -> (GameSession<Mc2CampaignBackend>, Targ
         .into_iter()
         .find(|root| root.slot == receipt.slot && root.generation == receipt.generation)
         .expect("the exact Fireball recipient remains the retaliating shooter");
-    let compatibility = session.backend().campaign.level2_compatibility();
+    let compatibility = session.backend().campaign.simulation();
     let source = compatibility
         .economy()
         .authored_class5()
@@ -744,7 +735,7 @@ fn publicly_provoked_archer_boundary() -> (GameSession<Mc2CampaignBackend>, Targ
 #[test]
 fn ordinary_level_three_archer_arrow_damages_player_without_lowering_shooter_health() {
     let (mut session, shooter) = publicly_provoked_archer_boundary();
-    let compatibility = session.backend().campaign.level2_compatibility();
+    let compatibility = session.backend().campaign.simulation();
     let player = compatibility.state.entity_index;
     let initial_life = compatibility.canonical_player_life_for_test();
     let event_start = compatibility.economy().events().len();
@@ -771,7 +762,7 @@ fn ordinary_level_three_archer_arrow_damages_player_without_lowering_shooter_hea
             command.lateral = crate::game_session::LateralControl::Positive;
         }
         step(&mut session, command);
-        let compatibility = session.backend().campaign.level2_compatibility();
+        let compatibility = session.backend().campaign.simulation();
         let economy = compatibility.economy();
         for child in economy
             .authored_class5_archer_children()
@@ -872,13 +863,13 @@ fn ordinary_level_three_archer_arrow_damages_player_without_lowering_shooter_hea
 fn typed_archer_attacker_reaches_imported_skeleton_damage_reaction() {
     let mut session = staged_group_boundary(5);
     for _ in 0..24 {
-        if session.backend().campaign.level2_compatibility().entities()[122].action == 79 {
+        if session.backend().campaign.simulation().entities()[122].action == 79 {
             break;
         }
         step(&mut session, GameCommand::default());
     }
     let archer = targets(&session, CombatFamily::Archer)[0];
-    let compatibility = session.backend_mut().campaign.level2_compatibility_mut();
+    let compatibility = session.backend_mut().campaign.simulation_mut();
     let skeleton = compatibility.entities()[122].clone();
     assert_eq!(
         (skeleton.class, skeleton.model, skeleton.action),
@@ -892,7 +883,7 @@ fn typed_archer_attacker_reaches_imported_skeleton_damage_reaction() {
     // separately; here the pulse must reach the real Skeleton reaction.
     compatibility.apply_fireball_impact_to_firefly_for_test(skeleton.position, archer.slot, 250);
     step(&mut session, GameCommand::default());
-    let after = &session.backend().campaign.level2_compatibility().entities()[122];
+    let after = &session.backend().campaign.simulation().entities()[122];
     assert_eq!(after.life, skeleton.life - 250);
     assert_eq!(after.action, 74);
     assert_eq!((after.record_bytes()[69], after.record_bytes()[70]), (5, 4));
@@ -1018,7 +1009,7 @@ fn staged_bee_pilot_departs_on_live_contact_cadence_and_heals_at_real_castle() {
     assert_eq!(session.backend().campaign.state_hash(), trace.initial_hash);
     let mut departed = false;
     for operation in trace.operations {
-        let compatibility = session.backend().campaign.level2_compatibility();
+        let compatibility = session.backend().campaign.simulation();
         let shared = compatibility.shared_spells();
         let holder = shared.local_player().enabled_spell_holders[0];
         let cost = shared
@@ -1046,7 +1037,7 @@ fn staged_bee_pilot_departs_on_live_contact_cadence_and_heals_at_real_castle() {
                 cost,
                 &mut BTreeSet::new(),
             );
-            let after = session.backend().campaign.level2_compatibility();
+            let after = session.backend().campaign.simulation();
             assert_eq!(
                 after.shared_spells().player_entity().life,
                 after.shared_spells().player_entity().max_life
@@ -1089,7 +1080,7 @@ fn staged_bee_pilot_departs_on_live_contact_cadence_and_heals_at_real_castle() {
 fn staged_bee_pilot_consumes_exact_current_dragon_impact() {
     let mut session = restore_actual_staged_bee_trace_frontier();
     assert_eq!(session.identity().tick, 869);
-    let before = session.backend().campaign.level2_compatibility();
+    let before = session.backend().campaign.simulation();
     assert_eq!(before.shared_spells().player_entity().life, 6_375);
     let root = *before
         .economy()
@@ -1127,7 +1118,7 @@ fn staged_bee_pilot_consumes_exact_current_dragon_impact() {
         GameCommand::default(),
         &mut BTreeSet::new(),
     );
-    let after = session.backend().campaign.level2_compatibility();
+    let after = session.backend().campaign.simulation();
     assert_eq!(after.shared_spells().player_entity().life, 5_875);
     assert_eq!(after.economy().slot_generation(282), generation);
     assert!(
@@ -1149,15 +1140,15 @@ fn staged_bee_pilot_consumes_exact_current_dragon_impact() {
 #[ignore = "requires MC_STAGED_BEE_COMMAND_TRACE_INPUT; replays only the explicitly staged component"]
 fn staged_final_bee_command_trace_restores_exact_failed_frontier() {
     let session = restore_actual_staged_bee_trace_frontier();
-    let before = session.backend().campaign.level2_compatibility().clone();
+    let before = session.backend().campaign.simulation().clone();
     let mut forecast = session.backend().campaign.clone();
     let motion = forecast.step_with_tuning(
         campaign_player_command(&GameCommand::default()),
         CAMPAIGN_SPEED_INDEX,
         session.backend().flight_binding.tuning(),
     );
-    let after = forecast.level2_compatibility();
-    let raw_mailbox = |state: &crate::native_world::Level2ResetSession| {
+    let after = forecast.simulation();
+    let raw_mailbox = |state: &crate::native_world::Mc2Simulation| {
         let raw = state.entities()[usize::from(state.state.entity_index)].record_bytes();
         (
             i32::from_le_bytes(raw[98..102].try_into().unwrap()),
@@ -1222,11 +1213,7 @@ fn staged_final_bee_command_trace_restores_exact_failed_frontier() {
 #[test]
 fn public_fireballs_retire_real_level_three_final_bees_from_staged_group() {
     let mut session = staged_group_boundary(3);
-    let shared = session
-        .backend()
-        .campaign
-        .level2_compatibility()
-        .shared_spells();
+    let shared = session.backend().campaign.simulation().shared_spells();
     eprintln!(
         "Bee incoming mana={}, speed holder={:?}",
         shared.player_mana(),
@@ -1275,7 +1262,7 @@ fn public_fireballs_retire_real_level_three_final_bees_from_staged_group() {
         session
             .backend()
             .campaign
-            .level2_compatibility()
+            .simulation()
             .canonical_player_life_for_test()
             > 0
     );
@@ -1285,13 +1272,7 @@ fn public_fireballs_retire_real_level_three_final_bees_from_staged_group() {
             .all(|row| row.life_before - row.life_after == 250)
     );
     assert_eq!(
-        session
-            .backend()
-            .campaign
-            .level2_compatibility()
-            .runtime()
-            .objectives[0]
-            .stage_selectors[4],
+        session.backend().campaign.simulation().runtime().objectives[0].stage_selectors[4],
         2
     );
 }

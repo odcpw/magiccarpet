@@ -21,7 +21,7 @@ use sim_core::{
         level1_minimap_project, minimap_objective_arrow, minimap_objective_distance,
     },
     native_world::{
-        Level2ResetSession, MapType, RuntimeRelation, TerrainPlanes, campaign_hud_palette_indices,
+        MapType, Mc2Simulation, RuntimeRelation, TerrainPlanes, campaign_hud_palette_indices,
     },
 };
 
@@ -140,7 +140,7 @@ const CAVE_MINIMAP_PALETTE: CampaignMinimapPalette = CampaignMinimapPalette {
 fn level2_day_selector_player_index(source_colour: u8) -> Option<usize> {
     // TransformPlayerColorIndex_616D0's single-player mapping.  The Level 2
     // campaign route is the qualified single-player route; multiplayer's
-    // lobby permutation is not a carrier in Level2ResetSession.
+    // lobby permutation is not a carrier in Mc2Simulation.
     Some(match source_colour {
         0 => 0,
         1 => 1,
@@ -159,7 +159,7 @@ fn level2_day_palette_player_index(source_colour: u8) -> Option<usize> {
 }
 
 fn level2_day_player_colour(
-    session: &Level2ResetSession,
+    session: &Mc2Simulation,
     entity_index: u16,
     secondary: bool,
     palette: &CampaignMinimapPalette,
@@ -183,7 +183,7 @@ fn level2_source_u16(bytes: &[u8], offset: usize) -> Option<u16> {
 }
 
 fn level2_minimap_input(
-    session: &Level2ResetSession,
+    session: &Mc2Simulation,
     entity: &sim_core::native_world::EntitySnapshot,
     local_entity_index: u16,
 ) -> Option<(Level1MinimapEntityInput, u8)> {
@@ -300,7 +300,7 @@ fn level2_day_fixed_palette_for_entity(
 }
 
 fn level2_day_model45_help_selector(
-    session: &Level2ResetSession,
+    session: &Mc2Simulation,
     input: Level1MinimapEntityInput,
     parameter_record_index: u8,
 ) -> Option<u8> {
@@ -312,7 +312,7 @@ fn level2_day_model45_help_selector(
 }
 
 fn level2_day_palette_for_entity(
-    session: &Level2ResetSession,
+    session: &Mc2Simulation,
     input: Level1MinimapEntityInput,
     palette: &CampaignMinimapPalette,
 ) -> Option<u8> {
@@ -404,7 +404,7 @@ fn level2_day_minimap_help_selector(
 }
 
 fn level2_day_minimap_command(
-    session: &Level2ResetSession,
+    session: &Mc2Simulation,
     input: Level1MinimapEntityInput,
     family12_enabled: bool,
     parameter_record_index: u8,
@@ -471,14 +471,12 @@ fn level2_day_minimap_command(
 /// Builds the bounded Level 2 minimap projection from the live authoritative
 /// session. Unknown entity classes and unqualified source subjects are
 /// omitted, rather than replaced with a generic presentation.
-pub(crate) fn level2_minimap_plan(
-    session: &Level2ResetSession,
-) -> Result<Level2MinimapPlan, String> {
+pub(crate) fn level2_minimap_plan(session: &Mc2Simulation) -> Result<Level2MinimapPlan, String> {
     campaign_minimap_plan(session, CampaignSelection::LEVEL2)
 }
 
 pub(crate) fn campaign_minimap_plan(
-    session: &Level2ResetSession,
+    session: &Mc2Simulation,
     selection: CampaignSelection,
 ) -> Result<Level2MinimapPlan, String> {
     let local_player_slot = session.runtime().local_player_slot as usize;
@@ -795,7 +793,7 @@ fn night_campaign_minimap_uses_live_source_commands_and_night_objective_colors()
         sim_core::campaign::CampaignSession::open(package, CampaignSelection::LEVEL1)
             .expect("real Night package opens");
     let baseline = campaign.state_hash();
-    let reset = campaign.level2_compatibility();
+    let reset = campaign.simulation();
     let plan = campaign_minimap_plan(reset, CampaignSelection::LEVEL1).expect("Night map plan");
     assert!(!plan.entities.is_empty(), "real Night entity commands");
     assert!(
@@ -845,8 +843,7 @@ fn night_campaign_minimap_uses_live_source_commands_and_night_objective_colors()
         0,
     );
     let after = campaign.state_hash();
-    let live =
-        campaign_minimap_plan(campaign.level2_compatibility(), CampaignSelection::LEVEL1).unwrap();
+    let live = campaign_minimap_plan(campaign.simulation(), CampaignSelection::LEVEL1).unwrap();
     assert!(!live.entities.is_empty());
     assert_eq!(campaign.state_hash(), after);
 }
@@ -860,10 +857,10 @@ fn campaign_package_objective_emits_shared_arrow_without_advancing_state() {
             .expect("qualified corrected Day campaign opens");
     campaign.step(sim_core::PlayerCommand::default(), 0);
     let before = campaign.state_hash();
-    let plan = campaign_minimap_plan(campaign.level2_compatibility(), CampaignSelection::LEVEL3)
+    let plan = campaign_minimap_plan(campaign.simulation(), CampaignSelection::LEVEL3)
         .expect("live campaign minimap plan");
     let targets = campaign
-        .level2_compatibility()
+        .simulation()
         .entities()
         .iter()
         .filter(|entity| entity.active && entity.class == 5 && entity.model == 9)
@@ -893,7 +890,7 @@ fn campaign_package_objective_emits_shared_arrow_without_advancing_state() {
         campaign.step(sim_core::PlayerCommand::default(), 0);
     }
     let before = campaign.state_hash();
-    let pulsed = campaign_minimap_plan(campaign.level2_compatibility(), CampaignSelection::LEVEL3)
+    let pulsed = campaign_minimap_plan(campaign.simulation(), CampaignSelection::LEVEL3)
         .expect("source-linked target remains valid after ordinary actor turns");
     assert_eq!(
         pulsed

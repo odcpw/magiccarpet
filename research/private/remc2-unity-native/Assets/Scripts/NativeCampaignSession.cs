@@ -1349,7 +1349,8 @@ namespace MagicCarpet.Native
                     row.generation != generation || row.tick != tick ||
                     !seen.Add(row.entityIndex) || row.selectedTmap < row.baseTmap ||
                     row.orientationSector > 15 || row.mirrored > 1 ||
-                    row.reserved0 != 0 || !AllZero(row.reserved))
+                    row.reserved0 != 0 || row.reserved != 0 ||
+                    row.pixelMode > 7 || row.brightness > 0x2000)
                     throw new InvalidOperationException(
                         "campaign entity presentation identity is invalid");
             }

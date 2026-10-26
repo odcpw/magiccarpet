@@ -60,7 +60,7 @@ mod tests {
             MC_STATUS_OK
         );
         let tick = campaign_abi::with_campaign_session(handle, |session| {
-            let CampaignSessionKind::Level2 { reset, .. } = &session.kind else {
+            let CampaignSessionKind::Campaign { reset, .. } = &session.kind else {
                 unreachable!("opening package has a source campaign session")
             };
             assert!(
@@ -124,7 +124,7 @@ mod tests {
         // Exercise the actual pickup callback and its numeric publication,
         // without granting a synthetic holder or setting an active timer.
         let acquired_tick = campaign_abi::with_campaign_session_mut(handle, |session| {
-            let CampaignSessionKind::Level2 { reset, .. } = &mut session.kind else {
+            let CampaignSessionKind::Campaign { reset, .. } = &mut session.kind else {
                 unreachable!("opening package has a source campaign session")
             };
             let position = reset

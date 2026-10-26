@@ -3,7 +3,7 @@ fn campaign_entity_projection_follows_live_player_and_reset() {
     let handle = open_level2_campaign_handle();
     let live_player = || {
         with_campaign_session(handle, |record| {
-            let CampaignSessionKind::Level2 { reset, .. } = &record.kind else {
+            let CampaignSessionKind::Campaign { reset, .. } = &record.kind else {
                 unreachable!()
             };
             let slot = reset.players()[0].entity_index;
@@ -55,7 +55,7 @@ fn campaign_native_projection_copies_live_sphere_and_castle_balloon_and_clears_o
     // Castle constructors. The core Possession test proves the upstream kill,
     // claim, upkeep, collection and deposit lifecycle through ordinary turns.
     let (sphere_slot, player_slot, camera) = with_campaign_session_mut(handle, |record| {
-        let CampaignSessionKind::Level2 { reset, .. } = &mut record.kind else {
+        let CampaignSessionKind::Campaign { reset, .. } = &mut record.kind else {
             unreachable!()
         };
         let player = reset.players()[0].entity_index;
@@ -90,7 +90,7 @@ fn campaign_native_projection_copies_live_sphere_and_castle_balloon_and_clears_o
         },
     );
     let (sphere, castle, balloon, before_hash) = with_campaign_session(handle, |record| {
-        let CampaignSessionKind::Level2 { reset, .. } = &record.kind else {
+        let CampaignSessionKind::Campaign { reset, .. } = &record.kind else {
             unreachable!()
         };
         let sphere = *reset
@@ -105,15 +105,40 @@ fn campaign_native_projection_copies_live_sphere_and_castle_balloon_and_clears_o
             .iter()
             .find(|row| row.active && (row.source_class, row.model, row.action) == (3, 3, 9))
             .expect("ordinary upkeep creates the live balloon");
-        Ok((sphere, reset.economy().castle().unwrap(), balloon, reset.state_hash()))
+        Ok((
+            sphere,
+            reset.economy().castle().unwrap(),
+            balloon,
+            reset.state_hash(),
+        ))
     })
     .unwrap();
     let entities = campaign_entities_public(handle);
     let castle_row = entities[usize::from(castle.source_entity_index)];
-    assert_eq!((castle_row.authority, castle_row.active, castle_row.class_id, castle_row.model, castle_row.action),
-        (MC_AUTHORITY_CAMPAIGN_LIVE, 1, 3, 2, 4));
-    assert_eq!((castle_row.source_id, castle_row.x, castle_row.y, castle_row.z),
-        (player_slot, castle.position.x, castle.position.y, castle.position.z));
+    assert_eq!(
+        (
+            castle_row.authority,
+            castle_row.active,
+            castle_row.class_id,
+            castle_row.model,
+            castle_row.action
+        ),
+        (MC_AUTHORITY_CAMPAIGN_LIVE, 1, 3, 2, 4)
+    );
+    assert_eq!(
+        (
+            castle_row.source_id,
+            castle_row.x,
+            castle_row.y,
+            castle_row.z
+        ),
+        (
+            player_slot,
+            castle.position.x,
+            castle.position.y,
+            castle.position.z
+        )
+    );
     let sphere_row = entities[usize::from(sphere_slot)];
     assert_eq!(
         (
@@ -186,9 +211,17 @@ fn campaign_native_projection_copies_live_sphere_and_castle_balloon_and_clears_o
         LAST_ERROR.with(|value| value.borrow().clone())
     );
     let sprites = &sprites[..written as usize];
-    let castle_sprite = sprites.iter().find(|row| row.entity_index == castle.source_entity_index)
+    let castle_sprite = sprites
+        .iter()
+        .find(|row| row.entity_index == castle.source_entity_index)
         .expect("the live Castle reaches the native visible selector");
-    assert_eq!((castle_sprite.render_parameter_index, castle_sprite.base_tmap), (177, 96));
+    assert_eq!(
+        (
+            castle_sprite.render_parameter_index,
+            castle_sprite.base_tmap
+        ),
+        (177, 96)
+    );
     let sphere_sprite = sprites
         .iter()
         .find(|row| row.entity_index == sphere_slot)
@@ -206,7 +239,7 @@ fn campaign_native_projection_copies_live_sphere_and_castle_balloon_and_clears_o
         (169, 88)
     );
     with_campaign_session(handle, |record| {
-        let CampaignSessionKind::Level2 { reset, .. } = &record.kind else {
+        let CampaignSessionKind::Campaign { reset, .. } = &record.kind else {
             unreachable!()
         };
         assert_eq!(
@@ -219,7 +252,10 @@ fn campaign_native_projection_copies_live_sphere_and_castle_balloon_and_clears_o
     .unwrap();
     assert_eq!(mc_native_campaign_session_reset(handle), MC_STATUS_OK);
     let reset_entities = campaign_entities_public(handle);
-    assert_eq!(reset_entities[usize::from(castle.source_entity_index)].active, 0);
+    assert_eq!(
+        reset_entities[usize::from(castle.source_entity_index)].active,
+        0
+    );
     assert_eq!(reset_entities[usize::from(sphere_slot)].active, 0);
     assert_eq!(
         reset_entities[usize::from(balloon.source_entity_index)].active,
@@ -884,7 +920,7 @@ fn layouts_and_versions_are_stable() {
 
 #[test]
 fn campaign_economy_event_kind_is_publicly_bound() {
-    let event = Level2DispatchEvent::Economy {
+    let event = Mc2DispatchEvent::Economy {
         pass: 2,
         source_slot: 157,
         event: Level2EconomyEvent::ManaSphereSpawned {
@@ -1723,7 +1759,7 @@ fn level2_campaign_objective_stage_state_is_live_generation_bound() {
     assert_eq!(completed.done, 0);
     assert!(
         with_campaign_session(handle, |session| {
-            let CampaignSessionKind::Level2 { reset, .. } = &session.kind else {
+            let CampaignSessionKind::Campaign { reset, .. } = &session.kind else {
                 return Err(AbiError::new(
                     MC_STATUS_INVALID_ARGUMENT,
                     "objective proof requires a Level 2 campaign session",
@@ -2596,29 +2632,62 @@ fn same_tick_camera_refresh_keeps_generic_and_retained_frames_identical() {
     let mut revision = 99;
     let mut blur = 99;
     let mut exit_tables = 99;
-    assert_eq!(mc_native_campaign_scene_frame_copy(handle, 0, 0,
-        scene.as_mut_ptr(), 1, &raw mut written, &raw mut revision,
-        &raw mut blur, &raw mut exit_tables), MC_STATUS_BUFFER_TOO_SMALL);
+    assert_eq!(
+        mc_native_campaign_scene_frame_copy(
+            handle,
+            0,
+            0,
+            scene.as_mut_ptr(),
+            1,
+            &raw mut written,
+            &raw mut revision,
+            &raw mut blur,
+            &raw mut exit_tables
+        ),
+        MC_STATUS_BUFFER_TOO_SMALL
+    );
     assert_eq!((written, revision, blur, exit_tables), (0, 0, 0, 0));
     assert!(scene.iter().all(|&index| index == 0xa5));
-    assert_eq!(mc_native_campaign_scene_frame_copy(handle, 0, 0,
-        scene.as_mut_ptr(), scene.len() as u32, &raw mut written, &raw mut revision,
-        &raw mut blur, &raw mut exit_tables), MC_STATUS_OK);
+    assert_eq!(
+        mc_native_campaign_scene_frame_copy(
+            handle,
+            0,
+            0,
+            scene.as_mut_ptr(),
+            scene.len() as u32,
+            &raw mut written,
+            &raw mut revision,
+            &raw mut blur,
+            &raw mut exit_tables
+        ),
+        MC_STATUS_OK
+    );
     assert_eq!(written, 64000);
     let initial_scene_revision = revision;
     // Isolate the same-tick camera-cache boundary. The sim-core exit test
     // exercises the real action12 producer; this fixture earns no transition.
     with_campaign_session_mut(handle, |record| {
-        let CampaignSessionKind::Level2 { reset, .. } = &mut record.kind else {
+        let CampaignSessionKind::Campaign { reset, .. } = &mut record.kind else {
             unreachable!()
         };
         reset.state.position.x = reset.state.position.x.wrapping_add(1024);
         Ok(())
     })
     .unwrap();
-    assert_eq!(mc_native_campaign_scene_frame_copy(handle, 0, 0,
-        scene.as_mut_ptr(), scene.len() as u32, &raw mut written, &raw mut revision,
-        &raw mut blur, &raw mut exit_tables), MC_STATUS_GENERATION_MISMATCH);
+    assert_eq!(
+        mc_native_campaign_scene_frame_copy(
+            handle,
+            0,
+            0,
+            scene.as_mut_ptr(),
+            scene.len() as u32,
+            &raw mut written,
+            &raw mut revision,
+            &raw mut blur,
+            &raw mut exit_tables
+        ),
+        MC_STATUS_GENERATION_MISMATCH
+    );
     assert_eq!((written, revision, blur, exit_tables), (0, 0, 0, 0));
     let (refreshed, generic) = copy();
     assert_ne!(initial, refreshed);
@@ -2638,9 +2707,20 @@ fn same_tick_camera_refresh_keeps_generic_and_retained_frames_identical() {
     let (repeated, repeated_info) = copy();
     assert_eq!(repeated, refreshed);
     assert_eq!(repeated_info.newly_committed, 0);
-    assert_eq!(mc_native_campaign_scene_frame_copy(handle, 0, 0,
-        scene.as_mut_ptr(), scene.len() as u32, &raw mut written, &raw mut revision,
-        &raw mut blur, &raw mut exit_tables), MC_STATUS_OK);
+    assert_eq!(
+        mc_native_campaign_scene_frame_copy(
+            handle,
+            0,
+            0,
+            scene.as_mut_ptr(),
+            scene.len() as u32,
+            &raw mut written,
+            &raw mut revision,
+            &raw mut blur,
+            &raw mut exit_tables
+        ),
+        MC_STATUS_OK
+    );
     assert_eq!(revision, initial_scene_revision + 1);
     assert_eq!((blur, exit_tables), (0, 0));
     assert_eq!(mc_native_campaign_session_destroy(handle), MC_STATUS_OK);
@@ -3655,13 +3735,16 @@ fn cf14_level3_uses_generic_campaign_abi() {
                 && row.generation == 0
                 && row.tick == tick
                 && row.selected_tmap >= row.base_tmap
-                && row.reserved == [0; 4]
+                && row.pixel_mode <= 7
+                && row.brightness <= 0x2000
+                && row.owner_color == 0x7b
+                && row.reserved == [0; 1]
         }));
     };
     assert_level3_surfaces(0, false);
 
     let nearby_actor = direct
-        .level2_compatibility()
+        .simulation()
         .entities()
         .iter()
         .find(|row| row.active && row.class == 5 && row.particle_parameter_index.is_some())

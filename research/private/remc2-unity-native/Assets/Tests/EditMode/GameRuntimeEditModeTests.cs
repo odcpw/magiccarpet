@@ -80,22 +80,22 @@ namespace MagicCarpet.Native.Tests
             try
             {
                 runtime.QualificationInitializeGameRuntimeProductionFromArguments(InstalledOpeningArguments());
-                Assert.That(Level2SpellPresenter.FindSpell(runtime.GameRuntimeProductionCampaignSnapshot.value,
+                Assert.That(CampaignSpellPresenter.FindSpell(runtime.GameRuntimeProductionCampaignSnapshot.value,
                     "spell.possession").hand, Is.EqualTo("right"));
                 runtime.QualificationAssignGameRuntimeProductionSpell("spell.possession", 0, false);
                 runtime.QualificationDriveGameRuntimeFrames(1);
-                Assert.That(Level2SpellPresenter.FindSpell(runtime.GameRuntimeProductionCampaignSnapshot.value,
+                Assert.That(CampaignSpellPresenter.FindSpell(runtime.GameRuntimeProductionCampaignSnapshot.value,
                     "spell.possession").hand, Is.EqualTo("both"),
                     "source left-hand assignment preserves the existing right hand");
                 runtime.QualificationAssignGameRuntimeProductionSpell("spell.fireball", 0, true);
                 runtime.QualificationDriveGameRuntimeFrames(1);
-                Assert.That(Level2SpellPresenter.FindSpell(runtime.GameRuntimeProductionCampaignSnapshot.value,
+                Assert.That(CampaignSpellPresenter.FindSpell(runtime.GameRuntimeProductionCampaignSnapshot.value,
                     "spell.fireball").hand, Is.EqualTo("right"));
-                Assert.That(Level2SpellPresenter.FindSpell(runtime.GameRuntimeProductionCampaignSnapshot.value,
+                Assert.That(CampaignSpellPresenter.FindSpell(runtime.GameRuntimeProductionCampaignSnapshot.value,
                     "spell.possession").hand, Is.EqualTo("left"));
                 runtime.QualificationAssignGameRuntimeProductionSpell("spell.possession", 2, false);
                 runtime.QualificationDriveGameRuntimeFrames(1);
-                Assert.That(Level2SpellPresenter.FindSpell(runtime.GameRuntimeProductionCampaignSnapshot.value,
+                Assert.That(CampaignSpellPresenter.FindSpell(runtime.GameRuntimeProductionCampaignSnapshot.value,
                     "spell.possession").tier, Is.Zero, "a locked choice never mutates its source holder");
                 runtime.ApplyGameRuntimeHeldSpellInput(true, false);
                 runtime.QualificationDriveGameRuntimeFrames(2);
@@ -518,6 +518,20 @@ namespace MagicCarpet.Native.Tests
             var visible = typeof(CampaignPresentationSurface).GetField("webVisible", flags);
             Assert.That(texture, Is.Not.Null);
             Assert.That(Array.Exists(texture.GetPixels32(), pixel => pixel.a != 0), Is.True);
+            var webPixels = texture.GetPixels32();
+            var webUploads = texture.updateCount;
+            surface.RefreshPreferences();
+            surface.RefreshPreferences();
+            Assert.That(texture.updateCount, Is.EqualTo(webUploads),
+                "unchanged preference polling must not recolor/upload the full WEB image");
+            surface.SetPaletteTransform(palette => Array.ConvertAll(palette, value => (byte)(255 - value)));
+            Assert.That(texture.updateCount, Is.GreaterThan(webUploads),
+                "a changed presentation palette must invalidate the retained WEB colors");
+            var transformedWeb = texture.GetPixels32();
+            var visiblePixel = Array.FindIndex(webPixels, pixel => pixel.a != 0);
+            Assert.That(transformedWeb[visiblePixel].r, Is.EqualTo(255 - webPixels[visiblePixel].r));
+            Assert.That(transformedWeb[visiblePixel].g, Is.EqualTo(255 - webPixels[visiblePixel].g));
+            Assert.That(transformedWeb[visiblePixel].b, Is.EqualTo(255 - webPixels[visiblePixel].b));
             surface.PresentImmobilization(2, true);
             Assert.That(visible.GetValue(surface), Is.True);
             surface.PresentImmobilization(0, true);
@@ -1854,8 +1868,8 @@ namespace MagicCarpet.Native.Tests
                         "the real flyer must construct the stable Castle root within 64 turns");
                     Assert.That(minimumMana, Is.Zero,
                         "the next player source visit must consume the actual 1000-mana Castle cost");
-                    Assert.That(Level2WorldObjectProjection.TryDescribe(root, out var description), Is.True);
-                    Assert.That(description.Kind, Is.EqualTo(Level2WorldObjectKind.Castle));
+                    Assert.That(CampaignWorldObjectProjection.TryDescribe(root, out var description), Is.True);
+                    Assert.That(description.Kind, Is.EqualTo(CampaignWorldObjectKind.Castle));
                     Assert.That(description.AssetSelector, Is.EqualTo((ushort)96));
                     Assert.That(runtime.Handle, Is.EqualTo(handle));
                     Assert.That(runtime.Current.session.session_id, Is.EqualTo(handle.ToString()));
@@ -1967,7 +1981,7 @@ namespace MagicCarpet.Native.Tests
             }
             Assert.That(NativeSession.ActiveSessionCount, Is.EqualTo(activeBefore));
             Assert.That(
-                UnityEngine.Object.FindObjectsByType<Level3EntitySurfaceMarker>(
+                UnityEngine.Object.FindObjectsByType<CampaignEntitySurfaceMarker>(
                     FindObjectsSortMode.None),
                 Is.Empty,
                 $"Level 3 surface {surfaceId} is disposed with its runtime");
@@ -3323,7 +3337,7 @@ namespace MagicCarpet.Native.Tests
                 var initial = runtime.GameRuntimeProductionCampaignSnapshot;
                 Assert.That(initial.identity.tick, Is.EqualTo("0"));
                 Assert.That(initial.value.presentation_entities, Is.Empty);
-                var fireball = Level2SpellPresenter.FindSpell(initial.value, "spell.fireball");
+                var fireball = CampaignSpellPresenter.FindSpell(initial.value, "spell.fireball");
                 Assert.That(fireball.acquired, Is.True);
                 Assert.That(fireball.tier, Is.Zero);
                 Assert.That(fireball.mana_cost, Is.EqualTo(100));
@@ -3342,7 +3356,7 @@ namespace MagicCarpet.Native.Tests
                 var selected = runtime.GameRuntimeProductionCampaignSnapshot;
                 Assert.That(selected.identity.tick, Is.EqualTo("1"));
                 Assert.That(selected.value.presentation_entities, Is.Empty);
-                Assert.That(Level2SpellPresenter.FindSpell(selected.value, fireball.id).selected, Is.True);
+                Assert.That(CampaignSpellPresenter.FindSpell(selected.value, fireball.id).selected, Is.True);
 
                 Assert.That(runtime.RequestGameRuntimeSelectedSpellCast(), Is.True);
                 runtime.QualificationDriveGameRuntimeFrames(1);
@@ -3361,7 +3375,7 @@ namespace MagicCarpet.Native.Tests
                 Assert.That(reset.identity.generation, Is.EqualTo("2"));
                 Assert.That(reset.identity.tick, Is.EqualTo("0"));
                 Assert.That(reset.value.state_hash, Is.EqualTo(initial.value.state_hash));
-                Assert.That(JsonUtility.ToJson(Level2SpellPresenter.FindSpell(reset.value, fireball.id)),
+                Assert.That(JsonUtility.ToJson(CampaignSpellPresenter.FindSpell(reset.value, fireball.id)),
                     Is.EqualTo(JsonUtility.ToJson(fireball)));
             }
             finally
@@ -3395,7 +3409,7 @@ namespace MagicCarpet.Native.Tests
                         "-mc-runtime-owner-cache", Path.Combine(generated, "level3-day-spell-owner-cache-audio-v4/components/material"),
                         "-mc-runtime-presentation-cache", Path.Combine(generated, "level3-day-spell-owner-cache-audio-v4")
                     });
-                Assert.That(Level2SpellPresenter.FindSpell(
+                Assert.That(CampaignSpellPresenter.FindSpell(
                     runtime.GameRuntimeProductionCampaignSnapshot.value, "spell.fireball").selected, Is.True);
                 Assert.That(runtime.SubmitGameRuntimeSpellKey(2), Is.True);
                 // Queue the same input bit as SampleInput, without changing
@@ -3406,9 +3420,9 @@ namespace MagicCarpet.Native.Tests
                 runtime.QualificationDriveGameRuntimeFrames(1);
                 var observed = runtime.GameRuntimeProductionCampaignSnapshot;
                 Assert.That(observed.identity.tick, Is.EqualTo("1"));
-                Assert.That(Level2SpellPresenter.FindSpell(observed.value, "spell.fireball").selected,
+                Assert.That(CampaignSpellPresenter.FindSpell(observed.value, "spell.fireball").selected,
                     Is.True, "source recenter/full-stop takes priority over selection");
-                Assert.That(Level2SpellPresenter.FindSpell(observed.value, "spell.possession").selected,
+                Assert.That(CampaignSpellPresenter.FindSpell(observed.value, "spell.possession").selected,
                     Is.False);
                 Assert.That(observed.value.presentation_entities, Is.Empty);
                 var status = (string)typeof(MagicCarpetRuntime)

@@ -203,11 +203,11 @@ namespace MagicCarpet.Native
             gameRuntimeManaHintStyle = null;
         }
 
-        private sealed class Level2HudPresenter
+        private sealed class CampaignHudPresenter
         {
             private readonly MagicCarpetRuntime owner;
 
-            internal Level2HudPresenter(MagicCarpetRuntime owner)
+            internal CampaignHudPresenter(MagicCarpetRuntime owner)
             {
                 this.owner = owner;
             }

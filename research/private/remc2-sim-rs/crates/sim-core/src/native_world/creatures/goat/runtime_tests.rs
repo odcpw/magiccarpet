@@ -253,7 +253,7 @@ fn parent_clone_reads_preceding_player_visit_yaw_in_source_slot_order() {
     let package = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../../../generated/mc-bhq8-level1-collision-v5-night");
     let mut campaign = CampaignSession::open(package, CampaignSelection::LEVEL1).unwrap();
-    let live = &mut campaign.level2_compatibility_mut().session.state.live;
+    let live = &mut campaign.simulation_mut().session.state.live;
     let player_slot = live.core.state.entity_index;
     let clone = live
         .goats
@@ -273,7 +273,7 @@ fn parent_clone_reads_preceding_player_visit_yaw_in_source_slot_order() {
         },
         0,
     );
-    let live = &campaign.level2_compatibility().session.state.live;
+    let live = &campaign.simulation().session.state.live;
     let parent = &live.economy.entities[usize::from(player_slot)];
     assert_ne!(live.core.state.yaw, 0);
     assert_eq!(parent.yaw, live.core.state.yaw);
@@ -281,7 +281,7 @@ fn parent_clone_reads_preceding_player_visit_yaw_in_source_slot_order() {
     let expected = (parent.position, parent.yaw, parent.source_roll());
     campaign.step(PlayerCommand::default(), 0);
     let goat = campaign
-        .level2_compatibility()
+        .simulation()
         .goats()
         .iter()
         .find(|goat| goat.entity_index == 50)
@@ -416,11 +416,11 @@ fn authored_group_goats_use_live_damage_mana_projection_and_following_pass_recla
     // Stage the actual group-5 producer boundary, not a second constructor.
     // The eleven placements, descriptors and health come from owner content.
     campaign
-        .level2_compatibility_mut()
+        .simulation_mut()
         .activate_authored_group_prerequisite_for_test(5)
         .unwrap();
     let slots = campaign
-        .level2_compatibility()
+        .simulation()
         .goats()
         .iter()
         .filter(|goat| goat.active)
@@ -429,7 +429,7 @@ fn authored_group_goats_use_live_damage_mana_projection_and_following_pass_recla
     assert_eq!(slots.len(), 11);
     // The ordinary class-9 Fireball mover consumes this target list before
     // its area pulse can reach the same canonical Goat damage mailbox.
-    let arena = &campaign.level2_compatibility().session.state.live.economy;
+    let arena = &campaign.simulation().session.state.live.economy;
     let collision_targets = arena.fireball_collision_targets(&arena.entities);
     for slot in &slots {
         let target = collision_targets
@@ -437,7 +437,7 @@ fn authored_group_goats_use_live_damage_mana_projection_and_following_pass_recla
             .find(|target| target.source_slot == *slot)
             .expect("authored Goat participates in ordinary Fireball collision");
         let goat = campaign
-            .level2_compatibility()
+            .simulation()
             .goats()
             .iter()
             .find(|goat| goat.entity_index == *slot)
@@ -458,28 +458,28 @@ fn authored_group_goats_use_live_damage_mana_projection_and_following_pass_recla
     }
     assert!(
         campaign
-            .level2_compatibility()
+            .simulation()
             .session
             .state
             .live
             .economy
             .rebuilt_class5_model_presence()[1]
     );
-    let owner = campaign.level2_compatibility().state.entity_index;
+    let owner = campaign.simulation().state.entity_index;
     let step = |campaign: &mut CampaignSession| {
         campaign.step(PlayerCommand::default(), 0);
         assert!(
-            campaign.events().iter().all(|event| !matches!(
-                event,
-                crate::native_world::Level2DispatchEvent::Error { .. }
-            )),
+            campaign
+                .events()
+                .iter()
+                .all(|event| !matches!(event, crate::native_world::Mc2DispatchEvent::Error { .. })),
             "{:?}",
             campaign.events()
         );
     };
     let first = slots[0];
     let before = campaign
-        .level2_compatibility()
+        .simulation()
         .goats()
         .iter()
         .find(|goat| goat.entity_index == first)
@@ -487,11 +487,11 @@ fn authored_group_goats_use_live_damage_mana_projection_and_following_pass_recla
         .clone();
     assert_eq!((before.life, before.mana, before.action), (600, 300, 9));
     campaign
-        .level2_compatibility_mut()
+        .simulation_mut()
         .apply_fireball_impact_to_firefly_for_test(before.position, owner, 500);
     step(&mut campaign);
     let goat = campaign
-        .level2_compatibility()
+        .simulation()
         .goats()
         .iter()
         .find(|goat| goat.entity_index == first)
@@ -501,7 +501,7 @@ fn authored_group_goats_use_live_damage_mana_projection_and_following_pass_recla
         (100, 14, Some(owner))
     );
     let projected = campaign
-        .level2_compatibility()
+        .simulation()
         .economy()
         .authored_class5()
         .iter()
@@ -512,36 +512,36 @@ fn authored_group_goats_use_live_damage_mana_projection_and_following_pass_recla
         (100, 14, owner)
     );
     assert_eq!(
-        campaign.level2_compatibility().runtime().objectives[0].stage_selectors[0],
+        campaign.simulation().runtime().objectives[0].stage_selectors[0],
         1,
         "a living dynamically constructed Goat blocks the published absence objective"
     );
     assert!(campaign.events().iter().all(|event| !matches!(
         event,
-        crate::native_world::Level2DispatchEvent::AuthoredGroupActivated { group: 1, .. }
+        crate::native_world::Mc2DispatchEvent::AuthoredGroupActivated { group: 1, .. }
     )));
 
     for slot in &slots {
         let goat = campaign
-            .level2_compatibility()
+            .simulation()
             .goats()
             .iter()
             .find(|goat| goat.entity_index == *slot)
             .unwrap()
             .clone();
         campaign
-            .level2_compatibility_mut()
+            .simulation_mut()
             .apply_fireball_impact_to_firefly_for_test(goat.position, owner, 500);
         if *slot != first {
             campaign
-                .level2_compatibility_mut()
+                .simulation_mut()
                 .apply_fireball_impact_to_firefly_for_test(goat.position, owner, 500);
         }
     }
     step(&mut campaign);
     assert!(
         campaign
-            .level2_compatibility()
+            .simulation()
             .goats()
             .iter()
             .filter(|goat| slots.contains(&goat.entity_index))
@@ -551,7 +551,7 @@ fn authored_group_goats_use_live_damage_mana_projection_and_following_pass_recla
     // from absence/countdown input on the following list rebuild.
     assert!(
         !campaign
-            .level2_compatibility()
+            .simulation()
             .session
             .state
             .live
@@ -559,13 +559,13 @@ fn authored_group_goats_use_live_damage_mana_projection_and_following_pass_recla
             .rebuilt_class5_model_presence()[1]
     );
     assert_eq!(
-        campaign.level2_compatibility().runtime().objectives[0].stage_selectors[0],
+        campaign.simulation().runtime().objectives[0].stage_selectors[0],
         1,
         "the killing pass still observes its frozen living-root census"
     );
     step(&mut campaign);
     assert_eq!(
-        campaign.level2_compatibility().runtime().objectives[0].stage_selectors[0],
+        campaign.simulation().runtime().objectives[0].stage_selectors[0],
         2,
         "the following pass releases the actual Goat absence objective"
     );
@@ -577,7 +577,7 @@ fn authored_group_goats_use_live_damage_mana_projection_and_following_pass_recla
         group_one_published |= campaign.events().iter().any(|event| {
             matches!(
                 event,
-                crate::native_world::Level2DispatchEvent::AuthoredGroupActivated {
+                crate::native_world::Mc2DispatchEvent::AuthoredGroupActivated {
                     source_slot: 127,
                     group: 1,
                     authored_indices,
@@ -590,7 +590,7 @@ fn authored_group_goats_use_live_damage_mana_projection_and_following_pass_recla
         group_one_published,
         "the source objective-complete producer must publish its real group"
     );
-    let session = campaign.level2_compatibility();
+    let session = campaign.simulation();
     for slot in slots {
         let goat = session
             .goats()

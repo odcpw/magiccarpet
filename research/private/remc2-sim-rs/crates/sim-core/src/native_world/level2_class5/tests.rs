@@ -10,11 +10,7 @@ use crate::{
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 
-fn update_level_two_goat<F>(
-    session: &mut Level2ResetSession,
-    source_slot: u16,
-    update: F,
-) -> GoatState
+fn update_level_two_goat<F>(session: &mut Mc2Simulation, source_slot: u16, update: F) -> GoatState
 where
     F: FnOnce(&mut GoatState),
 {
@@ -39,10 +35,10 @@ struct CreatureAudioReceipt {
     audio_site: crate::MissionAudioSite,
 }
 
-fn creature_audio_receipts(session: &Level2ResetSession) -> Vec<CreatureAudioReceipt> {
+fn creature_audio_receipts(session: &Mc2Simulation) -> Vec<CreatureAudioReceipt> {
     let mut receipts = Vec::new();
     for dispatch in session.dispatch_events() {
-        let Level2DispatchEvent::Goat {
+        let Mc2DispatchEvent::Goat {
             source_slot,
             events,
             ..
@@ -73,7 +69,7 @@ fn creature_audio_receipts(session: &Level2ResetSession) -> Vec<CreatureAudioRec
     receipts
 }
 
-fn configure_three_level_two_creature_sounds(session: &mut Level2ResetSession) {
+fn configure_three_level_two_creature_sounds(session: &mut Mc2Simulation) {
     let selected = [39_u16, 40, 42];
     for mut goat in session.goats().to_vec() {
         if selected.contains(&goat.entity_index) {
@@ -155,7 +151,7 @@ fn assert_no_goat_bleat(events: &[GoatStepEvent]) {
     );
 }
 
-fn activate_group20_archers() -> (Level2ResetSession, u64) {
+fn activate_group20_archers() -> (Mc2Simulation, u64) {
     let mut session = level_two_campaign_session();
     let baseline_hash = session.campaign_state_hash();
     let authored_features = session.mission().authored_features().to_vec();
@@ -184,7 +180,7 @@ fn activate_group20_archers() -> (Level2ResetSession, u64) {
         session.dispatch_events().iter().any(|event| {
             matches!(
                 event,
-                Level2DispatchEvent::AuthoredGroupActivated {
+                Mc2DispatchEvent::AuthoredGroupActivated {
                     group: 20,
                     authored_indices,
                     ..
@@ -205,7 +201,7 @@ fn activate_group20_archers() -> (Level2ResetSession, u64) {
     (session, baseline_hash)
 }
 
-fn produce_archer_child(session: &mut Level2ResetSession) -> (u16, u16, i16) {
+fn produce_archer_child(session: &mut Mc2Simulation) -> (u16, u16, i16) {
     let root = session
         .economy()
         .authored_class5()
@@ -340,7 +336,7 @@ fn level_two_archers_complete_constructor_action_and_child_chain() {
     assert!(session.dispatch_events().iter().any(|event| {
         matches!(
             event,
-            Level2DispatchEvent::DynamicArena {
+            Mc2DispatchEvent::DynamicArena {
                 source_slot,
                 kind: Level2DynamicArenaKind::AuthoredClass5ArcherChild,
                 ..
@@ -795,7 +791,7 @@ fn level_two_model45_group22_materializes_authored_class5_rows_in_source_order()
     assert_eq!(sources[1].max_mana, 0);
     assert!(session.dispatch_events().iter().any(|event| matches!(
         event,
-        Level2DispatchEvent::AuthoredGroupActivated {
+        Mc2DispatchEvent::AuthoredGroupActivated {
             group: 22,
             authored_indices,
             ..
@@ -847,7 +843,7 @@ fn level_two_model45_group22_materializes_authored_class5_rows_in_source_order()
     assert_eq!(row245_after_transition.position, row245_before.position);
     assert!(session.dispatch_events().iter().any(|event| matches!(
         event,
-        Level2DispatchEvent::DynamicArena {
+        Mc2DispatchEvent::DynamicArena {
             source_slot,
             kind: Level2DynamicArenaKind::AuthoredClass5,
             ..
@@ -952,7 +948,7 @@ fn level_two_model45_group22_materializes_authored_class5_rows_in_source_order()
     assert_eq!(row238_after.word_0x96_150, player_entity);
     assert!(session.dispatch_events().iter().any(|event| matches!(
         event,
-        Level2DispatchEvent::DynamicArena {
+        Mc2DispatchEvent::DynamicArena {
             source_slot,
             kind: Level2DynamicArenaKind::AuthoredClass5,
             ..
@@ -1165,12 +1161,12 @@ fn level_two_non_bee_creature_rng_draws_follow_pinned_source_order() {
         .dispatch_events()
         .iter()
         .filter_map(|event| match event {
-            Level2DispatchEvent::Goat { source_slot, .. }
+            Mc2DispatchEvent::Goat { source_slot, .. }
                 if matches!(*source_slot, 39 | 40 | 42 | 71) =>
             {
                 Some(*source_slot)
             }
-            Level2DispatchEvent::Villager {
+            Mc2DispatchEvent::Villager {
                 source_slot: 78,
                 pass: 0,
                 ..
@@ -1423,7 +1419,7 @@ fn level_two_bee_damage_mailbox_keeps_payload_and_orders_nonlethal_tail() {
         crate::campaign::spec::CampaignSelection::LEVEL2,
     )
     .expect("qualified semantic Level 2 campaign");
-    let session = campaign.level2_compatibility_mut();
+    let session = campaign.simulation_mut();
     session
         .activate_authored_group_prerequisite_for_test(21)
         .expect("qualified group-21 Bee boundary");

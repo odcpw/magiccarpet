@@ -46,7 +46,7 @@ impl State {
     /// Live draw tuples borrow the same root/segment state as the scheduler.
     pub(crate) fn sprite_sources(
         &self,
-    ) -> impl Iterator<Item = (u16, u16, u16, i16, crate::Position)> + '_ {
+    ) -> impl Iterator<Item = (u16, u16, u16, i16, crate::Position, u32)> + '_ {
         self.authored_model22
             .iter()
             .filter(|s| s.active && s.control_flags & 0x421 == 0)
@@ -57,6 +57,7 @@ impl State {
                     s.particle_index,
                     s.yaw,
                     s.position,
+                    s.control_flags,
                 )
             })
             .chain(
@@ -70,6 +71,7 @@ impl State {
                             s.particle_index,
                             s.yaw,
                             s.position,
+                            if s.drawing_enabled { 0 } else { 0x400 },
                         )
                     }),
             )

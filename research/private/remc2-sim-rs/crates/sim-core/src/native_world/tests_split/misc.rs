@@ -2,7 +2,7 @@
 fn level_two_qualified_area_exit_hides_after_inverse_overlap_success() {
     let mut session = level_two_campaign_session();
     let baseline_hash = session.campaign_state_hash();
-    let drive_exit = |session: &mut Level2ResetSession| {
+    let drive_exit = |session: &mut Mc2Simulation| {
         let feature = session
             .mission()
             .authored_features()
@@ -38,7 +38,7 @@ fn level_two_qualified_area_exit_hides_after_inverse_overlap_success() {
             session.step_outer_turn(PlayerCommand::default(), 0);
             assert!(
                 !session.dispatch_events().iter().any(|event| matches!(event,
-                Level2DispatchEvent::AuthoredGroupActivated { source_slot, group: 2, .. }
+                Mc2DispatchEvent::AuthoredGroupActivated { source_slot, group: 2, .. }
                     if *source_slot == root.source_entity_index))
             );
         }
@@ -61,7 +61,7 @@ fn level_two_qualified_area_exit_hides_after_inverse_overlap_success() {
             receipts.extend_from_slice(session.dispatch_events());
             if session.dispatch_events().iter().any(|event| {
                 matches!(event,
-                Level2DispatchEvent::AuthoredGroupActivated { source_slot, group: 2, .. }
+                Mc2DispatchEvent::AuthoredGroupActivated { source_slot, group: 2, .. }
                     if *source_slot == root.source_entity_index)
             }) {
                 break;
@@ -71,7 +71,7 @@ fn level_two_qualified_area_exit_hides_after_inverse_overlap_success() {
             receipts
                 .iter()
                 .filter(|event| matches!(event,
-            Level2DispatchEvent::AuthoredGroupActivated { source_slot, group: 2, .. }
+            Mc2DispatchEvent::AuthoredGroupActivated { source_slot, group: 2, .. }
                 if *source_slot == root.source_entity_index))
                 .count(),
             1,
@@ -97,7 +97,7 @@ fn level_two_qualified_area_exit_hides_after_inverse_overlap_success() {
                 .collect::<Vec<_>>(),
             receipts
                 .iter()
-                .filter(|event| matches!(event, Level2DispatchEvent::Error { .. }))
+                .filter(|event| matches!(event, Mc2DispatchEvent::Error { .. }))
                 .take(8)
                 .collect::<Vec<_>>(),
             session
@@ -149,7 +149,7 @@ fn level_two_qualified_area_exit_hides_after_inverse_overlap_success() {
         );
         assert!(
             !session.dispatch_events().iter().any(|event| matches!(event,
-            Level2DispatchEvent::AuthoredGroupActivated { source_slot, group: 2, .. }
+            Mc2DispatchEvent::AuthoredGroupActivated { source_slot, group: 2, .. }
                 if *source_slot == root.source_entity_index))
         );
         receipts
@@ -195,11 +195,11 @@ fn level_two_model76_producers_activate_rows_116_120_124_only() {
     assert_eq!(authored, BTreeSet::from([116_u16, 120, 124]));
     assert!(!source_trace.iter().any(|event| matches!(
         event,
-        Level2DispatchEvent::AuthoredGroupActivated { group: 10, .. }
+        Mc2DispatchEvent::AuthoredGroupActivated { group: 10, .. }
     )));
     assert!(source_trace.iter().any(|event| matches!(
         event,
-        Level2DispatchEvent::AuthoredGroupActivated {
+        Mc2DispatchEvent::AuthoredGroupActivated {
             group: 12,
             authored_indices,
             ..
@@ -207,7 +207,7 @@ fn level_two_model76_producers_activate_rows_116_120_124_only() {
     )));
     assert!(source_trace.iter().any(|event| matches!(
         event,
-        Level2DispatchEvent::AuthoredGroupActivated {
+        Mc2DispatchEvent::AuthoredGroupActivated {
             group: 14,
             authored_indices,
             ..
@@ -215,7 +215,7 @@ fn level_two_model76_producers_activate_rows_116_120_124_only() {
     )));
     assert!(source_trace.iter().any(|event| matches!(
         event,
-        Level2DispatchEvent::AuthoredGroupActivated {
+        Mc2DispatchEvent::AuthoredGroupActivated {
             group: 16,
             authored_indices,
             ..
@@ -223,7 +223,7 @@ fn level_two_model76_producers_activate_rows_116_120_124_only() {
     )));
     assert!(source_trace.iter().any(|event| matches!(
         event,
-        Level2DispatchEvent::DynamicArena {
+        Mc2DispatchEvent::DynamicArena {
             kind: Level2DynamicArenaKind::AuthoredModel76,
             ..
         }
@@ -231,7 +231,7 @@ fn level_two_model76_producers_activate_rows_116_120_124_only() {
     assert!(
         !source_trace.iter().any(|event| matches!(
             event,
-            Level2DispatchEvent::Economy {
+            Mc2DispatchEvent::Economy {
                 source_slot: 25,
                 event: Level2EconomyEvent::PreparedSound { sound_id: 41, .. },
                 ..
@@ -278,7 +278,7 @@ fn level_two_model76_switch25_stays_latent_without_overlap() {
     );
     assert!(!session.dispatch_events().iter().any(|event| matches!(
         event,
-        Level2DispatchEvent::AuthoredGroupActivated { group: 10, .. }
+        Mc2DispatchEvent::AuthoredGroupActivated { group: 10, .. }
     )));
     let live_switch = session
         .economy
@@ -316,7 +316,7 @@ fn level_two_model76_switch25_rejects_far_and_strict_boundary_positions() {
     );
     assert!(!far.dispatch_events().iter().any(|event| matches!(
         event,
-        Level2DispatchEvent::AuthoredGroupActivated { group: 10, .. }
+        Mc2DispatchEvent::AuthoredGroupActivated { group: 10, .. }
     )));
 
     let mut boundary = level_two_campaign_session();
@@ -361,7 +361,7 @@ fn level_two_model76_switch25_rejects_far_and_strict_boundary_positions() {
     );
     assert!(!boundary.dispatch_events().iter().any(|event| matches!(
         event,
-        Level2DispatchEvent::AuthoredGroupActivated { group: 10, .. }
+        Mc2DispatchEvent::AuthoredGroupActivated { group: 10, .. }
     )));
 }
 
@@ -385,7 +385,7 @@ fn level_two_model76_switch25_activates_row112_once_and_enters_cursor() {
 
     assert!(session.dispatch_events().iter().any(|event| matches!(
         event,
-        Level2DispatchEvent::AuthoredGroupActivated {
+        Mc2DispatchEvent::AuthoredGroupActivated {
             source_slot,
             group,
             authored_indices,
@@ -394,7 +394,7 @@ fn level_two_model76_switch25_activates_row112_once_and_enters_cursor() {
     )));
     assert!(session.dispatch_events().iter().any(|event| matches!(
         event,
-        Level2DispatchEvent::DynamicArena {
+        Mc2DispatchEvent::DynamicArena {
             kind: Level2DynamicArenaKind::AuthoredModel76,
             ..
         }
@@ -424,7 +424,7 @@ fn level_two_model76_switch25_activates_row112_once_and_enters_cursor() {
             .iter()
             .filter(|event| matches!(
                 event,
-                Level2DispatchEvent::AuthoredGroupActivated { group: 10, .. }
+                Mc2DispatchEvent::AuthoredGroupActivated { group: 10, .. }
             ))
             .count(),
         0,
@@ -484,7 +484,7 @@ fn level_two_model76_switch25_allocation_failure_consumes_row_and_hides() {
     assert!(hidden_switch.active);
     assert!(session.dispatch_events().iter().any(|event| matches!(
         event,
-        Level2DispatchEvent::AuthoredGroupActivated {
+        Mc2DispatchEvent::AuthoredGroupActivated {
             source_slot: 25,
             group: 10,
             authored_indices,
@@ -493,7 +493,7 @@ fn level_two_model76_switch25_allocation_failure_consumes_row_and_hides() {
     )));
     assert!(!session.dispatch_events().iter().any(|event| matches!(
         event,
-        Level2DispatchEvent::Error {
+        Mc2DispatchEvent::Error {
             source_slot: 25,
             ..
         }
@@ -516,7 +516,7 @@ fn level_two_model76_switch25_allocation_failure_consumes_row_and_hides() {
             .iter()
             .filter(|event| matches!(
                 event,
-                Level2DispatchEvent::AuthoredGroupActivated { group: 10, .. }
+                Mc2DispatchEvent::AuthoredGroupActivated { group: 10, .. }
             ))
             .count(),
         0,
@@ -1102,7 +1102,7 @@ fn level_two_model76_generic_collision_callback_is_exact() {
                 .dispatch_events()
                 .iter()
                 .filter_map(|event| match event {
-                    Level2DispatchEvent::Economy {
+                    Mc2DispatchEvent::Economy {
                         source_slot,
                         event:
                             Level2EconomyEvent::FireSphereCollisionSound {
@@ -1268,7 +1268,7 @@ fn level_two_model76_column_zero_owner_reaches_model2_mailbox_on_production_turn
     );
     assert!(session.dispatch_events().iter().any(|event| matches!(
         event,
-        Level2DispatchEvent::DynamicArena {
+        Mc2DispatchEvent::DynamicArena {
             kind: Level2DynamicArenaKind::AuthoredModel76,
             source_slot,
             ..
@@ -1329,7 +1329,7 @@ fn level_two_shield_active_holder_ticks_through_outer_turn_and_reset() {
             .dispatch_events()
             .iter()
             .find_map(|event| match event {
-                Level2DispatchEvent::SpellAcquisition {
+                Mc2DispatchEvent::SpellAcquisition {
                     family: 6,
                     result: Some(outcome),
                     ..
@@ -1682,20 +1682,20 @@ fn level_three_acquired_shield_charge_reaches_player_upkeep() {
     )
     .expect("installed Level 3 descriptor");
     let player = campaign
-        .level2_compatibility()
+        .simulation()
         .shared_spells()
         .local_player()
         .entity_index;
-    let pickup = campaign.level2_compatibility().entities()[124].clone();
+    let pickup = campaign.simulation().entities()[124].clone();
     assert_eq!((pickup.class, pickup.model, pickup.action), (15, 6, 19));
     campaign
-        .level2_compatibility_mut()
+        .simulation_mut()
         .set_level2_entity_position(player, pickup.position)
         .expect("player approaches the reset-imported Shield pickup");
     for _ in 0..4 {
         campaign.step(PlayerCommand::default(), 0);
         if campaign
-            .level2_compatibility()
+            .simulation()
             .shared_spells()
             .local_player()
             .enabled_spell_holders[6]
@@ -1706,7 +1706,7 @@ fn level_three_acquired_shield_charge_reaches_player_upkeep() {
     }
     assert_eq!(
         campaign
-            .level2_compatibility()
+            .simulation()
             .shared_spells()
             .local_player()
             .enabled_spell_holders[6],
@@ -1735,7 +1735,7 @@ fn level_three_acquired_shield_charge_reaches_player_upkeep() {
             0,
         );
         if campaign
-            .level2_compatibility()
+            .simulation()
             .shared_spells()
             .shield_state()
             .is_some_and(|shield| shield.active_value > 0)
@@ -1743,7 +1743,7 @@ fn level_three_acquired_shield_charge_reaches_player_upkeep() {
             break;
         }
     }
-    let shared = campaign.level2_compatibility().shared_spells();
+    let shared = campaign.simulation().shared_spells();
     let armed = shared.shield_state().expect("acquired Shield state");
     assert!(pickup.index < player, "holder visits before its caster");
     assert_eq!(armed.active_value, armed.activation_value);
@@ -1754,23 +1754,20 @@ fn level_three_acquired_shield_charge_reaches_player_upkeep() {
     // The next numeric holder visit produces the negative regen mailbox;
     // the later player visit in that same pass consumes it into actual mana.
     campaign.step(PlayerCommand::default(), 0);
-    let shared = campaign.level2_compatibility().shared_spells();
+    let shared = campaign.simulation().shared_spells();
     let first = shared.shield_state().expect("first Shield pulse");
     assert_eq!(first.active_value, armed.active_value - 1);
     assert_eq!(shared.player_mana(), mana_before_charge - armed.mana_cost);
     assert_eq!(shared.player_entity().mana, shared.player_mana());
     assert_eq!(
-        campaign.level2_compatibility().entities()[usize::from(player)].mana,
+        campaign.simulation().entities()[usize::from(player)].mana,
         shared.player_mana(),
         "numeric arena and HUD mana observe the consumed charge"
     );
     let mana_after_charge = shared.player_mana();
     campaign.step(PlayerCommand::default(), 0);
     assert_eq!(
-        campaign
-            .level2_compatibility()
-            .shared_spells()
-            .player_mana(),
+        campaign.simulation().shared_spells().player_mana(),
         mana_after_charge,
         "sustained Shield suppresses recharge without charging again"
     );
@@ -1803,7 +1800,7 @@ fn level_two_shield_damage_consumer_updates_parent_and_holder_projection() {
             .dispatch_events()
             .iter()
             .find_map(|event| match event {
-                Level2DispatchEvent::SpellAcquisition {
+                Mc2DispatchEvent::SpellAcquisition {
                     family: 6,
                     result: Some(outcome),
                     ..
@@ -1884,7 +1881,7 @@ fn level_two_automatic_bee_contact_consumes_shield_status_at_player_visit() {
         .expect("source objective completion sentinel");
     let baseline_hash = session.shared_spells().reset_hash();
     fire_level_two_model32_group(&mut session, 21);
-    let acquire_shield = |session: &mut Level2ResetSession| {
+    let acquire_shield = |session: &mut Mc2Simulation| {
         session.step_outer_turn(PlayerCommand::default(), 0);
         let source = session
             .economy()
@@ -1903,7 +1900,7 @@ fn level_two_automatic_bee_contact_consumes_shield_status_at_player_visit() {
                     .dispatch_events()
                     .iter()
                     .find_map(|event| match event {
-                        Level2DispatchEvent::SpellAcquisition {
+                        Mc2DispatchEvent::SpellAcquisition {
                             family: 6,
                             result: Some(outcome),
                             ..
@@ -1979,7 +1976,7 @@ fn level_two_automatic_bee_contact_consumes_shield_status_at_player_visit() {
         active.parent_life - damage.applied_damage
     );
     let assert_player_mailbox =
-        |session: &Level2ResetSession, expected_damage: i32, expected_owner: u16| {
+        |session: &Mc2Simulation, expected_damage: i32, expected_owner: u16| {
             let player_record =
                 session.economy.entities[usize::from(session.state.entity_index)].record_bytes();
             assert_eq!(
@@ -2068,7 +2065,7 @@ fn level_two_automatic_bee_contact_consumes_shield_status_at_player_visit() {
     let turns_to_last_live = u16::try_from(shield_ticks - 1).expect("Shield duration fits");
     let warmup =
         (cadence - (u16::from(live_bee.source_byte_3e) + turns_to_last_live) % cadence) % cadence;
-    let set_player_outside_contact = |session: &mut Level2ResetSession| {
+    let set_player_outside_contact = |session: &mut Mc2Simulation| {
         let live_bee = session
             .economy()
             .bee_creatures()
@@ -2167,7 +2164,7 @@ fn level_two_automatic_bee_contact_consumes_shield_status_at_player_visit() {
     );
     assert!(session.dispatch_events().iter().any(|event| matches!(
         event,
-        Level2DispatchEvent::Economy {
+        Mc2DispatchEvent::Economy {
             event: Level2EconomyEvent::DamageApplied {
                 attacker_entity_index,
                 damage: 200,
@@ -2279,7 +2276,7 @@ fn level_two_shield_expiry_replays_queued_setspell_word() {
             .dispatch_events()
             .iter()
             .find_map(|event| match event {
-                Level2DispatchEvent::SpellAcquisition {
+                Mc2DispatchEvent::SpellAcquisition {
                     family: 6,
                     result: Some(outcome),
                     ..
@@ -2372,7 +2369,7 @@ fn level_two_ordinary_invisible_acquisition_reconciles_command_latch_and_reset()
             .dispatch_events()
             .iter()
             .find_map(|event| match event {
-                Level2DispatchEvent::SpellAcquisition {
+                Mc2DispatchEvent::SpellAcquisition {
                     family: 11,
                     result: Some(outcome),
                     ..
@@ -2489,7 +2486,7 @@ fn level_two_ordinary_invisible_acquisition_reconciles_command_latch_and_reset()
     session.step_outer_turn(PlayerCommand::default(), 0);
     assert!(session.dispatch_events().iter().any(|event| matches!(
         event,
-        Level2DispatchEvent::SpellAcquisition {
+        Mc2DispatchEvent::SpellAcquisition {
             family: 11,
             source_slot,
             result: None,
@@ -2538,7 +2535,7 @@ fn level_two_invisible_active_holder_ticks_through_outer_turn_and_reset() {
             .dispatch_events()
             .iter()
             .find_map(|event| match event {
-                Level2DispatchEvent::SpellAcquisition {
+                Mc2DispatchEvent::SpellAcquisition {
                     family: 11,
                     result: Some(outcome),
                     ..
@@ -2908,7 +2905,7 @@ fn level_two_invisible_expiry_replays_queued_setspell_word() {
             .dispatch_events()
             .iter()
             .find_map(|event| match event {
-                Level2DispatchEvent::SpellAcquisition {
+                Mc2DispatchEvent::SpellAcquisition {
                     family: 11,
                     result: Some(outcome),
                     ..
@@ -3030,7 +3027,7 @@ fn level_two_beyond_sight_active_holder_ticks_through_outer_turn_and_reset() {
     );
     assert!(!session.dispatch_events().iter().any(|event| matches!(
         event,
-        Level2DispatchEvent::DynamicArena {
+        Mc2DispatchEvent::DynamicArena {
             kind: Level2DynamicArenaKind::BeyondSightPulseEffect,
             ..
         }
@@ -3718,7 +3715,7 @@ fn level_two_persistent_replacement_reaches_production_acquisition_and_reallocat
             .dispatch_events()
             .iter()
             .find_map(|event| match event {
-                Level2DispatchEvent::SpellAcquisition {
+                Mc2DispatchEvent::SpellAcquisition {
                     family: 11,
                     source_slot,
                     result: Some(outcome),
@@ -3769,7 +3766,7 @@ fn level_two_persistent_replacement_reaches_production_acquisition_and_reallocat
 
 #[test]
 fn level_two_persistent_replacement_boundary_is_complete() {
-    let persistent_spell_sources = |session: &Level2ResetSession| {
+    let persistent_spell_sources = |session: &Mc2Simulation| {
         session
             .shared_spells()
             .pickups()
@@ -3830,7 +3827,7 @@ fn level_two_persistent_replacement_boundary_is_complete() {
         [Some(20), Some(35), Some(38)]
     );
 
-    let acquire_ordinary = |session: &mut Level2ResetSession,
+    let acquire_ordinary = |session: &mut Mc2Simulation,
                             authored_index: u16,
                             family: u8,
                             source_action: u8,
@@ -3857,7 +3854,7 @@ fn level_two_persistent_replacement_boundary_is_complete() {
                 .dispatch_events()
                 .iter()
                 .find_map(|event| match event {
-                    Level2DispatchEvent::SpellAcquisition {
+                    Mc2DispatchEvent::SpellAcquisition {
                         family: observed_family,
                         source_slot: observed_slot,
                         result: Some(outcome),
@@ -3917,7 +3914,7 @@ fn level_two_persistent_replacement_boundary_is_complete() {
         assert!(session.dispatch_events().iter().all(|event| {
             !matches!(
                 event,
-                Level2DispatchEvent::DynamicArena {
+                Mc2DispatchEvent::DynamicArena {
                     source_slot: observed_slot,
                     kind: Level2DynamicArenaKind::SpellReplacement,
                     ..
@@ -3958,7 +3955,7 @@ fn level_two_persistent_replacement_boundary_is_complete() {
             .dispatch_events()
             .iter()
             .find_map(|event| match event {
-                Level2DispatchEvent::SpellAcquisition {
+                Mc2DispatchEvent::SpellAcquisition {
                     family: 12,
                     source_slot: 38,
                     result: Some(outcome),
@@ -4078,7 +4075,7 @@ fn level_two_possession_holder_dispatch_phase_advances_once_and_replays_after_re
         .expect("Level 2 Possession holder session");
     session.select_level2_campaign_entry_stage();
 
-    let holder = |session: &Level2ResetSession| {
+    let holder = |session: &Mc2Simulation| {
         session
             .shared_spells()
             .dynamic_pickups

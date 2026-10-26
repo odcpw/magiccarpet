@@ -44,14 +44,14 @@ pub(super) fn validate_embedded_command(command: &McCommandV2) -> AbiResult<()> 
 pub(super) fn campaign_event_snapshot(
     generation: u64,
     ordinal: usize,
-    event: &Level2DispatchEvent,
+    event: &Mc2DispatchEvent,
 ) -> McCampaignEventV2 {
     let (pass, projected_kind, family, flags, source_slot) = event.campaign_projection();
     let kind = match event {
-        Level2DispatchEvent::Economy { .. } => MC_CAMPAIGN_EVENT_ECONOMY,
-        Level2DispatchEvent::Goat { .. } => MC_CAMPAIGN_EVENT_GOAT,
-        Level2DispatchEvent::SpellAcquisition { .. } => MC_CAMPAIGN_EVENT_SPELL_ACQUISITION,
-        Level2DispatchEvent::AuthoredGroupActivated { .. } => MC_CAMPAIGN_EVENT_AUTHORED_GROUP,
+        Mc2DispatchEvent::Economy { .. } => MC_CAMPAIGN_EVENT_ECONOMY,
+        Mc2DispatchEvent::Goat { .. } => MC_CAMPAIGN_EVENT_GOAT,
+        Mc2DispatchEvent::SpellAcquisition { .. } => MC_CAMPAIGN_EVENT_SPELL_ACQUISITION,
+        Mc2DispatchEvent::AuthoredGroupActivated { .. } => MC_CAMPAIGN_EVENT_AUTHORED_GROUP,
         _ => projected_kind,
     };
     McCampaignEventV2 {
