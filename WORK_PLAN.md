@@ -56,6 +56,12 @@ live NTM panes rather than trusting old pane lists. GreenFinch coordinates
 acceptance, tracker and pushes. BrownCrane dispatches the sole Cargo/Unity build
 slot. Preserve dirty source, staged work, warm caches and current installations.
 
+For the current incremental build/install batches, check actual free bytes and
+pending output size before expensive stages. The earlier blanket 20 GB hold was
+replaced by the bounded headroom decision in mc-zdo.1: stop the next stage below
+5 GB free or when its measured footprint exceeds available headroom. Preserve
+the current player, immediate rollback and warm caches.
+
 Every dispatch/follow-up must say: reread this plan and the bead; the positive
 runtime result; the exact remaining link and owned surface; the integration
 owner; the focused evidence and handoff boundary. Reference existing details
