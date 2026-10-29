@@ -1155,6 +1155,29 @@ pub(crate) struct DeathOutcome {
     pub secondary_source_effect_slot: Option<u16>,
 }
 
+#[cfg(test)]
+#[derive(Debug)]
+pub(crate) struct DeathHideReceipt {
+    pub(crate) callback: SourceEntityHandle,
+    pub(crate) hidden: Vec<SourceEntityHandle>,
+}
+
+#[cfg(test)]
+thread_local! {
+    static DEATH_HIDE_TRACE: std::cell::RefCell<Option<Vec<DeathHideReceipt>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+pub(crate) fn start_death_hide_trace() {
+    DEATH_HIDE_TRACE.with(|trace| *trace.borrow_mut() = Some(Vec::new()));
+}
+
+#[cfg(test)]
+pub(crate) fn take_death_hide_trace() -> Vec<DeathHideReceipt> {
+    DEATH_HIDE_TRACE.with(|trace| trace.borrow_mut().take().unwrap_or_default())
+}
+
 /// `sub_298D0`: transform the dying root to a mana sphere using source's
 /// fraction flag (including its one-sphere/full-remainder shadowing behavior),
 /// request the optional source 10/1 product, then hide the complete chain.
@@ -1269,7 +1292,7 @@ pub(crate) fn kill(
         secondary_source_effect_slot,
     )?;
     if !replacement_hidden && arena.slot_generation(root.source_slot) == root.generation {
-        for part in suffix {
+        for part in &suffix {
             if arena.slot_generation(part.source_slot) == part.generation {
                 arena.entities[usize::from(part.source_slot)].disable_drawing();
             }
@@ -1280,6 +1303,23 @@ pub(crate) fn kill(
             root.source_slot
         ));
     }
+    #[cfg(test)]
+    DEATH_HIDE_TRACE.with(|trace| {
+        if let Some(receipts) = trace.borrow_mut().as_mut() {
+            let hidden = suffix
+                .iter()
+                .copied()
+                .filter(|part| {
+                    arena.slot_generation(part.source_slot) == part.generation
+                        && arena.entities[usize::from(part.source_slot)].drawing_disabled()
+                })
+                .collect();
+            receipts.push(DeathHideReceipt {
+                callback: root,
+                hidden,
+            });
+        }
+    });
     Ok(DeathOutcome {
         mana_sphere_ids: sphere_ids,
         credited_killer,

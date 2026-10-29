@@ -407,31 +407,91 @@ fn assert_head_projectiles_reach_scheduled_damage_consumers(
     root_slot: u16,
 ) {
     use crate::PlayerCommand;
+    use crate::native_world::Mc2DispatchEvent;
+
+    let local_slot = base.state.entity_index;
+    let target_slot = base
+        .entities()
+        .iter()
+        .find(|row| {
+            row.active
+                && row.class == 3
+                && row.model == 1
+                && row.life > 0
+                && !row.drawing_disabled()
+        })
+        .map_or(local_slot, |row| row.index);
+    let mut cases = Vec::new();
+    if target_slot == local_slot {
+        assert!(base.session.state.live.player_protection_ticks > 24);
+        let player = &base.entities()[usize::from(local_slot)];
+        assert!(
+            !base
+                .session
+                .state
+                .live
+                .economy
+                .economy
+                .player_castle_shift_aabb_overlap(player),
+            "the near-identical protection control requires a player outside its Castle"
+        );
+        let mut expired = base.clone();
+        let remaining = expired.session.state.live.player_protection_ticks;
+        for _ in 0..remaining {
+            expired.step_outer_turn(PlayerCommand::default(), 0);
+            assert!(
+                !expired
+                    .dispatch_events()
+                    .iter()
+                    .any(|event| matches!(event, Mc2DispatchEvent::Error { .. })),
+                "source scheduler error while startup protection expires: {:?}",
+                expired.dispatch_events()
+            );
+        }
+        assert_eq!(expired.session.state.live.player_protection_ticks, 0);
+        cases.push((true, base));
+        cases.push((false, expired));
+    } else {
+        cases.push((false, base));
+    }
+    let mut failures = Vec::new();
+    for (protected_case, case_base) in cases {
+        check_head_projectiles_in_case(
+            &case_base,
+            root_slot,
+            target_slot,
+            protected_case,
+            &mut failures,
+        );
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+fn check_head_projectiles_in_case(
+    case_base: &crate::native_world::Mc2Simulation,
+    root_slot: u16,
+    target_slot: u16,
+    protected_case: bool,
+    failures: &mut Vec<String>,
+) {
+    use crate::PlayerCommand;
     use crate::native_world::{Level2EconomyEvent, Mc2DispatchEvent};
 
-    let mut failures = Vec::new();
     for selector in [0, 9] {
-        let mut session = base.clone();
+        let mut session = case_base.clone();
         let player_slot = session.state.entity_index;
         let target = session
             .entities()
             .iter()
             .find(|row| {
-                row.active
+                row.index == target_slot
+                    && row.active
                     && row.class == 3
-                    && row.model == 1
                     && row.life > 0
                     && !row.drawing_disabled()
             })
-            .or_else(|| {
-                session
-                    .entities()
-                    .iter()
-                    .find(|row| row.index == player_slot && row.active && row.class == 3)
-            })
             .cloned()
             .expect("owner level has a living player or rival target");
-        let target_slot = target.index;
         let is_player = target_slot == player_slot;
         let target_life = if is_player {
             session.session.state.live.player_life
@@ -483,6 +543,7 @@ fn assert_head_projectiles_reach_scheduled_damage_consumers(
         let mut saw_consumed_life = false;
         let mut fireball_slot = None;
         let mut saw_fireball_reclaim = false;
+        let mut player_protection = Vec::new();
         crate::native_world::area_damage::start_effect_damage_trace(target_slot);
         for _ in 0..24 {
             let head = &mut session.session.state.live.economy.entities[usize::from(head_slot)];
@@ -517,6 +578,14 @@ fn assert_head_projectiles_reach_scheduled_damage_consumers(
                 })
             };
             let target_row = &arena.entities[usize::from(target_slot)];
+            if is_player && saw_projectile {
+                player_protection.push((
+                    arena.economy.player_castle_entity_index(),
+                    arena.economy.player_castle_shift_aabb_overlap(target_row),
+                    session.session.state.live.player_protection_ticks,
+                    session.session.state.live.shared_spells.shield_state(),
+                ));
+            }
             let impact_model = if selector == 0 { 0 } else { 23 };
             if let Some(effect) = arena.entities.iter().find(|effect| {
                 effect.active
@@ -581,24 +650,44 @@ fn assert_head_projectiles_reach_scheduled_damage_consumers(
             }
         }
         let callback_observations = crate::native_world::area_damage::take_effect_damage_trace();
+        saw_damage |= callback_observations.iter().any(|receipt| {
+            receipt.pulse.owner == root_slot
+                && receipt.target_slot == target_slot
+                && receipt.hit_count.is_some_and(|hits| hits > 0)
+                && receipt
+                    .mailbox_after
+                    .is_some_and(|(payload, owner)| payload > 0 && owner == root_slot)
+        });
+        let protection_matches = !is_player
+            || (!player_protection.is_empty()
+                && player_protection.iter().all(|(_, overlap, counter, _)| {
+                    !*overlap
+                        && if protected_case {
+                            *counter > 0
+                        } else {
+                            *counter == 0
+                        }
+                }));
         if !saw_projectile
             || !saw_impact
             || !saw_damage
-            || !saw_consumed_life
+            || !protection_matches
+            || (protected_case && saw_consumed_life)
+            || (!protected_case && !saw_consumed_life)
             || (selector == 0 && !saw_fireball_reclaim)
         {
             failures.push(format!(
-                "selector {selector}: projectile={saw_projectile}, root-attributed impact={saw_impact}, \
+            "selector {selector}, protected={protected_case}: projectile={saw_projectile}, root-attributed impact={saw_impact}, protection matches={protection_matches}, \
              fireball reclaim={saw_fireball_reclaim}; must deliver root-attributed damage to target {target_slot} \
              (player={is_player}, original life={target_life}, \
              damage observed={saw_damage}, life consumed={saw_consumed_life}, \
              impacts(slot, position, target, target position, flags/selectors, life/phase/age/payload, axes, target actor, target tile/head)={impact_observations:?}); \
+             player protection(castle, overlap, timer, shield)={player_protection:?}; \
              callback observations={callback_observations:?}; final target={:?}",
                 session.entities().get(usize::from(target_slot))
             ));
         }
     }
-    assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
 
 #[test]
@@ -728,15 +817,21 @@ fn assert_linked_damage_death_and_next_pass_reclaim_all_slots(
         attacker,
     )
     .unwrap();
-    let mut hidden = false;
-    let mut reclaimed = false;
+    let parts = std::iter::once(root)
+        .chain(chain.ordered.iter().copied())
+        .collect::<Vec<_>>();
+    let mut hidden_at = vec![None; parts.len()];
+    let mut reclaimed_at = vec![None; parts.len()];
     let mut burst_slot = None;
     let mut burst_expired = false;
     let mut death_passes = Vec::new();
     let mut death_events = Vec::new();
     let mut death_schedule = Vec::new();
-    for _ in 0..8 {
+    let mut group_rebuilds = Vec::new();
+    for pass in 0..8 {
+        combat::start_death_hide_trace();
         session.step_outer_turn(PlayerCommand::default(), 0);
+        let hide_receipts = combat::take_death_hide_trace();
         assert!(
             !session
                 .dispatch_events()
@@ -758,8 +853,10 @@ fn assert_linked_damage_death_and_next_pass_reclaim_all_slots(
                     if *slot == root_slot || *slot == chain.heads[0].source_slot)
                 }),
         );
+        let mut group_rebuilt = false;
         for event in session.dispatch_events() {
             if matches!(event, Mc2DispatchEvent::AuthoredGroupActivated { .. }) {
+                group_rebuilt = true;
                 death_events.push(format!("{event:?}"));
             }
             match event {
@@ -787,8 +884,9 @@ fn assert_linked_damage_death_and_next_pass_reclaim_all_slots(
                 _ => {}
             }
         }
+        group_rebuilds.push(group_rebuilt);
         let arena = &session.session.state.live.economy;
-        let mut all = std::iter::once(root).chain(chain.ordered.iter().copied());
+        let all = parts.iter().copied();
         death_passes.push((
             (
                 arena.entities[usize::from(root_slot)].active,
@@ -815,44 +913,80 @@ fn assert_linked_damage_death_and_next_pass_reclaim_all_slots(
                 })
                 .count(),
         ));
-        if !hidden {
-            hidden = all.clone().all(|part| {
-                arena.slot_generation(part.source_slot) == part.generation
-                    && arena.entities[usize::from(part.source_slot)].drawing_disabled()
-            });
-            if hidden {
-                let presentations = session.campaign_entity_presentations(0).unwrap();
+        let presentations = session.campaign_entity_presentations(0).unwrap();
+        let current_root = &arena.entities[usize::from(root_slot)];
+        if arena.slot_generation(root_slot) != root.generation
+            && current_root.active
+            && (current_root.class, current_root.model) == (5, SOURCE_MODEL)
+        {
+            let identity = session
+                .creature_identity_for_source_slot(root_slot)
+                .expect("a reused model27 root must retain its new source identity");
+            assert_ne!(identity.handle.generation, root.generation);
+            assert!(
+                !current_root.drawing_disabled(),
+                "old death must not hide the reused root"
+            );
+            multipart::read_chain(arena, identity.handle)
+                .expect("reused model27 root must own its complete new chain");
+        }
+        for (index, part) in parts.iter().copied().enumerate() {
+            let same_generation = arena.slot_generation(part.source_slot) == part.generation;
+            let hidden_now =
+                same_generation && arena.entities[usize::from(part.source_slot)].drawing_disabled();
+            let hidden_in_callback = hide_receipts
+                .iter()
+                .any(|receipt| receipt.hidden.contains(&part) && parts.contains(&receipt.callback));
+            if hidden_now || hidden_in_callback {
+                hidden_at[index].get_or_insert(pass);
+            }
+            let reclaimed_now = !same_generation
+                || arena
+                    .economy
+                    .free_source_slots()
+                    .contains(&part.source_slot);
+            if reclaimed_now {
                 assert!(
-                    all.clone().all(|part| presentations
+                    hidden_at[index].is_some(),
+                    "original model27 slot {} was reclaimed before its death hide",
+                    part.source_slot
+                );
+                reclaimed_at[index].get_or_insert(pass);
+            } else if hidden_now {
+                assert!(
+                    presentations
                         .iter()
-                        .all(|row| row.entity_index != part.source_slot)),
-                    "hidden family must disappear from the actual presentation consumer in the death pass"
+                        .all(|row| row.entity_index != part.source_slot),
+                    "hidden model27 slot {} must disappear from presentation",
+                    part.source_slot
                 );
             }
-        } else {
-            reclaimed = all.all(|part| {
-                arena.slot_generation(part.source_slot) != part.generation
-                    || arena
-                        .economy
-                        .free_source_slots()
-                        .contains(&part.source_slot)
-            });
-            if reclaimed && burst_expired {
-                break;
-            }
+        }
+        if reclaimed_at.iter().all(Option::is_some) && burst_expired {
+            break;
         }
     }
     assert!(
-        hidden,
-        "the source death pass hides every linked slot before reclaim; \
+        hidden_at.iter().all(Option::is_some),
+        "the source death callbacks hide every original linked slot before reclaim; \
          per outer turn (root state, hidden, reclaimed): {death_passes:?}; \
          authored groups during death: {death_events:?}; \
          root/first-head schedule: {death_schedule:?}"
     );
     assert!(
-        reclaimed,
-        "the following source boundary reclaims every linked slot"
+        reclaimed_at.iter().all(Option::is_some),
+        "source boundaries reclaim every original linked slot: hidden={hidden_at:?}, reclaimed={reclaimed_at:?}"
     );
+    for (index, part) in parts.iter().enumerate() {
+        let hidden_pass = hidden_at[index].unwrap();
+        let reclaimed_pass = reclaimed_at[index].unwrap();
+        assert!(
+            reclaimed_pass == hidden_pass + 1
+                || (reclaimed_pass == hidden_pass && group_rebuilds[hidden_pass]),
+            "slot {} was hidden in pass {hidden_pass} and reclaimed in pass {reclaimed_pass} without the matching next boundary or an authored group rebuild",
+            part.source_slot
+        );
+    }
     assert!(
         burst_slot.is_some(),
         "root death allocates its real class10 burst"
