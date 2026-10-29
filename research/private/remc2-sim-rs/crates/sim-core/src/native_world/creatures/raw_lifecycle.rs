@@ -53,6 +53,12 @@ pub(crate) fn prekill(arena: &mut SourceArena, slot: u16, base: u8) -> Result<Op
     let root = &mut arena.entities[usize::from(slot)];
     root.record[40..42].copy_from_slice(&killer.to_le_bytes());
     root.set_source_action(action);
+    // Typed occupants own their slot even when an older imported projection
+    // remains in `entities`. Never credit the previous raw occupant after a
+    // slot has been reused by a different live family.
+    if arena.economy.live_arena_cursor_row(killer).is_some() {
+        return Ok(None);
+    }
     Ok(arena
         .entities
         .get(usize::from(killer))
@@ -117,5 +123,45 @@ mod tests {
         arena.entities[usize::from(slots[2])].record[56..58]
             .copy_from_slice(&slots[0].to_le_bytes());
         assert!(prekill(&mut arena, slots[0], 168).is_err());
+    }
+
+    #[test]
+    fn raw_prekill_does_not_credit_a_stale_player_projection_under_a_live_typed_slot() {
+        let session = crate::native_world::tests::level_two_campaign_session();
+        let mut arena = session.source_arena().clone();
+        let root_slot = arena
+            .allocate_source_slot()
+            .expect("ordinary free root slot");
+        let mut root = crate::native_world::cave_features::new_event(
+            root_slot,
+            arena.new_event_rng(root_slot),
+            session.state.position,
+        );
+        root.class = 5;
+        root.model = 21;
+        root.source_id = 600;
+        arena.entities[usize::from(root_slot)] = root;
+
+        let bee = arena
+            .economy
+            .allocate_authored_bee(
+                1,
+                session.state.position,
+                None,
+                3000,
+                &session.session.state.live.terrain,
+            )
+            .expect("ordinary live typed Bee");
+        let killer = bee.source_entity_index;
+        let stale = &mut arena.entities[usize::from(killer)];
+        stale.active = true;
+        stale.class = 3;
+        stale.model = 0;
+        stale.source_id = 601;
+        arena.entities[usize::from(root_slot)].record[40..42]
+            .copy_from_slice(&killer.to_le_bytes());
+        assert!(arena.economy.live_arena_cursor_row(killer).is_some());
+        assert_eq!(prekill(&mut arena, root_slot, 168).unwrap(), None);
+        assert_eq!(arena.entities[usize::from(root_slot)].action, 173);
     }
 }

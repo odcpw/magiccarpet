@@ -414,6 +414,16 @@ pub(crate) fn apply_construction_kill(
         return Ok(true);
     }
     if let Some(row) = economy
+        .bee_creatures
+        .iter_mut()
+        .find(|row| row.active && row.source_entity_index == slot)
+    {
+        row.life = -1;
+        row.kill_credit_entity_index = source_id;
+        row.damage_attacker_entity_index = source_id;
+        return Ok(true);
+    }
+    if let Some(row) = economy
         .castle_defenders
         .iter_mut()
         .find(|row| row.active && row.source_entity_index == slot)
@@ -1282,6 +1292,68 @@ mod tests {
             session.state.entity_index
         );
         assert_eq!(current.life, bee.life);
+    }
+
+    #[test]
+    fn construction_burial_reaches_the_live_bee_carrier_and_callback() {
+        let session = super::super::tests::level_two_campaign_session();
+        let mut arena = session.source_arena().clone();
+        let terrain = session.canonical_terrain();
+        let (x, y) = (0_u8..=u8::MAX)
+            .flat_map(|y| (0_u8..=u8::MAX).map(move |x| (x, y)))
+            .find(|&(x, y)| arena.economy.map_chains.entity_chain(x, y).is_empty())
+            .expect("owner terrain has an unoccupied source cell");
+        let position = Position {
+            x: u16::from(x) << 8,
+            y: u16::from(y) << 8,
+            ..session.state.position
+        };
+        let bee = arena
+            .economy
+            .allocate_authored_bee(1, position, None, 3000, terrain)
+            .expect("ordinary authored Bee constructor");
+        let slot = bee.source_entity_index;
+        crate::world::terrain::disasters::mc2::burial::cell(&mut arena, None, x, y, bee.entity_id)
+            .unwrap();
+        assert_eq!(
+            arena
+                .economy
+                .bee_creatures
+                .iter()
+                .find(|row| row.source_entity_index == slot)
+                .unwrap()
+                .life,
+            bee.life
+        );
+        let owner = session.state.entity_index;
+        assert_ne!(owner, bee.entity_id);
+        crate::world::terrain::disasters::mc2::burial::cell(&mut arena, None, x, y, owner).unwrap();
+        let killed = arena
+            .economy
+            .bee_creatures
+            .iter()
+            .find(|row| row.source_entity_index == slot)
+            .unwrap();
+        assert_eq!(
+            (
+                killed.life,
+                killed.kill_credit_entity_index,
+                killed.damage_attacker_entity_index
+            ),
+            (-1, owner, owner)
+        );
+        assert!(arena.economy.step_authored_bee_slot(slot, None, terrain));
+        let after = arena
+            .economy
+            .bee_creatures
+            .iter()
+            .find(|row| row.source_entity_index == slot)
+            .unwrap();
+        assert_eq!(after.action, 20, "the ordinary callback reaches pre-kill");
+        assert_eq!(
+            after.kill_credit_entity_index, 0,
+            "an empty pending owner clears the current attacker before lethal credit"
+        );
     }
 
     #[test]
