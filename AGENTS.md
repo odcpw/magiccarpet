@@ -24,7 +24,7 @@ Oliver can playtest. An AI player is optional tooling.
 
 Select implementation work with `br ready --json --label worker-ready` and
 `bv --robot-next --label worker-ready`. Oliver's current fleet choice is
-`gpt-6-luna` at `max` for workers and `gpt-6.1-terra` at `high` for integrators;
+`gpt-6.1-terra` at `xhigh` for workers and `gpt-6.1-sol` at `xhigh` for integrators;
 this supersedes older model text in beads. Epics retain the full outcomes;
 deferred `needs-scope` items are not
 worker assignments. Each implementation bead names its positive runtime result

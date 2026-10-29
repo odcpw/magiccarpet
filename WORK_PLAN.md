@@ -1,8 +1,9 @@
 # Shared-engine delivery plan
 
-Execution is paused at Oliver's 2026-10-26 wind-down request. The fleet is
-stopped and the heartbeat is paused. Resume implementation only when Oliver
-requests it; unfinished bead acceptance remains open.
+Oliver resumed implementation on 2026-10-29: four teams, each with three
+Terra 6.1/xhigh workers and one Sol 6.1/xhigh integrator. Finish the full shared
+single-player engine first, tracing each remc2 path into its real Rust
+consumer. Resume the preserved implementation; unfinished acceptance stays open.
 
 Read this plan and your current bead before each assignment, follow-up, resumed
 work session or heartbeat. Also reread after compaction and before declaring a
@@ -15,13 +16,14 @@ Shared systems own behavior; missions configure and exercise them. Keep
 properties and asset bindings typed, and behavior in focused canonical modules.
 Use original presentation. Oliver does the playthroughs.
 
-Current scope is the agreed first 16 shared-engine gaps: spells 7 and 13–24,
+First finish the preserved 16 shared-engine gaps: spells 7 and 13–24,
 Meteor 9 identity; creature models 10,16,17,18,21,23,25–28; authored spawning;
 objectives 1,2,4,6 and rival targets; missing scenery/projectile/effect callbacks;
 final encounter; secret entry/return and carry; player-info/mark/cycle controls;
 campaign-map hover/cursor/terminal effects; original settings dialogs.
-Existing beads retain their full acceptance. Multiplayer and an authoring
-platform are separate. Do not restart planning or expand the scope.
+Then continue the remaining existing shared single-player engine/system beads.
+Existing beads retain their full acceptance. Multiplayer, an authoring platform
+and a level-content expansion are separate. Do not restart planning.
 
 ## Execute the existing plan
 
@@ -55,10 +57,27 @@ platform are separate. Do not restart planning or expand the scope.
 
 ## Coordination and prompts
 
-The current fleet uses Luna/max workers and Terra 6.1/high integrators. Discover
-live NTM panes rather than trusting old pane lists. GreenFinch coordinates
-acceptance, tracker and pushes. BrownCrane dispatches the sole Cargo/Unity build
-slot. Preserve dirty source, staged work, warm caches and current installations.
+The current fleet uses Terra 6.1/xhigh workers and Sol 6.1/xhigh integrators.
+Discover live NTM panes and Mail identities rather than trusting old names.
+TealFalcon coordinates acceptance, tracker and pushes. The economy-team Sol
+integrator dispatches the sole Cargo/Unity build slot; delivery negotiates that
+slot for matching native/player installation. Preserve dirty source, staged
+work, warm caches and current installations.
+
+- `engine-economy`: actual per-owner Castle lifecycle, directional/resource/late
+  spells, shared damage/mana consumers. First remove singleton Castle production.
+- `engine-creatures`: finish ordinary and summoned creature lifecycles and boss
+  integration; prioritize missing model18/21/27 and the existing Army consumers.
+- `engine-world`: real fire/projectile/effect descendants, fields/disasters,
+  authored spawning, switches and objective evaluation. Implement prerequisites.
+- `engine-delivery`: shared secret/session/save-carry routes, original controls
+  and presentation/assets, matching native/Unity delivery. Keep one member on
+  the existing opening consumer; no automated playthroughs.
+
+Integrator ownership includes implementation of shared joins. Never hold a
+shared-root reservation while waiting on another family: negotiate brief exact
+file windows, integrate the coherent change and release. Workers remain with
+their feature through the real consumer; do not accumulate unintegrated leaves.
 
 For the current incremental build/install batches, check actual free bytes and
 pending output size before expensive stages. The earlier blanket 20 GB hold was
