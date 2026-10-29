@@ -770,12 +770,51 @@ fn owner_level20_model27_projectiles_reach_scheduled_damage_consumers() {
 fn assert_linked_damage_death_and_next_pass_reclaim_all_slots(
     mut session: crate::native_world::Mc2Simulation,
     root_slot: u16,
+    target_objective_stage: Option<usize>,
 ) {
     use crate::PlayerCommand;
     use crate::campaign::schedule::ScheduleReceipt;
     use crate::native_world::{Level2EconomyEvent, Mc2DispatchEvent, area_damage};
 
     let attacker = session.state.entity_index;
+    let objective_owner = usize::from(session.players()[0].player_color_index());
+    if let Some(stage_index) = target_objective_stage {
+        use crate::native_world::RuntimeRelation;
+
+        let stage = &session.runtime().stages[stage_index];
+        assert_eq!(stage.kind, 1, "owner task is the source target-death form");
+        assert_eq!(stage.flags & 1, 1, "the real producer binds the target");
+        assert_eq!(stage.relation, RuntimeRelation::LiveEntity(root_slot));
+        assert_eq!(session.runtime().objectives[objective_owner].done, 0);
+        assert_eq!(
+            session.runtime().objectives[objective_owner].is_level_end,
+            0
+        );
+        assert_eq!(
+            session.runtime().objectives[objective_owner].stage_selectors[stage_index],
+            1
+        );
+        assert!(session.entities()[usize::from(root_slot)].life > -1);
+
+        // The near-identical survivor follows the same real objective pass
+        // without the head-damage stimulus used by the death case below.
+        let mut survivor = session.clone();
+        survivor.step_outer_turn(PlayerCommand::default(), 0);
+        assert!(
+            !survivor
+                .dispatch_events()
+                .iter()
+                .any(|event| matches!(event, Mc2DispatchEvent::Error { .. })),
+            "survivor scheduler error: {:?}",
+            survivor.dispatch_events()
+        );
+        assert!(survivor.entities()[usize::from(root_slot)].life > -1);
+        assert_eq!(
+            survivor.runtime().objectives[objective_owner].stage_selectors[stage_index],
+            1,
+            "the actual target-death objective must remain open while its bound root lives"
+        );
+    }
     let (root, chain) = {
         let arena = &mut session.session.state.live.economy;
         let root = arena.handle(root_slot).unwrap();
@@ -828,6 +867,7 @@ fn assert_linked_damage_death_and_next_pass_reclaim_all_slots(
     let mut death_events = Vec::new();
     let mut death_schedule = Vec::new();
     let mut group_rebuilds = Vec::new();
+    let mut target_objective_completed = false;
     for pass in 0..8 {
         combat::start_death_hide_trace();
         session.step_outer_turn(PlayerCommand::default(), 0);
@@ -886,6 +926,18 @@ fn assert_linked_damage_death_and_next_pass_reclaim_all_slots(
         }
         group_rebuilds.push(group_rebuilt);
         let arena = &session.session.state.live.economy;
+        if target_objective_stage.is_some_and(|stage_index| {
+            session.runtime().objectives[objective_owner].stage_selectors[stage_index] == 2
+        }) && !target_objective_completed
+        {
+            assert_eq!(arena.slot_generation(root_slot), root.generation);
+            assert_eq!(
+                arena.entities[usize::from(root_slot)].life,
+                -1,
+                "the real objective must observe its bound original root dead"
+            );
+            target_objective_completed = true;
+        }
         let all = parts.iter().copied();
         death_passes.push((
             (
@@ -995,18 +1047,22 @@ fn assert_linked_damage_death_and_next_pass_reclaim_all_slots(
         burst_expired,
         "the source scheduler consumes that same death burst"
     );
+    assert!(
+        target_objective_stage.is_none() || target_objective_completed,
+        "the actual owner task must observe its bound root's death"
+    );
 }
 
 #[test]
 fn owner_model27_linked_damage_death_and_next_pass_reclaim_all_slots() {
     let (session, root) = owner_level23_model27();
-    assert_linked_damage_death_and_next_pass_reclaim_all_slots(session, root);
+    assert_linked_damage_death_and_next_pass_reclaim_all_slots(session, root, None);
 }
 
 #[test]
 fn owner_level22_model27_linked_damage_death_and_reclaim_all_slots() {
     let (session, root) = owner_level22_model27();
-    assert_linked_damage_death_and_next_pass_reclaim_all_slots(session, root);
+    assert_linked_damage_death_and_next_pass_reclaim_all_slots(session, root, Some(0));
 }
 
 #[test]
@@ -1096,7 +1152,7 @@ fn owner_level22_summoned_feedback_reaches_only_the_human_player_progression() {
 #[test]
 fn owner_level20_model27_linked_damage_death_and_reclaim_all_slots() {
     let (session, root) = owner_level20_model27();
-    assert_linked_damage_death_and_next_pass_reclaim_all_slots(session, root);
+    assert_linked_damage_death_and_next_pass_reclaim_all_slots(session, root, Some(1));
 }
 
 #[test]
