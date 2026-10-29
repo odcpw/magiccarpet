@@ -1494,17 +1494,30 @@ mod tests {
                     );
                     for (child, generation) in children {
                         let raw = &session.economy.entities[usize::from(child)];
-                        assert!(
-                            !session.economy.map_chains.is_linked(child),
-                            "Wind child slot {child}: original generation {generation}, current generation {}, raw active={} selector={}/{}/{} position={:?}, typed={:?}",
-                            session.economy.economy.slot_generation(child),
-                            raw.active,
-                            raw.class,
-                            raw.model,
-                            raw.action,
-                            raw.position,
-                            session.economy.economy.live_arena_cursor_row(child),
-                        );
+                        let current_generation = session.economy.economy.slot_generation(child);
+                        if current_generation == generation {
+                            assert!(
+                                !session.economy.map_chains.is_linked(child),
+                                "retired Wind child generation must be unlinked"
+                            );
+                        } else if session.economy.map_chains.is_linked(child) {
+                            assert!(
+                                raw.active
+                                    || session
+                                        .economy
+                                        .economy
+                                        .live_arena_cursor_row(child)
+                                        .is_some(),
+                                "reused map slot {child} must have a live current occupant"
+                            );
+                            let tile = session.economy.map_chains.tile_of(child);
+                            assert_eq!(
+                                session.canonical_terrain().planes().entity_indices
+                                    [usize::from(tile)] as u16,
+                                session.economy.map_chains.tile_head(tile),
+                                "the reused occupant publishes its current terrain map head"
+                            );
+                        }
                         assert!(
                             !raw.active || (raw.class, raw.model) != (10, 75),
                             "following source boundary retires linked raw Wind rows"
@@ -1573,6 +1586,13 @@ mod tests {
             )
             .expect("eruption retains its map head");
         }
+        let previous_smoke14: std::collections::HashSet<_> = session
+            .economy
+            .entities
+            .iter()
+            .filter(|row| row.active && (row.class, row.model) == (10, 14))
+            .map(|row| row.index)
+            .collect();
         session.step_outer_turn(PlayerCommand::default(), 0);
         assert!(
             !session
@@ -1583,12 +1603,17 @@ mod tests {
             session.dispatch_events()
         );
         let smoke14 = session
-            .economy()
-            .model13_spawned_children()
+            .economy
+            .entities
             .iter()
-            .find(|row| row.active && row.parent_entity_index == eruption.source_entity_index)
+            .find(|row| {
+                row.active
+                    && (row.class, row.model) == (10, 14)
+                    && row.source_id == eruption.entity_id
+                    && !previous_smoke14.contains(&row.index)
+            })
             .expect("scheduled eruption produces source smoke14")
-            .source_entity_index;
+            .index;
         let current = *session
             .economy()
             .authored_model22()
@@ -1611,16 +1636,10 @@ mod tests {
                 .unwrap();
             a.control_flags |= 0x1000_0000;
             a.source_word_30 = 1_536;
-            let b = live
-                .economy
-                .economy
-                .model13_spawned_children
-                .iter_mut()
-                .find(|row| row.source_entity_index == smoke14)
-                .unwrap();
-            b.position = current.axis_position;
-            b.control_flags |= 0x1000_0000;
-            b.source_word_30 = 1_536;
+            let b = &mut live.economy.entities[usize::from(smoke14)];
+            b.set_position(current.axis_position);
+            b.set_control_flags(b.control_flags | 0x1000_0000);
+            b.set_source_word_30(1_536);
             crate::world::effects::sync_position(
                 &mut live.economy,
                 &mut live.terrain,
@@ -1638,13 +1657,7 @@ mod tests {
             .find(|row| row.source_entity_index == smoke13)
             .unwrap()
             .position;
-        let before14 = session
-            .economy()
-            .model13_spawned_children()
-            .iter()
-            .find(|row| row.source_entity_index == smoke14)
-            .unwrap()
-            .position;
+        let before14 = session.economy.entities[usize::from(smoke14)].position;
         let excluded_before = session
             .economy()
             .authored_model13()
@@ -1667,12 +1680,8 @@ mod tests {
             .iter()
             .find(|row| row.source_entity_index == smoke13)
             .expect("smoke13 remains allocated");
-        let b = session
-            .economy()
-            .model13_spawned_children()
-            .iter()
-            .find(|row| row.source_entity_index == smoke14)
-            .expect("smoke14 remains allocated");
+        let b = &session.economy.entities[usize::from(smoke14)];
+        assert!(b.active && (b.class, b.model) == (10, 14));
         for (position, before, flags, damage, owner) in [
             (
                 a.position,
@@ -1685,8 +1694,8 @@ mod tests {
                 b.position,
                 before14,
                 b.control_flags,
-                b.pending_damage,
-                b.pending_attacker_entity_index,
+                b.source_wind_spell_payload(),
+                b.source_wind_spell_owner(),
             ),
         ] {
             assert_ne!(position, before, "Wind moves the actual smoke carrier");
@@ -1753,14 +1762,7 @@ mod tests {
             0
         );
         assert_eq!(
-            session
-                .economy()
-                .model13_spawned_children()
-                .iter()
-                .find(|row| row.source_entity_index == smoke14)
-                .unwrap()
-                .control_flags
-                & 0x1000_0800,
+            session.economy.entities[usize::from(smoke14)].control_flags & 0x1000_0800,
             0
         );
         session.step_outer_turn(PlayerCommand::default(), 0);

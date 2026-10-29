@@ -432,16 +432,18 @@ mod tests {
         let live = &mut session.session.state.live;
         let arena = &mut live.economy;
         let terrain = &mut live.terrain;
+        // This qualified package has no initial Firefly. Construct the real
+        // unbound carrier for this allocator control; the scheduled authored
+        // producer is verified separately by the creature family.
         let shooter_slot = arena
             .economy
-            .authored_fireflies
-            .iter()
-            .find(|row| {
-                arena.economy.authored_class5.iter().any(|actor| {
-                    actor.active && actor.source_entity_index == row.source_entity_index
-                })
-            })
-            .expect("qualified Level2 retains a live Firefly")
+            .allocate_authored_firefly_unbound(
+                683,
+                live.core.state.position,
+                crate::native_world::level2_class5::firefly::FIREFLY_LIFE as u32,
+                terrain,
+            )
+            .expect("ordinary Firefly constructor has source capacity")
             .source_entity_index;
         let target_slot = live.core.state.entity_index;
         arena

@@ -431,7 +431,54 @@ pub(crate) fn step_impact(
     // rather than at the creature's original construction. Observe that live
     // address now so a later reuse cannot prolong the new Alliance binding.
     let parent = arena.handle(effect.source_id);
-    let impact = rules::impact(&mut arena.entities, effect_slot, map_order);
+    let center_slot = effect.source_word_96();
+    let mut fireflies = std::collections::BTreeMap::new();
+    for slot in map_order
+        .iter()
+        .copied()
+        .chain(std::iter::once(center_slot))
+    {
+        if let Some(row) = super::level2_class5::firefly::alliance_projection(arena, slot)
+            && let Some(handle) = arena.handle(slot)
+        {
+            fireflies.insert(slot, (handle, row));
+        }
+    }
+    // The source kernel needs current action and StageVar fields for both
+    // eligibility and its control writes. This view exists for this call
+    // only; the Firefly owner receives the result without installing a raw
+    // row over its typed source or sidecar.
+    let mut projected = (!fireflies.is_empty()).then(|| arena.entities.clone());
+    let impact = if let Some(rows) = projected.as_mut() {
+        for (&slot, (_, row)) in &fireflies {
+            rows[usize::from(slot)] = row.clone();
+        }
+        rules::impact(rows, effect_slot, map_order)
+    } else {
+        rules::impact(&mut arena.entities, effect_slot, map_order)
+    };
+    if let Some(rows) = projected.as_ref() {
+        if !rows[usize::from(effect_slot)].drawing_disabled() {
+            return Err(
+                "Alliance projected terminal was not consumed by the source kernel".to_owned(),
+            );
+        }
+        for &slot in &impact.affected_entities {
+            let row = &rows[usize::from(slot)];
+            if let Some((child, _)) = fireflies.get(&slot) {
+                if !super::level2_class5::firefly::apply_alliance_takeover(
+                    arena, *child, row, parent,
+                )? {
+                    return Err(format!(
+                        "Alliance Firefly {slot} rejected its current takeover"
+                    ));
+                }
+            } else {
+                arena.entities[usize::from(slot)] = row.clone();
+            }
+        }
+        arena.entities[usize::from(effect_slot)].disable_drawing();
+    }
     if !arena.entities[usize::from(effect_slot)].drawing_disabled() {
         return Err(
             "Alliance model74 terminal was not consumed by the current impact kernel".to_owned(),
@@ -439,6 +486,9 @@ pub(crate) fn step_impact(
     }
     if let Some(parent) = parent {
         for &slot in &impact.affected_entities {
+            if fireflies.contains_key(&slot) {
+                continue;
+            }
             // A typed occupant may have rejected an obsolete compatibility
             // row's control write. Do not change that occupant's parent when
             // its current source identity differs from the affected shadow.

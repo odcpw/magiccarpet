@@ -6699,7 +6699,14 @@ impl Level2EconomyState {
                 true
             }
             5 if snapshot.build_state == 4 => {
-                if self
+                self.castle_entry_mut(castle_slot)
+                    .expect("Castle remains installed")
+                    .position
+                    .z = terrain.ground_height(snapshot.position);
+                // BeginOfCastleCreation_5FA70 scans the class-10/model-42
+                // list only every 32 source visits. The ordinary epilogue
+                // still advances phase on the intervening visits.
+                if snapshot.phase & 0x1f != 0 || self
                     .castle_children
                     .iter()
                     .any(|child| child.active && child.model == 42)
@@ -6878,7 +6885,7 @@ impl Level2EconomyState {
                     sphere.active
                         && !sphere.pending_delete
                         && sphere.control_flags & ENTITY_DRAW_DISABLED_BIT == 0
-                        && sphere.owner_entity_index == castle.owner_entity_index
+                        && sphere.player_entity_index == castle.source_id_entity_index
                         && level2_castle_sphere_overlap(castle.position, sphere)
                 }) else {
                     self.advance_castle_phase(castle_slot);

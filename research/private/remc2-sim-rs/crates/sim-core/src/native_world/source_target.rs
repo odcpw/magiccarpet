@@ -908,6 +908,7 @@ fn relations(arena: &SourceArena, kind: Kind, slot: u16) -> Relations {
                 relation.parent = Some(state.parent_entity_index);
                 relation.stage_mode = Some(state.stage_var2);
                 relation.stage_index = Some(state.stage_var1);
+                relation.stage_relation = Some(state.stage_relation);
             } else if let Some(state) = economy
                 .authored_dragons
                 .iter()
@@ -998,6 +999,10 @@ fn orientation(arena: &SourceArena, kind: Kind, slot: u16) -> (Option<i16>, Opti
         };
     }
     match kind {
+        Kind::ManaSphere => arena.economy.spheres.iter()
+            .find(|row| row.active && row.source_entity_index == slot)
+            .map(|row| (Some(row.yaw), None))
+            .unwrap_or((None, None)),
         Kind::FireballProjectile => angles!(arena.economy.fireball_projectiles),
         Kind::BeeCreature => angles!(arena.economy.bee_creatures),
         Kind::AuthoredClass5 => angles!(arena.economy.authored_class5),
@@ -1080,6 +1085,21 @@ mod tests {
         assert_eq!(target.relations.stage_index, Some(71));
         assert_eq!(target.relations.stage_relation, Some(988));
         assert_eq!(target.relations.next, Some(977));
+
+        // A death can allocate a sphere at a Dragon predecessor address.
+        // The following segment must read that new carrier's actual yaw,
+        // not the old fixed-address bytes left by its predecessor.
+        let sphere_slot = arena.economy.spawn_mana_sphere_from_death(
+            999, position, 57, 0x1234, 500, 0, &session.session.state.live.terrain,
+        ).expect("real death constructor allocates a mana sphere") as u16;
+        let sphere = arena.economy.spheres.iter_mut()
+            .find(|row| row.active && row.source_entity_index == sphere_slot).unwrap();
+        sphere.yaw = 753;
+        arena.entities[usize::from(sphere_slot)].set_yaw(-321);
+        let target = read(&arena, Context::default(), sphere_slot).unwrap().unwrap();
+        assert_eq!((target.class, target.model, target.yaw), (10, 39, Some(753)));
+        arena.economy.spheres.iter_mut().find(|row| row.source_entity_index == sphere_slot).unwrap().yaw = 754;
+        assert_eq!(read(&arena, Context::default(), sphere_slot).unwrap().unwrap().yaw, Some(754));
 
         let live = &session.session.state.live;
         let goat = live

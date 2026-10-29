@@ -396,6 +396,156 @@ fn level_two_group31_tree_callback_consumes_rng_after_following_pass_gate() {
         .map_or(owner_entity_index, |entity| entity.source_id);
     assert_eq!(sphere.id, u32::from(owner_id));
     assert_eq!(sphere.mana, 512);
+    assert_eq!(sphere.vertical_velocity, tree_after.last_sphere_word_0x2c);
+    assert_eq!(sphere.life, tree_after.life);
+
+    // Fill the real arena, then consume earlier frozen replacement addresses
+    // through the ordinary sphere constructor until a previously visited
+    // Tree is the next fixed address. This is a controlled source boundary,
+    // not an earned gameplay traversal.
+    let mut alias = level_two_campaign_session();
+    alias.runtime.set_level2_is_level_end(1);
+    alias.step_outer_turn(PlayerCommand::default(), 0);
+    alias.step_outer_turn(PlayerCommand::default(), 0);
+    let owner = alias.state.entity_index;
+    while alias.economy().free_slot_count() > 0 {
+        alias
+            .allocate_level2_authored_class14(244)
+            .expect("real class14 constructor fills free arena");
+    }
+    let live = &mut alias.session.state.live;
+    let arena = &mut live.economy;
+    let terrain = &mut live.terrain;
+    let tree_slot = arena
+        .economy
+        .authored_trees()
+        .iter()
+        .filter(|tree| tree.active && tree.control_flags & SOURCE_REPLACEABLE_FLAG != 0)
+        .map(|tree| tree.source_entity_index)
+        .min()
+        .expect("ordinary Tree callback published a replaceable row");
+    let generation = arena.economy.slot_generation(tree_slot);
+    let rng_before_failure;
+    {
+        let tree = arena.economy.authored_tree_mut(tree_slot).unwrap();
+        // A fresh callback flag cannot enter an already-cleared source list.
+        tree.control_flags &= !SOURCE_REPLACEABLE_FLAG;
+        tree.owner_entity_index = owner;
+        tree.pending_damage = tree.life + 1;
+        rng_before_failure = tree.entity_rng;
+    }
+    arena.finish_source_group();
+    assert!(
+        crate::world::scenery::trees::step(arena, terrain, Default::default(), tree_slot).unwrap()
+    );
+    {
+        let tree = arena
+            .economy
+            .authored_tree_mut(tree_slot)
+            .expect("empty frozen list retains Tree");
+        assert!(tree.life < 0);
+        assert_eq!(tree.owner_entity_index, 0);
+        assert_eq!(tree.entity_rng, rng_before_failure);
+        assert_ne!(tree.control_flags & SOURCE_REPLACEABLE_FLAG, 0);
+        assert_eq!(tree.last_sphere_source_entity_index, 0);
+        assert!(tree.drawing_enabled, "real selected Tree remains on land");
+        tree.life = tree.max_life;
+        tree.owner_entity_index = owner;
+        tree.pending_damage = tree.life + 1;
+    }
+    arena.rebuild_free_arena(&[]);
+    assert_eq!(arena.economy.free_slot_count(), 0);
+    let dynamic = arena
+        .economy
+        .live_arena_slots()
+        .into_iter()
+        .map(|(slot, _)| slot)
+        .collect::<std::collections::BTreeSet<_>>();
+    let mut candidates = arena
+        .entities
+        .iter()
+        .filter(|row| {
+            row.index != 0
+                && row.active
+                && row.class != 0
+                && !dynamic.contains(&row.index)
+                && row.control_flags & SOURCE_REPLACEABLE_FLAG != 0
+        })
+        .map(|row| row.index)
+        .collect::<Vec<_>>();
+    arena
+        .economy
+        .for_each_live_replaceable_arena_row(|slot, _| candidates.push(slot));
+    candidates.sort_unstable();
+    candidates.dedup();
+    assert!(candidates.contains(&tree_slot));
+    for expected in candidates.into_iter().take_while(|slot| *slot < tree_slot) {
+        let slot = arena
+            .allocate_source_slot_with_terrain(terrain)
+            .expect("earlier frozen address");
+        assert_eq!(slot, expected);
+        let position = Position { x: 0, y: 0, z: 0 };
+        let sphere = arena
+            .economy
+            .initialize_authored_model39(slot, tree_slot, position)
+            .expect("ordinary sphere constructor at frozen address");
+        crate::world::effects::sync_position(arena, terrain, slot, sphere.position, true, false)
+            .unwrap();
+    }
+    let expected_rng = level2_next_rng16(arena.economy.new_event_rng(tree_slot));
+    // An obsolete raw mirror must not outlive the current typed occupant.
+    arena.entities[usize::from(tree_slot)].active = true;
+    arena.entities[usize::from(tree_slot)].class = 2;
+    assert!(
+        crate::world::scenery::trees::step(arena, terrain, Default::default(), tree_slot).unwrap()
+    );
+    assert_eq!(
+        arena.economy.slot_generation(tree_slot),
+        generation.wrapping_add(1)
+    );
+    assert!(
+        arena
+            .economy
+            .authored_trees()
+            .iter()
+            .all(|tree| tree.source_entity_index != tree_slot)
+    );
+    let replacement = arena
+        .economy
+        .spheres()
+        .iter()
+        .find(|sphere| sphere.active && sphere.source_entity_index == tree_slot)
+        .expect("source Tree address now owns its actual sphere");
+    assert_eq!((replacement.position.x, replacement.position.y), (0, 0));
+    assert_eq!(replacement.action, 1);
+    assert_eq!(replacement.entity_rng, expected_rng);
+    assert_eq!(replacement.life, i32::from(expected_rng % 60) + 130);
+    assert_eq!(replacement.vertical_velocity, 21);
+    assert_eq!(replacement.phase, (tree_slot as u8).wrapping_add(1));
+    assert_ne!(replacement.control_flags & SOURCE_REPLACEABLE_FLAG, 0);
+    assert!(!arena.entities[usize::from(tree_slot)].active);
+    assert_eq!(
+        terrain.planes().entity_indices[0] as u16,
+        arena.economy.map_chains.tile_head(0)
+    );
+    let sphere = arena
+        .economy
+        .spheres_mut()
+        .iter_mut()
+        .find(|sphere| sphere.source_entity_index == tree_slot)
+        .unwrap();
+    sphere.control_flags |= crate::level1_mission::SOURCE_DISABLED_FLAG;
+    arena
+        .rebuild_source_arena_with_terrain(terrain, &[])
+        .unwrap();
+    assert!(!arena.entities[usize::from(tree_slot)].active);
+    assert!(
+        arena
+            .economy
+            .spheres()
+            .iter()
+            .all(|sphere| sphere.source_entity_index != tree_slot)
+    );
 }
 
 #[test]
@@ -483,6 +633,9 @@ fn level_two_group31_tree_callback_rejects_nonlethal_and_failed_sphere_without_r
         tree.owner_entity_index = allocation_failure_owner;
         tree.pending_damage = tree.life + 1;
     }
+    // A source group termination clears the frozen replacement cursor. The
+    // old economy-only exclusion no longer models this allocator path.
+    allocation_failure.source_arena_mut().finish_source_group();
     allocation_failure.step_outer_turn(PlayerCommand::default(), 0);
     let allocation_after = allocation_failure
         .economy()

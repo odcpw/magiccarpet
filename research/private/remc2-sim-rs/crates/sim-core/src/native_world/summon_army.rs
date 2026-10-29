@@ -1306,7 +1306,9 @@ mod tests {
                     .find(|state| state.source_entity_index == creature.source_slot)
                     .expect("Firefly has its authored-family sidecar");
                 assert_eq!((carrier.model, carrier.action), (19, 159));
-                assert_eq!(arena.economy.source_owner(creature.source_slot), 42);
+                assert_eq!(sidecar.entity_id, 42, "sub_3A5B0 copies the caster source id");
+                assert_eq!(arena.economy.source_owner(creature.source_slot), 0,
+                    "NewEvent leaves the independent playerEntityIndex at zero");
                 assert_eq!(sidecar.authored_index, None);
                 assert_eq!(sidecar.parent_entity_index, 6);
                 assert_eq!(sidecar.word_0x2e, SUMMONED_REMAINING_LIFETIME);

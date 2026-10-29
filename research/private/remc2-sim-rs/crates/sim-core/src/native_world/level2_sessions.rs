@@ -1561,6 +1561,9 @@ impl Level2SharedSpellResetSession {
             let offset = PLAYER_LEGACY_RECORD_BYTES + 17;
             player.record[offset..offset + 4].copy_from_slice(&2_000_i32.to_le_bytes());
         }
+        for index in 0..8 {
+            let _ = player.set_type_str_164_array_word(4 * index + 4, 24_607);
+        }
         self.players[owner_index] = player.clone();
         let mut holders = Vec::new();
         for family in 0..PLAYER_SPELL_COUNT {
@@ -1605,6 +1608,8 @@ impl Level2SharedSpellResetSession {
             }
         }
         let relation = 4 + 4 * usize::from(player.player_color_index());
+        let local_entity_index = self.local_player.entity_index;
+        let mut update_local_hostility = false;
         for other in &mut self.players {
             if self.player_entities.iter().any(|entity| {
                 entity.index == other.entity_index
@@ -1612,7 +1617,11 @@ impl Level2SharedSpellResetSession {
                     && matches!(entity.model, 0 | 1)
             }) {
                 other.set_type_str_164_array_word(relation, (-24_609_i16).cast_unsigned());
+                update_local_hostility |= other.entity_index == local_entity_index;
             }
+        }
+        if update_local_hostility {
+            self.local_player.set_type_str_164_array_word(relation, (-24_609_i16).cast_unsigned());
         }
         Ok((actor, holders))
     }
@@ -1859,24 +1868,24 @@ impl Level2SharedSpellResetSession {
         Some(damage)
     }
 
-    fn consume_shield_damage_mailbox(&mut self) {
-        let Some(shield) = self.shield else {
-            return;
-        };
-        let Some(mailbox) = self
+    pub(super) fn consume_shield_damage_mailbox(
+        &mut self,
+        source_slot: u16,
+    ) -> Option<ShieldDamage> {
+        let shield = self
+            .shield
+            .filter(|shield| shield.holder_entity_index == source_slot)?;
+        let mailbox = self
             .shield_damage_mailbox
-            .filter(|mailbox| mailbox.target_entity_index == shield.parent_entity_index)
-        else {
-            return;
-        };
+            .filter(|mailbox| mailbox.target_entity_index == shield.parent_entity_index)?;
         self.shield_damage_mailbox = None;
-        if let Some(damage) = self.absorb_shield_damage(mailbox.damage) {
-            self.emit_shared_spell_effect(Level2SharedSpellEvent::ShieldDamageApplied {
-                target_entity_index: mailbox.target_entity_index,
-                attacker_entity_index: mailbox.attacker_entity_index,
-                damage,
-            });
-        }
+        let damage = self.absorb_shield_damage(mailbox.damage)?;
+        self.emit_shared_spell_effect(Level2SharedSpellEvent::ShieldDamageApplied {
+            target_entity_index: mailbox.target_entity_index,
+            attacker_entity_index: mailbox.attacker_entity_index,
+            damage,
+        });
+        Some(damage)
     }
 
     fn step_shield_source_slot(&mut self, source_slot: u16) {
@@ -1889,7 +1898,7 @@ impl Level2SharedSpellResetSession {
         // The public ABI adapter retains its accepted holder-side consumer.
         // Automatic collision does not use this side mailbox; it writes the
         // player entity mailbox and is evaluated at the player source visit.
-        self.consume_shield_damage_mailbox();
+        let _ = self.consume_shield_damage_mailbox(source_slot);
         if let Some(shield) = self.shield.as_mut() {
             let _step: ShieldStep = shield.step();
         }

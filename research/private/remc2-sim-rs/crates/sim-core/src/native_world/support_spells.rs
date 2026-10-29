@@ -419,6 +419,22 @@ pub(super) fn step_source_slot(
         .get(usize::from(parent_slot))
         .filter(|parent| parent_slot != 0 && parent.active && parent.class == 3)
         .cloned();
+    // The accepted Shield hit mailbox is consumed at this holder's visit.
+    // Refresh its parent cache from the current arena first, and carry the
+    // damage result into the same raw parent that the pulse will publish.
+    if holder.model == 6
+        && let Some(actor) = parent.as_ref()
+        && actor.index == shared.player_entity.index
+        && shared
+            .shield_state()
+            .is_some_and(|state| state.holder_entity_index == source_slot)
+    {
+        shared.sync_player_entity_from_authority(actor);
+        shared.sync_typed_spell_parent_caches_from_player_entity();
+        if shared.consume_shield_damage_mailbox(source_slot).is_some() {
+            parent = Some(shared.player_entity.clone());
+        }
+    }
     let parent_feedback = parent.as_ref().map(|_| parent_slot);
     let player_color = shared
         .players
@@ -450,13 +466,15 @@ pub(super) fn step_source_slot(
     }
     // Source6B310 publishes XP before 68D50. Refresh the actual holder
     // afterwards so a threshold's queued SetSpell survives this pulse.
+    let can_award_experience = shared.mission_rewards().allows_experience()
+        && parent
+            .as_ref()
+            .is_some_and(|row| (row.class, row.model) == (3, 0));
     let beyond_sight_experience = i32::from(
-        holder.model == 12
+        can_award_experience
+            && holder.model == 12
             && holder.active_value > 0
-            && holder.active_value == holder.activation_value.cast_signed()
-            && parent
-                .as_ref()
-                .is_some_and(|row| (row.class, row.model) == (3, 0)),
+            && holder.active_value == holder.activation_value.cast_signed(),
     );
     if beyond_sight_experience != 0 {
         shared.award_spell_experience(parent_slot, 12, beyond_sight_experience);
@@ -521,6 +539,9 @@ pub(super) fn step_source_slot(
             Some(StatusProjection::Invisible(mut state)) => {
                 current_profile!(state);
                 state.mana_regen_requirement = holder.mana_regen;
+                if !can_award_experience {
+                    state.experience_awarded = 0;
+                }
                 state.experience_awarded = state.experience_awarded.wrapping_add(
                     shared
                         .invisible
@@ -574,7 +595,7 @@ pub(super) fn step_source_slot(
                 shared.local_player.record[20..22].fill(0);
             }
         }
-        if result.award_experience && parent.class == 3 && parent.model == 0 {
+        if result.award_experience && can_award_experience {
             // XP can queue SetSpell on this same live holder. Publish the
             // callback first, then retain those source-visible queue writes.
             shared.sync_pickup_from_authority(&holder);

@@ -744,18 +744,41 @@ pub(crate) fn step_part_in_arena(
     terrain: &mut SessionTerrain,
     particles: &[ParticleParameter],
     source_slot: u16,
-    predecessor: DragonPredecessor,
+    targets: source_target::Context<'_>,
 ) -> std::result::Result<bool, String> {
-    let death_due = arena.economy.authored_dragon_parts.iter().any(|part| {
-        part.active && part.source_entity_index == source_slot
-            && part.action == DRAGON_KILL_ACTION && part.source_byte_3e & 7 == 0
-    });
-    if death_due {
-        kill_current_dragon(arena, terrain, particles, source_slot, true)?;
-        Ok(true)
-    } else {
-        Ok(arena.economy.step_authored_dragon_part_slot(source_slot, terrain, predecessor))
+    let Some(part) = arena.economy.authored_dragon_parts.iter().find(|part| {
+        part.active && part.source_entity_index == source_slot && part.model == DRAGON_MODEL
+    }).copied() else {
+        return Ok(false);
+    };
+    // The generic action-5 callback does not follow the previous segment.
+    // Earlier segments may already have changed into their death products.
+    if part.action == DRAGON_KILL_ACTION {
+        if part.source_byte_3e & 7 == 0 {
+            kill_current_dragon(arena, terrain, particles, source_slot, true)?;
+        }
+        return Ok(true);
     }
+    if part.action != DRAGON_PART_ACTION {
+        return Ok(false);
+    }
+    let previous = part.previous_entity_index;
+    let predecessor = if let Some(view) = source_target::read(arena, targets, previous)? {
+        DragonPredecessor {
+            class: view.class,
+            position: view.position,
+            yaw: view.yaw.ok_or_else(|| format!("Dragon predecessor {previous} has no current yaw"))?,
+        }
+    } else {
+        let sentinel = arena.entities.get(usize::from(previous))
+            .ok_or_else(|| format!("Dragon predecessor {previous} is outside the source arena"))?;
+        DragonPredecessor {
+            class: sentinel.class,
+            position: sentinel.position,
+            yaw: sentinel.yaw,
+        }
+    };
+    Ok(arena.economy.step_authored_dragon_part_slot(source_slot, terrain, predecessor))
 }
 
 impl Level2EconomyState {
@@ -1939,9 +1962,20 @@ mod lightning_consumer_tests {
                 (position, mana)
             };
             if is_part {
+                dying.economy.authored_dragon_parts.iter_mut()
+                    .find(|part| part.source_entity_index == death_slot).unwrap()
+                    .previous_entity_index = u16::MAX;
+                let mut following = dying.clone();
+                following.economy.authored_dragon_parts.iter_mut()
+                    .find(|part| part.source_entity_index == death_slot).unwrap()
+                    .action = DRAGON_PART_ACTION;
+                assert!(step_part_in_arena(
+                    &mut following, &mut world, particles, death_slot,
+                    source_target::Context::default(),
+                ).is_err(), "a live follower still requires its actual predecessor");
                 assert!(step_part_in_arena(
                     &mut dying, &mut world, particles, death_slot,
-                    DragonPredecessor { class: 5, position, yaw: 0 },
+                    source_target::Context::default(),
                 ).unwrap());
                 assert!(dying.economy.authored_dragon_parts.iter().any(|part|
                     part.source_entity_index == death_slot && part.active && !part.drawing_enabled));

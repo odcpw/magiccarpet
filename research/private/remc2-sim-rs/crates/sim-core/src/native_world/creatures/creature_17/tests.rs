@@ -418,9 +418,6 @@ fn attack_creates_guided_model20_slows_target_then_reclaims_projectile_next_pass
         actor.set_control_flags(actor.control_flags | 0x800);
         put(actor, 154, target_slot);
     }
-    // Preserve this same source attack for the ordinary scheduler after the
-    // existing direct producer and impact controls below.
-    let mut scheduled = simulation.clone();
     let live = &mut simulation.session.state.live;
     let (arena, runtime, terrain) = (&mut live.economy, &mut live.core.runtime, &mut live.terrain);
     let classes = class3_slots(arena);
@@ -513,13 +510,65 @@ fn attack_creates_guided_model20_slows_target_then_reclaims_projectile_next_pass
     assert!(!arena.entities[usize::from(projectile_slot)].active);
     assert!(!arena.entities[usize::from(impact)].active);
 
-    // Drive the same prepared source attack through the ordinary numeric
-    // scheduler and into the actual player FlightState. The aim adjustment
-    // makes this a controlled collision check, not a gameplay encounter.
-    assert_eq!(
-        scheduled.session.state.live.core.state.entity_index,
-        target_slot
+    // Level 9 contains actual reset-imported model17 actors and their package
+    // semantic bindings. Position and aim are controlled for this collision
+    // check; the actor, attack, scheduler and player state are real carriers.
+    let level9 = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../../generated/mc-bhq6-ordinary-20261024-b/level9");
+    let cache = std::env::var_os("MC_LEVEL2_GAMEPLAY_CACHE_V5").map_or_else(
+        || {
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../../generated/level2-day-owner-cache/components/gameplay")
+        },
+        std::path::PathBuf::from,
     );
+    let mut scheduled = crate::campaign::CampaignSession::open_with_owner_cache(
+        level9,
+        cache,
+        crate::campaign::spec::CampaignSelection::ordinary(9).unwrap(),
+    )
+    .expect("retained Level 9 campaign and owner cache")
+    .simulation()
+    .clone();
+    let (actor_slot, actor_source_id, target_slot) = {
+        let live = &mut scheduled.session.state.live;
+        let target_slot = live.core.state.entity_index;
+        let target_position = live.core.state.position;
+        let (actor_x, actor_yaw) = if target_position.x >= 2_000 {
+            (target_position.x - 2_000, 0)
+        } else {
+            (target_position.x + 2_000, 1_024)
+        };
+        let actor = live
+            .economy
+            .entities
+            .iter_mut()
+            .find(|row| row.active && (row.class, row.model) == (5, SOURCE_MODEL))
+            .expect("retained Level 9 model17 actor");
+        let position = Position {
+            x: actor_x,
+            y: target_position.y,
+            z: target_position.z,
+        };
+        actor.set_position(position);
+        actor.set_source_action(138);
+        actor.set_yaw(actor_yaw);
+        actor.set_source_roll(actor_yaw);
+        actor.set_phase(RULES.source_scan_period);
+        actor.set_control_flags(actor.control_flags | 0x800);
+        put(actor, 154, target_slot);
+        let (slot, source_id) = (actor.index, actor.source_id);
+        crate::world::effects::sync_position(
+            &mut live.economy,
+            &mut live.terrain,
+            slot,
+            position,
+            true,
+            false,
+        )
+        .expect("publish the retained model17 position");
+        (slot, source_id, target_slot)
+    };
     scheduled.step_outer_turn(crate::PlayerCommand::default(), 0);
     assert!(
         !scheduled
@@ -538,7 +587,7 @@ fn attack_creates_guided_model20_slows_target_then_reclaims_projectile_next_pass
             .find(|row| {
                 row.active
                     && (row.class, row.model, row.action) == (9, 20, 21)
-                    && row.source_id == actor_slot
+                    && row.source_id == actor_source_id
             })
             .expect("scheduled model17 attack creates the actual guided projectile")
             .index;

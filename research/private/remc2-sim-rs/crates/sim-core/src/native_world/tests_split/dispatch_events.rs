@@ -5722,7 +5722,20 @@ fn level_two_public_fireball_hits_qualified_water_without_fabricating_an_impact(
         (flyer.source_class, flyer.source_model, flyer.action),
         (9, 0, 0)
     );
-    assert!(!flyer.active && flyer.drawing_disabled);
+    assert!(
+        !flyer.active && flyer.drawing_disabled,
+        "water flyer={flyer:?}, player slot={}, dispatch={:?}",
+        session.state.entity_index,
+        session
+            .dispatch_events()
+            .iter()
+            .filter(|event| matches!(event,
+                Mc2DispatchEvent::DynamicArena { source_slot, .. }
+                    | Mc2DispatchEvent::Economy { source_slot, .. }
+                    if *source_slot == flyer.source_entity_index
+            ) || matches!(event, Mc2DispatchEvent::Error { .. }))
+            .collect::<Vec<_>>()
+    );
     assert!(
         session
             .economy()

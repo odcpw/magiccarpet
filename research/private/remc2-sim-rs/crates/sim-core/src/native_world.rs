@@ -2302,6 +2302,10 @@ pub struct AuthoredFireflyRuntime {
     pub parent_generation: u32,
     /// Source word_0x2E countdown (compact source record offset 50).
     pub word_0x2e: u16,
+    /// Source word_0x30, the original Alliance duration used for blinking.
+    pub alliance_duration: u16,
+    /// Source word_0x4A, preserving the stage to restore after Alliance.
+    pub stage_relation: u16,
     /// Source `word_0x32`, the Firefly peer-follow relation. This is not the
     /// class-5 child-chain `word_0x34` carried by the generic runtime state.
     pub linked_entity_index: u16,

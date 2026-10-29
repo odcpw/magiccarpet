@@ -304,6 +304,7 @@ mod tests {
             input.caster_position,
             &mut expected_position,
             &mut context,
+            crate::TETHER_SPEED_LIMIT,
         );
         assert!(!actual.clear_binding);
         assert_eq!(actual.predicted_position, expected_position);

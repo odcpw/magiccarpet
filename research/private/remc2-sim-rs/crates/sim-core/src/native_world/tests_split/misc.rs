@@ -1,11 +1,14 @@
-fn authored_invisible_reward_prerequisite(session: &mut Mc2Simulation) -> Level2SpellPickupSource {
+fn authored_status_reward_prerequisite(
+    session: &mut Mc2Simulation,
+    family: u8,
+) -> Level2SpellPickupSource {
     let feature = session
         .mission()
         .authored_features()
         .iter()
         .copied()
-        .find(|feature| feature.kind == 15 && feature.subtype == 11)
-        .expect("current Level2 authored ordinary Invisibility row");
+        .find(|feature| feature.kind == 15 && feature.subtype == i16::from(family))
+        .expect("current Level2 authored ordinary status row");
     assert_eq!(feature.stage_tag, 1, "the source is an ordinary pickup");
     // Completing the objective creates BUILD21 vaults; it does not instantly
     // deliver their rewards. Isolate this spell lifecycle at the real vault
@@ -22,7 +25,54 @@ fn authored_invisible_reward_prerequisite(session: &mut Mc2Simulation) -> Level2
         .iter()
         .find(|source| source.authored_index == feature.index)
         .copied()
-        .expect("ordinary Invisibility source from authored reward")
+        .expect("ordinary status source from authored reward")
+}
+
+// Keep the existing controlled remote-owner checks on the physical acquired
+// holder. These are callback controls, not autonomous rival gameplay proof.
+fn activate_status_source_for_test(session: &mut Mc2Simulation, source_slot: u16) {
+    let live = &mut session.session.state.live;
+    let mut source = live.shared_spells.pickup(source_slot).unwrap().clone();
+    let mut parent = live
+        .shared_spells
+        .player_entities
+        .iter()
+        .find(|parent| parent.index == source.source_spell_parent_entity_index())
+        .unwrap()
+        .clone();
+    assert_eq!((source.class, parent.class), (15, 3));
+    let mut caster = crate::spell_activation::SpellCasterState {
+        entity_index: parent.index,
+        model: parent.model,
+        mana: parent.mana,
+        control_flags: parent.control_flags,
+        ..Default::default()
+    };
+    let mut holder = crate::spell_activation::SpellActivationHolder {
+        entity_index: source_slot,
+        model: source.model,
+        level_gate: source.level_gate,
+        active_value: source.active_value,
+        activation_value: source.activation_value,
+        mana_cost: source.max_mana,
+        action_marker: source.font_type_index.cast_signed(),
+    };
+    assert!(crate::spell_activation::activate_spell(
+        &mut caster,
+        Some(&mut holder),
+        256,
+        false,
+        &mut Vec::new(),
+    ));
+    source.active_value = holder.active_value;
+    source.record[50..52].copy_from_slice(&holder.active_value.to_le_bytes());
+    parent.set_mana(parent.mana);
+    parent.set_control_flags(caster.control_flags);
+    live.shared_spells.sync_player_entity_from_authority(&parent);
+    let parent_slot = parent.index;
+    live.economy.entities[usize::from(parent_slot)] = parent;
+    live.shared_spells.sync_pickup_from_authority(&source);
+    live.economy.entities[usize::from(source_slot)] = source;
 }
 
 #[test]
@@ -1332,24 +1382,13 @@ fn level_two_model76_allocation_failure_rolls_back_partial_family() {
 
 #[test]
 fn level_two_shield_active_holder_ticks_through_outer_turn_and_reset() {
-    let inspection =
-        NativeWorld::inspect_level2(level_two_fixture_path()).expect("qualified Level 2 package");
-    let mut session = inspection
-        .level2_reset_session()
-        .expect("Level 2 Shield production session");
-    session
-        .set_level2_selected_objective_stage_state(2)
-        .expect("source objective completion sentinel");
+    let mut session = level_two_campaign_session();
     let baseline_hash = session.shared_spells().reset_hash();
-    session.step_outer_turn(PlayerCommand::default(), 0);
-    let source = session
-        .economy()
-        .spell_pickups()
-        .iter()
-        .find(|source| source.authored_index == 155)
-        .copied()
-        .expect("authored family-6 source");
-    session.state.position = source.position;
+    let source = authored_status_reward_prerequisite(&mut session, 6);
+    assert_eq!(source.authored_index, 155);
+    session
+        .set_level2_entity_position(session.state.entity_index, source.position)
+        .expect("move the authoritative player to the real Shield reward");
     let acquired = (0..4).find_map(|_| {
         session.step_outer_turn(PlayerCommand::default(), 0);
         session
@@ -1843,25 +1882,13 @@ fn level_three_acquired_shield_charge_reaches_player_upkeep() {
 
 #[test]
 fn level_two_shield_damage_consumer_updates_parent_and_holder_projection() {
-    let inspection =
-        NativeWorld::inspect_level2(level_two_fixture_path()).expect("qualified Level 2 package");
-    let mut session = inspection
-        .level2_reset_session()
-        .expect("Level 2 Shield damage session");
-    session
-        .set_level2_selected_objective_stage_state(2)
-        .expect("source objective completion sentinel");
+    let mut session = level_two_campaign_session();
     let baseline_hash = session.shared_spells().reset_hash();
-
-    session.step_outer_turn(PlayerCommand::default(), 0);
-    let source = session
-        .economy()
-        .spell_pickups()
-        .iter()
-        .find(|source| source.authored_index == 155)
-        .copied()
-        .expect("authored family-6 source");
-    session.state.position = source.position;
+    let source = authored_status_reward_prerequisite(&mut session, 6);
+    assert_eq!(source.authored_index, 155);
+    session
+        .set_level2_entity_position(session.state.entity_index, source.position)
+        .expect("move the authoritative player to the real Shield reward");
     let acquired = (0..4).find_map(|_| {
         session.step_outer_turn(PlayerCommand::default(), 0);
         session
@@ -1895,6 +1922,15 @@ fn level_two_shield_damage_consumer_updates_parent_and_holder_projection() {
         session
             .shared_spells_mut()
             .submit_shield_damage(active.parent_entity_index, 100, 152,)
+    );
+    let other_holder = session.shared_spells().speed_holder().entity_index;
+    assert_ne!(other_holder, outcome.source_slot);
+    assert!(
+        session
+            .shared_spells_mut()
+            .consume_shield_damage_mailbox(other_holder)
+            .is_none(),
+        "another source holder cannot drain the accepted Shield hit"
     );
     session.step_outer_turn(PlayerCommand::default(), 0);
     let damage = session
@@ -2247,24 +2283,12 @@ fn level_two_automatic_bee_contact_consumes_shield_status_at_player_visit() {
 
 #[test]
 fn level_two_remote_shield_owner_does_not_overwrite_local_mana_projection() {
-    let inspection =
-        NativeWorld::inspect_level2(level_two_fixture_path()).expect("qualified Level 2 package");
-    let mut session = inspection
-        .level2_reset_session()
-        .expect("Level 2 remote Shield session");
-    session
-        .set_level2_selected_objective_stage_state(2)
-        .expect("source objective completion sentinel");
-    session.step_outer_turn(PlayerCommand::default(), 0);
-    let source = session
-        .economy()
-        .spell_pickups()
-        .iter()
-        .find(|source| source.authored_index == 155)
-        .copied()
-        .expect("authored family-6 source");
+    let mut session = level_two_campaign_session();
+    let source = authored_status_reward_prerequisite(&mut session, 6);
+    assert_eq!(source.authored_index, 155);
     let source_position = source.position;
     let local_mana = session.shared_spells().player_mana();
+    let local_shield = session.shared_spells().shield_state();
     let remote_mana = local_mana.wrapping_add(7_777);
     {
         let mut shared = session.shared_spells_mut();
@@ -2312,10 +2336,11 @@ fn level_two_remote_shield_owner_does_not_overwrite_local_mana_projection() {
     assert_eq!(outcome.parent_entity_index, 112);
     let shield = session
         .shared_spells()
-        .shield_state()
-        .expect("remote acquisition seeds Shield state");
-    assert_eq!(shield.parent_entity_index, 112);
-    assert_eq!(shield.parent_mana, remote_mana);
+        .pickup(outcome.source_slot)
+        .expect("remote acquisition retains its actual Shield holder");
+    assert_eq!(shield.source_spell_parent_entity_index(), 112);
+    assert_eq!(session.shared_spells().player_entities[1].mana, remote_mana);
+    assert_eq!(session.shared_spells().shield_state(), local_shield);
     assert_eq!(session.shared_spells().player_mana(), local_mana);
 }
 
@@ -2414,7 +2439,7 @@ fn level_two_ordinary_invisible_acquisition_reconciles_command_latch_and_reset()
 
     // The real reward constructor supplies a world jar. Normal local
     // overlap still executes SetSpell and installs its held lifecycle.
-    let source = authored_invisible_reward_prerequisite(&mut session);
+    let source = authored_status_reward_prerequisite(&mut session, 11);
     session.state.position = source.position;
     let outcome = (0..4).find_map(|_| {
         session.step_outer_turn(PlayerCommand::default(), 0);
@@ -2577,7 +2602,7 @@ fn level_two_ordinary_invisible_acquisition_reconciles_command_latch_and_reset()
 fn level_two_invisible_active_holder_ticks_through_outer_turn_and_reset() {
     let mut session = level_two_campaign_session();
     let baseline_hash = session.shared_spells().reset_hash();
-    let source = authored_invisible_reward_prerequisite(&mut session);
+    let source = authored_status_reward_prerequisite(&mut session, 11);
     session
         .set_level2_entity_position(session.state.entity_index, source.position)
         .expect("fixture player position updates the authoritative row and map link");
@@ -2653,6 +2678,22 @@ fn level_two_invisible_active_holder_ticks_through_outer_turn_and_reset() {
     assert_eq!(active.active_value, active.activation_value);
     assert_ne!(session.shared_spells().reset_hash(), baseline_hash);
 
+    // Reward suppression changes XP only; the same real holder still pulses.
+    let mut suppressed = session.clone();
+    suppressed.shared_spells_mut().set_mission_rewards(
+        crate::campaign::rewards::MissionRewards::Suppressed,
+    );
+    let suppressed_experience = suppressed.shared_spells().players[0].runtime_spell_experience;
+    suppressed.step_outer_turn(PlayerCommand::default(), 0);
+    let suppressed_status = suppressed.shared_spells().invisible_state().unwrap();
+    assert_eq!(suppressed_status.active_value, active.active_value - 1);
+    assert_eq!(suppressed_status.experience_awarded, active.experience_awarded);
+    assert_eq!(
+        suppressed.shared_spells().players[0].runtime_spell_experience,
+        suppressed_experience,
+        "suppressed mission rewards preserve actual owner XP"
+    );
+
     session.step_outer_turn(PlayerCommand::default(), 0);
     let stepped = session
         .shared_spells()
@@ -2726,9 +2767,10 @@ fn level_two_invisible_active_holder_ticks_through_outer_turn_and_reset() {
 #[test]
 fn level_two_remote_invisible_owner_does_not_overwrite_local_projection() {
     let mut session = level_two_campaign_session();
-    let source = authored_invisible_reward_prerequisite(&mut session);
+    let source = authored_status_reward_prerequisite(&mut session, 11);
     let source_position = source.position;
     let local_mana = session.shared_spells().player_mana();
+    let local_invisible = session.shared_spells().invisible_state();
     let local_visibility = session.shared_spells().local_player.visibility_mode;
     let remote_mana = local_mana.wrapping_add(7_777);
     {
@@ -2766,10 +2808,11 @@ fn level_two_remote_invisible_owner_does_not_overwrite_local_projection() {
     assert_eq!(outcome.parent_entity_index, 112);
     let invisible = session
         .shared_spells()
-        .invisible_state()
-        .expect("remote acquisition seeds Invisible state");
-    assert_eq!(invisible.parent_entity_index, 112);
-    assert_eq!(invisible.parent_mana, remote_mana);
+        .pickup(outcome.source_slot)
+        .expect("remote acquisition retains its actual Invisible holder");
+    assert_eq!(invisible.source_spell_parent_entity_index(), 112);
+    assert_eq!(session.shared_spells().player_entities[1].mana, remote_mana);
+    assert_eq!(session.shared_spells().invisible_state(), local_invisible);
     assert_eq!(session.shared_spells().player_mana(), local_mana);
     assert_eq!(
         session.shared_spells().local_player.visibility_mode,
@@ -2807,16 +2850,17 @@ fn level_two_remote_invisible_owner_does_not_overwrite_local_projection() {
     assert!(!local_fire.accepted_models.contains(&11));
     let remote_invisible = session
         .shared_spells()
-        .invisible_state()
-        .expect("remote Invisible remains authoritative");
-    assert_eq!(remote_invisible.parent_entity_index, 112);
+        .pickup(outcome.source_slot)
+        .expect("remote physical Invisible remains authoritative");
+    assert_eq!(remote_invisible.source_spell_parent_entity_index(), 112);
     assert_eq!(remote_invisible.active_value, 0);
+    assert_eq!(session.shared_spells().invisible_state(), local_invisible);
 }
 
 #[test]
 fn nyphur_visibility_reads_player_a4_separately_from_invisible_holder_a4() {
     let mut session = level_two_campaign_session();
-    let invisible_source = authored_invisible_reward_prerequisite(&mut session);
+    let invisible_source = authored_status_reward_prerequisite(&mut session, 11);
     let invisible_position = invisible_source.position;
     let remote_mana = session.shared_spells().player_mana().wrapping_add(7_777);
     {
@@ -2851,19 +2895,22 @@ fn nyphur_visibility_reads_player_a4_separately_from_invisible_holder_a4() {
             .expect("remote family-11 source pass")
     });
     let acquired = acquired.expect("remote model-0 player acquires Invisible");
+    activate_status_source_for_test(&mut session, acquired.source_slot);
     {
-        let mut shared = session.shared_spells_mut();
-        shared
-            .invisible
-            .as_mut()
-            .expect("remote acquisition seeds Invisible state")
-            .parent_mana = remote_mana;
-        assert!(shared.activate_invisible(256, false));
-    }
-    {
-        session
-            .shared_spells
-            .step_invisible_source_slot(acquired.source_slot, Some(2_000));
+        let live = &mut session.session.state.live;
+        let castle = live
+            .economy
+            .economy
+            .build_castle_at(invisible_position, invisible_position, 112, false, true)
+            .expect("same declared remote Castle prerequisite");
+        assert!(live.economy.economy.set_castle_mana_prerequisite_for_test(castle, 2_000));
+        support_spells::step_source_slot(
+            &mut live.shared_spells,
+            &mut live.economy,
+            &mut live.core,
+            acquired.source_slot,
+        )
+        .expect("actual per-owner Invisible callback");
     }
     let hidden = session
         .nyphur_visibility()
@@ -2939,7 +2986,7 @@ fn nyphur_visibility_reads_player_a4_separately_from_invisible_holder_a4() {
 #[test]
 fn level_two_invisible_expiry_replays_queued_setspell_word() {
     let mut session = level_two_campaign_session();
-    let source = authored_invisible_reward_prerequisite(&mut session);
+    let source = authored_status_reward_prerequisite(&mut session, 11);
     session.state.position = source.position;
     let acquired = (0..4).find_map(|_| {
         session.step_outer_turn(PlayerCommand::default(), 0);
@@ -3027,6 +3074,10 @@ fn level_two_beyond_sight_active_holder_ticks_through_outer_turn_and_reset() {
             .expect("cold Beyond Sight state")
             .parent_mana = 5_000;
     }
+    // The scheduled callback reads the numeric actor, as Invisible's
+    // corresponding control does. Keep this declared unit setup consistent.
+    let parent_entity_index = session.state.entity_index;
+    session.economy.entities[usize::from(parent_entity_index)].set_mana(5_000);
     assert!(
         session
             .shared_spells_mut()
@@ -3038,6 +3089,22 @@ fn level_two_beyond_sight_active_holder_ticks_through_outer_turn_and_reset() {
         .expect("activated family-12 Beyond Sight state");
     assert_eq!(active.active_value, active.activation_value);
     assert_ne!(session.shared_spells().reset_hash(), baseline_hash);
+
+    // Reward suppression changes XP only; the same real holder still pulses.
+    let mut suppressed = session.clone();
+    suppressed.shared_spells_mut().set_mission_rewards(
+        crate::campaign::rewards::MissionRewards::Suppressed,
+    );
+    let suppressed_experience = suppressed.shared_spells().players[0].runtime_spell_experience;
+    suppressed.step_outer_turn(PlayerCommand::default(), 0);
+    let suppressed_status = suppressed.shared_spells().beyond_sight_state().unwrap();
+    assert_eq!(suppressed_status.active_value, active.active_value - 1);
+    assert_eq!(suppressed_status.experience_awarded, active.experience_awarded);
+    assert_eq!(
+        suppressed.shared_spells().players[0].runtime_spell_experience,
+        suppressed_experience,
+        "suppressed mission rewards preserve actual owner XP"
+    );
 
     session.step_outer_turn(
         PlayerCommand {
@@ -3394,6 +3461,7 @@ fn level_two_remote_beyond_sight_owner_does_not_overwrite_local_mana_projection(
         .expect("Level 2 remote Beyond Sight session");
     let source_position = session.shared_spells().pickups()[0].position;
     let local_mana = session.shared_spells().player_mana();
+    let local_beyond_sight = session.shared_spells().beyond_sight_state();
     let remote_mana = local_mana.wrapping_add(7_777);
     {
         let mut shared = session.shared_spells_mut();
@@ -3425,10 +3493,11 @@ fn level_two_remote_beyond_sight_owner_does_not_overwrite_local_mana_projection(
     assert_eq!(outcome.parent_entity_index, 112);
     let beyond_sight = session
         .shared_spells()
-        .beyond_sight_state()
-        .expect("remote acquisition seeds Beyond Sight state");
-    assert_eq!(beyond_sight.parent_entity_index, 112);
-    assert_eq!(beyond_sight.parent_mana, remote_mana);
+        .pickup(outcome.source_slot)
+        .expect("remote acquisition retains its actual Beyond Sight holder");
+    assert_eq!(beyond_sight.source_spell_parent_entity_index(), 112);
+    assert_eq!(session.shared_spells().player_entities[1].mana, remote_mana);
+    assert_eq!(session.shared_spells().beyond_sight_state(), local_beyond_sight);
     assert_eq!(session.shared_spells().player_mana(), local_mana);
 
     {
@@ -3440,30 +3509,28 @@ fn level_two_remote_beyond_sight_owner_does_not_overwrite_local_mana_projection(
         remote_player.record[514] = 0;
         remote_player.family_selected_tiers[12] = 0;
         remote_player.record[540] = 0;
-        assert!(shared.activate_beyond_sight(0, false));
-        let activation = shared
-            .beyond_sight
-            .expect("remote Beyond Sight state remains active")
-            .activation_value;
-        shared
-            .beyond_sight
-            .as_mut()
-            .expect("remote Beyond Sight state remains mutable")
-            .active_value = activation;
         shared.pickup_events.clear();
         shared.events.clear();
     }
+    activate_status_source_for_test(&mut session, outcome.source_slot);
     let local_runtime_before = session.shared_spells().spell_experience()[12];
     let local_level_before = session.shared_spells().spell_levels()[12];
     let local_record_before =
         session.shared_spells().local_player.record_bytes()[212..216].to_vec();
     let remote_runtime_before = session.shared_spells().players[1].runtime_spell_experience[12];
     let hash_before = session.shared_spells().reset_hash();
-    session
-        .shared_spells_mut()
-        .step_level2_spell_acquisition(12, 111, far_position)
-        .expect("remote action-36 source pulse");
+    {
+        let live = &mut session.session.state.live;
+        support_spells::step_source_slot(
+            &mut live.shared_spells,
+            &mut live.economy,
+            &mut live.core,
+            outcome.source_slot,
+        )
+        .expect("actual remote action-36 source pulse");
+    }
     let mut shared = session.shared_spells();
+    assert_eq!(shared.beyond_sight_state(), local_beyond_sight);
     assert_eq!(
         shared.players[1].runtime_spell_experience[12],
         remote_runtime_before.wrapping_add(1)

@@ -158,3 +158,95 @@ pub(crate) fn step(
     source.disable_drawing();
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        FlightWorld,
+        campaign::spec::{CampaignSelection, DecodedCampaignPackage},
+    };
+
+    #[test]
+    fn retained_ribbon_startup_changes_live_collision_terrain() {
+        let package = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../generated/mc-bhq6-ordinary-20261024-b/level24");
+        let selection = CampaignSelection::ordinary(24).unwrap();
+        let decoded = DecodedCampaignPackage::decode(&package, selection)
+            .expect("retained Level 24 owner package");
+        let mut features = crate::level1_mission::parse_authored_features(
+            decoded.member("authored-level.bin").unwrap(),
+        )
+        .expect("retained source features");
+        assert_eq!(
+            (
+                features[45].kind,
+                features[45].subtype,
+                features[45].stage_tag,
+                features[45].parameter_2
+            ),
+            (10, 28, 1, 46),
+            "the source contains the linked ribbon producer"
+        );
+        let generated = decoded
+            .generate_cave_startup()
+            .expect("ordinary source startup executes its ribbon descendants");
+        assert_eq!(
+            (
+                generated.authored[45].stage_tag,
+                generated.authored[46].stage_tag
+            ),
+            (0, 0)
+        );
+        let pre =
+            crate::native_world::parse_terrain(decoded.member("terrain-pre-features.bin").unwrap())
+                .expect("retained pre-feature terrain");
+        let mut simulation = crate::campaign::CampaignSession::open(&package, selection)
+            .expect("the ordinary Level 24 session loads")
+            .simulation()
+            .clone();
+        let live = &mut simulation.session.state.live;
+        let changed = (100_u16..=104)
+            .flat_map(|x| (0_u16..=255).map(move |y| (x, y)))
+            .find_map(|(x, y)| {
+                let index = usize::from(x) + 256 * usize::from(y);
+                let point = Position {
+                    x: x << 8,
+                    y: y << 8,
+                    z: 0,
+                };
+                let before = crate::legacy_terrain::interpolate_ground(
+                    &pre.ground_heights,
+                    point.x,
+                    point.y,
+                );
+                let after = i32::from(live.terrain.ground_height(point));
+                (generated.terrain.planes().terrain_types[index] == 8
+                    && live.terrain.planes().terrain_types[index] == 8
+                    && after == i32::from(generated.terrain.ground_height(point))
+                    && after != before)
+                    .then_some((point, before, after))
+            });
+        assert!(
+            changed.is_some(),
+            "authored ribbon reaches the live flight-height consumer"
+        );
+
+        // The same retained record with its source stage tag already cleared
+        // must not create a second linked chain or alter authoritative terrain.
+        features[45].stage_tag = 0;
+        let hash = live.terrain.deterministic_hash();
+        let before = live.economy.economy.live_arena_slots().len();
+        let result = super::super::authored::prepare_chain(
+            &mut live.economy,
+            &mut live.terrain,
+            &mut features,
+            45,
+            0,
+        )
+        .expect("consumed source record is a valid no-op");
+        assert!(result.source_slots.is_empty() && result.consumed_rows.is_empty());
+        assert_eq!(live.economy.economy.live_arena_slots().len(), before);
+        assert_eq!(live.terrain.deterministic_hash(), hash);
+    }
+}

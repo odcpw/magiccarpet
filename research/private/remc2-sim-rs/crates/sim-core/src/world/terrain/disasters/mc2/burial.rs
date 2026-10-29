@@ -108,6 +108,27 @@ mod tests {
         .expect("retained campaign and owner cache")
         .simulation()
         .clone();
+        let tree_authored_index = simulation
+            .session
+            .state
+            .live
+            .mission
+            .authored_features()
+            .iter()
+            .find(|feature| {
+                feature.kind == 2
+                    && feature.subtype == 0
+                    && simulation
+                        .session
+                        .definition
+                        .scenery_for_authored_record(feature.index)
+                        .is_some()
+            })
+            .expect("retained package has a semantic authored Tree")
+            .index;
+        let mut tree = simulation
+            .allocate_level2_authored_tree(tree_authored_index)
+            .expect("ordinary authored Tree producer");
         let (slot, generation, tile) = {
             let live = &mut simulation.session.state.live;
             let (x, y) = (0_u8..=u8::MAX)
@@ -119,11 +140,12 @@ mod tests {
                 y: (u16::from(y) << 8) | 128,
                 z: 0,
             };
-            let tree = live
+            tree.position = position;
+            live.economy
                 .economy
-                .economy
-                .allocate_authored_tree(1, position)
-                .expect("ordinary Tree constructor");
+                .authored_tree_mut(tree.source_entity_index)
+                .expect("authored Tree retains its authoritative carrier")
+                .position = position;
             let slot = tree.source_entity_index;
             crate::world::effects::sync_position(
                 &mut live.economy,
@@ -188,6 +210,9 @@ mod tests {
         // Exercise the same consumer from the real House BUILD callback.
         // This arranges the existing House and a real Tree constructor for a
         // controlled source-order check; it is not an authored playthrough.
+        let mut tree = simulation
+            .allocate_level2_authored_tree(tree_authored_index)
+            .expect("ordinary authored Tree producer");
         let (house_slot, tree_slot, tree_generation, tree_tile, phase_before) = {
             let live = &mut simulation.session.state.live;
             let house = *live
@@ -201,11 +226,12 @@ mod tests {
                 y: house.position.y.wrapping_add(128) & 0xff00 | 128,
                 z: house.position.z,
             };
-            let tree = live
+            tree.position = position;
+            live.economy
                 .economy
-                .economy
-                .allocate_authored_tree(1, position)
-                .expect("ordinary Tree constructor");
+                .authored_tree_mut(tree.source_entity_index)
+                .expect("authored Tree retains its authoritative carrier")
+                .position = position;
             assert!(
                 tree.source_entity_index > house.entity_index,
                 "House must visit before Tree"

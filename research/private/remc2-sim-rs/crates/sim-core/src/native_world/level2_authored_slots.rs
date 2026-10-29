@@ -375,6 +375,7 @@ impl Level2EconomyState {
         // stored control dword carries byte[2] & 2. This owner-local scan does
         // not claim authority over Level 2 rows outside this economy arena.
         visit_flagged_rows!(self.spheres, ManaSphere);
+        visit_flagged_rows!(self.authored_trees, AuthoredTree);
         visit_flagged_rows!(self.fireball_projectiles, FireballProjectile);
         visit_flagged_rows!(self.castle_projectiles, CastleProjectile);
         visit_flagged_rows!(self.death_bursts, DeathBurst);
@@ -452,6 +453,7 @@ impl Level2EconomyState {
                 self.castle_defenders.remove(index);
             }
             Level2DynamicArenaKind::ManaSphere => remove_flagged_row!(self.spheres),
+            Level2DynamicArenaKind::AuthoredTree => remove_flagged_row!(self.authored_trees),
             Level2DynamicArenaKind::FireballProjectile => {
                 remove_flagged_row!(self.fireball_projectiles);
             }
@@ -790,6 +792,37 @@ impl Level2EconomyState {
     #[must_use]
     pub fn authored_trees(&self) -> &[Level2AuthoredTreeSource] {
         &self.authored_trees
+    }
+
+    pub(crate) fn authored_tree_mut(&mut self, slot: u16) -> Option<&mut Level2AuthoredTreeSource> {
+        if !self
+            .live_arena_cursor_row(slot)
+            .is_some_and(|row| row.kind == Level2DynamicArenaKind::AuthoredTree)
+        {
+            return None;
+        }
+        self.authored_trees
+            .iter_mut()
+            .find(|row| row.source_entity_index == slot)
+    }
+
+    pub(crate) fn authored_model5_water_splash_mut(
+        &mut self,
+        slot: u16,
+    ) -> Option<&mut Level2AuthoredModel5WaterSplashSource> {
+        if !self
+            .live_arena_cursor_row(slot)
+            .is_some_and(|row| row.kind == Level2DynamicArenaKind::AuthoredModel5WaterSplash)
+        {
+            return None;
+        }
+        self.authored_model5_water_splashes
+            .iter_mut()
+            .find(|row| row.source_entity_index == slot)
+    }
+
+    pub(crate) fn set_source_rng(&mut self, slot: u16, rng: u16) {
+        self.source_rng.insert(slot, rng);
     }
 
     /// Apply terrain burial only to the current typed occupant of this slot.
@@ -2360,7 +2393,7 @@ impl Level2EconomyState {
         self.initialize_authored_model5_water_splash(source_entity_index, position, terrain)
     }
 
-    pub(super) fn initialize_authored_model5_water_splash(
+    pub(crate) fn initialize_authored_model5_water_splash(
         &mut self,
         source_entity_index: u16,
         position: Position,
@@ -2450,8 +2483,18 @@ impl Level2EconomyState {
         trigger_source_entity_index: u16,
         position: Position,
     ) -> Option<ManaSphere> {
-        const AUTHORED_MANA: i32 = 512;
         let source_entity_index = self.allocate_slot()?;
+        self.initialize_authored_model39(source_entity_index, trigger_source_entity_index, position)
+    }
+
+    /// CreateManaSphere after the source arena has assigned its fixed address.
+    pub(crate) fn initialize_authored_model39(
+        &mut self,
+        source_entity_index: u16,
+        trigger_source_entity_index: u16,
+        position: Position,
+    ) -> Option<ManaSphere> {
+        const AUTHORED_MANA: i32 = 512;
         let entity_rng = self.new_event_rng(source_entity_index);
         if self
             .map_chains
@@ -2500,7 +2543,8 @@ impl Level2EconomyState {
             attraction_distance_high: 0,
             assigned_carrier_id: 0,
             assigned_defender_slot: 0,
-            control_flags: 8,
+            // NewEvent's collision bit survives; AddEventToMap adds bit4.
+            control_flags: 12,
             // NewEvent seeds byte 0x3E from the allocated arena row.  The
             // typed phase is the corresponding source-visible byte.
             phase: source_entity_index as u8,

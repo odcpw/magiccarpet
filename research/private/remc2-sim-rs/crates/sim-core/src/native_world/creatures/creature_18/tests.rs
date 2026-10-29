@@ -472,9 +472,95 @@ fn constructor_binds_source18_properties_and_first_callback_enters_patrol() {
 #[test]
 fn attack_materializes_five_sourceordered_typed_fireballs_and_lost_target_emits_none() {
     use crate::PlayerCommand;
+    use crate::campaign::source_arena::CreatureRootOrigin;
+    use crate::campaign::{CampaignSession, spec::CampaignSelection};
     use crate::native_world::{Level2EconomyEvent, Mc2DispatchEvent};
 
-    let mut simulation = crate::native_world::tests::level_two_campaign_session();
+    let package = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../../generated/mc-paj2-source-secret-34-campaign-package");
+    let mut simulation = CampaignSession::open(package, CampaignSelection::SECRET_DESTINATION_34)
+        .expect("owner package for the source group23 switch")
+        .simulation()
+        .clone();
+    let target_slot = simulation.state.entity_index;
+    let switch_position = simulation.entities()[96].position;
+    simulation
+        .set_level2_entity_position(target_slot, switch_position)
+        .unwrap();
+    let mut published = false;
+    // Leave the player at the switch while the source player's normal spawn
+    // protection expires; no test code writes the protection countdown.
+    for _ in 0..128 {
+        if simulation.session.state.live.player_protection_ticks == 0 {
+            break;
+        }
+        simulation.step_outer_turn(PlayerCommand::default(), 0);
+        assert!(
+            !simulation
+                .dispatch_events()
+                .iter()
+                .any(|event| matches!(event, Mc2DispatchEvent::Error { .. })),
+            "owner protection-expiry scheduler error: {:?}",
+            simulation.dispatch_events()
+        );
+        published |= simulation.dispatch_events().iter().any(|event| {
+            matches!(
+                event,
+                Mc2DispatchEvent::AuthoredGroupActivated {
+                    source_slot: 96,
+                    group: 23,
+                    ..
+                }
+            )
+        });
+    }
+    assert_eq!(
+        simulation.session.state.live.player_protection_ticks, 0,
+        "source visits must expire spawn protection before the impact comparison"
+    );
+    assert!(simulation.session.state.live.player_life > 0);
+    let mut outside = switch_position;
+    outside.x = outside.x.wrapping_add(0x6000);
+    simulation
+        .set_level2_entity_position(target_slot, outside)
+        .unwrap();
+    for _ in 0..8 {
+        if published {
+            break;
+        }
+        simulation.step_outer_turn(PlayerCommand::default(), 0);
+        published |= simulation.dispatch_events().iter().any(|event| {
+            matches!(
+                event,
+                Mc2DispatchEvent::AuthoredGroupActivated {
+                    source_slot: 96,
+                    group: 23,
+                    ..
+                }
+            )
+        });
+    }
+    assert!(published, "owner switch must produce the controlled actor");
+    let actor_slot = simulation
+        .entities()
+        .iter()
+        .find_map(|row| {
+            let identity = simulation.creature_identity_for_source_slot(row.index)?;
+            matches!(
+                identity.origin,
+                CreatureRootOrigin::AuthoredRecord {
+                    authored_record: 566
+                }
+            )
+            .then_some(row.index)
+        })
+        .expect("owner group constructs model18 record566");
+    let actor_position = simulation.entities()[usize::from(actor_slot)].position;
+    let mut target_position = actor_position;
+    target_position.x = target_position.x.wrapping_add(1_000);
+    simulation
+        .set_level2_entity_position(target_slot, target_position)
+        .unwrap();
     let particles = simulation
         .session
         .definition
@@ -482,24 +568,18 @@ fn attack_materializes_five_sourceordered_typed_fireballs_and_lost_target_emits_
         .particles
         .to_vec();
     let live = &mut simulation.session.state.live;
-    let target_slot = live
-        .economy
-        .entities
-        .iter()
-        .find(|row| row.active && row.class == 3 && row.model == 0 && row.life >= 0)
-        .expect("fixture retains a live player")
-        .index;
-    let target_position = live.economy.entities[usize::from(target_slot)].position;
-    let actor_position = Position {
-        x: target_position.x.wrapping_sub(1_000),
-        y: target_position.y,
-        z: target_position.z,
-    };
+    assert_eq!(
+        (
+            live.economy.entities[usize::from(target_slot)].class,
+            live.economy.entities[usize::from(target_slot)].model
+        ),
+        (3, 0)
+    );
     let (arena, runtime, terrain) = (&mut live.economy, &mut live.core.runtime, &mut live.terrain);
     terrain.map_type = crate::native_world::MapType::Night;
-    let actor_slot = add_creature(arena, terrain, &particles, actor_position, 146);
     {
         let actor = &mut arena.entities[usize::from(actor_slot)];
+        actor.set_source_action(146);
         actor.set_phase(RULES.source_scan_period);
         actor.set_source_dword_10(10);
         actor.record[74] = 1;
@@ -647,7 +727,7 @@ fn attack_materializes_five_sourceordered_typed_fireballs_and_lost_target_emits_
     // out of reach after launch. This is a controlled consumer check, not a
     // substitute for the owner-produced acquisition path below.
     assert_eq!(target_slot, simulation.state.entity_index);
-    simulation.session.state.live.player_protection_ticks = 0;
+    assert_eq!(simulation.session.state.live.player_protection_ticks, 0);
     let original_life = simulation.session.state.live.player_life;
     let mut distant = simulation.clone();
     let mut distant_position = target_position;
@@ -1277,7 +1357,7 @@ fn owner_switch_publishes_model18_and_normal_scheduler_visits_it() {
     // or RNG edits. Its source callback decides when tracking becomes attack
     // and the shared scheduler advances any higher-slot newborns in that pass.
     let mut entered_attack = false;
-    let mut emitted = false;
+    let mut emitted = None;
     for _ in 0..256 {
         session.step_outer_turn(PlayerCommand::default(), 0);
         assert!(
@@ -1289,7 +1369,7 @@ fn owner_switch_publishes_model18_and_normal_scheduler_visits_it() {
             session.dispatch_events()
         );
         entered_attack |= session.entities()[usize::from(slot)].action == 146;
-        emitted |= session
+        emitted = session
             .session
             .state
             .live
@@ -1297,19 +1377,20 @@ fn owner_switch_publishes_model18_and_normal_scheduler_visits_it() {
             .economy
             .fireball_projectiles()
             .iter()
-            .any(|shot| {
+            .find(|shot| {
                 shot.origin == crate::native_world::FireballProjectileOrigin::Creature18
                     && shot.owner_entity_index == slot
                     && shot.target_source_entity_index == player
                     && shot.source_subspell_index == RULES.projectile_damage
-            });
-        if emitted {
+            })
+            .map(|shot| shot.source_entity_index);
+        if emitted.is_some() {
             break;
         }
     }
     let actor = &session.entities()[usize::from(slot)];
     assert!(
-        entered_attack && emitted,
+        entered_attack && emitted.is_some(),
         "owner model18 must naturally enter attack and emit a target-bound fireball: slot={slot} action={} phase={} attack_phase={} timer={} rng={} target={}",
         actor.action,
         actor.phase,
@@ -1317,6 +1398,108 @@ fn owner_switch_publishes_model18_and_normal_scheduler_visits_it() {
         actor.source_dword_10(),
         actor.entity_rng,
         put_word(actor, 154)
+    );
+    eprintln!(
+        "owner model18 source actor={slot} projectile={} target={player} damage={} player_protection={} player_life={}",
+        emitted.unwrap(),
+        RULES.projectile_damage,
+        session.session.state.live.player_protection_ticks,
+        session.session.state.live.player_life,
+    );
+
+    // Exercise the produced actor's downstream death consumer separately:
+    // the two worlds differ only in the controlled source mailbox amount.
+    // This does not claim that the player's own attack produced the damage.
+    let handle = session.source_arena().handle(slot).unwrap();
+    let life = actor.life;
+    let mana = actor.mana;
+    assert!(life > 1 && mana > 0);
+    let mut fatal = session.clone();
+    let mut nonfatal = session.clone();
+    let kills_before = fatal
+        .session
+        .state
+        .live
+        .economy
+        .economy
+        .authored_bee_kill_census(player);
+    for (world, damage) in [(&mut fatal, life + 1), (&mut nonfatal, life - 1)] {
+        let row = &mut world.session.state.live.economy.entities[usize::from(slot)];
+        row.record[98..102].copy_from_slice(&damage.to_le_bytes());
+        put(row, 102, player);
+    }
+    nonfatal.step_outer_turn(PlayerCommand::default(), 0);
+    assert_eq!(nonfatal.entities()[usize::from(slot)].life, 1);
+    assert!(
+        nonfatal
+            .creature_identity_for_source_slot(slot)
+            .is_some_and(|identity| identity.handle == handle && identity.living)
+    );
+    assert_eq!(
+        nonfatal
+            .session
+            .state
+            .live
+            .economy
+            .economy
+            .authored_bee_kill_census(player),
+        kills_before
+    );
+
+    let mut saw_prekill = false;
+    let mut saw_mana = false;
+    let mut saw_hidden = false;
+    let mut saw_reclaim = false;
+    for _ in 0..16 {
+        fatal.step_outer_turn(PlayerCommand::default(), 0);
+        assert!(
+            !fatal
+                .dispatch_events()
+                .iter()
+                .any(|event| matches!(event, Mc2DispatchEvent::Error { .. })),
+            "owner model18 death scheduler error: {:?}",
+            fatal.dispatch_events()
+        );
+        let row = &fatal.entities()[usize::from(slot)];
+        saw_prekill |= row.action == 148;
+        saw_mana |= fatal.dispatch_events().iter().any(|event| matches!(event,
+            Mc2DispatchEvent::Economy { event: crate::native_world::Level2EconomyEvent::ManaSphereSpawned {
+                source_entity_index, mana: released, ..
+            }, .. } if *source_entity_index == slot && *released == mana
+        ));
+        saw_hidden |= row.drawing_disabled() && fatal.source_arena().resolve(handle).is_some();
+        saw_reclaim |= fatal.source_arena().resolve(handle).is_none();
+        if saw_hidden && saw_reclaim && saw_mana {
+            break;
+        }
+    }
+    assert!(
+        saw_prekill,
+        "fatal damage must enter the source prekill action"
+    );
+    assert_eq!(
+        fatal
+            .session
+            .state
+            .live
+            .economy
+            .economy
+            .authored_bee_kill_census(player),
+        kills_before + 1,
+        "the real player receives one source kill credit"
+    );
+    assert!(
+        saw_mana,
+        "death must transfer the actor's mana to its source sphere"
+    );
+    assert!(
+        saw_hidden && saw_reclaim,
+        "death must hide before next-pass generation reclaim"
+    );
+    assert!(
+        !fatal
+            .creature_identity_for_source_slot(slot)
+            .is_some_and(|identity| identity.handle == handle && identity.living)
     );
 }
 

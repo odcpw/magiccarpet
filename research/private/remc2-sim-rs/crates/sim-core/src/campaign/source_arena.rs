@@ -917,6 +917,10 @@ impl SourceArena {
         } else {
             let allocated = self.economy.replace_typed_source_slot(slot, typed?)?;
             debug_assert_eq!(allocated, slot);
+            // NewEvent clears the fixed source address even when the current
+            // owner is typed. Its imported mirror must not reappear after the
+            // replacement's typed carrier is reclaimed.
+            self.entities[usize::from(slot)].reclaim_source_row();
         }
         for neighbor in neighbors
             .into_iter()

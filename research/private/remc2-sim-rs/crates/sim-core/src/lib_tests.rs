@@ -2631,7 +2631,7 @@ fn active_tether_turns_pulls_and_uses_the_source_speed_limit() {
         target: Some(target),
     };
 
-    apply_tether(&mut state, before, &mut proposed, &mut context);
+    apply_tether(&mut state, before, &mut proposed, &mut context, TETHER_SPEED_LIMIT);
 
     assert_eq!(state.yaw, 0x82);
     assert_eq!(
@@ -2646,7 +2646,7 @@ fn active_tether_turns_pulls_and_uses_the_source_speed_limit() {
 
     state.tether_prior_distance = 10_000;
     proposed = before;
-    apply_tether(&mut state, before, &mut proposed, &mut context);
+    apply_tether(&mut state, before, &mut proposed, &mut context, TETHER_SPEED_LIMIT);
     assert_eq!(
         proposed,
         Position {
@@ -2691,7 +2691,7 @@ fn tether_tiers_apply_exact_mana_and_life_mutations() {
         };
         let mut proposed = before;
 
-        apply_tether(&mut state, before, &mut proposed, &mut context);
+        apply_tether(&mut state, before, &mut proposed, &mut context, TETHER_SPEED_LIMIT);
 
         let target = context.target.expect("valid target remains projected");
         assert_eq!(target.life, expected_life);
@@ -2719,6 +2719,7 @@ fn tether_clears_only_after_a_valid_target_fails_active_conditions() {
         before,
         &mut missing_proposed,
         &mut TetherContext::default(),
+        TETHER_SPEED_LIMIT,
     );
     assert_eq!(missing_state.tether_target_index, 7);
 
@@ -2741,6 +2742,7 @@ fn tether_clears_only_after_a_valid_target_fails_active_conditions() {
         before,
         &mut inactive_proposed,
         &mut context,
+        TETHER_SPEED_LIMIT,
     );
     assert_eq!(inactive_state.tether_target_index, 0);
 }
@@ -2776,7 +2778,7 @@ fn tether_range_boundary_and_dead_target_clear_the_target() {
                 ..TetherTarget::default()
             }),
         };
-        apply_tether(&mut state, before, &mut proposed, &mut context);
+        apply_tether(&mut state, before, &mut proposed, &mut context, TETHER_SPEED_LIMIT);
         assert_eq!(
             state.tether_target_index, 0,
             "distance {distance}, life {life}"

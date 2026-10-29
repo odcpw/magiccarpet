@@ -1916,7 +1916,7 @@ pub(super) mod tests {
         };
         let position = live.economy.entities[usize::from(parent_slot)].position;
         let mut proposed = position;
-        crate::apply_tether(&mut flight, position, &mut proposed, &mut context);
+        crate::apply_tether(&mut flight, position, &mut proposed, &mut context, crate::TETHER_SPEED_LIMIT);
         assert_eq!(flight.tether_target_index, 0);
 
         deactivate_other_actors(&mut live.economy, &[parent_slot]);

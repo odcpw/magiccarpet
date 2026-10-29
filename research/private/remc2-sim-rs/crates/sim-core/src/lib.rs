@@ -2019,7 +2019,7 @@ pub fn step_entity_pass_with_context_and_tuning<W: FlightWorld>(
 ) -> StepEvidence {
     decode_movement_with_tuning(command.flags, state, tuning);
     journal_spell_fire(command.flags, context);
-    step_entity_body_with_context_and_tuning(state, profile, world, context, tuning)
+    step_entity_body_with_context_and_tuning(state, profile, world, context, tuning, TETHER_SPEED_LIMIT)
 }
 
 /// Execute the recovered `sub_5D530` flight/entity body without relatching
@@ -2034,7 +2034,38 @@ pub fn step_entity_body_with_context<W: FlightWorld>(
     world: &W,
     context: &mut FlightContext,
 ) -> StepEvidence {
-    step_entity_body_with_context_and_tuning(state, profile, world, context, FlightTuning::CLASSIC)
+    step_entity_body_with_context_and_tuning(
+        state, profile, world, context, FlightTuning::CLASSIC, TETHER_SPEED_LIMIT,
+    )
+}
+
+/// Run the same body for an owner whose source entity supplies its own
+/// minimum speed. The tether divisor is `3 * minSpeed / 2` in `sub_5DE30`.
+pub(crate) fn step_rival_entity_body_with_context<W: FlightWorld>(
+    state: &mut FlightState,
+    profile: FlightProfile,
+    world: &W,
+    context: &mut FlightContext,
+    minimum_speed: i16,
+) -> Result<StepEvidence, String> {
+    let limit = (3 * i32::from(minimum_speed) / 2) as i16;
+    let tether_will_move = !state.skip_flight_once && context.tether.target.is_some_and(|target| {
+        target.entity_index == state.tether_target_index
+            && target.life >= 0
+            && context.tether.holder.is_some_and(|holder| {
+                holder.entity_index == state.tether_holder_index && holder.active_value != 0
+            })
+            && TETHER_SPELLS.get(usize::from(state.tether_tier)).is_some_and(|spell| {
+                distance_3d_wrapped(state.position, target.position) < spell.range as u32
+            })
+    });
+    if tether_will_move && (limit <= 0 || limit > 1_024) {
+        return Err(format!("rival tether has invalid source speed limit {limit}"));
+    }
+    Ok(step_entity_body_with_context_and_tuning(
+        state, profile, world, context, FlightTuning::CLASSIC,
+        if tether_will_move { limit } else { TETHER_SPEED_LIMIT },
+    ))
 }
 
 fn step_entity_body_with_context_and_tuning<W: FlightWorld>(
@@ -2043,6 +2074,7 @@ fn step_entity_body_with_context_and_tuning<W: FlightWorld>(
     world: &W,
     context: &mut FlightContext,
     tuning: FlightTuning,
+    tether_speed_limit: i16,
 ) -> StepEvidence {
     let before = state.position;
 
@@ -2099,7 +2131,7 @@ fn step_entity_body_with_context_and_tuning<W: FlightWorld>(
     if state.water_counter != 0 {
         state.water_counter = state.water_counter.wrapping_sub(1);
     }
-    apply_tether(state, before, &mut proposed, &mut context.tether);
+    apply_tether(state, before, &mut proposed, &mut context.tether, tether_speed_limit);
     advance_status_counters(state, context.effects.as_mut());
 
     let (mut committed, movement_resolution) =
@@ -2473,6 +2505,7 @@ fn apply_tether(
     authoritative_position: Position,
     proposed: &mut Position,
     context: &mut TetherContext,
+    speed_limit: i16,
 ) {
     if state.tether_target_index == 0 {
         return;
@@ -2503,11 +2536,11 @@ fn apply_tether(
         return;
     }
 
-    let denominator = 1_024 / i32::from(TETHER_SPEED_LIMIT);
+    let denominator = 1_024 / i32::from(speed_limit);
     let raw_speed =
         (i32::try_from(distance).unwrap_or(i32::MAX) - state.tether_prior_distance) / denominator;
     let tether_speed =
-        wrapping_i16(i64::from(raw_speed)).clamp(-TETHER_SPEED_LIMIT, TETHER_SPEED_LIMIT);
+        wrapping_i16(i64::from(raw_speed)).clamp(-speed_limit, speed_limit);
     let heading = i16::try_from(heading_for_positions(
         authoritative_position,
         target.position,

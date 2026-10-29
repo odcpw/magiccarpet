@@ -242,8 +242,7 @@ fn ordinary_mission23_dying_rival_tether_uses_its_own_target_and_holder() {
         },
     ));
     let target_binding_before = live.nyphur_dispatcher.get(target_handle).unwrap().duel_tether();
-    // Controlled binding on the actual owner data; the scheduled dying path
-    // delegates to this same owner-bound operation before falling.
+    // Controlled binding on actual owner data exercises the tether kernel.
     live.nyphur_dispatcher.step_dying_tether(
         &mut live.economy, &mut live.shared_spells, live.core.context.spell_fire.as_mut(),
         &mut live.player_life, &live.core.players, live.core.state.entity_index, caster, caster_position,
@@ -292,6 +291,53 @@ fn ordinary_mission23_dying_rival_tether_uses_its_own_target_and_holder() {
     if let Some(fire) = live.core.context.spell_fire.as_ref() {
         assert_eq!(fire.caster.mana, expected_mana);
     }
+}
+
+#[test]
+fn ordinary_mission23_dying_rival_moves_before_falling() {
+    let package = std::env::var_os("MC_LEVEL23_PACKAGE").map_or_else(
+        || std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../generated/mc-copper-house27-v3-oucmzgsa/level23"),
+        std::path::PathBuf::from,
+    );
+    let mut session = crate::campaign::CampaignSession::open(
+        package, crate::campaign::spec::CampaignSelection::ordinary(23).unwrap(),
+    ).expect("actual ordinary Mission 23 package").simulation().clone();
+    let owner = 425_u16;
+    let mut expected;
+    {
+        let live = &mut session.session.state.live;
+        let handle = live.economy.handle(owner).unwrap();
+        let actor = &mut live.economy.entities[usize::from(owner)];
+        let mut position = actor.position;
+        position.z = live.terrain.ground_height(position).wrapping_add(2_000);
+        actor.set_position(position);
+        actor.set_life(-1);
+        actor.set_source_action(2);
+        actor.set_source_word_2c(0);
+        actor.set_yaw(0);
+        actor.set_pitch(0);
+        actor.set_actual_speed(128);
+        actor.set_control_flags(actor.control_flags & !0x800);
+        let player = live.core.players.iter_mut().find(|player| player.entity_index == owner).unwrap();
+        player.record[16..20].fill(0);
+        player.record[38..40].fill(0);
+        player.record[44..50].fill(0);
+        player.record[54..60].fill(0);
+        let common = &mut live.nyphur_dispatcher.get_mut(handle).unwrap().common_upkeep;
+        common.speed = 128;
+        common.strafe_speed = 0;
+        common.move_boost = 0;
+        common.move_speed = 0;
+        expected = position;
+        crate::move_entity(&mut expected, 0, 0, 128);
+        crate::world::effects::sync_position(&mut live.economy, &mut live.terrain, owner, position, true, false).unwrap();
+    }
+    session.step_level2_source_pass(0);
+    let actor = &session.session.state.live.economy.entities[usize::from(owner)];
+    assert_eq!(actor.action, 2);
+    assert_eq!((actor.position.x, actor.position.y), (expected.x, expected.y),
+        "the scheduled source flight body moves this rival before its fall");
 }
 
 #[test]
@@ -451,6 +497,17 @@ fn ordinary_mission23_rival_grounded_death_rebuilds_its_own_castle_holders() {
     }
     session.step_level2_source_pass(0);
     assert_eq!(session.session.state.live.economy.entities[usize::from(owner)].source_dword_10(), 0);
+    let peer_roll = {
+        let live = &mut session.session.state.live;
+        let shared_roll = live.shared_spells.players().iter()
+            .find(|player| player.entity_index == other).unwrap().roll_0x155();
+        // A live wind write is carried by core.players; make that state
+        // observably newer than the shared spell projection before revival.
+        let marker = if shared_roll == 512 { 513 } else { 512 };
+        live.core.players.iter_mut().find(|player| player.entity_index == other)
+            .unwrap().set_roll_0x155(marker);
+        marker
+    };
     session.step_level2_source_pass(0);
     let live = &session.session.state.live;
     let actor = &live.economy.entities[usize::from(owner)];
@@ -466,7 +523,15 @@ fn ordinary_mission23_rival_grounded_death_rebuilds_its_own_castle_holders() {
         }
     }
     let other_player = live.core.players.iter().find(|player| player.entity_index == other).unwrap();
+    assert_eq!(other_player.roll_0x155(), peer_roll, "revival must preserve the other rival's live movement state");
     assert_eq!(other_player.enabled_spell_holders[0], other_before[0]);
+    let relation = 4 + 4 * usize::from(player.player_color_index());
+    assert_eq!(
+        live.shared_spells.local_player().type_str_164_auxiliary().unwrap()
+            .array_0x1FC_508[relation],
+        (-24_609_i16).cast_unsigned(),
+        "the local player's hostility projection observes the revived rival",
+    );
     let other_handle = live.economy.handle(other).unwrap();
     assert_eq!(live.nyphur_dispatcher.bound_live_holder(other_handle, other_player, &live.economy, 0).unwrap().source_slot, other_before[0]);
 }
@@ -4841,7 +4906,16 @@ fn carried_steal_input_schedules_flyer_and_transfers_from_real_nyphur() {
                 .iter()
                 .all(|event| !matches!(event, Mc2DispatchEvent::Error { .. }))
         );
-        if live.shared_spells.spell_experience[13] > experience_before {
+        // The flyer may write its hit after the rival's visit in this pass.
+        // Wait for the next visit to consume that hit before checking mana.
+        let pending_before = target_before
+            .pending_player_effect(crate::combat::actors::PlayerEffectLane::StealMana);
+        let pending_after = target_row
+            .pending_player_effect(crate::combat::actors::PlayerEffectLane::StealMana);
+        if live.shared_spells.spell_experience[13] > experience_before
+            && pending_before.is_some_and(|hit| hit.attacker == caster && hit.payload == 0)
+            && pending_after.is_none()
+        {
             assert!(
                 target_row.mana < 7_000,
                 "actual recipient paid the tier-zero transfer:\n{}",

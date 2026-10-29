@@ -197,6 +197,10 @@ pub(super) struct Level2NyphurCommonUpkeep {
     move_boost: i16,
     move_speed: u8,
     move_speed_flag: u8,
+    flight_water_counter: i8,
+    flight_immobilize_counter: i8,
+    flight_immobilize_subcounter: i8,
+    flight_recovery_latch: bool,
     player_hit_frame_time: u8,
     dword_0x18d: i32,
     palette_sub_mod: u8,
@@ -391,6 +395,10 @@ impl Level2NyphurCommonUpkeep {
             move_boost: 0,
             move_speed: 0,
             move_speed_flag: 0,
+            flight_water_counter: 0,
+            flight_immobilize_counter: 0,
+            flight_immobilize_subcounter: 0,
+            flight_recovery_latch: false,
             player_hit_frame_time: 0,
             dword_0x18d: 0,
             palette_sub_mod: 0,
@@ -534,6 +542,19 @@ impl Level2NyphurCommonUpkeep {
             self.move_speed_flag,
             self.player_hit_frame_time,
         ]);
+        if self.flight_water_counter != 0
+            || self.flight_immobilize_counter != 0
+            || self.flight_immobilize_subcounter != 0
+            || self.flight_recovery_latch
+        {
+            hasher.update(b"rival-flight-aux");
+            hasher.update([
+                self.flight_water_counter.cast_unsigned(),
+                self.flight_immobilize_counter.cast_unsigned(),
+                self.flight_immobilize_subcounter.cast_unsigned(),
+                u8::from(self.flight_recovery_latch),
+            ]);
+        }
         hasher.update(self.dword_0x18d.to_le_bytes());
         hasher.update([self.palette_sub_mod]);
         hasher.update(self.palette_count.to_le_bytes());
@@ -2748,6 +2769,71 @@ pub(crate) struct RivalWizardRoster {
 }
 
 impl RivalWizardRoster {
+    /// Publish only the player-state fields written by an existing-actor
+    /// `sub_5C950` revival. The shared spell rows are projections and can
+    /// lag unrelated movement, scores, and objective state in `players`.
+    pub(crate) fn publish_revival_player_state(
+        &self,
+        owner: SourceEntityHandle,
+        arena: &SourceArena,
+        players: &mut [PlayerSnapshot],
+        shared: &super::Level2SharedSpellResetSession,
+    ) -> bool {
+        let Some(SourceEntityView::Imported(actor)) = arena.resolve(owner) else {
+            return false;
+        };
+        if actor.class != 3 || actor.model != 1 || actor.action != 1 {
+            return false;
+        }
+        let Some(entry) = self.entries.get(&owner.source_slot).filter(|entry| entry.handle == owner) else {
+            return false;
+        };
+        let Some(source) = shared.players.iter().find(|player| {
+            player.entity_index == owner.source_slot && player.is_ai
+                && player.slot == entry.dispatcher.common_upkeep.player_slot
+        }) else {
+            return false;
+        };
+        let Some(owner_index) = players.iter().position(|player| {
+            player.entity_index == owner.source_slot && player.is_ai && player.slot == source.slot
+        }) else {
+            return false;
+        };
+        let color = source.player_color_index();
+        {
+            let player = &mut players[owner_index];
+            player.sync_spell_acquisition_from(source);
+            for family in 0..PLAYER_SPELL_COUNT {
+                player.sync_spell_progression_family_from(source, family);
+            }
+            for range in [20..24, 32..38, 565..573] {
+                player.record[range.clone()].copy_from_slice(&source.record[range]);
+            }
+            if let (Some(target), Some(source_aux)) = (
+                player.type_str_164_auxiliary.as_mut(),
+                source.type_str_164_auxiliary.as_ref(),
+            ) {
+                target.dword_0x16D_365 = source_aux.dword_0x16D_365;
+                let offset = super::PLAYER_LEGACY_RECORD_BYTES + 17;
+                player.record[offset..offset + 4].copy_from_slice(&source.record[offset..offset + 4]);
+            }
+            for index in 0..8 {
+                let _ = player.set_type_str_164_array_word(4 * index + 4, 24_607);
+            }
+        }
+
+        let relation = 4 + 4 * usize::from(color);
+        for player in players.iter_mut().filter(|player| player.entity_index != owner.source_slot) {
+            if arena.entities.get(usize::from(player.entity_index)).is_some_and(|other| {
+                other.active && other.class == 3 && matches!(other.model, 0 | 1)
+                    && other.source_id != actor.source_id
+            }) {
+                let _ = player.set_type_str_164_array_word(relation, (-24_609_i16).cast_unsigned());
+            }
+        }
+        true
+    }
+
     /// Source sub_5E310 credits the player named by the grounded victim's
     /// word_0x24, indexed by this rival's actual player color.
     pub(crate) fn credit_grounded_death(
@@ -2861,6 +2947,156 @@ impl RivalWizardRoster {
             }
         }
         Ok(outcome.predicted_position)
+    }
+
+    /// Run the existing source flight body for this dying owner, including
+    /// its own target, holder, movement state, and terrain collision.
+    pub(crate) fn step_dying_flight(
+        &mut self,
+        arena: &mut SourceArena,
+        shared: &mut super::Level2SharedSpellResetSession,
+        players: &mut [PlayerSnapshot],
+        local_life: &mut i32,
+        local_owner: u16,
+        source_slot: u16,
+        terrain: &SessionTerrain,
+        profile: crate::FlightProfile,
+        context: &mut crate::FlightContext,
+    ) -> std::result::Result<(Position, Position), String> {
+        let handle = arena.handle(source_slot)
+            .ok_or_else(|| format!("dying rival {source_slot} has no current source handle"))?;
+        let player_index = players.iter().position(|player| player.is_ai && player.entity_index == source_slot)
+            .ok_or_else(|| format!("dying rival {source_slot} has no source player"))?;
+        let player = &players[player_index];
+        let actor = arena.entities[usize::from(source_slot)].clone();
+        let dispatcher = self.get(handle).ok_or_else(|| format!("dying rival {source_slot} has no current carrier"))?;
+        let common = &dispatcher.common_upkeep;
+        let binding = dispatcher.duel_tether();
+        let holder = binding.and_then(|binding| self.bound_live_holder(handle, player, arena, 14)
+            .filter(|holder| holder.source_slot == binding.holder_entity_index))
+            .map(|holder| crate::SpellHolder { entity_index: holder.source_slot, active_value: arena.entities[usize::from(holder.source_slot)].active_value });
+        let speed_holder = self.bound_live_holder(handle, player, arena, 3)
+            .map(|holder| arena.entities[usize::from(holder.source_slot)].clone());
+        let target_handle = binding.and_then(|binding| arena.handle(binding.target_entity_index));
+        let target = binding.and_then(|binding| arena.entities.get(usize::from(binding.target_entity_index)))
+            .filter(|row| target_handle.is_some() && row.active && row.class == 3 && matches!(row.model, 0 | 1))
+            .map(|row| {
+                let life_regen = if row.index == local_owner {
+                    shared.player_life_regen as i16
+                } else {
+                    self.get_in_arena(arena, row.index)
+                        .ok_or_else(|| format!("Duel target {} has no current player upkeep carrier", row.index))?
+                        .common_upkeep(row.phase).life_regen
+                };
+                Ok::<_, String>(crate::TetherTarget { entity_index: row.index, position: row.position,
+                    life: row.life, mana: row.mana, mana_regen: row.mana_regen, life_regen })
+            }).transpose()?;
+        let word = |offset: usize| i16::from_le_bytes([player.record[offset], player.record[offset + 1]]);
+        let dword = |offset: usize| i32::from_le_bytes(player.record[offset..offset + 4].try_into().expect("player source dword"));
+        let mut flight = crate::FlightState {
+            entity_index: source_slot, position: actor.position, yaw: actor.yaw,
+            display_pitch: actor.pitch, effective_pitch: word(38),
+            roll_accumulator: word(46), pitch_accumulator: word(48),
+            target_speed: common.speed, speed_changed_flag: common.word_0xe_14,
+            actual_speed: actor.actual_speed, strafe_speed: common.strafe_speed,
+            roll_delta: word(16), pitch_delta: word(18),
+            recoil_speed: common.move_boost, recoil_yaw: common.yaw_0x1e_30,
+            impulse_x: word(54), impulse_y: word(56), impulse_z: word(58),
+            entity_fov: actor.fov, water_counter: common.flight_water_counter,
+            speed_modifier: player.record[44], speed_modifier_counter: player.record[45].cast_signed(),
+            immobilize_counter: common.flight_immobilize_counter,
+            immobilize_subcounter: common.flight_immobilize_subcounter,
+            tether_prior_distance: binding.map_or(0, |value| value.prior_distance),
+            tether_target_index: binding.map_or(0, |value| value.target_entity_index),
+            tether_holder_index: binding.map_or(0, |value| value.holder_entity_index),
+            tether_tier: binding.map_or(0, |value| u16::from(value.tier)),
+            speed_spell_holder_index: speed_holder.as_ref().map_or(0, |value| value.index),
+            entity_phase: actor.phase, player_color_index: common.player_color_index,
+            ambient_loop_5_distance: dword(565), ambient_loop_31_distance: dword(569),
+            recovery_latch: common.flight_recovery_latch,
+            skip_flight_once: actor.control_flags & 0x800 != 0,
+            ..crate::FlightState::default()
+        };
+        let mut flight_context = crate::FlightContext {
+            tether: crate::TetherContext { holder, target },
+            speed_spell_holder: speed_holder.as_ref().map(|row| crate::SpellHolder {
+                entity_index: row.index, active_value: row.active_value,
+            }),
+            effects: context.effects.take(),
+            spell_fire: speed_holder.as_ref().map(|row| crate::SpellFireContext {
+                holders: vec![crate::SpellActivationHolder {
+                    entity_index: row.index, model: row.model, level_gate: row.level_gate,
+                    active_value: row.active_value, activation_value: row.activation_value,
+                    mana_cost: row.max_mana, action_marker: row.action_marker,
+                }],
+                ..crate::SpellFireContext::default()
+            }),
+            ..crate::FlightContext::default()
+        };
+        let result = crate::step_rival_entity_body_with_context(
+            &mut flight, profile, terrain, &mut flight_context, actor.minimum_speed(),
+        );
+        context.effects = flight_context.effects.take();
+        context.events.extend(flight_context.events.drain(..));
+        let result = result?;
+        let dispatcher = self.get_mut(handle).ok_or_else(|| "dying rival carrier changed during flight".to_owned())?;
+        let common = &mut dispatcher.common_upkeep;
+        common.speed = flight.target_speed;
+        common.strafe_speed = flight.strafe_speed;
+        common.move_boost = flight.recoil_speed;
+        common.yaw_0x1e_30 = flight.recoil_yaw;
+        common.move_speed = flight.speed_modifier;
+        common.flight_water_counter = flight.water_counter;
+        common.flight_immobilize_counter = flight.immobilize_counter;
+        common.flight_immobilize_subcounter = flight.immobilize_subcounter;
+        common.flight_recovery_latch = flight.recovery_latch;
+        if binding.is_some() && flight.tether_target_index == 0 {
+            dispatcher.clear_duel_tether();
+        }
+        let player = &mut players[player_index];
+        for (offset, value) in [(20, flight.target_speed), (22, flight.strafe_speed),
+            (32, flight.recoil_speed), (34, flight.recoil_yaw), (38, flight.effective_pitch),
+            (46, flight.roll_accumulator), (48, flight.pitch_accumulator),
+            (54, flight.impulse_x), (56, flight.impulse_y), (58, flight.impulse_z)] {
+            player.record[offset..offset + 2].copy_from_slice(&value.to_le_bytes());
+        }
+        player.record[44] = flight.speed_modifier;
+        player.record[45] = flight.speed_modifier_counter.cast_unsigned();
+        player.record[565..569].copy_from_slice(&flight.ambient_loop_5_distance.to_le_bytes());
+        player.record[569..573].copy_from_slice(&flight.ambient_loop_31_distance.to_le_bytes());
+        let row = &mut arena.entities[usize::from(source_slot)];
+        row.set_yaw(flight.yaw);
+        row.set_pitch(flight.display_pitch);
+        row.set_actual_speed(flight.actual_speed);
+        if actor.control_flags & 0x800 != 0 { row.set_control_flags(row.control_flags & !0x800); }
+        if let Some(holder) = flight_context.speed_spell_holder
+            && let Some(original) = speed_holder
+            && holder.active_value != original.active_value
+        {
+            let row = &mut arena.entities[usize::from(holder.entity_index)];
+            row.active_value = holder.active_value;
+            row.record[50..52].copy_from_slice(&holder.active_value.to_le_bytes());
+            if let Some(shared_holder) = shared.pickup_mut(holder.entity_index) { *shared_holder = row.clone(); }
+        }
+        if let Some(target) = flight_context.tether.target
+            && arena.handle(target.entity_index) == target_handle
+            && let Some(row) = arena.entities.get_mut(usize::from(target.entity_index))
+        {
+            row.set_life(target.life);
+            row.set_mana(target.mana);
+            if let Some(target_handle) = target_handle && let Some(dispatcher) = self.get_mut(target_handle) {
+                dispatcher.sync_spell_target_resources(row);
+            }
+            shared.sync_player_entity_from_authority(row);
+            if target.entity_index == local_owner {
+                *local_life = target.life;
+                shared.player_mana = target.mana;
+                shared.caster.mana = target.mana;
+                shared.sync_typed_spell_parent_caches_from_player_entity();
+                if let Some(fire) = context.spell_fire.as_mut() { fire.caster.mana = target.mana; }
+            }
+        }
+        Ok((flight.position, result.proposed))
     }
 
     #[cfg(test)]

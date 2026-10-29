@@ -1117,6 +1117,9 @@ fn alliance_impact_syncs_only_the_exact_typed_bee_before_its_source_visit() {
         *control.canonical_terrain_mut() = controlled_terrain;
         for _ in 0..2 {
             control.step_outer_turn(crate::PlayerCommand::default(), 0);
+            assert!(!control.dispatch_events().iter().any(|event|
+                matches!(event, crate::native_world::Mc2DispatchEvent::Error { .. })),
+                "Bee Alliance source pass must execute without rollback: {:?}", control.dispatch_events());
         }
         let current = control.source_arena().bee_creatures().iter()
             .find(|row| row.active && row.source_entity_index == bee_slot).unwrap();

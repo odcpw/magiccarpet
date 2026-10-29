@@ -1094,6 +1094,257 @@ fn authored_cymmerian_alliance_impact_rebinds_parent_and_rejects_reuse() {
 }
 
 #[test]
+fn level_ten_buildings_release_switch_group_into_cymmerian_guard() {
+    use crate::PlayerCommand;
+    use crate::campaign::source_arena::CreatureRootOrigin;
+    use crate::campaign::{CampaignSession, spec::CampaignSelection};
+    use crate::native_world::{FireballProjectileOrigin, Mc2DispatchEvent};
+    use std::collections::{BTreeMap, BTreeSet};
+
+    let campaign = CampaignSession::open(
+        mission_eighteen_root().join("level10"),
+        CampaignSelection::ordinary(10).unwrap(),
+    )
+    .expect("real Level 10 campaign package");
+    let mut session = campaign.simulation().clone();
+    let player = session.state.entity_index;
+    let owner = usize::from(session.players()[0].player_color_index());
+    let switch = &session.entities()[1];
+    assert_eq!(
+        (switch.class, switch.model, switch.action, switch.source_id),
+        (11, 32, 32, 8)
+    );
+    assert_eq!(session.runtime().stages[0].kind, 9);
+    assert_eq!(session.runtime().objectives[owner].stage_selectors[0], 1);
+    let initial = session.campaign_building_objective_targets(0);
+    assert_eq!(
+        initial.len(),
+        6,
+        "owner data starts with six standing chain-23 buildings"
+    );
+    let kept = (initial[0].1.x, initial[0].1.y);
+    let expected_group = session
+        .mission()
+        .authored_features()
+        .iter()
+        .filter(|feature| {
+            feature.index != 0
+                && feature.index < 1200
+                && feature.kind != 0
+                && feature.activation_group == 8
+        })
+        .map(|feature| feature.index)
+        .collect::<Vec<_>>();
+    assert_eq!(expected_group.len(), 25);
+    let mut damaged = BTreeSet::new();
+    let mut only_kept = false;
+
+    // Apply real source mailbox damage and allow the ordinary House callbacks
+    // to construct each 23 -> 24 -> 28 successor. One House remains intact.
+    for _ in 0..256 {
+        let targets = session.campaign_building_objective_targets(0);
+        if targets.iter().all(|(_, p)| (p.x, p.y) == kept) && !targets.is_empty() {
+            only_kept = true;
+            break;
+        }
+        for (slot, position) in targets {
+            if (position.x, position.y) == kept {
+                continue;
+            }
+            let ready = session
+                .session
+                .state
+                .live
+                .ordinary
+                .houses()
+                .iter()
+                .any(|house| house.entity_index == slot && house.active && house.action == 52);
+            if !ready {
+                continue;
+            }
+            let handle = session
+                .source_arena()
+                .handle(slot)
+                .expect("live House source handle");
+            if damaged.insert((slot, handle.generation)) {
+                assert!(
+                    session
+                        .session
+                        .state
+                        .live
+                        .ordinary
+                        .houses
+                        .submit_source_damage(slot, u16::MAX, player)
+                );
+            }
+        }
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        assert!(
+            !session
+                .dispatch_events()
+                .iter()
+                .any(|event| matches!(event, Mc2DispatchEvent::Error { .. })),
+            "ordinary House cleanup dispatch failed: {:?}",
+            session.dispatch_events()
+        );
+        assert!(
+            !session.dispatch_events().iter().any(|event| matches!(
+                event,
+                Mc2DispatchEvent::AuthoredGroupActivated { group: 8, .. }
+            )),
+            "a surviving source House must keep the objective switch inert"
+        );
+    }
+    assert!(
+        only_kept,
+        "other actual House destruction chains must finish"
+    );
+    assert_eq!(session.runtime().objectives[owner].stage_selectors[0], 1);
+
+    let mut activated = false;
+    for _ in 0..256 {
+        for (slot, _) in session.campaign_building_objective_targets(0) {
+            let ready = session
+                .session
+                .state
+                .live
+                .ordinary
+                .houses()
+                .iter()
+                .any(|house| house.entity_index == slot && house.active && house.action == 52);
+            if !ready {
+                continue;
+            }
+            let handle = session
+                .source_arena()
+                .handle(slot)
+                .expect("live House source handle");
+            if damaged.insert((slot, handle.generation)) {
+                assert!(
+                    session
+                        .session
+                        .state
+                        .live
+                        .ordinary
+                        .houses
+                        .submit_source_damage(slot, u16::MAX, player)
+                );
+            }
+        }
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        assert!(
+            !session
+                .dispatch_events()
+                .iter()
+                .any(|event| matches!(event, Mc2DispatchEvent::Error { .. })),
+            "ordinary switch/group dispatch failed: {:?}",
+            session.dispatch_events()
+        );
+        if let Some(indices) = session
+            .dispatch_events()
+            .iter()
+            .find_map(|event| match event {
+                Mc2DispatchEvent::AuthoredGroupActivated {
+                    source_slot: 1,
+                    group: 8,
+                    authored_indices,
+                    ..
+                } => Some(authored_indices),
+                _ => None,
+            })
+        {
+            assert_eq!(indices.as_ref(), expected_group.as_slice());
+            assert_eq!(indices[0], 31);
+            activated = true;
+            break;
+        }
+    }
+    assert!(
+        activated,
+        "naturally completed building objective must fire the real group-8 switch"
+    );
+    assert_eq!(session.runtime().objectives[owner].stage_selectors[0], 2);
+    let empty_bindings = BTreeMap::new();
+    let guard = session
+        .entities()
+        .iter()
+        .find_map(|row| {
+            let identity = session
+                .source_arena()
+                .imported_creature_runtime_identity(row.index, &empty_bindings)?;
+            (identity.origin
+                == CreatureRootOrigin::AuthoredRecord {
+                    authored_record: 31,
+                })
+            .then_some(identity.handle)
+        })
+        .expect("source row31 produced its live generation-bound Cymmerian");
+    let row = &session.entities()[usize::from(guard.source_slot)];
+    assert_eq!((row.class, row.model, row.record[76]), (5, 25, 1));
+    assert!(
+        matches!(row.record[77], 2 | 10),
+        "row31 uses its authored guard route"
+    );
+
+    // Place the actual player inside the guard's view cone; callbacks and
+    // projectile allocation then run only through the ordinary scheduler.
+    let position = row.position;
+    let yaw = row.yaw;
+    let actor_id = row.source_id;
+    let candidates = [
+        (2048_i16, 0_i16),
+        (-2048, 0),
+        (0, 2048),
+        (0, -2048),
+        (1448, 1448),
+        (1448, -1448),
+        (-1448, 1448),
+        (-1448, -1448),
+    ];
+    let point = candidates
+        .into_iter()
+        .map(|(dx, dy)| Position {
+            x: position.x.wrapping_add_signed(dx),
+            y: position.y.wrapping_add_signed(dy),
+            z: position.z,
+        })
+        .find(|point| {
+            angle_distance(i32::from(yaw), heading_for_positions(position, *point))
+                < RULES.target_half_angle
+        })
+        .expect("a bounded nearby position lies in the guard's source view cone");
+    session.set_level2_entity_position(player, point).unwrap();
+    let mut fired = false;
+    for _ in 0..32 {
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        assert!(
+            !session
+                .dispatch_events()
+                .iter()
+                .any(|event| matches!(event, Mc2DispatchEvent::Error { .. })),
+            "ordinary guard/projectile dispatch failed: {:?}",
+            session.dispatch_events()
+        );
+        fired |= session
+            .economy()
+            .fireball_projectiles()
+            .iter()
+            .any(|projectile| {
+                projectile.origin == FireballProjectileOrigin::Cymmerian
+                    && projectile.owner_entity_index == actor_id
+                    && projectile.target_source_entity_index == player
+            });
+        if fired {
+            break;
+        }
+    }
+    assert!(
+        fired,
+        "the real row31 guard must reach its ordinary projectile consumer"
+    );
+}
+
+#[test]
 fn army_action207_consumes_parent_timer_and_stage13_expiry_products() {
     let (mut arena, mut runtime, mut terrain, particles, parent_slot, owner_id, position) =
         summoned_source_parts();

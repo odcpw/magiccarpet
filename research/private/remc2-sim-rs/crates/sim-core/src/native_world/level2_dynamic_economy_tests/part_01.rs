@@ -4414,6 +4414,30 @@ fn level_two_economy_conformance_castle_action_vectors_and_allocator_fallback() 
         }
     );
 
+    // The missing-child fallback scans only on phase multiples of 32, while
+    // the source refreshes ground Z and advances phase on every visit.
+    let mut waiting = inspection.level2_reset_session().expect("waiting Castle session");
+    let waiting_slot = waiting.economy_mut().build_castle(Position::default(), 111)
+        .expect("waiting Castle");
+    let ground = waiting.canonical_terrain().ground_height(Position::default());
+    {
+        let mut economy = waiting.economy_mut();
+        assert!(economy.castle_children().iter().all(|child| !child.active || child.model != 42));
+        let castle = economy.castle.as_mut().expect("waiting Castle");
+        castle.action = 5;
+        castle.build_state = 4;
+        castle.phase = 30;
+        castle.position.z = ground.wrapping_add(123);
+    }
+    for phase in [31, 32] {
+        assert!(waiting.economy_mut().step_castle_action(waiting_slot));
+        let castle = waiting.economy().castle().unwrap();
+        assert_eq!((castle.build_state, castle.phase, castle.position.z), (4, phase, ground));
+    }
+    assert!(waiting.economy_mut().step_castle_action(waiting_slot));
+    let castle = waiting.economy().castle().unwrap();
+    assert_eq!((castle.build_state, castle.phase), (3, 33));
+
     // sub_5FF50/EndOfCastleProjectile's action-4 even-phase branch absorbs
     // an owned sphere before the source phase byte advances.
     let mut action4 = inspection
