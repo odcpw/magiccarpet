@@ -40,12 +40,43 @@ pub(crate) fn targets_in_arena(arena: &SourceArena) -> Vec<Target> {
                 roll_extent: row.array_roll(),
                 fov_extent: row.array_fov(),
                 attacker: word(row, 42),
+                target: word(row, 154),
+                stage_index: row.record[76],
+                stage_relation: word(row, 78),
                 killer: word(row, 40),
                 next: word(row, 56),
                 castle_slot,
             }
         })
         .collect::<Vec<_>>();
+    for source in arena
+        .economy
+        .authored_class5()
+        .iter()
+        .filter(|row| row.active)
+    {
+        targets.retain(|row| row.slot != source.source_entity_index);
+        targets.push(Target {
+            slot: source.source_entity_index,
+            source_id: arena.economy.source_owner(source.source_entity_index),
+            class: 5,
+            model: source.model,
+            action: source.action,
+            life: source.life,
+            flags: if source.drawing_enabled {
+                0
+            } else {
+                crate::native_world::ENTITY_DRAW_DISABLED_BIT
+            },
+            position: source.position,
+            yaw: source.yaw,
+            pitch_extent: source.shift_rot_x,
+            roll_extent: source.shift_rot_y,
+            attacker: source.word_0x26,
+            target: source.word_0x96_150,
+            ..Target::default()
+        });
+    }
     if let Some(castle) = castle.filter(|castle| {
         castle.active
             && !targets
@@ -208,6 +239,13 @@ pub(crate) fn allocate_summoned(
         return Err(format!(
             "Cymmerian Army summon at slot{slot} lost generation-bound origin"
         ));
+    }
+    if let Some(parent) = arena.handle(parent_slot) {
+        if !arena.bind_creature_parent(handle, parent) {
+            return Err(format!(
+                "Cymmerian Army summon at slot{slot} lost its parent binding"
+            ));
+        }
     }
     Ok(Some(handle))
 }
@@ -416,6 +454,18 @@ pub(crate) fn step_row(
         .ok_or_else(|| format!("Cymmerian callback lost slot{slot}"))?
         .clone();
     let source_id = row.source_id;
+    let parent_slot = word(&row, 44);
+    let parent_current = arena.handle(slot).is_some_and(|child| {
+        // Imported reset rows have generation zero and predate the runtime
+        // association. Every allocated Army or boss child binds a parent.
+        if arena.has_creature_parent_binding(child) {
+            arena
+                .creature_parent(child)
+                .is_some_and(|parent| parent.source_slot == parent_slot)
+        } else {
+            child.generation == 0
+        }
+    });
     let mut context = Context {
         terrain,
         targets: &snapshots,
@@ -425,7 +475,13 @@ pub(crate) fn step_row(
     let mut effects = super::step(&mut Actor { row: &mut row }, &mut context)?;
     let stage_expiry = if effects.stage_callback {
         effects.stage_callback = false;
-        super::stage::step_action_207(&mut Actor { row: &mut row }, &context)?
+        super::stage::step_action_207(
+            &mut Actor { row: &mut row },
+            &context,
+            runtime,
+            families,
+            parent_current,
+        )?
     } else {
         None
     };

@@ -980,6 +980,27 @@ mod tests {
             !model.references_authored_entity(518),
             "model routes retain their exemplar instead of binding one live entity"
         );
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path()).unwrap();
+        let mut session = inspection.mission_content_template().unwrap().session();
+        session.level2_authored_stage_variables = variables.into_boxed_slice();
+        // Sparse source indices remain indices, even when the active count
+        // cuts off the later direct route or is cleared without erasing rows.
+        assert!(
+            session
+                .level2_authored_stage_variable_references_to(312, 5)
+                .any(|i| i == 5)
+        );
+        assert!(
+            !session
+                .level2_authored_stage_variable_references_to(312, 4)
+                .any(|i| i == 5)
+        );
+        assert_eq!(
+            session
+                .level2_authored_stage_variable_references_to(312, 0)
+                .count(),
+            0
+        );
     }
 
     #[test]
@@ -1076,9 +1097,11 @@ mod tests {
                 .expect("qualified Day-Bee authored row");
             assert_eq!((feature.kind, feature.subtype), (5, 2));
             assert_eq!(
-                session.level2_authored_stage_variable_for(feature),
+                session.level2_authored_stage_variable_for(feature, 10),
                 Some(l2_06)
             );
+            assert_eq!(session.level2_authored_stage_variable_for(feature, 5), None);
+            assert_eq!(session.level2_authored_stage_variable_for(feature, 0), None);
         }
 
         // Decode against the real owner package, then corrupt only the
@@ -1121,7 +1144,7 @@ mod tests {
             .expect("row 229");
         assert!(
             missing_session
-                .level2_authored_stage_variable_for(row_229)
+                .level2_authored_stage_variable_for(row_229, 10)
                 .is_none()
         );
     }
@@ -1267,17 +1290,23 @@ impl MissionContentSession {
     pub(crate) fn level2_authored_stage_variable_for(
         &self,
         feature: AuthoredFeature,
+        active_count: u8,
     ) -> Option<Level2AuthoredStageVariable> {
         self.level2_authored_stage_variables
             .iter()
             .copied()
-            .find(|stage_var| !stage_var.subtype_match() && stage_var.selector == feature.index)
+            .find(|stage_var| {
+                stage_var.index <= active_count
+                    && !stage_var.subtype_match()
+                    && stage_var.selector == feature.index
+            })
             .or_else(|| {
                 self.level2_authored_stage_variables
                     .iter()
                     .copied()
                     .find(|stage_var| {
-                        stage_var.subtype_match()
+                        stage_var.index <= active_count
+                            && stage_var.subtype_match()
                             && self
                                 .authored_features
                                 .get(usize::from(stage_var.selector))
@@ -1291,10 +1320,13 @@ impl MissionContentSession {
     pub(crate) fn level2_authored_stage_variable_references_to(
         &self,
         authored_index: u16,
+        active_count: u8,
     ) -> impl Iterator<Item = u8> + '_ {
         self.level2_authored_stage_variables
             .iter()
-            .filter(move |stage| stage.references_authored_entity(authored_index))
+            .filter(move |stage| {
+                stage.index <= active_count && stage.references_authored_entity(authored_index)
+            })
             .map(|stage| stage.index)
     }
 

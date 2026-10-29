@@ -1,4 +1,284 @@
 #[test]
+fn castle_construction_uses_each_owners_generation_bound_coefficients() {
+    let inspection = NativeWorld::inspect_level2(level_two_fixture_path()).expect("Level 2 package");
+    let mut session = inspection.level2_reset_session().expect("Level 2 session");
+    let owner_a = inspection.players()[0].entity_index;
+    let owner_b = inspection.players()[1].entity_index;
+    let a = session.economy_mut().build_castle(Position::default(), owner_a).unwrap();
+    let b = session.economy_mut().build_castle(Position { x: 0x5000, y: 0x5000, z: 0 }, owner_b).unwrap();
+    assert!(session.economy_mut().set_castle_stage_coefficient_for_owner(owner_a, 1, 128));
+    assert!(session.economy_mut().set_castle_stage_coefficient_for_owner(owner_b, 1, 512));
+    assert!(session.economy_mut().set_castle_controller_coefficient_for_owner(owner_a, 1, 3));
+    assert!(session.economy_mut().set_castle_controller_coefficient_for_owner(owner_b, 1, 7));
+    assert!(session.economy_mut().start_castle_construction(a));
+    assert!(session.economy_mut().start_castle_construction(b));
+    assert!(session.economy_mut().step_castle_action(a));
+    assert!(session.economy_mut().step_castle_action(b));
+    assert_eq!(session.economy().castle_at(a).unwrap().max_life, 10_000);
+    assert_eq!(session.economy().castle_at(b).unwrap().max_life, 40_000);
+    for (owner, expected) in [(owner_a, 3), (owner_b, 7)] {
+        let controller = session.economy().castle_children().iter()
+            .find(|row| row.active && row.model == 79 && row.owner_entity_index == owner)
+            .expect("owner's stage controller");
+        assert_eq!(controller.source_byte_43, expected);
+    }
+    let generation = session.economy().slot_generation(owner_b);
+    session.economy_mut().slot_generations.insert(owner_b, generation.wrapping_add(1));
+    assert_eq!(session.economy().castle_stage_coefficient_for_owner(owner_b, 1), 256);
+    assert_eq!(session.economy().castle_controller_coefficients_for_owner(owner_b)[1], 1);
+    assert_eq!(session.economy().castle_stage_coefficient_for_owner(owner_a, 1), 128);
+}
+
+#[test]
+fn ordinary_level_23_imports_linked_castles_and_construction_children() {
+    let package = std::env::var_os("MC_LEVEL23_PACKAGE").map_or_else(
+        || {
+            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../../generated/mc-ordinary-package-_pgn4jfo/level23")
+        },
+        PathBuf::from,
+    );
+    let campaign = crate::campaign::CampaignSession::open(
+        package,
+        crate::campaign::spec::CampaignSelection::ordinary(23).unwrap(),
+    )
+    .expect("ordinary Level 23 owner package");
+    let session = campaign.simulation();
+    let economy = session.economy();
+    let expected = [
+        (425, 450, 1, 8_500, 0),
+        (451, 476, 1, 5_000, 612),
+        (477, 503, 5, 78_600, 613),
+        (504, 530, 5, 78_600, 614),
+        (531, 557, 5, 78_600, 615),
+        (558, 584, 6, 158_200, 616),
+        (585, 611, 7, 317_400, 617),
+    ];
+    for (owner, slot, level, mana, child) in expected {
+        let root = economy
+            .castle_for_owner(owner)
+            .expect("imported owner Castle");
+        assert_eq!(
+            (
+                root.source_entity_index,
+                root.level,
+                root.mana,
+                root.construction_slot
+            ),
+            (slot, level, mana, child)
+        );
+        assert!(!session.source_arena().entities[usize::from(slot)].active);
+        if child != 0 {
+            assert!(economy.castle_children().iter().any(|row| row.active
+                && row.source_entity_index == child
+                && row.parent_entity_index == slot
+                && (row.source_class, row.model, row.action) == (10, 42, 44)));
+            assert!(!session.source_arena().entities[usize::from(child)].active);
+        }
+    }
+    assert_eq!(economy.live_castles().count(), expected.len());
+}
+
+#[test]
+fn level_two_castles_keep_owner_links_separate_through_destruction_and_reuse() {
+    let package = level_two_fixture_path();
+    let gameplay_cache = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../../generated/level2-day-owner-cache/components/gameplay");
+    let inspection = NativeWorld::inspect_level2_with_owner_cache(&package, &gameplay_cache)
+        .expect("qualified Level 2 owner data");
+    let owners = [
+        inspection.players()[0].entity_index,
+        inspection.players()[1].entity_index,
+    ];
+    let footprint = inspection
+        .level2_castle_stage_footprints
+        .get(&1)
+        .expect("owner BUILD stage one")
+        .clone();
+    let mut session = inspection.level2_reset_session().expect("Level 2 session");
+    let baseline_hash = session.economy().reset_hash();
+    let terrain = session.canonical_terrain().clone();
+    let entities = inspection.entities();
+    let mut sites = Vec::new();
+    for y in (16_u16..240).step_by(16) {
+        for x in (16_u16..240).step_by(16) {
+            let mut site = Position {
+                x: x * 256,
+                y: y * 256,
+                z: 0,
+            };
+            site.z = terrain.ground_height(site);
+            if !session
+                .economy()
+                .castle_projectile_site_blocked(site, entities, &terrain)
+                && sites.first().is_none_or(|first| {
+                    level2_wrapping_xy_distance(*first, site) > 0x3000_u32.pow(2)
+                })
+            {
+                sites.push(site);
+            }
+            if sites.len() == 2 {
+                break;
+            }
+        }
+        if sites.len() == 2 {
+            break;
+        }
+    }
+    assert_eq!(
+        sites.len(),
+        2,
+        "owner terrain supplies two valid Castle sites"
+    );
+    let mut flyers = Vec::new();
+    for (owner, site) in owners.into_iter().zip(sites) {
+        let mut launch = site;
+        launch.z = launch.z.saturating_add(512);
+        flyers.push(
+            session
+                .economy_mut()
+                .spawn_castle_projectile_with_payload(
+                    Level2CastleProjectileLaunchPayload {
+                        position: launch,
+                        axis_position: site,
+                        yaw: 0,
+                        pitch: 0,
+                        source_id_entity_index: owner,
+                        source_subspell_index: 0,
+                        source_mana: 0,
+                        source_a4_byte_154: 0,
+                    },
+                    0,
+                    0,
+                )
+                .expect("ordinary Castle flyer"),
+        );
+    }
+    for _ in 0..32 {
+        for &flyer in &flyers {
+            session
+                .economy_mut()
+                .step_castle_projectile_slot(flyer, entities);
+        }
+        if session.economy().live_castles().count() == 2 {
+            break;
+        }
+    }
+    let first = session
+        .economy()
+        .live_castles()
+        .find(|castle| castle.owner_entity_index == owners[0])
+        .expect("first flyer produced a Castle seed")
+        .source_entity_index;
+    let second = session
+        .economy()
+        .live_castles()
+        .find(|castle| castle.owner_entity_index == owners[1])
+        .expect("second flyer produced a Castle seed")
+        .source_entity_index;
+    assert_ne!(first, second);
+    assert!(session.economy().castle_for_owner(owners[0]).is_none());
+    assert!(session.economy().castle_for_owner(owners[1]).is_none());
+    assert!(session.economy_mut().step_castle_action(first));
+    assert!(session.economy_mut().step_castle_action(second));
+    assert_eq!(
+        session
+            .economy()
+            .castle_for_owner(owners[0])
+            .unwrap()
+            .source_entity_index,
+        first
+    );
+    assert_eq!(
+        session
+            .economy()
+            .castle_for_owner(owners[1])
+            .unwrap()
+            .source_entity_index,
+        second
+    );
+    assert_eq!(session.economy().player_castle_entity_index(), first);
+    assert_ne!(session.economy().reset_hash(), baseline_hash);
+    let destroyed_generation = session.economy().slot_generation(second);
+    {
+        let mut economy = session.economy_mut();
+        let castle = economy.castle_at_mut(second).unwrap();
+        castle.action = 6;
+        castle.level = 1;
+        castle.life = -1;
+    }
+    assert!(session.economy_mut().step_castle_action(second));
+    assert!(session.economy().castle_for_owner(owners[1]).is_none());
+    assert_eq!(
+        session
+            .economy()
+            .castle_for_owner(owners[0])
+            .unwrap()
+            .source_entity_index,
+        first
+    );
+    session
+        .economy_mut()
+        .reclaim_inactive_slots_at_source_boundary();
+    let replacement = session
+        .economy_mut()
+        .build_castle_with_footprint(
+            Position {
+                x: 0x4400,
+                y: 0x5600,
+                z: 0,
+            },
+            owners[1],
+            &footprint,
+        )
+        .expect("rival rebuild");
+    assert_eq!(
+        replacement, second,
+        "rebuild reuses the reclaimed root slot"
+    );
+    assert_ne!(
+        session.economy().slot_generation(replacement),
+        destroyed_generation
+    );
+    assert!(session.economy().castle_for_owner(owners[1]).is_none());
+    assert!(session.economy_mut().step_castle_action(replacement));
+    assert_eq!(
+        session
+            .economy()
+            .castle_for_owner(owners[1])
+            .unwrap()
+            .source_entity_index,
+        replacement
+    );
+    let generation = session.economy().slot_generation(replacement);
+    session
+        .economy_mut()
+        .slot_generations
+        .insert(replacement, generation.wrapping_add(1));
+    assert!(
+        session.economy().castle_for_owner(owners[1]).is_none(),
+        "reused root slot cannot satisfy the old relation"
+    );
+    assert!(session.economy().castle_for_owner(owners[0]).is_some());
+    session
+        .economy_mut()
+        .slot_generations
+        .insert(replacement, generation);
+    let owner_generation = session.economy().slot_generation(owners[1]);
+    session
+        .economy_mut()
+        .slot_generations
+        .insert(owners[1], owner_generation.wrapping_add(1));
+    assert!(
+        session.economy().castle_for_owner(owners[1]).is_none(),
+        "reused owner slot cannot satisfy the old relation"
+    );
+    session.economy_mut().reset();
+    assert_eq!(session.economy().reset_hash(), baseline_hash);
+    assert_eq!(session.economy().live_castles().count(), 0);
+}
+
+#[test]
 fn level_two_possession_contact_retry_preserves_shifted_life_and_prologue_reclaim() {
     let mut session = level_two_possession_lifecycle_session();
     let source_id_entity_index = session.state.entity_index;

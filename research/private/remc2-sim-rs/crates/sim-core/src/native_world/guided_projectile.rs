@@ -1,6 +1,8 @@
 //! The shared sub_65820 flyer used by Meteor and Spider web.
 //! SourceArena owns fixed addresses; the scheduler owns phase and reclaim.
 
+pub(crate) mod boss;
+
 use super::{EntitySnapshot, ParticleParameter, SessionTerrain, area_damage};
 use crate::campaign::source_arena::SourceArena;
 use crate::level_definition::{EffectKind, FieldKind, TilePosition};

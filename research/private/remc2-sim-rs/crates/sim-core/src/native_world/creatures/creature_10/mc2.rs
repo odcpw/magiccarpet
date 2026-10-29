@@ -296,6 +296,12 @@ fn materialize_model25_summon(
         return Ok(None);
     };
     let slot = handle.source_slot;
+    let parent_handle = arena
+        .handle(parent_slot)
+        .ok_or("final encounter model25 parent lost its source generation")?;
+    if !arena.bind_creature_parent(handle, parent_handle) {
+        return Err("final encounter model25 could not bind its live parent".to_owned());
+    }
     let row = arena
         .entities
         .get_mut(usize::from(slot))
@@ -383,6 +389,7 @@ fn materialize_firefly_summon(
     if let Some(roll) = request.roll {
         source.roll = roll;
     }
+    let parent_generation = arena.slot_generation(parent_slot);
     let state = arena
         .economy
         .authored_fireflies
@@ -390,9 +397,21 @@ fn materialize_firefly_summon(
         .find(|state| state.source_entity_index == slot)
         .ok_or_else(|| format!("final encounter Firefly runtime lost slot{slot}"))?;
     state.parent_entity_index = parent_slot;
+    state.parent_generation = parent_generation;
     state.word_0x2e = timer;
     state.stage_var1 = 0;
     state.stage_var2 = stage;
+    if !arena.bind_dynamic_creature_origin(
+        handle,
+        crate::level_definition::CreatureKind::Firefly,
+        crate::campaign::source_arena::CreatureRootOrigin::CreatureConversion {
+            producer_slot: parent_slot,
+        },
+    ) {
+        return Err(format!(
+            "final encounter Firefly child at slot{slot} lost boss generation origin"
+        ));
+    }
     Ok(request.success_sound)
 }
 
@@ -415,20 +434,55 @@ fn materialize_summons(
                 materialize_firefly_summon(arena, runtime, terrain, particles, request)?
             }
             SummonKind::Dragon => {
-                return Err(
-                    "final encounter Dragon child has no source-ready constructor: \
-                     allocate_authored_dragon requires authored identity and cannot encode \
-                     boss parent, StageVar17, or lifetime250"
-                        .to_owned(),
-                );
+                let (parent_slot, player_slot, _, _, _) =
+                    validate_stage_child_request(&request, 7)?;
+                summon_parent_and_player(arena, &request)?;
+                let parent = arena
+                    .handle(parent_slot)
+                    .ok_or("final encounter Dragon parent lost its arena generation")?;
+                crate::native_world::level2_class5::dragon::allocate_boss_summoned(
+                    arena,
+                    terrain,
+                    request.position,
+                    parent,
+                    request.owner,
+                    player_slot,
+                    request.yaw.unwrap_or(0),
+                )?
+                .and(request.success_sound)
             }
             SummonKind::Class9Projectile { subtype } => {
-                return Err(format!(
-                    "final encounter source projectile(9,{subtype})->(10,{})/byte46={} has no \
-                     exact boss adapter: initialize_fireball_projectile lacks the source \
-                     byte43/44/46 payload and final-boss origin",
-                    request.source_variant, request.action
-                ));
+                use crate::native_world::guided_projectile::boss::{self, Launch, Product};
+                let product = match subtype {
+                    0 => Product::FinalBossFireball,
+                    9 => Product::Lightning,
+                    26 => Product::Whirlwind,
+                    3 => Product::Meteor,
+                    _ => {
+                        return Err(format!(
+                            "final encounter projectile selector9/{subtype} is invalid"
+                        ));
+                    }
+                };
+                boss::construct(
+                    arena,
+                    terrain,
+                    particles,
+                    Launch {
+                        product,
+                        position: request.position,
+                        owner: request.owner,
+                        yaw: request.yaw.unwrap_or(0),
+                        pitch: request.pitch.unwrap_or(0),
+                        target_class: request.target_player_class.unwrap_or(0),
+                        target_model: request.target_player_model.unwrap_or(0),
+                        target: 0,
+                        damage: request.subspell_index.unwrap_or(0),
+                        effect_life: request.action,
+                        descriptor: request.descriptor,
+                    },
+                )?
+                .and(request.success_sound)
             }
         };
         if let Some(sound) = sound {
@@ -472,31 +526,6 @@ fn source_tile_center(position: Position) -> (i16, i16) {
     )
 }
 
-fn apply_source_approach_mode(arena: &mut SourceArena, actor: &mut Actor, mode: u8) {
-    for row in arena
-        .entities
-        .iter_mut()
-        .filter(|row| row.active && row.class != 0 && row.index != actor.slot)
-    {
-        match mode {
-            1 => {
-                row.set_control_flags((row.control_flags | 0x0100_0000) & !0x0080_0000);
-            }
-            2 => {
-                row.set_control_flags((row.control_flags | 0x8000_0000) & !0x0001_0000);
-            }
-            3 => row.disable_drawing(),
-            _ => {}
-        }
-    }
-    match mode {
-        1 => actor.flags = (actor.flags | 0x0100_0000) & !0x0080_0000,
-        2 => actor.flags = (actor.flags | 0x8000_0000) & !0x0001_0000,
-        3 => actor.flags |= crate::native_world::ENTITY_DRAW_DISABLED_BIT,
-        _ => {}
-    }
-}
-
 /// Source `sub_21490`, called once in the phase-0 pass and once on every
 /// phase-1 pass. Its completion result is derived from the live source state;
 /// it is never supplied as a Frame success flag.
@@ -525,7 +554,7 @@ fn approach_step(
                 let tile = usize::from(x) + 256 * usize::from(y);
                 terrain.planes().terrain_types[tile] != 0
             });
-            if blocked {
+            if !blocked {
                 actor.timer = 70;
                 actor.subspell_index = (actor.subspell_index | 4) & !8;
             } else {
@@ -607,7 +636,9 @@ fn approach_step(
     }
 
     if creature_mode != 0 {
-        apply_source_approach_mode(arena, actor, creature_mode);
+        // Source v29 mutates only the frozen dword38523 chain (class10
+        // models39/40/57). The world owner consumes this exact-list intent;
+        // neither the player nor the boss is part of that chain.
         effects.approach_creature_mode = Some(creature_mode);
     }
 
@@ -837,6 +868,78 @@ pub(crate) fn step_row(
     }
     materialize_summons(arena, runtime, terrain, particles, &mut effects)?;
     materialize_source_effects(arena, runtime, terrain, &mut effects)?;
+    if effects.clear_stage_variable_count && !runtime.clear_active_stage_variable_count() {
+        return Err("final encounter could not clear the active StageVar count".to_owned());
+    }
+    if let Some(counter) = effects.final_boss_active_counter
+        && !runtime.set_final_boss_active_counter(counter)
+    {
+        return Err("final encounter source active-counter word is absent".to_owned());
+    }
+    Ok(effects)
+}
+
+/// Source sub_223E0 and sub_21F60 run immediately before action80. The
+/// population lists are frozen at pass start; callbacks still use the live
+/// numeric arena scan, so a higher newly allocated slot can run this pass.
+pub(crate) fn scheduled_step(
+    arena: &mut SourceArena,
+    runtime: &mut RuntimeSnapshot,
+    terrain: &mut SessionTerrain,
+    shared_spells: &mut crate::native_world::Level2SharedSpellResetSession,
+    particles: &[ParticleParameter],
+    slot: u16,
+    player_slot: u16,
+    families: &[Vec<u16>; 29],
+    class9: &[u16],
+    setting_30: u8,
+) -> Result<Effects, String> {
+    let player = arena
+        .entities
+        .get(usize::from(player_slot))
+        .filter(|row| row.active && row.class == 3)
+        .ok_or_else(|| format!("final encounter player slot{player_slot} is absent"))?;
+    let mut frame = Frame {
+        player_slot,
+        player_source_id: player.source_id,
+        player_position: player.position,
+        player_alive: player.life >= 0 && !player.drawing_disabled(),
+        player_class: player.class,
+        player_model: player.model,
+        source_setting: u16::from(setting_30),
+        pressure_speed: runtime
+            .final_boss_pressure_speed()
+            .ok_or("final encounter pressure-speed word is absent")?,
+        // The source intentionally scans the model0 chain for all three
+        // counters; changing these to19/21 would alter summon selection.
+        model0_count: families[0].len() as u16,
+        model19_count: families[0].len() as u16,
+        model21_count: families[0].len() as u16,
+        model25_count: families[25]
+            .iter()
+            .filter(|&&slot| {
+                arena
+                    .entities
+                    .get(usize::from(slot))
+                    .is_some_and(|row| row.action != 200)
+            })
+            .count() as u16,
+        ..Frame::default()
+    };
+    if arena
+        .entities
+        .get(usize::from(slot))
+        .is_some_and(|row| row.action == 80)
+    {
+        frame.close_creature =
+            super::protection::apply(arena, terrain, slot, shared_spells, class9)?;
+    }
+    let effects = step_row(arena, runtime, terrain, particles, slot, frame)?;
+    if let Some(pressure) = effects.player_pressure
+        && !runtime.set_final_boss_pressure_speed(pressure.speed)
+    {
+        return Err("final encounter could not store its pressure speed".to_owned());
+    }
     Ok(effects)
 }
 
@@ -1090,49 +1193,73 @@ mod tests {
     }
 
     #[test]
-    fn blocked_source_approach_enters_mode_four_without_claiming_completion() {
-        let (mut fixture, boss_slot) = boss_fixture();
-        let boss_position = fixture.arena.entities[usize::from(boss_slot)].position;
-        let (center_x, center_y) = source_tile_center(boss_position);
-        let (dx, dy) = *source_bitmap_class_offsets(7)
-            .unwrap()
-            .first()
-            .expect("SEARCH.DAT class7 has at least one return1 pair");
-        {
-            let (planes, _, _, _) = fixture.terrain.disaster_parts();
-            let x = center_x.wrapping_add(i16::from(dx)) as u8;
-            let y = center_y.wrapping_add(i16::from(dy)) as u8;
-            planes.terrain_types[usize::from(x) + 256 * usize::from(y)] = 1;
+    fn source_approach_clear_scan_enters_mode_four_but_obstruction_retries() {
+        // sub_21490, source12930: v28 remains1 only when every visited
+        // SEARCH.DAT tile is clear. A blocked tile selects the15-tick retry.
+        for blocked in [false, true] {
+            let (mut fixture, boss_slot) = boss_fixture();
+            let boss_position = fixture.arena.entities[usize::from(boss_slot)].position;
+            let (center_x, center_y) = source_tile_center(boss_position);
+            let offsets = source_bitmap_class_offsets(7).unwrap();
+            {
+                let (planes, _, _, _) = fixture.terrain.disaster_parts();
+                for &(dx, dy) in &offsets {
+                    let x = center_x.wrapping_add(i16::from(dx)) as u8;
+                    let y = center_y.wrapping_add(i16::from(dy)) as u8;
+                    planes.terrain_types[usize::from(x) + 256 * usize::from(y)] = 0;
+                }
+                if blocked {
+                    let (dx, dy) = offsets[0];
+                    let x = center_x.wrapping_add(i16::from(dx)) as u8;
+                    let y = center_y.wrapping_add(i16::from(dy)) as u8;
+                    planes.terrain_types[usize::from(x) + 256 * usize::from(y)] = 1;
+                }
+            }
+            let boss = &mut fixture.arena.entities[usize::from(boss_slot)];
+            boss.set_source_byte_46(1);
+            boss.set_subspell_index(8);
+            boss.set_source_dword_10(-1);
+            let frame = boss_frame(&fixture);
+            let effects = step_row(
+                &mut fixture.arena,
+                &mut fixture.runtime,
+                &mut fixture.terrain,
+                &fixture.particles,
+                boss_slot,
+                frame,
+            )
+            .unwrap();
+            let boss = &fixture.arena.entities[usize::from(boss_slot)];
+            assert_eq!(boss.record[74], 1);
+            assert_eq!(boss.subspell_index, if blocked { 8 } else { 4 });
+            assert_eq!(boss.source_dword_10(), if blocked { 15 } else { 70 });
+            assert!(
+                !effects.kill_all_creatures,
+                "the newly selected mode runs next callback"
+            );
+            assert!(!effects.request_approach_step);
+            assert!(effects.sounds.is_empty());
+            if !blocked {
+                let retained_rows = fixture.runtime.stage_variables.clone();
+                let effects = step_row(
+                    &mut fixture.arena,
+                    &mut fixture.runtime,
+                    &mut fixture.terrain,
+                    &fixture.particles,
+                    boss_slot,
+                    frame,
+                )
+                .unwrap();
+                assert!(effects.kill_all_creatures);
+                assert!(effects.clear_stage_variable_count);
+                assert_eq!(fixture.runtime.active_stage_variable_count(), 0);
+                assert_eq!(fixture.runtime.stage_variables, retained_rows);
+                assert_eq!(
+                    fixture.arena.entities[usize::from(boss_slot)].source_dword_10(),
+                    69
+                );
+            }
         }
-        let boss = &mut fixture.arena.entities[usize::from(boss_slot)];
-        boss.set_source_byte_46(1);
-        boss.set_subspell_index(8);
-        boss.set_source_dword_10(-1);
-
-        let frame = boss_frame(&fixture);
-        let effects = step_row(
-            &mut fixture.arena,
-            &mut fixture.runtime,
-            &mut fixture.terrain,
-            &fixture.particles,
-            boss_slot,
-            frame,
-        )
-        .unwrap();
-
-        let boss = &fixture.arena.entities[usize::from(boss_slot)];
-        assert_eq!(boss.record[74], 1, "obstructed approach remains in phase1");
-        assert_eq!(
-            boss.subspell_index, 4,
-            "source clears bit8 and enters mode4"
-        );
-        assert_eq!(boss.source_dword_10(), 70);
-        assert!(effects.kill_all_creatures);
-        assert!(!effects.request_approach_step);
-        assert!(
-            effects.sounds.is_empty(),
-            "negative-timer obstruction does not prepare sound10"
-        );
     }
 
     #[test]
@@ -1284,6 +1411,88 @@ mod tests {
                 && row.action == 175
                 && word(row, 44) == boss_slot
         }));
+    }
+
+    #[test]
+    fn boss_attack_constructs_each_real_class9_product_and_full_arena_suppresses_sound() {
+        for (mode, model, impact, lifetime, sound) in [
+            (1, 0, 0, 0, 15),
+            (2, 9, 23, 0, 23),
+            (8, 26, 22, 3, 15),
+            (9, 3, 17, 10, 15),
+        ] {
+            for full in [false, true] {
+                let (mut fixture, boss_slot) = boss_fixture();
+                fixture.arena.entities[usize::from(boss_slot)].record[71] = mode;
+                if full {
+                    exhaust(&mut fixture.arena);
+                }
+                let frame = boss_frame(&fixture);
+                let effects = step_row(
+                    &mut fixture.arena,
+                    &mut fixture.runtime,
+                    &mut fixture.terrain,
+                    &fixture.particles,
+                    boss_slot,
+                    frame,
+                )
+                .unwrap();
+                assert!(effects.summons.is_empty());
+                assert_eq!(effects.sounds.contains(&sound), !full);
+                let owner = fixture.arena.entities[usize::from(boss_slot)].source_id;
+                if model == 0 {
+                    let children = fixture
+                        .arena
+                        .economy
+                        .fireball_projectiles
+                        .iter()
+                        .filter(|row| {
+                            row.active
+                                && row.origin
+                                    == crate::native_world::FireballProjectileOrigin::FinalBoss
+                                && row.owner_entity_index == owner
+                        })
+                        .collect::<Vec<_>>();
+                    assert_eq!(children.len(), usize::from(!full));
+                    if let Some(child) = children.first() {
+                        assert_eq!(
+                            (child.source_class, child.source_model, child.action),
+                            (9, 0, 0)
+                        );
+                        assert_eq!((child.target_class, child.target_model), (3, 0));
+                        assert_eq!(child.source_subspell_index, 800);
+                    }
+                } else {
+                    let children = fixture
+                        .arena
+                        .entities
+                        .iter()
+                        .filter(|row| {
+                            row.active
+                                && row.class == 9
+                                && row.model == model
+                                && row.source_id == owner
+                        })
+                        .collect::<Vec<_>>();
+                    assert_eq!(children.len(), usize::from(!full));
+                    if let Some(child) = children.first() {
+                        assert_eq!(
+                            (child.record[71], child.record[72], child.record[74]),
+                            (10, impact, lifetime)
+                        );
+                        assert_eq!((child.record[69], child.record[70]), (3, 0));
+                        assert!(
+                            fixture
+                                .arena
+                                .economy
+                                .map_chains
+                                .linked_entity_indices()
+                                .contains(&child.index)
+                        );
+                    }
+                }
+            }
+        }
     }
 
     #[test]

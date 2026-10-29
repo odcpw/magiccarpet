@@ -121,10 +121,20 @@ pub struct SpellObservation {
     pub tier: i8,
     pub unlocked_tier: u8,
     pub menu_slot: u8,
+    /// Indexed sprites in the retained spell-menu artwork bank. A client
+    /// consumes these bindings without interpreting the semantic spell ID.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub menu_artwork: Option<SpellMenuArtwork>,
     pub mana_cost: i32,
     pub hand: SpellHand,
     pub marked_hand: SpellMarkHand,
     pub availability: SpellAvailability,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct SpellMenuArtwork {
+    pub grid_icon: u16,
+    pub tier_icons: [u16; 3],
 }
 
 /// Authoritative progress through the bound level's semantic objectives.
@@ -208,6 +218,9 @@ pub struct CampaignSnapshot {
     /// Admission of the source menu command applied on this exact tick, if any.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source_menu_admission: Option<SourceMenuAdmission>,
+    /// The ordinary player sequence requested a return to the frontend.
+    /// This is a live result, distinct from completion or a secret return.
+    pub return_to_title_requested: bool,
     pub source_scoreboard: SourceScoreboard,
     /// Source Spider immobilization countdown; presentation must not invent one.
     pub player_immobilized_ticks: u16,
@@ -292,6 +305,11 @@ pub enum AbandonAction {
     OpenAbandonConfirmation,
     ConfirmAbandon,
     CancelAbandonConfirmation,
+    OpenSpellMenu,
+    CloseSpellMenu,
+    ShowPlayerInformation,
+    HidePlayerInformation,
+    CloseGameplayMenus,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
@@ -299,6 +317,8 @@ pub struct SourceMenuAdmission {
     pub action: AbandonAction,
     pub admitted: bool,
     pub map_open: bool,
+    pub spells_open: bool,
+    pub player_information_open: bool,
     #[serde(serialize_with = "serialize_u64_decimal")]
     pub tick: u64,
 }

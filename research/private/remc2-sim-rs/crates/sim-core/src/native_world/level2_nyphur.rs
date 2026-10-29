@@ -2801,6 +2801,16 @@ impl Level2NyphurDispatcher {
         self.common_upkeep.byte_0x154
     }
 
+    pub(crate) fn source_byte_0x154_for_owner(&self, owner: u16) -> Option<u8> {
+        (self.common_upkeep.source_slot == owner).then_some(self.common_upkeep.byte_0x154)
+    }
+
+    pub(crate) fn clear_source_byte_0x154_for_owner(&mut self, owner: u16) {
+        if self.common_upkeep.source_slot == owner {
+            self.common_upkeep.byte_0x154 = 0;
+        }
+    }
+
     /// Clear the source byte only after a producer has committed its shared
     /// class-9 allocation and launch event.
     pub(super) const fn clear_source_byte_0x154(&mut self) {
@@ -2870,7 +2880,7 @@ impl Level2NyphurDispatcher {
         source_slot: u16,
         entities: &mut [EntitySnapshot],
         mana_spheres: &mut [ManaSphere],
-        castle: Option<Level2CastleState>,
+        castles: &[Level2CastleState],
         castle_children: &[Level2CastleChild],
         players: &[PlayerSnapshot],
         terrain: &SessionTerrain,
@@ -2878,6 +2888,21 @@ impl Level2NyphurDispatcher {
         move_speed_flag: u8,
         active_level_color_index: u8,
     ) -> Result<(Level2NyphurCommonUpkeepSnapshot, Level2NyphurDispatchTrace)> {
+        // Castle construction/destruction changes A4 after reset. The
+        // composition layer supplies generation-validated current roots,
+        // including enemies used by the ordinary target selectors below.
+        self.common_upkeep.castle_entity_index = players
+            .iter()
+            .find(|player| player.entity_index == source_slot)
+            .and_then(|player| {
+                let slot = u16::from_le_bytes([player.record[42], player.record[43]]);
+                castles.iter().find(|castle| {
+                    castle.active
+                        && castle.owner_entity_index == source_slot
+                        && castle.source_entity_index == slot
+                })
+            })
+            .map_or(0, |castle| castle.source_entity_index);
         let mut seen_spheres = BTreeSet::new();
         let mut seen_projected_slots = BTreeSet::new();
         let mut projected_entities = entities.to_vec();
@@ -2966,12 +2991,12 @@ impl Level2NyphurDispatcher {
             projected_carrier = true;
         }
 
-        // The typed Castle root is the sole class-3/model-2 authority; the
+        // Typed Castle roots are the class-3/model-2 authorities; the
         // qualified package imports no Castle seed rows. UpdateEntities keeps
         // the live root inside the rebuilt class-3 list, so `sub_13B00` and
         // `sub_13E40` must see it in its source slot for exactly one
         // dispatch, without the projection ever becoming a second live row.
-        if let Some(castle) = castle.filter(|castle| castle.active) {
+        for castle in castles.iter().copied().filter(|castle| castle.active) {
             let castle_slot = castle.source_entity_index;
             if castle_slot == 0 {
                 return Err(NativeWorldError::new(

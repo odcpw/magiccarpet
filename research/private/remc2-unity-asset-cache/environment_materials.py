@@ -126,7 +126,10 @@ def _validate_environment_audio(root: Path, profile: dict[str, Any], by_path: di
         descriptor = json.loads(descriptor_path.read_bytes())
     except json.JSONDecodeError as error:
         raise EnvironmentMaterialError("environment audio descriptor is invalid JSON") from error
-    if (not isinstance(descriptor, dict) or descriptor.get("schema") != schema
+    full_bank_schema = schema.replace("/v1", "/v2") if map_id in (0, 1) else None
+    if (not isinstance(descriptor, dict)
+            or (descriptor.get("schema") != schema and
+                (full_bank_schema is None or descriptor.get("schema") != full_bank_schema))
             or descriptor.get("profile") != profile):
         raise EnvironmentMaterialError("environment audio descriptor/profile identity differs")
     if output_by_path["audio/descriptor.json"].get("source_asset_ids") != [
@@ -183,6 +186,8 @@ def _validate_environment_audio(root: Path, profile: dict[str, Any], by_path: di
         raise EnvironmentMaterialError("environment Day reachable audio callsite count differs")
 
     records = sound.get("records")
+    expected_ids = (range(1, 65) if descriptor["schema"] == full_bank_schema
+                    else expected_ids)
     if (not isinstance(records, list) or any(not isinstance(row, dict) for row in records)
             or [row.get("sound_id") for row in records] != list(expected_ids)):
         raise EnvironmentMaterialError("environment selected sound record membership/order differs")

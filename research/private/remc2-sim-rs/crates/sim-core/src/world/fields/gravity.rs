@@ -6,7 +6,7 @@
 use crate::{
     FlightWorld, Position, SIN_16_16,
     campaign::source_arena::SourceArena,
-    heading_for_positions, legacy_sqrt,
+    heading_for_positions,
     legacy_terrain::interpolate_ground,
     move_entity,
     native_world::{
@@ -341,7 +341,7 @@ fn begin_shrinking(
 }
 
 /// Interpolate the surrounding ground toward the raised field. The source
-/// draws once for each tile inside the three-dimensional 3840-unit radius.
+/// draws once for each tile inside the source's horizontal 3840-unit radius.
 fn shrink_ground(
     arena: &mut SourceArena,
     source_slot: u16,
@@ -366,7 +366,8 @@ fn shrink_ground(
                     y: u16::from(y) << 8,
                     z: 0,
                 };
-                let distance = spatial_distance(source.position, tile_position);
+                // Despite its name, remc2's EuclideanDistXYZ_58490 ignores Z.
+                let distance = horizontal_distance(source.position, tile_position);
                 let tile = terrain_index(x, y);
                 if distance < 3_840 {
                     let heading = heading_for_positions(source.position, tile_position) as i16;
@@ -497,20 +498,23 @@ fn finish_shrinking(
             }
         }
     }
-    let typed_castle_slot = arena.economy.castle().and_then(|castle| {
-        (castle.active
-            && castle.source_class == 3
-            && castle.source_model == 2
-            && castle.control_flags & 0x0010_0000 != 0
-            && arena
-                .entities
-                .get(usize::from(castle.source_entity_index))
-                .is_some_and(|entity| {
-                    u16::from_le_bytes([entity.record[42], entity.record[43]]) == source_slot
-                }))
-        .then_some(castle.source_entity_index)
-    });
-    if let Some(castle_slot) = typed_castle_slot {
+    let typed_castle_slots: Vec<_> = arena
+        .economy
+        .live_castles()
+        .filter_map(|castle| {
+            (castle.source_class == 3
+                && castle.source_model == 2
+                && castle.control_flags & 0x0010_0000 != 0
+                && arena
+                    .entities
+                    .get(usize::from(castle.source_entity_index))
+                    .is_some_and(|entity| {
+                        u16::from_le_bytes([entity.record[42], entity.record[43]]) == source_slot
+                    }))
+            .then_some(castle.source_entity_index)
+        })
+        .collect();
+    for castle_slot in typed_castle_slots {
         let released = arena.economy.set_gravity_castle_capture(castle_slot, false);
         debug_assert!(
             released,
@@ -777,38 +781,45 @@ fn destroy_and_reward(
         }
     }
 
-    let typed_castle = arena.economy.castle().filter(|castle| {
-        castle.active
-            && castle.source_class == 3
-            && castle.source_model == 2
-            && castle.source_entity_index != source_slot
-    });
-    let typed_castle_slot = typed_castle.map(|castle| castle.source_entity_index);
+    let typed_castles: Vec<_> = arena
+        .economy
+        .live_castles()
+        .copied()
+        .filter(|castle| {
+            castle.source_class == 3
+                && castle.source_model == 2
+                && castle.source_entity_index != source_slot
+        })
+        .collect();
     let mut experience = 0;
-    if let Some(castle) = typed_castle.filter(|castle| {
+    for castle in typed_castles.iter().filter(|castle| {
         overlaps_source_bounds(
             source,
             castle.position,
             castle.shift_pitch,
             castle.shift_roll,
         )
-    }) && arena.economy.apply_wind_castle_contact(
-        castle.source_entity_index,
-        source_slot,
-        source.source_id,
-        source.subspell_index,
-    ) && arena
-        .economy
-        .set_gravity_castle_capture(castle.source_entity_index, true)
-    {
-        let entity = &mut arena.entities[usize::from(castle.source_entity_index)];
-        capture_model2_projection(entity, source_slot, source);
-        experience += 2;
+    }) {
+        if arena.economy.apply_wind_castle_contact(
+            castle.source_entity_index,
+            source_slot,
+            source.source_id,
+            source.subspell_index,
+        ) && arena
+            .economy
+            .set_gravity_castle_capture(castle.source_entity_index, true)
+        {
+            let entity = &mut arena.entities[usize::from(castle.source_entity_index)];
+            capture_model2_projection(entity, source_slot, source);
+            experience += 2;
+        }
     }
     for entity in arena.entities.iter_mut().filter(|entity| {
         entity.active
             && entity.index != source_slot
-            && Some(entity.index) != typed_castle_slot
+            && !typed_castles
+                .iter()
+                .any(|castle| castle.source_entity_index == entity.index)
             && entity.class == 3
             && entity.model == 2
     }) {
@@ -1158,16 +1169,6 @@ fn horizontal_distance(from: Position, to: Position) -> u32 {
     let dx = i32::from(to.x.wrapping_sub(from.x) as i16);
     let dy = i32::from(to.y.wrapping_sub(from.y) as i16);
     crate::legacy_sqrt(dx.wrapping_mul(dx).wrapping_add(dy.wrapping_mul(dy)) as u32)
-}
-
-fn spatial_distance(from: Position, to: Position) -> u32 {
-    let dx = i32::from(to.x.wrapping_sub(from.x) as i16);
-    let dy = i32::from(to.y.wrapping_sub(from.y) as i16);
-    let dz = i32::from(to.z.wrapping_sub(from.z));
-    let square_sum = i64::from(dx) * i64::from(dx)
-        + i64::from(dy) * i64::from(dy)
-        + i64::from(dz) * i64::from(dz);
-    legacy_sqrt(square_sum as u32)
 }
 
 fn pull_speed(distance: u32) -> u32 {

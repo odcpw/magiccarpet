@@ -1079,6 +1079,11 @@ pub(crate) fn digest_source_menu_state(hasher: &mut Sha256, state: &ResetState) 
                 AbandonAction::OpenAbandonConfirmation => 1,
                 AbandonAction::ConfirmAbandon => 2,
                 AbandonAction::CancelAbandonConfirmation => 3,
+                AbandonAction::OpenSpellMenu => 4,
+                AbandonAction::CloseSpellMenu => 5,
+                AbandonAction::ShowPlayerInformation => 6,
+                AbandonAction::HidePlayerInformation => 7,
+                AbandonAction::CloseGameplayMenus => 8,
             };
             hasher.update([
                 1,

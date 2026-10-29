@@ -11,7 +11,7 @@ use super::{
     Allocation, BODY_ACTION, BODY_PARTICLE, HEAD_ACTION, HEAD_PARTICLE, PROPERTIES, ROOT_PARTICLE,
     SOURCE_MODEL, enabled_root_action,
 };
-use super::{combat, multipart};
+use super::{combat, multipart, stage};
 
 fn put_link(
     arena: &mut SourceArena,
@@ -243,10 +243,54 @@ pub(crate) fn is_living_root(arena: &SourceArena, root: SourceEntityHandle) -> b
             })
 }
 
+/// Source sub_12100/sub_12330 binds an authored StageVar after sub_4D000.
+pub(crate) fn bind_authored_stage(
+    arena: &mut SourceArena,
+    runtime: &mut RuntimeSnapshot,
+    root: SourceEntityHandle,
+    index: u8,
+) -> Result<(), String> {
+    if index == 0 {
+        return Ok(());
+    }
+    let row = match arena.resolve(root) {
+        Some(crate::campaign::source_arena::SourceEntityView::Imported(row))
+            if row.class == 5 && row.model == SOURCE_MODEL && enabled_root_action(row.action) =>
+        {
+            row
+        }
+        _ => {
+            return Err(format!(
+                "model27 StageVar bind lost root {}",
+                root.source_slot
+            ));
+        }
+    };
+    let mut action = row.action;
+    let mut stage_index = row.record[76] as i8;
+    let mut mode = row.record[77] as i8;
+    let mut relation = u16::from_le_bytes([row.record[78], row.record[79]]);
+    let mut route = crate::native_world::creatures::stage_route::Route {
+        model: SOURCE_MODEL,
+        position: row.position,
+        action: &mut action,
+        index: &mut stage_index,
+        mode: &mut mode,
+        relation: &mut relation,
+    };
+    route.bind(runtime, index);
+    let row = &mut arena.entities[usize::from(root.source_slot)];
+    row.set_source_action(action);
+    row.record[76] = stage_index as u8;
+    row.record[77] = mode as u8;
+    row.record[78..80].copy_from_slice(&relation.to_le_bytes());
+    Ok(())
+}
+
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(crate) struct Effects {
     pub callback_executed: bool,
-    pub projectiles: Vec<combat::ProjectileIntent>,
+    pub projectile_slots: Vec<u16>,
     pub sounds: Vec<(u16, u8)>,
     pub death: Option<combat::DeathOutcome>,
     /// Credit is set by the source pre-kill callback, committed once to the
@@ -259,10 +303,12 @@ pub(crate) struct Effects {
 /// source pass tail and reclaims the hidden chain at its following pass.
 pub(crate) fn step_row(
     arena: &mut SourceArena,
+    runtime: &mut RuntimeSnapshot,
     terrain: &mut SessionTerrain,
     particles: &[ParticleParameter],
     slot: u16,
     class3: &[u16],
+    families: &[Vec<u16>; 29],
     attack_range: u16,
     attack_cone: u16,
     setting_30: u16,
@@ -270,7 +316,6 @@ pub(crate) fn step_row(
     let root = arena
         .handle(slot)
         .ok_or_else(|| format!("model27 callback lost root slot{slot}"))?;
-    let chain = multipart::read_chain(arena, root)?;
     let action = arena.entities[usize::from(slot)].action;
     if !enabled_root_action(action) {
         return Err(format!("model27 action{action} has no source callback"));
@@ -279,6 +324,13 @@ pub(crate) fn step_row(
         callback_executed: true,
         ..Effects::default()
     };
+    // PreKill writes action221 to the whole source chain. Higher slots can
+    // run that enabled action in this pass, including already-hidden parts.
+    if action == 221 {
+        effects.death = Some(combat::kill(arena, terrain, root)?);
+        return Ok(effects);
+    }
+    let chain = multipart::read_chain(arena, root)?;
     let root_callback = match action {
         217 | 218 => Some(action),
         219 => Some(217),
@@ -292,13 +344,44 @@ pub(crate) fn step_row(
             }
             return Ok(effects);
         }
-        221 => {
-            effects.death = Some(combat::kill(arena, terrain, root)?);
-            return Ok(effects);
+        222 => {
+            return Err("model27 action222 has an unsupported source callback".to_owned());
         }
-        222 | 223 => {
-            if action == 222 {
-                return Err("model27 action222 StageVar callback is not implemented".to_owned());
+        223 => {
+            // sub_29930 delegates to sub_1D5D0 before its visual and
+            // multipart tail. Mode 10 selects the descriptor's attack action;
+            // modes 0, 11 and 15 have no sub_1D5D0 case.
+            let mode = arena.entities[usize::from(slot)].record[77];
+            match mode {
+                1..=9 | 12..=14 | 16 | 17 => stage::step(
+                    arena, runtime, terrain, particles, root, class3, families, mode,
+                )?,
+                10 => arena.entities[usize::from(slot)].set_source_action(218),
+                0 | 11 | 15 => {}
+                _ => return Err(format!("model27 StageVar mode {mode} is not implemented")),
+            }
+            let mode = arena.entities[usize::from(slot)].record[77];
+            combat::set_root_visual(
+                arena,
+                particles,
+                slot,
+                if matches!(mode, 2 | 6..=9) { 337 } else { 315 },
+            )?;
+            let row = &mut arena.entities[usize::from(slot)];
+            row.set_life(PROPERTIES.root_initial_life);
+            let next_action = row.action;
+            let target = u16::from_le_bytes([row.record[154], row.record[155]]);
+            if next_action == 218 {
+                row.record[77] = 10;
+                for head in chain.heads {
+                    let row = &mut arena.entities[usize::from(head.source_slot)];
+                    if row.record[74] == 1 {
+                        row.record[74] = 2;
+                        row.record[154..156].copy_from_slice(&target.to_le_bytes());
+                    }
+                }
+            } else if next_action == 216 {
+                row.record[77] = 15;
             }
         }
         216 => {
@@ -333,6 +416,10 @@ pub(crate) fn step_row(
             if matches!(previous, 0 | 18) {
                 combat::set_root_visual(arena, particles, slot, 337)?;
             }
+            let mut position = arena.entities[usize::from(slot)].position;
+            position.z = terrain.ground_height(position);
+            arena.entities[usize::from(slot)].set_position(position);
+            crate::world::effects::sync_position(arena, terrain, slot, position, true, false)?;
         }
         219 => arena.entities[usize::from(slot)].set_source_action(217),
         217 | 218 => {}
@@ -355,6 +442,7 @@ pub(crate) fn step_row(
     let head_effects = combat::step_heads(
         arena,
         terrain,
+        particles,
         &Allocation {
             root,
             heads: chain.heads,
@@ -362,23 +450,31 @@ pub(crate) fn step_row(
         },
         &chain,
         class3,
-        attack_range,
-        attack_cone,
+        PROPERTIES.head_target_range,
+        PROPERTIES.head_target_half_angle,
         setting_30,
     )?;
-    effects.projectiles = head_effects.projectiles;
+    effects.projectile_slots = head_effects.projectile_slots;
     effects.sounds = head_effects.sounds;
 
-    let root_row = &arena.entities[usize::from(slot)];
-    let mut root_position = root_row.position;
-    root_position.z = terrain.ground_height(root_position);
-    if root_position != root_row.position {
-        arena.entities[usize::from(slot)].set_position(root_position);
-        crate::world::effects::sync_position(arena, terrain, slot, root_position, true, false)?;
-    }
-    let fresh_chain = multipart::read_chain(arena, root)?;
-    multipart::pose_bodies(arena, terrain, &fresh_chain)?;
     Ok(effects)
+}
+
+/// Materialize either source projectile through its ordinary scheduled constructor.
+pub(super) fn launch_projectile(
+    arena: &mut SourceArena,
+    terrain: &mut SessionTerrain,
+    particles: &[ParticleParameter],
+    shot: combat::ProjectileIntent,
+) -> Result<Option<u16>, String> {
+    crate::native_world::guided_projectile::boss::construct_model27(
+        arena,
+        terrain,
+        particles,
+        shot.head.source_slot,
+        shot.target.source_slot,
+        shot.selector,
+    )
 }
 
 pub(crate) fn hide_for_terminal(

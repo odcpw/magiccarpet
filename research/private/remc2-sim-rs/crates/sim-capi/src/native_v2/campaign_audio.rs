@@ -238,10 +238,10 @@ fn load_environment_music(
             "Environment music profile does not match the active package",
         ));
     }
-    let (track, schema, map_name) = match selection.map_type_id {
-        0 => (2, "mc2-day-audio/v1", "Day"),
-        1 => (1, "mc2-night-audio/v1", "Night"),
-        2 => (3, "mc2-cave-audio/v1", "Cave"),
+    let (track, map_name) = match selection.map_type_id {
+        0 => (2, "Day"),
+        1 => (1, "Night"),
+        2 => (3, "Cave"),
         _ => return Err(invalid("Environment music has an unknown source map type")),
     };
     let row = output(&manifest, "audio/descriptor.json")?;
@@ -252,7 +252,13 @@ fn load_environment_music(
     let descriptor: Value = serde_json::from_slice(&bytes)
         .map_err(|error| invalid(format!("invalid Environment music descriptor: {error}")))?;
     let container = output(&manifest, "audio/MUSIC.DAT")?;
-    if descriptor["schema"] != schema
+    let schema_matches = matches!(
+        (selection.map_type_id, descriptor["schema"].as_str()),
+        (0, Some("mc2-day-audio/v1" | "mc2-day-audio/v2"))
+            | (1, Some("mc2-night-audio/v1" | "mc2-night-audio/v2"))
+            | (2, Some("mc2-cave-audio/v1"))
+    );
+    if !schema_matches
         || manifest.profile.as_ref() != Some(&descriptor["profile"])
         || descriptor["sound"]["bank"] != selection.map_type_id
         || descriptor["music"]["maptype_music"] != track
@@ -382,6 +388,30 @@ mod tests {
                 ..selection
             };
             assert!(load_campaign_music(Some(&root), wrong_map, owner, campaign).is_err());
+        }
+    }
+
+    #[test]
+    fn full_bank_secret_environments_bind_music_and_reject_package_substitution() {
+        for (source, track) in [(31, 1), (34, 2)] {
+            let root = generated().join(format!("mc-oi68-source{source}-fullbank-v2-20261029"));
+            let manifest: Value =
+                serde_json::from_slice(&fs::read(root.join("manifest.json")).unwrap()).unwrap();
+            let profile = &manifest["profile"];
+            let selection = CampaignSelection::secret_destination(source).unwrap();
+            let owner = profile["owner_export_package_sha256"].as_str().unwrap();
+            let campaign = profile["campaign_package_sha256"].as_str().unwrap();
+            let music = load_campaign_music(Some(&root), selection, owner, campaign)
+                .unwrap()
+                .unwrap();
+            assert_eq!(music.track, track);
+            assert!(music.loaded && music.playing);
+            assert!(load_campaign_music(Some(&root), selection, owner, "wrong-package").is_err());
+            let wrong_selection = CampaignSelection {
+                map_type_id: (selection.map_type_id + 1) % 3,
+                ..selection
+            };
+            assert!(load_campaign_music(Some(&root), wrong_selection, owner, campaign).is_err());
         }
     }
 

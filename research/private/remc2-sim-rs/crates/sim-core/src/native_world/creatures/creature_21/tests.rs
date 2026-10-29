@@ -152,6 +152,187 @@ fn source_reset_168_and_171_clear_target_and_restore_record71_before_action169()
 }
 
 #[test]
+fn summoned_parent_loss_expires_before_consuming_damage_with_mode_specific_visual() {
+    let terrain = terrain();
+    for mode in [13, 16] {
+        let mut row = actor(175);
+        row.record[77] = mode;
+        put(&mut row, 44, 0);
+        put(&mut row, 50, 10);
+        row.record[98..102].copy_from_slice(&50_i32.to_le_bytes());
+        put(&mut row, 102, 12);
+        let before_life = row.life;
+        let mut routes = EmptyRoutes;
+        let mut ctx = Context {
+            terrain: &terrain,
+            targets: &[],
+            class3: &[],
+            model21: &[],
+            runtime: &mut routes,
+        };
+        let effects = step(&mut Actor { row: &mut row }, &mut ctx).unwrap();
+        assert!(effects.expire);
+        assert_eq!(effects.summon_expire, mode == 13);
+        assert_eq!(row.life, before_life);
+        assert_eq!(u16::from_le_bytes([row.record[102], row.record[103]]), 12);
+    }
+}
+
+#[test]
+fn boss_summon_acquires_live_target_and_dead_launch_hides() {
+    let terrain = terrain();
+    let mut parent = target(5);
+    parent.source_id = 5;
+    let enemy = target(12);
+    let targets = [parent, enemy];
+    let mut routes = EmptyRoutes;
+    let mut ctx = Context {
+        terrain: &terrain,
+        targets: &targets,
+        class3: &[5, 12],
+        model21: &[],
+        runtime: &mut routes,
+    };
+    let mut following = actor(175);
+    following.record[77] = 16;
+    put(&mut following, 44, 5);
+    put(&mut following, 50, 10);
+    let effects = step(
+        &mut Actor {
+            row: &mut following,
+        },
+        &mut ctx,
+    )
+    .unwrap();
+    assert!(!effects.expire);
+    assert_eq!(following.action, 170);
+    assert_eq!(
+        u16::from_le_bytes([following.record[154], following.record[155]]),
+        12
+    );
+
+    let mut dead_launch = actor(175);
+    dead_launch.record[77] = 17;
+    dead_launch.set_life(-1);
+    step(
+        &mut Actor {
+            row: &mut dead_launch,
+        },
+        &mut ctx,
+    )
+    .unwrap();
+    assert!(dead_launch.drawing_disabled());
+}
+
+#[test]
+fn dead_boss_launch_keeps_its_map_link_until_source_reclaim() {
+    let mut simulation = crate::native_world::tests::level_two_campaign_session();
+    let particles = simulation
+        .session
+        .definition
+        .presentation
+        .particles
+        .to_vec();
+    let live = &mut simulation.session.state.live;
+    let (arena, runtime, terrain) = (&mut live.economy, &mut live.core.runtime, &mut live.terrain);
+    let position = Position {
+        x: 20_000,
+        y: 20_000,
+        z: 0,
+    };
+    let slot = arena
+        .allocate_source_slot_with_terrain(terrain)
+        .expect("source slot");
+    let mut row =
+        super::mc2::construct_row(slot, arena.new_event_rng(slot), position, 0, &particles)
+            .expect("model21 constructor");
+    row.set_source_action(175);
+    row.record[77] = 17;
+    row.set_life(-1);
+    arena.economy.source_rng.insert(slot, row.entity_rng);
+    arena.entities[usize::from(slot)] = row;
+    crate::world::effects::sync_position(arena, terrain, slot, position, true, false).unwrap();
+    let families = std::array::from_fn(|_| Vec::new());
+    super::mc2::step_row(arena, runtime, terrain, &particles, slot, &[], &families)
+        .expect("dead launch callback");
+    assert!(arena.entities[usize::from(slot)].drawing_disabled());
+    assert!(arena.entities[usize::from(slot)].active);
+    assert!(arena.economy.map_chains.is_linked(slot));
+}
+
+#[test]
+fn owner_objective_gate_publishes_model21_into_normal_scheduler() {
+    use crate::PlayerCommand;
+    use crate::campaign::source_arena::CreatureRootOrigin;
+    use crate::campaign::{CampaignSession, spec::CampaignSelection};
+    use crate::native_world::Mc2DispatchEvent;
+
+    let package = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../../generated/mc-bhq5-cave-reset-v2-level8");
+    let campaign = CampaignSession::open(package, CampaignSelection::ordinary(8).unwrap())
+        .expect("owner Level8 package for source group26");
+    let mut session = campaign.simulation().clone();
+    let gate = session.entities()[13].clone();
+    assert_eq!(
+        (gate.class, gate.model, gate.action, gate.source_id),
+        (11, 32, 32, 26)
+    );
+    let gate_stage = usize::try_from(gate.level_gate).unwrap();
+    assert!(gate_stage < usize::from(session.runtime().stage_index));
+
+    // The real owner package starts this objective incomplete. The switch
+    // must not publish until the existing objective input is satisfied.
+    session.step_outer_turn(PlayerCommand::default(), 0);
+    assert!(!session.dispatch_events().iter().any(|event| matches!(
+        event,
+        Mc2DispatchEvent::AuthoredGroupActivated {
+            source_slot: 13,
+            group: 26,
+            ..
+        }
+    )));
+    for objective in 0..session.runtime.objectives.len() {
+        session
+            .runtime
+            .set_level2_objective_stage_selector_for(objective, gate_stage, 2);
+    }
+    session.step_outer_turn(PlayerCommand::default(), 0);
+    assert!(session.dispatch_events().iter().any(|event| matches!(event,
+        Mc2DispatchEvent::AuthoredGroupActivated { source_slot: 13, group: 26, authored_indices, .. }
+            if authored_indices.contains(&113) && authored_indices.contains(&140)
+    )), "owner objective gate must produce its authored model21 group: {:?}", session.dispatch_events());
+    let slots = session
+        .entities()
+        .iter()
+        .filter_map(|row| {
+            let identity = session.creature_identity_for_source_slot(row.index)?;
+            matches!(
+                identity.origin,
+                CreatureRootOrigin::AuthoredRecord {
+                    authored_record: 113 | 140
+                }
+            )
+            .then_some((row.index, row.phase))
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        slots.len(),
+        2,
+        "owner model21 rows 113 and 140 must be live"
+    );
+    session.step_outer_turn(PlayerCommand::default(), 0);
+    for (slot, phase) in slots {
+        let actor = &session.entities()[usize::from(slot)];
+        assert!(actor.active && !actor.drawing_disabled());
+        assert_eq!(
+            actor.phase,
+            phase.wrapping_add(1),
+            "normal scheduler visits model21 slot {slot}"
+        );
+    }
+}
+
+#[test]
 fn jump_states3_through7_apply_velocity_then_subtract_source_gravity() {
     let terrain = terrain();
     let mut routes = EmptyRoutes;
@@ -191,6 +372,11 @@ fn jump_states3_through7_apply_velocity_then_subtract_source_gravity() {
             row.position.z,
             before_z.wrapping_add(velocity),
             "jump state {state}"
+        );
+        assert_eq!(
+            i16::from_le_bytes([row.record[84], row.record[85]]),
+            row.position.z,
+            "jump state {state} source record"
         );
         assert_eq!(
             i16::from_le_bytes([row.record[48], row.record[49]]),

@@ -1,4 +1,243 @@
 #[test]
+fn level_one_group_schedules_unbound_fireflies_after_stagevar_count_clears() {
+    use crate::campaign::{CampaignSession, spec::CampaignSelection};
+
+    let package = std::env::var_os("MC_CAMPAIGN_LEVEL1_PACKAGE").map_or_else(
+        || {
+            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../../generated/mc-bhq8-level1-collision-v5-night")
+        },
+        PathBuf::from,
+    );
+    let campaign =
+        CampaignSession::open(package, CampaignSelection::LEVEL1).expect("real Level 1 package");
+    let mut session = campaign.simulation().clone();
+    let retained = session.runtime().stage_variables.clone();
+    assert_ne!(session.runtime().active_stage_variable_count(), 0);
+    assert!(
+        session
+            .session
+            .state
+            .live
+            .core
+            .runtime
+            .clear_active_stage_variable_count()
+    );
+    assert_eq!(session.runtime().stage_variables, retained);
+
+    // Stage one real authored group scan, without asserting that count zero
+    // occurs in vanilla Level 1 or forcing any objective to complete.
+    session
+        .activate_authored_group_prerequisite_for_test(6)
+        .unwrap();
+    assert!(session.dispatch_events().iter().any(|event| matches!(event,
+        Mc2DispatchEvent::AuthoredGroupActivated { group: 6, authored_indices, .. }
+            if authored_indices.as_ref() == [108, 134, 135, 154, 189, 193]
+    )));
+    let mut slots = Vec::new();
+    for authored in [108, 134, 135, 189, 193] {
+        let source = session
+            .economy()
+            .authored_class5()
+            .iter()
+            .find(|source| source.authored_index == authored && source.active)
+            .expect("group 6 Firefly source");
+        let state = session
+            .economy()
+            .authored_fireflies()
+            .iter()
+            .find(|state| state.source_entity_index == source.source_entity_index)
+            .expect("Firefly runtime state");
+        assert_eq!(
+            (
+                source.model,
+                source.action,
+                state.stage_var1,
+                state.stage_var2
+            ),
+            (19, 153, 0, 0)
+        );
+        slots.push((source.source_entity_index, source.source_byte_3e));
+    }
+    session.step_outer_turn(PlayerCommand::default(), 0);
+    for (slot, phase) in slots {
+        let source = session
+            .economy()
+            .authored_class5()
+            .iter()
+            .find(|source| source.source_entity_index == slot && source.active)
+            .expect("scheduled Firefly remains live");
+        assert_eq!(source.source_byte_3e, phase.wrapping_add(1));
+    }
+    assert_eq!(session.runtime().active_stage_variable_count(), 0);
+    assert_eq!(session.runtime().stage_variables, retained);
+}
+
+#[test]
+fn level_nine_switch_publishes_ordered_group_and_binds_live_type_two_target() {
+    use crate::campaign::{CampaignSession, spec::CampaignSelection};
+
+    let package = std::env::var_os("MC_ORDINARY_CAMPAIGN_PACKAGES").map_or_else(
+        || {
+            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../../generated/mc-bhq6-ordinary-20261025-zclu5fjj")
+        },
+        PathBuf::from,
+    );
+    let campaign = CampaignSession::open(
+        package.join("level9"),
+        CampaignSelection::ordinary(9).unwrap(),
+    )
+    .expect("real Level 9 package");
+    let mut session = campaign.simulation().clone();
+    let target_stage = session
+        .runtime()
+        .stages
+        .iter()
+        .position(|stage| stage.kind == 2 && stage.relation == RuntimeRelation::AuthoredFeature(63))
+        .expect("Level 9 type-2 objective names authored row 63");
+    let switch = session.entities()[17].clone();
+    assert_eq!(
+        (switch.class, switch.model, switch.action, switch.source_id),
+        (11, 1, 1, 1)
+    );
+    let player = session.state.entity_index;
+
+    let mut outside = session.clone();
+    let mut distant = switch.position;
+    distant.x = distant.x.wrapping_add(0x4000);
+    outside.set_level2_entity_position(player, distant).unwrap();
+    for _ in 0..8 {
+        outside.step_outer_turn(PlayerCommand::default(), 0);
+        assert!(!outside.dispatch_events().iter().any(|event| matches!(
+            event,
+            Mc2DispatchEvent::AuthoredGroupActivated {
+                source_slot: 17,
+                group: 1,
+                ..
+            }
+        )));
+    }
+    assert_eq!(
+        outside.runtime().stages[target_stage].relation,
+        RuntimeRelation::AuthoredFeature(63)
+    );
+
+    session
+        .set_level2_entity_position(player, switch.position)
+        .unwrap();
+    let mut published = false;
+    for _ in 0..8 {
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        published |= session.dispatch_events().iter().any(|event| matches!(event,
+            Mc2DispatchEvent::AuthoredGroupActivated { source_slot: 17, group: 1, authored_indices, .. }
+                if authored_indices.as_ref() == [63, 170]
+        ));
+        if published {
+            break;
+        }
+    }
+    assert!(
+        published,
+        "real switch must publish both source rows in order"
+    );
+    let target = session
+        .economy()
+        .authored_house_source_slot(63)
+        .expect("authored target house");
+    assert_eq!(
+        session.runtime().stages[target_stage].relation,
+        RuntimeRelation::LiveEntity(target)
+    );
+    assert_ne!(session.runtime().stages[target_stage].flags & 1, 0);
+    let owner = usize::from(session.players()[0].player_color_index());
+    let assert_target_projection = |session: &Mc2Simulation, slot: u16| {
+        let stage = &session.runtime().stages[target_stage];
+        let offset = 192 + target_stage * 14;
+        let raw = &session.runtime().bytes()[offset..offset + 14];
+        assert_eq!(stage.relation, RuntimeRelation::LiveEntity(slot));
+        assert_eq!(raw[1] & 1, 1);
+        assert_eq!(raw[6], 2);
+        assert_eq!(
+            u32::from_le_bytes(raw[10..14].try_into().unwrap()),
+            u32::from(slot) + 1
+        );
+    };
+    assert_target_projection(&session, target);
+    assert_eq!(
+        session.runtime().objectives[owner].stage_selectors[target_stage],
+        1,
+        "a live target cannot satisfy the death objective"
+    );
+
+    // Real BLDGPRM 23 -> 24 -> 28 conversion: submit damage through the
+    // House mailbox, then let its ordinary source action construct and bind
+    // each successor. No objective selector or target is forced here.
+    let mut current = target;
+    for (building, successor) in [(23, Some(24)), (24, Some(28)), (28, None)] {
+        for _ in 0..32 {
+            session.step_outer_turn(PlayerCommand::default(), 0);
+        }
+        let house = session
+            .session
+            .state
+            .live
+            .ordinary
+            .houses()
+            .iter()
+            .find(|house| house.active && house.entity_index == current)
+            .expect("live bound House target");
+        assert_eq!((house.building_index, house.action), (building, 52));
+        assert_eq!(
+            session.runtime().objectives[owner].stage_selectors[target_stage],
+            1
+        );
+        assert!(
+            session
+                .session
+                .state
+                .live
+                .ordinary
+                .houses
+                .submit_source_damage(current, u16::MAX, player)
+        );
+        for _ in 0..4 {
+            session.step_outer_turn(PlayerCommand::default(), 0);
+        }
+        if let Some(successor) = successor {
+            let next = session
+                .session
+                .state
+                .live
+                .ordinary
+                .houses()
+                .iter()
+                .find(|house| house.active && house.building_index == successor)
+                .expect("source House conversion created its successor");
+            current = next.entity_index;
+            assert_target_projection(&session, current);
+            assert_eq!(
+                session.runtime().objectives[owner].stage_selectors[target_stage],
+                1
+            );
+        } else {
+            assert_eq!(
+                session.runtime().objectives[owner].stage_selectors[target_stage],
+                2,
+                "the final bound target's death advances its real type-2 objective"
+            );
+            for index in [0, 1, 2, 4] {
+                assert_eq!(
+                    session.runtime().objectives[owner].stage_selectors[index],
+                    1,
+                    "other Level 9 objectives remain open"
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn level_two_group27_model17_companion_activates_from_objective_production_route() {
     let inspection =
         NativeWorld::inspect_level2(level_two_fixture_path()).expect("qualified Level 2 package");

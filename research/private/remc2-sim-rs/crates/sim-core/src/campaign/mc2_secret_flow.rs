@@ -4,7 +4,11 @@
 //! indices. It contains no authored mission names; the package owner supplies
 //! the semantic IDs when binding an association.
 
-use crate::{campaign::spec::CampaignSelection, game_definition::RuntimeFlowDefinition};
+use crate::{
+    campaign::spec::CampaignSelection,
+    game_definition::RuntimeFlowDefinition,
+    game_runtime::{CampaignSaveState, RuntimeTransitionError},
+};
 use sim_definition::runtime_flow::RuntimeFlowSecretEntry;
 
 /// One source-authored link from an ordinary map portal to a hidden level.
@@ -53,6 +57,43 @@ const MC2_SECRET_PORTAL_ASSOCIATIONS: [Mc2SecretPortalAssociation; 5] = [
         destination_level_index: 34,
     },
 ];
+
+/// Apply the MC2 map's associated ordinary-portal activation after a secret
+/// return. The caller supplies the exact validated active secret package and
+/// stages this change on the retained parent before publishing the return.
+pub(crate) fn activate_parent_after_secret_return(
+    source: CampaignSelection,
+    parent: &mut CampaignSaveState,
+) -> Result<(), RuntimeTransitionError> {
+    let invalid = || RuntimeTransitionError::InvalidRuntimeFlow {
+        message: "secret return does not match its retained MC2 parent portal".to_owned(),
+    };
+    if CampaignSelection::secret_destination(source.internal_level) != Some(source) {
+        return Err(invalid());
+    }
+    let association = MC2_SECRET_PORTAL_ASSOCIATIONS
+        .iter()
+        .find(|entry| entry.destination_level_index == source.internal_level)
+        .ok_or_else(invalid)?;
+    let flow = parent.definition.runtime_flow().ok_or_else(invalid)?;
+    let origin = flow
+        .entries()
+        .get(usize::from(association.origin_portal_index))
+        .map(|entry| entry.level_id())
+        .ok_or_else(invalid)?;
+    if parent.selected_level_id.as_ref() != Some(origin)
+        || !flow
+            .secret_entries()
+            .iter()
+            .any(|entry| entry.origin_level_id() == origin)
+    {
+        return Err(invalid());
+    }
+    if !parent.completed_levels.contains(origin) {
+        parent.completed_levels.push(origin.clone());
+    }
+    Ok(())
+}
 
 /// Resolve a source portal association for the selected ordinary package.
 ///
@@ -209,5 +250,83 @@ mod tests {
         assert_eq!(entry.secret_level_id(), &secret);
         assert!(entry_for(selection, 31, &parent, &destination).is_none());
         assert!(entry_for(selection, 30, &parent, &parent).is_none());
+    }
+
+    #[test]
+    fn secret_return_activates_only_its_selected_parent_once() {
+        use crate::{
+            campaign::backend::{Mc2CampaignInputs, Mc2RuntimePackageResolver, load_mc2_campaign},
+            game_definition::default_catalog,
+            game_runtime::CampaignMenuPhase,
+        };
+        use std::path::Path;
+
+        let generated = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../generated");
+        let resolver = Mc2RuntimePackageResolver::load(
+            [
+                "mc-bhq8-level1-collision-v5-night",
+                "level2-day-block32-campaign-v2",
+                "level3-day-block32-campaign-recipe-v2",
+                "mc-bhq6-ordinary-20261025-zclu5fjj/level4",
+                "mc-paj2-source4-campaign-package",
+                "mc-paj2-source30-campaign-package",
+            ]
+            .map(|path| Mc2CampaignInputs::new(generated.join(path))),
+        )
+        .unwrap();
+        let definition = load_mc2_campaign(
+            generated.join("mc-bhq8-level1-collision-v5-night"),
+            &default_catalog().unwrap(),
+        )
+        .unwrap();
+        let flow = resolver.flow().clone();
+        let ordinary: Vec<_> = flow
+            .entries()
+            .iter()
+            .map(|entry| entry.level_id().clone())
+            .collect();
+        let definition = sim_definition::adapter::with_level_and_runtime_flow(
+            definition.clone(),
+            definition.level_definition().unwrap().clone(),
+            flow,
+        );
+        let mut parent = CampaignSaveState {
+            definition,
+            phase: CampaignMenuPhase::MissionSelect,
+            completed_level_id: Some(ordinary[0].clone()),
+            selected_level_id: Some(ordinary[4].clone()),
+            completed_levels: ordinary[..4].to_vec(),
+            level_statistics: Vec::new(),
+        };
+        let original = parent.clone();
+        assert!(
+            activate_parent_after_secret_return(
+                CampaignSelection::SECRET_DESTINATION_31,
+                &mut parent
+            )
+            .is_err()
+        );
+        assert_eq!(parent, original);
+        parent.selected_level_id = Some(ordinary[3].clone());
+        let wrong_selection = parent.clone();
+        assert!(
+            activate_parent_after_secret_return(
+                CampaignSelection::SECRET_DESTINATION_30,
+                &mut parent
+            )
+            .is_err()
+        );
+        assert_eq!(parent, wrong_selection);
+        parent = original;
+        activate_parent_after_secret_return(CampaignSelection::SECRET_DESTINATION_30, &mut parent)
+            .unwrap();
+        activate_parent_after_secret_return(CampaignSelection::SECRET_DESTINATION_30, &mut parent)
+            .unwrap();
+        assert_eq!(parent.completed_levels, ordinary);
+        assert_eq!(
+            parent.completed_level_id,
+            Some(parent.completed_levels[0].clone())
+        );
+        assert!(parent.level_statistics.is_empty());
     }
 }

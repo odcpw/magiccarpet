@@ -193,11 +193,10 @@ fn validate_semantic_creature_dispatch(
                 ));
             }
             let expected = match (identity.kind, identity.role) {
-                (
-                    CreatureKind::Creature18 | CreatureKind::Creature27
-                    | CreatureKind::FinalBoss | CreatureKind::Creature21,
-                    _,
-                ) => None,
+                (CreatureKind::Creature18, _) => Some(&[ExistingHandler::Creature18][..]),
+                (CreatureKind::Creature21, _) => Some(&[ExistingHandler::Creature21][..]),
+                (CreatureKind::Creature27, _) => Some(&[ExistingHandler::Creature27][..]),
+                (CreatureKind::FinalBoss, _) => Some(&[ExistingHandler::FinalBoss][..]),
                 (CreatureKind::Wyvern, _) => Some(&[ExistingHandler::Wyvern][..]),
                 (CreatureKind::Creature17, _) => Some(&[ExistingHandler::Creature17][..]),
                 (CreatureKind::Creature23, _) => Some(&[ExistingHandler::Creature23][..]),
@@ -264,6 +263,10 @@ fn validate_semantic_creature_dispatch(
             | ExistingHandler::TraderFamily
             | ExistingHandler::Wyvern
             | ExistingHandler::Creature17
+            | ExistingHandler::Creature18
+            | ExistingHandler::Creature21
+            | ExistingHandler::Creature27
+            | ExistingHandler::FinalBoss
             | ExistingHandler::Creature23
             | ExistingHandler::Creature26
             | ExistingHandler::Creature28
@@ -451,13 +454,17 @@ impl Mc2Simulation {
             Other,
         }
 
-        let (entities, players, spheres, castle) = {
+        let (entities, players, spheres, castles) = {
             let live = &self.session.state.live;
             (
                 live.economy.entities.clone(),
                 live.core.players.clone(),
                 live.economy.economy.spheres().to_vec(),
-                live.economy.economy.castle(),
+                live.economy
+                    .economy
+                    .live_castles()
+                    .copied()
+                    .collect::<Vec<_>>(),
             )
         };
         let mut projectile_indices = self
@@ -541,8 +548,9 @@ impl Mc2Simulation {
                     _ => ThreatTarget::Other,
                 })
                 .or_else(|| {
-                    castle
-                        .filter(|target| target.active && target.source_entity_index == target_slot)
+                    castles
+                        .iter()
+                        .find(|target| target.active && target.source_entity_index == target_slot)
                         .map(|target| ThreatTarget::Class3 {
                             model: 2,
                             owner: target.source_id_entity_index,
@@ -760,7 +768,7 @@ struct Level2SourceSchedulerWorld<'session, 'evidence> {
     /// Frozen source list used by the post-pass type-9 objective service.
     pass_start_model45_building_selectors: Vec<u8>,
     pass_start_castle_auxiliary_membership: level2_dynamic_economy::Level2CastleAuxiliaryMembership,
-    pass_start_castle_root_slot: Option<u16>,
+    pass_start_castle_root_slots: BTreeSet<u16>,
     goat_begin_events: BTreeMap<u16, Vec<GoatStepEvent>>,
 }
 
@@ -934,6 +942,8 @@ impl SourceSchedulerWorld for Level2SourceSchedulerWorld<'_, '_> {
                 economy.reclaim_hidden_goat_rows_at_source_boundary();
                 economy.reclaim_hidden_worm_rows_at_source_boundary();
                 level2_class5::firefly::retire_hidden_summoned_stage_at_source_boundary(economy);
+                level2_class5::dragon::retire_hidden_boss_dragons_at_source_boundary(economy);
+                crate::world::fields::retire_hidden_wind_projections(economy);
                 economy.reclaim_inactive_slots_at_source_boundary();
             }
             PassPhase::RebuildMemberships => {
@@ -971,19 +981,22 @@ impl SourceSchedulerWorld for Level2SourceSchedulerWorld<'_, '_> {
                             .then_some(row.index)
                     }));
                     class9.extend(economy.castle_projectiles().iter().filter_map(|row| {
-                        (row.active && row.source_class == 9
+                        (row.active
+                            && row.source_class == 9
                             && (1..1000).contains(&row.source_entity_index))
-                            .then_some(row.source_entity_index)
+                        .then_some(row.source_entity_index)
                     }));
                     class9.extend(economy.fireball_projectiles().iter().filter_map(|row| {
-                        (row.active && row.source_class == 9
+                        (row.active
+                            && row.source_class == 9
                             && (1..1000).contains(&row.source_entity_index))
-                            .then_some(row.source_entity_index)
+                        .then_some(row.source_entity_index)
                     }));
                     class9.extend(economy.possession_projectiles().iter().filter_map(|row| {
-                        (row.active && row.source_class == 9
+                        (row.active
+                            && row.source_class == 9
                             && (1..1000).contains(&row.source_entity_index))
-                            .then_some(row.source_entity_index)
+                        .then_some(row.source_entity_index)
                     }));
                     self.pass_start_class9_slots = class9.into_iter().collect();
                     // Reuse the frozen intrusive class list, which also
@@ -994,9 +1007,7 @@ impl SourceSchedulerWorld for Level2SourceSchedulerWorld<'_, '_> {
                         .iter()
                         .copied()
                         .filter(|slot| {
-                            if let Some(castle) = economy.castle().filter(|castle| {
-                                castle.active && castle.source_entity_index == *slot
-                            }) {
+                            if let Some(castle) = economy.castle_at(*slot) {
                                 castle.source_class == 3
                                     && castle.life >= 0
                                     && economy.map_chains.is_linked(*slot)
@@ -1045,6 +1056,7 @@ impl SourceSchedulerWorld for Level2SourceSchedulerWorld<'_, '_> {
             }
             PassPhase::PreDispatch => {
                 let live = &mut self.owner.session.state.live;
+                live.sync_castle_player_relations();
                 creatures::stage_route::update_shared_stage_variables(
                     &mut live.core.runtime,
                     &live.economy.entities,
@@ -1075,15 +1087,15 @@ impl SourceSchedulerWorld for Level2SourceSchedulerWorld<'_, '_> {
                     .economy
                     .economy
                     .castle_auxiliary_membership(&self.owner.session.state.live.economy.entities);
-                self.pass_start_castle_root_slot = self
+                self.pass_start_castle_root_slots = self
                     .owner
                     .session
                     .state
                     .live
                     .economy
-                    .castle()
-                    .filter(|castle| castle.active)
-                    .map(|castle| castle.source_entity_index);
+                    .live_castles()
+                    .map(|castle| castle.source_entity_index)
+                    .collect();
                 self.goat_begin_events.clear();
                 {
                     let live = &mut self.owner.session.state.live;
@@ -1135,6 +1147,10 @@ impl SourceSchedulerWorld for Level2SourceSchedulerWorld<'_, '_> {
                     );
                     live.economy
                         .advance_authored_firefly_stage_rows(&mut live.core.runtime)?;
+                    level2_class5::dragon::prepare_boss_stage_pass(
+                        &mut live.economy,
+                        &self.pass_start_class5_model_slots[0],
+                    );
                     creatures::spider::mc2::prepare_source_pass(
                         &mut live.economy,
                         &mut live.core.runtime,
@@ -1178,6 +1194,21 @@ impl SourceSchedulerWorld for Level2SourceSchedulerWorld<'_, '_> {
                         &mut live.economy,
                         &mut live.core.runtime,
                         &self.pass_start_class5_model_slots[23],
+                    );
+                    creatures::creature_18::mc2::prepare_source_pass(
+                        &mut live.economy,
+                        &mut live.core.runtime,
+                        &self.pass_start_class5_model_slots[18],
+                    );
+                    creatures::creature_21::mc2::prepare_source_pass(
+                        &mut live.economy,
+                        &mut live.core.runtime,
+                        &self.pass_start_class5_model_slots[21],
+                    );
+                    creatures::stage_route::prepare_source_pass(
+                        &mut live.economy,
+                        &mut live.core.runtime,
+                        &self.pass_start_class5_model_slots[27],
                     );
                     creatures::creature_26::mc2::prepare_source_pass(
                         &mut live.economy,
@@ -1439,7 +1470,7 @@ impl SourceSchedulerWorld for Level2SourceSchedulerWorld<'_, '_> {
             &self.pass_start_capture_slots,
             &self.pass_start_settlement_building_slots,
             &self.pass_start_castle_auxiliary_membership,
-            self.pass_start_castle_root_slot,
+            &self.pass_start_castle_root_slots,
             &mut self.goat_begin_events,
         )
     }
@@ -1902,7 +1933,15 @@ impl Mc2Simulation {
             .state
             .live
             .mission
-            .level2_authored_stage_variable_for(feature);
+            .level2_authored_stage_variable_for(
+                feature,
+                self.session
+                    .state
+                    .live
+                    .core
+                    .runtime
+                    .active_stage_variable_count(),
+            );
         if let Some(stage) = stage {
             let live = &mut self.session.state.live;
             level2_class5::archer::bind_authored_archer_route(
@@ -1920,7 +1959,15 @@ impl Mc2Simulation {
             .state
             .live
             .mission
-            .level2_authored_stage_variable_for(feature)
+            .level2_authored_stage_variable_for(
+                feature,
+                self.session
+                    .state
+                    .live
+                    .core
+                    .runtime
+                    .active_stage_variable_count(),
+            )
             .map_or(0, |stage| stage.index);
         let live = &mut self.session.state.live;
         level2_class5::trader::bind_authored_route(
@@ -1940,7 +1987,15 @@ impl Mc2Simulation {
             .state
             .live
             .mission
-            .level2_authored_stage_variable_for(feature)
+            .level2_authored_stage_variable_for(
+                feature,
+                self.session
+                    .state
+                    .live
+                    .core
+                    .runtime
+                    .active_stage_variable_count(),
+            )
             .map(|s| s.index);
         let max_life = self
             .session
@@ -1978,10 +2033,10 @@ impl Mc2Simulation {
             slot
         };
         if let Some(slot) = slot {
-            for stage in live
-                .mission
-                .level2_authored_stage_variable_references_to(feature.index)
-            {
+            for stage in live.mission.level2_authored_stage_variable_references_to(
+                feature.index,
+                live.core.runtime.active_stage_variable_count(),
+            ) {
                 if !live
                     .core
                     .runtime
@@ -2052,10 +2107,10 @@ impl Mc2Simulation {
                     feature.index
                 ));
             }
-            for stage in live
-                .mission
-                .level2_authored_stage_variable_references_to(feature.index)
-            {
+            for stage in live.mission.level2_authored_stage_variable_references_to(
+                feature.index,
+                live.core.runtime.active_stage_variable_count(),
+            ) {
                 if !live
                     .core
                     .runtime
@@ -2104,7 +2159,15 @@ impl Mc2Simulation {
             .state
             .live
             .mission
-            .level2_authored_stage_variable_for(feature)
+            .level2_authored_stage_variable_for(
+                feature,
+                self.session
+                    .state
+                    .live
+                    .core
+                    .runtime
+                    .active_stage_variable_count(),
+            )
             .map(|s| s.index);
         let max_life = self
             .session
@@ -2116,6 +2179,49 @@ impl Mc2Simulation {
         let position =
             feature.world_position(live.terrain.ground_height(feature.world_position(0)));
         let slot = match feature.subtype {
+            18 => creatures::creature_18::mc2::allocate_authored(
+                &mut live.economy,
+                &mut live.core.runtime,
+                &mut live.terrain,
+                &self.session.definition.presentation.particles,
+                position,
+                max_life,
+                stage,
+                feature.index,
+            ),
+            21 => creatures::creature_21::mc2::allocate_authored(
+                &mut live.economy,
+                &mut live.core.runtime,
+                &mut live.terrain,
+                &self.session.definition.presentation.particles,
+                position,
+                max_life,
+                stage,
+                feature.index,
+            ),
+            27 => {
+                let allocation = creatures::creature_27::mc2::allocate_authored(
+                    &mut live.economy,
+                    &mut live.core.runtime,
+                    &mut live.terrain,
+                    &self.session.definition.presentation.particles,
+                    position,
+                    feature.index,
+                )?;
+                if let Some(allocation) = allocation {
+                    if let Some(stage_index) = stage {
+                        creatures::creature_27::mc2::bind_authored_stage(
+                            &mut live.economy,
+                            &mut live.core.runtime,
+                            allocation.root,
+                            stage_index,
+                        )?;
+                    }
+                    Ok(Some(allocation.root.source_slot))
+                } else {
+                    Ok(None)
+                }
+            }
             25 => creatures::creature_25::mc2::allocate_authored(
                 &mut live.economy,
                 &mut live.core.runtime,
@@ -2203,10 +2309,10 @@ impl Mc2Simulation {
             }
         }?;
         if let Some(slot) = slot {
-            for stage in live
-                .mission
-                .level2_authored_stage_variable_references_to(feature.index)
-            {
+            for stage in live.mission.level2_authored_stage_variable_references_to(
+                feature.index,
+                live.core.runtime.active_stage_variable_count(),
+            ) {
                 if !live
                     .core
                     .runtime
@@ -2249,7 +2355,15 @@ impl Mc2Simulation {
             .state
             .live
             .mission
-            .level2_authored_stage_variable_for(feature)
+            .level2_authored_stage_variable_for(
+                feature,
+                self.session
+                    .state
+                    .live
+                    .core
+                    .runtime
+                    .active_stage_variable_count(),
+            )
         {
             let live = &mut self.session.state.live;
             crate::native_world::creatures::creature_15::mc2::bind_authored_route(
@@ -3097,22 +3211,8 @@ impl Mc2Simulation {
         };
         let castle_mana = live
             .economy
-            .castle()
-            .filter(|castle| {
-                castle.active
-                    && castle.owner_entity_index == parent_slot
-                    && live.economy.player_castle_entity_index() == castle.source_entity_index
-            })
-            .map(|castle| castle.mana)
-            .or_else(|| {
-                let player = owner?;
-                let slot = u16::from_le_bytes([player.record[42], player.record[43]]);
-                live.economy
-                    .entities
-                    .get(usize::from(slot))
-                    .filter(|row| slot != 0 && row.active)
-                    .map(|row| row.mana)
-            });
+            .castle_for_owner(parent_slot)
+            .map(|castle| castle.mana);
         let input = meteor::CastInput {
             aim_yaw,
             aim_pitch,
@@ -3309,12 +3409,7 @@ impl Mc2Simulation {
             .state
             .live
             .economy
-            .castle()
-            .filter(|castle| {
-                castle.active
-                    && self.session.state.live.economy.player_castle_entity_index()
-                        == castle.source_entity_index
-            })
+            .castle_for_owner(holder.source_spell_parent_entity_index())
             .map(|castle| castle.mana);
         let admitted = holder.active_value > 0
             && parent.life >= 0
@@ -3599,7 +3694,13 @@ impl Mc2Simulation {
             .unwrap_or_default();
         if queued_spell != 0 {
             let tier = queued_spell.saturating_sub(1).min(2) as u8;
-            let owner = self.session.state.live.shared_spells.player_entity.index;
+            let owner = self
+                .session
+                .state
+                .live
+                .shared_spells
+                .pickup(holder_index)
+                .map_or(0, EntitySnapshot::source_spell_parent_entity_index);
             if let Some(profile) =
                 self.session
                     .state
@@ -3744,12 +3845,7 @@ impl Mc2Simulation {
                 .state
                 .live
                 .economy
-                .castle()
-                .filter(|castle| {
-                    castle.active
-                        && self.session.state.live.economy.player_castle_entity_index()
-                            == castle.source_entity_index
-                })
+                .castle_for_owner(holder.source_spell_parent_entity_index())
                 .map(|castle| castle.mana);
             let predicate = holder.level_gate >= 0
                 && holder.level_gate <= 2
@@ -4493,37 +4589,43 @@ impl Mc2Simulation {
             return None;
         };
 
-        let parent_entity_index = self.session.state.live.shared_spells.player_entity.index;
-        let parent_relation_valid =
-            holder.source_spell_parent_entity_index() == parent_entity_index;
+        let parent_entity_index = holder.source_spell_parent_entity_index();
+        let local_parent =
+            parent_entity_index == self.session.state.live.shared_spells.player_entity.index;
+        let parent = if local_parent {
+            Some(self.session.state.live.shared_spells.player_entity.clone())
+        } else {
+            self.session
+                .state
+                .live
+                .economy
+                .entities
+                .get(usize::from(parent_entity_index))
+                .filter(|parent| {
+                    parent_entity_index != 0
+                        && parent.active
+                        && parent.class == 3
+                        && matches!(parent.model, 0 | 1)
+                })
+                .cloned()
+        };
         let mut next_active_value = holder.active_value;
         let mut spawned = None;
         if holder.active_value <= 0 {
             // `sub_6D880` consumes the queued SetSpell word immediately at
             // the zero-W callback. word36 still decrements below.
             self.apply_castle_spell_holder_cleanup(holder_index);
-        } else if parent_relation_valid {
+        } else if let Some(parent) = parent {
             let fresh = holder.active_value == holder.activation_value.cast_signed();
-            let parent_life = self.session.state.live.shared_spells.player_entity.life;
-            let parent_mana = self.session.state.live.shared_spells.player_entity.mana;
-            let parent_mana_regen = self
-                .session
-                .state
-                .live
-                .shared_spells
-                .player_entity
-                .mana_regen;
+            let parent_life = parent.life;
+            let parent_mana = parent.mana;
+            let parent_mana_regen = parent.mana_regen;
             let castle_mana = self
                 .session
                 .state
                 .live
                 .economy
-                .castle()
-                .filter(|castle| {
-                    castle.active
-                        && self.session.state.live.economy.player_castle_entity_index()
-                            == castle.source_entity_index
-                })
+                .castle_for_owner(holder.source_spell_parent_entity_index())
                 .map(|castle| castle.mana);
             let predicate = parent_life >= 0
                 && parent_mana >= 0
@@ -4539,7 +4641,7 @@ impl Mc2Simulation {
                     .state
                     .live
                     .economy
-                    .castle()
+                    .castle_for_owner(holder.source_spell_parent_entity_index())
                     .map_or(1, |castle| castle.level.saturating_add(1));
                 // Spells.cpp's Castle profile conversion feeds the source
                 // Type_str_164 arrays: stage coefficient is 256 plus the
@@ -4552,13 +4654,18 @@ impl Mc2Simulation {
                     .state
                     .live
                     .economy
-                    .set_castle_stage_coefficient(stage, stage_coefficient as u16);
+                    .set_castle_stage_coefficient_for_owner(
+                        parent_entity_index,
+                        stage,
+                        stage_coefficient as u16,
+                    );
                 let _ = self
                     .session
                     .state
                     .live
                     .economy
-                    .set_castle_controller_coefficient(
+                    .set_castle_controller_coefficient_for_owner(
+                        parent_entity_index,
                         stage,
                         holder.level_gate.clamp(0, 2).cast_unsigned(),
                     );
@@ -4578,20 +4685,31 @@ impl Mc2Simulation {
                 // a strict ground penetration rolls the displacement back.
                 // The parent FOV and two A4 angle words are then copied with
                 // source-width wrapping into the new class-9/model-10 row.
-                let parent_position = self.session.state.live.core.state.position;
+                let (parent_position, parent_yaw, parent_pitch, parent_fov, actual_speed) =
+                    if local_parent {
+                        let state = &self.session.state.live.core.state;
+                        (
+                            state.position,
+                            state.yaw,
+                            state.display_pitch,
+                            state.entity_fov,
+                            state.actual_speed,
+                        )
+                    } else {
+                        (
+                            parent.position,
+                            parent.yaw,
+                            parent.pitch,
+                            parent.array_fov(),
+                            parent.actual_speed,
+                        )
+                    };
                 let mut launch_position = parent_position;
-                let direction_bits = self
-                    .session
-                    .state
-                    .live
-                    .shared_spells
-                    .player_entity
-                    .control_flags
-                    & 0x0300;
+                let direction_bits = parent.control_flags & 0x0300;
                 let hand_yaw = if direction_bits & 0x0100 != 0 {
-                    Some(self.session.state.live.core.state.yaw.wrapping_sub(512))
+                    Some(parent_yaw.wrapping_sub(512))
                 } else if direction_bits & 0x0200 != 0 {
-                    Some(self.session.state.live.core.state.yaw.wrapping_add(512))
+                    Some(parent_yaw.wrapping_add(512))
                 } else {
                     None
                 };
@@ -4599,36 +4717,61 @@ impl Mc2Simulation {
                     crate::move_entity(&mut launch_position, hand_yaw, 0, 256);
                     let terrain = &self.session.state.live.terrain;
                     if terrain.ground_height(launch_position) > launch_position.z {
-                        launch_position = self.session.state.live.core.state.position;
+                        launch_position = parent_position;
                     }
                 }
-                launch_position.z = launch_position
-                    .z
-                    .wrapping_add(self.session.state.live.core.state.entity_fov);
+                launch_position.z = launch_position.z.wrapping_add(parent_fov);
 
-                let auxiliary = self
-                    .session
-                    .state
-                    .live
-                    .shared_spells
-                    .beyond_sight_auxiliary();
+                let (aim_yaw, aim_pitch) = if local_parent {
+                    let auxiliary = self
+                        .session
+                        .state
+                        .live
+                        .shared_spells
+                        .beyond_sight_auxiliary();
+                    (auxiliary.next_entity, auxiliary.entity_index2)
+                } else {
+                    self.session
+                        .state
+                        .live
+                        .shared_spells
+                        .players
+                        .iter()
+                        .find(|player| player.entity_index == parent_entity_index)
+                        .and_then(|player| {
+                            player.record.get(
+                                PLAYER_LEGACY_RECORD_BYTES + 24..PLAYER_LEGACY_RECORD_BYTES + 28,
+                            )
+                        })
+                        .map_or((0, 0), |bytes| {
+                            (
+                                i16::from_le_bytes([bytes[0], bytes[1]]),
+                                i16::from_le_bytes([bytes[2], bytes[3]]),
+                            )
+                        })
+                };
                 let source_a4_byte_154 = self
                     .session
                     .state
                     .live
-                    .shared_spells
-                    .players
-                    .iter()
-                    .find(|player| player.entity_index == parent_entity_index)
-                    .and_then(PlayerSnapshot::type_str_164_auxiliary)
-                    .map_or(0, |carrier| carrier.byte_0x154_340);
-                let launch_yaw = auxiliary
-                    .next_entity
-                    .wrapping_add(self.session.state.live.core.state.yaw);
-                let launch_pitch = auxiliary
-                    .entity_index2
-                    .wrapping_add(self.session.state.live.core.state.display_pitch);
-                let actual_speed = self.session.state.live.core.state.actual_speed;
+                    .nyphur_dispatcher
+                    .as_ref()
+                    .and_then(|dispatcher| {
+                        dispatcher.source_byte_0x154_for_owner(parent_entity_index)
+                    })
+                    .unwrap_or_else(|| {
+                        self.session
+                            .state
+                            .live
+                            .shared_spells
+                            .players
+                            .iter()
+                            .find(|player| player.entity_index == parent_entity_index)
+                            .and_then(PlayerSnapshot::type_str_164_auxiliary)
+                            .map_or(0, |carrier| carrier.byte_0x154_340)
+                    });
+                let launch_yaw = aim_yaw.wrapping_add(parent_yaw);
+                let launch_pitch = aim_pitch.wrapping_add(parent_pitch);
                 let terrain = &self.session.state.live.terrain;
                 let mut axis_position = parent_position;
                 crate::move_entity(&mut axis_position, launch_yaw, 0, 4_096);
@@ -4657,6 +4800,9 @@ impl Mc2Simulation {
                     // The A4 byte transfer and sound are success-only source
                     // epilogue writes; predicate or allocator failure leaves
                     // the parent byte and audio journal untouched.
+                    if let Some(dispatcher) = self.session.state.live.nyphur_dispatcher.as_mut() {
+                        dispatcher.clear_source_byte_0x154_for_owner(parent_entity_index);
+                    }
                     if let Some(player) = self
                         .session
                         .state
@@ -5521,6 +5667,9 @@ impl Mc2Simulation {
             source_terrain_graphics_flags,
         );
         let mut economy = SourceArena::new(entities, economy);
+        economy
+            .economy
+            .adopt_imported_castles(&players, &mut economy.entities);
         let mut terrain = terrain;
         // Direct-start constructors allocate these holders before the live
         // arena is assembled. Publish their complete records and cell heads
@@ -5539,9 +5688,10 @@ impl Mc2Simulation {
         }
         economy.effects = crate::native_world::effects::reset_state(&runtime);
         let source_model45_building_selectors = economy.rebuilt_model45_building_selectors();
-        let source_player_result = crate::campaign::source_player_result::SourcePlayerResult::source_level_start(
-            u16::from(runtime.local_player_slot),
-        );
+        let source_player_result =
+            crate::campaign::source_player_result::SourcePlayerResult::source_level_start(
+                u16::from(runtime.local_player_slot),
+            );
         let live = Mc2LiveState {
             core: CanonicalRuntimeState {
                 state,
@@ -6639,7 +6789,7 @@ impl Mc2Simulation {
         );
         // NewAdd0A0C's Possession mailbox effect deliberately has hide bit 1;
         // it is not a visible explosion, even while its ownership pulse lives.
-        if let Some(castle) = self.economy().castle().filter(|castle| {
+        for castle in self.economy().live_castles().filter(|castle| {
             castle.active && castle.control_flags & (ENTITY_DRAW_DISABLED_BIT | 0x21) == 0
         }) {
             candidates.push((
@@ -7393,21 +7543,18 @@ impl Mc2Simulation {
                                 })
                                 .map_or(0, |player| player.entity_index);
                             let economy = &self.session.state.live.economy.economy;
-                            let castle_slot = economy.player_castle_entity_index();
                             let denominator = economy.owner_mana_global();
-                            castle_slot != 0
-                                && denominator > 0
-                                && economy.castle().is_some_and(|castle| {
-                                    castle.active
-                                        && castle.source_entity_index == castle_slot
-                                        && castle.owner_entity_index == player_entity_index
-                                        && 100_i32
+                            denominator > 0
+                                && economy.castle_for_owner(player_entity_index).is_some_and(
+                                    |castle| {
+                                        100_i32
                                             * economy
                                                 .owner_mana_aggregate(player_entity_index)
                                                 .saturating_add(castle.mana)
                                             / denominator
                                             >= required_percent
-                                })
+                                    },
+                                )
                         }
                         ObjectiveCondition::DefeatRivalWizard(target) => {
                             // The source type-3 predicate is independent of
@@ -7555,21 +7702,18 @@ impl Mc2Simulation {
                                 })
                                 .map_or(0, |player| player.entity_index);
                             let economy = &self.session.state.live.economy.economy;
-                            let castle_slot = economy.player_castle_entity_index();
                             let denominator = economy.owner_mana_global();
-                            castle_slot != 0
-                                && denominator > 0
-                                && economy.castle().is_some_and(|castle| {
-                                    castle.active
-                                        && castle.source_entity_index == castle_slot
-                                        && castle.owner_entity_index == player_entity_index
-                                        && 100_i32
+                            denominator > 0
+                                && economy.castle_for_owner(player_entity_index).is_some_and(
+                                    |castle| {
+                                        100_i32
                                             * economy
                                                 .owner_mana_aggregate(player_entity_index)
                                                 .saturating_add(castle.mana)
                                             / denominator
                                             >= required_percent
-                                })
+                                    },
+                                )
                         }
                         3 => {
                             if stage.flags & 1 == 0 {
@@ -7626,13 +7770,7 @@ impl Mc2Simulation {
             if completed.is_empty() {
                 continue;
             }
-            self.session
-                .state
-                .live
-                .core
-                .runtime
-                .request_objective_presentation();
-            for stage_index in completed {
+            for &stage_index in &completed {
                 self.session
                     .state
                     .live
@@ -7651,6 +7789,18 @@ impl Mc2Simulation {
                 .iter()
                 .take(stage_count)
                 .position(|selector| *selector == 1);
+            if crate::campaign::objectives::should_present_after_completion(
+                &completed,
+                objective.text_selector,
+                next_stage.is_none(),
+            ) {
+                self.session
+                    .state
+                    .live
+                    .core
+                    .runtime
+                    .request_objective_presentation();
+            }
             if let Some(next_stage) = next_stage {
                 self.session
                     .state
@@ -7703,9 +7853,7 @@ impl Mc2Simulation {
                 .economy
                 .entities
                 .get(usize::from(live.core.state.entity_index))
-                .is_some_and(|player| {
-                    player.action == crate::level_exit::SECRET_EXIT_PLAYER_ACTION
-                })
+                .is_some_and(|player| player.action == crate::level_exit::SECRET_EXIT_PLAYER_ACTION)
     }
 
     /// Bind the source per-player `MenuState_0x3DF` consumed by the dying
@@ -7729,19 +7877,14 @@ impl Mc2Simulation {
         use sim_session::AbandonAction;
         let live = &mut self.session.state.live;
         let menu = live.player_menu_state;
+        if let Some(destination) = crate::campaign::source_menus::destination(menu, action) {
+            live.player_menu_state = destination;
+            if crate::campaign::source_menus::hides_objective_textbox(destination) {
+                live.core.runtime.clear_objective_textbox();
+            }
+            return true;
+        }
         match action {
-            AbandonAction::ToggleGameplayMap if matches!(menu, 0 | 6) => {
-                live.player_menu_state = if menu == 0 { 6 } else { 0 };
-                true
-            }
-            AbandonAction::OpenAbandonConfirmation if matches!(menu, 0 | 6) => {
-                live.player_menu_state = if menu == 0 { 13 } else { 14 };
-                true
-            }
-            AbandonAction::CancelAbandonConfirmation if matches!(menu, 13 | 14) => {
-                live.player_menu_state = if menu == 13 { 0 } else { 6 };
-                true
-            }
             AbandonAction::ConfirmAbandon if matches!(menu, 13 | 14) => {
                 let slot = usize::from(live.core.runtime.local_player_slot);
                 if slot >= usize::from(live.core.runtime.player_count)
@@ -7772,7 +7915,9 @@ impl Mc2Simulation {
         live.source_menu_admission = action.map(|action| sim_session::SourceMenuAdmission {
             action,
             admitted,
-            map_open: matches!(live.player_menu_state, 6 | 14),
+            map_open: crate::campaign::source_menus::map_open(live.player_menu_state),
+            spells_open: crate::campaign::source_menus::spells_open(live.player_menu_state),
+            player_information_open: live.player_menu_state == 7,
             tick: live.core.state.tick,
         });
     }
@@ -7785,6 +7930,12 @@ impl Mc2Simulation {
         let live = &self.session.state.live;
         live.source_player_result
             .is_secret_banishment_for(u16::from(live.core.runtime.local_player_slot))
+    }
+
+    pub(crate) fn ordinary_banishment_result(&self) -> bool {
+        let live = &self.session.state.live;
+        live.source_player_result
+            .is_ordinary_banishment_for(u16::from(live.core.runtime.local_player_slot))
     }
 
     /// Move one imported source entity through the lossless Level 2 seam.
@@ -8294,7 +8445,8 @@ impl Mc2Simulation {
 
     fn validate_campaign_presentation_selection(&self, selection: CampaignSelection) -> Result<()> {
         let profile = self.session.state.live.mission.profile();
-        let known_selection = CampaignSelection::ordinary(selection.external_level) == Some(selection)
+        let known_selection = CampaignSelection::ordinary(selection.external_level)
+            == Some(selection)
             || CampaignSelection::secret_destination(selection.internal_level) == Some(selection);
         if !known_selection
             || profile.external_level != selection.external_level
@@ -8672,6 +8824,13 @@ impl Mc2Simulation {
     /// row has run. The phase is read from the live entity because the outer
     /// dispatcher increments byte `0x3E` after the callback returns.
     pub fn nyphur_common_upkeep(&self) -> Result<Level2NyphurCommonUpkeepSnapshot> {
+        let dispatcher = self
+            .session
+            .state
+            .live
+            .nyphur_dispatcher
+            .as_ref()
+            .ok_or_else(|| NativeWorldError::new("Nyphur common upkeep capability is absent"))?;
         let entity = self
             .session
             .state
@@ -8679,23 +8838,9 @@ impl Mc2Simulation {
             .economy
             .entities
             .iter()
-            .find(|entity| {
-                entity.index
-                    == self
-                        .session
-                        .state
-                        .live
-                        .nyphur_dispatcher
-                        .common_upkeep
-                        .source_slot
-            })
+            .find(|entity| entity.index == dispatcher.common_upkeep.source_slot)
             .ok_or_else(|| NativeWorldError::new("Level 2 Nyphur common source row is absent"))?;
-        Ok(self
-            .session
-            .state
-            .live
-            .nyphur_dispatcher
-            .common_upkeep(entity.phase))
+        Ok(dispatcher.common_upkeep(entity.phase))
     }
 
     /// Ordered `sub_12910` traces emitted by the real Level 2 source pass.
@@ -9493,7 +9638,15 @@ impl Mc2Simulation {
             .state
             .live
             .mission
-            .level2_authored_stage_variable_for(feature)?;
+            .level2_authored_stage_variable_for(
+                feature,
+                self.session
+                    .state
+                    .live
+                    .core
+                    .runtime
+                    .active_stage_variable_count(),
+            )?;
         if !matches!(stage_var.kind, 1 | 2) || stage_var.flags & 0x60 != 0 {
             return None;
         }
@@ -9529,7 +9682,21 @@ impl Mc2Simulation {
         &mut self,
         feature: AuthoredFeature,
     ) -> Option<Level2AuthoredClass5Source> {
-        let route = self.authored_firefly_stage_route(feature)?;
+        let route = self.authored_firefly_stage_route(feature);
+        if route.is_none()
+            && self
+                .session
+                .state
+                .live
+                .mission
+                .level2_authored_stage_variable_for(
+                    feature,
+                    self.runtime().active_stage_variable_count(),
+                )
+                .is_some()
+        {
+            return None;
+        }
         let position = feature.world_position(
             self.canonical_terrain()
                 .ground_height(feature.world_position(0)),
@@ -9538,18 +9705,33 @@ impl Mc2Simulation {
             .session
             .definition
             .authored_creature_max_life(feature.index)?;
-        let source = self.session.state.live.economy.allocate_authored_firefly(
-            feature.index,
-            position,
-            route,
-            max_life,
-            &self.session.state.live.terrain,
-        )?;
-        assert!(
-            self.runtime
-                .advance_level2_stage_variable_counter(route.stage_var1),
-            "validated Firefly StageVar must retain its runtime counter carrier"
-        );
+        let live = &mut self.session.state.live;
+        let source = if let Some(route) = route {
+            let source = live.economy.allocate_authored_firefly(
+                feature.index,
+                position,
+                route,
+                max_life,
+                &live.terrain,
+            )?;
+            assert!(
+                live.core
+                    .runtime
+                    .advance_level2_stage_variable_counter(route.stage_var1),
+                "validated Firefly StageVar must retain its runtime counter carrier"
+            );
+            source
+        } else {
+            // GenerateEvents constructs the actor before sub_12100 optionally
+            // selects a route. A cleared count leaves source stage fields at
+            // zero and the ordinary roaming action active.
+            live.economy.allocate_authored_firefly_unbound(
+                feature.index,
+                position,
+                max_life,
+                &live.terrain,
+            )?
+        };
         Some(source)
     }
 
@@ -9562,7 +9744,15 @@ impl Mc2Simulation {
             .state
             .live
             .mission
-            .level2_authored_stage_variable_for(feature)
+            .level2_authored_stage_variable_for(
+                feature,
+                self.session
+                    .state
+                    .live
+                    .core
+                    .runtime
+                    .active_stage_variable_count(),
+            )
             .map(|stage| stage.index);
         let position = feature.world_position(
             self.canonical_terrain()
@@ -10410,10 +10600,22 @@ impl Mc2Simulation {
         let pending = events[start..].to_vec();
         self.session.state.scratch.economy_event_cursor = events.len();
         for event in pending {
-            if let Level2EconomyEvent::CastleStageDestroyed { next_level, .. } = event {
-                if let Some(castle) = self.session.state.live.economy.castle() {
+            if let Level2EconomyEvent::CastleStageDestroyed {
+                source_entity_index,
+                next_level,
+                ..
+            } = event
+            {
+                if let Some(castle) = self
+                    .session
+                    .state
+                    .live
+                    .economy
+                    .castle_entry(source_entity_index)
+                {
+                    let owner = castle.owner_entity_index;
                     self.session.state.live.refresh_castle_spell_profile(
-                        castle.owner_entity_index,
+                        owner,
                         true,
                         Some(i32::from(next_level)),
                     );
@@ -10428,10 +10630,7 @@ impl Mc2Simulation {
                     .state
                     .live
                     .economy
-                    .castle()
-                    .filter(|castle| {
-                        castle.active && castle.source_entity_index == source_entity_index
-                    })
+                    .castle_at(source_entity_index)
                     .map(|castle| castle.source_id_entity_index)
             {
                 // sub60480 reaches this receipt only after model42 NewEvent
@@ -11157,7 +11356,7 @@ impl Mc2Simulation {
             && !matches!(
                 (feature.kind, feature.subtype),
                 (2, 0 | 1 | 6 | 7)
-                    | (5, 0 | 1 | 2 | 3 | 4 | 9 | 12 | 13 | 14 | 19 | 20 | 22 | 24)
+                    | (5, 0 | 1 | 2 | 3 | 4 | 9 | 12 | 13 | 14 | 18 | 19 | 20 | 21 | 22 | 24)
                     | (
                         10,
                         0..=7 | 9 | 11 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 22 | 23 | 34 | 38 | 39 | 45 | 54 | 58 | 59 | 60 | 63 | 64 | 70 | 71 | 76 | 80..=88 | 90
@@ -11194,7 +11393,19 @@ impl Mc2Simulation {
         for feature in rows.iter().filter(|feature| {
             feature.kind == 5 && matches!(feature.subtype, 0 | 1 | 2 | 4 | 9 | 14 | 19)
         }) {
-            if feature.subtype == 19 && self.authored_firefly_stage_route(*feature).is_none() {
+            if feature.subtype == 19
+                && self
+                    .session
+                    .state
+                    .live
+                    .mission
+                    .level2_authored_stage_variable_for(
+                        *feature,
+                        self.runtime().active_stage_variable_count(),
+                    )
+                    .is_some()
+                && self.authored_firefly_stage_route(*feature).is_none()
+            {
                 return Err(format!(
                     "authored Firefly row {} has no valid StageVar-1 route",
                     feature.index
@@ -11306,18 +11517,39 @@ impl Mc2Simulation {
                     } else {
                         crate::level_definition::VILLAGER_CLASS_PROPERTIES
                     };
-                    let max_life = self.session.definition.authored_creature_max_life(feature.index)
+                    let max_life = self
+                        .session
+                        .definition
+                        .authored_creature_max_life(feature.index)
                         .unwrap_or(defaults.max_life as u32);
-                    let stage_index = self.session.state.live.mission
-                        .level2_authored_stage_variable_for(feature)
+                    let stage_index = self
+                        .session
+                        .state
+                        .live
+                        .mission
+                        .level2_authored_stage_variable_for(
+                            feature,
+                            self.session
+                                .state
+                                .live
+                                .core
+                                .runtime
+                                .active_stage_variable_count(),
+                        )
                         .map(|stage| stage.index);
                     let live = &mut self.session.state.live;
                     if let Some(slot) = crate::campaign::authored_spawn::construct(
-                        &mut live.economy, &mut live.terrain, &mut live.core.runtime,
-                        feature, max_life, stage_index,
+                        &mut live.economy,
+                        &mut live.terrain,
+                        &mut live.core.runtime,
+                        feature,
+                        max_life,
+                        stage_index,
                     )? {
                         constructed_authored_source_slot = Some(slot);
-                        live.core.runtime.bind_authored_stage_entity(feature.index, slot);
+                        live.core
+                            .runtime
+                            .bind_authored_stage_entity(feature.index, slot);
                         live.level2_class5_activated.insert(feature.index);
                     }
                 }
@@ -11442,7 +11674,15 @@ impl Mc2Simulation {
                             .state
                             .live
                             .mission
-                            .level2_authored_stage_variable_for(feature)
+                            .level2_authored_stage_variable_for(
+                                feature,
+                                self.session
+                                    .state
+                                    .live
+                                    .core
+                                    .runtime
+                                    .active_stage_variable_count(),
+                            )
                         {
                             let live = &mut self.session.state.live;
                             live.goats.bind_authored_route(
@@ -11526,7 +11766,15 @@ impl Mc2Simulation {
                         .state
                         .live
                         .mission
-                        .level2_authored_stage_variable_for(feature)
+                        .level2_authored_stage_variable_for(
+                            feature,
+                            self.session
+                                .state
+                                .live
+                                .core
+                                .runtime
+                                .active_stage_variable_count(),
+                        )
                         .map(|stage| stage.index);
                     let live = &mut self.session.state.live;
                     if let Some(slot) = live.economy.allocate_authored_skeleton_raw(
@@ -11539,10 +11787,10 @@ impl Mc2Simulation {
                         &self.session.definition.presentation.entity_parameters[80],
                     )? {
                         live.level2_class5_activated.insert(feature.index);
-                        for stage in live
-                            .mission
-                            .level2_authored_stage_variable_references_to(feature.index)
-                        {
+                        for stage in live.mission.level2_authored_stage_variable_references_to(
+                            feature.index,
+                            live.core.runtime.active_stage_variable_count(),
+                        ) {
                             if !live
                                 .core
                                 .runtime
@@ -11595,7 +11843,7 @@ impl Mc2Simulation {
                 (5, 22) => {
                     self.allocate_authored_creature22_feature(feature)?;
                 }
-                (5, 16 | 17 | 20 | 23 | 24 | 25 | 26 | 28) => {
+                (5, 16 | 17 | 18 | 20 | 21 | 23 | 24 | 25 | 26 | 27 | 28) => {
                     self.allocate_authored_raw_creature_feature(feature)?;
                 }
                 (5, 3) => {
@@ -11690,7 +11938,10 @@ impl Mc2Simulation {
                                 .terrain_disaster()
                         })
                         .filter(|properties| {
-                            Some(properties.kind()) == crate::world::terrain::disasters::mc2::kind_for_model(model as u8)
+                            Some(properties.kind())
+                                == crate::world::terrain::disasters::mc2::kind_for_model(
+                                    model as u8,
+                                )
                         })
                         .ok_or_else(|| {
                             format!(
@@ -12074,13 +12325,15 @@ impl Mc2Simulation {
             }
             if feature.kind == 5 {
                 let live = &mut self.session.state.live;
-                let source_slot = constructed_authored_source_slot.or_else(|| {
-                    live.economy
-                        .authored_class5()
-                        .iter()
-                        .find(|source| source.active && source.authored_index == feature.index)
-                        .map(|source| source.source_entity_index)
-                }).or_else(|| {
+                let source_slot = constructed_authored_source_slot
+                    .or_else(|| {
+                        live.economy
+                            .authored_class5()
+                            .iter()
+                            .find(|source| source.active && source.authored_index == feature.index)
+                            .map(|source| source.source_entity_index)
+                    })
+                    .or_else(|| {
                         live.economy.bee_creatures().iter().find_map(|source| {
                             (source.active
                                 && source.origin
@@ -12093,10 +12346,10 @@ impl Mc2Simulation {
                 if let Some(source_slot) = source_slot {
                     // sub_12100 publishes references even when this creature
                     // did not select an AI route of its own. sub_58DA0 follows.
-                    for stage in live
-                        .mission
-                        .level2_authored_stage_variable_references_to(feature.index)
-                    {
+                    for stage in live.mission.level2_authored_stage_variable_references_to(
+                        feature.index,
+                        live.core.runtime.active_stage_variable_count(),
+                    ) {
                         if !live
                             .core
                             .runtime
@@ -13853,8 +14106,7 @@ impl Mc2Simulation {
             ))
         } else if let Some(castle) = live
             .economy
-            .castle()
-            .filter(|castle| castle.active && castle.source_entity_index == source_slot)
+            .castle_at(source_slot)
         {
             Some((
                 SourceRoute::CastleRoot,
@@ -14007,11 +14259,7 @@ impl Mc2Simulation {
                 .iter()
                 .find(|row| row.entity.active && row.entity.index == source_slot)
                 .map(|row| row.entity.phase),
-            SourceRoute::CastleRoot => live
-                .economy
-                .castle()
-                .filter(|row| row.active && row.source_entity_index == source_slot)
-                .map(|row| row.phase),
+            SourceRoute::CastleRoot => live.economy.castle_at(source_slot).map(|row| row.phase),
             SourceRoute::Goat => live
                 .goats
                 .goats()
@@ -14045,10 +14293,9 @@ impl Mc2Simulation {
                     Level2DynamicArenaKind::PossessionEffect => {
                         row_phase!(economy.possession_effects, phase)
                     }
-                    Level2DynamicArenaKind::CastleRoot => economy
-                        .castle
-                        .filter(|row| row.active && row.source_entity_index == source_slot)
-                        .map(|row| row.phase),
+                    Level2DynamicArenaKind::CastleRoot => {
+                        economy.castle_at(source_slot).map(|row| row.phase)
+                    }
                     Level2DynamicArenaKind::CastleChild
                     | Level2DynamicArenaKind::CastleDefender
                     | Level2DynamicArenaKind::CastleController => {
@@ -14246,8 +14493,7 @@ impl Mc2Simulation {
             SourceRoute::CastleRoot => live
                 .economy
                 .economy
-                .castle
-                .filter(|row| row.source_entity_index == source_slot)
+                .castle_entry(source_slot)
                 .map(|row| row.phase),
             SourceRoute::Dynamic(cursor) => {
                 let economy = &live.economy.economy;
@@ -14276,10 +14522,9 @@ impl Mc2Simulation {
                     Level2DynamicArenaKind::PossessionEffect => {
                         retained_phase!(economy.possession_effects, phase)
                     }
-                    Level2DynamicArenaKind::CastleRoot => economy
-                        .castle
-                        .filter(|row| row.source_entity_index == source_slot)
-                        .map(|row| row.phase),
+                    Level2DynamicArenaKind::CastleRoot => {
+                        economy.castle_entry(source_slot).map(|row| row.phase)
+                    }
                     Level2DynamicArenaKind::CastleChild
                     | Level2DynamicArenaKind::CastleDefender
                     | Level2DynamicArenaKind::CastleController => {
@@ -14437,9 +14682,7 @@ impl Mc2Simulation {
             SourceRoute::CastleRoot => live
                 .economy
                 .economy
-                .castle
-                .as_mut()
-                .filter(|row| row.source_entity_index == source_slot)
+                .castle_entry_mut(source_slot)
                 .map(|row| &mut row.phase),
             SourceRoute::PossessionHolder | SourceRoute::FireballHolder => {
                 if source_slot == LEVEL2_NYPHUR_POSSESSION_HOLDER_INDEX
@@ -14499,9 +14742,7 @@ impl Mc2Simulation {
                     Level2DynamicArenaKind::CastleRoot => live
                         .economy
                         .economy
-                        .castle
-                        .as_mut()
-                        .filter(|row| row.source_entity_index == source_slot)
+                        .castle_entry_mut(source_slot)
                         .map(|row| &mut row.phase),
                     Level2DynamicArenaKind::CastleChild
                     | Level2DynamicArenaKind::CastleDefender
@@ -14808,6 +15049,10 @@ impl Mc2Simulation {
                     | ExistingHandler::Creature24
                     | ExistingHandler::Wyvern
                     | ExistingHandler::Creature17
+                    | ExistingHandler::Creature18
+                    | ExistingHandler::Creature21
+                    | ExistingHandler::Creature27
+                    | ExistingHandler::FinalBoss
                     | ExistingHandler::Creature23
                     | ExistingHandler::Creature26
                     | ExistingHandler::Creature28
@@ -14979,6 +15224,10 @@ impl Mc2Simulation {
                 | ExistingHandler::Creature24
                 | ExistingHandler::Wyvern
                 | ExistingHandler::Creature17
+                | ExistingHandler::Creature18
+                | ExistingHandler::Creature21
+                | ExistingHandler::Creature27
+                | ExistingHandler::FinalBoss
                 | ExistingHandler::Creature23
                 | ExistingHandler::Creature26
                 | ExistingHandler::Creature28
@@ -15263,7 +15512,9 @@ impl Mc2Simulation {
                     next.control_flags |= 1;
                 }
                 live.ordinary.publish_house_source(&mut live.economy, slot);
-                live.core.runtime.replace_open_type2_target(source_slot, slot);
+                live.core
+                    .runtime
+                    .replace_open_type2_target(source_slot, slot);
                 let start_x = ((house.position.x.wrapping_add(128) >> 8) as u8)
                     .wrapping_sub(footprint.width / 2);
                 let start_y = ((house.position.y.wrapping_add(128) >> 8) as u8)
@@ -15510,11 +15761,18 @@ impl Mc2Simulation {
             let live = &mut self.session.state.live;
             let castle_slots = live
                 .economy
-                .castle()
-                .filter(|castle| castle.active)
-                .map_or_else(Vec::new, |castle| {
-                    vec![(castle.owner_entity_index, castle.source_entity_index)]
-                });
+                .live_castles()
+                .filter(|castle| {
+                    castle.active
+                        && live
+                            .economy
+                            .castle_for_owner(castle.owner_entity_index)
+                            .is_some_and(|root| {
+                                root.source_entity_index == castle.source_entity_index
+                            })
+                })
+                .map(|castle| (castle.owner_entity_index, castle.source_entity_index))
+                .collect::<Vec<_>>();
             crate::native_world::directional_spells::consume_actor_mailbox(
                 &mut live.shared_spells,
                 &mut live.economy,
@@ -15524,13 +15782,14 @@ impl Mc2Simulation {
             )?
         };
         let live = &mut self.session.state.live;
-        if let Some(binding) = outcome.duel
-            && binding.caster_entity_index == live.core.state.entity_index
-        {
-            crate::native_world::directional_spells::install_duel_tether_binding(
-                &mut live.core.state,
-                binding,
-            );
+        if let Some(binding) = outcome.duel {
+            award_source_spell_experience(live, binding.caster_entity_index, 14);
+            if binding.caster_entity_index == live.core.state.entity_index {
+                crate::native_world::directional_spells::install_duel_tether_binding(
+                    &mut live.core.state,
+                    binding,
+                );
+            }
         }
         if let Some(consumption) = outcome.steal_mana {
             if consumption.result.experience_awarded {
@@ -15578,23 +15837,24 @@ impl Mc2Simulation {
         pass_start_mana_sphere_slots: &BTreeSet<u16>,
         pass_start_class5_model_slots: &[Vec<u16>; 29],
         pass_start_class3_slots: &[u16],
-        _pass_start_class9_slots: &[u16],
+        pass_start_class9_slots: &[u16],
         effect_lists: &area_damage::EffectLists,
         pass_start_capture_slots: &[u16],
         pass_start_settlement_building_slots: &[u16],
         pass_start_castle_auxiliary_membership:
             &level2_dynamic_economy::Level2CastleAuxiliaryMembership,
-        pass_start_castle_root_slot: Option<u16>,
+        pass_start_castle_root_slots: &BTreeSet<u16>,
         goat_begin_events: &mut BTreeMap<u16, Vec<GoatStepEvent>>,
     ) -> std::result::Result<(), String> {
-        if self
-            .session
-            .state
-            .live
-            .economy
-            .entities
-            .get(usize::from(source_slot))
-            .is_some_and(|row| row.active && row.class == 3 && matches!(row.model, 0 | 1))
+        if source_slot != player_entity_index
+            && self
+                .session
+                .state
+                .live
+                .economy
+                .entities
+                .get(usize::from(source_slot))
+                .is_some_and(|row| row.active && row.class == 3 && matches!(row.model, 0 | 1))
         {
             self.consume_directional_actor_mailbox(pass, source_slot)?;
         }
@@ -15612,6 +15872,113 @@ impl Mc2Simulation {
             return Ok(());
         }
         match (visit.handler, visit.route) {
+            (ExistingHandler::FinalBoss, SourceRoute::Imported) => {
+                let outcome = {
+                    let live = &mut self.session.state.live;
+                    creatures::creature_10::mc2::scheduled_step(
+                        &mut live.economy,
+                        &mut live.core.runtime,
+                        &mut live.terrain,
+                        &mut live.shared_spells,
+                        &self.session.definition.presentation.particles,
+                        source_slot,
+                        player_entity_index,
+                        pass_start_class5_model_slots,
+                        pass_start_class9_slots,
+                        live.source_setting_30.value(),
+                    )?
+                };
+                if let Some(killer) = outcome.kill_credit {
+                    self.session
+                        .state
+                        .live
+                        .economy
+                        .record_authored_creature_kill(killer);
+                }
+                for sound in outcome.sounds {
+                    self.session.state.live.economy.prepare_sound(
+                        source_slot,
+                        source_slot,
+                        -1,
+                        u16::from(sound),
+                    );
+                }
+                if let Some(pressure) = outcome.player_pressure {
+                    let live = &mut self.session.state.live;
+                    let from = live.core.state.position;
+                    let movement = crate::resolve_legacy_movement(
+                        &mut live.core.state,
+                        from,
+                        pressure.proposed_position,
+                        self.session.definition.profile,
+                        &live.terrain,
+                    );
+                    if let crate::MovementResolution::Accept(position)
+                    | crate::MovementResolution::Redirect(position) = movement
+                    {
+                        let mut position = position;
+                        let clearance = live.economy.entities[usize::from(player_entity_index)]
+                            .parameter_relation
+                            .and_then(|index| {
+                                self.session
+                                    .definition
+                                    .presentation
+                                    .entity_parameters
+                                    .get(usize::from(index))
+                            })
+                            .map_or(0, |row| i16::from_le_bytes([row[12], row[13]]));
+                        position.z = position
+                            .z
+                            .max(live.terrain.ground_height(position).wrapping_add(clearance));
+                        live.core.state.position = position;
+                        live.shared_spells.player_entity.set_position(position);
+                        live.economy.entities[usize::from(player_entity_index)]
+                            .set_position(position);
+                        crate::world::effects::sync_position(
+                            &mut live.economy,
+                            &mut live.terrain,
+                            player_entity_index,
+                            position,
+                            true,
+                            false,
+                        )?;
+                        *player_position = position;
+                    }
+                    if let Some(mode) = pressure.palette_submod {
+                        live.level_exit.palette_submode = mode;
+                        if let Some(effects) = live.core.context.effects.as_mut() {
+                            effects.palette_submode = mode;
+                        }
+                    }
+                }
+                self.append_new_economy_events(pass, source_slot);
+            }
+            (ExistingHandler::Creature27, SourceRoute::Imported) => {
+                let outcome = {
+                    let live = &mut self.session.state.live;
+                    creatures::creature_27::mc2::step_row(
+                        &mut live.economy,
+                        &mut live.core.runtime,
+                        &mut live.terrain,
+                        &self.session.definition.presentation.particles,
+                        source_slot,
+                        pass_start_class3_slots,
+                        pass_start_class5_model_slots,
+                        creatures::creature_27::PROPERTIES.root_target_range,
+                        creatures::creature_27::PROPERTIES.root_target_half_angle,
+                        u16::from(live.source_setting_30.value()),
+                    )?
+                };
+                for (sound_slot, sound) in outcome.sounds {
+                    self.session.state.live.economy.prepare_sound(
+                        sound_slot,
+                        sound_slot,
+                        -1,
+                        u16::from(sound),
+                    );
+                }
+                self.append_new_economy_events(pass, source_slot);
+            }
             (ExistingHandler::Creature22, SourceRoute::Imported) => {
                 let empty_models = std::array::from_fn(|_| Vec::new());
                 let (models, players) = if effect_lists.is_current(&self.session.state.live.economy)
@@ -15657,6 +16024,8 @@ impl Mc2Simulation {
                 | ExistingHandler::Spider
                 | ExistingHandler::Wyvern
                 | ExistingHandler::Creature17
+                | ExistingHandler::Creature18
+                | ExistingHandler::Creature21
                 | ExistingHandler::Creature23
                 | ExistingHandler::Creature26
                 | ExistingHandler::Creature28
@@ -15674,7 +16043,35 @@ impl Mc2Simulation {
                     let local_player_status =
                         Some((player_entity_index, self.state.immobilize_counter));
                     let live = &mut self.session.state.live;
-                    if visit.handler == ExistingHandler::Creature28 {
+                    if visit.handler == ExistingHandler::Creature18 {
+                        let outcome = creatures::creature_18::mc2::step_row(
+                            &mut live.economy,
+                            &mut live.core.runtime,
+                            &mut live.terrain,
+                            &self.session.definition.presentation.particles,
+                            source_slot,
+                            players,
+                            models,
+                        )?;
+                        (None, outcome.kill_credit, outcome.feedback, None, None)
+                    } else if visit.handler == ExistingHandler::Creature21 {
+                        let outcome = creatures::creature_21::mc2::step_row(
+                            &mut live.economy,
+                            &mut live.core.runtime,
+                            &mut live.terrain,
+                            &self.session.definition.presentation.particles,
+                            source_slot,
+                            players,
+                            models,
+                        )?;
+                        (
+                            None,
+                            outcome.kill_credit,
+                            outcome.feedback,
+                            outcome.sound,
+                            outcome.target_music,
+                        )
+                    } else if visit.handler == ExistingHandler::Creature28 {
                         let outcome = creatures::creature_28::mc2::step_row(
                             &mut live.economy,
                             &live.core.runtime,
@@ -15683,11 +16080,13 @@ impl Mc2Simulation {
                             source_slot,
                             &models[28],
                         )?;
-                        let melee = outcome
-                            .melee
-                            .map(|hit| {
-                                (hit.target_slot, i32::from(hit.damage), hit.attacker_source_id)
-                            });
+                        let melee = outcome.melee.map(|hit| {
+                            (
+                                hit.target_slot,
+                                i32::from(hit.damage),
+                                hit.attacker_source_id,
+                            )
+                        });
                         (melee, outcome.kill_credit, None, outcome.sound, None)
                     } else if visit.handler == ExistingHandler::Cymmerian {
                         let outcome = creatures::creature_25::mc2::step_row(
@@ -15752,7 +16151,13 @@ impl Mc2Simulation {
                             players,
                             models,
                         )?;
-                        (outcome.melee, outcome.kill_credit, None, outcome.sound, None)
+                        (
+                            outcome.melee,
+                            outcome.kill_credit,
+                            None,
+                            outcome.sound,
+                            None,
+                        )
                     } else if visit.handler == ExistingHandler::Wyvern {
                         let outcome = creatures::creature_16::mc2::step_row(
                             &mut live.economy,
@@ -15914,13 +16319,19 @@ impl Mc2Simulation {
                     )?
                 } else if visit.handler == ExistingHandler::MeteorProjectile {
                     meteor::step_projectile(
-                        &mut live.economy, &mut live.terrain,
-                        &self.session.definition.presentation.particles, source_slot, Some(&targets),
+                        &mut live.economy,
+                        &mut live.terrain,
+                        &self.session.definition.presentation.particles,
+                        source_slot,
+                        Some(&targets),
                     )?
                 } else if visit.handler == ExistingHandler::FieldSpellProjectile {
                     field_spells::step_projectile(
-                        &mut live.economy, &mut live.terrain,
-                        &self.session.definition.presentation.particles, source_slot, Some(&targets),
+                        &mut live.economy,
+                        &mut live.terrain,
+                        &self.session.definition.presentation.particles,
+                        source_slot,
+                        Some(&targets),
                     )?
                 } else if visit.handler == ExistingHandler::DirectionalSpellProjectile {
                     crate::native_world::directional_spells::step_projectile(
@@ -15941,23 +16352,40 @@ impl Mc2Simulation {
                     )?
                 } else if visit.handler == ExistingHandler::DisasterSpellProjectile {
                     disaster_spells::step_projectile(
-                        &mut live.economy, &mut live.terrain,
-                        &self.session.definition.presentation.particles, source_slot, Some(&targets),
+                        &mut live.economy,
+                        &mut live.terrain,
+                        &self.session.definition.presentation.particles,
+                        source_slot,
+                        Some(&targets),
                     )?
                 } else if live.economy.entities[usize::from(source_slot)].class == 10
-                    && live.economy.entities[usize::from(source_slot)].model == 23 {
-                    let mut actors = area_damage::ActorDomains::new(&mut live.goats, &mut live.ordinary);
+                    && live.economy.entities[usize::from(source_slot)].model == 23
+                {
+                    let mut actors =
+                        area_damage::ActorDomains::new(&mut live.goats, &mut live.ordinary);
                     lightning::step_endpoint(&mut live.economy, source_slot, |arena, pulse| {
-                        area_damage::apply_effect(arena, Some(actors.reborrow()),
+                        area_damage::apply_effect(
+                            arena,
+                            Some(actors.reborrow()),
                             Some((player_entity_index, *player_position)),
-                            self.session.definition.collision_masks.as_ref(), effect_lists, pulse)
+                            self.session.definition.collision_masks.as_ref(),
+                            effect_lists,
+                            pulse,
+                        )
                     })?
                 } else {
-                    lightning::step(&mut live.economy, &mut live.terrain,
-                        &self.session.definition.presentation.particles, source_slot, Some(&targets))?
+                    lightning::step(
+                        &mut live.economy,
+                        &mut live.terrain,
+                        &self.session.definition.presentation.particles,
+                        source_slot,
+                        Some(&targets),
+                    )?
                 };
                 if outcome.impact_slot.is_some_and(|slot| {
-                    live.economy.entities.get(usize::from(slot))
+                    live.economy
+                        .entities
+                        .get(usize::from(slot))
                         .is_some_and(|row| (row.class, row.model) == (10, 9))
                 }) {
                     live.core.runtime.clear_alternate_volcano();
@@ -16134,9 +16562,15 @@ impl Mc2Simulation {
                     &visit,
                 )?;
                 if let Some((owner, family, _)) = visit.spell_experience {
-                    if let Some(source) = live.shared_spells.players.iter()
+                    if let Some(source) = live
+                        .shared_spells
+                        .players
+                        .iter()
                         .find(|player| player.entity_index == owner)
-                        && let Some(player) = live.core.players.iter_mut()
+                        && let Some(player) = live
+                            .core
+                            .players
+                            .iter_mut()
                             .find(|player| player.entity_index == owner)
                     {
                         player.sync_spell_progression_family_from(source, usize::from(family));
@@ -16577,6 +17011,7 @@ impl Mc2Simulation {
                         let protected =
                             self.step_level2_player_castle_protection(castle_shift_overlap);
                         if !protected {
+                            self.consume_directional_actor_mailbox(pass, source_slot)?;
                             if let Some((damage, attacker, lethal)) =
                                 self.consume_level2_player_damage()
                             {
@@ -17264,15 +17699,15 @@ impl Mc2Simulation {
                 }
             }
             (ExistingHandler::CastleRoot, SourceRoute::CastleRoot) => {
-                let construction_completion =
-                    self.session
-                        .state
-                        .live
-                        .economy
-                        .castle()
-                        .is_some_and(|castle| {
-                            castle.active && castle.action == 5 && castle.build_state == 2
-                        });
+                let construction_completion = self
+                    .session
+                    .state
+                    .live
+                    .economy
+                    .castle_at(source_slot)
+                    .is_some_and(|castle| {
+                        castle.active && castle.action == 5 && castle.build_state == 2
+                    });
                 let reset_free_slots = self.session.baseline.economy.economy.free_slots.clone();
                 let terrain = &mut self.session.state.live.terrain;
                 let advanced = self.session.state.live.economy.step_castle_action(
@@ -17280,11 +17715,12 @@ impl Mc2Simulation {
                     terrain,
                     &reset_free_slots,
                 );
+                self.session.state.live.sync_castle_player_relations();
                 // Publish the source handler's economy sidecars before
                 // the coarse Castle wrapper, matching the handler-first
                 // ApplyEvents cursor order used by dynamic rows.
                 self.append_new_economy_events(pass, source_slot);
-                if pass_start_castle_root_slot == Some(source_slot) {
+                if pass_start_castle_root_slots.contains(&source_slot) {
                     self.push_dispatch_effect(Mc2DispatchEvent::Castle {
                         pass,
                         source_slot,
@@ -17302,25 +17738,32 @@ impl Mc2Simulation {
                         kind: Level2DynamicArenaKind::CastleRoot,
                     });
                 }
-                if construction_completion
-                    && self
-                        .session
-                        .state
-                        .live
-                        .economy
-                        .castle()
-                        .is_some_and(|castle| castle.action == 4)
-                    && let Some(holder_index) = self
-                        .session
-                        .state
-                        .live
-                        .shared_spells
-                        .holders
-                        .iter()
-                        .chain(self.session.state.live.shared_spells.dynamic_pickups.iter())
-                        .find(|holder| holder.model == CASTLE_SPELL_FAMILY)
-                        .map(|holder| holder.index)
-                {
+                let completion_holder = {
+                    let live = &self.session.state.live;
+                    live.economy
+                        .castle_at(source_slot)
+                        .filter(|castle| castle.action == 4)
+                        .and_then(|castle| {
+                            let player =
+                                live.shared_spells.players.iter().find(|player| {
+                                    player.entity_index == castle.owner_entity_index
+                                })?;
+                            let holder_slot =
+                                player.enabled_spell_holders[usize::from(CASTLE_SPELL_FAMILY)];
+                            live.shared_spells
+                                .pickup(holder_slot)
+                                .filter(|holder| {
+                                    holder_slot != 0
+                                        && holder.active
+                                        && holder.class == 15
+                                        && holder.model == CASTLE_SPELL_FAMILY
+                                        && holder.source_spell_parent_entity_index()
+                                            == castle.owner_entity_index
+                                })
+                                .map(|holder| holder.index)
+                        })
+                };
+                if construction_completion && let Some(holder_index) = completion_holder {
                     // `BeginOfCastleCreation_5FA70` state 2 calls
                     // `sub_5F890(caster, 0)` before leaving action 5;
                     // construction, rather than a timer tick, releases
@@ -17345,6 +17788,50 @@ impl Mc2Simulation {
                     .find(|source| source.source_entity_index == source_slot)
                     .map(|source| source.action)
                     .ok_or_else(|| format!("Dragon source slot {source_slot} is absent"))?;
+                if action == level2_class5::dragon::DRAGON_STAGE_ACTION {
+                    let projectiles = pass_start_class9_slots
+                        .iter()
+                        .filter_map(|&slot| {
+                            let row = self
+                                .session
+                                .state
+                                .live
+                                .economy
+                                .entities
+                                .get(usize::from(slot))?;
+                            (row.active && row.class == 9).then_some(
+                                level2_class5::dragon::DragonProjectileThreat {
+                                    source_slot: slot,
+                                    target: row.source_word_96(),
+                                    life: row.life,
+                                    flags: row.control_flags,
+                                    yaw: row.yaw,
+                                },
+                            )
+                        })
+                        .collect::<Vec<_>>();
+                    let live = &mut self.session.state.live;
+                    let retained = level2_class5::dragon::step_boss_stage_slot(
+                        &mut live.economy,
+                        &mut live.terrain,
+                        &self.session.definition.presentation.particles,
+                        source_slot,
+                        goat_players,
+                        pass_start_class3_slots,
+                        &pass_start_class5_model_slots
+                            [usize::from(level2_class5::dragon::DRAGON_MODEL)],
+                        &projectiles,
+                    )?;
+                    self.append_new_economy_events(pass, source_slot);
+                    if retained {
+                        self.push_dispatch_effect(Mc2DispatchEvent::DynamicArena {
+                            pass,
+                            source_slot,
+                            kind: Level2DynamicArenaKind::AuthoredClass5,
+                        });
+                    }
+                    return Ok(());
+                }
                 let frozen_model0_slots = &pass_start_class5_model_slots
                     [usize::from(level2_class5::dragon::DRAGON_MODEL)];
                 let terrain = &self.session.state.live.terrain;
@@ -17561,8 +18048,18 @@ impl Mc2Simulation {
                     return Ok(());
                 }
                 if action == level2_class5::firefly::FIREFLY_STAGE_ACTION
-                    && self.session.state.live.economy.economy.authored_fireflies()
-                        .iter().any(|state| state.source_entity_index == source_slot && state.stage_var2 == 13)
+                    && self
+                        .session
+                        .state
+                        .live
+                        .economy
+                        .economy
+                        .authored_fireflies()
+                        .iter()
+                        .any(|state| {
+                            state.source_entity_index == source_slot
+                                && matches!(state.stage_var2, 13 | 16 | 17)
+                        })
                 {
                     let live = &mut self.session.state.live;
                     let retained = level2_class5::firefly::step_summoned_stage_slot(
@@ -17570,14 +18067,17 @@ impl Mc2Simulation {
                         source_slot,
                         goat_players,
                         pass_start_class3_slots,
-                        &pass_start_class5_model_slots[usize::from(level2_class5::firefly::FIREFLY_MODEL)],
+                        &pass_start_class5_model_slots
+                            [usize::from(level2_class5::firefly::FIREFLY_MODEL)],
                         &mut live.terrain,
                         &self.session.definition.presentation.particles,
                     )?;
                     self.append_new_economy_events(pass, source_slot);
                     if retained {
                         self.push_dispatch_effect(Mc2DispatchEvent::DynamicArena {
-                            pass, source_slot, kind: Level2DynamicArenaKind::AuthoredClass5,
+                            pass,
+                            source_slot,
+                            kind: Level2DynamicArenaKind::AuthoredClass5,
                         });
                     }
                     return Ok(());
@@ -18024,6 +18524,18 @@ impl Mc2Simulation {
                     self.step_level2_nyphur_banished_action(source_slot);
                     return Ok(());
                 }
+                if !self
+                    .session
+                    .state
+                    .live
+                    .nyphur_dispatcher
+                    .as_ref()
+                    .is_some_and(|dispatcher| dispatcher.common_upkeep.source_slot == source_slot)
+                {
+                    return Err(format!(
+                        "rival source slot {source_slot} has no owner-bound player dispatcher"
+                    ));
+                }
                 let move_speed_flag = self
                     .session
                     .state
@@ -18046,21 +18558,39 @@ impl Mc2Simulation {
                     let source_arena = &mut self.session.state.live.economy;
                     let (entities, economy) =
                         (&mut source_arena.entities, &mut source_arena.economy);
-                    let castle = economy.castle();
+                    let castles = economy
+                        .live_castles()
+                        .filter(|root| {
+                            economy
+                                .castle_for_owner(root.owner_entity_index)
+                                .is_some_and(|bound| {
+                                    bound.source_entity_index == root.source_entity_index
+                                })
+                        })
+                        .copied()
+                        .collect::<Vec<_>>();
                     let castle_children = economy.castle_children().to_vec();
-                    self.session.state.live.nyphur_dispatcher.step_dispatch(
-                        pass,
-                        source_slot,
-                        entities,
-                        economy.spheres_mut(),
-                        castle,
-                        &castle_children,
-                        players,
-                        terrain,
-                        &self.session.definition.presentation,
-                        move_speed_flag,
-                        active_level_color_index,
-                    )
+                    self.session
+                        .state
+                        .live
+                        .nyphur_dispatcher
+                        .as_mut()
+                        .ok_or_else(|| {
+                            format!("rival source slot {source_slot} lost its player dispatcher")
+                        })?
+                        .step_dispatch(
+                            pass,
+                            source_slot,
+                            entities,
+                            economy.spheres_mut(),
+                            &castles,
+                            &castle_children,
+                            players,
+                            terrain,
+                            &self.session.definition.presentation,
+                            move_speed_flag,
+                            active_level_color_index,
+                        )
                 };
                 match dispatch {
                     Ok((_snapshot, trace)) => {
@@ -18440,7 +18970,7 @@ impl Mc2Simulation {
                     model: row.model,
                 }),
         );
-        if let Some(castle) = economy.castle().filter(|row| row.active) {
+        for castle in economy.live_castles() {
             targets.push(campaign_shared_families::Model9DamageTarget {
                 source_slot: castle.source_entity_index,
                 source_id: castle.source_id_entity_index,
@@ -19015,7 +19545,7 @@ impl Mc2Simulation {
                 source.active
                     && source.index == source_slot
                     && source.class == 5
-                    && source.model == 3
+                    && (source.model == 3 || (source.model == 0 && source.action == 232))
             })
             .map(|source| source.action)
             .ok_or_else(|| format!("multipart callback lost source slot {source_slot}"))?;
@@ -19964,7 +20494,7 @@ impl Mc2Simulation {
             pass_start_class5_model_present: [false; 29],
             pass_start_model45_building_selectors: Vec::new(),
             pass_start_castle_auxiliary_membership: Default::default(),
-            pass_start_castle_root_slot: None,
+            pass_start_castle_root_slots: BTreeSet::new(),
             goat_begin_events: BTreeMap::new(),
         };
         run_update_entities(&mut world)
@@ -20122,8 +20652,7 @@ impl Mc2Simulation {
             .live
             .economy
             .economy
-            .castle
-            .filter(|castle| castle.active && castle.owner_entity_index == parent_entity_index)
+            .castle_for_owner(parent_entity_index)
             .map(|castle| castle.mana);
         let source_gate_passed = parent.as_ref().is_some_and(|parent| {
             parent.life >= 0
@@ -20442,12 +20971,14 @@ impl Mc2Simulation {
     }
 
     fn commit_spell_parent_mana_regen(&mut self, parent_entity_index: u16, mana_regen: i32) {
-        self.session
-            .state
-            .live
-            .shared_spells
-            .player_entity
-            .set_mana_regen(mana_regen);
+        if self.session.state.live.shared_spells.player_entity.index == parent_entity_index {
+            self.session
+                .state
+                .live
+                .shared_spells
+                .player_entity
+                .set_mana_regen(mana_regen);
+        }
         for entity in &mut self.session.state.live.shared_spells.player_entities {
             if entity.index == parent_entity_index {
                 entity.set_mana_regen(mana_regen);
@@ -20463,6 +20994,11 @@ impl Mc2Simulation {
             .find(|entity| entity.index == parent_entity_index)
         {
             entity.set_mana_regen(mana_regen);
+            if let Some(dispatcher) = self.session.state.live.nyphur_dispatcher.as_mut()
+                && dispatcher.sync_spell_target_resources(entity)
+            {
+                dispatcher.apply_holder_mana_regen(mana_regen);
+            }
         }
     }
 
@@ -20581,8 +21117,7 @@ impl Mc2Simulation {
             .live
             .economy
             .economy
-            .castle
-            .filter(|castle| castle.active && castle.owner_entity_index == parent_entity_index)
+            .castle_for_owner(parent_entity_index)
             .map(|castle| castle.mana);
         let source_gate_passed = parent.as_ref().is_some_and(|parent| {
             parent.life >= 0
@@ -21567,6 +22102,13 @@ impl Mc2Simulation {
                     && target.life >= 0
                     && target.class == 3
                     && target.model == 2
+                    && self
+                        .session
+                        .state
+                        .live
+                        .economy
+                        .castle_at(target.index)
+                        .is_none()
                     && target.source_id != step.owner_entity_index
                     && overlaps_raw(target)
             })
@@ -21585,23 +22127,31 @@ impl Mc2Simulation {
             }
         }
 
-        if let Some(castle) = self.session.state.live.economy.castle().filter(|castle| {
-            castle.active
-                && castle.life >= 0
-                && castle.source_id_entity_index != step.owner_entity_index
-                && crate::level1_mission::source_entities_overlap(
-                    step.position,
-                    shape.0,
-                    shape.1,
-                    shape.2,
-                    castle.position,
-                    castle.shift_pitch,
-                    castle.shift_yaw,
-                    castle.shift_fov,
-                )
-        }) {
+        let castle_targets = self
+            .session
+            .state
+            .live
+            .economy
+            .live_castles()
+            .filter(|castle| {
+                castle.life >= 0
+                    && castle.source_id_entity_index != step.owner_entity_index
+                    && crate::level1_mission::source_entities_overlap(
+                        step.position,
+                        shape.0,
+                        shape.1,
+                        shape.2,
+                        castle.position,
+                        castle.shift_pitch,
+                        castle.shift_yaw,
+                        castle.shift_fov,
+                    )
+            })
+            .map(|castle| castle.source_entity_index)
+            .collect::<Vec<_>>();
+        for castle_slot in castle_targets {
             let _ = self.session.state.live.economy.submit_damage(
-                castle.source_entity_index,
+                castle_slot,
                 i32::from(step.payload),
                 step.owner_entity_index,
             );
@@ -22471,17 +23021,19 @@ impl Mc2Simulation {
                 "campaign owner color is out of bounds",
             ));
         }
-        Ok(live
-            .economy
-            .economy
-            .step_mana_sphere_slot(source_slot, &live.terrain, &live.economy.entities, |relation| {
+        Ok(live.economy.economy.step_mana_sphere_slot(
+            source_slot,
+            &live.terrain,
+            &live.economy.entities,
+            |relation| {
                 players
                     .iter()
                     .find(|player| relation != 0 && player.entity_index == relation)
                     .map_or(52, |player| {
                         105 + 8 * OFFLINE_COLORS[usize::from(player.player_color_index())]
                     })
-            }))
+            },
+        ))
     }
 
     /// Dispatch one live dynamic row. The source class-10/model-1 burst
@@ -23839,7 +24391,12 @@ impl Mc2Simulation {
                 .to_le_bytes(),
         );
         hasher.update(self.session.state.live.core.runtime.bytes());
-        self.session.state.live.core.runtime.objective_state
+        self.session
+            .state
+            .live
+            .core
+            .runtime
+            .objective_state
             .append_collected_entity_hash(&mut hasher);
         for entity in &self.session.state.live.economy.entities {
             hasher.update(entity.record_bytes());
@@ -25237,17 +25794,30 @@ impl Mc2Simulation {
         if command.opcode == 29 {
             let live = &mut self.session.state.live;
             let slot = usize::from(live.core.runtime.local_player_slot);
-            let valid = live.core.runtime.player_inputs.get(slot).is_some_and(|input| input.opcode == 29)
-                && live.core.players.get_mut(slot)
+            let valid = live
+                .core
+                .runtime
+                .player_inputs
+                .get(slot)
+                .is_some_and(|input| input.opcode == 29)
+                && live
+                    .core
+                    .players
+                    .get_mut(slot)
                     .is_some_and(|player| player.set_banishment_state(0));
             if !valid {
                 self.session.state = state_before;
                 self.session.state.scratch.dispatch_events.clear();
-                self.session.state.scratch.dispatch_events.push(Mc2DispatchEvent::Error {
-                    pass: 0,
-                    source_slot: self.session.state.live.core.state.entity_index,
-                    message: "source action 29 lacks its admitted player input or player state".to_owned(),
-                });
+                self.session
+                    .state
+                    .scratch
+                    .dispatch_events
+                    .push(Mc2DispatchEvent::Error {
+                        pass: 0,
+                        source_slot: self.session.state.live.core.state.entity_index,
+                        message: "source action 29 lacks its admitted player input or player state"
+                            .to_owned(),
+                    });
                 return Vec::new();
             }
             if !live.source_player_result.record_player_event_0x1d(
@@ -25256,11 +25826,16 @@ impl Mc2Simulation {
             ) {
                 self.session.state = state_before;
                 self.session.state.scratch.dispatch_events.clear();
-                self.session.state.scratch.dispatch_events.push(Mc2DispatchEvent::Error {
-                    pass: 0,
-                    source_slot: self.session.state.live.core.state.entity_index,
-                    message: "source action 29 result belongs to another player slot".to_owned(),
-                });
+                self.session
+                    .state
+                    .scratch
+                    .dispatch_events
+                    .push(Mc2DispatchEvent::Error {
+                        pass: 0,
+                        source_slot: self.session.state.live.core.state.entity_index,
+                        message: "source action 29 result belongs to another player slot"
+                            .to_owned(),
+                    });
                 return Vec::new();
             }
             live.core.runtime.player_inputs[slot].opcode = 0;
@@ -25477,9 +26052,20 @@ mod tests {
             let (index, _) = target_stages[0];
             mismatch.session.state.live.core.runtime.stages[index].relation = relation;
             let free_before = mismatch.session.state.live.economy.free_slots.clone();
-            assert!(mismatch.allocate_authored_final_boss_feature(feature).is_err());
+            assert!(
+                mismatch
+                    .allocate_authored_final_boss_feature(feature)
+                    .is_err()
+            );
             assert_eq!(mismatch.session.state.live.economy.free_slots, free_before);
-            assert!(!mismatch.session.state.live.level2_class5_activated.contains(&379));
+            assert!(
+                !mismatch
+                    .session
+                    .state
+                    .live
+                    .level2_class5_activated
+                    .contains(&379)
+            );
         }
 
         let mut matching = seed;
@@ -25499,7 +26085,14 @@ mod tests {
                 },
             );
         }
-        assert!(matching.session.state.live.level2_class5_activated.contains(&379));
+        assert!(
+            matching
+                .session
+                .state
+                .live
+                .level2_class5_activated
+                .contains(&379)
+        );
     }
 
     #[test]
@@ -25744,11 +26337,12 @@ mod tests {
                 field.source_entity_index
             );
             assert_eq!(source.attraction_step, 42);
-            assert!(
-                live.economy
-                    .economy
-                    .step_mana_sphere_slot(sphere, &live.terrain, &live.economy.entities, |_| 0)
-            );
+            assert!(live.economy.economy.step_mana_sphere_slot(
+                sphere,
+                &live.terrain,
+                &live.economy.entities,
+                |_| 0
+            ));
             assert!(
                 live.economy
                     .spheres()
@@ -25765,7 +26359,14 @@ mod tests {
     #[test]
     fn level_four_public_army_cast_schedules_rings_and_real_summoned_creatures() {
         for (tier, model, expected_count, level, package_name, check_expiry) in [
-            (0_u8, 19_u8, 8_usize, 4, "mc-bhq8-level4-collision-v2-cave", false),
+            (
+                0_u8,
+                19_u8,
+                8_usize,
+                4,
+                "mc-bhq8-level4-collision-v2-cave",
+                false,
+            ),
             (1, 25, 4, 4, "mc-bhq8-level4-collision-v2-cave", false),
             (2, 16, 2, 4, "mc-bhq8-level4-collision-v2-cave", false),
             (0, 2, 8, 2, "mc-bhq8-level2-collision-v2-day", true),
@@ -25773,11 +26374,9 @@ mod tests {
             let package = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
                 .join("../../../generated")
                 .join(package_name);
-            let mut campaign = CampaignSession::open(
-                &package,
-                CampaignSelection::ordinary(level).unwrap(),
-            )
-            .unwrap();
+            let mut campaign =
+                CampaignSession::open(&package, CampaignSelection::ordinary(level).unwrap())
+                    .unwrap();
             let session = campaign.simulation_mut();
             let player = session.state.entity_index;
             let mut carried = session
@@ -25806,8 +26405,8 @@ mod tests {
                 holder, 0,
                 "ordinary SetSpell carry constructor installs Army"
             );
-            let army_tier = crate::level_definition::MC2_SOURCE_SUMMON_ARMY_PROPERTIES.tiers
-                [usize::from(tier)];
+            let army_tier =
+                crate::level_definition::MC2_SOURCE_SUMMON_ARMY_PROPERTIES.tiers[usize::from(tier)];
             let position = session.state.position;
             let castle = session
                 .economy_mut()
@@ -25828,7 +26427,9 @@ mod tests {
                         row.set_mana_regen(0);
                     }
                 }
-                live.shared_spells.player_entity.set_mana(army_tier.mana_cost);
+                live.shared_spells
+                    .player_entity
+                    .set_mana(army_tier.mana_cost);
                 live.shared_spells.player_entity.set_mana_regen(0);
                 live.shared_spells.caster.mana = army_tier.mana_cost;
                 live.shared_spells.player_mana = army_tier.mana_cost;
@@ -25840,6 +26441,7 @@ mod tests {
             let mut saw_flyer = false;
             let mut saw_paid_cast = false;
             let mut saw_cooldown = false;
+            let mut saw_recast_rejected = false;
             let mut rings = BTreeSet::new();
             let mut summoned = BTreeSet::new();
             let mut saw_summoned_upkeep = false;
@@ -25847,8 +26449,29 @@ mod tests {
             let mut expired_bees = BTreeSet::new();
             let mut saw_bee_reclaim = false;
             for turn in 0..if check_expiry { 360 } else { 80 } {
+                if turn == 1 {
+                    // Restore an affordable mana balance so the second cast
+                    // is rejected by the active holder, not by low mana.
+                    let live = &mut campaign.simulation_mut().session.state.live;
+                    for row in &mut live.shared_spells.player_entities {
+                        if row.index == player {
+                            row.set_mana(army_tier.mana_cost);
+                            row.set_mana_regen(0);
+                        }
+                    }
+                    live.shared_spells
+                        .player_entity
+                        .set_mana(army_tier.mana_cost);
+                    live.shared_spells.player_entity.set_mana_regen(0);
+                    live.shared_spells.caster.mana = army_tier.mana_cost;
+                    live.shared_spells.player_mana = army_tier.mana_cost;
+                    live.economy.entities[usize::from(player)].set_mana(army_tier.mana_cost);
+                    if let Some(fire) = live.core.context.spell_fire.as_mut() {
+                        fire.caster.mana = army_tier.mana_cost;
+                    }
+                }
                 campaign.step(
-                    if turn == 0 {
+                    if turn <= 1 {
                         PlayerCommand {
                             opcode: 6,
                             argument_1: 19,
@@ -25874,8 +26497,15 @@ mod tests {
                     if row.active && (row.class, row.model, row.action) == (9, 24, 25) {
                         saw_flyer = true;
                         let holder_row = session.shared_spells().pickup(holder).unwrap();
-                        let cooldown = u16::from_le_bytes([holder_row.record[58], holder_row.record[59]]);
-                        saw_cooldown |= cooldown > 0 && cooldown <= army_tier.cooldown;
+                        if turn == 0 {
+                            assert_eq!(holder_row.activation_value, army_tier.cooldown);
+                            saw_cooldown = holder_row.active_value
+                                == (army_tier.cooldown as i16).wrapping_sub(1);
+                        }
+                        if turn == 1 {
+                            saw_recast_rejected = holder_row.active_value
+                                == (army_tier.cooldown as i16).wrapping_sub(2);
+                        }
                         let caster = &session.shared_spells().player_entity;
                         saw_paid_cast |= caster.mana < army_tier.mana_cost || caster.mana_regen < 0;
                     }
@@ -25961,8 +26591,18 @@ mod tests {
                 }
             }
             assert!(saw_flyer, "public cast produces ordinary 9/24/25");
-            assert!(saw_cooldown, "public cast starts the selected tier cooldown");
-            assert!(saw_paid_cast, "public cast debits mana or retains its source mana charge");
+            assert!(
+                saw_cooldown,
+                "public cast starts the selected tier cooldown"
+            );
+            assert!(
+                saw_recast_rejected,
+                "an affordable recast does not reset the active cooldown"
+            );
+            assert!(
+                saw_paid_cast,
+                "public cast debits mana or retains its source mana charge"
+            );
             assert_eq!(
                 rings.len(),
                 expected_count,
@@ -25978,8 +26618,14 @@ mod tests {
                 "summoned creatures reach their actual scheduled lifetime consumer"
             );
             if check_expiry {
-                assert!(!expired_bees.is_empty(), "the real summoned Bee reaches its hidden expiry tail");
-                assert!(saw_bee_reclaim, "the following source boundary reclaims a summoned Bee generation");
+                assert!(
+                    !expired_bees.is_empty(),
+                    "the real summoned Bee reaches its hidden expiry tail"
+                );
+                assert!(
+                    saw_bee_reclaim,
+                    "the following source boundary reclaims a summoned Bee generation"
+                );
             }
             let arena = &campaign.simulation().session.state.live.economy;
             assert!(
@@ -25987,6 +26633,77 @@ mod tests {
                     .iter()
                     .all(|slot| !arena.entities[usize::from(*slot)].active),
                 "normal boundary reclaims expired rings"
+            );
+
+            // The source rejects family 19 while word_0x2e is nonzero and
+            // admits it again after the ordinary holder visits count to zero.
+            for _ in 0..=army_tier.cooldown {
+                if campaign
+                    .simulation()
+                    .shared_spells()
+                    .pickup(holder)
+                    .unwrap()
+                    .active_value
+                    == 0
+                {
+                    break;
+                }
+                campaign.step(PlayerCommand::default(), 0);
+                assert!(
+                    !campaign
+                        .events()
+                        .iter()
+                        .any(|event| matches!(event, Mc2DispatchEvent::Error { .. })),
+                    "waiting for Army cooldown: {:?}",
+                    campaign.events()
+                );
+            }
+            assert_eq!(
+                campaign
+                    .simulation()
+                    .shared_spells()
+                    .pickup(holder)
+                    .unwrap()
+                    .active_value,
+                0
+            );
+            {
+                let live = &mut campaign.simulation_mut().session.state.live;
+                for row in &mut live.shared_spells.player_entities {
+                    if row.index == player {
+                        row.set_mana(army_tier.mana_cost);
+                        row.set_mana_regen(0);
+                    }
+                }
+                live.shared_spells
+                    .player_entity
+                    .set_mana(army_tier.mana_cost);
+                live.shared_spells.player_entity.set_mana_regen(0);
+                live.shared_spells.caster.mana = army_tier.mana_cost;
+                live.shared_spells.player_mana = army_tier.mana_cost;
+                live.economy.entities[usize::from(player)].set_mana(army_tier.mana_cost);
+                if let Some(fire) = live.core.context.spell_fire.as_mut() {
+                    fire.caster.mana = army_tier.mana_cost;
+                }
+            }
+            campaign.step(
+                PlayerCommand {
+                    opcode: 6,
+                    argument_1: 19,
+                    flags: 0x40,
+                    ..PlayerCommand::default()
+                },
+                0,
+            );
+            assert_eq!(
+                campaign
+                    .simulation()
+                    .shared_spells()
+                    .pickup(holder)
+                    .unwrap()
+                    .active_value,
+                (army_tier.cooldown as i16).wrapping_sub(1),
+                "an affordable cast is admitted again after the cooldown"
             );
         }
     }
@@ -26908,8 +27625,8 @@ mod tests {
                     before_live.economy.slot_generation(castle_slot)
                 );
                 assert_eq!(
-                    live.economy.castle.unwrap().mana,
-                    reference.economy.castle.unwrap().mana,
+                    live.economy.castle().unwrap().mana,
+                    reference.economy.castle().unwrap().mana,
                     "recovery does not debit, refill or replace the Castle"
                 );
             }
@@ -27167,7 +27884,7 @@ mod tests {
             compact_spell_bytes.as_slice(),
             "source word159 must not overwrite compact spell bytes"
         );
-        let castle_life = campaign.simulation().economy().castle.unwrap().life;
+        let castle_life = campaign.simulation().economy().castle().unwrap().life;
         let castle_generation = campaign.simulation().economy().slot_generation(castle_slot);
         let events_before = campaign.simulation().economy().events().len();
         for hit in 1..=2 {
@@ -27195,7 +27912,7 @@ mod tests {
             let live = &campaign.simulation().session.state.live;
             assert_eq!(live.player_life, player_life);
             assert_eq!(
-                live.economy.castle.unwrap().life,
+                live.economy.castle().unwrap().life,
                 castle_life - hit * 200,
                 "two contact producers must transfer 200 each, never 200 then 400"
             );
@@ -27232,7 +27949,7 @@ mod tests {
             "the first callback after departure consumes the remaining protected visit"
         );
         assert_eq!(
-            campaign.simulation().economy().castle.unwrap().life,
+            campaign.simulation().economy().castle().unwrap().life,
             castle_life - 400
         );
         campaign
@@ -35063,17 +35780,20 @@ mod tests {
             };
 
             session.step_outer_turn(PlayerCommand::default(), 0);
-            assert!(session.dispatch_events().iter().any(|event| matches!(
-                event,
-                Mc2DispatchEvent::AuthoredGroupActivated {
-                    pass: 0,
-                    source_slot,
-                    group,
-                    authored_indices,
-                } if *source_slot == producer_slot
-                    && *group == TEST_GROUP as u16
-                    && authored_indices.as_ref() == [feature_index]
-            )), "the numeric source switch must publish the test row");
+            assert!(
+                session.dispatch_events().iter().any(|event| matches!(
+                    event,
+                    Mc2DispatchEvent::AuthoredGroupActivated {
+                        pass: 0,
+                        source_slot,
+                        group,
+                        authored_indices,
+                    } if *source_slot == producer_slot
+                        && *group == TEST_GROUP as u16
+                        && authored_indices.as_ref() == [feature_index]
+                )),
+                "the numeric source switch must publish the test row"
+            );
 
             let spawned = session
                 .economy()
@@ -35096,16 +35816,33 @@ mod tests {
             assert_eq!(resident.semantic_kind, semantic_kind);
             let authored_max_life = u32::try_from(resident.max_life)
                 .expect("constructed resident max life is positive");
-            assert!(session.dispatch_events().iter().any(|event| matches!(
-                event,
-                Mc2DispatchEvent::DynamicArena {
-                    pass: 0,
-                    source_slot,
-                    kind: Level2DynamicArenaKind::HouseResident,
-                } if *source_slot == resident_slot
-            )), "the same UpdateEntities pass must run the new resident callback");
-            assert!(session.session.state.live.authored_features_consumed.contains(&feature_index));
-            assert!(session.session.state.live.level2_class5_activated.contains(&feature_index));
+            assert!(
+                session.dispatch_events().iter().any(|event| matches!(
+                    event,
+                    Mc2DispatchEvent::DynamicArena {
+                        pass: 0,
+                        source_slot,
+                        kind: Level2DynamicArenaKind::HouseResident,
+                    } if *source_slot == resident_slot
+                )),
+                "the same UpdateEntities pass must run the new resident callback"
+            );
+            assert!(
+                session
+                    .session
+                    .state
+                    .live
+                    .authored_features_consumed
+                    .contains(&feature_index)
+            );
+            assert!(
+                session
+                    .session
+                    .state
+                    .live
+                    .level2_class5_activated
+                    .contains(&feature_index)
+            );
 
             let phase_before_following_pass = session
                 .economy()
@@ -35115,14 +35852,17 @@ mod tests {
                 .expect("resident remains live after its same-pass callback")
                 .phase;
             session.step_outer_turn(PlayerCommand::default(), 0);
-            assert!(session.dispatch_events().iter().any(|event| matches!(
-                event,
-                Mc2DispatchEvent::DynamicArena {
-                    source_slot,
-                    kind: Level2DynamicArenaKind::HouseResident,
-                    ..
-                } if *source_slot == resident_slot
-            )), "the following numeric pass consumes the live resident again");
+            assert!(
+                session.dispatch_events().iter().any(|event| matches!(
+                    event,
+                    Mc2DispatchEvent::DynamicArena {
+                        source_slot,
+                        kind: Level2DynamicArenaKind::HouseResident,
+                        ..
+                    } if *source_slot == resident_slot
+                )),
+                "the following numeric pass consumes the live resident again"
+            );
             let resident = session
                 .economy()
                 .house_residents()
@@ -35130,13 +35870,16 @@ mod tests {
                 .find(|source| source.source_entity_index == resident_slot)
                 .expect("following pass retains the active resident");
             assert_eq!(resident.phase, phase_before_following_pass.wrapping_add(1));
-            assert!(!session.dispatch_events().iter().any(|event| matches!(
-                event,
-                Mc2DispatchEvent::AuthoredGroupActivated {
-                    group,
-                    ..
-                } if *group == TEST_GROUP as u16
-            )), "the consumed source row cannot publish twice");
+            assert!(
+                !session.dispatch_events().iter().any(|event| matches!(
+                    event,
+                    Mc2DispatchEvent::AuthoredGroupActivated {
+                        group,
+                        ..
+                    } if *group == TEST_GROUP as u16
+                )),
+                "the consumed source row cannot publish twice"
+            );
 
             // The source keeps a free slot's generation stable. It advances
             // when NewEvent allocates that address again, not when cleanup

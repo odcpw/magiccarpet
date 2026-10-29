@@ -166,7 +166,7 @@ impl Target {
     }
 
     fn player(self) -> bool {
-        self.class == 3 && matches!(self.model, 0 | 1)
+        self.class == 3
     }
 }
 
@@ -206,8 +206,12 @@ pub(crate) struct Creature18Effects {
     pub projectile_slots: Vec<u16>,
     pub linked_actions: Vec<(u16, u8)>,
     pub kill_credit: Option<u16>,
+    pub feedback: Option<(u16, u8)>,
+    pub population_decrements: u32,
     pub kill: bool,
     pub route_hide: bool,
+    pub expire: bool,
+    pub summon_expire: bool,
 }
 
 fn source_distance_3d(a: Position, b: Position) -> u32 {
@@ -315,7 +319,11 @@ fn settle(actor: &mut Creature18State, terrain: &SessionTerrain) {
     actor.position.z = ground.wrapping_add(RULES.ground_clearance);
 }
 
-fn move_ground(actor: &mut Creature18State, terrain: &SessionTerrain) {
+fn move_ground(
+    actor: &mut Creature18State,
+    terrain: &SessionTerrain,
+    effects: &mut Creature18Effects,
+) {
     if actor.control_flags & 0x800 != 0 {
         actor.control_flags &= !0x800;
         return;
@@ -338,8 +346,14 @@ fn move_ground(actor: &mut Creature18State, terrain: &SessionTerrain) {
     );
     actor.position = motion.position;
     actor.yaw = motion.yaw;
+    if motion.movement_blocked {
+        actor.control_flags |= 0x40000;
+    } else {
+        actor.control_flags &= !0x40000;
+    }
     if motion.killed {
         actor.life = -1;
+        effects.population_decrements = effects.population_decrements.wrapping_add(1);
     }
 }
 
@@ -399,15 +413,12 @@ fn step_attack(
     }
     match actor.attack_phase {
         0 => {
-            let Some(target) = ctx
-                .target(actor.target)
-                .filter(|target| target.alive() && target.player())
-            else {
+            let Some(target) = ctx.target(actor.target).filter(|target| target.alive()) else {
                 actor.target = 0;
                 request_action(actor, 0, 0);
                 return;
             };
-            turn_toward(actor, target.position, RULES.turn_response);
+            turn_toward(actor, target.position, RULES.turn_limit);
             if hit == 1 {
                 actor.timer = actor.timer.wrapping_sub(47);
                 if actor.timer < 0 {
@@ -431,15 +442,13 @@ fn step_attack(
                 return;
             }
             if actor.phase % RULES.source_scan_period == 0 {
-                let Some(target) = ctx
-                    .target(actor.target)
-                    .filter(|target| target.alive() && target.player())
-                else {
-                    actor.target = 0;
+                let Some(target) = ctx.target(actor.target).filter(|target| target.alive()) else {
                     request_action(actor, 2, 2);
                     return;
                 };
-                turn_toward(actor, target.position, RULES.turn_response);
+                // sub_250B0 uses sub_58350(..., 5, 0x400) while firing;
+                // its third argument is ignored and the fourth is the cap.
+                turn_toward(actor, target.position, 1024);
                 fan(actor, target, effects);
             }
         }
@@ -462,13 +471,17 @@ fn step_attack(
     }
 }
 
-fn step_cooldown(actor: &mut Creature18State, ctx: &Creature18Context<'_>) {
+fn step_cooldown(
+    actor: &mut Creature18State,
+    ctx: &Creature18Context<'_>,
+    effects: &mut Creature18Effects,
+) {
     match source_damage(actor, ctx) {
         2 => actor.action = 148,
         1 => request_action(actor, 0, 1),
         _ => {
             actor.target = 0;
-            move_ground(actor, ctx.terrain);
+            move_ground(actor, ctx.terrain, effects);
             actor.timer = actor.timer.wrapping_sub(1);
             if actor.timer <= 0 {
                 request_action(actor, 0, 0);
@@ -489,16 +502,18 @@ pub(crate) fn step(
             2 => actor.action = 148,
             1 => request_action(actor, 2, 0),
             _ if actor.attack_phase == 1 => {
-                let Some(target) = ctx
-                    .target(actor.target)
-                    .filter(|target| target.alive() && target.player())
-                else {
+                // sub_24E20 leaves the tracking state untouched when its
+                // target word is zero; it does not restart patrol or RNG.
+                if actor.target == 0 {
+                    return Some(effects);
+                }
+                let Some(target) = ctx.target(actor.target).filter(|target| target.alive()) else {
                     actor.target = 0;
                     request_action(actor, 0, 0);
                     return Some(effects);
                 };
                 if source_distance_3d(actor.position, target.position) < RULES.target_range {
-                    turn_toward(actor, target.position, RULES.turn_response);
+                    turn_toward(actor, target.position, RULES.turn_limit);
                     if random(actor) % 49 == 0 {
                         request_action(actor, 2, 0);
                     }
@@ -508,8 +523,8 @@ pub(crate) fn step(
                 }
             }
             _ => {
-                if actor.timer > 0 {
-                    actor.timer = actor.timer.wrapping_sub(1);
+                actor.timer = actor.timer.wrapping_sub(1);
+                if actor.timer != 0 {
                     if actor.proximity != 0
                         && random(actor) & 1 == 0
                         && let Some(target) = nearest_player(actor, ctx)
@@ -517,22 +532,21 @@ pub(crate) fn step(
                         actor.target = target.slot;
                         request_action(actor, 0, 1);
                     }
-                    if actor.timer == 0 && actor.action == 144 {
-                        request_action(actor, 1, 0);
-                    }
                 } else {
                     request_action(actor, 1, 0);
                 }
             }
         },
-        145 => step_cooldown(actor, ctx),
+        145 => step_cooldown(actor, ctx, &mut effects),
         146 => step_attack(actor, ctx, &mut effects),
         147 => request_action(actor, 0, 0),
         148 => prekill(actor, ctx, &mut effects),
         149 => effects.kill = actor.phase & 7 == 0,
         151 => {
             stage::step(actor, ctx, &mut effects);
-            settle(actor, ctx.terrain);
+            if !effects.expire {
+                settle(actor, ctx.terrain);
+            }
             if actor.action == 146 {
                 request_action(actor, 2, 0);
             }

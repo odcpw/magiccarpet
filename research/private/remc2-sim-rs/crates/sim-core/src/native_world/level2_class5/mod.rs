@@ -215,6 +215,14 @@ impl Level2EconomyState {
         max_life_override: Option<i32>,
         terrain: &SessionTerrain,
     ) -> Option<Level2AuthoredClass5Source> {
+        if model == dragon::DRAGON_MODEL {
+            return self.allocate_authored_dragon(
+                authored_index,
+                position,
+                max_life_override.unwrap_or(dragon::DRAGON_LIFE),
+                terrain,
+            );
+        }
         if model == trader::TRADER_MODEL {
             return max_life_override.and_then(|max_life| {
                 self.allocate_authored_trader(authored_index, position, max_life, terrain)

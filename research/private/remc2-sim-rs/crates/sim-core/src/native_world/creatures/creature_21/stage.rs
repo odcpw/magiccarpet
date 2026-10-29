@@ -39,8 +39,15 @@ pub(super) fn base_route(actor: &mut Actor<'_>, ctx: &mut Context<'_>, base: u8)
 
 fn stage_target(actor: &mut Actor<'_>, ctx: &Context<'_>, parent: Target) -> Option<Target> {
     let current = actor.target();
-    if let Some(target) = ctx.target(current).filter(|target| living(*target)) {
+    if let Some(target) = ctx
+        .target(current)
+        .filter(|target| living(*target) && target.life > 0)
+    {
         return Some(target);
+    }
+    actor.set_target(0);
+    if actor.row.phase & 7 != 0 {
+        return None;
     }
     let mut best = None;
     let mut shortest = u32::MAX;
@@ -48,9 +55,9 @@ fn stage_target(actor: &mut Actor<'_>, ctx: &Context<'_>, parent: Target) -> Opt
         .class3
         .iter()
         .filter_map(|slot| ctx.target(*slot))
-        .filter(|target| living(*target) && target.control_flags & 0x20 == 0)
+        .filter(|target| matches!(target.model, 0 | 1) && target.source_id != parent.source_id)
     {
-        let d = super::xy(parent.position, target.position);
+        let d = crate::legacy_sqrt(super::xy(parent.position, target.position));
         if d < shortest {
             shortest = d;
             best = Some(target);
@@ -61,19 +68,67 @@ fn stage_target(actor: &mut Actor<'_>, ctx: &Context<'_>, parent: Target) -> Opt
 }
 
 fn summon_follow(actor: &mut Actor<'_>, ctx: &Context<'_>, target: Target, effects: &mut Effects) {
-    actor
-        .row
-        .set_source_roll(heading_for_positions(actor.row.position, target.position) as i16);
+    let hit = super::consume(actor, ctx, true);
+    if hit == 2 {
+        actor.put(50, 1);
+        return;
+    }
     move_actor(actor, ctx, effects);
-    jump(actor, ctx, effects);
+    if hit == 1 {
+        let attacker = actor.attacker();
+        if attacker != actor.stage_parent()
+            && ctx
+                .target(attacker)
+                .is_none_or(|row| row.class != 5 || row.model != SOURCE_MODEL)
+        {
+            actor.set_target(attacker);
+            actor.set_action(170);
+            effects.feedback = Some((actor.stage_parent(), 19));
+        }
+    } else if actor.row.phase & 7 == 0 {
+        if actor.row.control_flags & 0x40000 == 0 {
+            actor
+                .row
+                .set_source_roll(heading_for_positions(actor.row.position, target.position) as i16);
+            if actor.row.phase & 63 == 0 {
+                let first = super::level2_next_rng16(actor.row.entity_rng);
+                let second = super::level2_next_rng16(first);
+                actor.row.set_entity_rng(second);
+                let sign = 2 * (i32::from(first % 157) / 79) - 1;
+                let roll = (i32::from(actor.row.source_roll())
+                    + i32::from((second & 255) + 85) * sign) as i16
+                    & 2047;
+                actor.row.set_source_roll(roll);
+            }
+        }
+        if let Some(peer) = ctx
+            .model21
+            .iter()
+            .filter_map(|slot| ctx.target(*slot))
+            .find(|peer| {
+                peer.source_id != actor.row.source_id
+                    && (i32::from(actor.row.position.x) - i32::from(peer.position.x)).abs()
+                        < i32::from(actor.row.array_pitch())
+                    && (i32::from(actor.row.position.y) - i32::from(peer.position.y)).abs()
+                        < i32::from(actor.row.array_pitch())
+            })
+        {
+            actor
+                .row
+                .set_source_roll(heading_for_positions(peer.position, actor.row.position) as i16);
+        }
+    }
 }
 
 /// Source sub_1E320; after reaching the target it falls through to the
 /// persistent model21 StageVar16 follow/attack state.
 fn stage17(actor: &mut Actor<'_>, ctx: &Context<'_>, effects: &mut Effects) {
     move_actor(actor, ctx, effects);
+    if actor.row.life < 0 {
+        actor.row.disable_drawing();
+        return;
+    }
     let Some(target) = ctx.target(actor.target()).filter(|target| living(*target)) else {
-        actor.row.set_actual_speed(RULES.attack_ground_speed);
         actor.row.record[77] = 16;
         return;
     };
@@ -89,31 +144,24 @@ fn stage17(actor: &mut Actor<'_>, ctx: &Context<'_>, effects: &mut Effects) {
     }
 }
 
-fn stage16(actor: &mut Actor<'_>, ctx: &Context<'_>, effects: &mut Effects) {
-    match super::consume(actor, ctx, true) {
-        2 => {
-            actor.set_action(172);
-            return;
-        }
-        1 => {
-            actor.set_target(actor.attacker());
-            actor.set_action(170);
-            return;
-        }
-        _ => {}
-    }
+fn summoned(actor: &mut Actor<'_>, ctx: &Context<'_>, effects: &mut Effects) {
     let Some(parent) = ctx
         .target(actor.stage_parent())
         .filter(|parent| living(*parent))
     else {
         actor.row.record[50..52].copy_from_slice(&0_i16.to_le_bytes());
         effects.expire = true;
+        effects.summon_expire = actor.stage_mode() == 13;
         return;
     };
-    let remaining = actor.word(50) as i16;
+    let mut remaining = actor.word(50) as i16;
+    if actor.stage_mode() == 13 {
+        remaining = remaining.wrapping_sub(1);
+        actor.put(50, remaining as u16);
+    }
     if remaining <= 0 {
         effects.expire = true;
-        effects.summon_expire = true;
+        effects.summon_expire = actor.stage_mode() == 13;
         return;
     }
     if let Some(target) = stage_target(actor, ctx, parent) {
@@ -127,15 +175,21 @@ fn stage16(actor: &mut Actor<'_>, ctx: &Context<'_>, effects: &mut Effects) {
         actor.set_target(parent.slot);
         summon_follow(actor, ctx, parent, effects);
         actor.set_target(0);
-        actor.put(50, remaining.wrapping_sub(4) as u16);
+        actor.put(50, (actor.word(50) as i16).wrapping_sub(4) as u16);
     }
 }
 
 pub(super) fn step(actor: &mut Actor<'_>, ctx: &mut Context<'_>, effects: &mut Effects) {
     match actor.stage_mode() {
         17 => stage17(actor, ctx, effects),
-        16 => stage16(actor, ctx, effects),
-        13 | 14 => {
+        13 | 16 => {
+            summoned(actor, ctx, effects);
+            if !effects.expire {
+                actor.row.record[71] = 0;
+                jump(actor, ctx, effects);
+            }
+        }
+        14 => {
             prepare_route(actor, ctx, 168);
             if actor.row.action == 175 {
                 jump(actor, ctx, effects);

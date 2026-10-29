@@ -567,17 +567,7 @@ impl<B: super::GameSessionBackend<Command = sim_session::GameCommand>> super::Ga
             self.player_preferences.assistance.reset();
             self.player_preferences.input_generation = Some(input_generation);
         }
-        let action = command.longitudinal != sim_session::LongitudinalControl::Coast
-            || command.lateral != sim_session::LateralControl::Neutral
-            || command.cast_left
-            || command.cast_right
-            || command.cast_selected
-            || command.select_spell.is_some()
-            || command.abandon_action.is_some()
-            || command.look_yaw != 0
-            || command.look_pitch != 0
-            || command.recenter
-            || command.full_stop;
+        let action = command_has_player_activity(&command);
         // Read the menu state retained by the gameplay backend before this
         // command is dispatched. Client/UI menu state is only an input source.
         let menu_open = self
@@ -609,6 +599,27 @@ impl<B: super::GameSessionBackend<Command = sim_session::GameCommand>> super::Ga
         }
         result
     }
+}
+
+/// Semantic actions are real input even when they do not carry movement or
+/// cast flags. A rejected step rolls the assistance state back in the caller.
+fn command_has_player_activity(command: &sim_session::GameCommand) -> bool {
+    command.longitudinal != sim_session::LongitudinalControl::Coast
+        || command.lateral != sim_session::LateralControl::Neutral
+        || command.cast_left
+        || command.cast_right
+        || command.cast_selected
+        || command.select_spell.is_some()
+        || command.assign_spell.is_some()
+        || command.mark_spell.is_some()
+        || command.cycle_marked_spell.is_some()
+        || command.abandon_action.is_some()
+        || command.recover_player
+        || command.remove_castle_stage
+        || command.look_yaw != 0
+        || command.look_pitch != 0
+        || command.recenter
+        || command.full_stop
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -885,6 +896,64 @@ mod tests {
             assert!(!assist.observe(idle, true, policy));
         }
         assert!(assist.observe(idle, true, policy));
+    }
+
+    #[test]
+    fn spell_menu_commands_reset_idle_assistance() {
+        use crate::game_definition::SemanticId;
+        use sim_session::{
+            GameCommand, MarkedSpellCycle, SpellAssignment, SpellAssignmentHand,
+            SpellCycleDirection, SpellMark, SpellMarkHand,
+        };
+
+        let id = SemanticId::parse("spell.fireball").unwrap();
+        let commands = [
+            GameCommand {
+                assign_spell: Some(SpellAssignment {
+                    spell_id: id.clone(),
+                    tier: 0,
+                    hand: SpellAssignmentHand::Left,
+                }),
+                ..GameCommand::default()
+            },
+            GameCommand {
+                mark_spell: Some(SpellMark {
+                    spell_id: id,
+                    hand: SpellMarkHand::Left,
+                }),
+                ..GameCommand::default()
+            },
+            GameCommand {
+                cycle_marked_spell: Some(MarkedSpellCycle {
+                    hand: SpellAssignmentHand::Left,
+                    direction: SpellCycleDirection::Next,
+                }),
+                ..GameCommand::default()
+            },
+        ];
+        let policy = AssistancePolicy {
+            playing: true,
+            ..AssistancePolicy::default()
+        };
+        for command in commands {
+            let mut assist = FlightAssistance::default();
+            for _ in 0..48 {
+                assert!(!assist.observe(AssistanceInput::default(), true, policy));
+            }
+            assert!(!assist.observe(
+                AssistanceInput {
+                    action: command_has_player_activity(&command),
+                    ..AssistanceInput::default()
+                },
+                true,
+                policy
+            ));
+            for _ in 0..48 {
+                assert!(!assist.observe(AssistanceInput::default(), true, policy));
+            }
+            assert!(assist.observe(AssistanceInput::default(), true, policy));
+        }
+        assert!(!command_has_player_activity(&GameCommand::default()));
     }
 
     #[test]

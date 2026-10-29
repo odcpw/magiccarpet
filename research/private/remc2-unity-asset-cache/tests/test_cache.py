@@ -94,6 +94,42 @@ class InstalledLanguageTests(unittest.TestCase):
 
 
 class EnvironmentMaterialTests(unittest.TestCase):
+    def test_real_secret_environment_audio_binds_complete_selected_banks(self):
+        environment = cache.environment_importer()
+        for source, bank, expected in [(31, 1, (32, "SPIDER.WAV")),
+                                       (34, 0, (49, "TORNADO.WAV"))]:
+            with self.subTest(source=source):
+                root = cache.GENERATED / f"mc-oi68-source{source}-fullbank-v2-20261029"
+                manifest = environment.validate(root)
+                descriptor = json.loads((root / "audio/descriptor.json").read_bytes())
+                self.assertEqual(descriptor["sound"]["bank"], bank)
+                records = descriptor["sound"]["records"]
+                self.assertEqual([row["sound_id"] for row in records], list(range(1, 65)))
+                self.assertEqual(records[expected[0] - 1]["filename"], expected[1])
+                self.assertEqual(manifest["profile"]["internal_level"], source)
+
+        # Rehashing a descriptor cannot conceal an omitted source slot.
+        source = cache.GENERATED / "mc-oi68-source31-fullbank-v2-20261029"
+        with tempfile.TemporaryDirectory(prefix="mc-audio-bank-missing-") as temporary:
+            root = Path(temporary) / "cache"
+            shutil.copytree(source, root)
+            descriptor_path = root / "audio/descriptor.json"
+            descriptor = json.loads(descriptor_path.read_bytes())
+            descriptor["sound"]["records"].pop(31)
+            descriptor["sound"]["record_census_sha256"] = environment.digest(
+                environment.canonical(descriptor["sound"]["records"]))
+            descriptor_path.write_bytes(environment.canonical(descriptor))
+            manifest = json.loads((root / "manifest.json").read_bytes())
+            row = next(row for row in manifest["outputs"] if row["path"] == "audio/descriptor.json")
+            row["sha256"] = environment.digest(descriptor_path.read_bytes())
+            row["bytes"] = descriptor_path.stat().st_size
+            manifest["cache_content_sha256"] = environment.content_identity(manifest["outputs"])
+            manifest.pop("manifest_payload_sha256")
+            manifest["manifest_payload_sha256"] = environment.digest(environment.canonical(manifest))
+            (root / "manifest.json").write_bytes(environment.canonical(manifest))
+            with self.assertRaisesRegex(environment.EnvironmentMaterialError, "membership/order"):
+                environment.validate(root)
+
     def test_real_package_profiles_validate_selected_resources(self):
         environment = cache.environment_importer()
         for level, palette, blocks, sky in [

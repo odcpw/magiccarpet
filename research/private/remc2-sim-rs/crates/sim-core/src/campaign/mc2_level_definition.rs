@@ -194,13 +194,16 @@ impl Mc2LevelDefinition {
             15 => Some(CreatureKind::CastleDefender),
             16 => Some(CreatureKind::Wyvern),
             17 => Some(CreatureKind::Creature17),
+            18 => Some(CreatureKind::Creature18),
             19 => Some(CreatureKind::Firefly),
             20 => Some(CreatureKind::Spider),
+            21 => Some(CreatureKind::Creature21),
             22 => Some(CreatureKind::Creature22),
             23 => Some(CreatureKind::Creature23),
             24 => Some(CreatureKind::Creature24),
             25 => Some(CreatureKind::Cymmerian),
             26 => Some(CreatureKind::Creature26),
+            27 => Some(CreatureKind::Creature27),
             28 => Some(CreatureKind::Creature28),
             _ => None,
         }
@@ -604,6 +607,9 @@ impl Mc2LevelDefinition {
                 (5, 4) => Some(CreatureKind::Archer),
                 (5, 9) => Some(CreatureKind::Skeleton),
                 (5, 10) => Some(CreatureKind::FinalBoss),
+                (5, 18) => Some(CreatureKind::Creature18),
+                (5, 21) => Some(CreatureKind::Creature21),
+                (5, 27) => Some(CreatureKind::Creature27),
                 (5, 12) => Some(CreatureKind::Builder),
                 (5, 13) => Some(CreatureKind::Villager),
                 (5, 14) => Some(CreatureKind::Trader),
@@ -663,6 +669,9 @@ impl Mc2LevelDefinition {
                         | CreatureKind::CastleDefender
                         | CreatureKind::Wyvern
                         | CreatureKind::Creature17
+                        | CreatureKind::Creature18
+                        | CreatureKind::Creature21
+                        | CreatureKind::Creature27
                         | CreatureKind::Creature23
                         | CreatureKind::Creature26
                         | CreatureKind::Creature28
@@ -695,6 +704,15 @@ impl Mc2LevelDefinition {
                         }
                         CreatureKind::Creature17 => {
                             crate::level_definition::CREATURE17_CLASS_PROPERTIES.max_life
+                        }
+                        CreatureKind::Creature18 => {
+                            crate::level_definition::CREATURE18_CLASS_PROPERTIES.max_life
+                        }
+                        CreatureKind::Creature21 => {
+                            crate::level_definition::CREATURE21_CLASS_PROPERTIES.max_life
+                        }
+                        CreatureKind::Creature27 => {
+                            crate::level_definition::CREATURE27_CLASS_PROPERTIES.root_max_life
                         }
                         CreatureKind::Creature23 => {
                             crate::level_definition::CREATURE23_CLASS_PROPERTIES.max_life

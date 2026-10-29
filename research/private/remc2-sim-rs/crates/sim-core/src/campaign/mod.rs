@@ -26,6 +26,7 @@ pub mod schedule;
 #[doc(hidden)]
 pub mod source_arena;
 pub mod source_facts;
+pub(crate) mod source_menus;
 pub(crate) mod source_player_result;
 pub(crate) mod source_setting;
 pub mod spec;

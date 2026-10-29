@@ -1619,7 +1619,7 @@ impl Level2EconomyState {
         {
             return Some((bee.source_class, bee.model, bee.control_flags, bee.mana));
         }
-        if let Some(castle) = self.castle.filter(|row| row.source_entity_index == slot) {
+        if let Some(castle) = self.castle_entry(slot) {
             return Some((3, 2, castle.control_flags, castle.mana));
         }
         imported

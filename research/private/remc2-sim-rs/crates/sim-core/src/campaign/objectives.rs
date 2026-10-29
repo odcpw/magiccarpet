@@ -25,6 +25,21 @@ pub(crate) const fn objective_owner_count(multiplayer: bool, source_player_count
     }
 }
 
+/// `sub_58F00` keeps its achieved flag set as it scans in stage order. It
+/// requests presentation if that flag is set by the current text stage, or
+/// when the pass finishes the level. A later independent objective can finish
+/// without presenting an unchanged current objective.
+pub(crate) fn should_present_after_completion(
+    completed_stages: &[usize],
+    current_text_stage: u8,
+    level_end: bool,
+) -> bool {
+    level_end
+        || completed_stages
+            .iter()
+            .any(|&index| index <= usize::from(current_text_stage))
+}
+
 /// Source objective condition 8 reads the declared player-array extent and
 /// excludes its current owner. Actor life, player colour and records beyond
 /// `NumberOfPlayers` do not participate in this predicate. The caller retains
@@ -161,6 +176,16 @@ mod tests {
     }
 
     #[test]
+    fn presentation_respects_ordered_current_stage_and_level_end() {
+        use super::should_present_after_completion as present;
+
+        assert!(!present(&[3], 1, false));
+        assert!(present(&[1], 1, false));
+        assert!(present(&[0], 1, false));
+        assert!(present(&[3], 1, true));
+    }
+
+    #[test]
     fn condition_eight_uses_only_declared_other_player_flags() {
         use super::all_other_players_banished as achieved;
 
@@ -257,6 +282,79 @@ mod tests {
         );
         assert_eq!(session.runtime().objectives[local_color].text_selector, 1);
         assert_eq!(session.runtime().objectives[rival_color], rival_before);
+    }
+
+    #[test]
+    fn later_rival_completion_does_not_represent_current_reach_objective() {
+        let mut session = level_two_session();
+        let owner = usize::from(session.players()[0].player_color_index());
+        let target = match session.runtime().stages[1].relation {
+            crate::native_world::RuntimeRelation::LiveEntity(index) => index,
+            _ => panic!("real rival objective has a bound player"),
+        };
+        let point = (
+            session.runtime().stages[0].axis_x as u16,
+            session.runtime().stages[0].axis_y as u16,
+        );
+        session.state.position.x = point.0.wrapping_add(0x4000);
+        session.state.position.y = point.1;
+        session
+            .session
+            .state
+            .live
+            .core
+            .runtime
+            .objective_presentation_palette_mod = 3;
+        session.service_campaign_objective_presentation(2, false, false);
+        assert_eq!(session.runtime().objective_presentation_phase, 0);
+        session
+            .players
+            .iter_mut()
+            .find(|player| player.entity_index == target)
+            .unwrap()
+            .banishment_state_0x006 = Some(0);
+
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        assert_eq!(session.runtime().objectives[owner].stage_selectors[0], 1);
+        assert_eq!(session.runtime().objectives[owner].stage_selectors[1], 2);
+        assert_eq!(
+            session.runtime().objective_presentation_phase,
+            0,
+            "a later any-stage completion does not announce the current stage"
+        );
+
+        session.state.position.x = point.0;
+        session.state.position.y = point.1;
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        assert!(
+            session
+                .economy()
+                .authored_model32()
+                .iter()
+                .any(|source| { source.authored_index == 206 && source.fired }),
+            "the real objective switch fires before the objective phase"
+        );
+        assert_eq!(
+            session.runtime().objectives[owner].done,
+            0,
+            "the objective phase consumes the source pause"
+        );
+        assert_eq!(
+            session.runtime().objectives[owner].stage_selectors[0],
+            1,
+            "the source pause skips the reach predicate on this turn"
+        );
+        assert_eq!(session.runtime().objective_presentation_phase, 0);
+
+        session.state.position.x = point.0;
+        session.state.position.y = point.1;
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        assert_eq!(session.runtime().objectives[owner].stage_selectors[0], 2);
+        assert_eq!(
+            session.runtime().objective_presentation_phase,
+            1,
+            "completing the current reach stage requests presentation"
+        );
     }
 
     #[test]

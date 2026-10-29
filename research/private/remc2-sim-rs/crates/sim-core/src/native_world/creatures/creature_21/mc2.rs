@@ -439,6 +439,48 @@ pub(crate) fn step_row(
             slot,
             effects.summon_expire,
         )?;
+        // sub_26470 runs the jump/visual tail after sub_1E580 has
+        // allocated expiry children and hidden the current slot. Allocation
+        // can replace that address, so use its current occupant.
+        let mut current = arena.entities[usize::from(slot)].clone();
+        let mut tail = Effects::default();
+        if matches!(current.record[77], 13 | 16) {
+            current.record[71] = 0;
+            let targets = self::targets(arena);
+            let context = Context {
+                terrain,
+                targets: &targets,
+                class3,
+                model21: &families[usize::from(SOURCE_MODEL)],
+                runtime,
+            };
+            let previous_visual = current.particle_parameter_index;
+            super::jump(&mut Actor { row: &mut current }, &context, &mut tail);
+            if current.action != 175 {
+                let action = current.action;
+                Actor { row: &mut current }.set_action(action);
+            }
+            if let Some(index) = current.particle_parameter_index
+                && previous_visual != Some(index)
+            {
+                crate::world::effects::bind_particle(&mut current, index, particles)?;
+                current.set_source_overlap_half_extents(
+                    RULES.collision_half_width,
+                    RULES.collision_half_width,
+                );
+                put(&mut current, 92, RULES.collision_half_height as u16);
+            }
+            let position = current.position;
+            arena.economy.source_rng.insert(slot, current.entity_rng);
+            arena.entities[usize::from(slot)] = current;
+            crate::world::effects::sync_position(arena, terrain, slot, position, true, false)?;
+            if let Some(position) = tail.water_splash {
+                let _ = materialize_water_splash(arena, terrain, position)?;
+            }
+            if tail.sound.is_some() {
+                effects.sound = tail.sound;
+            }
+        }
     }
     Ok(effects)
 }

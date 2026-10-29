@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using UnityEngine;
 
 namespace MagicCarpet.Native
@@ -16,24 +17,44 @@ namespace MagicCarpet.Native
             selector >= 88 && selector <= 122 || selector == 149 || selector == 150 ||
             selector >= 161 && selector <= 256;
 
-        // Original MSPR artwork is indexed by family, while grid positions
-        // use spellIndex_D94FF's different order.
-        private static int Family(string id) => id switch {
-            "spell.fireball" => 0, "spell.possession" => 1, "spell.castle" => 2,
-            "spell.speed" => 3, "spell.morph" => 4, "spell.heal" => 5,
-            "spell.shield" => 6, "spell.lightning" => 7, "spell.rebound" => 8,
-            "spell.meteor" => 9, "spell.teleport" => 10,
-            "spell.invisibility" => 11, "spell.beyond_sight" => 12,
-            "spell.steal_mana" => 13, "spell.duel" => 14, "spell.tremor" => 15,
-            "spell.crater" => 16, "spell.earthquake" => 17, "spell.volcano" => 18,
-            "spell.summon_army" => 19, "spell.gravity_well" => 20,
-            "spell.whirlwind" => 21, "spell.fools_mana" => 22,
-            "spell.magic_mine" => 23, "spell.alliance" => 24,
-            "spell.cave_in" => 25,
-            _ => throw new InvalidOperationException("unbound source spell artwork: " + id)
-        };
+        // Only selectors from the retained source MSPR spell banks may be
+        // passed to the bitmap cache. A missing or malformed binding leaves
+        // the cell unavailable instead of aborting the gameplay GUI.
+        internal static bool HasArtwork(EngineSessionTransport.SpellObservation spell)
+        {
+            var art = spell?.menu_artwork;
+            if (art == null || art.grid_icon < 97 || art.grid_icon > 122 ||
+                art.tier_icons == null || art.tier_icons.Length != 3) return false;
+            foreach (var icon in art.tier_icons)
+                if (icon < 179 || icon > 256) return false;
+            return true;
+        }
 
         internal void Close() { choice = null; }
+
+        // A drag can span simulation turns. Keep the choice tied to the live
+        // acquired holder and slot, not the observation from the initial click.
+        internal static EngineSessionTransport.SpellObservation CurrentChoice(
+            EngineSessionTransport.SpellObservation selected,
+            EngineSessionTransport.SpellObservation[] spells) =>
+            selected == null || spells == null ? null : Array.Find(spells,
+                row => row != null && row.acquired && HasArtwork(row) && row.id == selected.id &&
+                    row.menu_slot == selected.menu_slot);
+
+        internal static bool HasRequiredBitmaps(EngineSessionTransport.SpellObservation[] spells,
+            Func<int, bool> available)
+        {
+            foreach (var selector in new[] { 88, 89, 90, 149, 150, 161, 163, 164, 165, 166, 167 })
+                if (!available(selector)) return false;
+            foreach (var spell in spells)
+            {
+                if (spell == null || !spell.acquired || !HasArtwork(spell)) continue;
+                if (!available(spell.menu_artwork.grid_icon)) return false;
+                foreach (var icon in spell.menu_artwork.tier_icons)
+                    if (!available(icon)) return false;
+            }
+            return true;
+        }
 
         internal EngineSessionTransport.SpellAssignment Draw(
             EngineSessionTransport.CampaignSnapshotValue snapshot,
@@ -43,7 +64,22 @@ namespace MagicCarpet.Native
             out EngineSessionTransport.SpellMark mark)
         {
             mark = null;
-            if (snapshot?.player_spells == null) return null;
+            if (snapshot?.player_spells == null) { Close(); return null; }
+            bool Available(int selector)
+            {
+                try
+                {
+                    var extent = size(selector);
+                    return extent.x > 0 && extent.y > 0 && bitmap(selector) != null;
+                }
+                catch (KeyNotFoundException) { return false; }
+            }
+            if (!HasRequiredBitmaps(snapshot.player_spells, Available)) { Close(); return null; }
+            if (choice != null)
+            {
+                choice = CurrentChoice(choice, snapshot.player_spells);
+                if (choice != null) tier = Mathf.Clamp(tier, 0, choice.unlocked_tier);
+            }
             const int columns = 13, edge = 8, panelWidth = 48, panelHeight = 36, top = 408;
             var scale = Mathf.Min(Screen.width / 640f, Screen.height / 480f);
             var view = new Rect((Screen.width - 640 * scale) / 2, (Screen.height - 480 * scale) / 2, 640 * scale, 480 * scale);
@@ -60,10 +96,11 @@ namespace MagicCarpet.Native
             {
                 var x = edge + slot % columns * panelWidth;
                 var y = top + slot / columns * panelHeight;
-                var spell = Array.Find(snapshot.player_spells, row => row.menu_slot == slot && row.acquired);
+                var spell = Array.Find(snapshot.player_spells, row => row != null &&
+                    row.menu_slot == slot && row.acquired && HasArtwork(row));
                 Sprite(89, x, y);
                 if (spell == null) continue;
-                Sprite(97 + Family(spell.id), x, y);
+                Sprite(spell.menu_artwork.grid_icon, x, y);
                 if (spell.marked_hand == "left") Sprite(149, x, y);
                 if (spell.marked_hand == "right") Sprite(150, x + panelWidth - size(149).x, y);
                 if (new Rect(x, y, panelWidth, panelHeight).Contains(pointer))
@@ -89,7 +126,7 @@ namespace MagicCarpet.Native
                     Sprite(value > choice.unlocked_tier ? 163 : 161, x, y);
                     if (value > choice.unlocked_tier) continue;
                     Sprite(165 + value, x + 6, y + 10);
-                    Sprite(179 + Family(choice.id) * 3 + value, x + 18, y + 6);
+                    Sprite(choice.menu_artwork.tier_icons[value], x + 18, y + 6);
                     if (value == tier) Sprite(164, x, y);
                 }
                 if (Event.current.type == EventType.MouseUp && Event.current.button == button)
@@ -102,7 +139,8 @@ namespace MagicCarpet.Native
             }
             else if (hovered >= 0 && Event.current.type == EventType.MouseDown && Event.current.button <= 1)
             {
-                var spell = Array.Find(snapshot.player_spells, row => row.menu_slot == hovered && row.acquired);
+                var spell = Array.Find(snapshot.player_spells, row => row != null &&
+                    row.menu_slot == hovered && row.acquired && HasArtwork(row));
                 if (markHeld)
                 {
                     var hand = Event.current.button == 0 ? "left" : "right";

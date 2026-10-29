@@ -28,62 +28,62 @@ fn imported(arena: &SourceArena, handle: SourceEntityHandle) -> Option<EntitySna
 
 /// `sub_2A660`: transfer a head's real damage mailbox to the root, apply the
 /// source's 76-point cap to that head, and consume the one-shot mailbox.
-pub(crate) fn consume_head_damage(arena: &mut SourceArena, chain: &Chain) -> Result<usize, String> {
-    if arena.slot_generation(chain.root.source_slot) != chain.root.generation {
+fn consume_head_damage(
+    arena: &mut SourceArena,
+    root_handle: SourceEntityHandle,
+    head_handle: SourceEntityHandle,
+) -> Result<(), String> {
+    if arena.slot_generation(root_handle.source_slot) != root_handle.generation {
         return Err(format!(
             "model27 root {} changed generation",
-            chain.root.source_slot
+            root_handle.source_slot
         ));
     }
-    let mut transferred = 0;
-    for head_handle in chain.heads {
-        if arena.slot_generation(head_handle.source_slot) != head_handle.generation {
-            return Err(format!(
-                "model27 head {} changed generation",
-                head_handle.source_slot
-            ));
-        }
-        let Some(head) = arena.entities.get(usize::from(head_handle.source_slot)) else {
-            return Err(format!(
-                "model27 head {} is outside the arena",
-                head_handle.source_slot
-            ));
-        };
-        if !head.active || head.class != 5 || head.model != SOURCE_MODEL {
-            return Err(format!(
-                "model27 head {} lost its source row",
-                head_handle.source_slot
-            ));
-        }
-        let mut head = head.clone();
-        let damage_word = word(&head, 102);
-        if damage_word == 0 {
-            continue;
-        }
-        let damage = i32::from_le_bytes(
-            head.record[98..102]
-                .try_into()
-                .expect("fixed entity record contains model27 damage word"),
-        );
-        let killer = damage_word;
-        let root_slot = chain.root.source_slot;
-        let root = arena
-            .entities
-            .get_mut(usize::from(root_slot))
-            .filter(|root| root.active && root.class == 5 && root.model == SOURCE_MODEL)
-            .ok_or_else(|| format!("model27 root {root_slot} lost its source row"))?;
-        put_dword(root, 98, damage);
-        put_word(root, 102, killer);
-        head.set_life(head.life.wrapping_sub(damage.min(76)));
-        head.record[102..104].fill(0);
-        put_word(&mut head, 42, killer);
-        if head.life < 0 {
-            head.record[74] = 6;
-        }
-        arena.entities[usize::from(head_handle.source_slot)] = head;
-        transferred += 1;
+    if arena.slot_generation(head_handle.source_slot) != head_handle.generation {
+        return Err(format!(
+            "model27 head {} changed generation",
+            head_handle.source_slot
+        ));
     }
-    Ok(transferred)
+    let Some(head) = arena.entities.get(usize::from(head_handle.source_slot)) else {
+        return Err(format!(
+            "model27 head {} is outside the arena",
+            head_handle.source_slot
+        ));
+    };
+    if !head.active || head.class != 5 || head.model != SOURCE_MODEL {
+        return Err(format!(
+            "model27 head {} lost its source row",
+            head_handle.source_slot
+        ));
+    }
+    let mut head = head.clone();
+    let damage_word = word(&head, 102);
+    if damage_word == 0 {
+        return Ok(());
+    }
+    let damage = i32::from_le_bytes(
+        head.record[98..102]
+            .try_into()
+            .expect("fixed entity record contains model27 damage word"),
+    );
+    let killer = damage_word;
+    let root_slot = root_handle.source_slot;
+    let root = arena
+        .entities
+        .get_mut(usize::from(root_slot))
+        .filter(|root| root.active && root.class == 5 && root.model == SOURCE_MODEL)
+        .ok_or_else(|| format!("model27 root {root_slot} lost its source row"))?;
+    put_dword(root, 98, damage);
+    put_word(root, 102, killer);
+    head.set_life(head.life.wrapping_sub(damage.min(76)));
+    head.record[102..104].fill(0);
+    put_word(&mut head, 42, killer);
+    if head.life < 0 {
+        head.record[74] = 6;
+    }
+    arena.entities[usize::from(head_handle.source_slot)] = head;
+    Ok(())
 }
 
 /// The root/part generation identity returned to the existing class-9 source
@@ -109,6 +109,7 @@ pub(crate) struct ProjectileIntent {
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(crate) struct CombatEffects {
     pub projectiles: Vec<ProjectileIntent>,
+    pub projectile_slots: Vec<u16>,
     pub sounds: Vec<(u16, u8)>,
 }
 
@@ -139,7 +140,7 @@ fn root_candidate_blocked(position: Position, terrain: &SessionTerrain) -> bool 
 /// heading search and descriptor-limited yaw correction. Model27 itself is
 /// rejected on Cave maps, so water remains admissible under descriptor97's
 /// all-material mask; the terrain slope and cave hooks still gate movement.
-fn step_root_motion(
+pub(super) fn step_root_motion(
     arena: &mut SourceArena,
     terrain: &mut SessionTerrain,
     root: SourceEntityHandle,
@@ -154,8 +155,8 @@ fn step_root_motion(
     } else {
         flags &= !1;
     }
-    if flags & 0x0008_0000 != 0 {
-        flags &= !0x0008_0000;
+    if flags & 0x0000_0800 != 0 {
+        flags &= !0x0000_0800;
         row.set_control_flags(flags);
         row.set_source_action(216);
         row.set_source_dword_10(0);
@@ -325,6 +326,12 @@ fn live_class3(arena: &SourceArena, slot: u16) -> Option<SourceEntityHandle> {
         .flatten()
 }
 
+fn live_target(arena: &SourceArena, slot: u16) -> Option<SourceEntityHandle> {
+    let handle = arena.handle(slot)?;
+    let row = imported(arena, handle)?;
+    (slot != 0 && row.life >= 0 && !row.drawing_disabled()).then_some(handle)
+}
+
 fn choose_target(
     arena: &SourceArena,
     origin: Position,
@@ -450,7 +457,7 @@ fn step_head_steering(head: &mut EntitySnapshot, terrain: &SessionTerrain) {
     }
 }
 
-fn move_attached_head(head: &mut EntitySnapshot, root: &EntitySnapshot) {
+pub(super) fn move_attached_head(head: &mut EntitySnapshot, root: &EntitySnapshot) {
     if head.actual_speed == 0 {
         return;
     }
@@ -526,7 +533,7 @@ pub(crate) fn step_root_action(
     }
 
     let target_slot = word(&arena.entities[usize::from(root_slot)], 154);
-    let Some(target_handle) = live_class3(arena, target_slot) else {
+    let Some(target_handle) = live_target(arena, target_slot) else {
         let root_row = &mut arena.entities[usize::from(root_slot)];
         root_row.set_source_action(217);
         put_word(root_row, 154, 0);
@@ -596,6 +603,7 @@ pub(crate) fn set_root_visual(
 pub(crate) fn step_heads(
     arena: &mut SourceArena,
     terrain: &mut SessionTerrain,
+    particles: &[crate::native_world::ParticleParameter],
     allocation: &Allocation,
     chain: &Chain,
     class3: &[u16],
@@ -603,15 +611,12 @@ pub(crate) fn step_heads(
     attack_cone: u16,
     setting_30: u16,
 ) -> Result<CombatEffects, String> {
-    consume_head_damage(arena, chain)?;
     let root_row = imported(arena, allocation.root)
         .ok_or_else(|| "model27 combat lost its root generation".to_owned())?;
-    let root_target = if root_row.action == 218 {
-        live_class3(arena, word(&root_row, 154))
-    } else {
-        None
-    };
+    let root_target = word(&root_row, 154);
     let mut effects = CombatEffects::default();
+    // sub_29A90 keeps this temporary across the whole linked-head loop.
+    let mut shared_roll = 0x2b_u8;
 
     for (head_index, head_handle) in chain.heads.iter().copied().enumerate() {
         if arena.slot_generation(head_handle.source_slot) != head_handle.generation {
@@ -621,6 +626,12 @@ pub(crate) fn step_heads(
             ));
         }
         let head_slot = head_handle.source_slot;
+        // sub_29A90 increments every head before selecting its state branch;
+        // sub_2A660 is called only for the initial states 0 through 5.
+        let initial_state = arena.entities[usize::from(head_slot)].record[74];
+        if initial_state <= 5 {
+            consume_head_damage(arena, allocation.root, head_handle)?;
+        }
         let mut head = arena
             .entities
             .get(usize::from(head_slot))
@@ -628,34 +639,31 @@ pub(crate) fn step_heads(
             .cloned()
             .ok_or_else(|| format!("model27 head {head_slot} lost its source row"))?;
 
-        let initial_state = head.record[74];
+        head.set_phase(head.record[66].wrapping_add(1));
         let mut state1_roll = None;
         if initial_state <= 5 {
-            head.record[66] = head.record[66].wrapping_add(1);
             let rng = crate::native_world::level2_next_rng16(head.entity_rng);
             head.set_entity_rng(rng);
             head.record[71] = (rng % 20) as u8;
             head.set_position(multipart::pose_head(&root_row, head_index));
-            if initial_state == 1 {
+            if head.record[74] == 1 {
                 let rng = crate::native_world::level2_next_rng16(head.entity_rng);
                 head.set_entity_rng(rng);
                 let target_roll = (rng & 7) as u8;
+                shared_roll = target_roll;
                 state1_roll = Some(target_roll);
                 let attacker = word(&head, 42);
-                let attacker_target = (attacker != 0)
-                    .then(|| live_class3(arena, attacker))
-                    .flatten();
-                if target_roll < 4 {
-                    if let Some(attacker) = attacker_target {
-                        put_word(&mut head, 154, attacker.source_slot);
+                if attacker != 0 {
+                    if target_roll < 4 {
+                        put_word(&mut head, 154, attacker);
                         head.record[74] = 2;
                         put_word(&mut head, 42, 0);
                         let growth = word(&head, 58).saturating_add(22).min(68);
                         put_word(&mut head, 58, growth);
-                    } else if root_target.is_some() && head.record[66] & 7 == 0 {
-                        put_word(&mut head, 154, word(&root_row, 154));
-                        head.record[74] = 2;
                     }
+                } else if target_roll < 4 && root_target != 0 && head.record[66] & 7 == 0 {
+                    put_word(&mut head, 154, root_target);
+                    head.record[74] = 2;
                 }
             }
         }
@@ -669,7 +677,7 @@ pub(crate) fn step_heads(
                 put_word(&mut head, 58, 0);
                 put_word(&mut head, 136, 16);
                 current_state = 1;
-                state1_roll = Some(7); // Initial source sentinel selects retreat.
+                state1_roll = Some(shared_roll);
             }
             2 => {
                 head.record[74] = 3;
@@ -748,12 +756,12 @@ pub(crate) fn step_heads(
             current_state = 5;
         }
 
-        let dispatched_state = current_state;
+        let mut pending_fire = None;
         match current_state {
             1 => {}
             3 => {
                 let target_slot = word(&head, 154);
-                let target_handle = live_class3(arena, target_slot);
+                let target_handle = live_target(arena, target_slot);
                 if let Some(target_handle) = target_handle {
                     let target_row = imported(arena, target_handle)
                         .ok_or_else(|| "model27 head target changed generation".to_owned())?;
@@ -775,28 +783,10 @@ pub(crate) fn step_heads(
                             head.record[72] = 3;
                             put_word(&mut head, 48, 3);
                             head.set_source_dword_10(4);
-                            fire_head(
-                                arena,
-                                allocation,
-                                head_handle,
-                                target_handle,
-                                &mut head,
-                                true,
-                                setting_30,
-                                &mut effects,
-                            )?;
+                            pending_fire = Some((target_handle, true));
                         }
                         3 => {
-                            fire_head(
-                                arena,
-                                allocation,
-                                head_handle,
-                                target_handle,
-                                &mut head,
-                                false,
-                                setting_30,
-                                &mut effects,
-                            )?;
+                            pending_fire = Some((target_handle, false));
                             let timer = head.source_dword_10().saturating_sub(1);
                             head.set_source_dword_10(timer);
                             if timer == 0 {
@@ -855,47 +845,25 @@ pub(crate) fn step_heads(
             },
             7 => {
                 head.set_position(multipart::pose_head(&root_row, head_index));
+                let mut wobble_yaw = false;
                 match head.record[72] {
                     0 if head.actual_speed == 0 => {
                         head.record[72] = 1;
                         put_word(&mut head, 48, 1);
                         let (yaw_offset, pitch_offset) = multipart::head_angles(head_index);
-                        put_word(&mut head, 136, (-16_i16) as u16);
                         head.set_source_roll(yaw_offset);
                         head.set_fov(pitch_offset);
-                        head.set_yaw(root_row.yaw.wrapping_add(yaw_offset));
-                        head.set_pitch(root_row.pitch.wrapping_add(pitch_offset));
                     }
-                    1 if head.actual_speed == -192 => {
-                        head.record[72] = 2;
-                        head.set_source_dword_10(2);
-                    }
-                    2 => {
-                        let timer = head.source_dword_10().saturating_sub(1);
-                        head.set_source_dword_10(timer);
-                        if timer == 0 {
-                            put_word(&mut head, 48, 4);
-                            head.record[72] = 6;
-                            head.set_source_dword_10(1);
-                        }
-                    }
-                    5 => {
-                        let timer = head.source_dword_10().saturating_sub(1);
-                        head.set_source_dword_10(timer);
-                        if timer <= 4 {
-                            head.record[74] = 0;
-                            head.set_source_dword_10(4);
-                        }
-                    }
-                    6 => {
-                        effects.sounds.push((allocation.root.source_slot, 17));
-                        let timer = head.source_dword_10().wrapping_add(1);
-                        head.set_source_dword_10(timer);
-                        if timer >= 4 {
-                            head.record[72] = 5;
+                    1 => {
+                        wobble_yaw = true;
+                        if head.actual_speed == 192 {
+                            head.record[72] = 7;
+                            put_word(&mut head, 48, 5);
+                            head.set_source_dword_10(8);
                         }
                     }
                     7 => {
+                        wobble_yaw = true;
                         let timer = head.source_dword_10().saturating_sub(1);
                         head.set_source_dword_10(timer);
                         if timer == 0 {
@@ -931,6 +899,15 @@ pub(crate) fn step_heads(
                     }
                     _ => {}
                 }
+                if wobble_yaw {
+                    let (yaw_offset, _) = multipart::head_angles(head_index);
+                    let wobble = if head.record[66] & 1 != 0 { -204 } else { 204 };
+                    head.set_yaw(root_row.yaw.wrapping_add(yaw_offset).wrapping_add(wobble));
+                }
+                // The state-7 branch runs these once before the final-state
+                // switch; that switch only poses bodies for states 6 and 7.
+                step_head_steering(&mut head, terrain);
+                move_attached_head(&mut head, &root_row);
             }
             8 => {
                 let root = &mut arena.entities[usize::from(allocation.root.source_slot)];
@@ -1010,13 +987,47 @@ pub(crate) fn step_heads(
         if matches!(final_state, 11..=12) {
             head.set_position(multipart::pose_head(&root_row, head_index));
         }
-        if matches!(final_state, 0..=5 | 11..=12) || dispatched_state == 7 {
+        if matches!(final_state, 0..=5) {
             step_head_steering(&mut head, terrain);
+        }
+        if matches!(final_state, 0..=5 | 11..=12) {
             move_attached_head(&mut head, &root_row);
         }
         let position = head.position;
         arena.entities[usize::from(head_slot)] = head;
         crate::world::effects::sync_position(arena, terrain, head_slot, position, true, false)?;
+        multipart::pose_bodies(arena, terrain, chain, Some(head_index))?;
+        if let Some((target, choose_variant)) = pending_fire {
+            let mut head = arena.entities[usize::from(head_slot)].clone();
+            let before = effects.projectiles.len();
+            fire_head(
+                arena,
+                allocation,
+                head_handle,
+                target,
+                &mut head,
+                choose_variant,
+                setting_30,
+                &mut effects,
+            )?;
+            arena.entities[usize::from(head_slot)] = head;
+            if effects.projectiles.len() > before {
+                let shot = effects.projectiles.pop().expect("a shot was just emitted");
+                if let Some(slot) = super::mc2::launch_projectile(arena, terrain, particles, shot)?
+                {
+                    effects.projectile_slots.push(slot);
+                    let sound_owner = if slot == head_slot {
+                        slot
+                    } else {
+                        arena.entities[usize::from(head_slot)].source_id
+                    };
+                    effects
+                        .sounds
+                        .push((sound_owner, if shot.selector == 0 { 15 } else { 23 }));
+                }
+            }
+            effects.sounds.push((allocation.root.source_slot, 17));
+        }
     }
     Ok(effects)
 }
@@ -1076,12 +1087,7 @@ fn fire_head(
             head,
             selector,
         )?);
-        effects.sounds.push((
-            allocation.root.source_slot,
-            if selector == 0 { 15 } else { 23 },
-        ));
     }
-    effects.sounds.push((allocation.root.source_slot, 17));
     Ok(())
 }
 
@@ -1121,15 +1127,7 @@ pub(crate) fn prekill(
 pub(crate) struct DeathOutcome {
     pub mana_sphere_ids: Vec<u32>,
     pub credited_killer: Option<u16>,
-    pub secondary_source_effect: Option<SourceEffectIntent>,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct SourceEffectIntent {
-    pub source_type: u8,
-    pub source_subtype: u8,
-    pub position: Position,
-    pub owner_source_id: u16,
+    pub secondary_source_effect_slot: Option<u16>,
 }
 
 /// `sub_298D0`: transform the dying root to a mana sphere using source's
@@ -1140,7 +1138,39 @@ pub(crate) fn kill(
     terrain: &mut SessionTerrain,
     root: SourceEntityHandle,
 ) -> Result<DeathOutcome, String> {
-    let chain = multipart::read_chain(arena, root)?;
+    let bindings = std::collections::BTreeMap::new();
+    let family_root = if let Some(parent) = arena.model27_part_root(root) {
+        parent
+    } else {
+        arena
+            .imported_creature_runtime_identity(root.source_slot, &bindings)
+            .filter(|identity| {
+                identity.handle == root
+                    && identity.kind == crate::level_definition::CreatureKind::Creature27
+            })
+            .map(|identity| identity.handle)
+            .ok_or_else(|| {
+                format!(
+                    "model27 death slot {} lost its generation-bound family",
+                    root.source_slot
+                )
+            })?
+    };
+    let mut suffix = vec![root];
+    let mut next = word(&arena.entities[usize::from(root.source_slot)], 56);
+    while next != 0 {
+        let Some(part) = arena
+            .handle(next)
+            .filter(|part| arena.model27_part_root(*part) == Some(family_root))
+        else {
+            break;
+        };
+        if suffix.contains(&part) {
+            return Err(format!("model27 death chain cycles at {next}"));
+        }
+        suffix.push(part);
+        next = word(&arena.entities[usize::from(next)], 56);
+    }
     let row = imported(arena, root)
         .ok_or_else(|| format!("model27 root {} changed generation", root.source_slot))?;
     if row.action != 221 {
@@ -1166,16 +1196,23 @@ pub(crate) fn kill(
         .get(usize::from(killer))
         .filter(|target| killer != 0 && target.active && target.class == 3)
         .map(|target| target.index);
-    let secondary_source_effect = (row.record[18] & 0x10 == 0).then_some(SourceEffectIntent {
-        source_type: 10,
-        source_subtype: 1,
-        position: row.position,
-        owner_source_id: row.source_id,
-    });
-    multipart::hide_chain(arena, &chain);
+    let secondary_source_effect_slot = if row.record[18] & 0x10 == 0 {
+        arena.economy.spawn_death_burst_from_death_with_id(
+            root.source_slot,
+            row.source_id,
+            row.position,
+        )
+    } else {
+        None
+    };
+    for part in suffix {
+        if arena.slot_generation(part.source_slot) == part.generation {
+            arena.entities[usize::from(part.source_slot)].disable_drawing();
+        }
+    }
     Ok(DeathOutcome {
         mana_sphere_ids: sphere_ids,
         credited_killer,
-        secondary_source_effect,
+        secondary_source_effect_slot,
     })
 }

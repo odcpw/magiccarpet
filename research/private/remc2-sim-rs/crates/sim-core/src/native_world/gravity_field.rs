@@ -28,11 +28,7 @@ impl super::Level2EconomyState {
     /// sub_3A090 and sub_396D0 change the Castle's capture bit in the same
     /// carrier that its ordinary callback and projection subsequently read.
     pub(crate) fn set_gravity_castle_capture(&mut self, slot: u16, captured: bool) -> bool {
-        let Some(castle) = self
-            .castle
-            .as_mut()
-            .filter(|castle| castle.active && castle.source_entity_index == slot)
-        else {
+        let Some(castle) = self.castle_at_mut(slot) else {
             return false;
         };
         if captured {
@@ -194,6 +190,126 @@ fn commit_house_destruction(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn gravity_shrink_uses_horizontal_distance_at_the_terrain_boundary() {
+        let mut session = super::super::tests::level_two_campaign_session();
+        let live = &mut session.session.state.live;
+        live.terrain.disaster_parts().0.ground_heights.fill(64);
+        let position = Position {
+            x: 0x80ff,
+            y: 0x8000,
+            z: 200,
+        };
+        let slot = gravity::construct(&mut live.economy, &mut live.terrain, position, 0, 1)
+            .unwrap()
+            .unwrap();
+        let source = &mut live.economy.entities[usize::from(slot)];
+        source.set_source_action(gravity::ACTION_SHRINK);
+        source.set_life(0);
+        source.record[74] = 1;
+        source.set_source_dword_10(16);
+        let mut expected_rng = source.entity_rng;
+        // sub_396D0 draws exactly once per tile with XY distance < 3840.
+        // The boundary tile (0x72, 0x80) is 3839 away in XY; adding the
+        // source altitude would incorrectly omit it and other edge tiles.
+        for y in 0x71_u16..=0x8e {
+            for x in 0x72_u16..=0x8f {
+                let dx = i32::from((x << 8).wrapping_sub(position.x) as i16);
+                let dy = i32::from((y << 8).wrapping_sub(position.y) as i16);
+                if dx * dx + dy * dy < 3840 * 3840 {
+                    expected_rng = expected_rng.wrapping_mul(9_377).wrapping_add(9_439);
+                }
+            }
+        }
+
+        let outcome = gravity::step(&mut live.economy, slot, &mut live.terrain);
+        assert!(outcome.terrain_mutated);
+        assert_eq!(
+            live.economy.entities[usize::from(slot)].entity_rng,
+            expected_rng
+        );
+        let center = super::super::terrain_index(0x80, 0x80);
+        let outside = super::super::terrain_index(0x72, 0x81);
+        assert_ne!(live.terrain.ground_heights()[center], 64);
+        assert_eq!(live.terrain.ground_heights()[outside], 64);
+    }
+
+    #[test]
+    fn gravity_captures_and_releases_the_overlapping_rival_castle() {
+        let mut session = super::super::tests::level_two_campaign_session();
+        let live = &mut session.session.state.live;
+        let owner = live.core.state.entity_index;
+        let rival_owner = live
+            .core
+            .players
+            .iter()
+            .find(|player| player.entity_index != 0 && player.entity_index != owner)
+            .expect("campaign has a rival player record")
+            .entity_index;
+        let existing_local = live
+            .economy
+            .economy
+            .live_castles()
+            .find(|castle| castle.owner_entity_index == owner)
+            .map(|c| c.source_entity_index);
+        let local = existing_local.unwrap_or_else(|| {
+            live.economy
+                .economy
+                .build_castle(live.core.state.position, owner, &live.terrain)
+                .expect("local Castle")
+        });
+        let local_position = live.economy.economy.castle_at(local).unwrap().position;
+        let rival_position = Position {
+            x: local_position.x.wrapping_add(0x6000),
+            ..local_position
+        };
+        let rival = live
+            .economy
+            .economy
+            .build_castle(rival_position, rival_owner, &live.terrain)
+            .expect("second owner's Castle");
+        let rival_position = live.economy.economy.castle_at(rival).unwrap().position;
+        let well = gravity::construct(
+            &mut live.economy,
+            &mut live.terrain,
+            rival_position,
+            750,
+            120,
+        )
+        .unwrap()
+        .unwrap();
+        let source = &mut live.economy.entities[usize::from(well)];
+        source.source_id = owner;
+        source.record[30..32].copy_from_slice(&owner.to_le_bytes());
+        source.set_source_action(gravity::ACTION_SHRINK);
+        source.record[74] = 0;
+        gravity::step(&mut live.economy, well, &mut live.terrain);
+
+        let rival_state = live.economy.economy.castle_at(rival).unwrap();
+        assert_eq!(
+            (
+                rival_state.pending_damage,
+                rival_state.pending_attacker_entity_index
+            ),
+            (750, owner)
+        );
+        assert_ne!(rival_state.control_flags & 0x0010_0000, 0);
+        let local_state = live.economy.economy.castle_at(local).unwrap();
+        assert_eq!(local_state.control_flags & 0x0010_0000, 0);
+        assert_eq!(local_state.pending_damage, 0);
+
+        live.economy.entities[usize::from(well)].record[74] = 2;
+        gravity::step(&mut live.economy, well, &mut live.terrain);
+        assert_eq!(
+            live.economy.economy.castle_at(rival).unwrap().control_flags & 0x0010_0000,
+            0
+        );
+        assert_eq!(
+            &live.economy.entities[usize::from(rival)].record[42..44],
+            &[0, 0]
+        );
+    }
 
     #[test]
     fn gravity_destruction_reaches_the_live_house_carrier() {
@@ -423,13 +539,7 @@ fn pull_actors(context: &mut Context<'_>, slot: u16) -> Result<(), String> {
         };
         actor_motion.actor.position = motion.actor.position;
         actor_motion.actor.flags = motion.actor.control_flags;
-        if let Some(castle) = context
-            .arena
-            .economy
-            .castle
-            .as_mut()
-            .filter(|castle| castle.active && castle.source_entity_index == target_slot)
-        {
+        if let Some(castle) = context.arena.economy.castle_at_mut(target_slot) {
             // Model2 fails pull admission but still reaches action74 LABEL25.
             castle.control_flags = motion.actor.control_flags;
         }

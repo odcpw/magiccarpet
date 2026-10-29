@@ -3881,8 +3881,11 @@ impl RuntimeSnapshot {
         replacement_entity_slot: u16,
     ) -> usize {
         let mut replaced = 0;
-        for stage_index in 0..self.stages.len() {
-            let is_open_target = self.objectives.iter().any(|objective| {
+        // Campaign sessions are single-player: sub_59760 visits only source
+        // objective owner 0, and only stages below stageIndex. Retained rival
+        // rows and inactive stage suffixes must not retarget a live objective.
+        for stage_index in 0..usize::from(self.stage_index).min(self.stages.len()) {
+            let is_open_target = self.objectives.iter().take(1).any(|objective| {
                 objective.is_level_end == 0
                     && objective.stage_selectors.get(stage_index) == Some(&1)
             });
@@ -4129,7 +4132,8 @@ impl RuntimeSnapshot {
         source_slot: u16,
     ) -> usize {
         let mut bound = 0;
-        for (stage_index, stage) in self.stages.iter_mut().enumerate() {
+        let stage_count = usize::from(self.stage_index).min(self.stages.len());
+        for (stage_index, stage) in self.stages.iter_mut().take(stage_count).enumerate() {
             if !matches!(stage.kind, 1 | 2 | 4 | 6)
                 || stage.relation != RuntimeRelation::AuthoredFeature(authored_index)
             {
@@ -4305,6 +4309,7 @@ mod target_replacement_tests {
                 },
             ],
         );
+        runtime.stage_index = 5;
 
         assert_eq!(runtime.bind_authored_stage_entity(100, 41), 1);
         assert_eq!(runtime.bytes[198], 2);
@@ -4312,17 +4317,56 @@ mod target_replacement_tests {
             u32::from_le_bytes(runtime.bytes[202..206].try_into().unwrap()),
             42
         );
-        assert_eq!(runtime.replace_open_type2_target(41, 73), 1);
+        // Both first stages are open type-2 bindings to slot 41. Source
+        // sub_59760 visits each eligible stage, not only the first match.
+        assert_eq!(runtime.replace_open_type2_target(41, 73), 2);
         assert_eq!(runtime.stages[0].relation, RuntimeRelation::LiveEntity(73));
         assert_eq!(
             u32::from_le_bytes(runtime.bytes[202..206].try_into().unwrap()),
             74
         );
         assert_eq!(runtime.bytes[198], 2);
-        assert_eq!(runtime.stages[1].relation, RuntimeRelation::LiveEntity(41));
+        assert_eq!(runtime.stages[1].relation, RuntimeRelation::LiveEntity(73));
+        assert_eq!(runtime.bytes[212], 2);
+        assert_eq!(
+            u32::from_le_bytes(runtime.bytes[216..220].try_into().unwrap()),
+            74
+        );
         assert_eq!(runtime.stages[2].relation, RuntimeRelation::LiveEntity(41));
         assert_eq!(runtime.stages[3].relation, RuntimeRelation::LiveEntity(41));
         assert_eq!(runtime.stages[4].relation, RuntimeRelation::LiveEntity(42));
+    }
+
+    #[test]
+    fn binding_and_conversion_ignore_inactive_stages_and_rival_objective_rows() {
+        let stage = RuntimeStage {
+            kind: 2,
+            flags: 0,
+            axis_x: 0,
+            axis_y: 0,
+            relation: RuntimeRelation::AuthoredFeature(100),
+        };
+        let objective = RuntimeObjective {
+            is_level_end: 0,
+            text_selector: 0,
+            done: 0,
+            stage_selectors: [1; 8],
+        };
+        let mut runtime = runtime(vec![stage.clone(), stage], vec![objective, objective]);
+        runtime.stage_index = 1;
+        assert_eq!(runtime.bind_authored_stage_entity(100, 41), 1);
+        assert_eq!(
+            runtime.stages[1].relation,
+            RuntimeRelation::AuthoredFeature(100)
+        );
+
+        // A rival's still-open row cannot retarget a completed local stage.
+        runtime.objectives[0].stage_selectors[0] = 2;
+        assert_eq!(runtime.replace_open_type2_target(41, 73), 0);
+        assert_eq!(runtime.stages[0].relation, RuntimeRelation::LiveEntity(41));
+        runtime.objectives[0].stage_selectors[0] = 1;
+        assert_eq!(runtime.replace_open_type2_target(41, 73), 1);
+        assert_eq!(runtime.stages[0].relation, RuntimeRelation::LiveEntity(73));
     }
 }
 
@@ -4830,6 +4874,7 @@ impl NativeWorldInspection {
             castle_stage_footprints,
             self.runtime.constructor_counters(),
         )?;
+        economy.bind_local_castle_owner(local_player.entity_index);
         let mut shared_spells = Level2SharedSpellResetSession::from_campaign_parts(
             &self.entities,
             &self.players,
@@ -4961,6 +5006,7 @@ impl NativeWorldInspection {
             self.level2_castle_stage_footprints.clone(),
             self.runtime.constructor_counters(),
         )?;
+        economy.bind_local_castle_owner(self.players[0].entity_index);
         let wizard = mission
             .wizard_map_settings()
             .first()

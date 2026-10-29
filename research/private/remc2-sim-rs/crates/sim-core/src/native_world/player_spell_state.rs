@@ -65,11 +65,7 @@ impl Level2SharedSpellResetSession {
 
     pub(super) fn castle_stage_for_owner(economy: &Level2EconomyState, owner: u16) -> Option<i32> {
         economy
-            .castle()
-            .filter(|castle| {
-                castle.owner_entity_index == owner
-                    && economy.player_castle_entity_index() == castle.source_entity_index
-            })
+            .castle_for_owner(owner)
             .map(|castle| i32::from(castle.level))
     }
 
@@ -138,6 +134,38 @@ fn castle_mana_cost(base: i32, tier: u8, stage: Option<i32>, destroyed: bool) ->
 }
 
 impl Mc2LiveState {
+    /// Project only generation-validated Castle links into the compact A4
+    /// records read by player and rival spell consumers.
+    pub(crate) fn sync_castle_player_relations(&mut self) {
+        let economy = &self.economy.economy;
+        let entities = &self.economy.entities;
+        for player in self
+            .core
+            .players
+            .iter_mut()
+            .chain(self.shared_spells.players.iter_mut())
+            .chain(std::iter::once(&mut self.shared_spells.local_player))
+        {
+            let linked_slot = economy
+                .castle_for_owner(player.entity_index)
+                .map(|castle| castle.source_entity_index);
+            // Ordinary packages can already contain a prebuilt Castle.
+            // Preserve its real imported relation until the Castle owner
+            // adopts that source carrier; dynamic roots never use a raw row.
+            let imported_slot = i16::from_le_bytes([player.record[42], player.record[43]]);
+            let imported = u16::try_from(imported_slot).ok().filter(|slot| {
+                *slot != 0
+                    && entities.get(usize::from(*slot)).is_some_and(|row| {
+                        row.active
+                            && (row.class, row.model) == (3, 2)
+                            && row.source_id == player.entity_index
+                    })
+            });
+            let slot = linked_slot.or(imported).unwrap_or(0);
+            player.record[42..44].copy_from_slice(&slot.to_le_bytes());
+        }
+    }
+
     pub(crate) fn source_spell_profile(
         &self,
         family: u8,
@@ -152,11 +180,18 @@ impl Mc2LiveState {
                         .players
                         .iter()
                         .find(|player| player.entity_index == owner)?;
-                    let slot = u16::from_le_bytes([player.record[42], player.record[43]]);
+                    let slot =
+                        u16::try_from(i16::from_le_bytes([player.record[42], player.record[43]]))
+                            .ok()?;
                     self.economy
                         .entities
                         .get(usize::from(slot))
-                        .filter(|row| slot != 0 && row.active)
+                        .filter(|row| {
+                            slot != 0
+                                && row.active
+                                && (row.class, row.model) == (3, 2)
+                                && row.source_id == owner
+                        })
                         .map(EntitySnapshot::source_dword_10)
                 });
         self.shared_spells
@@ -252,11 +287,7 @@ impl Mc2LiveState {
     /// destruction; this command only makes its source life negative.
     pub(crate) fn request_castle_stage_removal(&mut self) {
         let owner = self.core.state.entity_index;
-        let Some(castle) = self.economy.castle().filter(|castle| {
-            castle.active
-                && castle.owner_entity_index == owner
-                && self.economy.player_castle_entity_index() == castle.source_entity_index
-        }) else {
+        let Some(castle) = self.economy.castle_for_owner(owner).copied() else {
             return;
         };
         if castle.level == 1 {
@@ -264,8 +295,7 @@ impl Mc2LiveState {
         }
         self.economy
             .economy
-            .castle
-            .as_mut()
+            .castle_at_mut(castle.source_entity_index)
             .expect("validated owned Castle")
             .life = -1;
         self.economy.entities[usize::from(castle.source_entity_index)].set_life(-1);

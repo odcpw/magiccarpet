@@ -1,4 +1,4 @@
-//! Raw descriptor-campaign callbacks for the class-5/model-3 multipart family.
+//! Raw descriptor-campaign callbacks for Worm roots and shared Dragon/Worm limbs.
 //!
 //! This module deliberately mutates the imported [`EntitySnapshot`] records in
 //! place.  It does not allocate a parallel creature, rebuild reset state, or
@@ -967,10 +967,14 @@ fn validate_carrier(
     entity: RawEntityView,
     expected_action: u8,
 ) -> Result<(), MultipartCallbackError> {
+    // Source action232 calls sub_1B6B0 for both Dragon and Worm segments.
+    // The root callbacks below remain specific to the Worm's model3.
+    let accepted_model = entity.model == MULTIPART_MODEL
+        || (expected_action == MULTIPART_CHILD_ACTION && entity.model == 0);
     if entity.slot == 0
         || !entity.active
         || entity.class != MULTIPART_CLASS
-        || entity.model != MULTIPART_MODEL
+        || !accepted_model
         || entity.action != expected_action
     {
         return Err(MultipartCallbackError::UnexpectedCarrier {
@@ -1356,6 +1360,43 @@ mod tests {
         (0..count)
             .map(|slot| entity(slot, 0, 0, 0, Position { x: 0, y: 0, z: 0 }))
             .collect()
+    }
+
+    #[test]
+    fn action232_accepts_dragon_limbs_without_admitting_other_models_or_dragon_roots() {
+        let mut entities = arena(3);
+        entities[1] = entity(
+            1,
+            5,
+            0,
+            1,
+            Position {
+                x: 700,
+                y: 800,
+                z: 90,
+            },
+        );
+        entities[1].set_yaw(777);
+        entities[2] = entity(2, 5, 0, 232, Position { x: 1, y: 2, z: 3 });
+        write_u16(&mut entities[2], 54, 1);
+        entities[2].set_phase(0);
+        let step = step_raw_multipart_action232(&mut entities, 2).unwrap();
+        assert!(step.followed_predecessor);
+        assert_eq!(
+            (entities[2].position, entities[2].yaw),
+            (entities[1].position, 777)
+        );
+
+        entities[2].model = 27;
+        assert!(matches!(
+            step_raw_multipart_action232(&mut entities, 2),
+            Err(MultipartCallbackError::UnexpectedCarrier { model: 27, .. })
+        ));
+        entities[1].set_source_action(25);
+        assert!(matches!(
+            step_raw_multipart_action25(&mut entities, 1, &FlatWorld),
+            Err(MultipartCallbackError::UnexpectedCarrier { model: 0, .. })
+        ));
     }
 
     #[test]

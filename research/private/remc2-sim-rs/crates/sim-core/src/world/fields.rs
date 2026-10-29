@@ -42,6 +42,9 @@ pub(crate) struct State {
     pub(crate) authored_model22: Vec<wind::Wind>,
     pub(crate) model22_spawned_children: Vec<wind::Segment>,
     pub(crate) palette: palette::Palette,
+    /// Raw source projections published for spell-created Wind. The parent
+    /// slot distinguishes a root from its linked segments at reclamation.
+    wind_projections: std::collections::BTreeMap<u16, (u32, u16)>,
 }
 
 /// Ordinary spell delivery uses the same wind root/segment authority as
@@ -68,9 +71,65 @@ pub(crate) fn construct_spell_wind(
     }) {
         let (slot, position) = (row.index, row.position);
         arena.entities[usize::from(slot)] = row;
+        let generation = arena.economy.slot_generation(slot);
+        arena
+            .economy
+            .fields
+            .wind_projections
+            .insert(slot, (generation, root.source_entity_index));
         crate::world::effects::sync_position(arena, terrain, slot, position, true, false)?;
     }
     Ok(Some(root.source_entity_index))
+}
+
+/// Retire only raw projections of the hidden Wind incarnation, immediately
+/// before the typed arena reclaims it at the next UpdateEntities boundary.
+/// A reused slot is never retired on behalf of an older field.
+pub(crate) fn retire_hidden_wind_projections(
+    arena: &mut crate::campaign::source_arena::SourceArena,
+) {
+    let entries: Vec<_> = arena
+        .economy
+        .fields
+        .wind_projections
+        .iter()
+        .map(|(&slot, &(generation, parent))| (slot, generation, parent))
+        .collect();
+    for (slot, generation, parent) in entries {
+        let same_generation = arena.economy.slot_generation(slot) == generation;
+        let root = slot == parent;
+        let hidden = if root {
+            arena
+                .economy
+                .fields
+                .authored_model22
+                .iter()
+                .find(|wind| wind.source_entity_index == slot)
+                .map(|wind| wind.control_flags & 0x400 != 0 || !wind.active)
+        } else {
+            arena
+                .economy
+                .fields
+                .model22_spawned_children
+                .iter()
+                .find(|child| {
+                    child.source_entity_index == slot && child.parent_entity_index == parent
+                })
+                .map(|child| !child.active)
+        };
+        if !same_generation || hidden.is_none() {
+            arena.economy.fields.wind_projections.remove(&slot);
+            continue;
+        }
+        if hidden == Some(true) {
+            let row = &mut arena.entities[usize::from(slot)];
+            let model = if root { 22 } else { 75 };
+            if (row.class, row.model) == (10, model) {
+                row.reclaim_source_row();
+            }
+            arena.economy.fields.wind_projections.remove(&slot);
+        }
+    }
 }
 
 /// Commit the shared projectile's post-constructor writes, and its caller's
@@ -97,6 +156,19 @@ pub(crate) fn sync_wind_impact(arena: &mut crate::campaign::source_arena::Source
 }
 
 impl State {
+    pub(crate) fn hash_wind_projections(&self, hasher: &mut sha2::Sha256) {
+        use sha2::Digest;
+        if self.wind_projections.is_empty() {
+            return;
+        }
+        hasher.update(b"wind-projections-v1");
+        for (&slot, &(generation, parent)) in &self.wind_projections {
+            hasher.update(slot.to_le_bytes());
+            hasher.update(generation.to_le_bytes());
+            hasher.update(parent.to_le_bytes());
+        }
+    }
+
     /// Live draw tuples borrow the same root/segment state as the scheduler.
     pub(crate) fn sprite_sources(
         &self,

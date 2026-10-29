@@ -64,6 +64,12 @@ impl SourcePlayerResult {
         self.result_word
     }
 
+    /// An ordinary action-29 result exits through the ordinary menu path,
+    /// never through the secret-frame consumer.
+    pub(crate) const fn is_ordinary_banishment_for(&self, source_player_slot: u16) -> bool {
+        self.source_player_slot == source_player_slot && self.result_word == PLAYER_EVENT_1D_RESULT
+    }
+
     /// Match only the exact secret result for the same source player. The
     /// guarded campaign consumer must additionally validate the active secret
     /// frame and runtime/session generation before returning from it.
@@ -86,11 +92,14 @@ mod tests {
         assert_eq!(ordinary.raw_word(), 0);
         assert!(ordinary.record_player_event_0x1d(3, SECRET_RESULT_LEVEL_THRESHOLD));
         assert_eq!(ordinary.raw_word(), PLAYER_EVENT_1D_RESULT);
+        assert!(ordinary.is_ordinary_banishment_for(3));
+        assert!(!ordinary.is_ordinary_banishment_for(4));
         assert!(!ordinary.is_secret_banishment_for(3));
 
         let mut secret = SourcePlayerResult::source_level_start(3);
         assert!(secret.record_player_event_0x1d(3, SECRET_RESULT_LEVEL_THRESHOLD + 1));
         assert_eq!(secret.raw_word(), SECRET_BANISHMENT_RESULT);
+        assert!(!secret.is_ordinary_banishment_for(3));
         assert!(secret.is_secret_banishment_for(3));
         assert!(secret.is_secret_banishment_for(3), "query does not consume");
         assert!(!secret.is_secret_banishment_for(4));
@@ -115,5 +124,71 @@ mod tests {
         let next_source_session = SourcePlayerResult::source_level_start(1);
         assert_eq!(next_source_session.raw_word(), 0);
         assert_eq!(source_session.raw_word(), SECRET_BANISHMENT_RESULT);
+    }
+
+    #[test]
+    fn secret_package_menu_commands_produce_the_secret_result_for_the_live_player() {
+        use crate::{
+            campaign::backend::{Mc2CampaignAdapter, Mc2CampaignInputs, load_mc2_campaign},
+            game_definition::default_catalog,
+            game_session::GameSession,
+        };
+        use sim_session::{AbandonAction, GameCommand};
+        use std::{path::Path, sync::Arc};
+
+        // This opens a real secret package directly to exercise its caller.
+        // It does not claim an earned portal entry or campaign return.
+        let package = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../generated/mc-paj2-source-secret-31-campaign-package");
+        let definition =
+            Arc::new(load_mc2_campaign(&package, &default_catalog().unwrap()).unwrap());
+        let mut session = GameSession::open(
+            &Mc2CampaignAdapter,
+            definition,
+            7131,
+            Mc2CampaignInputs::new(&package),
+        )
+        .unwrap();
+        let stale = session.identity().guard();
+        let command = |action| GameCommand {
+            abandon_action: Some(action),
+            ..GameCommand::default()
+        };
+        let wrong = session
+            .step(stale, command(AbandonAction::ConfirmAbandon))
+            .unwrap();
+        assert!(!wrong.value.source_menu_admission.unwrap().admitted);
+        assert!(
+            !session
+                .backend()
+                .compatibility_campaign()
+                .simulation()
+                .secret_banishment_result()
+        );
+        let before = session.snapshot();
+        assert!(
+            session
+                .step(stale, command(AbandonAction::OpenAbandonConfirmation))
+                .is_err()
+        );
+        assert_eq!(session.snapshot(), before);
+        let opened = session
+            .step(
+                session.identity().guard(),
+                command(AbandonAction::OpenAbandonConfirmation),
+            )
+            .unwrap();
+        assert!(opened.value.source_menu_admission.unwrap().admitted);
+        let confirmed = session
+            .step(
+                session.identity().guard(),
+                command(AbandonAction::ConfirmAbandon),
+            )
+            .unwrap();
+        assert!(confirmed.value.source_menu_admission.unwrap().admitted);
+        let simulation = session.backend().compatibility_campaign().simulation();
+        assert!(simulation.secret_banishment_result());
+        assert!(!simulation.ordinary_banishment_result());
+        assert!(!confirmed.value.return_to_title_requested);
     }
 }

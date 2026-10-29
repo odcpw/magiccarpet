@@ -91,6 +91,53 @@ pub const CYMMERIAN_CLASS_PROPERTIES: CymmerianClassProperties = CymmerianClassP
     split_target_half_angle: 1024,
 };
 
+/// Multipart creature construction and separate root/head targeting rules.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct Creature27ClassProperties {
+    pub roots_require_free_slots: usize,
+    pub head_count: usize,
+    pub body_parts_per_head: usize,
+    pub root_minimum_speed: i16,
+    pub root_maximum_speed: i16,
+    pub root_initial_speed: i16,
+    pub root_max_life: i32,
+    pub root_initial_life: i32,
+    pub root_initial_mana: i32,
+    pub root_initial_source_cadence: u8,
+    pub root_turn_limit: i16,
+    pub head_initial_speed: i16,
+    pub head_base_life: i32,
+    pub head_life_per_index: i32,
+    pub body_spacing: i16,
+    pub root_target_range: u16,
+    pub root_target_half_angle: u16,
+    pub head_target_range: u16,
+    pub head_target_half_angle: u16,
+}
+
+/// Pinned sub_4D000 and descriptor rows 97 and 103.
+pub const CREATURE27_CLASS_PROPERTIES: Creature27ClassProperties = Creature27ClassProperties {
+    roots_require_free_slots: 51,
+    head_count: 5,
+    body_parts_per_head: 9,
+    root_minimum_speed: 64,
+    root_maximum_speed: 0,
+    root_initial_speed: 30,
+    root_max_life: 36_000,
+    root_initial_life: 1_000_000,
+    root_initial_mana: 20_000,
+    root_initial_source_cadence: 17,
+    root_turn_limit: 0x400,
+    head_initial_speed: 16,
+    head_base_life: 920,
+    head_life_per_index: 460,
+    body_spacing: 96,
+    root_target_range: 4608,
+    root_target_half_angle: 170,
+    head_target_range: 5120,
+    head_target_half_angle: 682,
+};
+
 /// Amphibious creature construction, acquisition and its two body forms.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct Creature28ClassProperties {

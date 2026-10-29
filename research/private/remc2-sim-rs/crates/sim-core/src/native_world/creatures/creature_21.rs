@@ -136,6 +136,7 @@ pub(crate) struct Effects {
     pub water_splash: Option<Position>,
     pub sound: Option<u8>,
     pub kill_credit: Option<u16>,
+    pub feedback: Option<(u16, u8)>,
     pub prekill: bool,
     pub population_decrements: u32,
     pub kill: bool,
@@ -417,6 +418,7 @@ fn jump(actor: &mut Actor<'_>, ctx: &Context<'_>, effects: &mut Effects) {
     if hold_movement {
         actor.row.set_control_flags(actor.row.control_flags | 0x800);
     }
+    actor.row.set_position(actor.row.position);
     let visual = visuals(actor);
     if actor.row.particle_parameter_index != Some(visual) {
         actor.row.particle_parameter_index = Some(visual);

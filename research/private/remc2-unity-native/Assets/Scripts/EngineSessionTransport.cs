@@ -137,10 +137,18 @@ namespace MagicCarpet.Native
             public sbyte tier;
             public byte unlocked_tier;
             public byte menu_slot;
+            public SpellMenuArtwork menu_artwork;
             public int mana_cost;
             public string hand;
             public string availability;
             public string marked_hand;
+        }
+
+        [Serializable]
+        internal sealed class SpellMenuArtwork
+        {
+            public ushort grid_icon;
+            public ushort[] tier_icons;
         }
 
         [Serializable]
@@ -176,6 +184,7 @@ namespace MagicCarpet.Native
             public Motion player_motion;
             public PlayerVitals player_vitals;
             public SourceMenuAdmission source_menu_admission;
+            public bool return_to_title_requested;
             public SourceScoreboard source_scoreboard;
             public SpellObservation[] player_spells;
             public ushort player_immobilized_ticks;
@@ -193,6 +202,8 @@ namespace MagicCarpet.Native
             public string action;
             public bool admitted;
             public bool map_open;
+            public bool spells_open;
+            public bool player_information_open;
             public string tick;
         }
 

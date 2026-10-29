@@ -91,17 +91,12 @@ fn prepare_row(
     row.record[30..32].copy_from_slice(&root_slot.to_le_bytes());
     row.record[67] = ENTITY_CLASS;
     row.record[68] = SOURCE_MODEL;
-    row.record[69] = 3;
     row.byte_3b = part_index;
-    row.byte_3c = 1;
-    row.font_type_index = 64;
     row.record[SOURCE_PART_INDEX] = part_index;
     row.set_source_action(action);
     if let Some(phase) = phase {
         row.set_phase(phase);
     }
-    row.record[60] = 1;
-    row.record[61] = 64;
     put_word(&mut row, SOURCE_OWNER, root_slot);
     row.parameter_relation = descriptor;
     if let Some(descriptor) = descriptor {
@@ -125,7 +120,7 @@ pub(crate) fn initialize_root(
         seed,
         slot,
         5,
-        PROPERTIES.initial_action,
+        super::ACTION_BASE + 1,
         position,
         Some(phase),
         ROOT_PARTICLE,
@@ -142,6 +137,8 @@ pub(crate) fn initialize_root(
     root.set_max_life(PROPERTIES.root_max_life);
     root.set_life(PROPERTIES.root_initial_life);
     root.set_mana(PROPERTIES.root_initial_mana);
+    root.record[69] = 3;
+    root.record[60] = 1;
     root.set_source_dword_10(i32::try_from(slot % 100).expect("slot modulo 100 fits i32"));
     // sub_2AC50 enables the source creature and sets shift pitch/roll.
     root.set_control_flags(root.control_flags | 0x8000_0000);
@@ -205,12 +202,14 @@ pub(crate) fn initialize_head(
     let rng = crate::native_world::level2_next_rng16(rng);
     head.set_fov((rng & 0x07ff) as i16);
     head.set_actual_speed(PROPERTIES.head_initial_speed);
+    put_word(&mut head, 136, PROPERTIES.head_initial_speed as u16);
     head.set_life(
         PROPERTIES
             .head_base_life
-            .wrapping_add(PROPERTIES.head_life_per_index * (i32::from(head_index) + 1)),
+            .wrapping_add(PROPERTIES.head_life_per_index * (i32::from(head_index) * 10 + 1)),
     );
     head.set_max_life(head.life);
+    head.record[60] = 1;
     head.set_control_flags(head.control_flags | 0xa000_0000);
     arena.economy.source_rng.insert(slot, head.entity_rng);
     arena.entities[usize::from(slot)] = head;
@@ -472,6 +471,7 @@ pub(crate) fn pose_bodies(
     arena: &mut SourceArena,
     terrain: &mut SessionTerrain,
     chain: &Chain,
+    only_head: Option<usize>,
 ) -> Result<(), String> {
     let root = arena
         .resolve(chain.root)
@@ -481,6 +481,9 @@ pub(crate) fn pose_bodies(
         })
         .ok_or_else(|| format!("model27 root {} changed generation", chain.root.source_slot))?;
     for head_index in 0..PROPERTIES.head_count {
+        if only_head.is_some_and(|index| index != head_index) {
+            continue;
+        }
         let head_handle = chain.heads[head_index];
         let head = arena
             .resolve(head_handle)
@@ -489,6 +492,11 @@ pub(crate) fn pose_bodies(
                 SourceEntityView::Dynamic(_) => None,
             })
             .ok_or_else(|| format!("model27 head {head_index} changed generation"))?;
+        // sub_29A90 calls sub_2AA90 only for final head states 0..7
+        // and 11..12; hidden/regrowing states 8..10 and 13..15 do not pose.
+        if !matches!(head.record[74], 0..=7 | 11..=12) {
+            continue;
+        }
         let mut position = root_head_anchor(&root, head_index);
         let curve = curve_index(position, head.position);
         let (yaw, pitch) =
@@ -516,8 +524,8 @@ pub(crate) fn pose_bodies(
     Ok(())
 }
 
-/// Constructor pose follows `sub_2A5B0`, then the 29A90 same-pass tail puts
-/// the linked bodies behind each head.
+/// sub_2AD40 moves each head once from the constructor position. The nine
+/// bodies remain at their allocated position until the first 29A90 tail.
 pub(crate) fn pose_new_chain(
     arena: &mut SourceArena,
     terrain: &mut SessionTerrain,
@@ -531,14 +539,12 @@ pub(crate) fn pose_new_chain(
         })
         .ok_or_else(|| format!("model27 root {} changed generation", chain.root.source_slot))?;
     for head_index in 0..PROPERTIES.head_count {
-        put_position(
-            arena,
-            terrain,
-            chain.heads[head_index],
-            pose_head(&root, head_index),
-        )?;
+        let head = chain.heads[head_index];
+        let mut row = arena.entities[usize::from(head.source_slot)].clone();
+        super::combat::move_attached_head(&mut row, &root);
+        put_position(arena, terrain, head, row.position)?;
     }
-    pose_bodies(arena, terrain, chain)
+    Ok(())
 }
 
 pub(crate) fn hide_unregistered(arena: &mut SourceArena, handles: &[SourceEntityHandle]) {

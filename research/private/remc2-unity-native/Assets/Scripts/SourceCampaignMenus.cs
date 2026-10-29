@@ -23,6 +23,14 @@ namespace MagicCarpet.Native
             internal bool Changed => Before != After;
             internal bool MapChanged => IsMap(Before) != IsMap(After);
             internal bool SpellsChanged => IsSpells(Before) != IsSpells(After);
+            internal string Action => !Changed ? null : After switch {
+                Mode.Flight => MapToggleRequested ? "toggle_gameplay_map" : "close_gameplay_menus",
+                Mode.Spells or Mode.MapSpells => "open_spell_menu",
+                Mode.PlayerInformation => "show_player_information",
+                Mode.Map => MapToggleRequested ? "toggle_gameplay_map" :
+                    IsSpells(Before) ? "close_spell_menu" : "hide_player_information",
+                _ => null
+            };
             internal bool SuppressCasting => Changed || IsSpells(After) || bothButtonsHeld || cycleModifierHeld;
             internal Result(Mode before, Mode after, bool abandon, AbandonMenuState abandonMenuState,
                 bool mapToggleRequested, bool both, bool cycleModifier, byte cycleHand, int cycleDirection)
@@ -41,6 +49,13 @@ namespace MagicCarpet.Native
 
         private bool previousBoth, previousLeft, previousRight;
         private AbandonMenuState pendingAbandonMenuState;
+        private Mode pendingPreviousMode;
+        internal string PendingAction { get; private set; }
+        internal bool HasPendingAction => PendingAction != null;
+        internal bool AbandonConfirmationPending => pendingAbandonMenuState != AbandonMenuState.None;
+        internal bool? PendingExpectedMapOpen { get; private set; }
+        internal bool? PendingExpectedSpellsOpen { get; private set; }
+        internal bool? PendingExpectedPlayerInformationOpen { get; private set; }
         internal Mode Current { get; private set; }
         internal bool MapOpen => IsMap(Current);
         internal bool SpellOpen => IsSpells(Current);
@@ -56,6 +71,52 @@ namespace MagicCarpet.Native
             Current = Mode.Flight;
             previousBoth = previousLeft = previousRight = false;
             pendingAbandonMenuState = AbandonMenuState.None;
+            ClearPendingAction();
+        }
+
+        // The presentation proposes a transition, but the next ordinary Rust
+        // turn owns admission. Never overwrite an intent awaiting its receipt.
+        internal bool QueueAction(string action, bool? expectedMapOpen, bool? expectedSpellsOpen,
+            bool? expectedPlayerInformationOpen, Result? transition = null)
+        {
+            if (HasPendingAction || string.IsNullOrEmpty(action)) return false;
+            PendingAction = action;
+            pendingPreviousMode = transition?.Before ?? Current;
+            PendingExpectedMapOpen = expectedMapOpen;
+            PendingExpectedSpellsOpen = expectedSpellsOpen;
+            PendingExpectedPlayerInformationOpen = expectedPlayerInformationOpen;
+            return true;
+        }
+
+        internal void CompleteAction(EngineSessionTransport.SourceMenuAdmission admission)
+        {
+            if (!HasPendingAction || admission == null || admission.action != PendingAction ||
+                admission.player_information_open && (!admission.map_open || admission.spells_open))
+                return;
+            Current = admission.spells_open
+                ? (admission.map_open ? Mode.MapSpells : Mode.Spells)
+                : admission.player_information_open ? Mode.PlayerInformation
+                : admission.map_open ? Mode.Map : Mode.Flight;
+            if ((PendingAction == "confirm_abandon" || PendingAction == "cancel_abandon_confirmation") &&
+                admission.admitted || PendingAction == "open_abandon_confirmation" && !admission.admitted)
+                pendingAbandonMenuState = AbandonMenuState.None;
+            ClearPendingAction();
+        }
+
+        // Only call after a transactional failure known not to have committed.
+        internal void CancelUnsubmittedAction()
+        {
+            if (!HasPendingAction) return;
+            Current = pendingPreviousMode;
+            if (PendingAction == "open_abandon_confirmation")
+                pendingAbandonMenuState = AbandonMenuState.None;
+            ClearPendingAction();
+        }
+
+        private void ClearPendingAction()
+        {
+            PendingAction = null;
+            PendingExpectedMapOpen = PendingExpectedSpellsOpen = PendingExpectedPlayerInformationOpen = null;
         }
 
         internal bool TryGetPendingBanish(out AbandonMenuState menuState)
@@ -84,6 +145,11 @@ namespace MagicCarpet.Native
                 return false;
             Current = transition.Before;
             return true;
+        }
+
+        internal void RestoreRejectedTransition(Result transition)
+        {
+            if (Current == transition.After) Current = transition.Before;
         }
 
         internal void CloseSpells()

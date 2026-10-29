@@ -25,9 +25,37 @@ fn distance_squared(a: crate::Position, b: crate::Position) -> u32 {
 pub(crate) fn step_action_207(
     actor: &mut Actor<'_>,
     ctx: &Context<'_>,
+    runtime: &RuntimeSnapshot,
+    families: &[Vec<u16>; 29],
+    parent_current: bool,
 ) -> Result<Option<bool>, String> {
     let mode = actor.row.record[77];
-    if mode != crate::native_world::summon_army::SUMMONED_STAGE_MODE {
+    if mode == 4 {
+        step_follow_leader_target(actor, ctx, runtime, families)?;
+        return Ok(None);
+    }
+    if mode == 17 {
+        super::move_actor(actor, ctx);
+        if actor.row.life < 0 {
+            actor.row.disable_drawing();
+        } else if let Some(target) = ctx.target(actor.target()).filter(|target| target.living()) {
+            actor
+                .row
+                .set_source_roll(
+                    crate::heading_for_positions(actor.row.position, target.position) as i16,
+                );
+            actor
+                .row
+                .set_actual_speed(actor.row.actual_speed.wrapping_sub(8));
+            if actor.row.actual_speed <= 16 {
+                actor.row.record[77] = 16;
+            }
+        } else {
+            actor.row.record[77] = 16;
+        }
+        return Ok(None);
+    }
+    if !matches!(mode, 13 | 16) {
         return Err(format!(
             "Cymmerian action207 StageVar2={mode} is not implemented by this leaf"
         ));
@@ -35,36 +63,20 @@ pub(crate) fn step_action_207(
 
     let parent_slot = word(actor.row, 44);
     let parent = ctx.target(parent_slot).filter(|parent| {
-        parent.life >= 0 && parent.flags & crate::native_world::ENTITY_DRAW_DISABLED_BIT == 0
+        parent_current
+            && parent.life >= 0
+            && parent.flags & crate::native_world::ENTITY_DRAW_DISABLED_BIT == 0
     });
     if parent.is_none() {
         put(actor.row, 50, 0);
-    } else {
+    } else if mode == 13 {
         put(actor.row, 50, word(actor.row, 50).wrapping_sub(1));
     }
     let timer = word(actor.row, 50) as i16;
     if timer <= 0 {
-        return Ok(Some(true));
+        return Ok(Some(mode == 13));
     }
     let parent = parent.expect("live Army parent checked above");
-
-    let hit = super::consume(actor, ctx);
-    if hit == 2 {
-        // sub_1E700 leaves the ordinary death callback for the source tail by
-        // setting word_0x2E to one.
-        put(actor.row, 50, 1);
-        return Ok(None);
-    }
-    if hit == 1
-        && let Some(attacker) = ctx.target(word(actor.row, 42)).filter(|target| {
-            target.life >= 0 && target.flags & crate::native_world::ENTITY_DRAW_DISABLED_BIT == 0
-        })
-        && (attacker.class, attacker.model) != (actor.row.class, actor.row.model)
-    {
-        actor.set_target(attacker.slot);
-        actor.set_action(202);
-        return Ok(None);
-    }
 
     let mut target = ctx.target(actor.target()).filter(|target| {
         target.life > 0 && target.flags & crate::native_world::ENTITY_DRAW_DISABLED_BIT == 0
@@ -73,9 +85,9 @@ pub(crate) fn step_action_207(
         actor.set_target(0);
         if actor.row.phase & 7 == 0 {
             target = ctx
-                .targets
+                .class3
                 .iter()
-                .copied()
+                .filter_map(|slot| ctx.target(*slot))
                 .filter(|candidate| {
                     candidate.slot != actor.row.index
                         && candidate.source_id != parent.source_id
@@ -90,30 +102,202 @@ pub(crate) fn step_action_207(
         }
     }
 
-    if let Some(target) = target {
+    if target.is_none() {
+        actor.set_target(parent_slot);
+    }
+    let hit = super::consume(actor, ctx);
+    if hit == 2 {
+        put(actor.row, 50, 1);
+    } else {
         super::move_actor(actor, ctx);
-        if actor.row.phase & 7 == 0 {
-            actor
-                .row
-                .set_source_roll(
-                    crate::heading_for_positions(actor.row.position, target.position) as i16,
-                );
-            if super::distance(actor.row.position, target.position) < RULES.target_range {
+        if hit == 1 {
+            let attacker = word(actor.row, 42);
+            if attacker != parent_slot
+                && ctx.target(attacker).is_none_or(|target| {
+                    (target.class, target.model) != (super::SOURCE_CLASS, SOURCE_MODEL)
+                })
+            {
+                actor.set_target(attacker);
                 actor.set_action(202);
             }
+        } else if actor.row.phase & 7 == 0 {
+            if actor.row.control_flags & 0x40000 == 0 {
+                let position = target.map_or(parent.position, |target| target.position);
+                actor.row.set_source_roll(
+                    crate::heading_for_positions(actor.row.position, position) as i16,
+                );
+                if actor.row.phase & 63 == 0 {
+                    super::jitter(actor);
+                }
+            }
+            if let Some(peer) = ctx
+                .model25
+                .iter()
+                .filter_map(|slot| ctx.target(*slot))
+                .find(|peer| {
+                    peer.source_id != actor.row.source_id
+                        && i32::from(peer.position.x).abs_diff(i32::from(actor.row.position.x))
+                            < u32::from(actor.row.array_pitch().cast_unsigned())
+                        && i32::from(peer.position.y).abs_diff(i32::from(actor.row.position.y))
+                            < u32::from(actor.row.array_pitch().cast_unsigned())
+                })
+            {
+                actor
+                    .row
+                    .set_source_roll(
+                        crate::heading_for_positions(peer.position, actor.row.position) as i16,
+                    );
+            }
+        }
+    }
+    if let Some(target) = target {
+        if actor.row.phase & 7 == 0
+            && super::distance(actor.row.position, target.position) < RULES.target_range
+        {
+            actor.set_action(202);
         }
     } else {
         // sub_1E580 temporarily points word96 at the parent while invoking
         // sub_1E700, then clears it and applies the source's four-tick penalty.
-        actor.set_target(parent_slot);
-        super::move_actor(actor, ctx);
         actor.set_target(0);
         put(actor.row, 50, word(actor.row, 50).wrapping_sub(4));
-        if (word(actor.row, 50) as i16) <= 0 {
-            return Ok(Some(true));
-        }
     }
     Ok(None)
+}
+
+/// `sub_1D700 -> sub_1D8C0`: follow the StageVar leader and, on the
+/// source cadence, attack the leader's current target when it is in range.
+fn step_follow_leader_target(
+    actor: &mut Actor<'_>,
+    ctx: &Context<'_>,
+    runtime: &RuntimeSnapshot,
+    families: &[Vec<u16>; 29],
+) -> Result<(), String> {
+    let index = actor.row.record[76];
+    let descriptor = runtime
+        .descriptor(index)
+        .ok_or_else(|| format!("Cymmerian StageVar {index} is absent"))?;
+    let hit = super::consume(actor, ctx);
+    let mut leader = None;
+    if hit == 0 {
+        super::move_actor(actor, ctx);
+        if actor.row.phase & 7 == 0 {
+            if descriptor.flags & 2 != 0 {
+                let mut relation = word(actor.row, 78);
+                if relation == 0 {
+                    relation = ctx
+                        .model25
+                        .iter()
+                        .filter_map(|slot| ctx.target(*slot))
+                        .find(|peer| peer.stage_index == index && peer.stage_relation != 0)
+                        .map_or(0, |peer| peer.stage_relation);
+                    if relation == 0 {
+                        relation = families
+                            .get(usize::from(descriptor.model))
+                            .into_iter()
+                            .flatten()
+                            .filter_map(|slot| ctx.target(*slot))
+                            .min_by_key(|target| {
+                                distance_squared(actor.row.position, target.position)
+                            })
+                            .map_or(0, |target| target.slot);
+                    }
+                    put(actor.row, 78, relation);
+                }
+                leader = ctx.target(relation);
+            } else {
+                leader = ctx.target(descriptor.actor);
+            }
+            if let Some(target) = leader {
+                if actor.row.control_flags & 0x40000 == 0 {
+                    actor.row.set_source_roll(crate::heading_for_positions(
+                        actor.row.position,
+                        target.position,
+                    ) as i16);
+                    if actor.row.phase & 63 == 0 {
+                        super::jitter(actor);
+                    }
+                }
+                if let Some(peer) = ctx
+                    .model25
+                    .iter()
+                    .filter_map(|slot| ctx.target(*slot))
+                    .find(|peer| {
+                        peer.source_id != actor.row.source_id
+                            && i32::from(peer.position.x).abs_diff(i32::from(actor.row.position.x))
+                                < u32::from(actor.row.array_pitch().cast_unsigned())
+                            && i32::from(peer.position.y).abs_diff(i32::from(actor.row.position.y))
+                                < u32::from(actor.row.array_pitch().cast_unsigned())
+                    })
+                {
+                    actor.row.set_source_roll(crate::heading_for_positions(
+                        peer.position,
+                        actor.row.position,
+                    ) as i16);
+                }
+                let extent = i32::from(actor.row.array_pitch()) + i32::from(target.pitch_extent);
+                if i32::from(target.position.x).abs_diff(i32::from(actor.row.position.x))
+                    < extent.max(0) as u32
+                    && i32::from(target.position.y).abs_diff(i32::from(actor.row.position.y))
+                        < extent.max(0) as u32
+                {
+                    actor.row.set_source_roll(crate::heading_for_positions(
+                        target.position,
+                        actor.row.position,
+                    ) as i16);
+                }
+            } else if actor.row.phase & 15 == 0 && actor.row.control_flags & 0x40000 == 0 {
+                let rng = crate::native_world::level2_next_rng16(actor.row.entity_rng);
+                actor.row.set_entity_rng(rng);
+                actor.row.set_source_roll(
+                    actor
+                        .row
+                        .source_roll()
+                        .wrapping_add((rng % 113 + 142) as i16)
+                        & 2047,
+                );
+            }
+        }
+    } else if hit == 1 {
+        let attacker = word(actor.row, 42);
+        if ctx.target(attacker).is_none_or(|target| {
+            (target.class, target.model) != (super::SOURCE_CLASS, SOURCE_MODEL)
+        }) {
+            actor.set_target(attacker);
+            actor.row.record[77] = 10;
+            actor.set_action(202);
+        }
+        crate::ground_creature_motion::relax_to_terrain(
+            &mut actor.row.position,
+            ctx.terrain,
+            RULES.ground_clearance,
+            RULES.descent,
+        );
+        actor.row.set_position(actor.row.position);
+    } else {
+        actor.set_action(204);
+    }
+
+    if actor.row.phase & 7 == 0 {
+        // sub_1D700 re-reads the leader after the follow callback.
+        let leader = if descriptor.flags & 2 != 0 {
+            ctx.target(word(actor.row, 78))
+        } else {
+            ctx.target(descriptor.actor)
+        }
+        .or(leader);
+        if let Some(target) = leader.and_then(|leader| {
+            (leader.target != 0xae02)
+                .then(|| ctx.target(leader.target))
+                .flatten()
+        }) && super::distance(actor.row.position, target.position) <= RULES.target_range
+        {
+            actor.set_target(target.slot);
+            actor.row.record[77] = 10;
+            actor.set_action(202);
+        }
+    }
+    Ok(())
 }
 
 fn edit_route(row: &mut EntitySnapshot, runtime: &mut dyn ArcherStageRuntime, index: u8) {

@@ -131,6 +131,13 @@ pub(crate) fn allocate_summoned(
     let handle = arena
         .handle(slot)
         .ok_or_else(|| format!("Bee Army summon lost generation-bound slot{slot}"))?;
+    if let Some(parent) = arena.handle(parent_slot) {
+        if !arena.bind_creature_parent(handle, parent) {
+            return Err(format!(
+                "Bee Army summon at slot{slot} lost its parent binding"
+            ));
+        }
+    }
     Ok(Some(handle))
 }
 
@@ -557,6 +564,17 @@ pub(crate) fn step_in_arena(
         .position(|source| source.active && source.source_entity_index == slot)
         .ok_or_else(|| format!("Bee source slot {slot} is absent"))?;
     let before = arena.economy.bee_creatures[index];
+    if matches!(before.origin, BeeCreatureOrigin::SummonedSpell { .. })
+        && before.stage_var2 == 13
+        && arena.handle(slot).is_none_or(|child| {
+            arena
+                .creature_parent(child)
+                .is_none_or(|parent| parent.source_slot != before.parent_entity_index)
+        })
+    {
+        // A recycled numeric slot is not the parent this Army child followed.
+        rows.retain(|row| row.slot != before.parent_entity_index);
+    }
     let stage = runtime.descriptor(before.stage_var1);
     let effects = super::step(
         &mut arena.economy.bee_creatures[index],

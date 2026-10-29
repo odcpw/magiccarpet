@@ -875,14 +875,11 @@ mod tests {
                 .entity_index;
             let owner = session.session.state.live.core.state.entity_index;
             let caster_position = session.session.state.live.core.state.position;
+            session
+                .apply_carried_spell_families(&[family_id], Some(family_id))
+                .expect("campaign carry publishes the scheduled field holder");
             {
                 let live = &mut session.session.state.live;
-                live.shared_spells
-                    .materialize_carried_spell_families(
-                        &mut live.economy.economy,
-                        &[(family_id, 0)],
-                    )
-                    .expect("source carry constructor materializes the typed field holder");
                 let mut player = live.shared_spells.player_entity.clone();
                 player.set_mana(profile.mana_cost);
                 player.set_mana_regen(0);
@@ -951,8 +948,20 @@ mod tests {
                     break;
                 }
             }
-            let projectile_slot =
-                projectile_slot.expect("ordinary PlayerCommand cast reaches its scheduled flyer");
+            let projectile_slot = projectile_slot.unwrap_or_else(|| {
+                let live = &session.session.state.live;
+                let holder = live.shared_spells.pickup(holder_slot);
+                let player = &live.economy.entities[usize::from(owner)];
+                panic!(
+                    "ordinary PlayerCommand cast reaches its scheduled flyer: family={family_id}, holder={holder:?}, player_mana={}, player_regen={}, castle={:?}, owner_max_mana={:?}, fire={:?}, dispatch={:?}",
+                    player.mana,
+                    player.mana_regen,
+                    live.economy.castle_for_owner(owner),
+                    live.economy.owner_max_mana.get(&owner),
+                    live.core.context.spell_fire,
+                    session.dispatch_events(),
+                );
+            });
             let projectile_power = if family == Family::Whirlwind {
                 profile.power / u16::from(profile.effect_parameter)
             } else {
@@ -1074,7 +1083,7 @@ mod tests {
                         .expect("Gravity target remains live")
                         .position;
                     let first_shrink_tail_before =
-                        session.economy.entities[usize::from(impact_slot)].record[62];
+                        session.economy.entities[usize::from(impact_slot)].phase;
                     session.step_outer_turn(PlayerCommand::default(), 0);
                     no_dispatch_errors(&session);
                     let actor = session
@@ -1089,7 +1098,7 @@ mod tests {
                         "ordinary Gravity expiry pulls the actual Villager carrier"
                     );
                     assert_eq!(
-                        session.economy.entities[usize::from(impact_slot)].record[62],
+                        session.economy.entities[usize::from(impact_slot)].phase,
                         first_shrink_tail_before.wrapping_add(1),
                         "Gravity action74 advances byte 0x3e in the same pass"
                     );
@@ -1100,17 +1109,17 @@ mod tests {
                         if field.control_flags & 0x400 != 0 {
                             break;
                         }
-                        let byte_3e_before = field.record[62];
+                        let byte_3e_before = field.phase;
                         session.step_outer_turn(PlayerCommand::default(), 0);
                         no_dispatch_errors(&session);
                         let field = &session.economy.entities[usize::from(impact_slot)];
                         if field.control_flags & 0x400 != 0 {
                             assert_eq!(
-                                field.record[62],
+                                field.phase,
                                 byte_3e_before.wrapping_add(1),
                                 "Gravity hide callback advances byte 0x3e in the same pass"
                             );
-                            hidden_tail = Some(field.record[62]);
+                            hidden_tail = Some(field.phase);
                             break;
                         }
                     }
@@ -1183,8 +1192,13 @@ mod tests {
                         .filter(|child| child.active && child.parent_entity_index == impact_slot)
                         .map(|child| child.source_entity_index)
                         .collect::<Vec<_>>();
-                    let byte_3e_before =
-                        session.economy.entities[usize::from(impact_slot)].record[62];
+                    let byte_3e_before = session
+                        .economy
+                        .authored_model22()
+                        .iter()
+                        .find(|source| source.source_entity_index == impact_slot)
+                        .expect("Wind phase remains on its typed carrier")
+                        .phase;
                     // The next scheduled callback decrements zero to -1 and
                     // exercises the real cleanup branch without waiting a
                     // full Wind lifetime. Natural expiry has a separate check.
@@ -1206,7 +1220,7 @@ mod tests {
                         .expect("same-pass Wind expiry retains its carrier until reclaim");
                     assert_ne!(expired.control_flags & 0x400, 0);
                     assert_eq!(
-                        session.economy.entities[usize::from(impact_slot)].record[62],
+                        expired.phase,
                         byte_3e_before.wrapping_add(1),
                         "same-pass source tail advances byte 0x3e before reclaim"
                     );
@@ -1236,8 +1250,18 @@ mod tests {
                                 child.parent_entity_index != impact_slot || !child.active
                             })
                     );
+                    let root = &session.economy.entities[usize::from(impact_slot)];
+                    assert!(
+                        !root.active || (root.class, root.model) != (10, 22),
+                        "following source boundary retires the raw Wind root as well"
+                    );
                     for child in children {
                         assert!(!session.economy.map_chains.is_linked(child));
+                        let raw = &session.economy.entities[usize::from(child)];
+                        assert!(
+                            !raw.active || (raw.class, raw.model) != (10, 75),
+                            "following source boundary retires linked raw Wind rows"
+                        );
                     }
                 }
             }

@@ -386,6 +386,9 @@ pub(crate) fn step_row(
     let row = &mut arena.entities[usize::from(slot)];
     store(row, actor, particles)?;
     arena.economy.source_rng.insert(slot, actor.rng);
+    for _ in 0..effects.population_decrements {
+        arena.economy.decrement_source_creature_population();
+    }
     if callback_action == 148 {
         effects.kill_credit =
             crate::native_world::creatures::raw_lifecycle::prekill(arena, slot, 144)?;
@@ -412,11 +415,59 @@ pub(crate) fn step_row(
     if effects.kill {
         kill(arena, terrain, particles, slot)?;
     }
+    if effects.expire {
+        expire(arena, terrain, particles, slot, effects.summon_expire)?;
+    }
     if effects.route_hide {
         arena.entities[usize::from(slot)].disable_drawing();
-        crate::world::effects::sync_position(arena, terrain, slot, actor.position, false, false)?;
     }
     Ok(effects)
+}
+
+fn expire(
+    arena: &mut SourceArena,
+    terrain: &mut SessionTerrain,
+    particles: &[ParticleParameter],
+    slot: u16,
+    summoned: bool,
+) -> Result<(), String> {
+    let position = arena.entities[usize::from(slot)].position;
+    let generation = arena.slot_generation(slot);
+    if summoned {
+        super::super::goat::runtime::spawn_expiry_visual(arena, terrain, position, particles)?;
+    }
+    if arena.slot_generation(slot) != generation {
+        let mut zero = Position::default();
+        zero.z = terrain.ground_height(zero);
+        arena.entities[usize::from(slot)].set_position(zero);
+        crate::world::effects::sync_position(arena, terrain, slot, zero, true, true)?;
+    }
+    let current_position = arena.entities[usize::from(slot)].position;
+    let child = crate::world::effects::allocate(
+        arena,
+        terrain,
+        sim_definition::adapter::mc2_effect_definition(crate::level_definition::EffectKind::Impact),
+        current_position,
+        particles,
+    )?;
+    if child == Some(slot) {
+        arena.entities[usize::from(slot)].set_position(Position::default());
+        crate::world::effects::sync_position(
+            arena,
+            terrain,
+            slot,
+            Position::default(),
+            true,
+            true,
+        )?;
+    }
+    let row = &mut arena.entities[usize::from(slot)];
+    row.disable_drawing();
+    let mut position = row.position;
+    position.z = terrain.ground_height(position);
+    row.set_position(position);
+    crate::world::effects::sync_position(arena, terrain, slot, position, true, false)?;
+    Ok(())
 }
 
 fn kill(
@@ -425,7 +476,7 @@ fn kill(
     particles: &[ParticleParameter],
     slot: u16,
 ) -> Result<(), String> {
-    let (position, source_id, yaw, mana, owner, flags) = if let Some(sphere) = arena
+    let (position, yaw, mana, owner) = if let Some(sphere) = arena
         .economy
         .spheres
         .iter()
@@ -433,21 +484,17 @@ fn kill(
     {
         (
             sphere.position,
-            slot,
             sphere.yaw,
             sphere.mana,
             sphere.player_entity_index,
-            sphere.control_flags,
         )
     } else {
         let row = &arena.entities[usize::from(slot)];
         (
             row.position,
-            row.source_id,
             row.yaw,
             row.mana,
             row.source_player_entity_index(),
-            row.control_flags,
         )
     };
     if mana > 0 {
@@ -475,16 +522,16 @@ fn kill(
             row.record[152..154].fill(0);
         }
     }
-    let (current_position, current_id, current_flags) = if let Some(sphere) = arena
+    let (current_position, current_flags) = if let Some(sphere) = arena
         .economy
         .spheres
         .iter()
         .find(|sphere| sphere.active && sphere.source_entity_index == slot)
     {
-        (sphere.position, slot, sphere.control_flags)
+        (sphere.position, sphere.control_flags)
     } else {
         let row = &arena.entities[usize::from(slot)];
-        (row.position, row.source_id, row.control_flags)
+        (row.position, row.control_flags)
     };
     if current_flags & 0x100000 == 0 {
         let child = crate::world::effects::allocate(
@@ -496,28 +543,26 @@ fn kill(
             current_position,
             particles,
         )?;
-        if let Some(child) = child
-            && child == slot
-        {
-            let zero = Position::default();
-            if let Some(sphere) = arena
+        if let Some(child) = child {
+            // The source reads the parent address after allocation: the
+            // allocator is allowed to replace that same address.
+            let id = arena
                 .economy
                 .spheres
-                .iter_mut()
-                .find(|sphere| sphere.source_entity_index == slot)
-            {
-                sphere.position = zero;
-            } else {
-                arena.entities[usize::from(slot)].set_position(zero);
+                .iter()
+                .find(|sphere| sphere.active && sphere.source_entity_index == slot)
+                .map_or_else(|| arena.entities[usize::from(slot)].source_id, |_| slot);
+            let row = &mut arena.entities[usize::from(child)];
+            row.source_id = id;
+            put(row, 30, id);
+            if child == slot {
+                let zero = Position::default();
+                row.set_position(zero);
+                crate::world::effects::sync_position(arena, terrain, slot, zero, true, true)?;
             }
-            if let Some(row) = arena.entities.get_mut(usize::from(child)) {
-                row.source_id = current_id;
-                put(row, 30, current_id);
-            }
-            crate::world::effects::sync_position(arena, terrain, slot, zero, true, true)?;
         }
     }
-    let hide_position = if let Some(sphere) = arena
+    if let Some(sphere) = arena
         .economy
         .spheres
         .iter_mut()
@@ -525,15 +570,8 @@ fn kill(
     {
         sphere.control_flags |= crate::native_world::ENTITY_DRAW_DISABLED_BIT;
         sphere.pending_delete = true;
-        Some(sphere.position)
     } else if let Some(row) = arena.entities.get_mut(usize::from(slot)) {
         row.disable_drawing();
-        Some(row.position)
-    } else {
-        None
-    };
-    if let Some(position) = hide_position {
-        crate::world::effects::sync_position(arena, terrain, slot, position, false, false)?;
     }
     Ok(())
 }

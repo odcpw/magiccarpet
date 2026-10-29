@@ -84,14 +84,13 @@ pub(crate) fn apply(
                     target_half_x,
                     target_half_y,
                 ),
-                false,
+                boss,
             )
         } else if boss {
             let overlap = crate::distance_3d_wrapped(protected.position, candidate.position)
                 <= BOSS_PROJECTILE_RADIUS;
-            // Source sub_21F60 sets its returned close flag only in this
-            // boss/model>=10 distance branch. Small-projectile axis hits
-            // suppress the projectile but do not close the boss.
+            // Both the boss distance branch and its small-projectile axis
+            // branch set v19; special-building protection ignores the flag.
             (overlap, overlap)
         } else {
             (

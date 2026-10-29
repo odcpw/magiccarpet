@@ -102,6 +102,136 @@ namespace MagicCarpet.Native.Tests
         }
 
         [Test]
+        public void MenuTransitionsEmitAuthorityActionsAndRejectedTransitionsRestoreTheirOrigin()
+        {
+            var menus = new SourceCampaignMenus();
+            var spell = menus.Step(false, true, false, false, false, true);
+            Assert.That(spell.Action, Is.EqualTo("open_spell_menu"));
+            menus.RestoreRejectedTransition(spell);
+            Assert.That(menus.Current, Is.EqualTo(SourceCampaignMenus.Mode.Flight));
+            spell = menus.Step(false, true, false, false, false, true);
+            Assert.That(spell.Action, Is.EqualTo("open_spell_menu"));
+            Assert.That(menus.Step(false, false, false, false, false, true).Action,
+                Is.EqualTo("close_gameplay_menus"));
+
+            var map = menus.Step(true, false, false, false, false, true);
+            Assert.That(map.Action, Is.EqualTo("toggle_gameplay_map"));
+            var info = menus.Step(false, false, false, false, false, true, informationHeld: true);
+            Assert.That(info.Action, Is.EqualTo("show_player_information"));
+            menus.RestoreRejectedTransition(info);
+            Assert.That(menus.Current, Is.EqualTo(SourceCampaignMenus.Mode.Map));
+            info = menus.Step(false, false, false, false, false, true, informationHeld: true);
+            Assert.That(info.Action, Is.EqualTo("show_player_information"));
+            var mapSpell = menus.Step(false, true, false, false, false, true);
+            Assert.That(mapSpell.Action, Is.EqualTo("open_spell_menu"));
+            var closeSpell = menus.Step(false, false, false, false, false, true);
+            Assert.That(closeSpell.Action, Is.EqualTo("close_spell_menu"));
+            Assert.That(menus.Current, Is.EqualTo(SourceCampaignMenus.Mode.Map));
+            Assert.That(menus.Step(false, false, false, false, false, true).Action, Is.Null);
+        }
+
+        [Test]
+        public void PendingMenuActionReconcilesAuthorityAndConsumesOnlyMatchingReceipts()
+        {
+            var menus = new SourceCampaignMenus();
+            var open = menus.Step(false, true, false, false, false, true);
+            Assert.That(menus.QueueAction(open.Action, false, true, false, open), Is.True);
+            Assert.That(menus.PendingAction, Is.EqualTo("open_spell_menu"));
+            Assert.That(menus.QueueAction("toggle_gameplay_map", true, false, false), Is.False);
+            menus.CompleteAction(new EngineSessionTransport.SourceMenuAdmission {
+                action = "toggle_gameplay_map", admitted = true, map_open = true
+            });
+            Assert.That(menus.HasPendingAction, Is.True, "a different receipt cannot consume the intent");
+            menus.CompleteAction(new EngineSessionTransport.SourceMenuAdmission {
+                action = open.Action, admitted = true, player_information_open = true
+            });
+            Assert.That(menus.HasPendingAction, Is.True, "impossible flags cannot authorize a local state");
+            menus.CompleteAction(new EngineSessionTransport.SourceMenuAdmission {
+                action = open.Action, admitted = false, map_open = true
+            });
+            Assert.That(menus.HasPendingAction, Is.False);
+            Assert.That(menus.Current, Is.EqualTo(SourceCampaignMenus.Mode.Map),
+                "even a rejected action reconciles to the authoritative state");
+            menus.CompleteAction(new EngineSessionTransport.SourceMenuAdmission {
+                action = open.Action, admitted = true, spells_open = true
+            });
+            Assert.That(menus.Current, Is.EqualTo(SourceCampaignMenus.Mode.Map), "a receipt is consumed once");
+
+            var info = menus.Step(false, false, false, false, false, true, informationHeld: true);
+            Assert.That(menus.QueueAction(info.Action, true, false, true, info), Is.True);
+            menus.CancelUnsubmittedAction();
+            Assert.That(menus.Current, Is.EqualTo(SourceCampaignMenus.Mode.Map));
+            Assert.That(menus.HasPendingAction, Is.False);
+
+            var escape = menus.Step(false, false, true, false, false, true);
+            Assert.That(escape.RequestAbandonConfirmation && menus.AbandonConfirmationPending, Is.True);
+            Assert.That(menus.QueueAction("open_abandon_confirmation", true, false, false), Is.True);
+            menus.CompleteAction(new EngineSessionTransport.SourceMenuAdmission {
+                action = "open_abandon_confirmation", admitted = false, map_open = true
+            });
+            Assert.That(menus.AbandonConfirmationPending, Is.False);
+            menus.Step(false, false, true, false, false, true);
+            Assert.That(menus.QueueAction("open_abandon_confirmation", true, false, false), Is.True);
+            menus.CompleteAction(new EngineSessionTransport.SourceMenuAdmission {
+                action = "open_abandon_confirmation", admitted = true, map_open = true
+            });
+            Assert.That(menus.AbandonConfirmationPending, Is.True);
+            Assert.That(menus.QueueAction("cancel_abandon_confirmation", true, false, false), Is.True);
+            menus.CompleteAction(new EngineSessionTransport.SourceMenuAdmission {
+                action = "cancel_abandon_confirmation", admitted = false, map_open = true
+            });
+            Assert.That(menus.AbandonConfirmationPending, Is.True);
+            Assert.That(menus.QueueAction("cancel_abandon_confirmation", true, false, false), Is.True);
+            menus.CompleteAction(new EngineSessionTransport.SourceMenuAdmission {
+                action = "cancel_abandon_confirmation", admitted = true, map_open = true
+            });
+            Assert.That(menus.AbandonConfirmationPending, Is.False);
+        }
+
+        [Test]
+        public void SpellDragUsesCurrentAcquiredHolderAndTierBinding()
+        {
+            var original = new EngineSessionTransport.SpellObservation {
+                id = "spell.fireball", menu_slot = 3, acquired = true, unlocked_tier = 2
+            };
+            var current = new EngineSessionTransport.SpellObservation {
+                id = original.id, menu_slot = original.menu_slot, acquired = true, unlocked_tier = 1,
+                menu_artwork = new EngineSessionTransport.SpellMenuArtwork {
+                    grid_icon = 97, tier_icons = new ushort[] { 179, 180, 181 }
+                }
+            };
+            Assert.That(SourceSpellMenu.CurrentChoice(original, new[] { current }), Is.SameAs(current));
+            Assert.That(SourceSpellMenu.HasRequiredBitmaps(new[] { current }, _ => true), Is.True);
+            Assert.That(SourceSpellMenu.HasRequiredBitmaps(new[] { current }, selector => selector != 180), Is.False,
+                "a missing retained tier bitmap must not reach the GUI lookup");
+            Assert.That(SourceSpellMenu.HasRequiredBitmaps(new[] { current }, selector => selector != 88), Is.False,
+                "a missing menu background must not reach the GUI lookup");
+            original.id = current.id = "spell.new_family";
+            Assert.That(SourceSpellMenu.CurrentChoice(original, new[] { current }), Is.SameAs(current),
+                "artwork comes from the observation rather than a Unity ID switch");
+            current.acquired = false;
+            Assert.That(SourceSpellMenu.CurrentChoice(original, new[] { current }), Is.Null);
+            current.acquired = true;
+            current.menu_slot++;
+            Assert.That(SourceSpellMenu.CurrentChoice(original, new[] { current }), Is.Null);
+            current.menu_slot = original.menu_slot;
+            current.id = "spell.shield";
+            Assert.That(SourceSpellMenu.CurrentChoice(original, new[] { current }), Is.Null);
+            Assert.That(SourceSpellMenu.CurrentChoice(original, null), Is.Null);
+            current.id = original.id;
+            current.menu_artwork.tier_icons = new ushort[] { 179, 180 };
+            Assert.That(SourceSpellMenu.CurrentChoice(original, new[] { current }), Is.Null,
+                "an incomplete tier binding cannot keep a drag active");
+            current.menu_artwork.tier_icons = new ushort[] { 179, 180, 257 };
+            Assert.That(SourceSpellMenu.HasArtwork(current), Is.False);
+            current.menu_artwork.tier_icons[2] = 181;
+            current.menu_artwork.grid_icon = 123;
+            Assert.That(SourceSpellMenu.HasArtwork(current), Is.False);
+            current.menu_artwork = null;
+            Assert.That(SourceSpellMenu.HasArtwork(current), Is.False);
+        }
+
+        [Test]
         public void BothButtonsAreConsumedOnceAndEscapeRequestsTheSourceConfirmation()
         {
             var menus = new SourceCampaignMenus();

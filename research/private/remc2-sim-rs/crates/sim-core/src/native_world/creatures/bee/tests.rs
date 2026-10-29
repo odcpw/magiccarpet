@@ -725,6 +725,68 @@ fn army_ring_allocates_a_generation_bound_summoned_bee_with_source_fields() {
 }
 
 #[test]
+fn summoned_bee_expires_when_parent_slot_is_reused() {
+    let session = crate::native_world::tests::level_two_campaign_session();
+    let mut arena = session.source_arena().clone();
+    let mut runtime = session.session.state.live.core.runtime.clone();
+    let mut terrain = session.session.state.live.terrain.clone();
+    let particles = &session.session.definition.presentation.particles;
+    let parent_slot = session.state.entity_index;
+    let holder = arena.allocate_source_slot().unwrap();
+    let child = mc2::allocate_summoned(
+        &mut arena,
+        &mut runtime,
+        &mut terrain,
+        particles,
+        session.state.position,
+        parent_slot,
+        parent_slot,
+        holder,
+    )
+    .unwrap()
+    .unwrap();
+    let parent = arena.handle(parent_slot).unwrap();
+    assert_eq!(arena.creature_parent(child), Some(parent));
+    arena.economy.release_slot(parent_slot, None);
+    assert_eq!(
+        arena.allocate_source_slot_with_terrain(&mut terrain),
+        Some(parent_slot)
+    );
+    let mut replacement =
+        crate::native_world::cave_features::new_event(parent_slot, 5, session.state.position);
+    replacement.class = 3;
+    replacement.model = 0;
+    replacement.record[67] = 3;
+    replacement.set_life(1000);
+    arena.entities[usize::from(parent_slot)] = replacement;
+    assert_eq!(arena.creature_parent(child), None);
+
+    let models: [Vec<u16>; 29] = std::array::from_fn(|_| Vec::new());
+    let effects = mc2::step_in_arena(
+        &mut arena,
+        &runtime,
+        &mut terrain,
+        particles,
+        child.source_slot,
+        &models,
+        &[parent_slot],
+        None,
+        None,
+    )
+    .unwrap();
+    assert!(effects.summon_expire_effect);
+    assert!(
+        !arena
+            .economy
+            .bee_creatures
+            .iter()
+            .find(|bee| bee.source_entity_index == child.source_slot)
+            .unwrap()
+            .drawing_enabled
+    );
+}
+
+#[test]
 fn army_ring_returns_none_when_the_shared_source_arena_is_exhausted() {
     let session = crate::native_world::tests::level_two_campaign_session();
     let mut arena = session.source_arena().clone();

@@ -303,6 +303,46 @@ fn lightning_holder_produces_each_tier_and_failed_allocation_still_consumes_the_
 }
 
 #[test]
+fn lightning_missing_or_replaced_parent_only_advances_holder_timers() {
+    for replaced in [false, true] {
+        let (mut session, slot, parent_slot) = ready_lightning(0);
+        let particles = session.session.definition.presentation.particles.clone();
+        let live = &mut session.session.state.live;
+        let holder = live.shared_spells.pickup_mut(slot).unwrap();
+        let active_before = holder.active_value;
+        put(holder, 58, 3);
+        let parent = &mut live.economy.entities[usize::from(parent_slot)];
+        if replaced {
+            parent.class = 5;
+            parent.record[67] = 5;
+        } else {
+            parent.active = false;
+        }
+        let regen_before = parent.mana_regen;
+        let outcome = step_holder(
+            &mut live.shared_spells,
+            &mut live.economy,
+            &mut live.terrain,
+            &particles,
+            slot,
+            CastInput {
+                castle_mana: Some(i32::MAX),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(outcome.projectile.is_none());
+        assert_eq!(
+            live.economy.entities[usize::from(parent_slot)].mana_regen,
+            regen_before
+        );
+        let holder = live.shared_spells.pickup(slot).unwrap();
+        assert_eq!(holder.active_value, active_before - 1);
+        assert_eq!(word(holder, 58), 2);
+    }
+}
+
+#[test]
 fn lightning_storm_emitter_uses_one_rng_draw_and_produces_opposite_source_rays() {
     let (mut session, _, parent) = ready_lightning(0);
     let particles = session.session.definition.presentation.particles.clone();
@@ -701,9 +741,43 @@ fn family22_lightning_fire_keeps_its_bound_target_and_damages_through_the_endpoi
         .map(|(endpoint, generation, _)| source_slot_cleanup_state(&session, endpoint, generation))
         .unwrap_or((false, false));
 
-    for _ in 0..8 {
+    let mut trace = Vec::new();
+    for visit in 0..8 {
         session.step_outer_turn(crate::PlayerCommand::default(), 0);
         let live = &session.session.state.live;
+        let ray_row = &live.economy.entities[usize::from(ray)];
+        let target_row = &live.economy.entities[usize::from(target_slot)];
+        let errors = session
+            .dispatch_events()
+            .iter()
+            .filter(|event| matches!(event, super::super::Mc2DispatchEvent::Error { .. }))
+            .collect::<Vec<_>>();
+        let endpoints = live
+            .economy
+            .entities
+            .iter()
+            .filter(|row| {
+                row.active
+                    && row.source_id == sphere_slot
+                    && (row.class, row.model, row.action) == (10, 23, 23)
+            })
+            .map(|row| {
+                (
+                    row.index,
+                    word(row, 154),
+                    row.position,
+                    row.life,
+                    row.drawing_disabled(),
+                )
+            })
+            .collect::<Vec<_>>();
+        trace.push(format!(
+            "visit={visit} errors={errors:?} ray=(slot={ray}, generation={}/{ray_generation}, active={}, class/model/action={}/{}/{}, life={}, flags={:#x}, position={:?}, target={}) target=(active={}, life={}, flags={:#x}, position={:?}) endpoints={endpoints:?}",
+            live.economy.economy.slot_generation(ray), ray_row.active, ray_row.class,
+            ray_row.model, ray_row.action, ray_row.life, ray_row.control_flags, ray_row.position,
+            word(ray_row, 154), target_row.active, target_row.life, target_row.control_flags,
+            target_row.position,
+        ));
         if endpoint_identity.is_none()
             && let Some(row) = live.economy.entities.iter().find(|row| {
                 row.active
@@ -772,8 +846,12 @@ fn family22_lightning_fire_keeps_its_bound_target_and_damages_through_the_endpoi
         }
     }
 
-    let _endpoint_identity =
-        endpoint_identity.expect("scheduled Lightning ray produces a bound-target endpoint");
+    let _endpoint_identity = endpoint_identity.unwrap_or_else(|| {
+        panic!(
+            "scheduled Lightning ray produces a bound-target endpoint; trace:\n{}",
+            trace.join("\n")
+        )
+    });
     let live = &session.session.state.live;
     assert!(
         target_damage_queued,

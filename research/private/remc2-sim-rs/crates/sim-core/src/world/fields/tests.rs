@@ -106,6 +106,118 @@ fn campaign_step(session: &mut crate::native_world::Mc2Simulation) {
 }
 
 #[test]
+fn wind_experience_reaches_the_owner_and_respects_source_gates() {
+    let mut session = campaign();
+    let live = &mut session.session.state.live;
+    let owner_slot = live.core.state.entity_index;
+    let owner = live.economy.entities[usize::from(owner_slot)].clone();
+    let before = live.shared_spells.spell_experience()[21];
+    wind::award_experience(&mut live.shared_spells, Some(&owner), 0, 3);
+    assert_eq!(live.shared_spells.spell_experience()[21], before + 3);
+
+    wind::award_experience(&mut live.shared_spells, Some(&owner), 4, 3);
+    let mut nonhuman = owner.clone();
+    nonhuman.model = 1;
+    wind::award_experience(&mut live.shared_spells, Some(&nonhuman), 0, 3);
+    wind::award_experience(&mut live.shared_spells, None, 0, 3);
+    assert_eq!(live.shared_spells.spell_experience()[21], before + 3);
+}
+
+#[test]
+fn wind_projection_cleanup_does_not_retire_a_reused_generation() {
+    let mut session = campaign();
+    let particles = &session.session.definition.presentation.particles;
+    let live = &mut session.session.state.live;
+    let slot = super::construct_spell_wind(
+        &mut live.economy,
+        &mut live.terrain,
+        particles,
+        live.core.state.position,
+    )
+    .unwrap()
+    .unwrap();
+    let old_generation = live.economy.economy.slot_generation(slot);
+    let wind = live
+        .economy
+        .economy
+        .fields
+        .authored_model22
+        .iter_mut()
+        .find(|wind| wind.source_entity_index == slot)
+        .unwrap();
+    wind.control_flags |= 0x400;
+    live.economy.economy.claim_raw_replacement_slot(slot);
+    assert_ne!(live.economy.economy.slot_generation(slot), old_generation);
+    assert!(live.economy.entities[usize::from(slot)].active);
+    super::retire_hidden_wind_projections(&mut live.economy);
+    assert!(
+        live.economy.entities[usize::from(slot)].active,
+        "the old field must not retire the new occupant at the same address"
+    );
+}
+
+#[test]
+fn hidden_wind_waits_for_source_rebuild_not_bare_allocation() {
+    let mut session = campaign();
+    let particles = &session.session.definition.presentation.particles;
+    let live = &mut session.session.state.live;
+    let root = super::construct_spell_wind(
+        &mut live.economy,
+        &mut live.terrain,
+        particles,
+        live.core.state.position,
+    )
+    .unwrap()
+    .unwrap();
+    let children: Vec<_> = live
+        .economy
+        .economy
+        .fields
+        .model22_spawned_children
+        .iter()
+        .filter(|child| child.parent_entity_index == root)
+        .map(|child| child.source_entity_index)
+        .collect();
+    assert_eq!(children.len(), 11);
+    live.economy
+        .economy
+        .fields
+        .authored_model22
+        .iter_mut()
+        .find(|wind| wind.source_entity_index == root)
+        .unwrap()
+        .life = 0;
+    assert!(
+        live.economy
+            .economy
+            .step_authored_model22_slot(root, &live.terrain)
+    );
+    let unrelated = live
+        .economy
+        .allocate_source_slot_with_terrain(&mut live.terrain)
+        .unwrap();
+    assert_ne!(unrelated, root);
+    assert!(!children.contains(&unrelated));
+    assert!(live.economy.map_chains.is_linked(root));
+    assert!(
+        children
+            .iter()
+            .all(|slot| live.economy.map_chains.is_linked(*slot))
+    );
+
+    // sub_4A1E0 explicitly calls sub_49F90, unlike ordinary NewEvent.
+    live.economy
+        .rebuild_source_arena_with_terrain(&mut live.terrain, &[])
+        .unwrap();
+    assert!(!live.economy.entities[usize::from(root)].active);
+    assert!(!live.economy.map_chains.is_linked(root));
+    for slot in children {
+        assert!(!live.economy.entities[usize::from(slot)].active);
+        assert!(!live.economy.map_chains.is_linked(slot));
+    }
+}
+
+#[test]
 fn source_field_constructors_keep_horizontal_bounds_separate_from_height() {
     let mut session = campaign();
     let wind = session.allocate_level2_authored_model22(110).unwrap();
@@ -203,7 +315,19 @@ fn scheduled_slowing_reaches_player_upkeep_palette_and_reclaim() {
 
 #[test]
 fn scheduled_web_damages_actual_player_once_and_refresh_only_recovers() {
+    // The source starts the player with 100 protected visits. The same Web
+    // contact is discarded by that prelude before normal damage consumption.
+    let mut protected = campaign();
+    let protected_life = protected.session.state.live.player_life;
+    scheduled_impact(&mut protected, FieldKind::Web);
+    campaign_step(&mut protected);
+    campaign_step(&mut protected);
+    assert_eq!(protected.session.state.live.player_life, protected_life);
+    assert_eq!(protected.session.state.live.player_pending_attacker, 0);
+
     let mut session = campaign();
+    // Exercise the ordinary post-protection visit, not the spawn grace period.
+    session.session.state.live.player_protection_ticks = 0;
     let life = session.session.state.live.player_life;
     let first = scheduled_impact(&mut session, FieldKind::Web);
     campaign_step(&mut session);

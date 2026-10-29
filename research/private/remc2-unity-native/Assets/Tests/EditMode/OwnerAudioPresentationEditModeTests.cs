@@ -33,6 +33,89 @@ namespace MagicCarpet.Native.Tests
             Path.Combine(PrivateRoot, "generated/mc-paj2-source-secret-34-campaign-package");
 
         [Test]
+        public void AudioReplacementKeepsPreviousPresenterWhenDestinationFails()
+        {
+            var cache = OwnerAssetCache.OpenAndValidateEnvironment(
+                Path.Combine(PrivateRoot, "generated/mc-oi68-source31-fullbank-v2-20261029"),
+                SecretSource31Package);
+            var selection = NativeSim.CampaignSelection.Create(32, 31, 1);
+            var root = new GameObject("transactional campaign audio");
+            OwnerAudioPresentation current = null;
+            try
+            {
+                current = OwnerAudioPresentation.LoadCampaignEnvironment(cache, selection, root.transform);
+                var previous = current;
+                var previousRoot = root.transform.GetChild(0).gameObject;
+                Assert.Throws<InvalidDataException>(() => OwnerAudioPresentation.Replace(ref current,
+                    () => OwnerAudioPresentation.LoadCampaignEnvironment(cache, selection, root.transform,
+                        qualificationFailAfterSoundRows: 2), _ => { }));
+                Assert.That(current, Is.SameAs(previous));
+                Assert.That(current.QualificationSoundCount, Is.EqualTo(64));
+                Assert.That(root.transform.childCount, Is.EqualTo(1));
+
+                Assert.Throws<InvalidDataException>(() => OwnerAudioPresentation.Replace(ref current,
+                    () => OwnerAudioPresentation.LoadCampaignEnvironment(cache, selection, root.transform),
+                    _ => throw new InvalidDataException("invalid replacement state")));
+                Assert.That(current, Is.SameAs(previous));
+                Assert.That(root.transform.childCount, Is.EqualTo(1));
+
+                OwnerAudioPresentation.Replace(ref current,
+                    () => OwnerAudioPresentation.LoadCampaignEnvironment(cache, selection, root.transform),
+                    _ => { });
+                Assert.That(current, Is.Not.SameAs(previous));
+                Assert.That(current.QualificationSoundCount, Is.EqualTo(64));
+                Assert.That(previousRoot == null, Is.True, "replaced audio root is destroyed");
+                Assert.That(root.transform.childCount, Is.EqualTo(1));
+            }
+            finally
+            {
+                current?.Dispose();
+                UnityEngine.Object.DestroyImmediate(root);
+            }
+        }
+
+        [Test]
+        public void SecretNightFullBankPlaysSpiderAndRejectsMismatchedSidecar()
+        {
+            var cache = OwnerAssetCache.OpenAndValidateEnvironment(
+                Path.Combine(PrivateRoot, "generated/mc-oi68-source31-fullbank-v2-20261029"),
+                SecretSource31Package);
+            var root = new GameObject("Secret Night full sound bank");
+            try
+            {
+                using var audio = OwnerAudioPresentation.LoadCampaignEnvironment(
+                    cache, NativeSim.CampaignSelection.Create(32, 31, 1), root.transform);
+                Assert.That(audio.QualificationSoundCount, Is.EqualTo(64));
+                Assert.That(audio.QualificationHasSound(32), Is.True);
+                var sound = new NativeSim.NativeEvent {
+                    abiVersion = NativeSim.AbiVersion, structSize = 72,
+                    generation = 1, sequence = 1, stateHash = 1,
+                    kind = NativeSim.EventPrepareSound, code = 32,
+                    entityIndex = 17, playerIndex = 0, assetRefIndex = 32,
+                    reserved = new uint[4]
+                };
+                var command = new NativeSim.AudioCommand {
+                    abiVersion = NativeSim.AbiVersion, structSize = 88,
+                    generation = 1, eventSequence = 1, stateHash = 1,
+                    assetRefIndex = 32, playbackRateHz = 22050, soundId = 32,
+                    entityIndex = 17, playerIndex = 0, volumeQ15 = 0x7fff,
+                    panQ16 = 0x8000, voiceIndex = 0,
+                    playType = NativeSim.AudioEntitySoundIfNotPlaying,
+                    loopCount = 0, action = NativeSim.AudioActionStart,
+                    reserved = new uint[4]
+                };
+                var mismatched = command;
+                mismatched.soundId = 38;
+                Assert.Throws<InvalidDataException>(() => audio.Consume(sound, mismatched, false));
+                Assert.That(audio.QualificationPositionalPlayStarts(32), Is.EqualTo(0));
+                audio.Consume(sound, command, false);
+                Assert.That(audio.QualificationPositionalPlayStarts(32), Is.EqualTo(1));
+                Assert.That(audio.HadSuppressedUnknown, Is.False);
+            }
+            finally { UnityEngine.Object.DestroyImmediate(root); }
+        }
+
+        [Test]
         public void CaveLoadsSourceBankTwoAndLogicalTrackThreeFromItsOwnEnvironment()
         {
             var cache = OwnerAssetCache.OpenAndValidateEnvironment(
@@ -51,6 +134,26 @@ namespace MagicCarpet.Native.Tests
                 Assert.That(music.clip.name, Does.StartWith("C2GAME3"));
                 Assert.That(music.clip.samples, Is.EqualTo(10584064));
                 Assert.That(music.clip.frequency, Is.EqualTo(44100));
+                var drip = new NativeSim.NativeEvent {
+                    abiVersion = NativeSim.AbiVersion, structSize = 72,
+                    generation = 1, sequence = 1, stateHash = 1,
+                    kind = NativeSim.EventPrepareSound, code = 67,
+                    entityIndex = 0, playerIndex = 0, assetRefIndex = 67,
+                    reserved = new uint[4]
+                };
+                var command = new NativeSim.AudioCommand {
+                    abiVersion = NativeSim.AbiVersion, structSize = 88,
+                    generation = 1, eventSequence = 1, stateHash = 1,
+                    assetRefIndex = 67, playbackRateHz = 22050, soundId = 67,
+                    entityIndex = 0, playerIndex = 0, volumeQ15 = 0x7fff,
+                    panQ16 = 0x7fff, voiceIndex = 0,
+                    playType = NativeSim.AudioEntitySoundIfNotPlaying,
+                    loopCount = 0, action = NativeSim.AudioActionStart,
+                    reserved = new uint[4]
+                };
+                audio.Consume(drip, command, reportCompletion: false);
+                Assert.That(audio.QualificationPositionalPlayStarts(67), Is.EqualTo(1));
+                Assert.That(audio.HadSuppressedUnknown, Is.False);
             }
             finally { UnityEngine.Object.DestroyImmediate(root); }
         }

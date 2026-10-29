@@ -299,14 +299,6 @@ namespace MagicCarpet.Native
             return ApplySource(preferences => preferences.fullscreen = !fullscreen);
         }
 
-        internal void DrawEffects(int terrain = 0, bool playing = false)
-        {
-            if (Current == null) return;
-            if (playing && Current.preferences.show_help)
-                GUI.Label(new Rect(12, Screen.height - 44, Screen.width - 24, 40),
-                    $"{Current.preferences.player_name} · {Current.preferences.keys[0]}/{Current.preferences.keys[1]} fly · {Current.preferences.keys[2]}/{Current.preferences.keys[3]} strafe · Mouse steer · P pause · Esc abandon · Backspace stop");
-        }
-
         /// sub_47650: each six-bit VGA component gains 6*setting and
         /// saturates at 63. Owner caches retain the equivalent RGB8 values.
         internal byte[] ApplyBrightnessToPalette(byte[] rgb8, int terrain)

@@ -709,6 +709,13 @@ fn prepared_event_sound_preserves_source_play_types_flags_and_pitch_families() {
             .expect("if-not-playing sound is in the source table");
         assert_eq!(prepared.play_type, 3, "sound {sound_id}");
     }
+    for sound_id in 65..=69 {
+        let prepared = prepare_event_sound_command(listener, 0, listener, sound_id, 28, 0, 0)
+            .expect("Cave drip is in the source sound table");
+        assert_eq!(prepared.play_type, 3, "sound {sound_id}");
+        assert_eq!(prepared.command.sound_flags, 0, "sound {sound_id}");
+    }
+    assert!(prepare_event_sound_command(listener, 0, listener, 70, 28, 0, 0).is_none());
 
     for sound_id in [43, 44, 46] {
         let prepared =
@@ -1028,6 +1035,15 @@ fn cave_ambience_advances_the_exact_rng_and_skip_bypasses_all_effects() {
             player_index: 0,
             sound_id: 67,
         })
+    );
+    let FlightEvent::PrepareSound { sound_id, .. } = context.events[0] else {
+        panic!("ordinary Cave flight must produce its selected drip");
+    };
+    assert_eq!(
+        prepare_event_sound_command(state.position, 0, state.position, sound_id, 12, 0, 0)
+            .expect("ordinary Cave drip reaches sound preparation")
+            .play_type,
+        3
     );
 
     state.skip_flight_once = true;

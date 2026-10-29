@@ -750,6 +750,12 @@ namespace MagicCarpet.Native
             this.approvedPaths = approvedPaths;
         }
 
+        internal bool HasOutput(string relative)
+        {
+            return relative != null &&
+                approvedPaths.Contains(relative.Replace(Path.DirectorySeparatorChar, '/'));
+        }
+
         public byte[] ReadOutput(string relative)
         {
             var canonical = relative.Replace(Path.DirectorySeparatorChar, '/');

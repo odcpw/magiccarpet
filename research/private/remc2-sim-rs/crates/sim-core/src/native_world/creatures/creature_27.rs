@@ -5,10 +5,12 @@
 //! constructed but never scheduled as independent callbacks.
 
 use crate::campaign::source_arena::SourceEntityHandle;
+use crate::level_definition::{CREATURE27_CLASS_PROPERTIES, Creature27ClassProperties};
 
 mod combat;
 pub(crate) mod mc2;
 mod multipart;
+mod stage;
 #[cfg(test)]
 mod tests;
 
@@ -23,44 +25,7 @@ pub(crate) const ROOT_DESCRIPTOR: u16 = 97;
 pub(crate) const HEAD_DESCRIPTOR: u16 = 103;
 pub(crate) const PROJECTILE_DESCRIPTOR: u16 = 106;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct Properties {
-    pub roots_require_free_slots: usize,
-    pub head_count: usize,
-    pub body_parts_per_head: usize,
-    pub initial_action: u8,
-    pub root_minimum_speed: i16,
-    pub root_maximum_speed: i16,
-    pub root_initial_speed: i16,
-    pub root_max_life: i32,
-    pub root_initial_life: i32,
-    pub root_initial_mana: i32,
-    pub root_initial_source_cadence: u8,
-    pub root_turn_limit: i16,
-    pub head_initial_speed: i16,
-    pub head_base_life: i32,
-    pub head_life_per_index: i32,
-    pub body_spacing: i16,
-}
-
-pub(crate) const PROPERTIES: Properties = Properties {
-    roots_require_free_slots: 51,
-    head_count: 5,
-    body_parts_per_head: 9,
-    initial_action: ACTION_BASE + 1,
-    root_minimum_speed: 64,
-    root_maximum_speed: 0,
-    root_initial_speed: 30,
-    root_max_life: 36_000,
-    root_initial_life: 1_000_000,
-    root_initial_mana: 20_000,
-    root_initial_source_cadence: 17,
-    root_turn_limit: 0x400,
-    head_initial_speed: 16,
-    head_base_life: 920,
-    head_life_per_index: 460,
-    body_spacing: 96,
-};
+pub(crate) const PROPERTIES: Creature27ClassProperties = CREATURE27_CLASS_PROPERTIES;
 
 /// The constructor's generation-stamped result. The source word-0x34 chain is
 /// the persistent topology; callers use these handles for the immediate

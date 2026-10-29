@@ -587,15 +587,15 @@ pub(crate) fn construct_ring_group(
     Ok(outcome)
 }
 
-fn ring_chain_slots(
-    arena: &SourceArena,
-    first_ring_slot: u16,
-    expected: u8,
-) -> Result<Vec<u16>, String> {
-    let mut slots = Vec::with_capacity(usize::from(expected));
+fn ring_chain_slots(arena: &SourceArena, first_ring_slot: u16) -> Result<Vec<u16>, String> {
+    // The group was sized from the selector at construction time. The flyer
+    // can subsequently carry a different selector, which sub_67800 copies
+    // over the existing chain without changing its length.
+    const MAX_SOURCE_RINGS: usize = 8;
+    let mut slots = Vec::with_capacity(MAX_SOURCE_RINGS);
     let mut cursor = first_ring_slot;
     let mut cycle = None;
-    while cursor != 0 && slots.len() < usize::from(expected) {
+    while cursor != 0 && slots.len() < MAX_SOURCE_RINGS {
         if slots.contains(&cursor) {
             cycle = Some(cursor);
             break;
@@ -617,9 +617,9 @@ fn ring_chain_slots(
     if cursor != 0 {
         return Err("Summon Army ring chain exceeds its source fan-out".to_owned());
     }
-    if slots.len() != usize::from(expected) {
+    if !matches!(slots.len(), 2 | 4 | 8) {
         return Err(format!(
-            "Summon Army ring chain has {} entries; expected {expected}",
+            "Summon Army ring chain has invalid source fan-out of {} entries",
             slots.len()
         ));
     }
@@ -645,9 +645,9 @@ fn propagate_current_flyer_to_ring_chain(
         .cloned()
         .ok_or_else(|| format!("Summon Army post-guided flyer lost slot{flyer_slot}"))?;
     let selector = flyer.record[74];
-    let expected = source_group_size(selector)
+    source_member(selector)
         .ok_or_else(|| format!("Summon Army flyer has unsupported family selector {selector}"))?;
-    let slots = ring_chain_slots(arena, first_ring_slot, expected)?;
+    let slots = ring_chain_slots(arena, first_ring_slot)?;
     let parent_id = word(&flyer, 44);
     let owner_id = flyer.source_id;
 
@@ -1140,6 +1140,30 @@ mod tests {
             assert_eq!(word(ring, 44), 0x4567);
             assert_eq!(ring.source_id, 0x2345);
             assert_eq!(word(ring, 30), 0x2345);
+        }
+    }
+
+    #[test]
+    fn post_guided_selector_change_preserves_the_constructed_chain_size() {
+        let (mut arena, mut terrain, particles, flyer_slot) = ring_fixture(8, 19);
+        let group = construct_ring_group(&mut arena, &mut terrain, &particles, flyer_slot).unwrap();
+        assert!(group.complete());
+        arena.entities[usize::from(flyer_slot)].set_source_byte_46(25);
+
+        assert_eq!(
+            propagate_current_flyer_to_ring_chain(
+                &mut arena,
+                flyer_slot,
+                group.rings[0].source_slot,
+            )
+            .unwrap(),
+            8
+        );
+        for handle in group.rings {
+            assert_eq!(
+                arena.entities[usize::from(handle.source_slot)].record[74],
+                25
+            );
         }
     }
 

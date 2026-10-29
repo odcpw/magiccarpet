@@ -956,6 +956,7 @@ pub struct Level2SpeedPickupStep {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Level2CastleState {
     pub source_entity_index: u16,
+    pub(crate) slot_generation: u32,
     /// Source `id_0x1A_26` copied into Castle child records. This is kept
     /// separate from the player/owner relation used by economy arbitration.
     pub source_id_entity_index: u16,
@@ -1179,6 +1180,8 @@ pub enum FireballProjectileOrigin {
     Wyvern,
     Creature18,
     Creature21,
+    Creature27,
+    FinalBoss,
     Eruption,
     Cymmerian,
 }
@@ -2263,6 +2266,8 @@ pub struct AuthoredFireflyRuntime {
     pub authored_index: Option<u16>,
     /// Source parentId word (compact source record offset 44).
     pub parent_entity_index: u16,
+    /// Generation of the parent when the child was created.
+    pub parent_generation: u32,
     /// Source word_0x2E countdown (compact source record offset 50).
     pub word_0x2e: u16,
     /// Source `word_0x32`, the Firefly peer-follow relation. This is not the
@@ -2284,6 +2289,10 @@ pub struct AuthoredFireflyRuntime {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct AuthoredDragonRuntime {
     pub source_entity_index: u16,
+    pub stage_var2: u8,
+    pub parent_entity_index: u16,
+    pub parent_generation: u32,
+    pub stage_remaining: i16,
     /// Source `word_0x32`, used by the ordinary creature peer relation.
     pub linked_entity_index: u16,
     pub word_0x36: i16,
@@ -2604,6 +2613,25 @@ pub enum Level2EconomyEvent {
 /// stack is reconstructed from the validated reset rows; failed allocations
 /// leave arena/object fields unchanged after the source's ordered dying-row
 /// RNG and owner writes.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+struct CastleRoots(Vec<Level2CastleState>);
+
+impl CastleRoots {
+    // Transitional first-root access is used by existing local-player paths;
+    // slot- or owner-oriented consumers use the accessors on the economy.
+    fn as_mut(&mut self) -> Option<&mut Level2CastleState> {
+        self.0.first_mut()
+    }
+
+    fn filter(&self, predicate: impl FnMut(&Level2CastleState) -> bool) -> Option<Level2CastleState> {
+        self.0.iter().copied().find(predicate)
+    }
+
+    fn is_some_and(&self, predicate: impl FnMut(&Level2CastleState) -> bool) -> bool {
+        self.0.iter().any(predicate)
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Level2EconomyState {
     free_slots: Vec<u16>,
@@ -2784,7 +2812,12 @@ pub struct Level2EconomyState {
 
     castle_projectiles: Vec<Level2CastleProjectile>,
 
-    castle: Option<Level2CastleState>,
+    castle: CastleRoots,
+
+    /// Owner and root generations guard the source player-to-Castle link
+    /// against either arena slot being reused.
+    castle_links: BTreeMap<u16, (u32, u16, u32)>,
+    local_player_entity_index: u16,
 
     castle_children: Vec<Level2CastleChild>,
     castle_defenders: Vec<creatures::creature_15::CastleDefenderState>,
@@ -2820,11 +2853,13 @@ pub struct Level2EconomyState {
     /// sessions default to the source identity coefficient (256); callers
     /// preserving those bytes can bind each stage explicitly.
     castle_stage_coefficients: [u16; 8],
+    castle_owner_stage_coefficients: BTreeMap<(u16, u32), [u16; 8]>,
     /// Imported `sub_613D0` controller coefficient from the player's
     /// `array_0x24E[9 + level]`. The owner export does not expose this
     /// nested byte array, so fixed-profile sessions bind the explicit source
     /// identity value `1` unless a caller provides the preserved byte.
     castle_controller_coefficients: [u8; 8],
+    castle_owner_controller_coefficients: BTreeMap<(u16, u32), [u8; 8]>,
     events: Vec<Level2EconomyEvent>,
 }
 

@@ -2766,14 +2766,29 @@ fn level_two_castle_public_route_retries_root_and_child_failures_and_upgrades() 
     root_failed.step_outer_turn(request, 0);
     let free_slots = root_failed.economy().free_slots.clone();
     root_failed.economy_mut().free_slots.clear();
+    let mut free_before_root_tick = Vec::new();
     for _ in 0..32 {
+        // Other live source actors can be reclaimed between outer turns.
+        // In this owner package Bee 46 is reclaimed before the Castle flyer
+        // lands, so keep the failure prerequisite exhausted on each turn.
+        root_failed.economy_mut().free_slots.clear();
+        free_before_root_tick = root_failed.economy().free_slots.clone();
         root_failed.step_outer_turn(PlayerCommand::default(), 0);
         if root_failed.economy().castle().is_some() {
             break;
         }
     }
     assert_eq!(root_failed.economy().player_castle_entity_index(), 0);
-    assert!(root_failed.economy().castle().is_none());
+    assert!(
+        root_failed.economy().castle().is_none(),
+        "unexpected root slot {:?}, generation {:?}; free stack before tick: len {}, next {:?}; after tick: len {}, next {:?}",
+        root_failed.economy().castle().map(|root| root.source_entity_index),
+        root_failed.economy().castle().map(|root| root_failed.economy().slot_generation(root.source_entity_index)),
+        free_before_root_tick.len(),
+        free_before_root_tick.last(),
+        root_failed.economy().free_slots.len(),
+        root_failed.economy().free_slots.last(),
+    );
     assert!(
         root_failed
             .economy()
@@ -2808,6 +2823,10 @@ fn level_two_castle_public_route_retries_root_and_child_failures_and_upgrades() 
     let free_slots = child_failed.economy().free_slots.clone();
     child_failed.economy_mut().free_slots = vec![free_slots[0]];
     for _ in 0..32 {
+        // Admit exactly the seed slot until landing, despite unrelated source
+        // rows reclaimed during earlier turns. The construction child then
+        // encounters the real empty stack in the same source pass.
+        child_failed.economy_mut().free_slots = vec![free_slots[0]];
         child_failed.step_outer_turn(PlayerCommand::default(), 0);
         if child_failed.economy().castle().is_some() {
             break;

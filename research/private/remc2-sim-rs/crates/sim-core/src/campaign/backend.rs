@@ -2253,7 +2253,11 @@ impl Mc2RuntimePackageResolver {
             .value;
         let source = self.exact_package_for_definition(session.definition())?;
         if runtime.secret_flow_state().return_frame().is_some()
-            && session.backend().campaign.simulation().secret_banishment_result()
+            && session
+                .backend()
+                .campaign
+                .simulation()
+                .secret_banishment_result()
         {
             return self.abandon_secret_if_active(runtime, guard, session_guard);
         }
@@ -2345,6 +2349,10 @@ impl Mc2RuntimePackageResolver {
             SecretMissionOutcome::Completed,
             |parent| {
                 self.exact_package_for_definition(&parent.definition)?;
+                super::mc2_secret_flow::activate_parent_after_secret_return(
+                    source.selection,
+                    parent,
+                )?;
                 parent
                     .selected_level_id
                     .as_ref()
@@ -2402,7 +2410,7 @@ impl Mc2RuntimePackageResolver {
             .completion_status(session_guard)
             .map_err(Box::new)
             .map_err(RuntimeTransitionError::SessionGuard)?;
-        self.exact_package_for_definition(session.definition())?;
+        let source = self.exact_package_for_definition(session.definition())?;
         if runtime.secret_flow_state().return_frame().is_none() {
             return Ok(None);
         }
@@ -2425,6 +2433,10 @@ impl Mc2RuntimePackageResolver {
             SecretMissionOutcome::Abandoned,
             |parent| {
                 self.exact_package_for_definition(&parent.definition)?;
+                super::mc2_secret_flow::activate_parent_after_secret_return(
+                    source.selection,
+                    parent,
+                )?;
                 parent
                     .selected_level_id
                     .as_ref()
@@ -2951,7 +2963,9 @@ impl GameSessionBackend for Mc2CampaignBackend {
     }
 
     fn flight_assistance_menu_open(&self) -> bool {
-        self.campaign.simulation().level2_player_menu_state() != 0
+        super::source_menus::suppresses_flight_assistance(
+            self.campaign.simulation().level2_player_menu_state(),
+        )
     }
 
     fn completion_status(&self) -> GameCompletionStatus {
@@ -3041,6 +3055,7 @@ impl GameSessionBackend for Mc2CampaignBackend {
         CampaignSnapshot {
             tick: flight.tick,
             source_menu_admission: self.campaign.simulation().source_menu_admission(),
+            return_to_title_requested: self.campaign.simulation().ordinary_banishment_result(),
             effect_head: self.campaign.effect_cursor().next_sequence,
             state_hash: self.campaign.state_hash(),
             terrain_hash: self.campaign.terrain_hash(),
@@ -3151,6 +3166,9 @@ impl GameSessionBackend for Mc2CampaignBackend {
     fn step(&mut self, command: Self::Command) -> Result<(), Self::Error> {
         let mut player_command = self.campaign_player_command(&command)?;
         let mut candidate = self.campaign.clone();
+        candidate
+            .simulation_mut()
+            .apply_objective_input(command.show_objective);
         let menu_admitted = command.abandon_action.is_some_and(|action| {
             candidate
                 .simulation_mut()
@@ -3159,9 +3177,6 @@ impl GameSessionBackend for Mc2CampaignBackend {
         candidate
             .simulation_mut()
             .advance_elapsed_centiseconds(command.elapsed_centiseconds);
-        candidate
-            .simulation_mut()
-            .apply_objective_input(command.show_objective);
         let _evidence = candidate.step_with_tuning(
             player_command,
             CAMPAIGN_SPEED_INDEX,
@@ -4574,7 +4589,11 @@ pub(crate) mod tests {
                 .as_ref(),
             Some(&origin)
         );
-        assert_eq!(runtime.campaign_save_state().unwrap(), retained_parent);
+        let mut activated_parent = retained_parent;
+        if !activated_parent.completed_levels.contains(&origin) {
+            activated_parent.completed_levels.push(origin.clone());
+        }
+        assert_eq!(runtime.campaign_save_state().unwrap(), activated_parent);
         let secret_progress = receipt.after.secret_campaign.as_ref().unwrap();
         assert!(secret_progress.discovered_levels.contains(&secret_level));
         assert!(!secret_progress.completed_levels.contains(&secret_level));
@@ -6758,6 +6777,196 @@ pub(crate) mod tests {
             generation: identity.generation,
             expected_tick: identity.tick,
         }
+    }
+
+    #[test]
+    fn public_menu_commands_retain_source_modes_and_reject_stale_transitions() {
+        use sim_session::AbandonAction;
+
+        let root = descriptor_fixture_path();
+        let catalog = default_catalog().unwrap();
+        let definition = Arc::new(load_mc2_campaign(&root, &catalog).unwrap());
+        let mut session = GameSession::open(
+            &Mc2CampaignAdapter,
+            Arc::clone(&definition),
+            731,
+            Mc2CampaignInputs::new(&root),
+        )
+        .unwrap();
+        let stale = guard(&session);
+        for (action, admitted, map, spells, information) in [
+            (AbandonAction::OpenSpellMenu, true, false, true, false),
+            (AbandonAction::OpenSpellMenu, false, false, true, false),
+            (AbandonAction::CloseSpellMenu, true, false, false, false),
+            (AbandonAction::ToggleGameplayMap, true, true, false, false),
+            (
+                AbandonAction::ShowPlayerInformation,
+                true,
+                true,
+                false,
+                true,
+            ),
+            (AbandonAction::OpenSpellMenu, true, true, true, false),
+            (AbandonAction::CloseSpellMenu, true, true, false, false),
+            (AbandonAction::ToggleGameplayMap, true, false, false, false),
+        ] {
+            let observed = session
+                .step(
+                    guard(&session),
+                    GameCommand {
+                        abandon_action: Some(action),
+                        show_objective: true,
+                        ..GameCommand::default()
+                    },
+                )
+                .unwrap();
+            let menu = observed.value.source_menu_admission.unwrap();
+            assert_eq!(menu.action, action);
+            assert_eq!(menu.admitted, admitted);
+            assert_eq!(
+                (
+                    menu.map_open,
+                    menu.spells_open,
+                    menu.player_information_open
+                ),
+                (map, spells, information)
+            );
+            assert_eq!(menu.tick, observed.identity.tick);
+            if information {
+                assert_eq!(observed.value.objective_textbox_ticks, 0);
+            } else {
+                assert!(observed.value.objective_textbox_ticks > 0);
+            }
+            assert_eq!(session.backend().flight_assistance_menu_open(), spells);
+        }
+        let before = session.snapshot();
+        assert!(
+            session
+                .step(
+                    stale,
+                    GameCommand {
+                        abandon_action: Some(AbandonAction::OpenSpellMenu),
+                        ..GameCommand::default()
+                    }
+                )
+                .is_err()
+        );
+        assert_eq!(session.snapshot(), before);
+        let fireball = before
+            .value
+            .player_spells
+            .iter()
+            .find(|spell| spell.id.as_str() == "spell.fireball")
+            .unwrap();
+        let artwork = fireball.menu_artwork.as_ref().unwrap();
+        assert_eq!(artwork.grid_icon, 97);
+        assert_eq!(artwork.tier_icons, [179, 180, 181]);
+        for (action, admitted, returns_to_title) in [
+            (AbandonAction::ConfirmAbandon, false, false),
+            (AbandonAction::OpenAbandonConfirmation, true, false),
+            (AbandonAction::ConfirmAbandon, true, true),
+        ] {
+            if action == AbandonAction::ConfirmAbandon && admitted {
+                // Model an already occupied source input slot, then submit the
+                // ordinary guarded command rather than writing a result word.
+                let live = &mut session
+                    .backend_mut()
+                    .campaign
+                    .simulation_mut()
+                    .session
+                    .state
+                    .live;
+                let slot = usize::from(live.core.runtime.local_player_slot);
+                live.core.runtime.player_inputs[slot].opcode = 27;
+                let blocked = session
+                    .step(
+                        guard(&session),
+                        GameCommand {
+                            abandon_action: Some(AbandonAction::ConfirmAbandon),
+                            ..GameCommand::default()
+                        },
+                    )
+                    .unwrap();
+                assert!(!blocked.value.source_menu_admission.unwrap().admitted);
+                assert!(!blocked.value.return_to_title_requested);
+                assert!(
+                    !session
+                        .backend()
+                        .campaign
+                        .simulation()
+                        .secret_banishment_result()
+                );
+                // Release the test's occupied input so the following command
+                // exercises the positive confirmation in the same menu.
+                let live = &mut session
+                    .backend_mut()
+                    .campaign
+                    .simulation_mut()
+                    .session
+                    .state
+                    .live;
+                let slot = usize::from(live.core.runtime.local_player_slot);
+                live.core.runtime.player_inputs[slot].opcode = 0;
+            }
+            let observed = session
+                .step(
+                    guard(&session),
+                    GameCommand {
+                        abandon_action: Some(action),
+                        show_objective: true,
+                        ..GameCommand::default()
+                    },
+                )
+                .unwrap();
+            assert_eq!(
+                observed.value.source_menu_admission.unwrap().admitted,
+                admitted
+            );
+            assert_eq!(observed.value.return_to_title_requested, returns_to_title);
+            if admitted {
+                assert_eq!(observed.value.objective_textbox_ticks, 0);
+            } else {
+                assert!(observed.value.objective_textbox_ticks > 0);
+            }
+            assert_eq!(
+                session.backend().completion_status(),
+                GameCompletionStatus::InProgress
+            );
+        }
+
+        let mut notification = GameSession::open(
+            &Mc2CampaignAdapter,
+            definition,
+            732,
+            Mc2CampaignInputs::new(&root),
+        )
+        .unwrap();
+        notification.backend_mut().set_speech_enabled(false);
+        // PresentObjective services a pending notification after PlayerEvents
+        // clears the old textbox. Its new display lifetime must survive.
+        let runtime = &mut notification
+            .backend_mut()
+            .campaign
+            .simulation_mut()
+            .session
+            .state
+            .live
+            .core
+            .runtime;
+        runtime.objective_presentation_phase = 1;
+        runtime.objective_presentation_palette_mod = 3;
+        let observed = notification
+            .step(
+                guard(&notification),
+                GameCommand {
+                    abandon_action: Some(AbandonAction::OpenAbandonConfirmation),
+                    show_objective: true,
+                    ..GameCommand::default()
+                },
+            )
+            .unwrap();
+        assert!(observed.value.source_menu_admission.unwrap().admitted);
+        assert_eq!(observed.value.objective_textbox_ticks, 200);
     }
 
     fn stage_castle_mana_objective_percent(

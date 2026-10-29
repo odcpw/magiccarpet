@@ -1,8 +1,8 @@
 //! Model-18 `sub_25550 -> sub_1D5D0(144)` StageVar callback.
 
 use super::{
-    Creature18Context, Creature18Effects, Creature18State, RULES, SOURCE_MODEL, Target,
-    source_damage,
+    Creature18Context, Creature18Effects, Creature18State, RULES, SOURCE_CLASS, SOURCE_MODEL,
+    Target, source_damage,
 };
 use crate::native_world::RuntimeRelation;
 use crate::{Position, heading_for_positions};
@@ -56,9 +56,10 @@ fn move_toward(
     actor: &mut Creature18State,
     point: Position,
     terrain: &crate::native_world::SessionTerrain,
+    effects: &mut Creature18Effects,
 ) {
     actor.roll = heading_for_positions(actor.position, point) as i16;
-    super::move_ground(actor, terrain);
+    super::move_ground(actor, terrain, effects);
 }
 
 pub(super) fn step(
@@ -69,7 +70,7 @@ pub(super) fn step(
     match actor.route_mode {
         10 => actor.action = 146,
         12 => {
-            if let Some(parent) = live_target(ctx, actor.parent) {
+            if let Some(parent) = ctx.target(actor.parent) {
                 if parent.life < 0 {
                     effects.route_hide = true;
                 }
@@ -78,26 +79,114 @@ pub(super) fn step(
                 actor.roll = parent.roll;
             } else {
                 effects.route_hide = true;
+                actor.position = Position::default();
+                actor.yaw = 0;
+                actor.roll = 0;
             }
         }
-        13 | 14 | 16 => {
-            if let Some(parent) = live_target(ctx, actor.parent) {
-                if actor.route_mode == 13 {
-                    actor.route_remaining = actor.route_remaining.wrapping_sub(1);
+        13 | 16 => {
+            let parent = live_target(ctx, actor.parent);
+            if parent.is_none() {
+                actor.route_remaining = 0;
+            } else if actor.route_mode == 13 {
+                actor.route_remaining = actor.route_remaining.wrapping_sub(1);
+            }
+            if actor.route_remaining <= 0 {
+                effects.expire = true;
+                effects.summon_expire = actor.route_mode == 13;
+                return;
+            }
+            let parent = parent.expect("summon parent was checked");
+            let mut target = live_target(ctx, actor.target).filter(|target| target.life > 0);
+            if target.is_none() {
+                actor.target = 0;
+                if actor.phase & 7 == 0 {
+                    target = ctx
+                        .class3
+                        .iter()
+                        .filter_map(|slot| ctx.target(*slot))
+                        .filter(|candidate| {
+                            matches!(candidate.model, 0 | 1)
+                                && candidate.source_id != parent.source_id
+                        })
+                        .min_by_key(|candidate| {
+                            crate::legacy_sqrt(super::xy_squared(
+                                parent.position,
+                                candidate.position,
+                            ))
+                        });
+                    actor.target = target.map_or(0, |candidate| candidate.slot);
                 }
-                if actor.route_mode == 14 {
-                    actor.route_remaining = actor.route_remaining.wrapping_sub(1);
-                    if actor.route_remaining <= 0 {
-                        actor.route_mode = 10;
-                        actor.target = 0;
-                        actor.parent = 0;
-                        actor.route_index = actor.route_relation as u8;
-                        return;
+            }
+            let destination = target.map_or(parent.position, |candidate| candidate.position);
+            let hit = super::consume(actor, ctx);
+            if hit == 2 {
+                actor.route_remaining = 1;
+            } else {
+                super::move_ground(actor, ctx.terrain, effects);
+                if hit == 1
+                    && actor.attacker != actor.parent
+                    && ctx.target(actor.attacker).is_none_or(|attacker| {
+                        attacker.class != SOURCE_CLASS || attacker.model != SOURCE_MODEL
+                    })
+                {
+                    actor.target = actor.attacker;
+                    actor.action = 146;
+                    effects.feedback = Some((actor.parent, 19));
+                } else if hit == 0 && actor.phase & 7 == 0 {
+                    if actor.control_flags & 0x40000 == 0 {
+                        actor.roll = heading_for_positions(actor.position, destination) as i16;
+                        if actor.phase & 63 == 0 {
+                            let first = super::random(actor);
+                            let second = super::random(actor);
+                            let sign = 2 * (i32::from(first % 157) / 79) - 1;
+                            actor.roll = (i32::from(actor.roll)
+                                + i32::from((second & 255) + 85) * sign)
+                                as i16
+                                & 2047;
+                        }
                     }
+                    if let Some(peer) = ctx
+                        .model18
+                        .iter()
+                        .filter_map(|slot| ctx.target(*slot))
+                        .find(|peer| {
+                            peer.source_id != actor.source_id
+                                && (i32::from(actor.position.x) - i32::from(peer.position.x)).abs()
+                                    < i32::from(actor.half_width)
+                                && (i32::from(actor.position.y) - i32::from(peer.position.y)).abs()
+                                    < i32::from(actor.half_width)
+                        })
+                    {
+                        actor.roll = heading_for_positions(peer.position, actor.position) as i16;
+                    }
+                }
+            }
+            if let Some(target) = target {
+                if actor.phase & 7 == 0
+                    && super::source_distance_3d(actor.position, target.position)
+                        < RULES.target_range
+                {
+                    actor.action = 146;
+                }
+            } else {
+                actor.target = 0;
+                actor.route_remaining = actor.route_remaining.wrapping_sub(4);
+            }
+        }
+        14 => {
+            if let Some(parent) = live_target(ctx, actor.parent) {
+                actor.route_remaining = actor.route_remaining.wrapping_sub(1);
+                if actor.route_remaining <= 0 {
+                    actor.route_mode = 10;
+                    actor.target = 0;
+                    actor.parent = 0;
+                    actor.route_index = actor.route_relation as u8;
+                    return;
                 }
                 let target = live_target(ctx, actor.target);
                 let follow = target.map_or(parent.position, |target| target.position);
-                move_toward(actor, follow, ctx.terrain);
+                move_toward(actor, follow, ctx.terrain, effects);
                 if target.is_none() {
                     actor.route_remaining = actor.route_remaining.wrapping_sub(4);
                 }
@@ -109,7 +198,7 @@ pub(super) fn step(
             }
         }
         17 => {
-            super::move_ground(actor, ctx.terrain);
+            super::move_ground(actor, ctx.terrain, effects);
             if actor.life < 0 {
                 effects.route_hide = true;
             } else if let Some(target) = live_target(ctx, actor.target) {
@@ -148,7 +237,7 @@ pub(super) fn step(
                 };
                 if matches!(actor.route_mode, 3 | 4 | 5) && actor.phase & 7 == 0 {
                     if let Some(target) = route_target(actor, ctx) {
-                        move_toward(actor, target.position, ctx.terrain);
+                        move_toward(actor, target.position, ctx.terrain, effects);
                         if crate::legacy_sqrt(
                             crate::native_world::level2_wrapping_source_distance_3d(
                                 actor.position,
@@ -162,7 +251,7 @@ pub(super) fn step(
                         }
                     }
                 } else {
-                    move_toward(actor, point, ctx.terrain);
+                    move_toward(actor, point, ctx.terrain, effects);
                     let radius = if actor.route_mode == 1 { 2048 } else { 3072 };
                     let close = actor
                         .position

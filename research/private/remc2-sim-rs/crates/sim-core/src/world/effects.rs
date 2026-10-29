@@ -4,6 +4,8 @@
 //! content and retained particle rows; the scheduler applies common cadence,
 //! publishes the returned sound/damage operations, and reclaims hidden rows.
 
+pub(crate) mod lighting;
+
 use crate::level_definition::{EffectDefinition, EffectKind};
 use crate::native_world::{
     EntitySnapshot, Level2AuthoredModel76Source, Level2Model76Child, ParticleParameter,

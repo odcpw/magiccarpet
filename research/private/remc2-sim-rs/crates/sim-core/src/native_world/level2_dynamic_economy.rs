@@ -596,6 +596,8 @@ fn fireball_target_selector_matches(
             | FireballProjectileOrigin::Creature18
             | FireballProjectileOrigin::Creature21
             | FireballProjectileOrigin::Cymmerian
+            | FireballProjectileOrigin::FinalBoss
+            | FireballProjectileOrigin::Creature27
     ) || projectile.target_class == u8::MAX
         || (projectile.target_class == class
             && (projectile.target_model == u8::MAX || projectile.target_model == model))
@@ -830,6 +832,8 @@ impl Level2EconomyState {
                     | FireballProjectileOrigin::Creature18
                     | FireballProjectileOrigin::Creature21
                     | FireballProjectileOrigin::Cymmerian
+                    | FireballProjectileOrigin::FinalBoss
+                    | FireballProjectileOrigin::Creature27
             ),
             threat_accounted: false,
             control_flags: 0,
@@ -1014,17 +1018,19 @@ impl Level2EconomyState {
                 | FireballProjectileOrigin::Creature18
                 | FireballProjectileOrigin::Creature21
                 | FireballProjectileOrigin::Cymmerian
+                | FireballProjectileOrigin::FinalBoss
+                | FireballProjectileOrigin::Creature27
         ) && projectile.target_source_entity_index != 0
         {
             // Source24510/1D460 bind descriptor61 (113/113); source1CC20 binds
             // descriptor65 (0/22). sub65610 follows the bound fixed address.
-            let (yaw_turn, pitch_turn) = if matches!(
-                projectile.origin,
-                FireballProjectileOrigin::Wyvern | FireballProjectileOrigin::Creature18
-            ) {
-                (113, 113)
-            } else {
-                (0, 22)
+            let (yaw_turn, pitch_turn) = match projectile.origin {
+                FireballProjectileOrigin::Wyvern | FireballProjectileOrigin::Creature18 => {
+                    (113, 113)
+                }
+                FireballProjectileOrigin::FinalBoss => (17, 22),
+                FireballProjectileOrigin::Creature27 => (17, 113),
+                _ => (0, 22),
             };
             let target_position = guidance_targets
                 .iter()
@@ -3992,7 +3998,7 @@ impl Level2EconomyState {
         let mut valid_target = false;
 
         if original.returning_to_castle {
-            if let Some(castle) = self.castle.filter(|castle| castle.active) {
+            if let Some(castle) = self.castle_for_owner(original.owner_entity_index).copied() {
                 valid_target = true;
                 yaw = i16::try_from(heading_for_positions(position, castle.position))
                     .expect("Level 2 carrier Castle heading fits");
@@ -4012,7 +4018,7 @@ impl Level2EconomyState {
                         position.x = castle.position.x;
                         position.y = castle.position.y;
                         let deposited = carried_mana;
-                        self.castle.as_mut().expect("Castle remains installed").mana =
+                        self.castle_at_mut(castle.source_entity_index).expect("Castle remains installed").mana =
                             castle.mana.wrapping_add(deposited);
                         carried_mana = 0;
                         owner_entity_index = castle.owner_entity_index;
@@ -4395,16 +4401,12 @@ impl Level2EconomyState {
     ) -> Option<u16> {
         let footprint = self.castle_stage_footprints.get(&1)?.clone();
         let target_castle_slot = self
-            .castle
-            .filter(|castle| {
-                castle.active && self.player_castle_entity_index == castle.source_entity_index
-            })
+            .castle_for_owner(payload.source_id_entity_index)
             .map_or(0, |castle| castle.source_entity_index);
         let axis_position = if target_castle_slot == 0 {
             payload.axis_position
         } else {
-            self.castle
-                .filter(|castle| castle.source_entity_index == target_castle_slot)
+            self.castle_at(target_castle_slot)
                 .map_or(payload.position, |castle| castle.position)
         };
         let (target_position, target_anchor) =
@@ -4801,14 +4803,11 @@ impl Level2EconomyState {
     }
 
     pub fn take_castle_upgrade_holder_clear_pending(&mut self) -> bool {
-        let pending = self
-            .castle
-            .as_ref()
+        let local_castle_slot = self.player_castle_entity_index();
+        let pending = self.castle_at(local_castle_slot)
             .is_some_and(|castle| castle.upgrade_holder_clear_pending);
-        if pending {
-            if let Some(castle) = self.castle.as_mut() {
-                castle.upgrade_holder_clear_pending = false;
-            }
+        if let Some(castle) = self.castle_at_mut(local_castle_slot) {
+            castle.upgrade_holder_clear_pending = false;
         }
         pending
     }
@@ -4845,9 +4844,12 @@ impl Level2EconomyState {
         owner_entity_index: u16,
         source_constructor: bool,
         emit_built_event: bool,
+        sync_map: bool,
     ) -> Option<u16> {
-        self.castle = Some(Level2CastleState {
+        let slot_generation = self.slot_generation(source_entity_index);
+        self.castle.0.push(Level2CastleState {
             source_entity_index,
+            slot_generation,
             // The source Castle root stores the owning player's logical
             // entity id in id_0x1A; the arena slot remains separate.
             source_id_entity_index: owner_entity_index,
@@ -4931,21 +4933,26 @@ impl Level2EconomyState {
             defense_child_active: false,
             active: true,
         });
-        self.player_castle_entity_index = if source_constructor {
-            0
-        } else {
-            source_entity_index
-        };
-        self.player_castle_stage = if source_constructor { 0 } else { 1 };
-        self.player_castle_aux_flags = 0;
-        self.map_chains
-            .sync_entity(RenderableMapSeed {
+        if self.local_player_entity_index == 0 {
+            self.local_player_entity_index = owner_entity_index;
+        }
+        if !source_constructor {
+            self.link_castle_owner(owner_entity_index, source_entity_index);
+        }
+        if owner_entity_index == self.local_player_entity_index {
+            self.player_castle_entity_index = if source_constructor { 0 } else { source_entity_index };
+            self.player_castle_stage = if source_constructor { 0 } else { 1 };
+            self.player_castle_aux_flags = 0;
+        }
+        if sync_map {
+            self.map_chains.sync_entity(RenderableMapSeed {
                 entity_index: source_entity_index,
                 active: true,
                 x: position.x,
                 y: position.y,
             })
             .expect("Castle root source slot fits the map chain");
+        }
         if emit_built_event {
             self.events.push(Level2EconomyEvent::CastleBuilt {
                 source_entity_index,
@@ -4953,6 +4960,139 @@ impl Level2EconomyState {
             });
         }
         Some(source_entity_index)
+    }
+
+    /// Transfer the source reset's Castle roots and in-flight construction
+    /// children into the same arena used by newly cast Castles. Unsupported
+    /// source shapes remain in the imported arena; they are not silently
+    /// replaced by an invented empty defender/auxiliary list.
+    pub(crate) fn adopt_imported_castles(
+        &mut self,
+        players: &[PlayerSnapshot],
+        entities: &mut [EntitySnapshot],
+    ) -> usize {
+        let word = |row: &EntitySnapshot, at: usize| {
+            u16::from_le_bytes([row.record[at], row.record[at + 1]])
+        };
+        let dword = |row: &EntitySnapshot, at: usize| {
+            i32::from_le_bytes(row.record[at..at + 4].try_into().expect("source record word"))
+        };
+        let axis = |row: &EntitySnapshot| Position {
+            x: word(row, 158),
+            y: word(row, 160),
+            z: word(row, 162) as i16,
+        };
+        let mut candidates = Vec::new();
+        for player in players {
+            let relation = i16::from_le_bytes([player.record[42], player.record[43]]);
+            let Ok(slot) = u16::try_from(relation) else { continue };
+            if slot == 0 || player.entity_index == 0 || self.castle_for_owner(player.entity_index).is_some() {
+                continue;
+            }
+            let Some(root) = entities.get(usize::from(slot)).filter(|row| {
+                row.active && row.class == 3 && row.model == 2 && row.action == 5
+                    && row.source_id == player.entity_index && matches!(row.source_word_2e(), 2 | 4)
+                    && (1..=7).contains(&row.source_dword_10())
+            }) else { continue };
+            // These owner arrays are not present in the compact export. Do
+            // not discard live rows whose source relation cannot be restored.
+            if entities.iter().any(|row| row.active
+                && ((row.class == 3 && row.model == 3) || (row.class == 5 && row.model == 15) || (row.class == 10 && row.model == 79))
+                && (row.source_id == player.entity_index || row.source_player_entity_index() == player.entity_index)) {
+                continue;
+            }
+            let children = entities.iter().filter(|row| row.active && word(row, 44) == slot).collect::<Vec<_>>();
+            let child = match (root.source_word_2e(), children.as_slice()) {
+                (2, []) => None,
+                (4, [row]) if row.class == 10 && row.model == 42 && row.action == 44
+                    && row.source_id == player.entity_index => Some((*row).clone()),
+                _ => continue,
+            };
+            candidates.push((player.entity_index, root.clone(), child));
+        }
+        let mut adopted = 0;
+        for (owner, root, child) in candidates {
+            let slot = root.index;
+            // A reset row starts at generation zero but is now owned by the
+            // typed arena. Recording that generation prevents the baseline
+            // mana row from surviving after this root is destroyed.
+            self.slot_generations.entry(slot).or_default();
+            let _ = self.install_castle_root(slot, root.position, axis(&root), owner, true, false, false);
+            self.source_rng.insert(slot, root.entity_rng);
+            self.source_owner.insert(slot, owner);
+            let castle = self.castle_entry_mut(slot).expect("imported Castle installed");
+            castle.source_id_entity_index = root.source_id;
+            castle.source_byte_38 = root.record[60];
+            castle.source_particle_parameter = word(&root, 94);
+            castle.life = root.life;
+            castle.max_life = root.max_life;
+            castle.mana = root.mana;
+            castle.mana_capacity = root.max_mana;
+            castle.pending_damage = dword(&root, 98);
+            castle.pending_attacker_entity_index = word(&root, 102);
+            castle.killer_entity_index = word(&root, 40);
+            castle.control_flags = root.control_flags;
+            castle.phase = root.phase;
+            castle.action = root.action;
+            castle.build_state = root.source_word_2e() as u8;
+            castle.level = root.source_dword_10() as u8;
+            castle.shift_yaw = root.array_yaw();
+            castle.shift_pitch = root.array_pitch();
+            castle.shift_roll = root.array_roll();
+            castle.shift_fov = root.array_fov();
+            castle.source_word_2e = root.source_word_2e();
+            castle.source_word_30 = root.source_word_30();
+            castle.timer = root.source_word_30() as u8;
+            castle.source_word_7c = word(&root, 128);
+            castle.source_word_80 = word(&root, 132);
+            if let Some(row) = child {
+                let child_slot = row.index;
+                castle.construction_slot = child_slot;
+                castle.construction_model = row.model;
+                castle.construction_action = row.action;
+                castle.construction_control_flags = row.control_flags;
+                castle.construction_parent_slot = slot;
+                castle.construction_owner_entity_index = owner;
+                castle.construction_id = row.source_id;
+                castle.construction_position = row.position;
+                castle.child_chain_slots[0] = child_slot;
+                castle.child_chain_models[0] = row.model;
+                castle.child_chain_active[0] = true;
+                castle.construction_child_active = true;
+                self.slot_generations.entry(child_slot).or_default();
+                self.castle_children.push(Level2CastleChild {
+                    source_entity_index: child_slot, entity_rng: row.entity_rng,
+                    id_entity_index: row.source_id, source_class: row.class,
+                    parent_entity_index: slot, owner_entity_index: owner,
+                    player_entity_index: row.source_player_entity_index(), position: row.position,
+                    axis_position: axis(&row), model: row.model, action: row.action,
+                    mana: row.mana, max_mana: row.max_mana, life: row.life, max_life: row.max_life,
+                    speed: row.actual_speed, target_sphere_slot: row.source_word_96(),
+                    pending_damage: dword(&row, 98), pending_attacker_entity_index: word(&row, 102),
+                    damage_attacker_entity_index: word(&row, 42), killer_entity_index: word(&row, 40),
+                    source_byte_3e: row.phase, source_byte_39: row.record[61], source_byte_3b: row.byte_3b,
+                    cave_collision_cooldown: row.record[74], source_dword_10: row.source_dword_10(),
+                    source_word_2e: row.source_word_2e() as i16,
+                    construction_target_height: row.subspell_index as i16, source_subspell_index: row.subspell_index,
+                    yaw: row.yaw as u16, roll: row.source_roll() as u16, visual_index: word(&row, 94),
+                    control_flags: row.control_flags, chain_previous_slot: word(&row, 54),
+                    chain_next_slot: word(&row, 56), source_byte_43: row.record[71],
+                    source_word_4a: word(&row, 78), active: true,
+                });
+                self.source_rng.insert(child_slot, row.entity_rng);
+                entities[usize::from(child_slot)].active = false;
+                entities[usize::from(child_slot)].record[2] = 0;
+            }
+            self.link_castle_owner(owner, slot);
+            if owner == self.local_player_entity_index {
+                self.player_castle_entity_index = slot;
+                self.player_castle_stage = root.source_dword_10() as u8;
+            }
+            entities[usize::from(slot)].active = false;
+            entities[usize::from(slot)].record[2] = 0;
+            adopted += 1;
+        }
+        adopted
     }
 
     /// Allocate the class-3/model-2 row created by the human flyer collision
@@ -4965,7 +5105,7 @@ impl Level2EconomyState {
         anchor_position: Position,
         owner_entity_index: u16,
     ) -> Option<u16> {
-        if self.castle.is_some_and(|castle| castle.active) {
+        if self.live_castles().any(|castle| castle.owner_entity_index == owner_entity_index) {
             return None;
         }
         let source_entity_index = self.allocate_slot()?;
@@ -4984,6 +5124,7 @@ impl Level2EconomyState {
             owner_entity_index,
             true,
             false,
+            true,
         )
     }
 
@@ -4995,7 +5136,7 @@ impl Level2EconomyState {
         source_constructor: bool,
         emit_built_event: bool,
     ) -> Option<u16> {
-        if self.castle.is_some_and(|castle| castle.active) {
+        if self.live_castles().any(|castle| castle.owner_entity_index == owner_entity_index) {
             return None;
         }
         let source_entity_index = self.allocate_slot()?;
@@ -5016,6 +5157,7 @@ impl Level2EconomyState {
             owner_entity_index,
             source_constructor,
             emit_built_event,
+            true,
         )
     }
 
@@ -5086,8 +5228,10 @@ impl Level2EconomyState {
         castle.life = 0;
         castle.max_life = 0;
         castle.mana_capacity = 5_000;
-        self.player_castle_stage = 0;
-        self.player_castle_aux_flags = 0;
+        if self.player_castle_entity_index == castle_slot {
+            self.player_castle_stage = 0;
+            self.player_castle_aux_flags = 0;
+        }
         true
     }
 
@@ -5480,7 +5624,7 @@ impl Level2EconomyState {
         terrain: &SessionTerrain,
     ) {
         let Some((selected_level, source_byte_43)) =
-            level2_castle_controller_selection(level, &self.castle_controller_coefficients)
+            level2_castle_controller_selection(level, self.castle_controller_coefficients_for_owner(snapshot.owner_entity_index))
         else {
             return;
         };
@@ -5960,11 +6104,7 @@ impl Level2EconomyState {
                 };
                 let next_level = snapshot.level.saturating_add(1).max(1);
                 let (base_life, stage_mana_capacity) = level2_castle_stage_stats(next_level);
-                let stage_coefficient = self
-                    .castle_stage_coefficients
-                    .get(usize::from(next_level))
-                    .copied()
-                    .unwrap_or(256);
+                let stage_coefficient = self.castle_stage_coefficient_for_owner(snapshot.owner_entity_index, next_level);
                 let stage_life =
                     i32::try_from((i64::from(base_life) * i64::from(stage_coefficient)) >> 8)
                         .unwrap_or(if base_life >= 0 { i32::MAX } else { i32::MIN });
@@ -6024,7 +6164,7 @@ impl Level2EconomyState {
                 let mut controller_count = 0_u8;
                 if let Some((selected_level, source_byte_43)) = level2_castle_controller_selection(
                     next_level,
-                    &self.castle_controller_coefficients,
+                    self.castle_controller_coefficients_for_owner(snapshot.owner_entity_index),
                 ) {
                     let (controller_width, controller_height) =
                         level2_castle_controller_dimensions(selected_level);
@@ -6147,9 +6287,13 @@ impl Level2EconomyState {
                 }
                 let completed_slot = castle.source_entity_index;
                 let completed_level = castle.level;
-                self.player_castle_entity_index = completed_slot;
-                self.player_castle_stage = completed_level;
-                self.player_castle_aux_flags = 0;
+                let owner = castle.owner_entity_index;
+                self.link_castle_owner(owner, completed_slot);
+                if owner == self.local_player_entity_index {
+                    self.player_castle_entity_index = completed_slot;
+                    self.player_castle_stage = completed_level;
+                    self.player_castle_aux_flags = 0;
+                }
                 self.events
                     .push(Level2EconomyEvent::CastleConstructionSound {
                         source_entity_index: completed_slot,
@@ -6430,11 +6574,7 @@ impl Level2EconomyState {
                 self.retire_castle_controller_chain(snapshot.source_entity_index);
                 let next_level = snapshot.level.saturating_sub(1);
                 let (base_life, stage_mana_capacity) = level2_castle_stage_stats(next_level);
-                let stage_coefficient = self
-                    .castle_stage_coefficients
-                    .get(usize::from(next_level))
-                    .copied()
-                    .unwrap_or(256);
+                let stage_coefficient = self.castle_stage_coefficient_for_owner(snapshot.owner_entity_index, next_level);
                 let stage_life =
                     i32::try_from((i64::from(base_life) * i64::from(stage_coefficient)) >> 8)
                         .unwrap_or(if base_life >= 0 { i32::MAX } else { i32::MIN });
@@ -6506,6 +6646,7 @@ impl Level2EconomyState {
                 let destroyed_slot = castle.source_entity_index;
                 let killer = castle.killer_entity_index;
                 let castle_level = castle.level;
+                let owner = castle.owner_entity_index;
                 if castle_level == 0 {
                     castle.active = false;
                 }
@@ -6515,18 +6656,23 @@ impl Level2EconomyState {
                     next_level,
                 });
                 if castle_level == 0 {
-                    self.player_castle_entity_index = 0;
-                    self.player_castle_stage = 0;
-                    self.player_castle_aux_flags = 0;
-                    if self.player_model == 1 && self.player_terrain_flags & 4 != 0 {
-                        self.player_spell_slot_2 = 0;
-                        self.player_spell_holder_action = 0;
+                    if self.castle_links.get(&owner).is_some_and(|link| link.1 == destroyed_slot) {
+                        self.castle_links.remove(&owner);
+                    }
+                    if owner == self.local_player_entity_index {
+                        self.player_castle_entity_index = 0;
+                        self.player_castle_stage = 0;
+                        self.player_castle_aux_flags = 0;
+                        if self.player_model == 1 && self.player_terrain_flags & 4 != 0 {
+                            self.player_spell_slot_2 = 0;
+                            self.player_spell_holder_action = 0;
+                        }
                     }
                     self.events.push(Level2EconomyEvent::CastleDestroyed {
                         source_entity_index: destroyed_slot,
                         killer_entity_index: killer,
                     });
-                } else {
+                } else if owner == self.local_player_entity_index {
                     self.player_castle_stage = castle_level;
                     self.player_castle_aux_flags = 0;
                 }
@@ -6535,7 +6681,7 @@ impl Level2EconomyState {
                 // non-player path calls `sub_5F890(a1, 0)` and clears it,
                 // while a model-1 player on terrain flag 4 disables the
                 // holder relation entirely.
-                if self.player_spell_slot_2 != 0 {
+                if owner == self.local_player_entity_index && self.player_spell_slot_2 != 0 {
                     if next_level > 0 {
                         self.player_spell_holder_action =
                             self.player_spell_holder_max_action.saturating_sub(1);
@@ -6586,7 +6732,10 @@ impl Level2EconomyState {
     }
 
     pub fn return_carrier_to_castle(&mut self, carrier_slot: u16) -> bool {
-        let Some(castle) = self.castle.as_mut().filter(|castle| castle.active) else {
+        let Some(owner) = self.carriers.iter().find(|carrier| carrier.active && carrier.source_entity_index == carrier_slot).map(|carrier| carrier.owner_entity_index) else {
+            return false;
+        };
+        let Some(castle_slot) = self.castle_for_owner(owner).map(|castle| castle.source_entity_index) else {
             return false;
         };
         let Some(carrier) = self
@@ -6596,10 +6745,7 @@ impl Level2EconomyState {
         else {
             return false;
         };
-        if carrier.owner_entity_index != castle.owner_entity_index {
-            return false;
-        }
-        carrier.target_sphere_id = u32::from(castle.source_entity_index);
+        carrier.target_sphere_id = u32::from(castle_slot);
         carrier.returning_to_castle = true;
         true
     }
@@ -6615,7 +6761,10 @@ impl Level2EconomyState {
         position: Position,
         terrain: &SessionTerrain,
     ) -> bool {
-        let Some(castle) = self.castle.filter(|castle| castle.active) else {
+        let Some(owner) = self.carriers.iter().find(|carrier| carrier.active && carrier.source_entity_index == carrier_slot).map(|carrier| carrier.owner_entity_index) else {
+            return false;
+        };
+        let Some(castle) = self.castle_for_owner(owner).copied() else {
             return false;
         };
         let raw_position = position;
@@ -6646,14 +6795,15 @@ impl Level2EconomyState {
         }
         carrier.position = position;
         let mana = carrier.carried_mana;
-        let castle_state = self.castle.as_mut().expect("Castle remains installed");
-        castle_state.mana = castle_state.mana.wrapping_add(mana);
         carrier.carried_mana = 0;
         carrier.target_sphere_id = 0;
         carrier.returning_to_castle = false;
         carrier.life = carrier.max_life;
+        let carrier_id = carrier.id;
+        let castle_state = self.castle_at_mut(castle.source_entity_index).expect("Castle remains installed");
+        castle_state.mana = castle_state.mana.wrapping_add(mana);
         self.events.push(Level2EconomyEvent::ManaCarrierArrived {
-            carrier_id: carrier.id,
+            carrier_id,
             castle_id: castle.source_entity_index,
             mana,
         });
@@ -6736,6 +6886,7 @@ impl Level2EconomyState {
             });
             return Some(lethal);
         }
+        let local_owner = self.local_player_entity_index;
         let castle = self.castle_at_mut(target_slot)?;
         let damage = castle.pending_damage;
         let attacker = castle.pending_attacker_entity_index;
@@ -6756,7 +6907,7 @@ impl Level2EconomyState {
                 castle.control_flags |= 0x40;
             }
         }
-        if !lethal {
+        if !lethal && castle.owner_entity_index == local_owner {
             self.player_castle_aux_flags = 4;
         }
         self.events.push(Level2EconomyEvent::DamageApplied {

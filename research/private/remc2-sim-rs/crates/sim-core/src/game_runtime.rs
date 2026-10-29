@@ -767,7 +767,7 @@ impl<B: GameSessionBackend> GameRuntime<B> {
         resolve: F,
     ) -> Result<SecretTransitionReceipt, RuntimeTransitionError>
     where
-        F: FnOnce(&CampaignSaveState) -> Result<Arc<GameDefinition>, RuntimeTransitionError>,
+        F: FnOnce(&mut CampaignSaveState) -> Result<Arc<GameDefinition>, RuntimeTransitionError>,
     {
         self.validate_guard(guard)
             .map_err(Box::new)
@@ -804,8 +804,8 @@ impl<B: GameSessionBackend> GameRuntime<B> {
             .and_then(NonZeroU64::new)
             .ok_or(RuntimeTransitionError::GenerationExhausted)?;
         let mut secret_flow = self.secret_flow.clone();
-        let parent = secret_flow.return_to_parent(active_flow, outcome)?;
-        let selected = resolve(&parent)?;
+        let mut parent = secret_flow.return_to_parent(active_flow, outcome)?;
+        let selected = resolve(&mut parent)?;
         let origin = parent.selected_level_id.as_ref().ok_or_else(|| {
             RuntimeTransitionError::InvalidRuntimeFlow {
                 message: "secret return frame has no selected parent".to_owned(),

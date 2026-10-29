@@ -159,7 +159,8 @@ pub(crate) fn step_holder(
     let parent_slot = holder.source_spell_parent_entity_index();
     let mut result = HolderOutcome::default();
     if holder.active_value > 0 {
-        if parent_slot != 0 && let Some(parent) = arena.entities.get(usize::from(parent_slot)) {
+        if parent_slot != 0 && let Some(parent) = arena.entities.get(usize::from(parent_slot))
+            .filter(|row| row.active && row.class == 3 && matches!(row.model, 0 | 1)) {
             let fresh = holder.active_value == holder.activation_value as i16;
             let admitted = parent.life >= 0 && parent.mana >= 0
                 && (holder.mana_regen == 0 || input.castle_mana.is_some_and(|m| m >= holder.mana_regen))

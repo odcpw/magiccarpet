@@ -2987,8 +2987,7 @@ fn level_two_castle_auxiliary_invalid_relation_clears_slot_and_restarts_cooldown
             .level = 3;
         economy.maintain_castle_defenders(castle_slot);
         invalid_slot = economy
-            .castle
-            .as_ref()
+            .castle_at(castle_slot)
             .expect("created auxiliary Castle")
             .auxiliary_slots[0];
         economy

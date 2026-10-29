@@ -196,7 +196,7 @@ pub fn prepare_event_sound_command(
         | 61
         | 63
         | 64 => 1,
-        7 | 8 | 12 | 13 | 16 | 17 | 32..=34 | 37 | 39 | 42..=46 | 54..=59 | 62 => 3,
+        7 | 8 | 12 | 13 | 16 | 17 | 32..=34 | 37 | 39 | 42..=46 | 54..=59 | 62 | 65..=69 => 3,
         47 | 49 => 4,
         // Select/CantUse use play type 1 for both the current-level and
         // entity-local branches. Ambient loops 1/2/5/31 are handled by their

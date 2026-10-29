@@ -211,6 +211,57 @@ fn ordinary_seek_keeps_searching_when_no_target_is_in_source_range() {
 }
 
 #[test]
+fn authored_follow_leader_attacks_only_its_in_range_target() {
+    let session = crate::native_world::tests::level_two_campaign_session();
+    let terrain = session.canonical_terrain();
+    let position = session.state.position;
+    let mut runtime = session.session.state.live.core.runtime.clone();
+    runtime.stage_variables[1].flags = 0;
+    runtime.stage_variables[1].relation = crate::native_world::RuntimeRelation::LiveEntity(42);
+    let families: [Vec<u16>; 29] = std::array::from_fn(|_| Vec::new());
+    for (offset, expected_action) in [(0_u16, 202), (RULES.target_range as u16 + 100, 207)] {
+        let mut leader = target(42, 5, 18, position);
+        leader.target = 43;
+        let enemy = target(
+            43,
+            3,
+            0,
+            Position {
+                x: position.x.wrapping_add(offset),
+                ..position
+            },
+        );
+        let targets = [leader, enemy];
+        let mut row = cymmerian(207, position);
+        row.record[76] = 1;
+        row.record[77] = 4;
+        row.set_phase(8);
+        let context = Context {
+            terrain,
+            targets: &targets,
+            class3: &[43],
+            model25: &[],
+        };
+        assert_eq!(
+            stage::step_action_207(
+                &mut Actor { row: &mut row },
+                &context,
+                &runtime,
+                &families,
+                true
+            )
+            .unwrap(),
+            None
+        );
+        assert_eq!(row.action, expected_action);
+        if expected_action == 202 {
+            assert_eq!(u16::from_le_bytes([row.record[154], row.record[155]]), 43);
+            assert_eq!(row.record[77], 10);
+        }
+    }
+}
+
+#[test]
 fn ordinary_seek_waits_for_descriptor92_scan_cadence() {
     let terrain = terrain();
     let position = Position {
@@ -464,6 +515,54 @@ fn army_ring_allocates_a_real_summoned_cymmerian_with_holder_provenance() {
         identity.origin,
         crate::campaign::source_arena::CreatureRootOrigin::SummonedSpell { holder_slot }
     );
+}
+
+#[test]
+fn summoned_cymmerian_rejects_reused_parent_slot_and_hides() {
+    let (mut arena, mut runtime, mut terrain, particles, parent_slot, owner_id, position) =
+        summoned_source_parts();
+    let holder = arena.allocate_source_slot().unwrap();
+    let child = mc2::allocate_summoned(
+        &mut arena,
+        &mut runtime,
+        &mut terrain,
+        &particles,
+        position,
+        parent_slot,
+        owner_id,
+        holder,
+    )
+    .unwrap()
+    .unwrap();
+    let parent = arena.handle(parent_slot).unwrap();
+    assert_eq!(arena.creature_parent(child), Some(parent));
+
+    arena.economy.release_slot(parent_slot, None);
+    assert_eq!(
+        arena.allocate_source_slot_with_terrain(&mut terrain),
+        Some(parent_slot)
+    );
+    let mut replacement = crate::native_world::cave_features::new_event(parent_slot, 5, position);
+    replacement.class = 3;
+    replacement.model = 0;
+    replacement.record[67] = 3;
+    replacement.set_life(1000);
+    arena.entities[usize::from(parent_slot)] = replacement;
+    assert_ne!(arena.handle(parent_slot), Some(parent));
+    assert_eq!(arena.creature_parent(child), None);
+
+    let families = family_with_cymmerian(child.source_slot);
+    mc2::step_row(
+        &mut arena,
+        &mut runtime,
+        &mut terrain,
+        &particles,
+        child.source_slot,
+        &[],
+        &families,
+    )
+    .unwrap();
+    assert!(arena.entities[usize::from(child.source_slot)].drawing_disabled());
 }
 
 #[test]

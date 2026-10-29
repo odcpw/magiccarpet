@@ -373,6 +373,28 @@ namespace MagicCarpet.Native
 
         private float SoundGain => preferenceSoundGain * speechSoundGain;
 
+        internal static void Replace(
+            ref OwnerAudioPresentation current,
+            Func<OwnerAudioPresentation> create,
+            Action<OwnerAudioPresentation> configure)
+        {
+            OwnerAudioPresentation replacement = null;
+            try
+            {
+                replacement = create();
+                Require(replacement != null, "replacement audio presenter exists");
+                configure(replacement);
+            }
+            catch
+            {
+                replacement?.Dispose();
+                throw;
+            }
+            var previous = current;
+            current = replacement;
+            previous?.Dispose();
+        }
+
         internal void ApplyPreferences(PlayerPreferences preferences)
         {
             preferenceSoundGain = preferences.sound_enabled ? preferences.sound_volume / 127f : 0;
@@ -573,9 +595,10 @@ namespace MagicCarpet.Native
                 : night ? "mc2-night-audio/v1" : "mc2-cave-audio/v1";
             var soundBank = expected.mapType;
             var track = day ? 2 : night ? 1 : 3;
-            var expectedSoundCount = day
-                ? ExactCampaignDaySoundOrder.Length
-                : night ? ExactSoundOrder.Length : 69;
+            // Environment caches contain the whole selected source bank. Older
+            // Day aggregates and environment caches retain their qualified
+            // opening-mission subset and remain readable.
+            var legacySoundCount = day ? ExactCampaignDaySoundOrder.Length : ExactSoundOrder.Length;
             var ordinaryDayAggregate = isDayAggregate && day &&
                 (expected.externalLevel == 2 || expected.externalLevel == 3) &&
                 expected.internalLevel == expected.externalLevel - 1;
@@ -587,7 +610,9 @@ namespace MagicCarpet.Native
             var descriptor = DecodeCampaignAudioDescriptor(
                 cache.ReadOutput(component + "audio/descriptor.json"));
             Require(
-                descriptor != null && descriptor.schema == audioSchema &&
+                descriptor != null &&
+                (descriptor.schema == audioSchema ||
+                    (isEnvironment && !cave && descriptor.schema == audioSchema.Replace("/v1", "/v2"))) &&
                 descriptor.profile != null &&
                 descriptor.profile.external_level == expected.externalLevel &&
                 descriptor.profile.internal_level == expected.internalLevel &&
@@ -597,7 +622,8 @@ namespace MagicCarpet.Native
                 descriptor.sound != null && descriptor.sound.bank == soundBank &&
                 (!day || descriptor.sound.reachable_occurrence_count == 34) &&
                 descriptor.sound.records != null &&
-                descriptor.sound.records.Length == expectedSoundCount,
+                descriptor.sound.records.Length == (cave ? 69 :
+                    descriptor.schema.EndsWith("/v2") ? 64 : legacySoundCount),
                 "qualified destination-bound campaign Night/Day/Cave audio descriptor");
             if (isEnvironment)
                 Require(EnvironmentAudioProfileMatches(
@@ -655,22 +681,24 @@ namespace MagicCarpet.Native
                         throw new InvalidDataException(
                             "qualification-forced owner-audio load failure");
                     var record = descriptor.sound.records[index];
-                    var soundId = day
-                        ? ExactCampaignDaySoundOrder[index]
-                        : night ? ExactSoundOrder[index] : index + 1;
+                    var fullBank = descriptor.sound.records.Length == (cave ? 69 : 64);
+                    var soundId = fullBank ? index + 1 : day
+                        ? ExactCampaignDaySoundOrder[index] : ExactSoundOrder[index];
+                    var knownDayIndex = day ? Array.IndexOf(ExactCampaignDaySoundOrder, soundId) : -1;
                     var nightNull = night && soundId == 12;
                     var expectedPath = $"audio/sfx/{soundId:000}.wav";
                     Require(
                         record != null && record.sound_id == soundId &&
                         !string.IsNullOrEmpty(record.filename) &&
-                        (!day || record.filename == ExactCampaignDaySoundFiles[index]) &&
+                        (knownDayIndex < 0 || record.filename == ExactCampaignDaySoundFiles[knownDayIndex]) &&
                         (!night ||
                             (record.bank == 1 && record.quality == 822 && record.quality_index == 3 &&
                              record.semantic_name == Path.GetFileNameWithoutExtension(record.filename)
                                  .ToLowerInvariant() &&
                              record.play_class == (nightNull ? "explicit_null" :
                                  CampaignDayPlayClass(soundId)) &&
-                             record.playback_scope == ExpectedPlaybackScope(soundId) &&
+                             record.playback_scope == (nightNull ? "explicit_null" :
+                                 CampaignDayPlaybackScope(soundId)) &&
                              record.loop_target_volume == (nightNull ? 0 : CampaignDayLoopVolume(soundId)) &&
                              record.mapping_status == (nightNull ? "explicit_null" :
                                  "proven_campaign_Night"))) &&

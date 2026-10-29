@@ -3911,7 +3911,7 @@ fn level_two_nyphur_sub_14250_uses_live_castle_defender_projection() {
             112,
             &mut entities,
             &mut spheres,
-            castle,
+            castle.as_slice(),
             &castle_children,
             &players,
             &terrain,
@@ -3952,7 +3952,7 @@ fn level_two_nyphur_sub_14250_uses_live_castle_defender_projection() {
             112,
             &mut overlapping_entities,
             &mut overlapping_spheres,
-            castle,
+            castle.as_slice(),
             &overlapping_children,
             &players,
             &terrain,
@@ -3963,6 +3963,71 @@ fn level_two_nyphur_sub_14250_uses_live_castle_defender_projection() {
         .expect("overlapping Castle defender falls through");
     assert_ne!(overlapping_dispatcher.state_byte, 9);
     assert_ne!(overlapping_entities[112].source_word_96(), defender_slot);
+}
+
+#[test]
+fn nyphur_dispatch_refreshes_castle_links_and_projects_both_owners() {
+    let inspection = NativeWorld::inspect_level2(level_two_fixture_path()).unwrap();
+    let mut session = inspection.level2_reset_session().unwrap();
+    let human_position = session.session.state.live.economy.entities[111].position;
+    let rival_position = session.session.state.live.economy.entities[112].position;
+    let human_castle = session
+        .economy_mut()
+        .build_castle(human_position, 111)
+        .unwrap();
+    let rival_castle = session
+        .economy_mut()
+        .build_castle(rival_position, 112)
+        .unwrap();
+    session.session.state.live.sync_castle_player_relations();
+    let live = &session.session.state.live;
+    for player in live
+        .core
+        .players
+        .iter()
+        .chain(live.shared_spells.players.iter())
+    {
+        if let Some(root) = live.economy.castle_for_owner(player.entity_index) {
+            assert_eq!(
+                u16::from_le_bytes([player.record[42], player.record[43]]),
+                root.source_entity_index
+            );
+        }
+    }
+    let castles = live.economy.live_castles().copied().collect::<Vec<_>>();
+    assert_eq!(castles.len(), 2);
+    // These roots exercise the real AI projection/selector consumer. The
+    // flyer constructor itself is covered by the Castle production checks.
+    for (relation, expected) in [(rival_castle, rival_castle), (human_castle, 0), (0, 0)] {
+        let mut entities = live.economy.entities.clone();
+        let mut spheres = live.economy.spheres().to_vec();
+        let mut players = live.core.players.clone();
+        players
+            .iter_mut()
+            .find(|player| player.entity_index == 112)
+            .unwrap()
+            .record[42..44]
+            .copy_from_slice(&relation.to_le_bytes());
+        let mut dispatcher = live.nyphur_dispatcher.clone();
+        dispatcher
+            .step_dispatch(
+                0,
+                112,
+                &mut entities,
+                &mut spheres,
+                &castles,
+                live.economy.castle_children(),
+                &players,
+                &live.terrain,
+                &session.session.definition.presentation,
+                0,
+                live.shared_spells.local_player.player_color_index(),
+            )
+            .unwrap();
+        assert_eq!(dispatcher.common_upkeep.castle_entity_index, expected);
+        assert!(!entities[usize::from(human_castle)].active);
+        assert!(!entities[usize::from(rival_castle)].active);
+    }
 }
 
 #[test]

@@ -13,15 +13,15 @@ mod cave_features;
 pub use cave_features::{CaveFeatureDefinition, CaveFeatureKind};
 mod creatures;
 pub use creatures::{
-    FINAL_BOSS_CLASS_PROPERTIES, FinalBossClassProperties,
-    CYMMERIAN_CLASS_PROPERTIES, CymmerianClassProperties,
-    CREATURE28_CLASS_PROPERTIES, Creature28ClassProperties,
     BEE_CLASS_PROPERTIES, BeeClassProperties, CREATURE17_CLASS_PROPERTIES,
     CREATURE18_CLASS_PROPERTIES, CREATURE21_CLASS_PROPERTIES, CREATURE22_CLASS_PROPERTIES,
     CREATURE23_CLASS_PROPERTIES, CREATURE24_CLASS_PROPERTIES, CREATURE26_CLASS_PROPERTIES,
+    CREATURE27_CLASS_PROPERTIES, CREATURE28_CLASS_PROPERTIES, CYMMERIAN_CLASS_PROPERTIES,
     Creature17ClassProperties, Creature18ClassProperties, Creature21ClassProperties,
     Creature22ClassProperties, Creature23ClassProperties, Creature24ClassProperties,
-    Creature26ClassProperties, WYVERN_CLASS_PROPERTIES, WyvernClassProperties,
+    Creature26ClassProperties, Creature27ClassProperties, Creature28ClassProperties,
+    CymmerianClassProperties, FINAL_BOSS_CLASS_PROPERTIES, FinalBossClassProperties,
+    WYVERN_CLASS_PROPERTIES, WyvernClassProperties,
 };
 mod effects;
 pub use effects::{EffectDefinition, EffectKind};
@@ -299,8 +299,12 @@ pub const fn creature_max_life_upper_bound(kind: CreatureKind) -> Option<u32> {
         | CreatureKind::Trader
         | CreatureKind::Villager
         | CreatureKind::Worm => Some(2_147_483_647),
-        CreatureKind::Wyvern | CreatureKind::Creature17 | CreatureKind::Creature18
-        | CreatureKind::Creature26 | CreatureKind::Creature27 | CreatureKind::Cymmerian => Some(2_147_483_647),
+        CreatureKind::Wyvern
+        | CreatureKind::Creature17
+        | CreatureKind::Creature18
+        | CreatureKind::Creature26
+        | CreatureKind::Creature27
+        | CreatureKind::Cymmerian => Some(2_147_483_647),
         _ => None,
     }
 }

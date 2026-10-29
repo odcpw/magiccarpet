@@ -331,6 +331,13 @@ namespace MagicCarpet.Native.Tests
             try
             {
                 runtime.QualificationInitializeGameRuntimeProductionFromArguments(InstalledOpeningArguments());
+                var openingSpells = runtime.GameRuntimeProductionCampaignSnapshot.value.player_spells;
+                var textures = (System.Collections.Generic.Dictionary<int, Texture2D>)
+                    typeof(MagicCarpetRuntime).GetField("hudBitmapTextures",
+                        System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic).GetValue(runtime);
+                Assert.That(SourceSpellMenu.HasRequiredBitmaps(openingSpells,
+                    selector => textures.TryGetValue(selector, out var texture) && texture != null), Is.True,
+                    "the ordinary Night HUD materializes the original acquired-spell menu artwork");
                 Assert.That(CampaignSpellPresenter.FindSpell(runtime.GameRuntimeProductionCampaignSnapshot.value,
                     "spell.possession").hand, Is.EqualTo("right"));
                 runtime.QualificationAssignGameRuntimeProductionSpell("spell.possession", 0, false);

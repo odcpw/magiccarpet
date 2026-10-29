@@ -177,8 +177,8 @@ mod tests {
                 .mana_spheres
                 .iter()
                 .map(|sphere| sphere.mana)
-                .sum::<i32>(),
-            900
+                .collect::<Vec<_>>(),
+            [500, 500, 234]
         );
         assert!(
             outcome

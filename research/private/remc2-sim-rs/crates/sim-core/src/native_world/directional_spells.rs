@@ -61,6 +61,11 @@ pub(crate) struct StealManaConsumption {
 pub(crate) struct DirectionalMailboxOutcome {
     pub duel: Option<DuelTetherBinding>,
     pub steal_mana: Option<StealManaConsumption>,
+    /// Source victim feedback also runs when a consumed lane cannot produce
+    /// its effect. Steal's hit timers require a resolved attacker address.
+    pub duel_consumed: bool,
+    pub steal_consumed: bool,
+    pub steal_attacker_resolved: bool,
 }
 
 fn word(row: &EntitySnapshot, offset: usize) -> u16 {
@@ -129,7 +134,10 @@ pub(crate) fn step_holder(
 
     if holder.active_value > 0 {
         if parent_slot != 0
-            && let Some(parent) = arena.entities.get(usize::from(parent_slot))
+            && let Some(parent) = arena
+                .entities
+                .get(usize::from(parent_slot))
+                .filter(|row| row.active && row.class == 3 && matches!(row.model, 0 | 1))
         {
             let fresh = holder.active_value == holder.activation_value as i16;
             let admitted = parent.mana >= 0
@@ -647,7 +655,7 @@ fn source_contact_overlaps_actor(
 
 fn actor(arena: &SourceArena, slot: u16) -> Option<ManaActor> {
     let row = arena.entities.get(usize::from(slot))?;
-    if !row.active || (row.class, row.model) != (3, 0) {
+    if !row.active || row.class != 3 || !matches!(row.model, 0 | 1) {
         return None;
     }
     Some(ManaActor {
@@ -662,7 +670,7 @@ fn actor(arena: &SourceArena, slot: u16) -> Option<ManaActor> {
 
 fn duel_actor(arena: &SourceArena, slot: u16) -> Option<DuelActor> {
     let row = arena.entities.get(usize::from(slot))?;
-    if !row.active || (row.class, row.model) != (3, 0) {
+    if !row.active || row.class != 3 || !matches!(row.model, 0 | 1) {
         return None;
     }
     Some(DuelActor {
@@ -674,49 +682,34 @@ fn duel_actor(arena: &SourceArena, slot: u16) -> Option<DuelActor> {
     })
 }
 
-fn castle_slot(castle_slots: &[(u16, u16)], player_slot: u16) -> Option<u16> {
-    castle_slots
-        .iter()
-        .find_map(|(player, castle)| (*player == player_slot && *castle != 0).then_some(*castle))
+fn castle_slot(arena: &SourceArena, castle_slots: &[(u16, u16)], player_slot: u16) -> Option<u16> {
+    castle_slots.iter().find_map(|(player, castle)| {
+        (*player == player_slot
+            && arena
+                .economy
+                .castle_for_owner(player_slot)
+                .is_some_and(|root| root.source_entity_index == *castle))
+        .then_some(*castle)
+    })
 }
 
 #[derive(Clone, Copy)]
 struct CastleProjection {
-    owner_entity_index: u16,
     position: Position,
     pitch: i16,
     roll: i16,
     mana: i32,
 }
 
-/// Resolve a Castle from its typed authority before considering an active
-/// source row. The row fallback is limited to class-3/model-2 Castle roots;
-/// an unrelated occupant at the same arena address is never Castle mana or
-/// sphere-position state.
+/// Resolve only a current owner/root generation pair from typed authority.
 fn castle_projection(arena: &SourceArena, slot: u16) -> Option<CastleProjection> {
-    if slot == 0 {
-        return None;
-    }
-    if let Some(castle) = arena
-        .economy
-        .castle
-        .filter(|castle| castle.active && castle.source_entity_index == slot)
-    {
-        return Some(CastleProjection {
-            owner_entity_index: castle.owner_entity_index,
-            position: castle.position,
-            pitch: castle.shift_pitch,
-            roll: castle.shift_roll,
-            mana: castle.mana,
-        });
-    }
-    let row = arena.entities.get(usize::from(slot))?;
-    (row.active && (row.class, row.model) == (3, 2)).then_some(CastleProjection {
-        owner_entity_index: row.source_player_entity_index(),
-        position: row.position,
-        pitch: row.array_pitch(),
-        roll: row.array_roll(),
-        mana: row.mana,
+    let castle = arena.economy.castle_at(slot)?;
+    let current = arena.economy.castle_for_owner(castle.owner_entity_index)?;
+    (current.source_entity_index == slot).then_some(CastleProjection {
+        position: castle.position,
+        pitch: castle.shift_pitch,
+        roll: castle.shift_roll,
+        mana: castle.mana,
     })
 }
 
@@ -728,10 +721,6 @@ fn castle_mana(arena: &SourceArena, slot: Option<u16>) -> Option<CastleMana> {
         active: true,
         mana: castle.mana,
     })
-}
-
-fn castle_owner_entity_index(arena: &SourceArena, slot: u16) -> Option<u16> {
-    castle_projection(arena, slot).map(|castle| castle.owner_entity_index)
 }
 
 fn set_actor_mana(
@@ -747,46 +736,38 @@ fn set_actor_mana(
 }
 
 fn set_castle_mana(arena: &mut SourceArena, slot: u16, mana: i32) -> bool {
-    let typed = arena
-        .economy
-        .castle
-        .is_some_and(|castle| castle.active && castle.source_entity_index == slot);
-    if typed {
-        if let Some(castle) = arena
-            .economy
-            .castle
-            .as_mut()
-            .filter(|castle| castle.active && castle.source_entity_index == slot)
-        {
-            castle.mana = mana;
-        }
+    if castle_projection(arena, slot).is_none() {
+        return false;
     }
-    let row_written = if let Some(row) = arena
+    let Some(castle) = arena.economy.castle_at_mut(slot) else {
+        return false;
+    };
+    castle.mana = mana;
+    if let Some(row) = arena
         .entities
         .get_mut(usize::from(slot))
         .filter(|row| row.active && (row.class, row.model) == (3, 2))
     {
         row.set_mana(mana);
-        true
-    } else {
-        false
-    };
-    typed || row_written
+    }
+    true
 }
 
 fn duel_holder_slot(shared: &Level2SharedSpellResetSession, caster_slot: u16) -> Option<u16> {
-    shared
-        .pickups()
+    let slot = shared
+        .players
         .iter()
+        .find(|player| player.entity_index == caster_slot)?
+        .enabled_spell_holders[usize::from(DUEL_FAMILY)];
+    shared
+        .pickup(slot)
         .filter(|holder| {
             holder.class == 15
                 && holder.model == DUEL_FAMILY
                 && holder.action == DUEL_ACTION
-                && holder.active_value != 0
                 && holder.source_spell_parent_entity_index() == caster_slot
         })
         .map(|holder| holder.index)
-        .min()
 }
 
 /// Publish a consumed Duel lane to the existing FlightState/`apply_tether`
@@ -817,7 +798,13 @@ pub(crate) fn consume_actor_mailbox(
         .entities
         .get(usize::from(actor_slot))
         .ok_or("directional mailbox actor address is outside source arena")?;
-    if !target_row.active || (target_row.class, target_row.model) != (3, 0) {
+    // sub_5EFA0 only reads or clears either effect lane while the target's
+    // life is nonnegative. Preserve pending hits across the dead callback.
+    if !target_row.active
+        || target_row.class != 3
+        || !matches!(target_row.model, 0 | 1)
+        || target_row.life < 0
+    {
         return Ok(DirectionalMailboxOutcome::default());
     }
 
@@ -825,11 +812,14 @@ pub(crate) fn consume_actor_mailbox(
     let duel_hit = arena.entities[usize::from(actor_slot)]
         .take_player_effect(crate::combat::actors::PlayerEffectLane::Duel);
     if let Some(hit) = duel_hit {
+        outcome.duel_consumed = true;
         let caster_slot = hit.attacker;
-        if let (Some(caster), Some(target), Some(holder_slot)) = (
+        // The hit callback writes the relation even when its holder has
+        // expired; the later flight callback checks the holder and clears it.
+        let holder_slot = duel_holder_slot(shared, caster_slot).unwrap_or(0);
+        if let (Some(caster), Some(target)) = (
             duel_actor(arena, caster_slot),
             duel_actor(arena, actor_slot),
-            duel_holder_slot(shared, caster_slot),
         ) && let Some(binding) = bind_tether(hit.payload, caster, target, holder_slot)
         {
             outcome.duel = Some(binding);
@@ -840,14 +830,16 @@ pub(crate) fn consume_actor_mailbox(
         .take_player_effect(crate::combat::actors::PlayerEffectLane::StealMana);
     if let Some(hit) = steal_hit {
         let caster_slot = hit.attacker;
+        outcome.steal_consumed = true;
+        outcome.steal_attacker_resolved = arena.handle(caster_slot).is_some();
         let Some(mut thief) = actor(arena, caster_slot) else {
             return Ok(outcome);
         };
         let Some(mut victim) = actor(arena, actor_slot) else {
             return Ok(outcome);
         };
-        let thief_castle_slot = castle_slot(castle_slots, caster_slot);
-        let victim_castle_slot = castle_slot(castle_slots, actor_slot);
+        let thief_castle_slot = castle_slot(arena, castle_slots, caster_slot);
+        let victim_castle_slot = castle_slot(arena, castle_slots, actor_slot);
         let mut thief_castle = castle_mana(arena, thief_castle_slot);
         let mut victim_castle = castle_mana(arena, victim_castle_slot);
         let result = apply_steal_mana(
@@ -869,16 +861,12 @@ pub(crate) fn consume_actor_mailbox(
                 }
             }
             if let Some(spawn_castle_slot) = thief_castle_slot {
-                let Some(castle_owner) = castle_owner_entity_index(arena, spawn_castle_slot) else {
-                    return Ok(outcome);
-                };
                 for grant in &result.mana_spheres {
                     let _ = spawn_steal_mana_sphere(
                         arena,
                         terrain,
                         actor_slot,
                         spawn_castle_slot,
-                        castle_owner,
                         grant.mana,
                         grant.player_entity_index,
                     )?;
@@ -899,7 +887,6 @@ fn spawn_steal_mana_sphere(
     terrain: &mut SessionTerrain,
     hit_actor_slot: u16,
     caster_castle_slot: u16,
-    castle_owner_entity_index: u16,
     mana: i32,
     player_entity_index: u16,
 ) -> Result<Option<u16>, String> {
@@ -940,7 +927,7 @@ fn spawn_steal_mana_sphere(
         position,
         angle,
         mana,
-        castle_owner_entity_index,
+        player_entity_index,
         terrain,
     );
     let sphere = arena
@@ -951,10 +938,6 @@ fn spawn_steal_mana_sphere(
         .ok_or("Steal Mana NewEvent lost its model-39 sphere carrier")?;
     sphere.position = position;
     sphere.mana = mana;
-    // The Rust Castle collector routes by the caster Castle owner, while the
-    // raw C++ model-39 targeting relation follows the SPELLS.DAT product byte.
-    sphere.owner_entity_index = castle_owner_entity_index;
-    sphere.player_entity_index = player_entity_index;
     let entity_rng = sphere.entity_rng;
     arena.economy.source_rng.insert(slot, entity_rng);
     if let Some(row) = arena.entities.get_mut(usize::from(slot)) {
@@ -1010,6 +993,15 @@ mod tests {
         }
         if parent.mana < required_mana {
             parent.set_mana(required_mana);
+        }
+        if family == DUEL_FAMILY {
+            let player = live
+                .shared_spells
+                .players
+                .iter_mut()
+                .find(|player| player.entity_index == parent_slot)
+                .expect("holder owner has a player spell state");
+            player.enabled_spell_holders[usize::from(DUEL_FAMILY)] = holder_slot;
         }
         (simulation, holder_slot, parent_slot)
     }
@@ -1123,7 +1115,7 @@ mod tests {
                     live.economy
                         .entities
                         .get(usize::from(player.entity_index))
-                        .filter(|row| row.active && (row.class, row.model) == (3, 0))
+                        .filter(|row| row.active && row.class == 3 && matches!(row.model, 0 | 1))
                         .map(|row| row.index)
                 })
                 .expect("qualified Level 2 campaign has a live opposing player actor");
@@ -1139,7 +1131,8 @@ mod tests {
         {
             let live = &mut simulation.session.state.live;
             let target = &mut live.economy.entities[usize::from(target_slot)];
-            assert_eq!((target.class, target.model), (3, 0));
+            assert_eq!(target.class, 3);
+            assert!(matches!(target.model, 0 | 1));
             assert_ne!(target.source_id, parent_slot);
             target.set_position(position);
             target.set_life(100);
@@ -1330,45 +1323,6 @@ mod tests {
         slot
     }
 
-    fn add_castle(
-        simulation: &mut super::super::Mc2Simulation,
-        template_slot: u16,
-        position: Position,
-        player_entity_index: u16,
-        mana: i32,
-    ) -> u16 {
-        let live = &mut simulation.session.state.live;
-        let slot = live
-            .economy
-            .allocate_source_slot_with_terrain(&mut live.terrain)
-            .expect("test Castle source slot available");
-        let mut castle = live.economy.entities[usize::from(template_slot)].clone();
-        castle.index = slot;
-        castle.source_id = player_entity_index;
-        castle.record[30..32].copy_from_slice(&player_entity_index.to_le_bytes());
-        castle.class = 3;
-        castle.model = 2;
-        castle.record[67] = 3;
-        castle.record[68] = 2;
-        castle.set_source_action(5);
-        castle.active = true;
-        castle.set_life(40_000);
-        castle.set_mana(mana);
-        castle.set_source_player_entity_index(player_entity_index);
-        castle.set_position(position);
-        live.economy.entities[usize::from(slot)] = castle;
-        crate::world::effects::sync_position(
-            &mut live.economy,
-            &mut live.terrain,
-            slot,
-            position,
-            true,
-            true,
-        )
-        .expect("test Castle map link");
-        slot
-    }
-
     fn deactivate_other_actors(arena: &mut SourceArena, keep: &[u16]) {
         for row in &mut arena.entities {
             if row.class == 3 && !keep.contains(&row.index) {
@@ -1378,6 +1332,200 @@ mod tests {
                 row.record[67] = 0;
             }
         }
+    }
+
+    fn castle_from_source_flyer(simulation: &mut super::super::Mc2Simulation, owner: u16) -> u16 {
+        let live = &mut simulation.session.state.live;
+        let position = (1_u16..32)
+            .flat_map(|y| {
+                (1_u16..32).map(move |x| Position {
+                    x: x * 2_048,
+                    y: y * 2_048,
+                    z: 0,
+                })
+            })
+            .find(|position| {
+                !live.economy.economy.castle_projectile_site_blocked(
+                    *position,
+                    &live.economy.entities,
+                    &live.terrain,
+                ) && live.economy.economy.live_castles().all(|castle| {
+                    crate::distance_3d_wrapped(
+                        Position {
+                            z: castle.position.z,
+                            ..*position
+                        },
+                        castle.position,
+                    ) > 25_000
+                })
+            })
+            .expect("owner terrain has an admissible Castle flyer site");
+        let ground = live.terrain.ground_height(position);
+        let origin = Position {
+            z: ground.wrapping_add(1),
+            ..position
+        };
+        let axis = Position {
+            z: ground.wrapping_sub(1),
+            ..position
+        };
+        let payload = super::super::level2_dynamic_economy::Level2CastleProjectileLaunchPayload {
+            position: origin,
+            axis_position: axis,
+            yaw: 0,
+            pitch: 0,
+            source_id_entity_index: owner,
+            source_subspell_index: 0,
+            source_mana: 0,
+            source_a4_byte_154: 0,
+        };
+        let flyer = live
+            .economy
+            .economy
+            .spawn_castle_projectile_with_payload(payload, 0, 0, &live.terrain)
+            .expect("source Castle flyer allocation");
+        let entities = live.economy.entities.clone();
+        assert!(
+            live.economy
+                .economy
+                .step_castle_projectile_slot(flyer, &entities, &live.terrain)
+        );
+        assert!(
+            !live
+                .economy
+                .economy
+                .step_castle_projectile_slot(flyer, &entities, &live.terrain)
+        );
+        let root = live
+            .economy
+            .economy
+            .live_castles()
+            .find(|castle| castle.owner_entity_index == owner)
+            .expect("flyer landing allocates the source Castle root")
+            .source_entity_index;
+        let free_slots = live.economy.free_slots.clone();
+        assert!(
+            live.economy
+                .economy
+                .step_castle_action(root, &mut live.terrain, &free_slots)
+        );
+        assert_eq!(
+            live.economy
+                .economy
+                .castle_for_owner(owner)
+                .unwrap()
+                .source_entity_index,
+            root
+        );
+        root
+    }
+
+    #[test]
+    fn missing_or_replaced_parent_does_not_cast_but_holder_timers_advance() {
+        for family in [STEAL_MANA_FAMILY, DUEL_FAMILY] {
+            for replaced in [false, true] {
+                let (mut simulation, holder_slot, parent_slot) = ready_holder(family, 0);
+                let particles = simulation.session.definition.presentation.particles.clone();
+                let live = &mut simulation.session.state.live;
+                let holder = live.shared_spells.pickup_mut(holder_slot).unwrap();
+                let active_before = holder.active_value;
+                put(holder, 58, 3);
+                let parent = &mut live.economy.entities[usize::from(parent_slot)];
+                if replaced {
+                    parent.class = 5;
+                    parent.record[67] = 5;
+                } else {
+                    parent.active = false;
+                }
+                let regen_before = parent.mana_regen;
+                let outcome = step_holder(
+                    &mut live.shared_spells,
+                    &mut live.economy,
+                    &mut live.terrain,
+                    &particles,
+                    holder_slot,
+                    DirectionalCastInput {
+                        projectile: CastInput {
+                            castle_mana: Some(i32::MAX),
+                            ..Default::default()
+                        },
+                        duel_target_active: false,
+                    },
+                )
+                .unwrap();
+                assert!(outcome.projectile.is_none());
+                assert_eq!(
+                    live.economy.entities[usize::from(parent_slot)].mana_regen,
+                    regen_before
+                );
+                let holder = live.shared_spells.pickup(holder_slot).unwrap();
+                assert_eq!(holder.active_value, active_before - 1);
+                assert_eq!(word(holder, 58), 2);
+            }
+        }
+    }
+
+    #[test]
+    fn steal_mana_cast_hits_and_transfers_from_live_nyphur() {
+        let (mut simulation, holder_slot, parent_slot) = ready_holder(STEAL_MANA_FAMILY, 0);
+        let projectile_slot = cast(&mut simulation, holder_slot, false);
+        let particles = simulation.session.definition.presentation.particles.clone();
+        let target_slot = {
+            let live = &mut simulation.session.state.live;
+            let position = source_probe_eligible_target_position(
+                &live.economy.entities[usize::from(projectile_slot)],
+                4,
+            );
+            let target = live
+                .economy
+                .entities
+                .iter_mut()
+                .find(|row| {
+                    row.active && (row.class, row.model) == (3, 1) && row.source_id != parent_slot
+                })
+                .expect("campaign has a live rival Nyphur");
+            let slot = target.index;
+            target.set_position(position);
+            target.set_life(100);
+            target.max_mana = 10_000;
+            target.record[144..148].copy_from_slice(&10_000_i32.to_le_bytes());
+            target.set_mana(8_000);
+            crate::world::effects::sync_position(
+                &mut live.economy,
+                &mut live.terrain,
+                slot,
+                position,
+                true,
+                true,
+            )
+            .unwrap();
+            slot
+        };
+        let (_, field_slot) = fly_projectile_into_target_slot(
+            &mut simulation,
+            projectile_slot,
+            target_slot,
+            3,
+            particles,
+        );
+        let live = &mut simulation.session.state.live;
+        deactivate_other_actors(&mut live.economy, &[parent_slot, target_slot]);
+        assert_eq!(
+            step_field(&mut live.economy, field_slot)
+                .unwrap()
+                .accepted_target_slots,
+            [target_slot]
+        );
+        let result = consume_actor_mailbox(
+            &mut live.shared_spells,
+            &mut live.economy,
+            &mut live.terrain,
+            target_slot,
+            &[],
+        )
+        .unwrap();
+        assert_eq!(result.steal_mana.unwrap().result.fixed_transfer, 2_000);
+        assert_eq!(live.economy.entities[usize::from(target_slot)].mana, 6_000);
     }
 
     #[test]
@@ -1473,6 +1621,7 @@ mod tests {
             &[],
         )
         .unwrap();
+        assert!(result.steal_consumed && result.steal_attacker_resolved);
         let consumption = result.steal_mana.expect("real actor mailbox was consumed");
         assert_eq!(consumption.caster_entity_index, parent_slot);
         assert!(consumption.result.experience_awarded);
@@ -1564,6 +1713,7 @@ mod tests {
             &[],
         )
         .unwrap();
+        assert!(consumed.duel_consumed);
         let tether = consumed
             .duel
             .expect("Duel mailbox produces the existing FlightState tether binding");
@@ -1588,6 +1738,52 @@ mod tests {
         );
         assert_eq!(tether.tier, 0);
         assert_eq!(tether.prior_distance, 1_417);
+
+        // A hit arriving after the holder expired still writes the source
+        // relation. The ordinary flight consumer clears it on its next pass.
+        live.shared_spells
+            .pickup_mut(holder_slot)
+            .unwrap()
+            .active_value = 0;
+        assert!(
+            live.economy.entities[usize::from(target_slot)].submit_player_effect_contact(
+                crate::combat::actors::PlayerEffectLane::Duel,
+                0,
+                parent_slot,
+                true,
+            )
+        );
+        let expired = consume_actor_mailbox(
+            &mut live.shared_spells,
+            &mut live.economy,
+            &mut live.terrain,
+            target_slot,
+            &[],
+        )
+        .unwrap()
+        .duel
+        .expect("the hit still publishes the relation");
+        assert_eq!(expired.holder_entity_index, holder_slot);
+        install_duel_tether_binding(&mut flight, expired);
+        let target = &live.economy.entities[usize::from(target_slot)];
+        let mut context = crate::TetherContext {
+            holder: Some(crate::SpellHolder {
+                entity_index: holder_slot,
+                active_value: 0,
+            }),
+            target: Some(crate::TetherTarget {
+                entity_index: target_slot,
+                position: target.position,
+                life: target.life,
+                mana: target.mana,
+                mana_regen: target.mana_regen,
+                life_regen: 0,
+            }),
+        };
+        let position = live.economy.entities[usize::from(parent_slot)].position;
+        let mut proposed = position;
+        crate::apply_tether(&mut flight, position, &mut proposed, &mut context);
+        assert_eq!(flight.tether_target_index, 0);
 
         deactivate_other_actors(&mut live.economy, &[parent_slot]);
         let field = step_field(&mut live.economy, field_slot).unwrap();
@@ -1617,6 +1813,7 @@ mod tests {
 
         let pending_before = live.economy.entities[usize::from(target_slot)]
             .pending_player_effect(crate::combat::actors::PlayerEffectLane::StealMana);
+        assert!(pending_before.is_some(), "field must first deliver a hit");
         let consumed = consume_actor_mailbox(
             &mut live.shared_spells,
             &mut live.economy,
@@ -1628,7 +1825,48 @@ mod tests {
         let pending_after = live.economy.entities[usize::from(target_slot)]
             .pending_player_effect(crate::combat::actors::PlayerEffectLane::StealMana);
         assert!(consumed.steal_mana.is_none());
+        assert!(!consumed.steal_consumed);
         assert_eq!(pending_after, pending_before);
+
+        live.economy.entities[usize::from(target_slot)].set_life(100);
+        let resumed = consume_actor_mailbox(
+            &mut live.shared_spells,
+            &mut live.economy,
+            &mut live.terrain,
+            target_slot,
+            &[],
+        )
+        .unwrap();
+        assert!(resumed.steal_consumed && resumed.steal_attacker_resolved);
+        assert!(resumed.steal_mana.is_some());
+        assert!(
+            live.economy.entities[usize::from(target_slot)]
+                .pending_player_effect(crate::combat::actors::PlayerEffectLane::StealMana)
+                .is_none()
+        );
+
+        let missing = (1..u16::try_from(live.economy.entities.len()).unwrap())
+            .find(|&slot| live.economy.handle(slot).is_none())
+            .expect("a free source address");
+        assert!(
+            live.economy.entities[usize::from(target_slot)].submit_player_effect_contact(
+                crate::combat::actors::PlayerEffectLane::StealMana,
+                0,
+                missing,
+                true,
+            )
+        );
+        let missing_result = consume_actor_mailbox(
+            &mut live.shared_spells,
+            &mut live.economy,
+            &mut live.terrain,
+            target_slot,
+            &[],
+        )
+        .unwrap();
+        assert!(missing_result.steal_consumed);
+        assert!(!missing_result.steal_attacker_resolved);
+        assert!(missing_result.steal_mana.is_none());
     }
 
     #[test]
@@ -1637,63 +1875,41 @@ mod tests {
         let projectile_slot = cast(&mut simulation, holder_slot, false);
         let (target_slot, field_slot) =
             fly_into_actual_opposing_player(&mut simulation, projectile_slot, parent_slot);
-        let constructed_castle_slot = {
-            let live = &mut simulation.session.state.live;
-            let parent_position = live.economy.entities[usize::from(parent_slot)].position;
-            live.economy
-                .economy
-                .build_castle(parent_position, parent_slot, &live.terrain)
-                .expect("tier-two consumer fixture constructs a real local Castle")
-        };
-        let position =
-            simulation.session.state.live.economy.entities[usize::from(field_slot)].position;
-        let caster_castle_slot = simulation
-            .session
-            .state
-            .live
-            .economy
-            .economy
-            .castle
-            .filter(|castle| castle.active)
-            .expect("qualified Level 2 fixture has its local Castle")
-            .source_entity_index;
-        assert_eq!(caster_castle_slot, constructed_castle_slot);
+        let caster_castle_slot = castle_from_source_flyer(&mut simulation, parent_slot);
         {
             let live = &mut simulation.session.state.live;
             deactivate_other_actors(
                 &mut live.economy,
                 &[parent_slot, target_slot, caster_castle_slot],
             );
-            if let Some(castle) = live
-                .economy
-                .economy
-                .castle
-                .as_mut()
-                .filter(|castle| castle.source_entity_index == caster_castle_slot)
-            {
-                castle.mana = 9_000;
-            }
-            if let Some(row) = live
-                .economy
-                .entities
-                .get_mut(usize::from(caster_castle_slot))
-            {
-                row.set_mana(9_000);
-            }
+            assert!(set_castle_mana(
+                &mut live.economy,
+                caster_castle_slot,
+                9_000
+            ));
         }
-        let target_castle_position = Position {
-            x: position.x.wrapping_add(30_000),
-            y: position.y.wrapping_add(30_000),
-            z: position.z,
-        };
-        let target_castle_slot = add_castle(
-            &mut simulation,
-            parent_slot,
-            target_castle_position,
-            target_slot,
-            12_345,
-        );
+        let target_castle_slot = castle_from_source_flyer(&mut simulation, target_slot);
         let live = &mut simulation.session.state.live;
+        assert!(set_castle_mana(
+            &mut live.economy,
+            target_castle_slot,
+            12_345
+        ));
+        let target_castle_position = live
+            .economy
+            .economy
+            .castle_at(target_castle_slot)
+            .unwrap()
+            .position;
+        assert_eq!(
+            castle_slot(
+                &live.economy,
+                &[(target_slot, caster_castle_slot)],
+                target_slot
+            ),
+            None,
+            "another owner's live Castle is not the target's Castle"
+        );
         let sphere_count = live.economy.economy.spheres.len();
         assert_eq!(
             live.economy.entities[usize::from(field_slot)].record[74],
@@ -1725,25 +1941,30 @@ mod tests {
         assert_eq!(result.result.target_castle_mana_after, Some(11_111));
         assert_eq!(live.economy.entities[usize::from(target_slot)].mana, 8_000);
         assert_eq!(
-            live.economy.economy.castle.unwrap().mana,
+            live.economy
+                .economy
+                .castle_at(caster_castle_slot)
+                .unwrap()
+                .mana,
             9_000,
             "the casting actor's Castle supplies sphere positions but is not debited"
         );
         assert_eq!(
-            live.economy.entities[usize::from(target_castle_slot)].mana,
+            live.economy
+                .economy
+                .castle_at(target_castle_slot)
+                .unwrap()
+                .mana,
             11_111,
             "the hit actor's Castle pays the tier-two percentage"
         );
         let spheres = &live.economy.economy.spheres[sphere_count..];
         assert_eq!(spheres.len(), 3);
         assert_eq!(spheres.iter().map(|sphere| sphere.mana).sum::<i32>(), 1_234);
-        let caster_castle = live.economy.economy.castle.unwrap();
-        // This fixture Castle is installed in typed economy state without
-        // publishing an active draw row. Sphere placement takes this same
-        // Castle.position fallback when its raw row is inactive.
+        let caster_castle = *live.economy.economy.castle_at(caster_castle_slot).unwrap();
         let caster_castle_position = caster_castle.position;
         assert!(spheres.iter().all(|sphere| {
-            sphere.owner_entity_index == caster_castle.owner_entity_index
+            sphere.owner_entity_index == 0
                 && sphere.player_entity_index == 0
                 && sphere.max_life == 300
                 && sphere.life == 300
@@ -1757,6 +1978,14 @@ mod tests {
                 .map_chains
                 .is_linked(sphere.source_entity_index)
         }));
+        // A reused arena address must not revive the old owner/root link.
+        live.economy.economy.release_slot(target_castle_slot, None);
+        assert_eq!(
+            live.economy.economy.allocate_slot(),
+            Some(target_castle_slot)
+        );
+        assert!(castle_projection(&live.economy, target_castle_slot).is_none());
+        assert!(!set_castle_mana(&mut live.economy, target_castle_slot, 1));
     }
 
     #[test]

@@ -53,7 +53,14 @@ pub(crate) fn allocate_summoned(
     };
     arena
         .economy
-        .initialize_authored_firefly_at_slot(slot, None, position, route, FIREFLY_LIFE, terrain)
+        .initialize_authored_firefly_at_slot(
+            slot,
+            None,
+            position,
+            Some(route),
+            FIREFLY_LIFE,
+            terrain,
+        )
         .ok_or_else(|| format!("Firefly Army summon constructor failed at slot{slot}"))?;
 
     let source = arena
@@ -68,6 +75,7 @@ pub(crate) fn allocate_summoned(
     source.word_0x96_150 = 0;
     let source_position = source.position;
 
+    let parent_generation = arena.slot_generation(parent_slot);
     let runtime_state = arena
         .economy
         .authored_fireflies
@@ -78,6 +86,7 @@ pub(crate) fn allocate_summoned(
     runtime_state.stage_var2 = 13;
     runtime_state.stage_target = Position::default();
     runtime_state.parent_entity_index = parent_slot;
+    runtime_state.parent_generation = parent_generation;
     runtime_state.word_0x2e = 250;
     arena.economy.source_owner.insert(slot, owner_id);
 
@@ -97,9 +106,10 @@ pub(crate) fn allocate_summoned(
     Ok(Some(handle))
 }
 
-/// Run the source action-159 StageVar-13 branch for a summoned Firefly.
+/// Run action 159's parent-bound StageVar 13, 16 and 17 branches.
 ///
-/// `sub_1E580` consumes the parent and lifetime on every scheduled visit,
+/// `sub_1E320` first moves a boss-launched child towards its launch target;
+/// `sub_1E580` then consumes its parent and lifetime on scheduled visits,
 /// chooses a class-3 model-0/1 target from the frozen source list, and hides
 /// the root only after publishing its real class-10 expiry children. The
 /// source scheduler still owns the byte-0x3E tail and next-pass reclaim.
@@ -134,11 +144,60 @@ pub(crate) fn step_summoned_stage_slot(
 
     let mut source = arena.economy.authored_class5[source_index];
     let mut state = arena.economy.authored_fireflies[state_index];
-    if state.stage_var2 != 13 {
+    if !matches!(state.stage_var2, 13 | 16 | 17) {
         return Err(format!(
-            "summoned Firefly slot {source_slot} has StageVar2 {}, expected 13",
+            "parent-bound Firefly slot {source_slot} has unsupported StageVar2 {}",
             state.stage_var2
         ));
+    }
+
+    if state.stage_var2 == 17 {
+        if step_firefly_motion(&mut source, &mut state, terrain) {
+            arena.economy.decrement_source_creature_population();
+        }
+        if source.life < 0 {
+            source.drawing_enabled = false;
+        } else {
+            // Unlike sub_1E580, sub_1E320 accepts a target with zero life.
+            let target = arena
+                .entities
+                .get(usize::from(source.word_0x96_150))
+                .filter(|row| {
+                    source.word_0x96_150 != 0
+                        && row.active
+                        && row.life >= 0
+                        && !row.drawing_disabled()
+                });
+            if let Some(target) = target {
+                let position =
+                    firefly_stage_position(source.word_0x96_150, target.position, players);
+                source.roll =
+                    i16::try_from(crate::heading_for_positions(source.position, position))
+                        .expect("Firefly launch heading fits i16");
+                source.actual_speed = source.actual_speed.wrapping_sub(8);
+                if source.actual_speed <= 16 {
+                    source.actual_speed = FIREFLY_MINIMUM_SPEED;
+                    state.stage_var2 = 16;
+                }
+            } else {
+                state.stage_var2 = 16;
+            }
+        }
+        arena
+            .economy
+            .source_rng
+            .insert(source_slot, source.entity_rng);
+        arena.economy.authored_class5[source_index] = source;
+        arena.economy.authored_fireflies[state_index] = state;
+        crate::world::effects::sync_position(
+            arena,
+            terrain,
+            source_slot,
+            source.position,
+            source.drawing_enabled,
+            false,
+        )?;
+        return Ok(true);
     }
 
     let parent_slot = state.parent_entity_index;
@@ -146,25 +205,31 @@ pub(crate) fn step_summoned_stage_slot(
         .entities
         .get(usize::from(parent_slot))
         .filter(|parent| {
-            parent_slot != 0 && parent.active && parent.life >= 0 && !parent.drawing_disabled()
+            parent_slot != 0
+                && arena.slot_generation(parent_slot) == state.parent_generation
+                && parent.active
+                && parent.life >= 0
+                && !parent.drawing_disabled()
         })
         .map(|parent| FireflyStageTarget {
             source_id: parent.source_id,
             position: firefly_stage_position(parent_slot, parent.position, players),
         });
 
-    if parent.is_some() {
-        state.word_0x2e = state.word_0x2e.saturating_sub(1);
-    } else {
+    if parent.is_some() && state.stage_var2 == 13 {
+        state.word_0x2e = state.word_0x2e.wrapping_sub(1);
+    } else if parent.is_none() {
         state.word_0x2e = 0;
     }
 
-    if state.word_0x2e == 0 {
+    if state.word_0x2e.cast_signed() <= 0 {
         arena.economy.authored_fireflies[state_index] = state;
         let handle = arena
             .handle(source_slot)
             .ok_or_else(|| format!("summoned Firefly slot {source_slot} lost its handle"))?;
-        crate::goat::runtime::spawn_expiry_visual(arena, terrain, source.position, particles)?;
+        if state.stage_var2 == 13 {
+            crate::goat::runtime::spawn_expiry_visual(arena, terrain, source.position, particles)?;
+        }
         let _ = crate::world::effects::allocate(
             arena,
             terrain,
@@ -238,7 +303,7 @@ pub(crate) fn step_summoned_stage_slot(
 
     if !acquired_target {
         source.word_0x96_150 = 0;
-        state.word_0x2e = state.word_0x2e.saturating_sub(4);
+        state.word_0x2e = state.word_0x2e.wrapping_sub(4);
     }
 
     if source.source_byte_3e & 7 == 0 {
@@ -260,6 +325,8 @@ pub(crate) fn step_summoned_stage_slot(
                     && peer.model == FIREFLY_MODEL
                     && peer.source_entity_index == *peer_slot
                     && peer.source_entity_index != source_slot
+                    && arena.economy.source_owner(*peer_slot)
+                        != arena.economy.source_owner(source_slot)
                     && (i32::from(
                         peer.position
                             .x
@@ -318,7 +385,7 @@ pub(crate) fn retire_hidden_summoned_stage_at_source_boundary(arena: &mut Source
         .economy
         .authored_fireflies
         .iter()
-        .filter(|state| state.stage_var2 == 13)
+        .filter(|state| matches!(state.stage_var2, 13 | 16 | 17))
         .map(|state| state.source_entity_index)
         .collect::<std::collections::BTreeSet<_>>();
     for source in arena.economy.authored_class5.iter_mut().filter(|source| {
@@ -525,6 +592,7 @@ pub(crate) fn adopt_imported_fireflies(
                 ),
                 linked_head: row.word_34(),
             });
+        let parent_generation = arena.slot_generation(word(44));
         arena
             .economy
             .authored_fireflies
@@ -541,6 +609,7 @@ pub(crate) fn adopt_imported_fireflies(
                 stage_target,
                 movement_blocked: row.control_flags & 0x0004_0000 != 0,
                 parent_entity_index: word(44),
+                parent_generation,
                 word_0x2e: word(50),
             });
         arena.economy.source_rng.insert(row.index, row.entity_rng);
@@ -614,7 +683,28 @@ impl Level2EconomyState {
             source_entity_index,
             Some(authored_index),
             position,
-            route,
+            Some(route),
+            max_life,
+            terrain,
+        )
+    }
+
+    /// Construct an ordinary Firefly when sub_12100 finds no active route.
+    /// The source constructor leaves its stage fields zero and action 153.
+    pub(crate) fn allocate_authored_firefly_unbound(
+        &mut self,
+        authored_index: u16,
+        position: Position,
+        max_life: u32,
+        terrain: &SessionTerrain,
+    ) -> Option<Level2AuthoredClass5Source> {
+        let max_life = i32::try_from(max_life).ok().filter(|value| *value > 0)?;
+        let slot = self.allocate_slot()?;
+        self.initialize_authored_firefly_at_slot(
+            slot,
+            Some(authored_index),
+            position,
+            None,
             max_life,
             terrain,
         )
@@ -629,7 +719,7 @@ impl Level2EconomyState {
         source_entity_index: u16,
         authored_index: Option<u16>,
         position: Position,
-        route: FireflyStageRoute,
+        route: Option<FireflyStageRoute>,
         max_life: i32,
         terrain: &SessionTerrain,
     ) -> Option<Level2AuthoredClass5Source> {
@@ -668,7 +758,11 @@ impl Level2EconomyState {
             entity_rng,
             authored_index: authored_index.unwrap_or(IMPORTED_FIREFLY_AUTHORED_INDEX),
             model: FIREFLY_MODEL,
-            action: FIREFLY_STAGE_ACTION,
+            action: if route.is_some() {
+                FIREFLY_STAGE_ACTION
+            } else {
+                FIREFLY_ROAM_ACTION
+            },
             minimum_speed: FIREFLY_MINIMUM_SPEED,
             maximum_speed: FIREFLY_MAXIMUM_SPEED,
             actual_speed: FIREFLY_MINIMUM_SPEED,
@@ -719,11 +813,12 @@ impl Level2EconomyState {
             byte_0x38: 1,
             xtype: 3,
             descriptor_index: FIREFLY_DESCRIPTOR,
-            stage_var1: route.stage_var1,
-            stage_var2: route.stage_var2,
-            stage_target: route.target,
+            stage_var1: route.map_or(0, |route| route.stage_var1),
+            stage_var2: route.map_or(0, |route| route.stage_var2),
+            stage_target: route.map_or(Position::default(), |route| route.target),
             movement_blocked: false,
             parent_entity_index: 0,
+            parent_generation: 0,
             word_0x2e: 0,
         });
         Some(source)
@@ -964,6 +1059,12 @@ impl Level2EconomyState {
                 .position(|state| state.source_entity_index == source_slot)
                 .expect("Firefly source slot came from its runtime row");
             let state = self.authored_fireflies[state_index];
+            if matches!(state.stage_var2, 13 | 16 | 17) {
+                if !matches!(self.authored_class5[source_index].action & 7, 2 | 6) {
+                    self.authored_class5[source_index].action = FIREFLY_STAGE_ACTION;
+                }
+                continue;
+            }
             let rebind = state.stage_var2 == 10;
             if state.stage_var1 == 0
                 || !matches!(state.stage_var2, 1 | 10)
@@ -2063,6 +2164,307 @@ mod tests {
     use crate::campaign::{CampaignSession, spec::CampaignSelection};
     use std::path::PathBuf;
 
+    #[test]
+    fn ordinary_unbound_firefly_constructs_and_runs_source_roam() {
+        let session = crate::native_world::tests::level_two_campaign_session();
+        let mut economy = session.economy().clone();
+        let terrain = session.canonical_terrain();
+        let source = economy
+            .allocate_authored_firefly_unbound(
+                683,
+                session.state.position,
+                FIREFLY_LIFE as u32,
+                terrain,
+            )
+            .expect("ordinary Firefly constructor has source capacity");
+        let slot = source.source_entity_index;
+        let state = economy
+            .authored_fireflies
+            .iter()
+            .find(|row| row.source_entity_index == slot)
+            .unwrap();
+        assert_eq!(
+            (source.action, state.stage_var1, state.stage_var2),
+            (FIREFLY_ROAM_ACTION, 0, 0)
+        );
+        assert!(economy.step_authored_firefly_roam_slot(slot, &[], &[], terrain));
+        assert!(
+            economy
+                .authored_class5
+                .iter()
+                .any(|row| row.active && row.source_entity_index == slot)
+        );
+    }
+
+    #[test]
+    fn parent_stage_prepass_resumes_after_attack_without_interrupting_attack() {
+        let session = crate::native_world::tests::level_two_campaign_session();
+        let mut economy = session.economy().clone();
+        let mut runtime = session.session.state.live.core.runtime.clone();
+        let source = economy
+            .allocate_authored_firefly_unbound(
+                683,
+                session.state.position,
+                FIREFLY_LIFE as u32,
+                session.canonical_terrain(),
+            )
+            .unwrap();
+        let slot = source.source_entity_index;
+        let state = economy
+            .authored_fireflies
+            .iter_mut()
+            .find(|state| state.source_entity_index == slot)
+            .unwrap();
+        state.stage_var2 = 13;
+        economy
+            .advance_authored_firefly_stage_rows(&mut runtime)
+            .unwrap();
+        let root = economy
+            .authored_class5
+            .iter_mut()
+            .find(|row| row.source_entity_index == slot)
+            .unwrap();
+        assert_eq!(root.action, FIREFLY_STAGE_ACTION);
+        root.action = FIREFLY_ATTACK_ACTION;
+        economy
+            .advance_authored_firefly_stage_rows(&mut runtime)
+            .unwrap();
+        assert_eq!(
+            economy
+                .authored_class5
+                .iter()
+                .find(|row| row.source_entity_index == slot)
+                .unwrap()
+                .action,
+            FIREFLY_ATTACK_ACTION
+        );
+    }
+
+    #[test]
+    fn mode16_negative_countdown_expires_on_next_visit() {
+        let session = crate::native_world::tests::level_two_campaign_session();
+        let mut arena = session.source_arena().clone();
+        let mut runtime = session.session.state.live.core.runtime.clone();
+        let mut terrain = session.session.state.live.terrain.clone();
+        let particles = &session.session.definition.presentation.particles;
+        let parent = session.state.entity_index;
+        let handle = allocate_summoned(
+            &mut arena,
+            &mut runtime,
+            &mut terrain,
+            particles,
+            session.state.position,
+            parent,
+            parent,
+            parent,
+        )
+        .unwrap()
+        .unwrap();
+        let slot = handle.source_slot;
+        let state = arena
+            .economy
+            .authored_fireflies
+            .iter_mut()
+            .find(|row| row.source_entity_index == slot)
+            .unwrap();
+        state.stage_var2 = 16;
+        state.word_0x2e = 2;
+        let source = arena
+            .economy
+            .authored_class5
+            .iter_mut()
+            .find(|row| row.source_entity_index == slot)
+            .unwrap();
+        source.source_byte_3e = 1;
+        assert!(
+            step_summoned_stage_slot(&mut arena, slot, &[], &[], &[], &mut terrain, particles)
+                .unwrap()
+        );
+        let state = arena
+            .economy
+            .authored_fireflies
+            .iter()
+            .find(|row| row.source_entity_index == slot)
+            .unwrap();
+        assert_eq!(state.word_0x2e.cast_signed(), -2);
+        assert!(
+            arena
+                .economy
+                .authored_class5
+                .iter()
+                .find(|row| row.source_entity_index == slot)
+                .unwrap()
+                .drawing_enabled
+        );
+        assert!(
+            step_summoned_stage_slot(&mut arena, slot, &[], &[], &[], &mut terrain, particles)
+                .unwrap()
+        );
+        assert!(
+            !arena
+                .economy
+                .authored_class5
+                .iter()
+                .find(|row| row.source_entity_index == slot)
+                .unwrap()
+                .drawing_enabled
+        );
+    }
+
+    #[test]
+    fn summoned_firefly_expires_when_parent_slot_is_reused() {
+        let session = crate::native_world::tests::level_two_campaign_session();
+        let mut arena = session.source_arena().clone();
+        let mut runtime = session.session.state.live.core.runtime.clone();
+        let mut terrain = session.session.state.live.terrain.clone();
+        let particles = &session.session.definition.presentation.particles;
+        let parent = session.state.entity_index;
+        let child = allocate_summoned(
+            &mut arena,
+            &mut runtime,
+            &mut terrain,
+            particles,
+            session.state.position,
+            parent,
+            parent,
+            parent,
+        )
+        .unwrap()
+        .unwrap();
+        let old_parent = arena.handle(parent).unwrap();
+        arena.economy.release_slot(parent, None);
+        assert_eq!(
+            arena.allocate_source_slot_with_terrain(&mut terrain),
+            Some(parent)
+        );
+        let mut replacement =
+            crate::native_world::cave_features::new_event(parent, 5, session.state.position);
+        replacement.class = 3;
+        replacement.model = 0;
+        replacement.record[67] = 3;
+        replacement.set_life(1000);
+        arena.entities[usize::from(parent)] = replacement;
+        assert_ne!(arena.handle(parent), Some(old_parent));
+        assert!(
+            step_summoned_stage_slot(
+                &mut arena,
+                child.source_slot,
+                &[],
+                &[],
+                &[],
+                &mut terrain,
+                particles
+            )
+            .unwrap()
+        );
+        let source = arena
+            .economy
+            .authored_class5
+            .iter()
+            .find(|row| row.source_entity_index == child.source_slot)
+            .unwrap();
+        assert!(source.active && !source.drawing_enabled);
+    }
+
+    #[test]
+    fn parent_bound_launch_transitions_and_parent_loss_hides_the_real_firefly() {
+        let session = crate::native_world::tests::level_two_campaign_session();
+        let mut arena = session.source_arena().clone();
+        let mut runtime = session.session.state.live.core.runtime.clone();
+        let mut terrain = session.session.state.live.terrain.clone();
+        let particles = &session.session.definition.presentation.particles;
+        let parent = session.state.entity_index;
+        let handle = allocate_summoned(
+            &mut arena,
+            &mut runtime,
+            &mut terrain,
+            particles,
+            session.state.position,
+            parent,
+            parent,
+            parent,
+        )
+        .unwrap()
+        .expect("real Firefly constructor has a free source slot");
+        let slot = handle.source_slot;
+        let source = arena
+            .economy
+            .authored_class5
+            .iter_mut()
+            .find(|row| row.source_entity_index == slot)
+            .unwrap();
+        source.word_0x96_150 = parent;
+        source.actual_speed = 24;
+        source.source_byte_3e = 1;
+        let state = arena
+            .economy
+            .authored_fireflies
+            .iter_mut()
+            .find(|row| row.source_entity_index == slot)
+            .unwrap();
+        state.stage_var2 = 17;
+
+        assert!(
+            step_summoned_stage_slot(&mut arena, slot, &[], &[], &[], &mut terrain, particles)
+                .unwrap()
+        );
+        let source = arena
+            .economy
+            .authored_class5
+            .iter()
+            .find(|row| row.source_entity_index == slot)
+            .unwrap();
+        let state = arena
+            .economy
+            .authored_fireflies
+            .iter()
+            .find(|row| row.source_entity_index == slot)
+            .unwrap();
+        assert_eq!(
+            (state.stage_var2, state.word_0x2e, source.actual_speed),
+            (16, 250, 76)
+        );
+
+        assert!(
+            step_summoned_stage_slot(&mut arena, slot, &[], &[], &[], &mut terrain, particles)
+                .unwrap()
+        );
+        let state = arena
+            .economy
+            .authored_fireflies
+            .iter()
+            .find(|row| row.source_entity_index == slot)
+            .unwrap();
+        assert_eq!(
+            state.word_0x2e, 250,
+            "mode16 does not consume lifetime while pursuing a target"
+        );
+
+        arena.entities[usize::from(parent)].disable_drawing();
+        assert!(
+            step_summoned_stage_slot(&mut arena, slot, &[], &[], &[], &mut terrain, particles)
+                .unwrap()
+        );
+        let source = arena
+            .economy
+            .authored_class5
+            .iter()
+            .find(|row| row.source_entity_index == slot)
+            .unwrap();
+        assert!(
+            source.active && !source.drawing_enabled,
+            "hidden row remains for its same-pass tail"
+        );
+        retire_hidden_summoned_stage_at_source_boundary(&mut arena);
+        arena
+            .rebuild_source_arena_with_terrain(&mut terrain, &[])
+            .unwrap();
+        assert!(
+            arena.resolve(handle).is_none(),
+            "following boundary reclaims the original generation"
+        );
+    }
+
     fn patrol_point(runtime: &RuntimeSnapshot, index: u8) -> Position {
         let row = runtime.stage_variables[usize::from(index)];
         assert_eq!(row.kind, 1);
@@ -2209,7 +2611,10 @@ mod tests {
             .expect("authored group0 Firefly row683");
         let binding = live
             .mission
-            .level2_authored_stage_variable_for(feature)
+            .level2_authored_stage_variable_for(
+                feature,
+                live.core.runtime.active_stage_variable_count(),
+            )
             .unwrap();
         assert_eq!(
             (binding.index, binding.kind),

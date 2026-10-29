@@ -316,6 +316,12 @@ pub(super) fn observe(shared: &Level2SharedSpellResetSession) -> Vec<SpellObserv
                     .iter()
                     .position(|&family| family == binding.family)
                     .expect("bound spell has a menu slot") as u8,
+                menu_artwork: Some(sim_session::SpellMenuArtwork {
+                    grid_icon: 97 + u16::from(binding.family),
+                    tier_icons: std::array::from_fn(|tier| {
+                        179 + 3 * u16::from(binding.family) + tier as u16
+                    }),
+                }),
                 mana_cost: holder.map_or(0, |holder| holder.mana_cost),
                 hand,
                 availability,

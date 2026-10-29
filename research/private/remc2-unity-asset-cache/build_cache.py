@@ -11195,8 +11195,8 @@ def add_campaign_environment_audio(cache, owner_root, catalog_path):
     profile = manifest["profile"]
     map_id = profile.get("map_type", {}).get("id")
     selectors = {
-        0: (0, 2, "mc2-day-audio/v1"),
-        1: (1, 1, "mc2-night-audio/v1"),
+        0: (0, 2, "mc2-day-audio/v2"),
+        1: (1, 1, "mc2-night-audio/v2"),
         2: (2, 3, "mc2-cave-audio/v1"),
     }
     if map_id not in selectors:
@@ -11235,13 +11235,9 @@ def add_campaign_environment_audio(cache, owner_root, catalog_path):
     reachable = []
     if map_id == 0:
         reachable, _unreachable = _campaign_day_audio_denominator()
-        sound_ids = sorted({
-            sound_id
-            for occurrence in reachable
-            for sound_id in _level2_sound_selector(occurrence["sound_expression"])["sound_ids"]
-        })
+        sound_ids = list(range(1, 65))
     elif map_id == 1:
-        sound_ids = list(LEVEL1_SOUND_IDS)
+        sound_ids = list(range(1, 65))
     else:
         sound_ids = list(range(1, 70))
 

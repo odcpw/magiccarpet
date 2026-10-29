@@ -112,6 +112,10 @@ pub enum ExistingHandler {
     Creature28 = 53,
     MagicMineProjectile = 54,
     AllianceProjectile = 55,
+    Creature18 = 56,
+    Creature21 = 57,
+    Creature27 = 58,
+    FinalBoss = 59,
 }
 
 impl ExistingHandler {
@@ -167,6 +171,10 @@ impl ExistingHandler {
             Self::MorphBody => "Morph constructor and controlled StageVar2 selector12 body",
             Self::Wyvern => "authored Wyvern constructor and live descriptor61 burst",
             Self::Creature17 => "ordinary model17 stance, combat and lifecycle",
+            Self::Creature18 => "authored model18 constructor, five-shot attack and lifecycle",
+            Self::Creature21 => "authored and boss-produced model21 jump, attack and lifecycle",
+            Self::Creature27 => "authored model27 root and linked heads and bodies",
+            Self::FinalBoss => "feature-gated final boss constructor and source encounter phases",
             Self::Creature23 => "ordinary model23 Lightning, sphere capture and lifecycle",
             Self::Creature26 => "ordinary model26 mana drain, spell theft and lifecycle",
             Self::Creature28 => "ordinary model28 movement, combat and lifecycle",
@@ -231,6 +239,10 @@ impl ExistingHandler {
             Self::MorphBody => "morph-body",
             Self::Wyvern => "wyvern-family",
             Self::Creature17 => "creature17-family",
+            Self::Creature18 => "creature18-family",
+            Self::Creature21 => "creature21-family",
+            Self::Creature27 => "creature27-family",
+            Self::FinalBoss => "final-boss-family",
             Self::Creature23 => "creature23-family",
             Self::Creature26 => "creature26-family",
             Self::Creature28 => "creature28-family",
@@ -401,12 +413,13 @@ compiled_registry! {
         (PlayerFlight, 3, [2, 3, 11, 12]);
         (CastleRoot, 3, [4, 5, 6]);
         (ManaCarrier, 3, [9]);
-        (DragonFamily, 5, [1, 2, 3, 4, 5]);
+        (DragonFamily, 5, [1, 2, 3, 4, 5, 7]);
         (GoatFamily, 5, [8, 9, 10, 11, 12, 13, 14, 15]);
         (BeeFamily, 5, [16, 17, 18, 19, 20, 21, 22, 23]);
         (MultipartFamily, 5, [25, 26, 27, 28, 29, 30, 31]);
         (ArcherFamily, 5, [32, 33, 34, 35, 36, 37, 39]);
         (Model9Family, 5, [72, 73, 74, 76, 77]);
+        (FinalBoss, 5, [80, 81, 82, 83, 84, 85, 86, 87]);
         (BuilderFamily, 5, [96, 97, 98, 99, 100, 101, 102, 103]);
         (VillagerFamily, 5, [104]);
         (BuilderVillagerPostBuild, 5, [105]);
@@ -416,6 +429,9 @@ compiled_registry! {
         (FireflyFamily, 5, [153, 154, 155, 156, 157, 159]);
         (Wyvern, 5, [128, 129, 130, 131, 132, 133, 135]);
         (Creature17, 5, [136, 137, 138, 139, 140, 141, 143]);
+        (Creature18, 5, [144, 145, 146, 147, 148, 149, 151]);
+        (Creature21, 5, [168, 169, 170, 171, 172, 173, 175]);
+        (Creature27, 5, [216, 217, 218, 219, 220, 221, 223]);
         (Cymmerian, 5, [200, 201, 202, 203, 204, 205, 207]);
         (Spider, 5, [160, 161, 162, 163, 164, 165, 167]);
         (Creature22, 5, [176, 177, 178, 179, 180, 181, 183]);
@@ -485,12 +501,16 @@ compiled_registry! {
         (MultipartFamily, 5, [3]);
         (ArcherFamily, 5, [4]);
         (Model9Family, 5, [9]);
+        (FinalBoss, 5, [10]);
         (BuilderFamily, 5, [12]);
         (VillagerFamily, 5, [13]);
         (TraderFamily, 5, [14]);
         (CastleAuxiliary, 5, [15]);
         (Wyvern, 5, [16]);
         (Creature17, 5, [17]);
+        (Creature18, 5, [18]);
+        (Creature21, 5, [21]);
+        (Creature27, 5, [27]);
         (FireflyFamily, 5, [19]);
         (Spider, 5, [20]);
         (Creature22, 5, [22]);
@@ -788,6 +808,27 @@ mod tests {
             ),
             (
                 5,
+                &[80, 81, 82, 83, 84, 85, 86, 87][..],
+                "final-boss-family",
+            ),
+            (5, &[7][..], "dragon-family"),
+            (
+                5,
+                &[144, 145, 146, 147, 148, 149, 151][..],
+                "creature18-family",
+            ),
+            (
+                5,
+                &[168, 169, 170, 171, 172, 173, 175][..],
+                "creature21-family",
+            ),
+            (
+                5,
+                &[216, 217, 218, 219, 220, 221, 223][..],
+                "creature27-family",
+            ),
+            (
+                5,
                 &[200, 201, 202, 203, 204, 205, 207][..],
                 "cymmerian-family",
             ),
@@ -874,6 +915,22 @@ mod tests {
         expected.insert("Constructor:ClassModel:5:2".to_owned(), "level2-bee-family");
         expected.insert("Constructor:ClassModel:5:0".to_owned(), "dragon-family");
         expected.insert(
+            "Constructor:ClassModel:5:10".to_owned(),
+            "final-boss-family",
+        );
+        expected.insert(
+            "Constructor:ClassModel:5:18".to_owned(),
+            "creature18-family",
+        );
+        expected.insert(
+            "Constructor:ClassModel:5:21".to_owned(),
+            "creature21-family",
+        );
+        expected.insert(
+            "Constructor:ClassModel:5:27".to_owned(),
+            "creature27-family",
+        );
+        expected.insert(
             "Constructor:ClassModel:5:15".to_owned(),
             "level2-castle-auxiliary",
         );
@@ -957,7 +1014,11 @@ mod tests {
             (15, &[19][..], "spell-holder-and-pickup-family"),
             (9, &[2, 4, 5, 23][..], "disaster-spell-projectile"),
             (9, &[22, 26][..], "field-spell-projectile"),
-            (15, &[15, 16, 17, 18, 20, 21, 22][..], "spell-holder-and-pickup-family"),
+            (
+                15,
+                &[15, 16, 17, 18, 20, 21, 22][..],
+                "spell-holder-and-pickup-family",
+            ),
             (9, &[9, 12][..], "lightning-projectile"),
             (9, &[28][..], "projectile-family"),
             (10, &[23, 38][..], "lightning-projectile"),
@@ -988,9 +1049,9 @@ mod tests {
         assert_eq!(registry["action_dispatch_sites"][0], "ApplyEvents");
         assert_eq!(registry["action_dispatch_sites"][1], "UpdateEntities");
         assert_eq!(registry["constructor_dispatch_site"], "Constructor");
-        // 886 macro-generated keys plus the pinned TypeSubtype 10/45 entry
+        // 950 macro-generated keys plus the pinned TypeSubtype 10/45 entry
         // composed explicitly after the constructor table.
-        assert_eq!(CAMPAIGN_BEHAVIOR_REGISTRY.entries().len(), 887);
+        assert_eq!(CAMPAIGN_BEHAVIOR_REGISTRY.entries().len(), 951);
         validate_against_source(CAMPAIGN_BEHAVIOR_REGISTRY.entries(), &source_keys)
             .expect("compiled entries retain exact pinned sites and selector shapes");
 
@@ -1021,7 +1082,7 @@ mod tests {
         }
         // Wyvern134, model17/142, Spider166, model23/190 and model26/214 have table addresses but no pinned source
         // dispatcher implementation. Neither may become an invented no-op.
-        for action in [134, 142, 166, 190, 206, 214, 230] {
+        for action in [134, 142, 150, 166, 174, 190, 206, 214, 222, 230] {
             for site in [DispatchSite::ApplyEvents, DispatchSite::UpdateEntities] {
                 let key = BehaviorKey {
                     dispatch_site: site.id(),
@@ -1104,7 +1165,9 @@ mod tests {
             );
         }
         expected_handlers.extend(supplemental_handlers);
-        assert_eq!(expected_handlers.len(), 887);
+        // Four newly joined families contribute 29 callbacks at both
+        // source action sites and four constructors; Dragon action7 adds2.
+        assert_eq!(expected_handlers.len(), 887 + 29 * 2 + 4 + 2);
 
         for entry in CAMPAIGN_BEHAVIOR_REGISTRY.entries() {
             assert_eq!(
