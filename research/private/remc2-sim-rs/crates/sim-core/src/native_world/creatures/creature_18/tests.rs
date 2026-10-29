@@ -225,6 +225,9 @@ fn ordinary_scan_uses_frozen_class3_membership_but_honors_current_exclusion_flag
     };
     let mut counter = 0;
     let mut actor = construct(7, 1, 1, position, &mut counter);
+    // The constructor starts at action147; exercise action144's scan rather
+    // than its initial reset callback.
+    actor.action = 144;
     actor.yaw = heading_for_positions(position, enemy.position) as i16;
     actor.rng = 1; // The first source RNG step selects the acquisition scan.
     let mut negative = actor;
