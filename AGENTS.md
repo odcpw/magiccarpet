@@ -6,6 +6,36 @@ Read [WORK_PLAN.md](WORK_PLAN.md) before every assignment, follow-up, resumed
 session or orchestration tick, and before a completion handoff. It is the
 canonical current delivery plan; keep prompts short and refer to it.
 
+## Gameplay capabilities are the unit of work
+
+Keep the current plan and its full acceptance. Execute it by completing connected
+gameplay capabilities, with these priorities and ownership rules:
+
+- Prioritize the known failing shared paths: Castle, Beyond Sight, Alliance
+  ownership and summoned-creature production. Resolve their missing consumers
+  before adding isolated implementations elsewhere.
+- Give each path one named accountable owner through real acquisition/spawn →
+  scheduling → interaction → consequences → cleanup → presentation. That owner
+  stays with consumer failures until the connected capability works. Integrators
+  actively implement required shared joins with the owner.
+- Trace remc2's actual authoritative state, arithmetic and update order, including
+  same-pass tails and following-pass reclaim. Fix canonical shared behavior;
+  missions configure and exercise it. Do not patch individual missions around a
+  shared defect.
+- Every assignment names a concrete gameplay outcome, owned surface, integration
+  owner and decisive way to check the result. Representative spell–creature
+  checks exercise the shared boundary; add focused checks for genuine exceptions.
+- Keep partial work attached to its capability. Do not accumulate leaf handoffs
+  or count a callback, constructor, trace or passing leaf test as delivery.
+- Parallelize independent ownership. When integration blocks workers, redirect
+  available capacity to the concrete blocker and serialize shared-file edits.
+- Report **implemented**, **verified**, **committed** and **installed** separately,
+  with the relevant revision and evidence. Installed means matching native/player
+  artifacts reached the actual client. Keep unfinished acceptance open.
+
+No new planning rounds, test-count targets or assertion weakening. Deliver
+complete, installed capabilities while preserving unfinished work and scope.
+
 ## Purpose
 
 Port the full Magic Carpet 2 game from remc2 into the existing Rust engine.
