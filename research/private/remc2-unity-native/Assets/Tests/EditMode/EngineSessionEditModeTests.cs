@@ -535,6 +535,24 @@ namespace MagicCarpet.Native.Tests
                     Assert.That(JsonUtility.ToJson(transport.CampaignSnapshot()),
                         Is.EqualTo(JsonUtility.ToJson(initial)));
 
+                // Validate controlled contract states on a copy of the real
+                // snapshot; this does not stage a gameplay caster or holder.
+                var unavailable = JsonUtility.FromJson<EngineSessionTransport.CampaignSnapshotValue>(
+                    JsonUtility.ToJson(initial.value));
+                var unavailableSpell = CampaignSpellPresenter.FindSpell(unavailable, fireball.id);
+                unavailableSpell.availability = "invalid_caster";
+                Assert.DoesNotThrow(() =>
+                    EngineSessionTransport.ValidateCampaignSnapshot(unavailable, initial.identity));
+                unavailableSpell.acquired = false;
+                unavailableSpell.hand = "none";
+                unavailableSpell.selected = false;
+                Assert.Throws<InvalidOperationException>(() =>
+                    EngineSessionTransport.ValidateCampaignSnapshot(unavailable, initial.identity));
+                unavailableSpell.acquired = true;
+                unavailableSpell.availability = "invalid_holder";
+                Assert.Throws<InvalidOperationException>(() =>
+                    EngineSessionTransport.ValidateCampaignSnapshot(unavailable, initial.identity));
+
                 var selected = transport.CampaignStep(0, 0, 0, 0, 0, fireball.id);
                 Assert.That(CampaignSpellPresenter.FindSpell(selected.value, fireball.id).selected, Is.True);
                 var cast = transport.CampaignStep(0, 0, 0x40, 0, 0);

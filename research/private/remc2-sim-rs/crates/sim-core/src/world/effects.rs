@@ -500,9 +500,9 @@ pub(crate) fn allocate(
     allocate_inner(arena, terrain, definition, position, particles, None)
 }
 
-/// Construct an impact, radial explosion or ash from a source entity's position
-/// address. NewEvent can reuse that same address and zero it before the
-/// constructor maps the child or admits its light.
+/// Construct an impact, radial explosion, ash or ground fire from a source
+/// entity's position address. NewEvent can reuse that same address and zero it
+/// before the constructor maps the child or admits its light.
 pub(crate) fn allocate_from_source_position(
     arena: &mut SourceArena,
     terrain: &mut SessionTerrain,
@@ -513,10 +513,13 @@ pub(crate) fn allocate_from_source_position(
 ) -> Result<Option<u16>, String> {
     if !matches!(
         definition.kind(),
-        EffectKind::Impact | EffectKind::RadialExplosion | EffectKind::Ash
+        EffectKind::Impact
+            | EffectKind::RadialExplosion
+            | EffectKind::Ash
+            | EffectKind::GroundFire
     ) {
         return Err(
-            "source-position effect constructor only supports impact, radial explosion and ash"
+            "source-position effect constructor only supports impact, radial explosion, ash and ground fire"
                 .to_owned(),
         );
     }

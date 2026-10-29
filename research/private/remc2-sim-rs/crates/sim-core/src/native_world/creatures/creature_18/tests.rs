@@ -1383,7 +1383,9 @@ fn owner_switch_publishes_model18_and_normal_scheduler_visits_it() {
     // and the shared scheduler advances any higher-slot newborns in that pass.
     let mut entered_attack = false;
     let mut emitted = None;
+    let mut player_life_before_last_pass = session.session.state.live.player_life;
     for _ in 0..256 {
+        player_life_before_last_pass = session.session.state.live.player_life;
         session.step_outer_turn(PlayerCommand::default(), 0);
         assert!(
             !session
@@ -1457,6 +1459,7 @@ fn owner_switch_publishes_model18_and_normal_scheduler_visits_it() {
     let mut natural_impact = false;
     let mut natural_damage = false;
     let mut natural_reclaim = false;
+    let mut natural_consumption = None;
     for _ in 0..=24 {
         let arena = session.source_arena();
         natural_impact |= arena.entities.iter().any(|row| {
@@ -1468,21 +1471,46 @@ fn owner_switch_publishes_model18_and_normal_scheduler_visits_it() {
         let target = &arena.entities[usize::from(player)];
         natural_damage |= i32::from_le_bytes(target.record[98..102].try_into().unwrap()) > 0
             && put_word(target, 102) == slot;
-        natural_damage |= session.dispatch_events().iter().any(|event| matches!(event,
-            Mc2DispatchEvent::Economy { event: crate::native_world::Level2EconomyEvent::DamageApplied {
-                target_entity_index, attacker_entity_index, damage, ..
-            }, .. } if *target_entity_index == player && *attacker_entity_index == slot && *damage > 0
-        ));
+        let consumed = session
+            .dispatch_events()
+            .iter()
+            .find_map(|event| match event {
+                Mc2DispatchEvent::Economy {
+                    event:
+                        crate::native_world::Level2EconomyEvent::DamageApplied {
+                            target_entity_index,
+                            attacker_entity_index,
+                            damage,
+                            ..
+                        },
+                    ..
+                } if *target_entity_index == player
+                    && *attacker_entity_index == slot
+                    && *damage > 0 =>
+                {
+                    Some(*damage)
+                }
+                _ => None,
+            });
+        natural_damage |= consumed.is_some();
+        let current_life = session.session.state.live.player_life;
+        if let Some(damage) = consumed
+            && current_life < player_life_before_last_pass
+        {
+            natural_consumption = Some((damage, player_life_before_last_pass, current_life));
+        }
         natural_reclaim |= shot_handles
             .iter()
             .any(|&handle| arena.resolve(handle).is_none());
         if natural_impact
             && natural_damage
+            && natural_consumption.is_some()
             && natural_reclaim
             && session.session.state.live.player_life < player_life_before_attack
         {
             break;
         }
+        player_life_before_last_pass = session.session.state.live.player_life;
         session.step_outer_turn(PlayerCommand::default(), 0);
         assert!(
             !session
@@ -1500,6 +1528,12 @@ fn owner_switch_publishes_model18_and_normal_scheduler_visits_it() {
     assert!(
         natural_damage,
         "the unforced source impact must reach the player's damage mailbox"
+    );
+    let (consumed_damage, previous_life, current_life) = natural_consumption.expect(
+        "player source visit must consume this actor's damage and reduce life in that pass",
+    );
+    eprintln!(
+        "owner model18 actor={slot} player={player} consumed_damage={consumed_damage} life={previous_life}->{current_life}"
     );
     assert!(session.session.state.live.player_life < player_life_before_attack);
     assert!(
@@ -1551,6 +1585,7 @@ fn owner_switch_publishes_model18_and_normal_scheduler_visits_it() {
     let mut saw_hidden = false;
     let mut saw_reclaim = false;
     for _ in 0..16 {
+        let awaiting_next_reclaim = saw_hidden;
         fatal.step_outer_turn(PlayerCommand::default(), 0);
         assert!(
             !fatal
@@ -1560,6 +1595,12 @@ fn owner_switch_publishes_model18_and_normal_scheduler_visits_it() {
             "owner model18 death scheduler error: {:?}",
             fatal.dispatch_events()
         );
+        if awaiting_next_reclaim {
+            assert!(
+                fatal.source_arena().resolve(handle).is_none(),
+                "the hidden original generation must be reclaimed at the immediately following source boundary"
+            );
+        }
         let row = &fatal.entities()[usize::from(slot)];
         saw_prekill |= row.action == 148;
         saw_mana |= fatal.dispatch_events().iter().any(|event| matches!(event,

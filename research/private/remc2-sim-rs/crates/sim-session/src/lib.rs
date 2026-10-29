@@ -131,14 +131,16 @@ pub enum SpellAvailability {
     Ready,
     NotAcquired,
     InvalidHolder,
+    InvalidCaster,
     Active,
     InsufficientMana,
 }
 
 /// One supported semantic action at this observation's generation and tick.
 /// Tier/cost describe the live acquired holder (zero when absent). Readiness
-/// uses the gameplay activation gate at this boundary, before the next source
-/// pass; it does not promise a future target, allocation or hit will succeed.
+/// uses the gameplay activation gate and known emission prerequisites at this
+/// boundary, before the next source pass; it does not promise a future target,
+/// allocation or hit will succeed.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct SpellObservation {
     pub id: SemanticId,

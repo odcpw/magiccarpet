@@ -350,15 +350,21 @@ impl Level2NyphurCommonUpkeep {
         })?;
         let mut array_0x1fc = auxiliary.array_0x1FC_508;
         let mut padding_0x23c = [0_u8; 6];
+        for (index, value) in auxiliary.padding_words_0x23c.iter().enumerate() {
+            if let Some(value) = value {
+                padding_0x23c[index * 2..index * 2 + 2].copy_from_slice(&value.to_le_bytes());
+            }
+        }
         for index in 0..8 {
             let threshold = 4 * index + 4;
             if threshold < array_0x1fc.len() {
-                // Model-1 reset writes the source sentinel only when the
-                // captured owner row has not already supplied that slot.
-                if array_0x1fc[threshold] == 0 {
+                // Historical captures omit the adjoining source bytes and
+                // retain their legacy reset projection. A complete capture
+                // must preserve every source word, including zero.
+                if auxiliary.padding_words_0x23c[0].is_none() && array_0x1fc[threshold] == 0 {
                     array_0x1fc[threshold] = 24_607;
                 }
-            } else {
+            } else if auxiliary.padding_words_0x23c[0].is_none() {
                 // The eighth logical threshold is array index 32, which is
                 // the first uint16 in the separate Watcom padding boundary.
                 padding_0x23c[..2].copy_from_slice(&24_607_u16.to_le_bytes());

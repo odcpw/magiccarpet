@@ -58,6 +58,39 @@ fn exhaust(arena: &mut SourceArena) {
 }
 
 #[test]
+fn meteor_admission_uses_source_parent_and_castle_thresholds() {
+    let (session, slot, parent_slot) = ready_holder();
+    let live = &session.session.state.live;
+    let holder = live.shared_spells.pickup(slot).unwrap();
+    let mut parent = live.economy.entities[usize::from(parent_slot)].clone();
+    let first_pulse = holder.activation_value as i16;
+    let castle = holder.mana_regen;
+    assert_eq!(admission(holder, &parent, Some(castle), first_pulse), Admission::Allowed);
+    assert_eq!(
+        admission(holder, &parent, None, first_pulse),
+        Admission::InsufficientCastleMana
+    );
+    assert_eq!(
+        admission(holder, &parent, Some(castle - 1), first_pulse),
+        Admission::InsufficientCastleMana
+    );
+    parent.set_mana(holder.max_mana - 1);
+    assert_eq!(
+        admission(holder, &parent, Some(castle), first_pulse),
+        Admission::InsufficientCasterMana
+    );
+    assert_eq!(
+        admission(holder, &parent, Some(castle), first_pulse - 1),
+        Admission::Allowed
+    );
+    parent.set_life(-1);
+    assert_eq!(
+        admission(holder, &parent, Some(castle), first_pulse),
+        Admission::ParentUnavailable
+    );
+}
+
+#[test]
 fn failed_meteor_allocation_still_charges_and_decrements_without_clearing_auxiliary() {
     let (mut session, slot, parent) = ready_holder();
     let particles = session.session.definition.presentation.particles.clone();
@@ -398,6 +431,53 @@ fn meteor_terminal_projectile_uses_existing_model17_damage_and_lifetime_consumer
             .control_flags
             & ENTITY_DRAW_DISABLED_BIT
             != 0
+    );
+    let before = super::super::source_target::read(
+        &live.economy,
+        super::super::source_target::Context::default(),
+        impact,
+    )
+    .unwrap()
+    .unwrap();
+    assert!(
+        before.active,
+        "the hidden impact remains at its source address during this pass"
+    );
+    let impact_handle = live.economy.handle(impact).unwrap();
+    let mut arena = live.economy.clone();
+    let mut terrain = live.terrain.clone();
+    arena
+        .rebuild_source_arena_with_terrain(&mut terrain, &[])
+        .unwrap();
+    let retired = super::super::source_target::read(
+        &arena,
+        super::super::source_target::Context::default(),
+        impact,
+    )
+    .unwrap()
+    .unwrap();
+    assert!(
+        !retired.active,
+        "the following source boundary reclaims the address"
+    );
+    let row = &arena.entities[usize::from(impact)];
+    assert_eq!(
+        (row.class, row.pitch, row.source_word_96(), row.record[74]),
+        (0, 37, 0, 2)
+    );
+    session.step_outer_turn(crate::PlayerCommand::default(), 0);
+    assert_ne!(
+        session.session.state.live.economy.handle(impact),
+        Some(impact_handle),
+        "the normal next pass also retires the hidden incarnation"
+    );
+    assert!(
+        session.dispatch_events().iter().all(|event| !matches!(
+            event,
+            crate::native_world::Mc2DispatchEvent::Error { .. }
+        )),
+        "the next ordinary pass must remain dispatchable: {:?}",
+        session.dispatch_events()
     );
 }
 

@@ -361,6 +361,15 @@ pub const fn mc2_field_definition(
             damage: 200,
             first_boost: -80,
         },
+        FieldKind::SkeletonSummon => FieldDefinition::SkeletonSummon {
+            life: 8,
+            initial_budget: 64_000,
+            scheduled_budget: 10_000,
+            max_births: 8,
+            owner_cap: 64,
+            spawn_radius: 512,
+            particle_index: 41,
+        },
     }
 }
 

@@ -22,5 +22,6 @@ pub(crate) mod creature_28;
 pub(crate) mod morph;
 pub(crate) mod raw_lifecycle;
 pub(crate) mod settlements;
+pub(crate) mod skeleton;
 pub(crate) mod spider;
 pub(crate) mod stage_route;

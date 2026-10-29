@@ -1058,7 +1058,9 @@ fn orientation(arena: &SourceArena, kind: Kind, slot: u16) -> (Option<i16>, Opti
         Kind::AuthoredModel22 => angles!(arena.economy.fields.authored_model22),
         Kind::Model22SpawnedChild => angles!(arena.economy.fields.model22_spawned_children),
         Kind::Model76Child => angles!(arena.economy.model76_children),
-        Kind::AuthoredTree => angles!(arena.economy.authored_trees),
+        // AddTree and actions 0..2 retain NewEvent's pose. The typed Tree
+        // yaw/roll fields are array_0x52 collision axes, not pose angles.
+        Kind::AuthoredTree => (Some(0), Some(0)),
         _ => (None, None),
     }
 }
@@ -1210,6 +1212,25 @@ mod tests {
             .unwrap(),
             "zero life is not source death"
         );
+
+        let tree = arena
+            .economy
+            .allocate_authored_tree(260, position, &session.session.definition.presentation.particles)
+            .expect("ordinary Tree constructor");
+        let current_tree = arena
+            .economy
+            .authored_tree_mut(tree.source_entity_index)
+            .unwrap();
+        current_tree.yaw = 612;
+        current_tree.roll = 345;
+        arena.entities[usize::from(tree.source_entity_index)].set_yaw(999);
+        arena.entities[usize::from(tree.source_entity_index)].set_source_roll(-111);
+        let target = read(&arena, Context::default(), tree.source_entity_index)
+            .unwrap()
+            .unwrap();
+        assert_eq!((target.yaw, target.roll), (Some(0), Some(0)));
+        let shape = target.collision.expect("current Tree collision axes");
+        assert_eq!((shape.vertical_offset, shape.half_depth), (612, 345));
 
         let live = &session.session.state.live;
         let house = live

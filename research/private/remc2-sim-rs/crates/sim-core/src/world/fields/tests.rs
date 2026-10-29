@@ -106,6 +106,252 @@ fn campaign_step(session: &mut crate::native_world::Mc2Simulation) {
 }
 
 #[test]
+fn skeleton_controller_schedules_owned_births_and_respects_owner_cap() {
+    use super::skeleton_summon::{self, Birth};
+    use crate::campaign::source_arena::CreatureRootOrigin;
+    use crate::level_definition::CreatureKind;
+    use crate::native_world::Mc2DispatchEvent;
+
+    // Controlled source-constructor placement on retained Level2 terrain;
+    // this exercises the numeric scheduler, not an earned mission event.
+    let mut session = campaign();
+    let properties = definition(FieldKind::SkeletonSummon);
+    let FieldDefinition::SkeletonSummon { particle_index, .. } = properties else {
+        unreachable!("source adapter returns the Skeleton controller definition");
+    };
+    let particle = session.session.definition.presentation.particles[usize::from(particle_index)];
+    let (controller, handle, owner, position, phase, tile) = {
+        let live = &mut session.session.state.live;
+        let owner = live.core.state.entity_index;
+        let position = live.core.state.position;
+        let controller = skeleton_summon::construct(
+            &mut live.economy,
+            &mut live.terrain,
+            position,
+            properties,
+            particle,
+        )
+        .unwrap()
+        .expect("source controller allocation");
+        let source = &mut live.economy.entities[usize::from(controller)];
+        source.source_id = owner;
+        source.record[30..32].copy_from_slice(&owner.to_le_bytes());
+        assert_eq!(
+            (
+                source.class,
+                source.model,
+                source.action,
+                source.life,
+                source.subspell_index
+            ),
+            (10, 36, 38, 8, 64_000)
+        );
+        let phase = source.phase;
+        let handle = live.economy.handle(controller).unwrap();
+        let tile = live.economy.map_chains.tile_of(controller);
+        (controller, handle, owner, position, phase, tile)
+    };
+    session.step_outer_turn(PlayerCommand::default(), 0);
+    assert!(
+        !session
+            .dispatch_events()
+            .iter()
+            .any(|event| matches!(event, Mc2DispatchEvent::Error { .. })),
+        "scheduled source36 must not roll back: {:?}",
+        session.dispatch_events()
+    );
+    let summoned = {
+        let live = &session.session.state.live;
+        let root = &live.economy.entities[usize::from(controller)];
+        assert!(root.active && root.drawing_disabled());
+        assert_eq!(root.phase, phase.wrapping_add(1));
+        assert_eq!(root.subspell_index, 10_000);
+        assert!(live.economy.map_chains.is_linked(controller));
+        let births = session
+            .creature_runtime_census()
+            .roots_of_kind(CreatureKind::Skeleton)
+            .filter(|identity| {
+                identity.origin == CreatureRootOrigin::FieldSummon { controller: handle }
+            })
+            .collect::<Vec<_>>();
+        assert!(
+            !births.is_empty() && births.len() <= 8,
+            "controller produces real Skeletons"
+        );
+        for birth in &births {
+            let actor = &live.economy.entities[usize::from(birth.handle.source_slot)];
+            assert_eq!(
+                (
+                    actor.class,
+                    actor.model,
+                    actor.source_id,
+                    actor.source_player_entity_index()
+                ),
+                (5, 9, owner, owner)
+            );
+            assert_eq!(actor.max_life, 1_000);
+        }
+        births
+            .iter()
+            .map(|birth| {
+                let actor = &live.economy.entities[usize::from(birth.handle.source_slot)];
+                (birth.handle, actor.phase)
+            })
+            .collect::<Vec<_>>()
+    };
+    session.step_outer_turn(PlayerCommand::default(), 0);
+    assert!(
+        !session
+            .dispatch_events()
+            .iter()
+            .any(|event| matches!(event, Mc2DispatchEvent::Error { .. })),
+        "controller reclaim must not roll back: {:?}",
+        session.dispatch_events()
+    );
+    {
+        let live = &session.session.state.live;
+        assert!(
+            !live.economy.entities[usize::from(controller)].active
+                || live.economy.economy.slot_generation(controller) != handle.generation
+        );
+        assert_eq!(
+            live.terrain.planes().entity_indices[usize::from(tile)] as u16,
+            live.economy.map_chains.tile_head(tile)
+        );
+        assert!(
+            session
+                .creature_runtime_census()
+                .roots_of_kind(CreatureKind::Skeleton)
+                .any(|identity| identity.origin
+                    == CreatureRootOrigin::FieldSummon { controller: handle }),
+            "Skeletons do not inherit the controller's lifetime"
+        );
+        assert!(
+            summoned.iter().any(|(handle, phase)| {
+                let actor = &live.economy.entities[usize::from(handle.source_slot)];
+                live.economy.economy.slot_generation(handle.source_slot) == handle.generation
+                    && actor.active
+                    && actor.phase == phase.wrapping_add(1)
+            }),
+            "a summoned Skeleton reaches its own scheduled actor callback"
+        );
+    }
+
+    // The near-identical case populates the source-frozen owner list using
+    // the real constructor. At the source cap, the same controller hides
+    // without adding another owned Skeleton.
+    let mut capped = campaign();
+    let particles = capped.session.definition.presentation.particles.clone();
+    let descriptor = capped.session.definition.presentation.entity_parameters[80];
+    let (controller, handle, owner) = {
+        let live = &mut capped.session.state.live;
+        let owner = live.core.state.entity_index;
+        let controller = skeleton_summon::construct(
+            &mut live.economy,
+            &mut live.terrain,
+            position,
+            properties,
+            particle,
+        )
+        .unwrap()
+        .expect("source controller allocation");
+        let source = &mut live.economy.entities[usize::from(controller)];
+        source.source_id = owner;
+        source.record[30..32].copy_from_slice(&owner.to_le_bytes());
+        let handle = live.economy.handle(controller).unwrap();
+        for _ in 0..64 {
+            assert!(
+                crate::native_world::creatures::skeleton::allocate_from_controller(
+                    &mut live.economy,
+                    &mut live.terrain,
+                    &particles,
+                    &descriptor,
+                    Birth {
+                        position,
+                        controller_slot: controller,
+                        owner,
+                        mana: 0,
+                        yaw: 0
+                    },
+                )
+                .unwrap(),
+                "real retained terrain admits a Skeleton constructor"
+            );
+        }
+        (controller, handle, owner)
+    };
+    let before = capped
+        .creature_runtime_census()
+        .roots_of_kind(CreatureKind::Skeleton)
+        .filter(|identity| {
+            identity.origin == CreatureRootOrigin::FieldSummon { controller: handle }
+        })
+        .count();
+    assert_eq!(before, 64);
+    capped.step_outer_turn(PlayerCommand::default(), 0);
+    assert!(
+        !capped
+            .dispatch_events()
+            .iter()
+            .any(|event| matches!(event, Mc2DispatchEvent::Error { .. })),
+        "capped controller must not roll back: {:?}",
+        capped.dispatch_events()
+    );
+    let live = &capped.session.state.live;
+    assert!(live.economy.entities[usize::from(controller)].drawing_disabled());
+    let after = capped
+        .creature_runtime_census()
+        .roots_of_kind(CreatureKind::Skeleton)
+        .filter(|identity| {
+            identity.origin == CreatureRootOrigin::FieldSummon { controller: handle }
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(after.len(), before, "owner cap prevents all new births");
+    assert!(after.iter().all(|identity| {
+        live.economy.entities[usize::from(identity.handle.source_slot)].source_player_entity_index()
+            == owner
+    }));
+
+    // A frozen model-9 list stores addresses, not lifetime handles. If an
+    // address is reused, the owner-cap scan reads the current occupant's
+    // word94, even when the retained raw record still contains an old value.
+    use crate::native_world::creatures::skeleton::current_source_player_entity_index;
+    let raw_slot = after[0].handle.source_slot;
+    assert_eq!(
+        current_source_player_entity_index(&live.economy, raw_slot).unwrap(),
+        Some(owner)
+    );
+    let live = &mut capped.session.state.live;
+    let stale_owner = owner.wrapping_add(1);
+    let sphere = live
+        .economy
+        .economy
+        .spawn_mana_sphere_from_death(999, position, 0, 0x1234, 500, owner, &live.terrain)
+        .expect("death constructor allocates a typed sphere") as u16;
+    live.economy.entities[usize::from(sphere)].record[152..154]
+        .copy_from_slice(&stale_owner.to_le_bytes());
+    assert_eq!(
+        current_source_player_entity_index(&live.economy, sphere).unwrap(),
+        Some(owner),
+        "current sphere ownership wins over stale raw bytes"
+    );
+    let creature = live
+        .economy
+        .economy
+        .allocate_authored_class5(999, 9, position, &live.terrain)
+        .expect("ordinary constructor allocates a typed Skeleton");
+    let creature_slot = creature.source_entity_index;
+    let typed_owner = live.economy.economy.source_owner(creature_slot);
+    live.economy.entities[usize::from(creature_slot)].record[152..154]
+        .copy_from_slice(&typed_owner.wrapping_add(1).to_le_bytes());
+    assert_eq!(
+        current_source_player_entity_index(&live.economy, creature_slot).unwrap(),
+        Some(typed_owner),
+        "current typed creature ownership wins over stale raw bytes"
+    );
+}
+
+#[test]
 fn wind_experience_reaches_the_owner_and_respects_source_gates() {
     let mut session = campaign();
     let live = &mut session.session.state.live;

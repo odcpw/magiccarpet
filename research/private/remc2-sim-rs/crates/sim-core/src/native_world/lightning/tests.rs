@@ -602,6 +602,35 @@ fn source_entity_damage_mailbox(
 #[test]
 fn family22_lightning_fire_keeps_its_bound_target_and_damages_through_the_endpoint_consumer() {
     let mut session = super::super::tests::level_two_campaign_session();
+    // The source initializes rival Castle protection to 100 visits. Let the
+    // ordinary scheduler expire it before expecting a Lightning hit to hurt.
+    let target_slot = session.session.state.live.economy.entities.iter()
+        .find(|row| row.active && row.class == 3 && row.model == 1 && row.action == 1)
+        .expect("qualified campaign fixture has its live rival Nyphur").index;
+    let target_handle = session.session.state.live.economy.handle(target_slot)
+        .expect("rival has a current generation-bound handle");
+    for _ in 0..128 {
+        let live = &session.session.state.live;
+        let row = &live.economy.entities[usize::from(target_slot)];
+        assert_eq!(live.economy.handle(target_slot), Some(target_handle));
+        let rival = live.nyphur_dispatcher.get(target_handle)
+            .expect("rival retains its source carrier during protection expiry");
+        if rival.common_upkeep(row.phase).word_0x159 == 0 {
+            break;
+        }
+        session.step_outer_turn(crate::PlayerCommand::default(), 0);
+        assert!(session.dispatch_events().iter().all(|event|
+            !matches!(event, super::super::Mc2DispatchEvent::Error { .. })));
+    }
+    {
+        let live = &session.session.state.live;
+        let row = &live.economy.entities[usize::from(target_slot)];
+        assert_eq!(live.economy.handle(target_slot), Some(target_handle));
+        let rival = live.nyphur_dispatcher.get(target_handle)
+            .expect("rival retains its source carrier after protection expiry");
+        assert_eq!(rival.common_upkeep(row.phase).word_0x159, 0,
+            "ordinary visits must expire protection outside the rival Castle");
+    }
     let live = &mut session.session.state.live;
     let parent = live.core.state.entity_index;
     let sphere_damage = crate::spells::late::fools_mana::SOURCE_RULES[2].projectile_damage;
@@ -615,7 +644,7 @@ fn family22_lightning_fire_keeps_its_bound_target_and_damages_through_the_endpoi
         .economy
         .entities
         .iter()
-        .find(|row| row.active && row.class == 3 && row.model == 1 && row.action == 1)
+        .find(|row| row.index == target_slot && row.active && row.class == 3 && row.model == 1 && row.action == 1)
         .cloned()
         .expect("qualified campaign fixture has its live rival Nyphur");
     assert_ne!(
@@ -893,6 +922,7 @@ fn family22_lightning_fire_keeps_its_bound_target_and_damages_through_the_endpoi
 
         if endpoint_identity.is_some()
             && target_damage_queued
+            && target_life_after_damage.is_some()
             && sphere_reclaimed
             && ray_reclaimed
             && endpoint_reclaimed

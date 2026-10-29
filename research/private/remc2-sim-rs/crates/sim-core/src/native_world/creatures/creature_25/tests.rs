@@ -1181,7 +1181,7 @@ pub(crate) fn assert_night_army_cymmerian_lifetime(
         None,
         parent.source_slot,
         u16::MAX,
-        player,
+        rival_slot,
     )
     .unwrap();
     attack.step(PlayerCommand::default(), 0);
@@ -1294,7 +1294,7 @@ pub(crate) fn assert_night_army_cymmerian_lifetime(
             None,
             child.source_slot,
             u16::MAX,
-            player,
+            rival_slot,
         )
         .unwrap();
     }

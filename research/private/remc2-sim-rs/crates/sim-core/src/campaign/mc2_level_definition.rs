@@ -104,6 +104,9 @@ impl Mc2LevelDefinition {
             (10, 34) => Some(LevelEntityKind::Mechanic(MechanicKind::Field {
                 kind: FieldKind::Transport,
             })),
+            (10, 36) => Some(LevelEntityKind::Mechanic(MechanicKind::Field {
+                kind: FieldKind::SkeletonSummon,
+            })),
             (10, model @ (9 | 11 | 15 | 71)) => {
                 Some(LevelEntityKind::Mechanic(MechanicKind::TerrainDisaster {
                     kind: Self::terrain_disaster_kind(model),
@@ -246,6 +249,9 @@ impl Mc2LevelDefinition {
             }),
             (10, 34, 36) => Some(MechanicKind::Field {
                 kind: FieldKind::Transport,
+            }),
+            (10, 36, 38) => Some(MechanicKind::Field {
+                kind: FieldKind::SkeletonSummon,
             }),
             (10, model @ 80..=86, action) if action == model as u8 + 7 => {
                 match Self::cave_feature_kind(model as u8) {
@@ -1120,6 +1126,9 @@ impl Mc2LevelDefinition {
                 },
                 (10, 34) => MechanicKind::Field {
                     kind: FieldKind::Transport,
+                },
+                (10, 36) => MechanicKind::Field {
+                    kind: FieldKind::SkeletonSummon,
                 },
                 (10, model @ 80..=86) => MechanicKind::CaveFeature {
                     kind: Self::cave_feature_kind(model as u8).expect("bounded cave model"),

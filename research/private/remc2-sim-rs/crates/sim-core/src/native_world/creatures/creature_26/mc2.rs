@@ -508,12 +508,12 @@ pub(super) fn apply_spell_theft(
     holder.set_control_flags(holder.control_flags & !1);
     holder.record[20..24].fill(0);
     holder.set_position(victim_position);
-    put(&mut holder, 74, 0);
+    put(&mut holder, 78, 0);
     if right_selected {
-        put(&mut holder, 74, 1);
+        put(&mut holder, 78, 1);
     }
     if left_selected {
-        put(&mut holder, 74, 2);
+        put(&mut holder, 78, 2);
     }
     if arena
         .economy
@@ -626,8 +626,10 @@ pub(crate) fn step_row(
     if let Some(drain) = effects.mana_drain {
         apply_mana_drain(arena, shared, drain);
     }
-    if let Some(theft) = effects.spell_theft {
-        apply_spell_theft(arena, shared, theft);
+    if let Some(theft) = effects.spell_theft
+        && apply_spell_theft(arena, shared, theft)
+    {
+        effects.committed_theft_victim = Some(theft.victim);
     }
     for _ in 0..effects.population_decrements {
         arena.economy.decrement_source_creature_population();

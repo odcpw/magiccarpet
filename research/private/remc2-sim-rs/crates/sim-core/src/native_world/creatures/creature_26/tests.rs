@@ -271,7 +271,7 @@ fn owner_level6_model26_drains_its_real_player_in_the_normal_source_pass() {
     assert_eq!(session.runtime().stages[1].kind, 7);
     assert_eq!(
         session.runtime().stages[1].relation,
-        RuntimeRelation::AxisScalar(26)
+        RuntimeRelation::Scalar(26)
     );
     let runtime = &mut session.session.state.live.core.runtime;
     runtime.set_level2_objective_stage_selector_for(0, 0, 0);
@@ -285,7 +285,6 @@ fn owner_level6_model26_drains_its_real_player_in_the_normal_source_pass() {
         .collect::<Vec<_>>();
     assert!(!roots.is_empty());
     let credits_before = session.economy().authored_bee_kill_census(77);
-    let spheres_before = session.economy().spheres.len();
     let mut survivor = session.clone();
     for (handle, life) in &roots {
         for (candidate, damage) in [(&mut session, *life + 1), (&mut survivor, *life - 1)] {
@@ -344,9 +343,13 @@ fn owner_level6_model26_drains_its_real_player_in_the_normal_source_pass() {
         assert_eq!(row.action, KILL_ACTION);
         assert!(!row.drawing_disabled());
     }
-    // Let the real source phase reach its death cadence. Do not force a
-    // callback, phase, hide flag, reclaim, or objective result.
-    for _ in 0..9 {
+    // Observe each original generation hide at the real death cadence and
+    // reclaim at the immediately following pass. Different roots may have
+    // different phases, so track the boundary for each one separately.
+    let mut hidden = vec![false; roots.len()];
+    let mut reclaimed = vec![false; roots.len()];
+    let mut mana_release = false;
+    for _ in 0..10 {
         session.step_outer_turn(PlayerCommand::default(), 0);
         assert!(
             !session
@@ -356,20 +359,305 @@ fn owner_level6_model26_drains_its_real_player_in_the_normal_source_pass() {
             "{:?}",
             session.dispatch_events()
         );
-        if roots
-            .iter()
-            .all(|(handle, _)| session.source_arena().resolve(*handle).is_none())
-        {
+        mana_release |= session.dispatch_events().iter().any(|event| {
+            matches!(event, crate::native_world::Mc2DispatchEvent::Economy {
+                event: crate::native_world::Level2EconomyEvent::ManaSphereSpawned {
+                    source_entity_index, ..
+                }, ..
+            } if roots.iter().any(|(handle, _)| handle.source_slot == *source_entity_index))
+        });
+        for (index, (handle, _)) in roots.iter().enumerate() {
+            if reclaimed[index] {
+                continue;
+            }
+            let resolved = session.source_arena().resolve(*handle);
+            if hidden[index] {
+                assert!(
+                    resolved.is_none(),
+                    "the hidden original generation must be reclaimed on the next pass"
+                );
+                reclaimed[index] = true;
+            } else {
+                assert!(
+                    resolved.is_some(),
+                    "the original generation must remain live until hidden"
+                );
+                hidden[index] =
+                    session.entities()[usize::from(handle.source_slot)].drawing_disabled();
+            }
+        }
+        if reclaimed.iter().all(|done| *done) {
             break;
         }
     }
-    assert!(session.economy().spheres.len() > spheres_before);
-    for (handle, _) in roots {
+    assert!(
+        mana_release,
+        "a real model26 death must emit its mana sphere"
+    );
+    assert!(hidden.iter().all(|seen| *seen));
+    assert!(reclaimed.iter().all(|done| *done));
+}
+
+#[test]
+fn owner_level6_acquired_spell_runs_theft_detachment_and_pickup() {
+    use crate::PlayerCommand;
+    use crate::campaign::{CampaignSession, spec::CampaignSelection};
+
+    let package = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../../generated/mc-bhq6-ordinary-20261024-b/level6");
+    let campaign = CampaignSession::open(package, CampaignSelection::ordinary(6).unwrap())
+        .expect("ordinary owner Level6 package");
+    let mut session = campaign.simulation().clone();
+    let (actor_slot, player_slot, holder_slot, family) = (73_u16, 77_u16, 1_u16, 3_u8);
+    let pickup = session.entities()[usize::from(holder_slot)].clone();
+    assert_eq!(
+        (pickup.class, pickup.model, pickup.action),
+        (15, family, 10)
+    );
+    assert_eq!(
+        session.shared_spells().local_player().enabled_spell_holders[3],
+        0
+    );
+    let holder_handle = session.source_arena().handle(holder_slot).unwrap();
+    session
+        .set_level2_entity_position(player_slot, pickup.position)
+        .unwrap();
+    for _ in 0..8 {
+        session.step_outer_turn(PlayerCommand::default(), 0);
         assert!(
-            session.source_arena().resolve(handle).is_none(),
-            "the next boundary must reclaim the original dead generation"
+            session
+                .dispatch_events()
+                .iter()
+                .all(|event| !matches!(event, crate::native_world::Mc2DispatchEvent::Error { .. })),
+            "{:?}",
+            session.dispatch_events()
+        );
+        if session.shared_spells().local_player().enabled_spell_holders[3] == holder_slot {
+            break;
+        }
+    }
+    let acquired = session.shared_spells().local_player();
+    assert_eq!(acquired.enabled_spell_holders[3], holder_slot);
+    assert_eq!(acquired.left_spell_slot_raw, i16::from(family));
+    assert_eq!(
+        session.entities()[usize::from(holder_slot)].action,
+        family * 3
+    );
+
+    // sub_69300 refuses a holder while its ordinary 64-visit presentation
+    // timer remains nonzero. Let the real holder callback expire it.
+    for _ in 0..70 {
+        if word(&session.entities()[usize::from(holder_slot)], 58) == 0 {
+            break;
+        }
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        assert!(
+            session
+                .dispatch_events()
+                .iter()
+                .all(|event| !matches!(event, crate::native_world::Mc2DispatchEvent::Error { .. })),
+            "{:?}",
+            session.dispatch_events()
         );
     }
+    assert_eq!(word(&session.entities()[usize::from(holder_slot)], 58), 0);
+
+    // An old holder generation cannot mutate the genuinely acquired hand.
+    let victim = session.source_arena().handle(player_slot).unwrap();
+    let thief = session.source_arena().handle(actor_slot).unwrap();
+    let mut wrong_generation = session.clone();
+    let stale = SourceEntityHandle {
+        source_slot: holder_slot,
+        generation: holder_handle.generation.wrapping_add(1),
+    };
+    let theft = SpellTheft {
+        thief,
+        victim,
+        victim_player: player_slot,
+        holder: stale,
+        family,
+        hand: SpellHand::Left,
+        victim_position: session.entities()[usize::from(player_slot)].position,
+    };
+    let live = &mut wrong_generation.session.state.live;
+    assert!(!mc2::apply_spell_theft(
+        &mut live.economy,
+        &mut live.shared_spells,
+        theft
+    ));
+    assert_eq!(
+        live.shared_spells.local_player.enabled_spell_holders[3],
+        holder_slot
+    );
+    assert_eq!(
+        live.shared_spells.local_player.left_spell_slot_raw,
+        i16::from(family)
+    );
+
+    // Approach the original actor with the actual acquired spell. Its own
+    // targeting, cadence and unchanged global RNG decide whether theft occurs.
+    let actor = session.entities()[usize::from(actor_slot)].clone();
+    assert_eq!((actor.class, actor.model), (5, SOURCE_MODEL));
+    let mut approach = actor.position;
+    crate::move_entity(&mut approach, actor.yaw, 0, 384);
+    session
+        .set_level2_entity_position(player_slot, approach)
+        .unwrap();
+    let mut stolen = false;
+    for _ in 0..256 {
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        assert!(
+            session
+                .dispatch_events()
+                .iter()
+                .all(|event| !matches!(event, crate::native_world::Mc2DispatchEvent::Error { .. })),
+            "{:?}",
+            session.dispatch_events()
+        );
+        if session.entities()[usize::from(holder_slot)].action == 78 {
+            stolen = true;
+            break;
+        }
+    }
+    assert!(
+        stolen,
+        "the ordinary model26 callback must steal the actual acquired holder"
+    );
+    let holder = &session.entities()[usize::from(holder_slot)];
+    assert_eq!(word(holder, 42), actor_slot);
+    assert_eq!(holder.source_word_4a(), 2);
+    assert_eq!(
+        session.source_arena().handle(holder_slot),
+        Some(holder_handle)
+    );
+    let live = &session.session.state.live;
+    let player = live
+        .core
+        .players
+        .iter()
+        .find(|player| player.entity_index == player_slot)
+        .unwrap();
+    assert_eq!(player.enabled_spell_holders[3], 0);
+    assert_eq!(player.left_spell_slot_raw, -1);
+    assert_eq!(live.shared_spells.local_player.enabled_spell_holders[3], 0);
+    assert_eq!(live.shared_spells.local_player.left_spell_slot_raw, -1);
+
+    // The earlier holder slot already ran this pass. Its next normal visits
+    // perform action78 and eventually restore the ordinary pickup action.
+    assert_eq!(
+        session.entities()[usize::from(holder_slot)].source_dword_10(),
+        0
+    );
+    session.step_outer_turn(PlayerCommand::default(), 0);
+    assert!(
+        session
+            .dispatch_events()
+            .iter()
+            .all(|event| !matches!(event, crate::native_world::Mc2DispatchEvent::Error { .. })),
+        "{:?}",
+        session.dispatch_events()
+    );
+    assert_eq!(session.entities()[usize::from(holder_slot)].action, 78);
+    assert_eq!(
+        session.entities()[usize::from(holder_slot)].source_dword_10(),
+        1
+    );
+    let mut returned = false;
+    for _ in 0..128 {
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        assert!(
+            session
+                .dispatch_events()
+                .iter()
+                .all(|event| !matches!(event, crate::native_world::Mc2DispatchEvent::Error { .. })),
+            "{:?}",
+            session.dispatch_events()
+        );
+        if session.entities()[usize::from(holder_slot)].action == family * 3 + 1 {
+            returned = true;
+            break;
+        }
+    }
+    assert!(
+        returned,
+        "the detached holder must return through its scheduled pickup action"
+    );
+    assert_eq!(
+        session.source_arena().handle(holder_slot),
+        Some(holder_handle)
+    );
+    // Acquire the actual Shield pickup into the now-empty left hand. Without
+    // the remembered return side the Speed pickup would choose the right hand;
+    // this makes the source word_0x4A consumer distinguish the two paths.
+    let shield = session.entities()[2].clone();
+    assert_eq!((shield.class, shield.model, shield.action), (15, 6, 19));
+    session
+        .set_level2_entity_position(player_slot, shield.position)
+        .unwrap();
+    for _ in 0..8 {
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        assert!(
+            session
+                .dispatch_events()
+                .iter()
+                .all(|event| !matches!(event, crate::native_world::Mc2DispatchEvent::Error { .. })),
+            "{:?}",
+            session.dispatch_events()
+        );
+        if session.shared_spells().local_player().enabled_spell_holders[6] == 2 {
+            break;
+        }
+    }
+    assert_eq!(
+        session.shared_spells().local_player().enabled_spell_holders[6],
+        2
+    );
+    assert_eq!(
+        session.shared_spells().local_player().left_spell_slot_raw,
+        6
+    );
+    assert_eq!(
+        session.shared_spells().local_player().right_spell_slot_raw,
+        -1
+    );
+    let returned_position = session.entities()[usize::from(holder_slot)].position;
+    session
+        .set_level2_entity_position(player_slot, returned_position)
+        .unwrap();
+    for _ in 0..8 {
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        assert!(
+            session
+                .dispatch_events()
+                .iter()
+                .all(|event| !matches!(event, crate::native_world::Mc2DispatchEvent::Error { .. })),
+            "{:?}",
+            session.dispatch_events()
+        );
+        if session.shared_spells().local_player().enabled_spell_holders[3] == holder_slot {
+            break;
+        }
+    }
+    assert_eq!(
+        session.shared_spells().local_player().enabled_spell_holders[3],
+        holder_slot
+    );
+    assert_eq!(
+        session.shared_spells().local_player().left_spell_slot_raw,
+        i16::from(family)
+    );
+    assert_eq!(
+        session.shared_spells().local_player().right_spell_slot_raw,
+        -1
+    );
+    assert_eq!(
+        session.entities()[usize::from(holder_slot)].source_word_4a(),
+        0
+    );
+    assert_eq!(
+        session.source_arena().handle(holder_slot),
+        Some(holder_handle)
+    );
 }
 
 #[test]
@@ -1145,6 +1433,7 @@ fn dynamic_theft_publishes_current_holder_and_uses_detached_return_consumer() {
         "a rejected identity leaves the player hand unchanged"
     );
 
+    let selector_bytes = shared.pickup(holder_slot).unwrap().record[74..76].to_vec();
     assert!(mc2::apply_spell_theft(&mut arena, &mut shared, theft));
     let stolen = &arena.entities[usize::from(holder_slot)];
     assert!(stolen.active);
@@ -1153,7 +1442,8 @@ fn dynamic_theft_publishes_current_holder_and_uses_detached_return_consumer() {
         (15, family, 78)
     );
     assert_eq!(word(stolen, 42), thief_slot);
-    assert_eq!(word(stolen, 74), 1);
+    assert_eq!(stolen.source_word_4a(), 1);
+    assert_eq!(&stolen.record[74..76], selector_bytes.as_slice());
     assert_eq!(stolen.position, victim.position);
     assert_eq!(
         shared.players[player_index].enabled_spell_holders[usize::from(family)],

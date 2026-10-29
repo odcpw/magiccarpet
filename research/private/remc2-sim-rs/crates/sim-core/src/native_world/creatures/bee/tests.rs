@@ -1152,7 +1152,7 @@ fn alliance_impact_syncs_only_the_exact_typed_bee_before_its_source_visit() {
     let actual_parent_handle = actual.source_arena().handle(actual_parent).unwrap();
     let actual_bee_handle = actual.source_arena().handle(actual_bee).unwrap();
     assert_eq!(actual.shared_spells().pickup(holder).unwrap().source_word_96(), actual_bee);
-    {
+    let impact_slot = {
         let live = &mut actual.session.state.live;
         let impact_slot = crate::native_world::alliance_spell::construct_impact(&mut live.economy, &mut live.terrain).unwrap();
         let effect = &mut live.economy.entities[usize::from(impact_slot)];
@@ -1161,12 +1161,21 @@ fn alliance_impact_syncs_only_the_exact_typed_bee_before_its_source_visit() {
         effect.record[74] = 32;
         effect.subspell_index = 40;
         effect.record[154..156].copy_from_slice(&actual_bee.to_le_bytes());
-    }
+        impact_slot
+    };
+    let before = actual.source_arena().bee_creatures().iter()
+        .find(|row| row.source_entity_index == actual_bee).unwrap().clone();
+    let before_map = actual.source_arena().economy.map_chains.entity_chain(
+        (before.position.x >> 8) as u8, (before.position.y >> 8) as u8,
+    );
     actual.step_outer_turn(crate::PlayerCommand::default(), 0);
     assert!(!actual.dispatch_events().iter().any(|event|
         matches!(event, crate::native_world::Mc2DispatchEvent::Error { .. })),
         "actual scheduled Alliance impact must not roll back: {:?}", actual.dispatch_events());
-    assert_eq!(actual.source_arena().creature_parent_binding(actual_bee_handle), Some(actual_parent_handle));
+    assert_eq!(actual.source_arena().creature_parent_binding(actual_bee_handle), Some(actual_parent_handle),
+        "scheduled Alliance binding: before Bee={before:?}, map={before_map:?}, after Bee={:?}, effect={:?}, dispatch={:?}",
+        actual.source_arena().bee_creatures().iter().find(|row| row.source_entity_index == actual_bee),
+        actual.source_arena().entities.get(usize::from(impact_slot)), actual.dispatch_events());
     let actual_state = actual.source_arena().bee_creatures().iter()
         .find(|row| row.active && row.source_entity_index == actual_bee).unwrap();
     assert_eq!(actual_state.stage_var2, 14, "actual Morph Bee receives the scheduled Alliance impact");

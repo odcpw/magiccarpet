@@ -3510,7 +3510,22 @@ impl GameSessionBackend for Mc2CampaignBackend {
                 players: Vec::new(),
                 projection_error: Some(error.to_string()),
             }),
-            player_spells: spells::observe(shared_spells, |holder| self.spell_holder_actor(holder)),
+            player_spells: spells::observe(
+                shared_spells,
+                |holder| self.spell_holder_actor(holder),
+                |holder| {
+                    let simulation = self.campaign.simulation();
+                    let owner = holder.source_spell_parent_entity_index();
+                    spells::emission_availability(
+                        holder,
+                        simulation.source_arena().entities().get(usize::from(owner)),
+                        simulation
+                            .economy()
+                            .castle_for_owner(owner)
+                            .map(|castle| castle.mana),
+                    )
+                },
+            ),
             player_immobilized_ticks: u16::from(flight.immobilize_counter.cast_unsigned()),
             source_camera_fov: {
                 let exit = self.campaign.simulation().level_exit_sequence();

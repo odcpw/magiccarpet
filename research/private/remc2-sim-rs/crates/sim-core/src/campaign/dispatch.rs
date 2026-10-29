@@ -456,7 +456,7 @@ compiled_registry! {
         (SpiderWeb, 9, [22]);
         (CaveSpell, 9, [31]);
         (TerrainDisasters, 10, [9, 10, 11, 15, 27, 28, 29, 30, 31, 32, 33, 34, 54, 55, 66, 67, 78]);
-        (Fields, 10, [36, 37, 70, 71, 72, 73, 74]);
+        (Fields, 10, [36, 37, 38, 70, 71, 72, 73, 74]);
         (Fields, 10, [81, 85]);
         (Class10Effects, 10, [0, 1, 2, 3, 4, 5, 6, 7, 12, 13, 14, 16, 17, 18, 19, 22, 41, 42, 43, 44, 45, 48, 51, 52, 53, 58, 59, 64, 65, 76, 77, 80, 83, 86, 98]);
         (SwitchProducers, 11, [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 31]);
@@ -541,7 +541,7 @@ compiled_registry! {
         (CaveFeatures, 10, [80, 81, 82, 83, 84, 85, 86]);
         (CaveSpell, 10, [89]);
         (TerrainDisasters, 10, [9, 11, 15, 71]);
-        (Fields, 10, [34, 65, 66, 67, 74, 78]);
+        (Fields, 10, [34, 36, 65, 66, 67, 74, 78]);
         (DirectionalSpellProjectile, 9, [7, 8]);
         (DirectionalSpellProjectile, 10, [25, 26]);
         (SwitchProducers, 11, [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 31]);
@@ -922,7 +922,7 @@ mod tests {
             ),
             (
                 10,
-                &[36, 37, 70, 71, 72, 73, 74, 81, 85][..],
+                &[36, 37, 38, 70, 71, 72, 73, 74, 81, 85][..],
                 "world-fields",
             ),
             (
@@ -1025,7 +1025,7 @@ mod tests {
             (9, &[30][..], "cave-spell"),
             (10, &[89][..], "cave-spell"),
             (10, &[9, 11, 15, 71][..], "terrain-disasters"),
-            (10, &[34, 65, 66, 67, 74, 78][..], "world-fields"),
+            (10, &[34, 36, 65, 66, 67, 74, 78][..], "world-fields"),
             (9, &[29][..], "magic-mine-projectile"),
             (9, &[25][..], "alliance-projectile"),
             (15, &[23, 24][..], "spell-holder-and-pickup-family"),

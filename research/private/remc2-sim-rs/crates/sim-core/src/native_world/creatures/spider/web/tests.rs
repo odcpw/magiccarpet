@@ -304,6 +304,10 @@ fn mission_four_ordinary_scheduler_carries_web_to_actual_player_damage_and_recla
     let (spider, player, projectile, life) = {
         let live = &mut session.session.state.live;
         let player = live.core.state.entity_index;
+        assert_eq!(live.player_protection_ticks, 100);
+        // Exercise damage after the source's initial protection interval. The
+        // protected branch is checked separately below on the same producer.
+        live.player_protection_ticks = 0;
         let position =
             feature.world_position(live.terrain.ground_height(feature.world_position(0)));
         let spider = super::super::mc2::allocate_authored(

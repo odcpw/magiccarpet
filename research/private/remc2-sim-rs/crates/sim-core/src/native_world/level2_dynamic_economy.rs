@@ -5165,6 +5165,19 @@ impl Level2EconomyState {
         Some((castle.source_id_entity_index, busy))
     }
 
+    /// `sub_6D880(root)` in state 2 clears root word2c after the caller
+    /// has resolved its actual Castle holder. At that source point word2e
+    /// is still 2, so `SetSpell` only requeues word2c before clearing it.
+    pub(super) fn clear_castle_release_cooldown(&mut self, slot: u16) -> bool {
+        let Some(castle) = self.castle_at_mut(slot)
+            .filter(|castle| castle.action == 5 && castle.build_state == 2)
+        else {
+            return false;
+        };
+        castle.auxiliary_cooldown = 0;
+        true
+    }
+
     pub(super) fn take_castle_upgrade_holder_clear_owners(&mut self) -> Vec<u16> {
         let pending = self.live_castles()
             .filter(|castle| castle.upgrade_holder_clear_pending)
@@ -6703,6 +6716,7 @@ impl Level2EconomyState {
                 let castle = self.castle_entry_mut(castle_slot).expect("Castle remains installed");
                 castle.action = 4;
                 castle.build_state = 0;
+                castle.source_word_2e = 0;
                 castle.shift_yaw = -8_192;
                 castle.shift_fov = 0x4000;
                 self.advance_castle_phase(castle_slot);

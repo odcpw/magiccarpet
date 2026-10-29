@@ -1076,7 +1076,7 @@ namespace MagicCarpet.Native
                      spell.hand != "right" && spell.hand != "both") ||
                     (spell.availability != "ready" && spell.availability != "not_acquired" &&
                      spell.availability != "invalid_holder" && spell.availability != "active" &&
-                     spell.availability != "insufficient_mana") ||
+                     spell.availability != "insufficient_mana" && spell.availability != "invalid_caster") ||
                     (!spell.acquired && (spell.selected || spell.hand != "none" ||
                      (spell.availability != "not_acquired" && spell.availability != "invalid_holder"))) ||
                     (spell.acquired && (spell.availability == "not_acquired" ||

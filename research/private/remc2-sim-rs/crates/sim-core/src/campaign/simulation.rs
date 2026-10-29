@@ -977,6 +977,7 @@ impl SourceSchedulerWorld for Level2SourceSchedulerWorld<'_, '_> {
                 area_damage::retire_hidden_player_death_markers(economy, &mut live.terrain)?;
                 terrain_strip::prepare_trigger_reclaim(economy, &mut live.terrain)?;
                 crate::world::scenery::trees::prepare_reclaim(economy, &mut live.terrain)?;
+                crate::native_world::effects::prepare_model17_reclaim(economy)?;
                 economy.reclaim_inactive_slots_at_source_boundary();
             }
             PassPhase::RebuildMemberships => {
@@ -1204,8 +1205,26 @@ impl SourceSchedulerWorld for Level2SourceSchedulerWorld<'_, '_> {
                         &live.terrain,
                         &self.pass_start_class5_model_slots,
                     );
-                    live.economy
-                        .advance_authored_firefly_stage_rows(&mut live.core.runtime)?;
+                    // Settlement preparation mutates ordinary carriers.
+                    // Firefly reads their current values at this source
+                    // point, after that prepass and without retaining its
+                    // earlier immutable borrow across the mutation.
+                    let state = live.core.state;
+                    let targets = source_target::Context {
+                        spells: Some(&live.shared_spells),
+                        map_type: Some(live.terrain.map_type()),
+                        player: Some((state.entity_index, state.position, live.player_life)),
+                        player_orientation: Some((state.yaw, state.roll_accumulator)),
+                        particles: Some(&self.owner.session.definition.presentation.particles),
+                        ..source_target::Context::from_ordinary(&live.goats, &live.ordinary)
+                    };
+                    level2_class5::firefly::prepare_stage_pass_in_arena(
+                        &mut live.economy,
+                        &mut live.core.runtime,
+                        &self.pass_start_class5_model_slots
+                            [usize::from(level2_class5::firefly::FIREFLY_MODEL)],
+                        targets,
+                    )?;
                     level2_class5::dragon::prepare_boss_stage_pass(
                         &mut live.economy,
                         &self.pass_start_class5_model_slots[0],
@@ -5069,12 +5088,12 @@ impl Mc2Simulation {
         }
     }
 
-    fn commit_castle_holder_source_update(&mut self, owner: u16, busy: bool) -> std::result::Result<(), String> {
+    fn commit_castle_holder_source_update(&mut self, owner: u16, busy: bool) -> std::result::Result<Option<u16>, String> {
         let live = &mut self.session.state.live;
         live.shared_spells.apply_castle_holder_source_update(
             &mut live.economy, &live.core.players, &live.nyphur_dispatcher,
             live.core.context.spell_fire.as_mut(), owner, busy,
-        ).map(|_| ())
+        )
     }
 
     pub(super) fn sync_level2_spell_fire_context(&mut self) {
@@ -5087,10 +5106,16 @@ impl Mc2Simulation {
         // the local command path.
         let local_player = self.session.state.live.shared_spells.local_player.clone();
         let enabled_holder_indices = local_player.enabled_spell_holders;
-        let left_slot = usize::from(local_player.left_spell_slot);
-        let right_slot = usize::from(local_player.right_spell_slot);
-        let left_holder_index = enabled_holder_indices[left_slot];
-        let right_holder_index = enabled_holder_indices[right_slot];
+        // Source -1 is an empty hand; the normalized zero also names Fireball.
+        let hand_holder_index = |selector: i16| {
+            usize::try_from(selector)
+                .ok()
+                .and_then(|family| enabled_holder_indices.get(family))
+                .copied()
+                .unwrap_or(0)
+        };
+        let left_holder_index = hand_holder_index(local_player.left_spell_slot_raw);
+        let right_holder_index = hand_holder_index(local_player.right_spell_slot_raw);
         let selected_family = SOURCE_SPELL_INDEX_MAP
             .get(usize::from(local_player.selected_spell_ui_index))
             .copied()
@@ -7011,6 +7036,9 @@ impl Mc2Simulation {
         }
         candidates.extend(crate::native_world::effects::sprite_sources(
             &self.session.state.live.economy,
+        ));
+        candidates.extend(crate::world::scenery::trees::sprite_sources(
+            self.economy().authored_trees(),
         ));
         candidates.extend(self.session.state.live.economy.fields.sprite_sources());
         candidates.extend(creatures::creature_15::mc2::presentation_candidates(
@@ -9374,11 +9402,26 @@ impl Mc2Simulation {
             self.canonical_terrain()
                 .ground_height(feature.world_position(0)),
         );
-        self.session
-            .state
-            .live
+        let live = &mut self.session.state.live;
+        let slot = live
             .economy
-            .allocate_authored_tree(authored_index, position)
+            .allocate_source_slot_with_terrain(&mut live.terrain)?;
+        let tree = live.economy.economy.initialize_authored_tree(
+            slot,
+            authored_index,
+            position,
+            &self.session.definition.presentation.particles,
+        )?;
+        crate::world::effects::sync_position(
+            &mut live.economy,
+            &mut live.terrain,
+            slot,
+            tree.position,
+            true,
+            false,
+        )
+        .ok()?;
+        Some(tree)
     }
 
     /// Materialize one qualified Level 1 group-13-through-32 House through
@@ -9909,7 +9952,7 @@ impl Mc2Simulation {
     fn authored_firefly_stage_route(
         &self,
         feature: AuthoredFeature,
-    ) -> Option<level2_class5::firefly::FireflyStageRoute> {
+    ) -> Option<u8> {
         if feature.kind != 5 || feature.subtype != i16::from(level2_class5::firefly::FIREFLY_MODEL)
         {
             return None;
@@ -9928,7 +9971,7 @@ impl Mc2Simulation {
                     .runtime
                     .active_stage_variable_count(),
             )?;
-        if !matches!(stage_var.kind, 1 | 2) || stage_var.flags & 0x60 != 0 {
+        if !matches!(stage_var.kind, 1..=9) {
             return None;
         }
         let runtime_stage_var = self
@@ -9939,30 +9982,19 @@ impl Mc2Simulation {
             .runtime
             .stage_variables
             .get(usize::from(stage_var.index))?;
-        let (point_x, point_y) = stage_var.point();
-        let expected_relation = u32::from(point_x) | (u32::from(point_y) << 16);
         if runtime_stage_var.kind != i8::try_from(stage_var.kind).expect("StageVar kind fits i8")
-            || runtime_stage_var.flags as u8 != stage_var.flags
-            || runtime_stage_var.word_2 & 0x00ff != u16::from(stage_var.stage)
-            || runtime_stage_var.relation != RuntimeRelation::AxisScalar(expected_relation)
+            || (matches!(stage_var.kind, 1 | 2 | 6)
+                && !matches!(runtime_stage_var.relation, RuntimeRelation::AxisScalar(_)))
         {
             return None;
         }
-        Some(level2_class5::firefly::FireflyStageRoute {
-            stage_var1: stage_var.index,
-            stage_var2: stage_var.kind,
-            target: Position {
-                x: point_x,
-                y: point_y,
-                z: 0,
-            },
-        })
+        Some(stage_var.index)
     }
 
     fn allocate_authored_firefly_feature(
         &mut self,
         feature: AuthoredFeature,
-    ) -> Option<Level2AuthoredClass5Source> {
+    ) -> std::result::Result<Option<Level2AuthoredClass5Source>, String> {
         let route = self.authored_firefly_stage_route(feature);
         if route.is_none()
             && self
@@ -9976,44 +10008,48 @@ impl Mc2Simulation {
                 )
                 .is_some()
         {
-            return None;
+            return Ok(None);
         }
         let position = feature.world_position(
             self.canonical_terrain()
                 .ground_height(feature.world_position(0)),
         );
-        let max_life = self
+        let Some(max_life) = self
             .session
             .definition
-            .authored_creature_max_life(feature.index)?;
-        let live = &mut self.session.state.live;
-        let source = if let Some(route) = route {
-            let source = live.economy.allocate_authored_firefly(
-                feature.index,
-                position,
-                route,
-                max_life,
-                &live.terrain,
-            )?;
-            assert!(
-                live.core
-                    .runtime
-                    .advance_level2_stage_variable_counter(route.stage_var1),
-                "validated Firefly StageVar must retain its runtime counter carrier"
-            );
-            source
-        } else {
-            // GenerateEvents constructs the actor before sub_12100 optionally
-            // selects a route. A cleared count leaves source stage fields at
-            // zero and the ordinary roaming action active.
-            live.economy.allocate_authored_firefly_unbound(
-                feature.index,
-                position,
-                max_life,
-                &live.terrain,
-            )?
+            .authored_creature_max_life(feature.index)
+        else {
+            return Ok(None);
         };
-        Some(source)
+        let live = &mut self.session.state.live;
+        // GenerateEvents constructs before sub_12100 binds and thins a route.
+        // Failed allocation must leave the shared StageVar counter unchanged.
+        let Some(source) = live.economy.allocate_authored_firefly_unbound(
+            feature.index,
+            position,
+            max_life,
+            &live.terrain,
+        ) else {
+            return Ok(None);
+        };
+        if let Some(index) = route {
+            level2_class5::firefly::bind_authored_stage_in_arena(
+                &mut live.economy,
+                &mut live.core.runtime,
+                source.source_entity_index,
+                index,
+            )?;
+        }
+        live.economy
+            .economy
+            .authored_class5()
+            .iter()
+            .find(|row| row.source_entity_index == source.source_entity_index)
+            .copied()
+            .map(Some)
+            .ok_or_else(|| {
+                format!("authored Firefly {} lost its constructed source", feature.index)
+            })
     }
 
     pub(super) fn allocate_level2_authored_bee_feature(
@@ -11686,7 +11722,7 @@ impl Mc2Simulation {
                 && self.authored_firefly_stage_route(*feature).is_none()
             {
                 return Err(format!(
-                    "authored Firefly row {} has no valid StageVar-1 route",
+                    "authored Firefly row {} has no valid StageVar route",
                     feature.index
                 ));
             }
@@ -12019,7 +12055,7 @@ impl Mc2Simulation {
                     }
                 }
                 (5, 19) => {
-                    if self.allocate_authored_firefly_feature(feature).is_some() {
+                    if self.allocate_authored_firefly_feature(feature)?.is_some() {
                         self.session
                             .state
                             .live
@@ -12343,6 +12379,31 @@ impl Mc2Simulation {
                     let position = feature
                         .world_position(live.terrain.ground_height(feature.world_position(0)));
                     crate::world::fields::transport::construct(
+                        &mut live.economy,
+                        &mut live.terrain,
+                        position,
+                        properties,
+                        particle,
+                    )?;
+                }
+                (10, 36) => {
+                    let properties = sim_definition::adapter::mc2_field_definition(
+                        crate::level_definition::FieldKind::SkeletonSummon,
+                        crate::level_definition::TilePosition { x: 0, y: 0 },
+                    );
+                    let crate::level_definition::FieldDefinition::SkeletonSummon {
+                        particle_index, ..
+                    } = properties else {
+                        return Err("Skeleton controller lacks its typed properties".into());
+                    };
+                    let particle = self.session.definition.presentation.particles
+                        .get(usize::from(particle_index)).copied()
+                        .ok_or_else(|| format!("Skeleton controller needs particle {particle_index}"))?;
+                    let live = &mut self.session.state.live;
+                    let position = feature.world_position(
+                        live.terrain.ground_height(feature.world_position(0)),
+                    );
+                    crate::world::fields::skeleton_summon::construct(
                         &mut live.economy,
                         &mut live.terrain,
                         position,
@@ -14416,13 +14477,13 @@ impl Mc2Simulation {
                     entity.active
                         && matches!(
                             (entity.class, entity.action),
-                            (2, 0 | 3 | 18 | 19 | 20 | 21)
+                            (2, 0 | 1 | 2 | 3 | 18 | 19 | 20 | 21)
                                 | (
                                     5,
                                     25 | 26 | 27 | 28 | 29 | 31 | 72 | 73 | 74 | 76 | 77 | 79 | 80..=87 | 128..=133 | 135..=141 | 143 | 144..=149 | 151 | 160..=167 | 168..=173 | 175 | 176..=181 | 183..=189 | 191..=205 | 207..=213 | 215 | 216..=221 | 223 | 224..=229 | 231 | 232
                                 )
                                 | (9, 2 | 3 | 4 | 5 | 7 | 8 | 9 | 12 | 14 | 21 | 22 | 23 | 24 | 25 | 27 | 31)
-                                | (10, 0..=7 | 9 | 10 | 11 | 13 | 14 | 15 | 16 | 18 | 19 | 22 | 23 | 25 | 26 | 27..=34 | 36 | 37 | 40 | 54 | 55 | 62 | 65 | 66 | 67 | 68..=74 | 77 | 78 | 79 | 87..=94 | 96)
+                                | (10, 0..=7 | 9 | 10 | 11 | 13 | 14 | 15 | 16 | 18 | 19 | 22 | 23 | 25 | 26 | 27..=34 | 36 | 37 | 38 | 40 | 54 | 55 | 62 | 65 | 66 | 67 | 68..=74 | 77 | 78 | 79 | 87..=94 | 96)
                                 | (11, 0..=44)
                                 | (14, 6 | 7 | 8 | 9)
                         )
@@ -16473,6 +16534,38 @@ impl Mc2Simulation {
                             players,
                             models,
                         )?;
+                        if let Some(victim) = outcome.committed_theft_victim
+                            && live.economy.handle(victim.source_slot) == Some(victim)
+                            && let Some(victim_row) = live
+                                .economy
+                                .entities
+                                .get(usize::from(victim.source_slot))
+                                .filter(|row| {
+                                    row.active
+                                        && row.index == victim.source_slot
+                                        && row.class == 3
+                                        && row.model == 0
+                                })
+                        {
+                            let victim_player = victim_row.source_player_entity_index();
+                            if let Some(source_player) = live
+                                .shared_spells
+                                .players()
+                                .iter()
+                                .find(|player| player.entity_index == victim_player)
+                                .or_else(|| {
+                                    (live.shared_spells.local_player.entity_index == victim_player)
+                                        .then_some(&live.shared_spells.local_player)
+                                })
+                                && let Some(player) = live
+                                    .core
+                                    .players
+                                    .iter_mut()
+                                    .find(|player| player.entity_index == victim_player)
+                            {
+                                player.sync_spell_acquisition_from(source_player);
+                            }
+                        }
                         live.shared_spells
                             .sync_typed_spell_parent_caches_from_player_entity();
                         if let Some(fire) = live.core.context.spell_fire.as_mut()
@@ -16916,6 +17009,41 @@ impl Mc2Simulation {
                         &self.session.definition.presentation.particles,
                     )?;
                 }
+            }
+            (ExistingHandler::Fields, SourceRoute::Imported)
+                if self.session.state.live.economy.entities[usize::from(source_slot)].model
+                    == 36 =>
+            {
+                let properties = sim_definition::adapter::mc2_field_definition(
+                    crate::level_definition::FieldKind::SkeletonSummon,
+                    crate::level_definition::TilePosition { x: 0, y: 0 },
+                );
+                let descriptor = self.session.definition.presentation.entity_parameters
+                    .get(80).ok_or("Skeleton constructor needs descriptor80")?;
+                let particles = &self.session.definition.presentation.particles;
+                let live = &mut self.session.state.live;
+                let owner = live.economy.entities[usize::from(source_slot)].source_id;
+                let mut owned_count = 0;
+                if effect_lists.is_current(&live.economy) {
+                    for &slot in &pass_start_class5_model_slots[9] {
+                        if creatures::skeleton::current_source_player_entity_index(
+                            &live.economy, slot,
+                        )? == Some(owner) {
+                            owned_count += 1;
+                        }
+                    }
+                }
+                crate::world::fields::skeleton_summon::step(
+                    &mut live.economy,
+                    &mut live.terrain,
+                    source_slot,
+                    properties,
+                    owned_count,
+                    |arena, terrain, birth| creatures::skeleton::allocate_from_controller(
+                        arena, terrain, particles, descriptor, birth,
+                    ),
+                )?;
+                self.append_new_economy_events(pass, source_slot);
             }
             (ExistingHandler::Fields, SourceRoute::Imported)
                 if self.session.state.live.economy.entities[usize::from(source_slot)].model
@@ -18188,15 +18316,23 @@ impl Mc2Simulation {
                 let reset_free_slots = self.session.baseline.economy.economy.free_slots.clone();
                 let remove_rival_castle_spell =
                     self.session.definition.source_terrain_graphics_flags() & 4 != 0;
+                // Construction states 3/5 call sub_5F890 before NewEvent,
+                // including when that allocation fails or replaces a row.
+                // State 2 releases before resetting word2e; 6D880 acts on
+                // this root's word2c only if its actual holder resolves.
+                if let Some((owner, busy)) = holder_update {
+                    let holder = self.commit_castle_holder_source_update(owner, busy)?;
+                    if !busy && holder.is_some() {
+                        self.session.state.live.economy
+                            .clear_castle_release_cooldown(source_slot);
+                    }
+                }
                 let advanced = self.session.state.live.step_castle_action_with_player_state(
                     source_slot,
                     &reset_free_slots,
                     remove_rival_castle_spell,
                 );
                 self.session.state.live.sync_castle_player_relations();
-                if advanced && let Some((owner, busy)) = holder_update {
-                    self.commit_castle_holder_source_update(owner, busy)?;
-                }
                 // Publish the source handler's economy sidecars before
                 // the coarse Castle wrapper, matching the handler-first
                 // ApplyEvents cursor order used by dynamic rows.
@@ -18464,6 +18600,31 @@ impl Mc2Simulation {
                     )?
                 };
                 if lifecycle.handled {
+                    if let Some(mode) = lifecycle.post_stage_scan {
+                        let live = &mut self.session.state.live;
+                        let targets = source_target::Context {
+                            spells: Some(&live.shared_spells),
+                            map_type: Some(live.terrain.map_type()),
+                            player: Some((
+                                live.core.state.entity_index,
+                                live.core.state.position,
+                                live.player_life,
+                            )),
+                            player_orientation: Some((
+                                live.core.state.yaw,
+                                live.core.state.roll_accumulator,
+                            )),
+                            particles: Some(&self.session.definition.presentation.particles),
+                            ..source_target::Context::from_ordinary(&live.goats, &live.ordinary)
+                        };
+                        level2_class5::firefly::finish_stage_hit_in_arena(
+                            &mut live.economy,
+                            &live.core.runtime,
+                            source_slot,
+                            mode,
+                            targets,
+                        )?;
+                    }
                     if let Some(killer_entity_index) = lifecycle.pre_kill_credit {
                         let qualifying_killer = killer_entity_index != source_slot
                             && self
@@ -18577,6 +18738,36 @@ impl Mc2Simulation {
                     [usize::from(level2_class5::firefly::FIREFLY_MODEL)];
                 let terrain = &self.session.state.live.terrain;
                 let live = match action {
+                    level2_class5::firefly::FIREFLY_STAGE_ACTION
+                        if self.session.state.live.economy.economy.authored_fireflies()
+                            .iter().any(|state| state.source_entity_index == source_slot
+                                && matches!(state.stage_var2, 3..=9)) =>
+                    {
+                        let live = &mut self.session.state.live;
+                        let targets = source_target::Context {
+                            spells: Some(&live.shared_spells),
+                            map_type: Some(live.terrain.map_type()),
+                            player: Some((
+                                live.core.state.entity_index,
+                                live.core.state.position,
+                                live.player_life,
+                            )),
+                            player_orientation: Some((
+                                live.core.state.yaw,
+                                live.core.state.roll_accumulator,
+                            )),
+                            particles: Some(&self.session.definition.presentation.particles),
+                            ..source_target::Context::from_ordinary(&live.goats, &live.ordinary)
+                        };
+                        level2_class5::firefly::step_actor_stage_in_arena(
+                            &mut live.economy,
+                            &live.core.runtime,
+                            &mut live.terrain,
+                            source_slot,
+                            pass_start_class5_model_slots,
+                            targets,
+                        )?
+                    }
                     level2_class5::firefly::FIREFLY_IDLE_ACTION => self
                         .session
                         .state
@@ -19381,73 +19572,26 @@ impl Mc2Simulation {
     /// a higher numeric birth is naturally visible to this pass's cursor.
     fn step_imported_tree(&mut self, source_slot: u16) -> std::result::Result<(), String> {
         let live = &mut self.session.state.live;
-        let source = live
-            .economy
-            .entities
-            .get(usize::from(source_slot))
-            .filter(|source| {
-                source.active
-                    && source.index == source_slot
-                    && source.class == 2
-                    && source.model == 0
-                    && source.action == 0
-            })
-            .cloned()
-            .ok_or_else(|| format!("tree callback lost source slot {source_slot}"))?;
-        let ground_height = live.terrain.ground_height(source.position);
-        let is_water = live.terrain.material_mask(source.position) == crate::WATER_AMBIENCE_MASK;
-        let mut source_after = source;
-        let (entities, economy) = (&live.economy.entities, &mut live.economy.economy);
-        let outcome = campaign_shared_families::step_tree_action0(
-            &mut source_after,
-            ground_height,
-            is_water,
-            |request| match request.kind {
-                campaign_shared_families::ScenerySpawnKind::TreeDeathSphere => {
-                    let inherited_id = request
-                        .inherit_source_id_from
-                        .and_then(|slot| entities.get(usize::from(slot)))
-                        .filter(|row| row.active && row.index != 0)
-                        .map_or(request.fallback_source_id, |row| row.source_id);
-                    let spawned = economy.allocate_authored_model6(
-                        source_slot,
-                        request.source_position,
-                        &live.terrain,
-                    )?;
-                    let row = economy
-                        .authored_model6
-                        .iter_mut()
-                        .find(|row| row.source_entity_index == spawned.source_entity_index)?;
-                    row.entity_id = inherited_id;
-                    row.height_offset = request.word_0x2c;
-                    row.position.z = request.position_z;
-                    Some(row.source_entity_index)
-                }
-                campaign_shared_families::ScenerySpawnKind::WaterSplash => {
-                    let spawned = economy.allocate_authored_model5_water_splash(
-                        request.source_position,
-                        &live.terrain,
-                    )?;
-                    let row = economy
-                        .authored_model5_water_splashes
-                        .iter_mut()
-                        .find(|row| row.source_entity_index == spawned.source_entity_index)?;
-                    row.entity_id = request.fallback_source_id;
-                    Some(row.source_entity_index)
-                }
-            },
+        let particles = &self.session.definition.presentation.particles;
+        let targets = source_target::Context {
+            spells: Some(&live.shared_spells),
+            player: Some((
+                live.core.state.entity_index,
+                live.core.state.position,
+                live.player_life,
+            )),
+            player_orientation: Some((live.core.state.yaw, live.core.state.roll_accumulator)),
+            particles: Some(particles),
+            map_type: Some(live.terrain.map_type()),
+            ..source_target::Context::from_ordinary(&live.goats, &live.ordinary)
+        };
+        crate::world::scenery::trees::step_imported(
+            &mut live.economy,
+            &mut live.terrain,
+            targets,
+            particles,
+            source_slot,
         )
-        .map_err(|error| error.to_string())?;
-        if let Some(spawned_slot) = outcome.death_sphere_slot
-            && let Some(spawned) = economy
-                .authored_model6
-                .iter_mut()
-                .find(|row| row.source_entity_index == spawned_slot)
-        {
-            spawned.life = source_after.life as i16;
-        }
-        live.economy.entities[usize::from(source_slot)] = source_after;
-        Ok(())
     }
 
     fn step_imported_stone(&mut self, source_slot: u16) -> std::result::Result<(), String> {
@@ -27473,6 +27617,42 @@ mod tests {
     }
 
     #[test]
+    fn real_authored_firefly_binds_or_thins_only_after_successful_allocation() {
+        let package = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../generated/mc-bhq6-ordinary-20261025-zclu5fjj/level4");
+        let campaign = CampaignSession::open(package, CampaignSelection::ordinary(4).unwrap())
+            .expect("real Cave owner package opens");
+        let baseline = campaign.simulation();
+        let feature = *baseline.session.state.live.mission.authored_features().iter()
+            .find(|feature| feature.index == 683 && feature.kind == 5 && feature.subtype == 19)
+            .expect("actual authored Firefly feature");
+        let stage = baseline.session.state.live.mission.level2_authored_stage_variable_for(
+            feature, baseline.runtime().active_stage_variable_count(),
+        ).expect("real Firefly StageVar binding");
+        assert_eq!(stage.kind, 2);
+        for (phase, admitted) in [(0_u16, true), (3, false)] {
+            let mut candidate = baseline.clone();
+            let row = &mut candidate.session.state.live.core.runtime.stage_variables[usize::from(stage.index)];
+            row.flags = 0x20;
+            row.word_2 = (row.word_2 & 0xff) | (phase << 8);
+            let source = candidate.allocate_authored_firefly_feature(feature).unwrap()
+                .expect("real authored producer allocates");
+            let state = candidate.economy().authored_fireflies().iter()
+                .find(|state| state.source_entity_index == source.source_entity_index).unwrap();
+            assert_eq!((state.stage_var1, state.stage_var2, source.action),
+                if admitted { (stage.index, 2, 159) } else { (0, 0, 153) });
+            assert_eq!(candidate.runtime().stage_variables[usize::from(stage.index)].word_2 >> 8,
+                phase + 1, "source binding advances once after successful allocation");
+        }
+        let mut exhausted = baseline.clone();
+        while exhausted.session.state.live.economy.economy.allocate_slot().is_some() {}
+        let before = exhausted.runtime().stage_variables[usize::from(stage.index)].word_2;
+        assert!(exhausted.allocate_authored_firefly_feature(feature).unwrap().is_none());
+        assert_eq!(exhausted.runtime().stage_variables[usize::from(stage.index)].word_2, before,
+            "failed construction cannot advance the shared source StageVar counter");
+    }
+
+    #[test]
     fn level_four_public_army_cast_schedules_rings_and_real_summoned_creatures() {
         for (tier, model, expected_count, level, package_name, check_expiry) in [
             (
@@ -27493,9 +27673,9 @@ mod tests {
             ),
             (1, 25, 4, 4, "mc-bhq8-level4-collision-v2-cave", true),
             (2, 16, 2, 4, "mc-bhq8-level4-collision-v2-cave", true),
+            (1, 25, 4, 7, "mc-bhq6-ordinary-20261025-zclu5fjj/level7", false),
             (0, 19, 8, 1, "mc-bhq6-ordinary-20261025-zclu5fjj/level1", false),
             (0, 19, 8, 7, "mc-bhq6-ordinary-20261025-zclu5fjj/level7", false),
-            (1, 25, 4, 7, "mc-bhq6-ordinary-20261025-zclu5fjj/level7", false),
             (
                 0,
                 19,
@@ -27786,6 +27966,7 @@ mod tests {
             let mut summoned_handles = BTreeMap::new();
             let mut observed_army_children = Vec::new();
             let mut terminal_ring_observations = Vec::new();
+            let mut child_damage_observations = Vec::new();
             let mut last_firefly_visits = BTreeMap::new();
             let mut expired_creatures = BTreeSet::new();
             let mut saw_creature_reclaim = false;
@@ -27889,8 +28070,23 @@ mod tests {
                         let sidecar = arena.economy.authored_fireflies().iter()
                             .find(|row| row.source_entity_index == identity.handle.source_slot);
                         observed_army_children.push((turn, identity.handle, identity.living,
-                            (row.map(|row| (row.action, row.life, row.drawing_enabled, row.source_byte_3e)),
-                             sidecar.map(|row| (row.stage_var2, row.word_0x2e, row.parent_entity_index)))));
+                            (row.map(|row| (row.action, row.life, row.drawing_enabled, row.source_byte_3e,
+                                row.word_0x26, row.position)),
+                             sidecar.map(|row| (row.stage_var2, row.word_0x2e, row.parent_entity_index,
+                                row.movement_blocked)))));
+                    }
+                }
+                for event in session.dispatch_events() {
+                    if let Mc2DispatchEvent::Economy {
+                        event: Level2EconomyEvent::DamageApplied {
+                            target_entity_index, attacker_entity_index, damage, lethal,
+                        }, ..
+                    } = event
+                        && observed_army_children.iter().any(|(_, handle, _, _)|
+                            handle.source_slot == *target_entity_index)
+                    {
+                        child_damage_observations.push((turn, *target_entity_index,
+                            *attacker_entity_index, *damage, *lethal));
                     }
                 }
                 for identity in census.entries().iter().filter(|identity| {
@@ -28026,7 +28222,7 @@ mod tests {
             assert_eq!(
                 summoned.len(),
                 expected_count,
-                "scheduled rings allocate the real family for level {level}, tier {tier}, model {model}; observed={observed_army_children:?}; terminal_rings={terminal_ring_observations:?}"
+                "scheduled rings allocate the real family for level {level}, tier {tier}, model {model}; observed={observed_army_children:?}; terminal_rings={terminal_ring_observations:?}; child_damage={child_damage_observations:?}"
             );
             assert!(
                 saw_summoned_upkeep,
@@ -30909,6 +31105,15 @@ mod tests {
 
     #[test]
     fn mission_four_meteor_reward_reaches_acquisition_and_live_holder_dispatch() {
+        use crate::campaign::backend::{
+            Mc2CampaignAdapter, Mc2CampaignBackend, Mc2CampaignInputs, load_mc2_campaign,
+        };
+        use crate::game_session::{GameCommand, GameSession, SessionGuard, SpellAvailability};
+        let guard = |game: &GameSession<Mc2CampaignBackend>| {
+            let identity = game.identity();
+            SessionGuard { session_id: identity.session_id, generation: identity.generation,
+                expected_tick: identity.tick }
+        };
         let root = std::env::var_os("MC_ORDINARY_CAMPAIGN_PACKAGES").map_or_else(
             || {
                 std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -30916,9 +31121,12 @@ mod tests {
             },
             std::path::PathBuf::from,
         );
-        let mut campaign =
-            CampaignSession::open(root.join("level4"), CampaignSelection::ordinary(4).unwrap())
-                .expect("actual Arachnium package opens");
+        let package = root.join("level4");
+        let catalog = crate::game_definition::default_catalog().unwrap();
+        let definition = load_mc2_campaign(&package, &catalog).unwrap();
+        let mut game = GameSession::open(&Mc2CampaignAdapter, std::sync::Arc::new(definition),
+            91, Mc2CampaignInputs::new(&package)).expect("actual Arachnium semantic session opens");
+        let campaign = game.backend_mut().compatibility_campaign_mut_for_test();
         let creature_bindings = campaign.definition().authored_creature_entity_bindings();
         let spider = campaign
             .definition()
@@ -30959,7 +31167,8 @@ mod tests {
             .unwrap();
         let visits = usize::from((4_u8.wrapping_sub(pickup.phase & 3)) & 3) + 1;
         for _ in 0..visits {
-            session.step_outer_turn(PlayerCommand::default(), 0);
+            game.step(guard(&game), GameCommand::default()).unwrap();
+            let session = game.backend().compatibility_campaign().simulation();
             assert!(
                 session
                     .dispatch_events()
@@ -30969,6 +31178,7 @@ mod tests {
                 session.dispatch_events()
             );
         }
+        let session = game.backend().compatibility_campaign().simulation();
         assert!(
             session.entities()[usize::from(ring_slot)].life < ring_life,
             "authored lowering ring reaches the existing terrain callback"
@@ -30991,7 +31201,8 @@ mod tests {
             (6000, 40000, 3)
         );
         let phase = holder.phase;
-        session.step_outer_turn(PlayerCommand::default(), 0);
+        game.step(guard(&game), GameCommand::default()).unwrap();
+        let session = game.backend().compatibility_campaign().simulation();
         let holder = session
             .shared_spells()
             .pickup(pickup.source_entity_index)
@@ -31008,6 +31219,71 @@ mod tests {
             session.players()[0].enabled_spell_holders[9],
             pickup.source_entity_index
         );
+
+        // Stage only the upstream Castle/resource boundary. Acquisition and
+        // both casts still cross the one GameSession command authority;
+        // this is controlled consumer evidence, not earned mission progress.
+        let baseline_life = session.entities()[usize::from(player)].life;
+        let castle = {
+            let session = game.backend_mut().compatibility_campaign_mut_for_test().simulation_mut();
+            let position = session.state.position;
+            session.economy_mut().build_castle(position, player)
+                .expect("the real owner can construct the Castle prerequisite")
+        };
+        let stage_resources = |game: &mut GameSession<Mc2CampaignBackend>, castle_mana, mana, life| {
+            let session = game.backend_mut().compatibility_campaign_mut_for_test().simulation_mut();
+            assert!(session.economy_mut().set_castle_mana_prerequisite_for_test(castle, castle_mana));
+            let live = &mut session.session.state.live;
+            for row in &mut live.shared_spells.player_entities {
+                if row.index == player { row.set_mana(mana); row.set_mana_regen(0); row.set_life(life); }
+            }
+            live.shared_spells.player_entity.set_mana(mana);
+            live.shared_spells.player_entity.set_mana_regen(0);
+            live.shared_spells.player_entity.set_life(life);
+            live.shared_spells.caster.mana = mana;
+            live.shared_spells.player_mana = mana;
+            live.economy.entities[usize::from(player)].set_mana(mana);
+            live.economy.entities[usize::from(player)].set_mana_regen(0);
+            live.economy.entities[usize::from(player)].set_life(life);
+            live.player_life = life;
+            if let Some(fire) = live.core.context.spell_fire.as_mut() { fire.caster.mana = mana; }
+        };
+        let meteor_id = crate::game_definition::SemanticId::parse("spell.meteor").unwrap();
+        let observe = |game: &GameSession<Mc2CampaignBackend>| {
+            let before = game.snapshot();
+            assert_eq!(before, game.snapshot(), "spell observations must not tick, mutate or draw RNG");
+            before.value.player_spells.iter().find(|spell| spell.id == meteor_id).unwrap().clone()
+        };
+        stage_resources(&mut game, 39_999, 6_000, baseline_life);
+        assert_eq!(observe(&game).availability, SpellAvailability::InsufficientMana);
+        game.step(guard(&game), GameCommand { select_spell: Some(meteor_id.clone()),
+            cast_selected: true, ..GameCommand::default() }).unwrap();
+        let session = game.backend().compatibility_campaign().simulation();
+        assert!(!session.entities().iter().any(|row| row.active
+            && (row.class, row.model, row.action) == (9, 3, 3)
+            && u16::from_le_bytes([row.record[42], row.record[43]]) == pickup.source_entity_index),
+            "one-below Castle mana must reject the actual semantic cast");
+        assert_eq!(session.shared_spells().pickup(pickup.source_entity_index).unwrap().active_value, 0);
+        stage_resources(&mut game, 40_000, 5_999, baseline_life);
+        assert_eq!(observe(&game).availability, SpellAvailability::InsufficientMana);
+        stage_resources(&mut game, 40_000, 6_000, -1);
+        let dead_owner = observe(&game);
+        assert!(dead_owner.acquired);
+        assert_eq!(dead_owner.availability, SpellAvailability::InvalidCaster);
+        stage_resources(&mut game, 40_000, 6_000, baseline_life);
+        let ready = observe(&game);
+        assert!(ready.acquired);
+        assert_eq!(ready.availability, SpellAvailability::Ready);
+        let result = game.step(guard(&game), GameCommand { select_spell: Some(meteor_id.clone()),
+            cast_selected: true, ..GameCommand::default() }).unwrap();
+        assert!(result.value.player_spells.iter().any(|spell| spell.id == meteor_id && spell.selected));
+        let session = game.backend().compatibility_campaign().simulation();
+        assert!(session.dispatch_events().iter().all(|event| !matches!(event, Mc2DispatchEvent::Error { .. })),
+            "semantic Meteor emission must dispatch: {:?}", session.dispatch_events());
+        assert!(session.entities().iter().any(|row| row.active
+            && (row.class, row.model, row.action) == (9, 3, 3)
+            && u16::from_le_bytes([row.record[42], row.record[43]]) == pickup.source_entity_index),
+            "an admitted public semantic cast must emit its actual Meteor projectile");
     }
 
     #[test]
@@ -34672,7 +34948,11 @@ mod tests {
                 // sub_1CC20 already bound word96; guided acquisition is not
                 // attempted for that preselected source address.
                 false,
-            )
+            ),
+            "Dragon source before={dragon_before_fire:?}, predicted_motion={fire_transition:?}, \
+             target_before={fire_target_position:?}, target_after={:?}, source_after={fired:?}, \
+             projectile_visited={projectile_visited}, projectile={projectile:?}",
+            live.core.state.position,
         );
         let receipts = campaign.simulation().cf10_production_schedule_receipts();
         assert_eq!(

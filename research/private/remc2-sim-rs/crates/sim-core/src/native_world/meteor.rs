@@ -15,6 +15,37 @@ pub(crate) use crate::spell_activation::{
     ProjectileSpellCastInput as CastInput, ProjectileSpellHolderOutcome as HolderOutcome,
 };
 
+/// Current source `sub_68D50` gate, shared by the actual holder visit and
+/// the public observation of a fresh activation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum Admission {
+    Allowed,
+    ParentUnavailable,
+    InsufficientCasterMana,
+    InsufficientCastleMana,
+}
+
+pub(crate) fn admission(
+    holder: &EntitySnapshot,
+    parent: &EntitySnapshot,
+    castle_mana: Option<i32>,
+    active_value: i16,
+) -> Admission {
+    if parent.mana < 0 {
+        return Admission::InsufficientCasterMana;
+    }
+    if parent.life < 0 {
+        return Admission::ParentUnavailable;
+    }
+    if holder.mana_regen != 0 && castle_mana.is_none_or(|mana| mana < holder.mana_regen) {
+        return Admission::InsufficientCastleMana;
+    }
+    if active_value == holder.activation_value as i16 && parent.mana < holder.max_mana {
+        return Admission::InsufficientCasterMana;
+    }
+    Admission::Allowed
+}
+
 fn word(row: &EntitySnapshot, offset: usize) -> u16 {
     u16::from_le_bytes([row.record[offset], row.record[offset + 1]])
 }
@@ -155,14 +186,8 @@ pub(crate) fn step_holder(
         if parent_slot != 0
             && let Some(parent) = arena.entities.get(usize::from(parent_slot))
         {
-            let admitted = parent.mana >= 0
-                && parent.life >= 0
-                && (holder.mana_regen == 0
-                    || input
-                        .castle_mana
-                        .is_some_and(|mana| mana >= holder.mana_regen))
-                && (holder.active_value != holder.activation_value as i16
-                    || parent.mana >= holder.max_mana);
+            let admitted = admission(&holder, parent, input.castle_mana, holder.active_value)
+                == Admission::Allowed;
             if admitted {
                 if holder.active_value == holder.activation_value as i16 {
                     outcome.projectile =

@@ -5778,9 +5778,54 @@ fn level_two_public_fireball_hits_qualified_water_without_fabricating_an_impact(
             .iter()
             .all(|row| impact_slots_before.contains(&row.source_entity_index))
     );
-    assert!(session.source_arena().entities.iter().all(|row| {
-        !row.active || (row.class, row.model) != (10, 0) || raw_impacts_before.contains(&row.index)
-    }));
+    let new_raw_impacts = session
+        .source_arena()
+        .entities
+        .iter()
+        .filter(|row| {
+            row.active
+                && (row.class, row.model) == (10, 0)
+                && !raw_impacts_before.contains(&row.index)
+        })
+        .map(|row| {
+            (
+                row.index,
+                row.source_id,
+                row.position,
+                row.action,
+                row.phase,
+                row.life,
+            )
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        new_raw_impacts.is_empty(),
+        "new impact rows={new_raw_impacts:?}, flyer={flyer:?}, new splashes={:?}, dispatch={:?}",
+        session
+            .source_arena()
+            .entities
+            .iter()
+            .filter(|row| row.active
+                && (row.class, row.model) == (10, 5)
+                && !splash_slots_before.contains(&row.index))
+            .map(|row| (
+                row.index,
+                row.source_id,
+                row.position,
+                row.action,
+                row.phase,
+                row.life
+            ))
+            .collect::<Vec<_>>(),
+        session
+            .dispatch_events()
+            .iter()
+            .filter(|event| matches!(
+                event,
+                Mc2DispatchEvent::Economy { .. } | Mc2DispatchEvent::Error { .. }
+            ))
+            .collect::<Vec<_>>()
+    );
     let splash = session
         .source_arena()
         .entities

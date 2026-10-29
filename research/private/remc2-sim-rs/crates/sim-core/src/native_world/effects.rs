@@ -673,6 +673,9 @@ fn header(
                 .unwrap();
             row.set_source_dword_10(s.dword_0x10);
             row.set_yaw(s.yaw);
+            row.set_pitch(s.pitch);
+            row.set_source_word_96(s.target_source_entity_index);
+            row.set_source_byte_46(s.source_byte_46);
             row.set_source_overlap_half_extents(s.shift_rot_x, s.shift_rot_x);
             row.record[92..94].copy_from_slice(&s.shift_rot_y.to_le_bytes());
             row.record[69] = u8::MAX;
@@ -808,6 +811,10 @@ fn store(arena: &mut SourceArena, kind: Kind, row: &EntitySnapshot) {
                 .unwrap();
             common!(s);
             s.dword_0x10 = row.source_dword_10();
+            s.yaw = row.yaw;
+            s.pitch = row.pitch;
+            s.target_source_entity_index = row.source_word_96();
+            s.source_byte_46 = row.record[74];
             s.shift_rot_x = row.array_pitch();
             s.shift_rot_y = row.array_fov();
         }
@@ -911,6 +918,36 @@ fn store(arena: &mut SourceArena, kind: Kind, row: &EntitySnapshot) {
         }
         _ => unreachable!("header admitted a retained effect kind"),
     }
+}
+
+/// After hidden map unlink, retain the source's class-zero bytes at each
+/// current 10/17 address before the economy frees its typed carrier.
+pub(crate) fn prepare_model17_reclaim(arena: &mut SourceArena) -> Result<(), String> {
+    let hidden = arena
+        .economy
+        .authored_model17
+        .iter()
+        .filter(|source| source.active && source.control_flags & 0x400 != 0)
+        .filter_map(|source| {
+            let current = arena.economy.live_arena_cursor_row(source.source_entity_index)?;
+            (current.kind == Kind::AuthoredModel17)
+                .then_some((source.source_entity_index, current.generation))
+        })
+        .collect::<Vec<_>>();
+    for (slot, generation) in hidden {
+        let current = arena.economy.live_arena_cursor_row(slot);
+        if !current
+            .is_some_and(|row| row.kind == Kind::AuthoredModel17 && row.generation == generation)
+        {
+            continue;
+        }
+        // This header has no particle binding. The typed carrier is still the
+        // current authority, including its last callback and phase bytes.
+        let mut row = header(arena, slot, Kind::AuthoredModel17, &[])?;
+        row.reclaim_source_row();
+        arena.entities[usize::from(slot)] = row;
+    }
+    Ok(())
 }
 
 pub(crate) fn visit<F>(

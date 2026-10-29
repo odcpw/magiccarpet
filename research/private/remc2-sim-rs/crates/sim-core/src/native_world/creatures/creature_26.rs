@@ -110,6 +110,8 @@ pub(crate) struct PeerUpdate {
 pub(crate) struct Effects {
     pub mana_drain: Option<ManaDrain>,
     pub spell_theft: Option<SpellTheft>,
+    /// A committed theft changed this generation's player acquisition state.
+    pub committed_theft_victim: Option<SourceEntityHandle>,
     pub peer_updates: Vec<PeerUpdate>,
     pub sound: Option<u8>,
     pub earlier_feedback: Option<(u16, u8)>,

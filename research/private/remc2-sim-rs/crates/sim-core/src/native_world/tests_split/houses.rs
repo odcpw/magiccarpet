@@ -3016,6 +3016,58 @@ fn level_two_castle_public_route_retries_root_and_child_failures_and_upgrades() 
     );
     assert_eq!(completed_root.shift_yaw, -8_192);
     assert_eq!(completed_root.shift_fov, 0x4000);
+    // The real completed root also supplies the state-3 retry control.
+    // sub_5F890 runs before the constructor whether NewEvent succeeds or
+    // fails. Only arena capacity differs between these two source visits.
+    for allocation_available in [false, true] {
+        let mut retry = occupied.clone();
+        let holder_slot = retry.shared_spells().local_player.enabled_spell_holders[2];
+        assert_eq!(retry.shared_spells().pickup(holder_slot).unwrap().active_value, 0);
+        {
+            let mut economy = retry.economy_mut();
+            let root = economy.castle_at_mut(root_slot).unwrap();
+            root.action = 5;
+            root.build_state = 3;
+            root.source_word_2e = 3;
+        }
+        if !allocation_available {
+            retry.economy_mut().free_slots.clear();
+        }
+        retry.step_outer_turn(PlayerCommand::default(), 0);
+        assert!(retry.dispatch_events().iter().all(|event| !matches!(event, Mc2DispatchEvent::Error { .. })),
+            "Castle source retry must dispatch: {:?}", retry.dispatch_events());
+        assert_ne!(retry.shared_spells().pickup(holder_slot).unwrap().active_value, 0,
+            "state 3 marks its actual holder busy before allocation, available={allocation_available}");
+        assert_eq!(retry.economy().castle_at(root_slot).unwrap().build_state,
+            if allocation_available { 4 } else { 3 },
+            "only the successful constructor advances the real root");
+    }
+    for valid_parent in [false, true] {
+        let mut release = occupied.clone();
+        let holder_slot = release.shared_spells().local_player.enabled_spell_holders[2];
+        {
+            let mut economy = release.economy_mut();
+            let root = economy.castle_at_mut(root_slot).unwrap();
+            root.action = 5;
+            root.build_state = 2;
+            root.source_word_2e = 2;
+            root.auxiliary_cooldown = 37;
+        }
+        if !valid_parent {
+            let live = &mut release.session.state.live;
+            let mut holder = live.shared_spells.pickup(holder_slot).unwrap().clone();
+            holder.record[44..46].copy_from_slice(&0_u16.to_le_bytes());
+            live.shared_spells.sync_pickup_from_authority(&holder);
+            live.economy.entities[usize::from(holder_slot)] = holder;
+        }
+        release.step_outer_turn(PlayerCommand::default(), 0);
+        assert!(release.dispatch_events().iter().all(|event| !matches!(event, Mc2DispatchEvent::Error { .. })),
+            "Castle state-2 release must dispatch: {:?}", release.dispatch_events());
+        let root = release.economy().castle_at(root_slot).unwrap();
+        assert_eq!((root.action, root.build_state, root.source_word_2e), (4, 0, 0));
+        assert_eq!(root.auxiliary_cooldown, if valid_parent { 0 } else { 37 },
+            "6D880 clears the root word2c only when its owner's actual holder resolves");
+    }
     let occupied_holder = occupied
         .shared_spells()
         .dynamic_pickups
@@ -3051,12 +3103,24 @@ fn level_two_castle_public_route_retries_root_and_child_failures_and_upgrades() 
         })
         .collect::<BTreeSet<_>>();
     assert!(!mana_positions.is_empty());
-    occupied
-        .set_level2_entity_position(player_slot, switch_position)
-        .expect("controlled overlap with the real mana switch");
-    occupied.step_outer_turn(PlayerCommand::default(), 0);
-    assert!(occupied.dispatch_events().iter().all(|event| !matches!(event, Mc2DispatchEvent::Error { .. })),
-        "the ordinary mana producer must commit: {:?}", occupied.dispatch_events());
+    // Source class-11/model-0 tests overlap only when phase & 7 == 0.
+    // Construction has already advanced that phase; hold the declared
+    // position input through one complete eight-visit source cadence.
+    for _ in 0..8 {
+        occupied
+            .set_level2_entity_position(player_slot, switch_position)
+            .expect("controlled overlap with the real mana switch");
+        assert!(occupied.level2_authored_switch_matches(11).unwrap());
+        occupied.step_outer_turn(PlayerCommand::default(), 0);
+        assert!(occupied.dispatch_events().iter().all(|event| !matches!(event, Mc2DispatchEvent::Error { .. })),
+            "the ordinary mana producer must commit: {:?}", occupied.dispatch_events());
+        if occupied.economy().spheres().iter().any(|sphere| {
+            sphere.active && !sphere.pending_delete
+                && mana_positions.contains(&(sphere.position.x, sphere.position.y))
+        }) {
+            break;
+        }
+    }
     assert!(occupied.economy().spheres().iter().any(|sphere| {
         sphere.active && !sphere.pending_delete
             && mana_positions.contains(&(sphere.position.x, sphere.position.y))

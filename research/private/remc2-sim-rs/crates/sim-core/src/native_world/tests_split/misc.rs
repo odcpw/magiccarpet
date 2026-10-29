@@ -3115,16 +3115,28 @@ fn level_two_beyond_sight_active_holder_ticks_through_outer_turn_and_reset() {
     // corresponding control does. Keep this declared unit setup consistent.
     let parent_entity_index = session.state.entity_index;
     session.economy.entities[usize::from(parent_entity_index)].set_mana(5_000);
-    assert!(
-        session
-            .shared_spells_mut()
-            .activate_beyond_sight(256, false)
+    // The imported callback reloads its numeric holder before each visit.
+    // Cast through the actual player command so activation reaches that row;
+    // changing only the typed mirror would be discarded by the next refresh.
+    session.step_outer_turn(
+        PlayerCommand {
+            opcode: 6,
+            argument_1: 12,
+            flags: 0x40,
+            ..PlayerCommand::default()
+        },
+        0,
     );
     let active = session
         .shared_spells()
         .beyond_sight_state()
         .expect("activated family-12 Beyond Sight state");
     assert_eq!(active.active_value, active.activation_value);
+    assert_eq!(
+        session.economy.entities[usize::from(outcome.source_slot)].active_value,
+        active.active_value,
+        "the normal cast activates the authoritative numeric holder"
+    );
     assert_ne!(session.shared_spells().reset_hash(), baseline_hash);
 
     // Reward suppression changes XP only; the same real holder still pulses.

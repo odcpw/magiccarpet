@@ -1876,8 +1876,20 @@ impl Level2EconomyState {
         &mut self,
         authored_index: u16,
         position: Position,
+        particles: &[ParticleParameter],
     ) -> Option<Level2AuthoredTreeSource> {
         let source_entity_index = self.allocate_slot()?;
+        self.initialize_authored_tree(source_entity_index, authored_index, position, particles)
+    }
+
+    /// AddTree after the source arena has selected the fixed source address.
+    pub(crate) fn initialize_authored_tree(
+        &mut self,
+        source_entity_index: u16,
+        authored_index: u16,
+        position: Position,
+        particles: &[ParticleParameter],
+    ) -> Option<Level2AuthoredTreeSource> {
         let initial_rng = self.new_event_rng(source_entity_index);
         let life_rng = level2_next_rng16(initial_rng);
         let x_rng = level2_next_rng16(life_rng);
@@ -1890,6 +1902,10 @@ impl Level2EconomyState {
             .expect("tree y offset draw fits i16")
             .wrapping_sub(32);
         let particle_index = if particle_rng & 1 != 0 { 84 } else { 83 };
+        let Some(particle) = particles.get(usize::from(particle_index)) else {
+            self.release_slot(source_entity_index, None);
+            return None;
+        };
         let position = Position {
             x: position.x.wrapping_add(x_offset as u16),
             y: position.y.wrapping_add(y_offset as u16),
@@ -1929,13 +1945,11 @@ impl Level2EconomyState {
             owner_entity_index: 0,
             pending_damage: 0,
             particle_index,
-            // Particle rows 83 and 84 both have rotSpeed 800 and speed 0;
-            // SetHalfSpeedEntity therefore writes yaw/fov 400 and pitch/roll
-            // zero after the fourth constructor draw.
-            yaw: 400,
-            pitch: 0,
-            roll: 0,
-            fov: 400,
+            // SetHalfSpeedEntity binds the selected source particle's pose.
+            yaw: (particle.rotation_speed / 2) as i16,
+            pitch: (particle.speed / 2) as i16,
+            roll: (particle.speed / 2) as i16,
+            fov: (particle.rotation_speed / 2) as i16,
             position,
             phase: source_entity_index as u8,
             last_sphere_source_entity_index: 0,

@@ -6,6 +6,7 @@
 pub(crate) mod gravity;
 pub(crate) mod magic_mine;
 pub mod palette;
+pub(crate) mod skeleton_summon;
 pub(crate) mod status;
 pub(crate) mod transport;
 pub(crate) mod wind;

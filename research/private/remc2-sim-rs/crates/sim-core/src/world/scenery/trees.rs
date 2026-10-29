@@ -6,6 +6,148 @@ use crate::{
     native_world::{Level2AuthoredTreeSource, ParticleParameter, SessionTerrain, source_target},
 };
 
+/// Present the current typed Tree occupant through the ordinary sprite path.
+pub(crate) fn sprite_sources(
+    trees: &[Level2AuthoredTreeSource],
+) -> impl Iterator<Item = (u16, u16, u16, i16, Position, u32)> + '_ {
+    trees
+        .iter()
+        .filter(|tree| tree.active && tree.drawing_enabled && tree.control_flags & 0x421 == 0)
+        .map(|tree| {
+            (
+                tree.source_entity_index,
+                tree.entity_id,
+                tree.particle_index,
+                // AddTree and its callbacks leave the source sprite heading
+                // at NewEvent's zero; `tree.yaw` is the collision array yaw.
+                0,
+                tree.position,
+                tree.control_flags,
+            )
+        })
+}
+
+/// Run the same Tree actions for reset-imported source rows. Allocation can
+/// reuse the visited address, so subsequent writes always reread that address.
+pub(crate) fn step_imported(
+    arena: &mut SourceArena,
+    terrain: &mut SessionTerrain,
+    context: source_target::Context<'_>,
+    particles: &[ParticleParameter],
+    slot: u16,
+) -> Result<(), String> {
+    use crate::level_definition::EffectKind;
+    use crate::world::effects::{allocate_from_source_position, bind_particle, sync_position};
+
+    let tree = arena
+        .entities
+        .get_mut(usize::from(slot))
+        .filter(|tree| tree.active && tree.class == 2 && tree.model == 0)
+        .ok_or_else(|| format!("imported Tree callback lost source slot {slot}"))?;
+    let had_owner = match tree.action {
+        0 => {
+            tree.set_control_flags(tree.control_flags | 0x0002_0000);
+            let owner = u16::from_le_bytes([tree.record[102], tree.record[103]]);
+            if owner != 0 {
+                let damage = i32::from_le_bytes([
+                    tree.record[98],
+                    tree.record[99],
+                    tree.record[100],
+                    tree.record[101],
+                ]);
+                tree.set_life(tree.life.wrapping_sub(damage));
+            }
+            owner != 0
+        }
+        1 => {
+            tree.set_life(tree.life.wrapping_sub(1));
+            if tree.life < 60 {
+                let particle = match tree.particle_parameter_index {
+                    Some(83) => Some(226),
+                    Some(84) => Some(227),
+                    _ => None,
+                };
+                tree.set_source_action(2);
+                if let Some(particle) = particle {
+                    bind_particle(tree, particle, particles)?;
+                }
+            }
+            false
+        }
+        2 => false,
+        action => {
+            return Err(format!(
+                "imported Tree slot {slot} has unsupported action {action}"
+            ));
+        }
+    };
+    let lethal = had_owner && tree.life < 0;
+    let position = tree.position;
+    if lethal
+        && let Some(child_slot) = allocate_from_source_position(
+            arena,
+            terrain,
+            sim_definition::adapter::mc2_effect_definition(EffectKind::GroundFire),
+            slot,
+            position,
+            particles,
+        )?
+    {
+        let current = &arena.entities[usize::from(slot)];
+        let owner = u16::from_le_bytes([current.record[102], current.record[103]]);
+        let owner_id = if owner == 0 {
+            arena.entities[0].source_id
+        } else {
+            source_target::read(arena, context, owner)?
+                .ok_or("imported Tree damage owner is outside the source arena")?
+                .source_id
+        };
+        let height = (i32::from(current.array_fov()) * 3 / 4) as i16;
+        let child = &mut arena.entities[usize::from(child_slot)];
+        child.source_id = owner_id;
+        child.record[30..32].copy_from_slice(&owner_id.to_le_bytes());
+        child.set_source_word_2c(height);
+        let mut child_position = child.position;
+        child_position.z = child_position.z.saturating_sub(128).max(0);
+        child.set_position(child_position);
+        let current = &mut arena.entities[usize::from(slot)];
+        let rng = current.entity_rng.wrapping_mul(9_377).wrapping_add(9_439);
+        current.set_entity_rng(rng);
+        let life = i32::from(rng % 60) + 130;
+        current.set_life(life);
+        current.set_control_flags((current.control_flags & !0x0002_0008) | 0x0002_0000);
+        current.set_source_action(1);
+        arena.economy.set_source_rng(slot, rng);
+        arena.entities[usize::from(child_slot)].set_life(life);
+        let position = arena.entities[usize::from(slot)].position;
+        sync_position(arena, terrain, slot, position, true, true)?;
+    }
+    let current = &mut arena.entities[usize::from(slot)];
+    if had_owner {
+        current.record[102..104].fill(0);
+    }
+    let mut position = current.position;
+    position.z = terrain.ground_height(position);
+    current.set_position(position);
+    if terrain.material_mask(position) == crate::WATER_AMBIENCE_MASK {
+        if let Some(child_slot) = allocate_from_source_position(
+            arena,
+            terrain,
+            sim_definition::adapter::mc2_effect_definition(EffectKind::Ash),
+            slot,
+            position,
+            particles,
+        )? {
+            let id = arena.entities[usize::from(slot)].source_id;
+            let child = &mut arena.entities[usize::from(child_slot)];
+            child.source_id = id;
+            child.record[30..32].copy_from_slice(&id.to_le_bytes());
+        }
+        arena.entities[usize::from(slot)].disable_drawing();
+    }
+    Ok(())
+}
+
 /// Run AddTree02_00 against the source arena's frozen allocation cursor.
 /// A successful NewEvent may replace the very address being visited; all
 /// remaining writes then target its new occupant, as in the source.

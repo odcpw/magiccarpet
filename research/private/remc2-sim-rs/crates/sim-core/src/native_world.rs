@@ -257,6 +257,8 @@ const PLAYER_LEVEL2_BANISHMENT_STATE_BYTES: usize = 1;
 const PLAYER_LEVEL2_RECORD_BYTES: usize =
     PLAYER_LEVEL2_V4_RECORD_BYTES + PLAYER_LEVEL2_BANISHMENT_STATE_BYTES;
 const PLAYER_LEVEL2_RECORD_BYTES_U16: u16 = 663;
+const PLAYER_CAMPAIGN_V5_RECORD_BYTES: usize = PLAYER_LEVEL2_RECORD_BYTES + 6;
+const PLAYER_CAMPAIGN_V5_RECORD_BYTES_U16: u16 = 669;
 const AUTHORED_LEVEL_BYTES: usize = 0x6604;
 const TERRAIN_BYTES: usize = LEGACY_MAP_CELLS * 7;
 const RUNTIME_BYTES: usize = 2_754;
@@ -571,9 +573,11 @@ mod guided_projectile;
 #[cfg(test)]
 pub(crate) use guided_projectile::boss as test_guided_boss;
 pub(crate) use effects::hidden_slots as hidden_effect_slots;
+pub(crate) use effects::prepare_model17_reclaim;
 mod level2_nyphur;
 pub(crate) mod lightning;
 mod meteor;
+pub(crate) use meteor::{Admission as MeteorAdmission, admission as meteor_admission};
 mod night_cache;
 mod player_damage;
 mod player_spell_state;
@@ -4167,6 +4171,13 @@ impl NativeWorld {
             terrain_planes.angles.to_vec(),
         )
         .map_err(NativeWorldError::new)?;
+        let player_schema = if definition.identity == CampaignSelection::LEVEL1 {
+            OwnerPackageSchema::V3
+        } else if read_u16(&players_bytes, 4, "campaign players version")? == 5 {
+            OwnerPackageSchema::CampaignPlayerV5
+        } else {
+            OwnerPackageSchema::V5
+        };
         let players = parse_players(
             &players_bytes,
             if definition.identity == CampaignSelection::LEVEL1 {
@@ -4174,11 +4185,7 @@ impl NativeWorld {
             } else {
                 OwnerPackageProfile::Campaign
             },
-            if definition.identity == CampaignSelection::LEVEL1 {
-                OwnerPackageSchema::V3
-            } else {
-                OwnerPackageSchema::V5
-            },
+            player_schema,
         )?;
         let runtime = parse_runtime(&runtime_bytes)?;
         validate_campaign_runtime(&runtime, &players, &entities)?;
@@ -4189,6 +4196,8 @@ impl NativeWorld {
             &runtime_bytes,
             if definition.identity == CampaignSelection::LEVEL1 {
                 PLAYER_LEGACY_RECORD_BYTES
+            } else if player_schema == OwnerPackageSchema::CampaignPlayerV5 {
+                PLAYER_CAMPAIGN_V5_RECORD_BYTES
             } else {
                 PLAYER_LEVEL2_RECORD_BYTES
             },
@@ -4238,11 +4247,7 @@ impl NativeWorld {
 
         Ok(NativeWorldInspection {
             profile: OwnerPackageProfile::Campaign,
-            schema: if definition.identity == CampaignSelection::LEVEL1 {
-                OwnerPackageSchema::V3
-            } else {
-                OwnerPackageSchema::V5
-            },
+            schema: player_schema,
             metadata,
             package_sha256: owner_export_package_sha256,
             terrain_planes,
@@ -6647,7 +6652,7 @@ fn validate_level_two_profile(
         OwnerPackageSchema::V4 | OwnerPackageSchema::V5 => {
             "inactive non-Cave secondary terrain plane zeroed; player time_393 host-clock sample zeroed"
         }
-        OwnerPackageSchema::V2 => {
+        OwnerPackageSchema::V2 | OwnerPackageSchema::CampaignPlayerV5 => {
             return Err(NativeWorldError::new(
                 "Level 2 player profile requires schema v3, v4, or v5",
             ));
@@ -7155,6 +7160,11 @@ fn validate_package(
         OwnerPackageSchema::V3 => &LEVEL2_PACKAGE_MEMBERS,
         OwnerPackageSchema::V4 => &LEVEL2_V4_PACKAGE_MEMBERS,
         OwnerPackageSchema::V5 => &LEVEL2_V5_PACKAGE_MEMBERS,
+        OwnerPackageSchema::CampaignPlayerV5 => {
+            return Err(NativeWorldError::new(
+                "campaign player schema is not a standalone owner schema",
+            ));
+        }
     };
     let mut allowed_paths = expected_members
         .iter()
@@ -7376,7 +7386,15 @@ fn parse_type_str_164_auxiliary(record: &[u8]) -> Result<TypeStr164Auxiliary> {
         dword_0x16D_365: read_i32(carrier, 17, "Type_str_164 dword_0x16D_365")?,
         word_0x1A2_418: read_i16(carrier, 21, "Type_str_164 word_0x1A2_418")?,
         array_0x1FC_508,
-        padding_words_0x23c: [None; 3],
+        padding_words_0x23c: if record.len() == PLAYER_CAMPAIGN_V5_RECORD_BYTES {
+            [
+                Some(read_u16(record, PLAYER_LEVEL2_RECORD_BYTES, "Type_str_164 padding word 0")?),
+                Some(read_u16(record, PLAYER_LEVEL2_RECORD_BYTES + 2, "Type_str_164 padding word 1")?),
+                Some(read_u16(record, PLAYER_LEVEL2_RECORD_BYTES + 4, "Type_str_164 padding word 2")?),
+            ]
+        } else {
+            [None; 3]
+        },
         word_0x242_578: read_i16(carrier, 87, "Type_str_164 word_0x242_578")?,
     })
 }
@@ -7410,6 +7428,13 @@ fn parse_players(
                 4,
                 PLAYER_LEVEL2_RECORD_BYTES,
                 PLAYER_LEVEL2_RECORD_BYTES_U16,
+                true,
+                true,
+            ),
+            (OwnerPackageProfile::Campaign, OwnerPackageSchema::CampaignPlayerV5) => (
+                5,
+                PLAYER_CAMPAIGN_V5_RECORD_BYTES,
+                PLAYER_CAMPAIGN_V5_RECORD_BYTES_U16,
                 true,
                 true,
             ),

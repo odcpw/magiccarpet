@@ -1374,6 +1374,19 @@ impl CampaignDefinition {
             ValidationStage::Definition,
         )?;
 
+        // The newer player arena appends the actual source padding bytes.
+        // Select it from the hashed definition, then validate its exact
+        // header, extent and typed descriptor below. Historical v4 remains
+        // independently accepted for existing packages.
+        if caller != CampaignSelection::LEVEL1
+            && reset_sources["players"].get("schema").and_then(Value::as_str)
+                == Some("mc2-player-arena/v5")
+        {
+            profile.player_schema = "mc2-player-arena/v5";
+            profile.player_version = 5;
+            profile.player_record_bytes = 669;
+        }
+
         // Stage 5: typed members and cross-member topology.
         let authored_records = parse_member_ref(
             &spec_value["authored_records"],

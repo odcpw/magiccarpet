@@ -227,6 +227,7 @@ pub(super) fn acquired_holder(
 pub(super) fn observe(
     shared: &Level2SharedSpellResetSession,
     holder_actor: impl Fn(&EntitySnapshot) -> Option<RuntimeActorId>,
+    emission_availability: impl Fn(&EntitySnapshot) -> SpellAvailability,
 ) -> Vec<SpellObservation> {
     let player = shared.local_player();
     let entity = shared.player_entity();
@@ -284,7 +285,7 @@ pub(super) fn observe(
                         false,
                         &mut Vec::new(),
                     ) {
-                        SpellAvailability::Ready
+                        emission_availability(holder)
                     } else {
                         // A second scalar probe separates a mana refusal from a
                         // source active/timer gate, preserving that gate's precedence.
@@ -334,6 +335,39 @@ pub(super) fn observe(
             }
         })
         .collect()
+}
+
+/// Family-specific prerequisites after the shared scalar activation gate.
+/// Read the current source actor and its own Castle without advancing either.
+pub(super) fn emission_availability(
+    holder: &EntitySnapshot,
+    parent: Option<&EntitySnapshot>,
+    castle_mana: Option<i32>,
+) -> SpellAvailability {
+    if holder.model != 9 {
+        return SpellAvailability::Ready;
+    }
+    let Some(parent) = parent.filter(|parent| {
+        parent.index == holder.source_spell_parent_entity_index()
+            && parent.index != 0
+            && parent.active
+            && parent.class == 3
+    }) else {
+        return SpellAvailability::InvalidCaster;
+    };
+    use crate::native_world::{MeteorAdmission, meteor_admission};
+    match meteor_admission(
+        holder,
+        parent,
+        castle_mana,
+        holder.activation_value.cast_signed(),
+    ) {
+        MeteorAdmission::Allowed => SpellAvailability::Ready,
+        MeteorAdmission::ParentUnavailable => SpellAvailability::InvalidCaster,
+        MeteorAdmission::InsufficientCasterMana | MeteorAdmission::InsufficientCastleMana => {
+            SpellAvailability::InsufficientMana
+        }
+    }
 }
 
 pub(super) fn assigned_player_command(

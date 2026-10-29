@@ -567,6 +567,69 @@ fn ordinary_mission23_rival_grounded_death_rebuilds_its_own_castle_holders() {
 }
 
 #[test]
+#[ignore = "requires a fresh Mission 23 source export with the v5 player arena"]
+fn ordinary_mission23_rival_reset_carries_captured_source_padding() {
+    let package = std::path::PathBuf::from(
+        std::env::var_os("MC_LEVEL23_PADDING_PACKAGE")
+            .expect("MC_LEVEL23_PADDING_PACKAGE must name the freshly exported Mission 23 package"),
+    );
+    let source = std::fs::read(package.join("players.bin")).expect("captured player rows");
+    assert_eq!(&source[..8], &[b'M', b'C', b'P', b'1', 5, 0, 157, 2]);
+    let mut session = crate::campaign::CampaignSession::open(
+        package,
+        crate::campaign::spec::CampaignSelection::ordinary(23).unwrap(),
+    ).expect("actual Mission 23 package with v5 player arena").simulation().clone();
+    let live = &session.session.state.live;
+    for (slot, player) in live.core.players.iter().enumerate() {
+        let offset = 12 + slot * 669 + 663;
+        let bytes = &source[offset..offset + 6];
+        for index in 0..3 {
+            let word = u16::from_le_bytes([bytes[2 * index], bytes[2 * index + 1]]);
+            assert_eq!(player.type_str_164_array_word(32 + index), Some(word), "player slot {slot}");
+        }
+        if player.is_ai {
+            let handle = live.economy.handle(player.entity_index).expect("rival generation");
+            let rival = live.nyphur_dispatcher.get(handle).expect("rival roster member");
+            assert_eq!(&rival.common_upkeep.padding_0x23c, bytes, "rival slot {slot}");
+            for index in 0..32 {
+                let word_offset = 12 + slot * 669 + 596 + 2 * index;
+                let expected = u16::from_le_bytes([source[word_offset], source[word_offset + 1]]);
+                assert_eq!(rival.common_upkeep.array_0x1fc[index], expected, "rival slot {slot}, word {index}");
+            }
+        }
+    }
+    // Exercise an actual source revival after the initial capture: the
+    // color-7 threshold write must update each live player row as well as the
+    // rival's own carrier.
+    let owner = 585_u16;
+    let live = &mut session.session.state.live;
+    let handle = live.economy.handle(owner).expect("color-7 generation");
+    let row = &live.economy.entities[usize::from(owner)];
+    let parameter = row.parameter_relation.expect("rival collision parameters");
+    let clearance = &session.session.definition.presentation.entity_parameters[usize::from(parameter)][12..14];
+    let mut position = row.position;
+    position.z = live.terrain.ground_height(position).wrapping_add(i16::from_le_bytes([clearance[0], clearance[1]]));
+    let row = &mut live.economy.entities[usize::from(owner)];
+    row.set_position(position);
+    row.set_life(-1);
+    row.set_source_action(2);
+    row.set_source_word_2c(0);
+    crate::world::effects::sync_position(&mut live.economy, &mut live.terrain, owner, position, true, false).unwrap();
+    session.step_level2_source_pass(0);
+    session.session.state.live.economy.entities[usize::from(owner)].set_source_dword_10(1);
+    session.step_level2_source_pass(0);
+    session.step_level2_source_pass(0);
+    let live = &session.session.state.live;
+    assert_eq!(live.economy.handle(owner), Some(handle));
+    assert_eq!(live.economy.entities[usize::from(owner)].action, 1);
+    for player in &live.core.players {
+        let expected = if player.entity_index == owner { 24_607 } else { (-24_609_i16).cast_unsigned() };
+        assert_eq!(player.type_str_164_array_word(32), Some(expected));
+        assert_eq!(&player.record_bytes()[663..665], &expected.to_le_bytes());
+    }
+}
+
+#[test]
 fn ordinary_mission23_color7_revival_publishes_source_padding_word() {
     let package = std::env::var_os("MC_LEVEL23_PACKAGE").map_or_else(
         || std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))

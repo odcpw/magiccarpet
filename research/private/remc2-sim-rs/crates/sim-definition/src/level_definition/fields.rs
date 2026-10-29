@@ -10,6 +10,7 @@ pub enum FieldKind {
     Transport,
     Slowing,
     Web,
+    SkeletonSummon,
 }
 
 impl FieldKind {
@@ -20,6 +21,7 @@ impl FieldKind {
             Self::Transport => "transport",
             Self::Slowing => "slowing",
             Self::Web => "web",
+            Self::SkeletonSummon => "skeleton_summon",
         }
     }
 }
@@ -45,6 +47,15 @@ pub enum FieldDefinition {
         damage: u16,
         first_boost: i16,
     },
+    SkeletonSummon {
+        life: i32,
+        initial_budget: u16,
+        scheduled_budget: u16,
+        max_births: u8,
+        owner_cap: u16,
+        spawn_radius: i16,
+        particle_index: u16,
+    },
 }
 
 impl FieldDefinition {
@@ -55,6 +66,7 @@ impl FieldDefinition {
             Self::Transport { .. } => FieldKind::Transport,
             Self::Slowing { .. } => FieldKind::Slowing,
             Self::Web { .. } => FieldKind::Web,
+            Self::SkeletonSummon { .. } => FieldKind::SkeletonSummon,
         }
     }
 
@@ -69,6 +81,18 @@ impl FieldDefinition {
             ),
             Self::Web { duration, .. } if duration <= 0 => {
                 Err("web needs a positive signed-byte duration".to_owned())
+            }
+            Self::SkeletonSummon {
+                scheduled_budget,
+                max_births,
+                ..
+            } if scheduled_budget > i16::MAX as u16
+                || (scheduled_budget != 0 && scheduled_budget < u16::from(max_births)) =>
+            {
+                Err(
+                    "Skeleton summon budget must fit i16 and give each birth a nonzero share"
+                        .into(),
+                )
             }
             _ => Ok(()),
         }

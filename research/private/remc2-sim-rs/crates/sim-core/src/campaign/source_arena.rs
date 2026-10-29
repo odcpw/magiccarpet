@@ -62,6 +62,10 @@ pub(crate) enum CreatureRootOrigin {
     SummonedSpell {
         holder_slot: u16,
     },
+    /// Historical field producer, including its original arena generation.
+    FieldSummon {
+        controller: SourceEntityHandle,
+    },
     HouseSpawn {
         house_slot: u16,
     },
@@ -216,12 +220,16 @@ impl SourceArena {
                     CreatureRootOrigin::AuthoredRecord { authored_record } => (1, *authored_record),
                     CreatureRootOrigin::MorphSpell { holder_slot } => (2, *holder_slot),
                     CreatureRootOrigin::SummonedSpell { holder_slot } => (6, *holder_slot),
+                    CreatureRootOrigin::FieldSummon { controller } => (7, controller.source_slot),
                     CreatureRootOrigin::HouseSpawn { house_slot } => (3, *house_slot),
                     CreatureRootOrigin::CastleSpawn { castle_slot } => (4, *castle_slot),
                     CreatureRootOrigin::CreatureConversion { producer_slot } => (5, *producer_slot),
                 };
                 hash.update([tag]);
                 hash.update(producer.to_le_bytes());
+                if let CreatureRootOrigin::FieldSummon { controller } = origin {
+                    hash.update(controller.generation.to_le_bytes());
+                }
             }
         }
         if !self.raw_creature_parts.is_empty() {
@@ -846,6 +854,7 @@ impl SourceArena {
         crate::native_world::terrain_strip::prepare_trigger_reclaim(self, terrain)?;
         self.economy.reclaim_death_burst_rows_at_source_boundary();
         crate::world::scenery::trees::prepare_reclaim(self, terrain)?;
+        crate::native_world::prepare_model17_reclaim(self)?;
         self.economy.reclaim_inactive_slots_at_source_boundary();
         let retired_origins = self
             .raw_creature_origins

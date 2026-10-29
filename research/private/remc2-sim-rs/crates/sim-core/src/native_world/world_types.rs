@@ -163,6 +163,7 @@ pub enum OwnerPackageSchema {
     V3,
     V4,
     V5,
+    CampaignPlayerV5,
 }
 
 /// Resolve the single Level 1 presentation-cache root used by Rust fixtures.
@@ -1893,8 +1894,8 @@ pub struct TypeStr164Auxiliary {
     pub dword_0x16D_365: i32,
     pub word_0x1A2_418: i16,
     pub array_0x1FC_508: [u16; 32],
-    /// The three words of source `stubm` at 0x23c. Existing owner packages
-    /// omit these bytes, so each stays unknown until a source callback writes it.
+    /// The three words of source `stubm` at 0x23c. Historical player arenas
+    /// omit them, so each remains unknown until a source callback writes it.
     pub padding_words_0x23c: [Option<u16>; 3],
     pub word_0x242_578: i16,
 }
@@ -2050,6 +2051,10 @@ impl PlayerSnapshot {
         };
         if (32..35).contains(&index) {
             auxiliary.padding_words_0x23c[index - 32] = Some(value);
+            if self.record.len() == super::PLAYER_CAMPAIGN_V5_RECORD_BYTES {
+                let offset = super::PLAYER_LEVEL2_RECORD_BYTES + (index - 32) * 2;
+                self.record[offset..offset + 2].copy_from_slice(&value.to_le_bytes());
+            }
             return true;
         }
         let Some(word) = auxiliary.array_0x1FC_508.get_mut(index) else {

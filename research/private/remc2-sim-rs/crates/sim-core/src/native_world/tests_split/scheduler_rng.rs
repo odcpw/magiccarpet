@@ -223,6 +223,8 @@ fn level_two_group31_tree_constructor_preserves_source_order_and_draws() {
         let x_rng = level2_next_rng16(life_rng);
         let y_rng = level2_next_rng16(x_rng);
         let particle_rng = level2_next_rng16(y_rng);
+        let particle_index = if particle_rng & 1 != 0 { 84 } else { 83 };
+        let particle = session.session.definition.presentation.particles[particle_index as usize];
         let x_offset = i16::try_from(x_rng & 0x3f)
             .expect("tree x constructor draw fits")
             .wrapping_sub(32);
@@ -264,11 +266,11 @@ fn level_two_group31_tree_constructor_preserves_source_order_and_draws() {
             ),
             (
                 particle_rng,
-                if particle_rng & 1 != 0 { 84 } else { 83 },
-                400,
-                0,
-                0,
-                400,
+                particle_index,
+                (particle.rotation_speed / 2) as i16,
+                (particle.speed / 2) as i16,
+                (particle.speed / 2) as i16,
+                (particle.rotation_speed / 2) as i16,
                 (tree.source_entity_index as u8).wrapping_add(1),
                 0x0002_000c,
             )
@@ -320,6 +322,32 @@ fn level_two_group31_tree_callback_consumes_rng_after_following_pass_gate() {
     assert_eq!(tree_before.owner_entity_index, 0);
     assert_eq!(tree_before.action, 0);
     let no_owner_rng = tree_before.entity_rng;
+    let presentation = session
+        .campaign_entity_presentations(0)
+        .expect("actual campaign sprite projection")
+        .into_iter()
+        .find(|row| row.entity_index == tree_before.source_entity_index)
+        .expect("authored Tree reaches the sprite consumer");
+    assert_eq!(presentation.source_id, tree_before.entity_id);
+    assert_eq!(
+        presentation.render_parameter_index,
+        tree_before.particle_index
+    );
+    assert_eq!(presentation.position, tree_before.position);
+    assert_eq!(presentation.yaw, 0);
+    let mut hidden = session.clone();
+    assert!(crate::world::scenery::trees::hide_for_terrain(
+        hidden.source_arena_mut(),
+        tree_before.source_entity_index,
+        tree_before.entity_id.wrapping_add(1),
+    ));
+    assert!(
+        hidden
+            .campaign_entity_presentations(0)
+            .expect("hidden Tree sprite projection")
+            .iter()
+            .all(|row| row.entity_index != tree_before.source_entity_index)
+    );
     assert!(!session.economy().events().iter().any(|event| matches!(
         event,
         Level2EconomyEvent::ManaSphereSpawned {
@@ -328,20 +356,32 @@ fn level_two_group31_tree_callback_consumes_rng_after_following_pass_gate() {
         } if *source_entity_index == tree_before.source_entity_index
     )));
 
-    // The owner/life gate is written between source passes, just as the
-    // ordinary damage mailbox is. The following pass reaches the same
-    // tree callback and is the first pass allowed to allocate its child.
+    // The actual shared area-damage producer writes the Tree mailbox between
+    // source passes. The next pass reaches the ordinary Tree callback.
     let owner_entity_index = session.state.entity_index;
-    {
-        let mut economy_view = session.economy_mut();
-        let tree = economy_view
-            .authored_trees
-            .iter_mut()
-            .find(|source| source.source_entity_index == tree_before.source_entity_index)
-            .expect("mutable group-31 row 260 tree");
-        tree.owner_entity_index = owner_entity_index;
-        tree.pending_damage = tree.life + 1;
-    }
+    assert!(
+        crate::native_world::area_damage::apply(
+            session.source_arena_mut(),
+            None,
+            None,
+            crate::combat::area::AreaDamage {
+                position: tree_before.position,
+                shape: crate::combat::area::Shape {
+                    half_width: 64,
+                    half_depth: 64,
+                    vertical_offset: tree_before.yaw,
+                    half_height: tree_before.fov,
+                },
+                owner: owner_entity_index,
+                payload: u16::try_from(tree_before.life + 1)
+                    .expect("Tree life fits damage payload"),
+                selector: (tree_before.source_class, tree_before.model),
+                mode: 0,
+            },
+        )
+        .expect("shared area damage visits Tree")
+            > 0
+    );
     session.step_outer_turn(PlayerCommand::default(), 0);
 
     let tree_after = session
@@ -670,14 +710,30 @@ fn level_two_group31_tree_callback_consumes_rng_after_following_pass_gate() {
     assert_eq!(visit.sounds, vec![3]);
     let mut scheduled_alias = alias.clone();
     scheduled_alias.step_outer_turn(PlayerCommand::default(), 0);
-    assert!(scheduled_alias.dispatch_events().iter().any(|event| matches!(
-        event,
-        Mc2DispatchEvent::DynamicArena {
-            source_slot,
-            kind: Level2DynamicArenaKind::AuthoredModel6,
-            ..
-        } if *source_slot == tree_slot
-    )));
+    assert!(
+        scheduled_alias
+            .dispatch_events()
+            .iter()
+            .any(|event| matches!(
+                event,
+                Mc2DispatchEvent::DynamicArena {
+                    source_slot,
+                    kind: Level2DynamicArenaKind::AuthoredModel6,
+                    ..
+                } if *source_slot == tree_slot
+            )),
+        "slot {tree_slot}, generation {}, retained {:?}, raw {:?}, slot events {:?}, first errors {:?}",
+        scheduled_alias.economy().slot_generation(tree_slot),
+        scheduled_alias.economy().authored_model6().iter().find(|row| row.source_entity_index == tree_slot),
+        scheduled_alias.entities()[usize::from(tree_slot)],
+        scheduled_alias.dispatch_events().iter().filter(|event| matches!(event,
+            Mc2DispatchEvent::DynamicArena { source_slot, .. } | Mc2DispatchEvent::Error { source_slot, .. }
+                if *source_slot == tree_slot
+        )).collect::<Vec<_>>(),
+        scheduled_alias.dispatch_events().iter()
+            .filter(|event| matches!(event, Mc2DispatchEvent::Error { .. }))
+            .take(8).collect::<Vec<_>>()
+    );
     let scheduled_child = scheduled_alias
         .economy()
         .authored_model6()
@@ -723,16 +779,28 @@ fn level_two_group31_tree_callback_rejects_nonlethal_and_failed_sphere_without_r
         .iter()
         .filter(|child| child.authored_index == nonlethal_before.source_entity_index)
         .count();
-    {
-        let mut economy_view = nonlethal.economy_mut();
-        let tree = economy_view
-            .authored_trees
-            .iter_mut()
-            .find(|source| source.source_entity_index == nonlethal_before.source_entity_index)
-            .expect("mutable nonlethal tree");
-        tree.owner_entity_index = nonlethal_owner;
-        tree.pending_damage = 0;
-    }
+    assert!(
+        crate::native_world::area_damage::apply(
+            nonlethal.source_arena_mut(),
+            None,
+            None,
+            crate::combat::area::AreaDamage {
+                position: nonlethal_before.position,
+                shape: crate::combat::area::Shape {
+                    half_width: 64,
+                    half_depth: 64,
+                    vertical_offset: nonlethal_before.yaw,
+                    half_height: nonlethal_before.fov,
+                },
+                owner: nonlethal_owner,
+                payload: 0,
+                selector: (nonlethal_before.source_class, nonlethal_before.model),
+                mode: 0,
+            },
+        )
+        .expect("shared nonlethal area damage visits Tree")
+            > 0
+    );
     nonlethal.step_outer_turn(PlayerCommand::default(), 0);
     let nonlethal_after = nonlethal
         .economy()
@@ -847,6 +915,116 @@ fn level_two_group31_tree_callback_rejects_nonlethal_and_failed_sphere_without_r
                     ..
                 } if *source_entity_index == allocation_before.source_entity_index
             ))
+    );
+}
+
+#[test]
+fn level_three_imported_tree_damage_reaches_effect_and_following_actions() {
+    let package = std::env::var_os("MC_CAMPAIGN_PACKAGE_LEVEL3_V1").map_or_else(
+        || {
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../../generated/mc-cf14-campaign-package-v1-a/qualified-level3")
+        },
+        std::path::PathBuf::from,
+    );
+    let mut session = crate::campaign::CampaignSession::open(
+        package,
+        crate::campaign::spec::CampaignSelection::LEVEL3,
+    )
+    .expect("real Level 3 campaign package")
+    .simulation()
+    .clone();
+    session.runtime.set_level2_is_level_end(1);
+    let tree = session.entities()[95].clone();
+    assert!(tree.active);
+    assert_eq!((tree.class, tree.model, tree.action), (2, 0, 0));
+    let owner = session.state.entity_index;
+    let owner_id = session.entities()[usize::from(owner)].source_id;
+    let request = crate::combat::area::AreaDamage {
+        position: tree.position,
+        shape: crate::combat::area::Shape {
+            half_width: 64,
+            half_depth: 64,
+            vertical_offset: tree.array_yaw(),
+            half_height: tree.array_fov(),
+        },
+        owner,
+        payload: u16::try_from(tree.life + 1).expect("Tree life fits damage payload"),
+        selector: (2, 0),
+        mode: 0,
+    };
+    let mut nonlethal = session.clone();
+    assert!(
+        crate::native_world::area_damage::apply(
+            nonlethal.source_arena_mut(),
+            None,
+            None,
+            crate::combat::area::AreaDamage {
+                payload: 0,
+                ..request
+            },
+        )
+        .expect("nonlethal source area visit")
+            > 0
+    );
+    nonlethal.step_outer_turn(PlayerCommand::default(), 0);
+    let unchanged = &nonlethal.entities()[95];
+    assert_eq!(
+        (unchanged.action, unchanged.life, unchanged.entity_rng),
+        (0, tree.life, tree.entity_rng)
+    );
+    assert_eq!(&unchanged.record[102..104], &[0, 0]);
+
+    assert!(
+        crate::native_world::area_damage::apply(session.source_arena_mut(), None, None, request,)
+            .expect("lethal source area visit")
+            > 0
+    );
+    let old_children = session
+        .entities()
+        .iter()
+        .filter(|row| row.active && (row.class, row.model) == (10, 6))
+        .map(|row| row.index)
+        .collect::<std::collections::BTreeSet<_>>();
+    session.step_outer_turn(PlayerCommand::default(), 0);
+    let after = &session.entities()[95];
+    assert_eq!((after.class, after.model, after.action), (2, 0, 1));
+    assert_eq!(after.entity_rng, level2_next_rng16(tree.entity_rng));
+    assert_eq!(&after.record[102..104], &[0, 0]);
+    let child = session
+        .entities()
+        .iter()
+        .find(|row| {
+            row.active
+                && (row.class, row.model) == (10, 6)
+                && !old_children.contains(&row.index)
+                && row.source_id == owner_id
+                && (row.position.x, row.position.y) == (tree.position.x, tree.position.y)
+        })
+        .expect("actual imported Tree produces its source GroundFire child");
+    assert_eq!(
+        child.source_word_2c(),
+        (i32::from(tree.array_fov()) * 3 / 4) as i16
+    );
+    assert!(
+        session
+            .campaign_entity_presentations(0)
+            .expect("campaign sprite consumer")
+            .iter()
+            .any(|row| row.entity_index == child.index
+                && row.render_parameter_index == child.particle_parameter_index.unwrap())
+    );
+    let life = after.life;
+    session.step_outer_turn(PlayerCommand::default(), 0);
+    let continued = &session.entities()[95];
+    assert_eq!(
+        (
+            continued.class,
+            continued.model,
+            continued.action,
+            continued.life
+        ),
+        (2, 0, 1, life - 1)
     );
 }
 

@@ -2026,7 +2026,11 @@ mod tests {
 
         let tree = arena
             .economy
-            .allocate_authored_tree(u16::MAX, session.state.position)
+            .allocate_authored_tree(
+                u16::MAX,
+                session.state.position,
+                &session.session.definition.presentation.particles,
+            )
             .expect("source Tree constructor");
         let raw = &mut arena.entities[usize::from(tree.source_entity_index)];
         raw.set_position(Position::default());
