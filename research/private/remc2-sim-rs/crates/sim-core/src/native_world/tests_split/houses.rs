@@ -3024,6 +3024,128 @@ fn level_two_castle_public_route_retries_root_and_child_failures_and_upgrades() 
         .expect("family-2 holder remains authoritative after construction");
     let occupied_mana_cost = occupied_holder.mana_cost;
     let holder_max_mana = occupied_holder.max_mana;
+    // The real reset capacity is only 1,000. Waiting at the Castle cannot
+    // fund a 10,000-cost upgrade until the player actually owns more mana.
+    // Use the ordinary row-11 switch and its authored group-1 spheres,
+    // followed by hand casts and the normal ownership/capacity boundary.
+    // Position and aim are controlled inputs to this focused regression;
+    // no mana, capacity, ownership mailbox or mission completion is granted.
+    let player_slot = occupied.state.entity_index;
+    let recharge_position = occupied.state.position;
+    let recharge_yaw = occupied.state.yaw;
+    let switch_position = occupied
+        .mission()
+        .authored_features()
+        .iter()
+        .find(|feature| feature.index == 11)
+        .expect("the package retains the ordinary group-1 switch")
+        .world_position(0);
+    let mana_positions = occupied
+        .mission()
+        .authored_features()
+        .iter()
+        .filter(|feature| feature.activation_group == 1 && feature.kind == 10 && feature.subtype == 39)
+        .map(|feature| {
+            let position = feature.world_position(0);
+            (position.x, position.y)
+        })
+        .collect::<BTreeSet<_>>();
+    assert!(!mana_positions.is_empty());
+    occupied
+        .set_level2_entity_position(player_slot, switch_position)
+        .expect("controlled overlap with the real mana switch");
+    occupied.step_outer_turn(PlayerCommand::default(), 0);
+    assert!(occupied.dispatch_events().iter().all(|event| !matches!(event, Mc2DispatchEvent::Error { .. })),
+        "the ordinary mana producer must commit: {:?}", occupied.dispatch_events());
+    assert!(occupied.economy().spheres().iter().any(|sphere| {
+        sphere.active && !sphere.pending_delete
+            && mana_positions.contains(&(sphere.position.x, sphere.position.y))
+    }), "the real switch must expose its authored model-39 products");
+    for _ in 0..128 {
+        if occupied.economy().spheres().iter().any(|sphere| {
+            sphere.active && !sphere.pending_delete && sphere.player_entity_index == 0
+                && sphere.vertical_velocity == 0
+                && mana_positions.contains(&(sphere.position.x, sphere.position.y))
+        }) {
+            break;
+        }
+        occupied.step_outer_turn(PlayerCommand::default(), 0);
+    }
+    let possession_ui = crate::SOURCE_SPELL_INDEX_MAP.iter()
+        .position(|family| *family == 1).expect("public Possession menu family") as i8;
+    for claim in 0..mana_positions.len() {
+        if occupied.shared_spells().player_entity().max_mana >= occupied_mana_cost {
+            break;
+        }
+        occupied.set_level2_entity_position(player_slot, recharge_position).unwrap();
+        let holder_slot = occupied.shared_spells().local_player.enabled_spell_holders[1];
+        for _ in 0..32 {
+            let holder = occupied.shared_spells().pickup(holder_slot)
+                .expect("the real player retains its Possession holder");
+            if holder.active_value == 0 && occupied.shared_spells().caster.mana >= holder.mana_cost {
+                break;
+            }
+            occupied.step_outer_turn(PlayerCommand::default(), 0);
+        }
+        let sphere = occupied.economy().spheres().iter()
+            .filter(|sphere| sphere.active && !sphere.pending_delete
+                && sphere.player_entity_index == 0 && sphere.vertical_velocity == 0
+                && mana_positions.contains(&(sphere.position.x, sphere.position.y)))
+            .min_by_key(|sphere| crate::distance_3d_wrapped(recharge_position, sphere.position))
+            .copied().expect("unowned authored mana remains before the upgrade is affordable");
+        let target = occupied.possession_guidance_target_top_for_test(sphere.source_entity_index)
+            .expect("the live sphere supplies its real guidance top");
+        let mut approach = Position {
+            x: target.x.wrapping_sub(768),
+            y: target.y,
+            z: target.z.wrapping_add(512),
+        };
+        approach.z = approach.z.max(occupied.canonical_terrain().ground_height(approach).wrapping_add(512));
+        occupied.set_level2_entity_position(player_slot, approach).unwrap();
+        occupied.state.target_speed = 0;
+        occupied.state.actual_speed = 0;
+        let (yaw, pitch) = crate::level1_mission::projectile_guidance_angles(approach, target);
+        occupied.state.yaw = yaw;
+        occupied.state.display_pitch = pitch;
+        occupied.state.effective_pitch = pitch;
+        let event_start = occupied.economy().events().len();
+        occupied.step_outer_turn(PlayerCommand {
+            opcode: 6,
+            argument_1: possession_ui,
+            flags: 0x40,
+            ..PlayerCommand::default()
+        }, 0);
+        let mut saw_flyer = false;
+        let mut saw_effect = false;
+        let mut saw_claim = false;
+        for _ in 0..32 {
+            saw_flyer |= occupied.economy().possession_projectiles().iter()
+                .any(|row| row.source_id_entity_index == player_slot);
+            saw_effect |= occupied.economy().possession_effects().iter()
+                .any(|row| row.source_id_entity_index == player_slot);
+            saw_claim |= occupied.economy().events()[event_start..].iter().any(|event| matches!(event,
+                Level2EconomyEvent::ManaSphereClaimed { owner_entity_index, .. }
+                    if *owner_entity_index == player_slot));
+            assert!(occupied.dispatch_events().iter().all(|event| !matches!(event, Mc2DispatchEvent::Error { .. })),
+                "public Possession must commit: {:?}", occupied.dispatch_events());
+            if saw_claim {
+                break;
+            }
+            occupied.step_outer_turn(PlayerCommand::default(), 0);
+        }
+        assert!(saw_flyer && saw_effect && saw_claim,
+            "claim {claim} must use the real hand, flyer, effect and owner mailbox: flyer={saw_flyer}, effect={saw_effect}, claim={saw_claim}, target={sphere:?}");
+        // Claiming is not allowed to publish sub_60F00's capacity early.
+        occupied.step_outer_turn(PlayerCommand::default(), 0);
+    }
+    occupied.set_level2_entity_position(player_slot, recharge_position).unwrap();
+    occupied.state.yaw = recharge_yaw;
+    occupied.state.display_pitch = 0;
+    occupied.state.effective_pitch = 0;
+    occupied.state.target_speed = 0;
+    occupied.state.actual_speed = 0;
+    assert!(occupied.shared_spells().player_entity().max_mana >= occupied_mana_cost,
+        "actual owned source mana must supply the upgrade capacity");
     let player_before_recharge = occupied.shared_spells().player_entity().clone();
     let overlap_before_recharge = occupied
         .economy()
@@ -3141,13 +3263,14 @@ fn level_two_castle_public_route_retries_root_and_child_failures_and_upgrades() 
     );
     let upgrade_spawn_position = upgrade.position;
     let landed_root = occupied.economy().castle().expect("live Castle root");
-    let same_pass_consumer = if landed_root.source_word_7c == 0 {
+    let same_pass_consumer = if landed_root.source_word_80 == 0 {
         assert!(
             upgrade_product_before.source_entity_index < root_slot,
             "only an earlier source product can have its mailbox consumed by this root in the same pass"
         );
         assert_eq!((landed_root.action, landed_root.build_state), (5, 0));
         assert_eq!(landed_root.source_word_80, 0);
+        assert_eq!(landed_root.source_word_7c, 10);
         assert_ne!(landed_root.control_flags & 0x40, 0);
         assert!(occupied.cf10_production_schedule_receipts().iter().any(|receipt| matches!(receipt,
             crate::campaign::schedule::ScheduleReceipt::CallbackCompleted { slot, selector, .. }

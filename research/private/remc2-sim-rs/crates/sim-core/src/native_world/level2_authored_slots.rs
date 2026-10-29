@@ -821,6 +821,21 @@ impl Level2EconomyState {
             .find(|row| row.source_entity_index == slot)
     }
 
+    pub(crate) fn authored_model6_mut(
+        &mut self,
+        slot: u16,
+    ) -> Option<&mut Level2AuthoredModel6Source> {
+        if !self
+            .live_arena_cursor_row(slot)
+            .is_some_and(|row| row.kind == Level2DynamicArenaKind::AuthoredModel6)
+        {
+            return None;
+        }
+        self.authored_model6
+            .iter_mut()
+            .find(|row| row.source_entity_index == slot)
+    }
+
     pub(crate) fn set_source_rng(&mut self, slot: u16, rng: u16) {
         self.source_rng.insert(slot, rng);
     }
@@ -2666,6 +2681,17 @@ impl Level2EconomyState {
         terrain: &SessionTerrain,
     ) -> Option<Level2AuthoredModel6Source> {
         let source_entity_index = self.allocate_slot()?;
+        self.initialize_authored_model6(source_entity_index, authored_index, position, terrain)
+    }
+
+    /// NewAdd0A06 after the source arena assigned its fixed address.
+    pub(crate) fn initialize_authored_model6(
+        &mut self,
+        source_entity_index: u16,
+        authored_index: u16,
+        position: Position,
+        terrain: &SessionTerrain,
+    ) -> Option<Level2AuthoredModel6Source> {
         let entity_rng = self.new_event_rng(source_entity_index);
         let mut position = position;
         position.z = terrain.ground_height(position);
@@ -2695,7 +2721,9 @@ impl Level2EconomyState {
             height_offset: 0,
             dword_0x10: 0,
             particle_index: 228,
-            control_flags: 0x0002_0000,
+            // NewAdd0A06 clears collision bit8, sets the replaceable bit,
+            // then AddEventToMap publishes source map bit4.
+            control_flags: 0x0002_0004,
             shift_rot_x: 272,
             shift_rot_y: 1536,
             position,
@@ -7693,6 +7721,11 @@ impl Level2EconomyState {
             hasher.update(state.stage_target.y.to_le_bytes());
             hasher.update(state.stage_target.z.to_le_bytes());
             hasher.update([u8::from(state.movement_blocked)]);
+            if state.alliance_duration != 0 || state.stage_relation != 0 {
+                hasher.update(b"firefly-alliance-state-v1");
+                hasher.update(state.alliance_duration.to_le_bytes());
+                hasher.update(state.stage_relation.to_le_bytes());
+            }
             if state.parent_entity_index != 0 || state.word_0x2e != 0 {
                 hasher.update(b"firefly-parent-countdown-v1");
                 hasher.update(state.parent_entity_index.to_le_bytes());

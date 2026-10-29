@@ -1297,6 +1297,30 @@ fn owner_switch_publishes_model18_and_normal_scheduler_visits_it() {
         );
     }
 
+    // Keep the player distant from the produced actor until the source
+    // player's spawn protection expires, before testing unforced acquisition.
+    let mut protection_wait_position = session.entities()[usize::from(slots[0].0)].position;
+    protection_wait_position.x = protection_wait_position.x.wrapping_add(0x6000);
+    session
+        .set_level2_entity_position(player, protection_wait_position)
+        .unwrap();
+    for _ in 0..128 {
+        if session.session.state.live.player_protection_ticks == 0 {
+            break;
+        }
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        assert!(
+            !session
+                .dispatch_events()
+                .iter()
+                .any(|event| matches!(event, Mc2DispatchEvent::Error { .. })),
+            "owner model18 protection-expiry scheduler error: {:?}",
+            session.dispatch_events()
+        );
+    }
+    assert_eq!(session.session.state.live.player_protection_ticks, 0);
+    assert!(session.session.state.live.player_life > 0);
+
     // Place the real player once in front of an owner-produced model18. The
     // ordinary callback, not the test, selects its target on a later pass.
     let slot = slots[0].0;
@@ -1333,6 +1357,7 @@ fn owner_switch_publishes_model18_and_normal_scheduler_visits_it() {
         .set_level2_entity_position(player, distant)
         .unwrap();
     session.set_level2_entity_position(player, nearby).unwrap();
+    let player_life_before_attack = session.session.state.live.player_life;
     let mut acquired = false;
     for _ in 0..20 {
         session.step_outer_turn(PlayerCommand::default(), 0);
@@ -1407,12 +1432,87 @@ fn owner_switch_publishes_model18_and_normal_scheduler_visits_it() {
         session.session.state.live.player_life,
     );
 
+    // Follow the shots from that same unforced actor through the common
+    // projectile and impact consumers, while tracking their source generations.
+    let shot_handles = session
+        .session
+        .state
+        .live
+        .economy
+        .economy
+        .fireball_projectiles()
+        .iter()
+        .filter(|shot| {
+            shot.origin == crate::native_world::FireballProjectileOrigin::Creature18
+                && shot.owner_entity_index == slot
+                && shot.target_source_entity_index == player
+                && shot.source_subspell_index == RULES.projectile_damage
+        })
+        .filter_map(|shot| session.source_arena().handle(shot.source_entity_index))
+        .collect::<Vec<_>>();
+    assert!(
+        !shot_handles.is_empty(),
+        "natural shot retains a source generation"
+    );
+    let mut natural_impact = false;
+    let mut natural_damage = false;
+    let mut natural_reclaim = false;
+    for _ in 0..=24 {
+        let arena = session.source_arena();
+        natural_impact |= arena.entities.iter().any(|row| {
+            row.active
+                && (row.class, row.model, row.source_id) == (10, 0, slot)
+                && put_word(row, 154) == player
+                && row.subspell_index == RULES.projectile_damage
+        });
+        let target = &arena.entities[usize::from(player)];
+        natural_damage |= i32::from_le_bytes(target.record[98..102].try_into().unwrap()) > 0
+            && put_word(target, 102) == slot;
+        natural_damage |= session.dispatch_events().iter().any(|event| matches!(event,
+            Mc2DispatchEvent::Economy { event: crate::native_world::Level2EconomyEvent::DamageApplied {
+                target_entity_index, attacker_entity_index, damage, ..
+            }, .. } if *target_entity_index == player && *attacker_entity_index == slot && *damage > 0
+        ));
+        natural_reclaim |= shot_handles
+            .iter()
+            .any(|&handle| arena.resolve(handle).is_none());
+        if natural_impact
+            && natural_damage
+            && natural_reclaim
+            && session.session.state.live.player_life < player_life_before_attack
+        {
+            break;
+        }
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        assert!(
+            !session
+                .dispatch_events()
+                .iter()
+                .any(|event| matches!(event, Mc2DispatchEvent::Error { .. })),
+            "natural model18 projectile scheduler error: {:?}",
+            session.dispatch_events()
+        );
+    }
+    assert!(
+        natural_impact,
+        "the unforced source shot must produce its target-bound impact"
+    );
+    assert!(
+        natural_damage,
+        "the unforced source impact must reach the player's damage mailbox"
+    );
+    assert!(session.session.state.live.player_life < player_life_before_attack);
+    assert!(
+        natural_reclaim,
+        "the unforced source projectile must be generation-safely reclaimed"
+    );
+
     // Exercise the produced actor's downstream death consumer separately:
     // the two worlds differ only in the controlled source mailbox amount.
     // This does not claim that the player's own attack produced the damage.
     let handle = session.source_arena().handle(slot).unwrap();
-    let life = actor.life;
-    let mana = actor.mana;
+    let life = session.entities()[usize::from(slot)].life;
+    let mana = session.entities()[usize::from(slot)].mana;
     assert!(life > 1 && mana > 0);
     let mut fatal = session.clone();
     let mut nonfatal = session.clone();

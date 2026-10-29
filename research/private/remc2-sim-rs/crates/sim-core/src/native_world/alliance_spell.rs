@@ -403,6 +403,30 @@ pub(crate) fn step_projectile(
     super::guided_projectile::step(arena, terrain, particles, slot, guidance, targets, context)
 }
 
+#[derive(Clone, Copy)]
+enum TypedAllianceOwner {
+    Bee,
+    Firefly,
+}
+
+fn typed_projection(
+    arena: &SourceArena,
+    slot: u16,
+) -> Option<(TypedAllianceOwner, EntitySnapshot)> {
+    super::creatures::bee::mc2::alliance_projection(arena, slot)
+        .map(|row| (TypedAllianceOwner::Bee, row))
+        .or_else(|| {
+            super::level2_class5::firefly::alliance_projection(arena, slot)
+                .map(|row| (TypedAllianceOwner::Firefly, row))
+        })
+}
+
+pub(crate) fn impact_center(arena: &SourceArena, slot: u16) -> Option<EntitySnapshot> {
+    typed_projection(arena, slot)
+        .map(|(_, row)| row)
+        .or_else(|| arena.entities.get(usize::from(slot)).cloned())
+}
+
 /// Scheduled class10/model74 terminal consumer. The shared guided collision
 /// constructor allocates this row separately from the class9/model25 carrier.
 /// It writes the source StageVar, parent, action, and timer state consumed by
@@ -432,25 +456,25 @@ pub(crate) fn step_impact(
     // address now so a later reuse cannot prolong the new Alliance binding.
     let parent = arena.handle(effect.source_id);
     let center_slot = effect.source_word_96();
-    let mut fireflies = std::collections::BTreeMap::new();
+    let mut typed_targets = std::collections::BTreeMap::new();
     for slot in map_order
         .iter()
         .copied()
         .chain(std::iter::once(center_slot))
     {
-        if let Some(row) = super::level2_class5::firefly::alliance_projection(arena, slot)
+        if let Some((owner, row)) = typed_projection(arena, slot)
             && let Some(handle) = arena.handle(slot)
         {
-            fireflies.insert(slot, (handle, row));
+            typed_targets.insert(slot, (handle, owner, row));
         }
     }
     // The source kernel needs current action and StageVar fields for both
     // eligibility and its control writes. This view exists for this call
-    // only; the Firefly owner receives the result without installing a raw
-    // row over its typed source or sidecar.
-    let mut projected = (!fireflies.is_empty()).then(|| arena.entities.clone());
+    // only; each owner receives the result without installing a raw row over
+    // its typed source or sidecar.
+    let mut projected = (!typed_targets.is_empty()).then(|| arena.entities.clone());
     let impact = if let Some(rows) = projected.as_mut() {
-        for (&slot, (_, row)) in &fireflies {
+        for (&slot, (_, _, row)) in &typed_targets {
             rows[usize::from(slot)] = row.clone();
         }
         rules::impact(rows, effect_slot, map_order)
@@ -465,12 +489,20 @@ pub(crate) fn step_impact(
         }
         for &slot in &impact.affected_entities {
             let row = &rows[usize::from(slot)];
-            if let Some((child, _)) = fireflies.get(&slot) {
-                if !super::level2_class5::firefly::apply_alliance_takeover(
-                    arena, *child, row, parent,
-                )? {
+            if let Some((child, owner, _)) = typed_targets.get(&slot) {
+                let applied = match owner {
+                    TypedAllianceOwner::Bee => super::creatures::bee::mc2::apply_alliance_takeover(
+                        arena, *child, row, parent,
+                    )?,
+                    TypedAllianceOwner::Firefly => {
+                        super::level2_class5::firefly::apply_alliance_takeover(
+                            arena, *child, row, parent,
+                        )?
+                    }
+                };
+                if !applied {
                     return Err(format!(
-                        "Alliance Firefly {slot} rejected its current takeover"
+                        "Alliance typed creature {slot} rejected its current takeover"
                     ));
                 }
             } else {
@@ -486,7 +518,7 @@ pub(crate) fn step_impact(
     }
     if let Some(parent) = parent {
         for &slot in &impact.affected_entities {
-            if fireflies.contains_key(&slot) {
+            if typed_targets.contains_key(&slot) {
                 continue;
             }
             // A typed occupant may have rejected an obsolete compatibility

@@ -12,7 +12,7 @@ use crate::{FlightWorld, Position, angle_distance, heading_for_positions};
 pub(crate) mod mc2;
 mod stage;
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 
 pub(crate) const SOURCE_CLASS: u8 = 5;
 pub(crate) const SOURCE_MODEL: u8 = 25;

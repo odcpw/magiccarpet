@@ -330,7 +330,7 @@ fn level_two_group31_tree_callback_consumes_rng_after_following_pass_gate() {
 
     // The owner/life gate is written between source passes, just as the
     // ordinary damage mailbox is. The following pass reaches the same
-    // tree callback and is the first pass allowed to allocate its sphere.
+    // tree callback and is the first pass allowed to allocate its child.
     let owner_entity_index = session.state.entity_index;
     {
         let mut economy_view = session.economy_mut();
@@ -374,30 +374,131 @@ fn level_two_group31_tree_callback_consumes_rng_after_following_pass_gate() {
             kind: Level2DynamicArenaKind::AuthoredTree,
         } if *source_slot == tree_before.source_entity_index
     )));
-    assert!(session.dispatch_events().iter().any(|event| matches!(
-        event,
-        Mc2DispatchEvent::Economy {
-            pass: 0,
-            source_slot,
-            event: Level2EconomyEvent::ManaSphereSpawned { .. },
-        } if *source_slot == tree_before.source_entity_index
-    )));
-    let sphere = session
+    let child = session
         .economy()
-        .spheres()
+        .authored_model6()
         .iter()
-        .find(|sphere| sphere.source_entity_index == tree_after.last_sphere_source_entity_index)
+        .find(|child| child.source_entity_index == tree_after.last_sphere_source_entity_index)
         .copied()
-        .expect("tree callback sphere remains in the following pass");
+        .expect("tree callback model-6 child remains live");
     let owner_id = session
         .economy
         .entities
         .get(usize::from(owner_entity_index))
         .map_or(owner_entity_index, |entity| entity.source_id);
-    assert_eq!(sphere.id, u32::from(owner_id));
-    assert_eq!(sphere.mana, 512);
-    assert_eq!(sphere.vertical_velocity, tree_after.last_sphere_word_0x2c);
-    assert_eq!(sphere.life, tree_after.life);
+    assert_eq!(child.entity_id, owner_id);
+    assert_eq!(
+        (child.model, child.action, child.subspell_index),
+        (6, 6, 50)
+    );
+    assert_eq!(child.height_offset, tree_after.last_sphere_word_0x2c);
+    assert_eq!(i32::from(child.life), tree_after.life);
+
+    // Continue the actual action-1 Tree from the successful source birth.
+    // The neighboring life values exercise the strict source threshold.
+    let mut lifecycle = session.clone();
+    let particles = &lifecycle.session.definition.presentation.particles;
+    let live = &mut lifecycle.session.state.live;
+    let arena = &mut live.economy;
+    let terrain = &mut live.terrain;
+    let slot = tree_after.source_entity_index;
+    let expected_particle = match tree_after.particle_index {
+        83 => 226,
+        84 => 227,
+        other => panic!("real Tree constructor selected unexpected particle {other}"),
+    };
+    let binding = particles[expected_particle as usize];
+    {
+        let tree = arena.economy.authored_tree_mut(slot).unwrap();
+        tree.life = 61;
+        tree.owner_entity_index = owner_entity_index;
+        tree.pending_damage = 123;
+    }
+    assert!(
+        crate::world::scenery::trees::step(arena, terrain, Default::default(), particles, slot)
+            .unwrap()
+    );
+    let tree = *arena.economy.authored_tree_mut(slot).unwrap();
+    assert_eq!(
+        (tree.life, tree.action, tree.particle_index),
+        (60, 1, tree_after.particle_index)
+    );
+    assert_eq!(tree.phase, tree_after.phase.wrapping_add(1));
+    assert_eq!(
+        (tree.owner_entity_index, tree.pending_damage),
+        (owner_entity_index, 123)
+    );
+    assert!(
+        crate::world::scenery::trees::step(arena, terrain, Default::default(), particles, slot)
+            .unwrap()
+    );
+    let tree = *arena.economy.authored_tree_mut(slot).unwrap();
+    assert_eq!(
+        (tree.life, tree.action, tree.particle_index),
+        (59, 2, expected_particle)
+    );
+    assert_eq!(tree.phase, tree_after.phase.wrapping_add(2));
+    assert_eq!(
+        (tree.yaw, tree.fov),
+        (
+            (binding.rotation_speed / 2) as i16,
+            (binding.rotation_speed / 2) as i16
+        )
+    );
+    assert_eq!(
+        (tree.pitch, tree.roll),
+        ((binding.speed / 2) as i16, (binding.speed / 2) as i16)
+    );
+    assert_eq!(
+        (tree.owner_entity_index, tree.pending_damage),
+        (owner_entity_index, 123)
+    );
+    assert!(
+        crate::world::scenery::trees::step(arena, terrain, Default::default(), particles, slot)
+            .unwrap()
+    );
+    let tree = *arena.economy.authored_tree_mut(slot).unwrap();
+    assert_eq!(
+        (tree.life, tree.action, tree.particle_index),
+        (59, 2, expected_particle)
+    );
+    assert_eq!(tree.phase, tree_after.phase.wrapping_add(3));
+    assert_eq!(
+        (tree.owner_entity_index, tree.pending_damage),
+        (owner_entity_index, 123)
+    );
+    let tree = arena.economy.authored_tree_mut(slot).unwrap();
+    tree.life = 60;
+    tree.action = 1;
+    tree.particle_index = tree_after.particle_index;
+    tree.owner_entity_index = 0;
+    lifecycle.step_outer_turn(PlayerCommand::default(), 0);
+    let scheduled = lifecycle
+        .economy()
+        .authored_trees()
+        .iter()
+        .find(|tree| tree.source_entity_index == slot)
+        .expect("source scheduler retains the post-child Tree");
+    assert_eq!(
+        (scheduled.life, scheduled.action, scheduled.particle_index),
+        (59, 2, expected_particle)
+    );
+    let scheduled_child = lifecycle
+        .economy()
+        .authored_model6()
+        .iter()
+        .find(|row| row.source_entity_index == child.source_entity_index)
+        .expect("Tree child reaches the ordinary model-6 consumer");
+    assert_eq!(scheduled_child.life, child.life - 1);
+    assert_eq!(scheduled_child.phase, child.phase.wrapping_add(1));
+    assert!(lifecycle.dispatch_events().iter().any(|event| matches!(
+        event,
+        Mc2DispatchEvent::DynamicArena {
+            source_slot,
+            kind: Level2DynamicArenaKind::AuthoredModel6,
+            ..
+        } if *source_slot == child.source_entity_index
+    )));
 
     // Fill the real arena, then consume earlier frozen replacement addresses
     // through the ordinary sphere constructor until a previously visited
@@ -413,6 +514,7 @@ fn level_two_group31_tree_callback_consumes_rng_after_following_pass_gate() {
             .allocate_level2_authored_class14(244)
             .expect("real class14 constructor fills free arena");
     }
+    let particles = &alias.session.definition.presentation.particles;
     let live = &mut alias.session.state.live;
     let arena = &mut live.economy;
     let terrain = &mut live.terrain;
@@ -436,7 +538,14 @@ fn level_two_group31_tree_callback_consumes_rng_after_following_pass_gate() {
     }
     arena.finish_source_group();
     assert!(
-        crate::world::scenery::trees::step(arena, terrain, Default::default(), tree_slot).unwrap()
+        crate::world::scenery::trees::step(
+            arena,
+            terrain,
+            Default::default(),
+            particles,
+            tree_slot
+        )
+        .unwrap()
     );
     {
         let tree = arena
@@ -497,7 +606,14 @@ fn level_two_group31_tree_callback_consumes_rng_after_following_pass_gate() {
     arena.entities[usize::from(tree_slot)].active = true;
     arena.entities[usize::from(tree_slot)].class = 2;
     assert!(
-        crate::world::scenery::trees::step(arena, terrain, Default::default(), tree_slot).unwrap()
+        crate::world::scenery::trees::step(
+            arena,
+            terrain,
+            Default::default(),
+            particles,
+            tree_slot
+        )
+        .unwrap()
     );
     assert_eq!(
         arena.economy.slot_generation(tree_slot),
@@ -512,15 +628,16 @@ fn level_two_group31_tree_callback_consumes_rng_after_following_pass_gate() {
     );
     let replacement = arena
         .economy
-        .spheres()
+        .authored_model6()
         .iter()
-        .find(|sphere| sphere.active && sphere.source_entity_index == tree_slot)
-        .expect("source Tree address now owns its actual sphere");
+        .find(|child| child.active && child.source_entity_index == tree_slot)
+        .expect("source Tree address now owns its actual model-6 child");
     assert_eq!((replacement.position.x, replacement.position.y), (0, 0));
     assert_eq!(replacement.action, 1);
     assert_eq!(replacement.entity_rng, expected_rng);
-    assert_eq!(replacement.life, i32::from(expected_rng % 60) + 130);
-    assert_eq!(replacement.vertical_velocity, 21);
+    assert_eq!(replacement.life, (expected_rng % 60 + 130) as i16);
+    assert_eq!(replacement.height_offset, 1152);
+    assert_eq!((replacement.model, replacement.subspell_index), (6, 50));
     assert_eq!(replacement.phase, (tree_slot as u8).wrapping_add(1));
     assert_ne!(replacement.control_flags & SOURCE_REPLACEABLE_FLAG, 0);
     assert!(!arena.entities[usize::from(tree_slot)].active);
@@ -528,13 +645,52 @@ fn level_two_group31_tree_callback_consumes_rng_after_following_pass_gate() {
         terrain.planes().entity_indices[0] as u16,
         arena.economy.map_chains.tile_head(0)
     );
-    let sphere = arena
-        .economy
-        .spheres_mut()
-        .iter_mut()
-        .find(|sphere| sphere.source_entity_index == tree_slot)
-        .unwrap();
-    sphere.control_flags |= crate::level1_mission::SOURCE_DISABLED_FLAG;
+    let life_before_visit = replacement.life;
+    // The same shared effect adapter used by the scheduler must select the
+    // current action, even though this carrier was constructed as model 6.
+    // Keep the frozen cursor empty so its Quickfair child attempts cannot
+    // replace the address under examination during this focused check.
+    arena.finish_source_group();
+    let mut effects = std::mem::take(&mut arena.effects);
+    let visit = crate::native_world::effects::visit(
+        arena,
+        terrain,
+        tree_slot,
+        Level2DynamicArenaKind::AuthoredModel6,
+        particles,
+        &mut effects,
+        |_, _| Ok(0),
+    )
+    .expect("self-aliased child reaches the shared action-1 consumer");
+    arena.effects = effects;
+    let after_visit = arena.economy.authored_model6_mut(tree_slot).unwrap();
+    assert_eq!((after_visit.model, after_visit.action), (6, 1));
+    assert_eq!(after_visit.life, life_before_visit - 1);
+    assert_ne!(after_visit.control_flags & 2, 0);
+    assert_eq!(visit.sounds, vec![3]);
+    let mut scheduled_alias = alias.clone();
+    scheduled_alias.step_outer_turn(PlayerCommand::default(), 0);
+    assert!(scheduled_alias.dispatch_events().iter().any(|event| matches!(
+        event,
+        Mc2DispatchEvent::DynamicArena {
+            source_slot,
+            kind: Level2DynamicArenaKind::AuthoredModel6,
+            ..
+        } if *source_slot == tree_slot
+    )));
+    let scheduled_child = scheduled_alias
+        .economy()
+        .authored_model6()
+        .iter()
+        .find(|row| row.source_entity_index == tree_slot)
+        .expect("self-aliased model-6 child reaches its next scheduled pass");
+    assert_eq!((scheduled_child.model, scheduled_child.action), (6, 1));
+    assert_eq!(scheduled_child.life, life_before_visit - 2);
+    let live = &mut alias.session.state.live;
+    let arena = &mut live.economy;
+    let terrain = &mut live.terrain;
+    let child = arena.economy.authored_model6_mut(tree_slot).unwrap();
+    child.control_flags |= crate::level1_mission::SOURCE_DISABLED_FLAG;
     arena
         .rebuild_source_arena_with_terrain(terrain, &[])
         .unwrap();
@@ -542,9 +698,9 @@ fn level_two_group31_tree_callback_consumes_rng_after_following_pass_gate() {
     assert!(
         arena
             .economy
-            .spheres()
+            .authored_model6()
             .iter()
-            .all(|sphere| sphere.source_entity_index != tree_slot)
+            .all(|child| child.source_entity_index != tree_slot)
     );
 }
 
@@ -561,6 +717,12 @@ fn level_two_group31_tree_callback_rejects_nonlethal_and_failed_sphere_without_r
         .copied()
         .expect("nonlethal group-31 tree");
     let nonlethal_owner = nonlethal.state.entity_index;
+    let nonlethal_children = nonlethal
+        .economy()
+        .authored_model6()
+        .iter()
+        .filter(|child| child.authored_index == nonlethal_before.source_entity_index)
+        .count();
     {
         let mut economy_view = nonlethal.economy_mut();
         let tree = economy_view
@@ -583,6 +745,15 @@ fn level_two_group31_tree_callback_rejects_nonlethal_and_failed_sphere_without_r
     assert_eq!(nonlethal_after.action, 0);
     assert_eq!(nonlethal_after.owner_entity_index, 0);
     assert_eq!(nonlethal_after.last_sphere_source_entity_index, 0);
+    assert_eq!(
+        nonlethal
+            .economy()
+            .authored_model6()
+            .iter()
+            .filter(|child| child.authored_index == nonlethal_before.source_entity_index)
+            .count(),
+        nonlethal_children
+    );
     assert!(!nonlethal.economy().events().iter().any(|event| matches!(
         event,
         Level2EconomyEvent::ManaSphereSpawned {
@@ -623,6 +794,12 @@ fn level_two_group31_tree_callback_rejects_nonlethal_and_failed_sphere_without_r
         .copied()
         .expect("allocation-failure group-31 tree");
     let allocation_failure_owner = allocation_failure.state.entity_index;
+    let allocation_children = allocation_failure
+        .economy()
+        .authored_model6()
+        .iter()
+        .filter(|child| child.authored_index == allocation_before.source_entity_index)
+        .count();
     {
         let mut economy_view = allocation_failure.economy_mut();
         let tree = economy_view
@@ -648,6 +825,15 @@ fn level_two_group31_tree_callback_rejects_nonlethal_and_failed_sphere_without_r
     assert_eq!(allocation_after.action, 0);
     assert_eq!(allocation_after.owner_entity_index, 0);
     assert_eq!(allocation_after.last_sphere_source_entity_index, 0);
+    assert_eq!(
+        allocation_failure
+            .economy()
+            .authored_model6()
+            .iter()
+            .filter(|child| child.authored_index == allocation_before.source_entity_index)
+            .count(),
+        allocation_children
+    );
     assert_eq!(allocation_failure.economy().authored_trees().len(), 12);
     assert!(
         !allocation_failure

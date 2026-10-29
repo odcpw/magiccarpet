@@ -1893,6 +1893,9 @@ pub struct TypeStr164Auxiliary {
     pub dword_0x16D_365: i32,
     pub word_0x1A2_418: i16,
     pub array_0x1FC_508: [u16; 32],
+    /// The three words of source `stubm` at 0x23c. Existing owner packages
+    /// omit these bytes, so each stays unknown until a source callback writes it.
+    pub padding_words_0x23c: [Option<u16>; 3],
     pub word_0x242_578: i16,
 }
 
@@ -1969,6 +1972,19 @@ pub struct PlayerSnapshot {
 
 impl PlayerSnapshot {
     pub(crate) fn append_omitted_state_hash(&self, hasher: &mut Sha256) {
+        if let Some(auxiliary) = self.type_str_164_auxiliary.as_ref()
+            && auxiliary.padding_words_0x23c.iter().any(Option::is_some)
+        {
+            hasher.update(b"source-player-padding-0x23c-v1");
+            for word in auxiliary.padding_words_0x23c {
+                if let Some(word) = word {
+                    hasher.update([1]);
+                    hasher.update(word.to_le_bytes());
+                } else {
+                    hasher.update([0]);
+                }
+            }
+        }
         if self.hit_frame_time != 0 || self.castle_destroyed != 0 || self.visibility_mode != 0 {
             hasher.update(b"source-player-omitted-state-v1");
             hasher.update([
@@ -2018,11 +2034,12 @@ impl PlayerSnapshot {
     /// exporter-specific compact-record offset to campaign behavior code.
     #[must_use]
     pub(crate) fn type_str_164_array_word(&self, index: usize) -> Option<u16> {
-        self.type_str_164_auxiliary
-            .as_ref()?
-            .array_0x1FC_508
-            .get(index)
-            .copied()
+        let auxiliary = self.type_str_164_auxiliary.as_ref()?;
+        if (32..35).contains(&index) {
+            auxiliary.padding_words_0x23c[index - 32]
+        } else {
+            auxiliary.array_0x1FC_508.get(index).copied()
+        }
     }
 
     /// Keep the typed and compact-record projections of one
@@ -2031,6 +2048,10 @@ impl PlayerSnapshot {
         let Some(auxiliary) = self.type_str_164_auxiliary.as_mut() else {
             return false;
         };
+        if (32..35).contains(&index) {
+            auxiliary.padding_words_0x23c[index - 32] = Some(value);
+            return true;
+        }
         let Some(word) = auxiliary.array_0x1FC_508.get_mut(index) else {
             return false;
         };

@@ -38,6 +38,65 @@ pub(crate) struct DragonProjectileThreat {
     pub flags: u32,
     pub yaw: i16,
 }
+
+/// Read the current target carrier for sub_1C310. The target can be any
+/// source actor, not only a player; zero-life actors remain valid here.
+pub(crate) fn current_attack_target(
+    arena: &SourceArena,
+    context: crate::native_world::source_target::Context<'_>,
+    target_slot: u16,
+) -> std::result::Result<Option<GoatPlayerTarget>, String> {
+    if target_slot == 0 {
+        return Ok(None);
+    }
+    Ok(crate::native_world::source_target::read(arena, context, target_slot)?
+        .filter(|target| target.active && target.life >= 0 && !target.drawing_disabled())
+        .map(|target| GoatPlayerTarget {
+            entity_index: target_slot,
+            position: target.position,
+            control_flags: target.control_flags,
+        }))
+}
+
+/// `sub_1C310` consumes damage and moves before it reads word96's current
+/// fixed-address actor. Keep that order even when the target is the Dragon.
+pub(crate) fn step_attack_in_arena(
+    arena: &mut SourceArena,
+    terrain: &mut SessionTerrain,
+    source_slot: u16,
+    frozen_model0_slots: &[u16],
+    context: crate::native_world::source_target::Context<'_>,
+) -> std::result::Result<DragonAttackStep, String> {
+    let source_index = arena.economy.authored_class5.iter().position(|source| {
+        source.active && source.source_entity_index == source_slot
+            && source.model == DRAGON_MODEL && source.action == DRAGON_ATTACK_ACTION
+    }).ok_or_else(|| format!("Dragon {source_slot} lost its attack source"))?;
+    let state_index = arena.economy.authored_dragons.iter()
+        .position(|state| state.source_entity_index == source_slot)
+        .ok_or_else(|| format!("Dragon {source_slot} lost its sidecar"))?;
+    let runtime_index = arena.economy.authored_class5_runtime.iter()
+        .position(|state| state.source_entity_index == source_slot)
+        .ok_or_else(|| format!("Dragon {source_slot} lost its class-5 runtime"))?;
+    let mut source = arena.economy.authored_class5[source_index];
+    let mut state = arena.economy.authored_dragons[state_index];
+    let mut runtime = arena.economy.authored_class5_runtime[runtime_index];
+    let damaged = consume_dragon_damage(&mut source, &mut runtime,
+        &arena.economy.authored_dragon_parts, terrain);
+    if !damaged && step_dragon_motion(&mut source, &mut state, terrain) {
+        arena.economy.decrement_source_creature_population();
+    }
+    arena.economy.authored_class5[source_index] = source;
+    arena.economy.authored_dragons[state_index] = state;
+    arena.economy.authored_class5_runtime[runtime_index] = runtime;
+    crate::world::effects::sync_position(arena, terrain, source_slot, source.position, true, false)?;
+    if damaged {
+        return Ok(DragonAttackStep { live: true, fireball: None });
+    }
+    let target = current_attack_target(arena, context, source.word_0x96_150)?;
+    arena.economy.step_authored_dragon_attack_slot(
+        source_slot, target, frozen_model0_slots, terrain, true,
+    )
+}
 pub(crate) const DRAGON_INITIAL_MANA: i32 = 2_250;
 pub(crate) const DRAGON_SEGMENT_MANA: i32 = DRAGON_MAX_MANA >> 5;
 pub(crate) const DRAGON_SUBSPELL_INDEX: u16 = 100;
@@ -629,6 +688,31 @@ pub(crate) struct DragonAttackStep {
     pub(crate) fireball: Option<DragonFireballLaunch>,
 }
 
+/// Run the post-1CC20 Dragon tails against the current arena occupant, after
+/// allocation and target feedback, rather than against a preallocation copy.
+pub(crate) fn finish_attack_in_arena(
+    arena: &mut SourceArena,
+    terrain: &mut SessionTerrain,
+    source_slot: u16,
+    projectiles: &[DragonProjectileThreat],
+) -> std::result::Result<bool, String> {
+    let handle = arena.handle(source_slot)
+        .ok_or_else(|| format!("Dragon attack tail {source_slot} lost its current address"))?;
+    if !matches!(arena.resolve(handle), Some(crate::campaign::source_arena::SourceEntityView::Dynamic(
+        Level2DynamicArenaKind::AuthoredClass5
+    ))) {
+        return Err(format!("Dragon attack tail {source_slot} is no longer a typed class5 carrier"));
+    }
+    let live = arena.economy.finish_authored_dragon_attack_slot(source_slot, terrain, projectiles)?;
+    if live {
+        let position = arena.economy.authored_class5.iter()
+            .find(|source| source.active && source.source_entity_index == source_slot && source.model == DRAGON_MODEL)
+            .ok_or_else(|| format!("Dragon attack tail {source_slot} lost its typed source"))?.position;
+        crate::world::effects::sync_position(arena, terrain, source_slot, position, true, false)?;
+    }
+    Ok(live)
+}
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(crate) struct DragonLifecycleStep {
     pub(crate) handled: bool,
@@ -1139,7 +1223,7 @@ impl Level2EconomyState {
         target: Option<GoatPlayerTarget>,
         frozen_model0_slots: &[u16],
         terrain: &SessionTerrain,
-        projectiles: &[DragonProjectileThreat],
+        prelude_done: bool,
     ) -> std::result::Result<DragonAttackStep, String> {
         let Some(source_index) = self.authored_class5.iter().position(|source| {
             source.active
@@ -1164,13 +1248,13 @@ impl Level2EconomyState {
         let mut state = self.authored_dragons[state_index];
         let mut fireball = None;
         let mut runtime = self.authored_class5_runtime[runtime_index];
-        if !consume_dragon_damage(
+        if prelude_done || !consume_dragon_damage(
             &mut source,
             &mut runtime,
             &self.authored_dragon_parts,
             terrain,
         ) {
-            if step_dragon_motion(&mut source, &mut state, terrain) {
+            if !prelude_done && step_dragon_motion(&mut source, &mut state, terrain) {
                 self.decrement_source_creature_population();
             }
 
@@ -1228,13 +1312,9 @@ impl Level2EconomyState {
             }
         }
 
-        step_dragon_tails(
-            &mut source,
-            &mut state,
-            terrain,
-            &self.map_chains,
-            projectiles,
-        );
+        // sub_1EF70 invokes the 1CC20 constructor before its font and
+        // vertical tails. Publish this pre-tail source so NewEvent and its
+        // fixed-address reads observe the correct position and identity.
         self.source_rng.insert(source_slot, source.entity_rng);
         self.authored_class5[source_index] = source;
         self.authored_class5_runtime[runtime_index] = runtime;
@@ -1252,6 +1332,31 @@ impl Level2EconomyState {
             live,
             fireball: if live { fireball } else { None },
         })
+    }
+
+    /// Finish sub_1EF70 only after its projectile constructor and successful
+    /// feedback have run. The source cursor owns the later common epilogue.
+    pub(crate) fn finish_authored_dragon_attack_slot(
+        &mut self,
+        source_slot: u16,
+        terrain: &SessionTerrain,
+        projectiles: &[DragonProjectileThreat],
+    ) -> std::result::Result<bool, String> {
+        let source_index = self.authored_class5.iter().position(|source| {
+            source.active && source.source_entity_index == source_slot && source.model == DRAGON_MODEL
+        }).ok_or_else(|| format!("Dragon attack tail {source_slot} lost its current source"))?;
+        let state_index = self.authored_dragons.iter().position(|state| state.source_entity_index == source_slot)
+            .ok_or_else(|| format!("Dragon attack tail {source_slot} lost its current sidecar"))?;
+        let mut source = self.authored_class5[source_index];
+        let mut state = self.authored_dragons[state_index];
+        step_dragon_tails(&mut source, &mut state, terrain, &self.map_chains, projectiles);
+        self.source_rng.insert(source_slot, source.entity_rng);
+        self.authored_class5[source_index] = source;
+        self.authored_dragons[state_index] = state;
+        Ok(self.map_chains.sync_entity(RenderableMapSeed {
+            entity_index: source_slot, active: source.active,
+            x: source.position.x, y: source.position.y,
+        }).is_ok())
     }
 
     /// Run `sub_1EFD0 -> sub_1C560(..., 0)`: follow the Dragon root in the
@@ -1935,6 +2040,49 @@ mod lightning_consumer_tests {
         );
         let part_slot = arena.economy.authored_dragon_parts.iter()
             .find(|part| part.active && part.entity_id == slot).unwrap().source_entity_index;
+        // The typed body is a non-player target. A stale raw shadow must not
+        // override its current life/position, and hiding the same body rejects it.
+        let mut target_arena = arena.clone();
+        target_arena.entities[usize::from(part_slot)].set_life(-1);
+        let target = current_attack_target(&target_arena, Default::default(), part_slot).unwrap().unwrap();
+        assert_eq!(target.position, target_arena.economy.authored_dragon_parts.iter()
+            .find(|part| part.source_entity_index == part_slot).unwrap().position);
+        let mut hidden_target = target_arena.clone();
+        let hidden_part = hidden_target.economy.authored_dragon_parts.iter_mut()
+            .find(|part| part.source_entity_index == part_slot).unwrap();
+        hidden_part.drawing_enabled = false;
+        hidden_part.control_flags |= 0x400;
+        assert!(current_attack_target(&hidden_target, Default::default(), part_slot).unwrap().is_none());
+        for hidden in [false, true] {
+            let mut attack = if hidden { hidden_target.clone() } else { target_arena.clone() };
+            let mut attack_world = terrain.clone();
+            let source = attack.economy.authored_class5.iter_mut()
+                .find(|row| row.source_entity_index == slot).unwrap();
+            source.action = DRAGON_ATTACK_ACTION;
+            source.source_byte_3e = 0;
+            source.word_0x96_150 = part_slot;
+            let step = step_attack_in_arena(&mut attack, &mut attack_world, slot, &[],
+                Default::default()).unwrap();
+            let source = attack.economy.authored_class5.iter()
+                .find(|row| row.source_entity_index == slot).unwrap();
+            assert_eq!(step.fireball.is_some(), !hidden);
+            assert_eq!(source.action, if hidden { DRAGON_ROAM_ACTION } else { DRAGON_ATTACK_ACTION });
+            if let Some(launch) = step.fireball { assert_eq!(launch.target_entity_index, part_slot); }
+        }
+        let mut self_target = arena.clone();
+        let mut self_world = terrain.clone();
+        let source = self_target.economy.authored_class5.iter_mut()
+            .find(|row| row.source_entity_index == slot).unwrap();
+        source.action = DRAGON_ATTACK_ACTION;
+        source.source_byte_3e = 0;
+        source.word_0x96_150 = slot;
+        let before = source.position;
+        let step = step_attack_in_arena(&mut self_target, &mut self_world, slot, &[],
+            Default::default()).unwrap();
+        let moved = self_target.economy.authored_class5.iter()
+            .find(|row| row.source_entity_index == slot).unwrap().position;
+        assert_ne!(moved, before, "source motion must precede the target read");
+        assert_eq!(step.fireball.unwrap().target_position, moved);
         for (is_part, suppressed) in [(false, false), (false, true), (true, false), (true, true)] {
             let mut dying = arena.clone();
             let mut world = terrain.clone();

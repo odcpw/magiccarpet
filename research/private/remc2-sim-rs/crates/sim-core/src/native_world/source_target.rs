@@ -312,6 +312,53 @@ pub(crate) fn read(
     Ok(Some(view))
 }
 
+/// The type-2 objective reads this byte only after the current target dies.
+/// Resolve it from the same owner as `read`, never a typed row's raw shadow.
+pub(crate) fn font_type_index(
+    arena: &SourceArena,
+    context: Context<'_>,
+    slot: u16,
+) -> Result<Option<u8>, String> {
+    let Some(current) = read(arena, context, slot)? else {
+        return Ok(None);
+    };
+    if (current.class, current.model) == (10, 45)
+        && let Some(house) = context.houses.and_then(|family| {
+            family
+                .houses()
+                .iter()
+                .find(|row| row.source_retained() && row.entity_index == slot)
+        })
+    {
+        return Ok(Some(house.parameter.destruction_successor));
+    }
+    let Some(cursor) = arena.economy.live_arena_cursor_row(slot) else {
+        return Ok(Some(arena.entities[usize::from(slot)].font_type_index));
+    };
+    match cursor.kind {
+        // These constructors retain NewEvent's zero byte, and their source
+        // callbacks do not write fontTypeIndex (4AC40, 4E5F0, 500C0,
+        // 64E20, 31760, 30F60, 35940).
+        Kind::ManaSphere | Kind::AuthoredTree | Kind::AuthoredModel6 => Ok(Some(0)),
+        Kind::AuthoredModel76 => arena
+            .economy
+            .authored_model76
+            .iter()
+            .find(|row| row.source_entity_index == slot)
+            .map(|row| Some(row.font_type_index as u8))
+            .ok_or_else(|| format!("objective target {slot} lost its Fire Spheres carrier")),
+        Kind::SpellPickup | Kind::SpellReplacement => context
+            .spells
+            .and_then(|spells| spells.pickup(slot))
+            .filter(|row| (row.class, row.model) == (current.class, current.model))
+            .map(|row| Some(row.font_type_index))
+            .ok_or_else(|| format!("objective target {slot} lost its spell carrier")),
+        kind => Err(format!(
+            "objective target {slot} has no font-type binding for current {kind:?}"
+        )),
+    }
+}
+
 fn dynamic(
     arena: &SourceArena,
     context: Context<'_>,
@@ -1072,6 +1119,29 @@ mod tests {
             }
         );
 
+        // The objective consumer must use this same current carrier. A dead
+        // retained packet cannot kill a live Bee; a live packet cannot hide
+        // the current Bee's death from a type-1 objective.
+        use crate::campaign::objectives::target_death::{Form, achieved_in_arena};
+        let stage = super::super::RuntimeStage {
+            kind: 1,
+            flags: 1,
+            axis_x: 0,
+            axis_y: 0,
+            relation: super::super::RuntimeRelation::LiveEntity(slot),
+        };
+        assert!(!achieved_in_arena(Form::TargetDeath, &stage, &arena, Context::default()).unwrap());
+        arena
+            .economy
+            .bee_creatures
+            .iter_mut()
+            .find(|row| row.source_entity_index == slot)
+            .unwrap()
+            .life = -1;
+        arena.entities[usize::from(slot)].set_life(400);
+        assert!(achieved_in_arena(Form::TargetDeath, &stage, &arena, Context::default()).unwrap());
+        arena.entities[usize::from(slot)].set_life(-400);
+
         // Removing the typed occupant changes the same address read. No old
         // value or lifetime handle can keep selecting the former Bee.
         arena
@@ -1101,7 +1171,64 @@ mod tests {
         arena.economy.spheres.iter_mut().find(|row| row.source_entity_index == sphere_slot).unwrap().yaw = 754;
         assert_eq!(read(&arena, Context::default(), sphere_slot).unwrap().unwrap().yaw, Some(754));
 
+        let mut sphere_stage = stage.clone();
+        sphere_stage.kind = 2;
+        sphere_stage.relation = super::super::RuntimeRelation::LiveEntity(sphere_slot);
+        arena.entities[usize::from(sphere_slot)].font_type_index = 7;
+        arena.entities[usize::from(sphere_slot)].set_life(400);
+        arena
+            .economy
+            .spheres
+            .iter_mut()
+            .find(|row| row.source_entity_index == sphere_slot)
+            .unwrap()
+            .life = -1;
+        assert!(
+            achieved_in_arena(
+                Form::TargetDeathWithFontTypeZero,
+                &sphere_stage,
+                &arena,
+                Context::default(),
+            )
+            .unwrap(),
+            "the current sphere retains its constructor's zero font byte"
+        );
+        arena
+            .economy
+            .spheres
+            .iter_mut()
+            .find(|row| row.source_entity_index == sphere_slot)
+            .unwrap()
+            .life = 0;
+        assert!(
+            !achieved_in_arena(
+                Form::TargetDeathWithFontTypeZero,
+                &sphere_stage,
+                &arena,
+                Context::default(),
+            )
+            .unwrap(),
+            "zero life is not source death"
+        );
+
         let live = &session.session.state.live;
+        let house = live
+            .ordinary
+            .houses()
+            .iter()
+            .find(|row| row.source_retained())
+            .expect("ordinary Level2 House");
+        arena.entities[usize::from(house.entity_index)].font_type_index =
+            house.parameter.destruction_successor.wrapping_add(1);
+        assert_eq!(
+            font_type_index(
+                &arena,
+                Context::from_ordinary(&live.goats, &live.ordinary),
+                house.entity_index,
+            )
+            .unwrap(),
+            Some(house.parameter.destruction_successor)
+        );
         let goat = live
             .goats
             .goats()

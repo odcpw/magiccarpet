@@ -33,13 +33,17 @@ fn authored_status_reward_prerequisite(
 fn activate_status_source_for_test(session: &mut Mc2Simulation, source_slot: u16) {
     let live = &mut session.session.state.live;
     let mut source = live.shared_spells.pickup(source_slot).unwrap().clone();
-    let mut parent = live
+    let declared_parent = live
         .shared_spells
         .player_entities
         .iter()
         .find(|parent| parent.index == source.source_spell_parent_entity_index())
         .unwrap()
         .clone();
+    let mut parent = live.economy.entities[usize::from(declared_parent.index)].clone();
+    // Mana is the declared control input; actor class/model and identity
+    // remain those of the current numeric owner (including an actual AI).
+    parent.set_mana(declared_parent.mana);
     assert_eq!((source.class, parent.class), (15, 3));
     let mut caster = crate::spell_activation::SpellCasterState {
         entity_index: parent.index,
@@ -1918,6 +1922,21 @@ fn level_two_shield_damage_consumer_updates_parent_and_holder_projection() {
         0
     );
 
+    let mana_after_player_upkeep = {
+        let parent = &session.economy.entities[usize::from(active.parent_entity_index)];
+        assert_eq!(
+            (parent.mana, parent.mana_regen),
+            (active.parent_mana, active.parent_mana_regen)
+        );
+        assert_eq!(parent.mana_regen, -active.mana_cost);
+        // The player's earlier source visit pays the fresh pulse's deferred
+        // charge before this later holder consumes the accepted hit.
+        parent
+            .mana
+            .wrapping_add(parent.mana_regen)
+            .clamp(0, parent.max_mana)
+    };
+
     assert!(
         session
             .shared_spells_mut()
@@ -1950,7 +1969,10 @@ fn level_two_shield_damage_consumer_updates_parent_and_holder_projection() {
         .shield_state()
         .expect("Shield state remains projected after hit");
     assert_eq!(after.parent_life, active.parent_life - 25);
-    assert_eq!(after.parent_mana, active.parent_mana - 25);
+    assert_eq!(
+        after.parent_mana,
+        mana_after_player_upkeep - damage.mana_drained
+    );
     assert_eq!(after.experience_awarded, active.experience_awarded + 1);
     assert_eq!(
         damage.status_after & crate::spell_activation::SHIELD_MANA_STATUS_BIT,
@@ -3061,6 +3083,21 @@ fn level_two_beyond_sight_active_holder_ticks_through_outer_turn_and_reset() {
     assert_eq!(cold.action, BEYOND_SIGHT_ACTIVE_ACTION);
     assert_eq!(cold.active_value, 0);
 
+    let castle = session
+        .economy_mut()
+        .build_castle_at(
+            Position::default(),
+            Position::default(),
+            cold.parent_entity_index,
+            false,
+            true,
+        )
+        .expect("actual owner Castle for the source Beyond Sight predicate");
+    assert!(session.economy_mut().set_castle_mana_prerequisite_for_test(
+        castle,
+        cold.mana_regen_requirement,
+    ));
+
     {
         let mut shared = session.shared_spells_mut();
         shared.player_mana = 5_000;
@@ -3511,6 +3548,14 @@ fn level_two_remote_beyond_sight_owner_does_not_overwrite_local_mana_projection(
         remote_player.record[540] = 0;
         shared.pickup_events.clear();
         shared.events.clear();
+    }
+    // This existing XP control declares a second model-0 body. Reflect that
+    // declaration in the actual actor read by sub6D8B0; real model-1 rival
+    // no-award behavior is covered by the imported Mission18 control.
+    {
+        let actor = &mut session.economy.entities[usize::from(outcome.parent_entity_index)];
+        actor.model = 0;
+        actor.record[68] = 0;
     }
     activate_status_source_for_test(&mut session, outcome.source_slot);
     let local_runtime_before = session.shared_spells().spell_experience()[12];

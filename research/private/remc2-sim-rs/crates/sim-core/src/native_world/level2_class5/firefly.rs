@@ -10,6 +10,7 @@ use crate::goat::GoatPlayerTarget;
 use crate::native_world::{ParticleParameter, RuntimeSnapshot, SessionTerrain};
 
 pub(crate) const FIREFLY_MODEL: u8 = 19;
+pub(crate) const FIREFLY_IDLE_ACTION: u8 = 152;
 pub(crate) const FIREFLY_ROAM_ACTION: u8 = 153;
 pub(crate) const FIREFLY_ATTACK_ACTION: u8 = 154;
 pub(crate) const FIREFLY_LINKED_ACTION: u8 = 155;
@@ -1213,6 +1214,71 @@ pub(crate) fn step_lifecycle_in_arena(
     source_slot: u16,
     players: &[GoatPlayerTarget],
 ) -> std::result::Result<FireflyLifecycleStep, String> {
+    // sub_1BD90 consumes the mailbox and the current word34 chain before
+    // deciding whether the idle peer scan can run. Child attackers can be
+    // zero, so this cannot be represented by synthesizing a damage mailbox.
+    if let Some(source_index) = arena.economy.authored_class5.iter().position(|source| {
+        source.active && source.source_entity_index == source_slot
+            && source.model == FIREFLY_MODEL && source.action == FIREFLY_IDLE_ACTION
+    }) {
+        let runtime_index = arena.economy.authored_class5_runtime.iter()
+            .position(|row| row.source_entity_index == source_slot)
+            .ok_or_else(|| format!("Firefly {source_slot} has no class-5 runtime"))?;
+        let mut source = arena.economy.authored_class5[source_index];
+        let attacker = source.pending_word_0x62;
+        let mut damaged = attacker != 0;
+        source.word_0x26 = attacker;
+        if damaged {
+            let damage = arena.economy.authored_class5_runtime[runtime_index].pending_damage;
+            source.life = source.life.wrapping_sub(damage);
+            source.pending_word_0x62 = 0;
+            arena.economy.authored_class5_runtime[runtime_index].pending_damage = 0;
+            arena.economy.events.push(Level2EconomyEvent::DamageApplied {
+                target_entity_index: source_slot, attacker_entity_index: attacker,
+                damage, lethal: source.life < 0,
+            });
+        }
+        let mut child = arena.economy.authored_class5_runtime[runtime_index].linked_head;
+        let mut remaining = arena.entities.len();
+        while child != 0 {
+            if remaining == 0 {
+                return Err(format!("idle Firefly {source_slot} has a cyclic child chain"));
+            }
+            remaining -= 1;
+            let Some(view) = crate::native_world::source_target::read(
+                arena, crate::native_world::source_target::Context::default(), child,
+            )? else { break; };
+            if !view.active { break; }
+            if view.life < source.life {
+                source.life = view.life;
+                source.word_0x26 = view.relations.attacker.ok_or_else(||
+                    format!("idle Firefly child {child} has no attacker"))?;
+                damaged = true;
+                break;
+            }
+            child = view.relations.next.ok_or_else(||
+                format!("idle Firefly child {child} has no next link"))?;
+        }
+        if source.life < 0 {
+            source.word_0x24 = source.word_0x26;
+            source.action = FIREFLY_PRE_KILL_ACTION;
+        } else if damaged {
+            source.word_0x96_150 = source.word_0x26;
+            source.action = FIREFLY_ATTACK_ACTION;
+            source.byte_0x46_70 = 0;
+        }
+        if damaged || source.life < 0 {
+            crate::ground_creature_motion::relax_to_terrain(
+                &mut source.position, terrain, FIREFLY_GROUND_CLEARANCE, FIREFLY_DESCENT,
+            );
+            arena.economy.authored_class5[source_index] = source;
+            return Ok(FireflyLifecycleStep {
+                handled: true, retained_for_epilogue: true,
+                pre_kill_credit: None, death_due: false,
+            });
+        }
+        arena.economy.authored_class5[source_index] = source;
+    }
     let result = arena.economy.step_authored_firefly_lifecycle_slot(source_slot, players, terrain)?;
     if !result.death_due {
         return Ok(result);
@@ -1859,6 +1925,38 @@ impl Level2EconomyState {
             .is_ok()
     }
 
+    /// `sub_25590 -> sub_1BD90`: idle Fireflies do not move horizontally.
+    pub(crate) fn step_authored_firefly_idle_slot(
+        &mut self,
+        source_slot: u16,
+        frozen_model19_slots: &[u16],
+        terrain: &SessionTerrain,
+    ) -> bool {
+        let Some(source_index) = self.authored_class5.iter().position(|source| {
+            source.active && source.source_entity_index == source_slot
+                && source.model == FIREFLY_MODEL && source.action == FIREFLY_IDLE_ACTION
+        }) else { return false; };
+        let Some(state_index) = self.authored_fireflies.iter()
+            .position(|state| state.source_entity_index == source_slot) else { return false; };
+        let mut source = self.authored_class5[source_index];
+        let mut state = self.authored_fireflies[state_index];
+        source.word_0x26 = 0;
+        if source.source_byte_3e % FIREFLY_DESCRIPTOR_CADENCE == 0 {
+            if let Some(peer) = nearest_unlinked_firefly(
+                source, frozen_model19_slots, &self.authored_class5, &self.authored_fireflies, true,
+            ) {
+                state.linked_entity_index = peer;
+                source.action = FIREFLY_LINKED_ACTION;
+            }
+        }
+        crate::ground_creature_motion::relax_to_terrain(
+            &mut source.position, terrain, FIREFLY_GROUND_CLEARANCE, FIREFLY_DESCENT,
+        );
+        self.authored_class5[source_index] = source;
+        self.authored_fireflies[state_index] = state;
+        true
+    }
+
     pub(crate) fn step_authored_firefly_roam_slot(
         &mut self,
         source_slot: u16,
@@ -1916,6 +2014,7 @@ impl Level2EconomyState {
                     frozen_model19_slots,
                     &self.authored_class5,
                     &self.authored_fireflies,
+                    false,
                 ) {
                     state.linked_entity_index = peer_slot;
                     source.action = FIREFLY_LINKED_ACTION;
@@ -2686,6 +2785,7 @@ fn nearest_unlinked_firefly(
     frozen_model19_slots: &[u16],
     roots: &[Level2AuthoredClass5Source],
     fireflies: &[AuthoredFireflyRuntime],
+    peer_to_source: bool,
 ) -> Option<u16> {
     let range_squared = u32::from(FIREFLY_RANGE).pow(2);
     frozen_model19_slots
@@ -2693,7 +2793,6 @@ fn nearest_unlinked_firefly(
         .filter_map(|slot| {
             let peer = roots.iter().find(|peer| {
                 peer.active
-                    && peer.life >= 0
                     && peer.source_entity_index == *slot
                     && peer.source_entity_index != source.source_entity_index
                     && fireflies
@@ -2702,7 +2801,11 @@ fn nearest_unlinked_firefly(
                         .is_some_and(|state| state.linked_entity_index == 0)
             })?;
             let distance = squared_wrapping_xy_distance(source.position, peer.position);
-            let heading = crate::heading_for_positions(source.position, peer.position);
+            let heading = if peer_to_source {
+                crate::heading_for_positions(peer.position, source.position)
+            } else {
+                crate::heading_for_positions(source.position, peer.position)
+            };
             (distance <= range_squared
                 && crate::angle_distance(i32::from(source.yaw), heading) < FIREFLY_VIEW_HALF_ANGLE)
                 .then_some((distance, *slot))
@@ -2782,22 +2885,98 @@ mod tests {
                 .iter()
                 .any(|row| row.active && row.source_entity_index == slot)
         );
+
+        let peer_position = Position {
+            x: source.position.x.wrapping_add(256),
+            ..source.position
+        };
+        let peer = economy.allocate_authored_firefly_unbound(
+            684, peer_position, FIREFLY_LIFE as u32, terrain,
+        ).expect("second ordinary Firefly constructor has capacity");
+        let source_index = economy.authored_class5.iter()
+            .position(|row| row.source_entity_index == slot).unwrap();
+        let state_index = economy.authored_fireflies.iter()
+            .position(|row| row.source_entity_index == slot).unwrap();
+        let source_position = economy.authored_class5[source_index].position;
+        let slots = [slot, peer.source_entity_index];
+        economy.authored_class5[source_index].action = FIREFLY_IDLE_ACTION;
+        economy.authored_class5[source_index].source_byte_3e = 0;
+        economy.authored_class5[source_index].yaw =
+            crate::heading_for_positions(source_position, peer.position) as i16;
+        assert!(economy.step_authored_firefly_idle_slot(slot, &slots, terrain));
+        assert_eq!(economy.authored_class5[source_index].action, FIREFLY_IDLE_ACTION,
+            "idle's peer-to-source cone rejects the opposite heading");
+        assert_eq!(economy.authored_fireflies[state_index].linked_entity_index, 0);
+        assert_eq!((economy.authored_class5[source_index].position.x,
+                    economy.authored_class5[source_index].position.y),
+                   (source_position.x, source_position.y));
+        economy.authored_class5[source_index].yaw =
+            crate::heading_for_positions(peer.position, source_position) as i16;
+        // The frozen source model list is built before callbacks. A peer
+        // damaged during this pass remains on that list until the next pass.
+        economy.authored_class5.iter_mut()
+            .find(|row| row.source_entity_index == peer.source_entity_index).unwrap().life = -1;
+        assert!(economy.step_authored_firefly_idle_slot(slot, &slots, terrain));
+        assert_eq!(economy.authored_class5[source_index].action, FIREFLY_LINKED_ACTION);
+        assert_eq!(economy.authored_fireflies[state_index].linked_entity_index, peer.source_entity_index);
+
+        let mut arena = session.source_arena().clone();
+        let mut runtime = session.session.state.live.core.runtime.clone();
+        let mut world = session.session.state.live.terrain.clone();
+        let particles = &session.session.definition.presentation.particles;
+        let parent = session.state.entity_index;
+        let child = allocate_summoned(&mut arena, &mut runtime, &mut world, particles,
+            session.state.position, parent, parent, parent).unwrap().unwrap();
+        let root = arena.economy.authored_class5.iter_mut()
+            .find(|row| row.source_entity_index == child.source_slot).unwrap();
+        root.action = FIREFLY_IDLE_ACTION;
+        for damage in [0, 1, FIREFLY_LIFE + 1] {
+            let mut candidate = arena.clone();
+            let mut candidate_world = world.clone();
+            if damage != 0 {
+                assert!(candidate.economy.submit_authored_firefly_damage(child.source_slot, damage, parent));
+            }
+            let outcome = step_lifecycle_in_arena(&mut candidate, &mut candidate_world,
+                particles, child.source_slot, &[]).unwrap();
+            let root = candidate.economy.authored_class5.iter()
+                .find(|row| row.source_entity_index == child.source_slot).unwrap();
+            assert_eq!(root.life, FIREFLY_LIFE - damage);
+            assert_eq!(outcome.handled, damage != 0);
+            assert_eq!(root.action, if damage > FIREFLY_LIFE { FIREFLY_PRE_KILL_ACTION }
+                else if damage != 0 { FIREFLY_ATTACK_ACTION } else { FIREFLY_IDLE_ACTION });
+            if damage != 0 && damage <= FIREFLY_LIFE {
+                assert_eq!((root.word_0x96_150, root.byte_0x46_70), (parent, 0));
+            }
+        }
     }
 
     #[test]
     fn real_alliance_impact_controls_a_typed_firefly_until_parent_loss_or_expiry() {
-        let session = crate::native_world::tests::level_two_campaign_session();
+        let package = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../generated/mc-bhq6-ordinary-20261025-zclu5fjj/level7");
+        let mut session = CampaignSession::open(package, CampaignSelection::ordinary(7).unwrap())
+            .expect("real Night7 owner package opens").simulation().clone();
+        // The ordinary source pass adopts the package's real Fireflies and
+        // retains their source identities before the impact visits one.
+        session.step_outer_turn(crate::PlayerCommand::default(), 0);
+        assert!(!session.dispatch_events().iter().any(|event|
+            matches!(event, crate::native_world::Mc2DispatchEvent::Error { .. })),
+            "Night7 Firefly producer: {:?}", session.dispatch_events());
         let mut arena = session.source_arena().clone();
         let mut terrain = session.session.state.live.terrain.clone();
         let parent = session.state.entity_index;
         let parent_handle = arena.handle(parent).expect("real player has a source handle");
-        let position = session.state.position;
-        let slot = arena.allocate_source_slot_with_terrain(&mut terrain).expect("Firefly source slot");
-        arena.economy.initialize_authored_firefly_at_slot(
-            slot, None, position, None, FIREFLY_LIFE, &terrain,
-        ).expect("ordinary Firefly constructor");
+        let source = arena.economy.authored_class5.iter().find(|row| {
+            row.active && row.drawing_enabled && row.model == FIREFLY_MODEL
+                && row.action == FIREFLY_ROAM_ACTION
+                && arena.economy.authored_fireflies.iter().any(|state| {
+                    state.source_entity_index == row.source_entity_index
+                        && state.stage_var1 == 0 && !matches!(state.stage_var2, 13 | 14 | 16 | 17)
+                })
+        }).copied().expect("ordinary Night7 producer has an unbound Firefly");
+        let slot = source.source_entity_index;
+        let position = source.position;
         arena.entities[usize::from(slot)].record[78..80].copy_from_slice(&987_u16.to_le_bytes());
-        crate::world::effects::sync_position(&mut arena, &mut terrain, slot, position, true, false).unwrap();
         let child = arena.handle(slot).expect("typed Firefly is the current occupant");
         let impact_slot = crate::native_world::alliance_spell::construct_impact(&mut arena, &mut terrain)
             .expect("real Alliance terminal constructor");
@@ -2836,12 +3015,12 @@ mod tests {
         assert_eq!(arena.economy.authored_class5.iter().find(|row| row.source_entity_index == slot).unwrap().action,
             FIREFLY_STAGE_ACTION);
 
-        // On this actual Level2 owner package, the parent's current target is
+        // On this actual Night7 owner package, the parent's current target is
         // the real opposing wizard; the Alliance filter admits that target
         // and rejects the parent with otherwise identical state.
         let rival = arena.entities.iter().find(|row|
             row.active && row.class == 3 && row.model == 1 && row.life > 0)
-            .expect("ordinary Level2 package has a live opposing wizard").index;
+            .expect("ordinary Night7 package has a live opposing wizard").index;
         let mut aiming = arena.clone();
         aiming.entities[usize::from(parent)].record[154..156].copy_from_slice(&rival.to_le_bytes());
         let mut accepted = aiming.clone();
@@ -2851,6 +3030,23 @@ mod tests {
         for result in [&accepted, &rejected] {
             assert_eq!(result.economy.authored_fireflies.iter()
                 .find(|row| row.source_entity_index == slot).unwrap().word_0x2e, 2);
+        }
+
+        let mut hash_session = session.clone();
+        *hash_session.source_arena_mut() = arena.clone();
+        let baseline_hash = hash_session.campaign_state_hash();
+        for change_duration in [false, true] {
+            let mut changed = hash_session.clone();
+            let state = changed.source_arena_mut().economy.authored_fireflies.iter_mut()
+                .find(|row| row.source_entity_index == slot).unwrap();
+            if change_duration { state.alliance_duration ^= 1; } else { state.stage_relation ^= 1; }
+            assert_ne!(changed.campaign_state_hash(), baseline_hash,
+                "each authoritative Alliance field contributes to the current state hash");
+            let state = changed.source_arena_mut().economy.authored_fireflies.iter_mut()
+                .find(|row| row.source_entity_index == slot).unwrap();
+            if change_duration { state.alliance_duration ^= 1; } else { state.stage_relation ^= 1; }
+            assert_eq!(changed.campaign_state_hash(), baseline_hash,
+                "restoring the source field restores the same state hash");
         }
 
         // Leave the real parent live without a current combat target so this

@@ -510,24 +510,16 @@ fn attack_creates_guided_model20_slows_target_then_reclaims_projectile_next_pass
     assert!(!arena.entities[usize::from(projectile_slot)].active);
     assert!(!arena.entities[usize::from(impact)].active);
 
-    // Level 9 contains actual reset-imported model17 actors and their package
+    // Level 17 contains actual reset-imported model17 actors and their package
     // semantic bindings. Position and aim are controlled for this collision
     // check; the actor, attack, scheduler and player state are real carriers.
-    let level9 = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../../generated/mc-bhq6-ordinary-20261024-b/level9");
-    let cache = std::env::var_os("MC_LEVEL2_GAMEPLAY_CACHE_V5").map_or_else(
-        || {
-            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("../../../generated/level2-day-owner-cache/components/gameplay")
-        },
-        std::path::PathBuf::from,
-    );
-    let mut scheduled = crate::campaign::CampaignSession::open_with_owner_cache(
-        level9,
-        cache,
-        crate::campaign::spec::CampaignSelection::ordinary(9).unwrap(),
+    let level17 = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../../generated/mc-bhq6-ordinary-20261024-b/level17");
+    let mut scheduled = crate::campaign::CampaignSession::open(
+        level17,
+        crate::campaign::spec::CampaignSelection::ordinary(17).unwrap(),
     )
-    .expect("retained Level 9 campaign and owner cache")
+    .expect("retained Level 17 campaign")
     .simulation()
     .clone();
     let (actor_slot, actor_source_id, target_slot) = {
@@ -544,7 +536,7 @@ fn attack_creates_guided_model20_slows_target_then_reclaims_projectile_next_pass
             .entities
             .iter_mut()
             .find(|row| row.active && (row.class, row.model) == (5, SOURCE_MODEL))
-            .expect("retained Level 9 model17 actor");
+            .expect("retained Level 17 model17 actor");
         let position = Position {
             x: actor_x,
             y: target_position.y,
@@ -731,6 +723,193 @@ fn prekill_inherits_owned_child_credit_without_running_death_early() {
     assert!(
         !effects.kill,
         "PreKill does not run the phase-gated death callback"
+    );
+
+    // The retained Level 17 reset contains actual model17 roots. Drive a
+    // nonlethal and then lethal contact through their normal scheduler and
+    // inspect the same class-5 list used by absence objectives.
+    let package = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../../generated/mc-bhq6-ordinary-20261024-b/level17");
+    let mut scheduled = crate::campaign::CampaignSession::open(
+        package,
+        crate::campaign::spec::CampaignSelection::ordinary(17).unwrap(),
+    )
+    .expect("retained Level 17 campaign")
+    .simulation()
+    .clone();
+    let (victim, generation, player, initial_life) = {
+        let live = &mut scheduled.session.state.live;
+        let slots = live.economy.rebuilt_class5_model_slots();
+        assert!(
+            slots[17].len() > 1,
+            "real package retains other model17 roots"
+        );
+        let victim = slots[17][0];
+        let player = live.core.state.entity_index;
+        let row = &mut live.economy.entities[usize::from(victim)];
+        let initial_life = row.life;
+        row.set_source_action(136);
+        row.set_phase(0);
+        let generation = live.economy.economy.slot_generation(victim);
+        crate::native_world::area_damage::contact(&mut live.economy, None, victim, 1, player)
+            .expect("real model17 damage mailbox");
+        (victim, generation, player, initial_life)
+    };
+    scheduled.step_outer_turn(crate::PlayerCommand::default(), 0);
+    assert!(
+        !scheduled
+            .dispatch_events()
+            .iter()
+            .any(|event| matches!(event, crate::native_world::Mc2DispatchEvent::Error { .. })),
+        "model17 nonlethal source pass must not roll back: {:?}",
+        scheduled.dispatch_events()
+    );
+    {
+        let live = &mut scheduled.session.state.live;
+        let row = &live.economy.entities[usize::from(victim)];
+        assert_eq!(row.life, initial_life - 1);
+        assert!(live.economy.rebuilt_class5_model_slots()[17].contains(&victim));
+        let lethal = u16::try_from(row.life + 1).expect("retained model17 life fits damage word");
+        crate::native_world::area_damage::contact(&mut live.economy, None, victim, lethal, player)
+            .expect("real model17 lethal mailbox");
+    }
+    scheduled.step_outer_turn(crate::PlayerCommand::default(), 0);
+    assert!(
+        !scheduled
+            .dispatch_events()
+            .iter()
+            .any(|event| matches!(event, crate::native_world::Mc2DispatchEvent::Error { .. })),
+        "model17 lethal source pass must not roll back: {:?}",
+        scheduled.dispatch_events()
+    );
+    {
+        let live = &scheduled.session.state.live;
+        let row = &live.economy.entities[usize::from(victim)];
+        assert!(row.active && row.life < 0 && row.action == 140);
+        let frozen = live.economy.rebuilt_class5_model_slots();
+        assert!(
+            !frozen[17].contains(&victim),
+            "negative-life root leaves the next frozen list"
+        );
+        assert!(
+            !frozen[17].is_empty(),
+            "other living roots still prevent family absence"
+        );
+    }
+    let mut saw_hidden = false;
+    for _ in 0..16 {
+        scheduled.step_outer_turn(crate::PlayerCommand::default(), 0);
+        assert!(
+            !scheduled
+                .dispatch_events()
+                .iter()
+                .any(|event| matches!(event, crate::native_world::Mc2DispatchEvent::Error { .. })),
+            "model17 death lifecycle must not roll back: {:?}",
+            scheduled.dispatch_events()
+        );
+        let live = &scheduled.session.state.live;
+        let row = &live.economy.entities[usize::from(victim)];
+        if live.economy.economy.slot_generation(victim) != generation || !row.active {
+            assert!(
+                saw_hidden,
+                "death remains hidden until the following source boundary"
+            );
+            break;
+        }
+        saw_hidden |= row.drawing_disabled();
+    }
+    assert!(
+        saw_hidden,
+        "phase-gated model17 death hides the actual source actor"
+    );
+    let live = &scheduled.session.state.live;
+    assert!(
+        !live.economy.entities[usize::from(victim)].active
+            || live.economy.economy.slot_generation(victim) != generation,
+        "the next source boundary reclaims the hidden actor"
+    );
+
+    // Keep one real package root alive as the absence negative, then remove
+    // the last root through the same source contact and scheduled callback.
+    // This controls a bounded family lifecycle, not an earned mission result.
+    let package = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../../generated/mc-bhq6-ordinary-20261024-b/level17");
+    let mut absence = crate::campaign::CampaignSession::open(
+        package,
+        crate::campaign::spec::CampaignSelection::ordinary(17).unwrap(),
+    )
+    .expect("retained Level 17 campaign")
+    .simulation()
+    .clone();
+    let survivor = {
+        let live = &mut absence.session.state.live;
+        let victims = live.economy.rebuilt_class5_model_slots()[17].clone();
+        assert!(victims.len() > 1);
+        let survivor = *victims.last().unwrap();
+        let player = live.core.state.entity_index;
+        for slot in victims.into_iter().filter(|slot| *slot != survivor) {
+            let row = &mut live.economy.entities[usize::from(slot)];
+            row.set_source_action(136);
+            let lethal = u16::try_from(row.life + 1).unwrap();
+            crate::native_world::area_damage::contact(
+                &mut live.economy,
+                None,
+                slot,
+                lethal,
+                player,
+            )
+            .expect("real model17 lethal contact");
+        }
+        survivor
+    };
+    absence.step_outer_turn(crate::PlayerCommand::default(), 0);
+    assert!(
+        !absence
+            .dispatch_events()
+            .iter()
+            .any(|event| matches!(event, crate::native_world::Mc2DispatchEvent::Error { .. })),
+        "model17 family damage must not roll back: {:?}",
+        absence.dispatch_events()
+    );
+    {
+        let live = &mut absence.session.state.live;
+        let remaining = &live.economy.rebuilt_class5_model_slots()[17];
+        assert_eq!(
+            remaining.as_slice(),
+            &[survivor],
+            "one living source root prevents absence"
+        );
+        let player = live.core.state.entity_index;
+        let row = &mut live.economy.entities[usize::from(survivor)];
+        row.set_source_action(136);
+        let lethal = u16::try_from(row.life + 1).unwrap();
+        crate::native_world::area_damage::contact(
+            &mut live.economy,
+            None,
+            survivor,
+            lethal,
+            player,
+        )
+        .expect("last model17 lethal contact");
+    }
+    absence.step_outer_turn(crate::PlayerCommand::default(), 0);
+    assert!(
+        !absence
+            .dispatch_events()
+            .iter()
+            .any(|event| matches!(event, crate::native_world::Mc2DispatchEvent::Error { .. })),
+        "last model17 source pass must not roll back: {:?}",
+        absence.dispatch_events()
+    );
+    assert!(
+        absence
+            .session
+            .state
+            .live
+            .economy
+            .rebuilt_class5_model_slots()[17]
+            .is_empty(),
+        "the following source-frozen family list admits absence"
     );
 }
 

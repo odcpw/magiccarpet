@@ -474,6 +474,84 @@ pub(crate) fn alliance_shadow_matches_current_bee(arena: &SourceArena, slot: u16
         .is_some_and(|source| exact_source_bee_row(arena, *source))
 }
 
+/// Borrow the current typed Bee as the source fields consumed by the
+/// Alliance kernel. This temporary projection is never installed as an
+/// independent arena actor or used as an authoritative compatibility row.
+pub(crate) fn alliance_projection(
+    arena: &SourceArena,
+    slot: u16,
+) -> Option<crate::native_world::EntitySnapshot> {
+    let handle = arena.handle(slot)?;
+    if !matches!(arena.resolve(handle), Some(SourceEntityView::Dynamic(Level2DynamicArenaKind::BeeCreature))) {
+        return None;
+    }
+    let source = arena.economy.bee_creatures.iter().find(|row| {
+        row.active && row.source_entity_index == slot && row.source_class == 5 && row.model == 2
+    })?;
+    let mut row = arena.entities.get(usize::from(slot))?.clone();
+    row.active = true;
+    row.record[2] = 1;
+    row.source_id = source.entity_id;
+    row.record[30..32].copy_from_slice(&source.entity_id.to_le_bytes());
+    row.class = source.source_class;
+    row.model = source.model;
+    row.record[67] = source.source_class;
+    row.record[68] = source.model;
+    row.set_source_action(source.action);
+    row.set_position(source.position);
+    row.set_life(source.life);
+    row.set_control_flags((source.control_flags & !0x400) | if source.drawing_enabled { 0 } else { 0x400 });
+    row.record[44..46].copy_from_slice(&source.parent_entity_index.to_le_bytes());
+    row.record[50..52].copy_from_slice(&source.stage_remaining.to_le_bytes());
+    row.record[52..54].copy_from_slice(&source.stage_duration.to_le_bytes());
+    row.record[76] = source.stage_var1;
+    row.record[77] = source.stage_var2;
+    row.record[78..80].copy_from_slice(&source.stage_relation.to_le_bytes());
+    row.record[154..156].copy_from_slice(&source.target_entity_index.unwrap_or(0).to_le_bytes());
+    Some(row)
+}
+
+/// Transfer only a successful impact back to the same live Bee generation.
+/// Retain the caster generation even when its slot has already gone away.
+pub(crate) fn apply_alliance_takeover(
+    arena: &mut SourceArena,
+    child: SourceEntityHandle,
+    row: &crate::native_world::EntitySnapshot,
+    parent: Option<SourceEntityHandle>,
+) -> Result<bool, String> {
+    let slot = child.source_slot;
+    if row.index != slot || (row.class, row.model) != (5, 2)
+        || row.record[76] != 0 || row.record[77] != 14
+        || arena.handle(slot) != Some(child)
+        || alliance_projection(arena, slot).is_none_or(|current| current.source_id != row.source_id)
+    {
+        return Ok(false);
+    }
+    let parent_slot = u16::from_le_bytes([row.record[44], row.record[45]]);
+    let bound_parent = parent.filter(|handle| handle.source_slot == parent_slot)
+        .or_else(|| (parent_slot != 0).then(|| SourceEntityHandle {
+            source_slot: parent_slot, generation: arena.slot_generation(parent_slot),
+        }));
+    if let Some(parent) = bound_parent {
+        if !arena.bind_carried_creature_parent(child, parent) {
+            return Err(format!("Alliance Bee {slot} lost its parent binding"));
+        }
+    }
+    let source = arena.economy.bee_creatures.iter_mut().find(|source| {
+        source.active && source.source_entity_index == slot && source.source_class == 5 && source.model == 2
+    }).ok_or_else(|| format!("Alliance Bee {slot} lost its typed carrier"))?;
+    source.action = row.action;
+    source.parent_entity_index = parent_slot;
+    source.stage_var1 = row.record[76];
+    source.stage_var2 = row.record[77];
+    source.stage_relation = u16::from_le_bytes([row.record[78], row.record[79]]);
+    source.stage_remaining = i16::from_le_bytes([row.record[50], row.record[51]]);
+    source.stage_duration = i16::from_le_bytes([row.record[52], row.record[53]]);
+    source.target_entity_index = Some(row.source_word_96()).filter(|target| *target != 0);
+    publish_source_alliance_control(arena, slot);
+    Ok(true)
+}
+
 /// Import the source Alliance control write before the ordinary typed Bee
 /// callback. StageVar2=14 with StageVar1=0 is the kernel's exact transition.
 fn import_source_alliance_control(arena: &mut SourceArena, slot: u16) {

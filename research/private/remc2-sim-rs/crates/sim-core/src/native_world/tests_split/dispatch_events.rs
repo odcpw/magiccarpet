@@ -26,7 +26,9 @@ fn condition_eight_root_uses_current_stage_and_source_player_slot() {
     session.economy.entities[usize::from(target)].life = -1;
     for state in [None, Some(1)] {
         session.players[0].banishment_state_0x006 = state;
-        session.advance_level2_objectives(&[false; 29], &[]);
+        session
+            .advance_level2_objectives(&[false; 29], &[])
+            .expect("current objective targets resolve");
         assert_eq!(
             &session.runtime.objectives[0].stage_selectors[..2],
             &[1, 1],
@@ -34,7 +36,9 @@ fn condition_eight_root_uses_current_stage_and_source_player_slot() {
         );
     }
     session.players[0].banishment_state_0x006 = Some(0);
-    session.advance_level2_objectives(&[false; 29], &[]);
+    session
+        .advance_level2_objectives(&[false; 29], &[])
+        .expect("current objective targets resolve");
     assert_eq!(
         &session.runtime.objectives[0].stage_selectors[..2],
         &[2, 1],
@@ -42,7 +46,9 @@ fn condition_eight_root_uses_current_stage_and_source_player_slot() {
     );
     assert_eq!(session.runtime.objectives[0].text_selector, 1);
     assert_eq!(session.runtime.objectives[0].is_level_end, 0);
-    session.advance_level2_objectives(&[false; 29], &[]);
+    session
+        .advance_level2_objectives(&[false; 29], &[])
+        .expect("current objective targets resolve");
     assert_eq!(&session.runtime.objectives[0].stage_selectors[..2], &[2, 2]);
     assert_eq!(session.runtime.objectives[0].is_level_end, 1);
     assert_ne!(session.campaign_state_hash(), baseline);
@@ -5660,7 +5666,8 @@ fn level_two_public_fireball_hits_qualified_water_without_fabricating_an_impact(
     // The real package starts the local wizard at z=256 over type-0 ground.
     // Ordinary pitch input reaches 250 after sixteen turns; the cast turn
     // reaches 251 and the source-speed 384 flyer crosses ground on its first
-    // numeric callback. No target or entity position is manufactured here.
+    // numeric callback. Its free slot precedes the player, so that callback
+    // occurs on the following pass. No position is manufactured here.
     for _ in 0..16 {
         session.step_outer_turn(
             PlayerCommand {
@@ -5722,6 +5729,23 @@ fn level_two_public_fireball_hits_qualified_water_without_fabricating_an_impact(
         (flyer.source_class, flyer.source_model, flyer.action),
         (9, 0, 0)
     );
+    assert!(flyer.source_entity_index < session.state.entity_index);
+    assert!(flyer.active && !flyer.drawing_disabled);
+    assert_eq!(flyer.phase, flyer.source_entity_index as u8);
+    assert!(session.dispatch_events().iter().all(|event| !matches!(
+        event,
+        Mc2DispatchEvent::DynamicArena { source_slot, .. }
+            if *source_slot == flyer.source_entity_index
+    )));
+
+    session.step_outer_turn(PlayerCommand::default(), 0);
+    let flyer = session
+        .economy()
+        .fireball_projectiles()
+        .iter()
+        .find(|row| row.source_entity_index == flyer.source_entity_index)
+        .copied()
+        .expect("the first source visit retains the hidden Fireball until prepass");
     assert!(
         !flyer.active && flyer.drawing_disabled,
         "water flyer={flyer:?}, player slot={}, dispatch={:?}",

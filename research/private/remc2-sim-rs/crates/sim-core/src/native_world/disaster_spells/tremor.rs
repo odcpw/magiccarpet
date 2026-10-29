@@ -279,7 +279,10 @@ mod tests {
                 y: ((tile >> 8) << 8) as u16,
                 z: 0,
             })
-            .find(|position| live.terrain.material_mask(*position) != 1)
+            .find(|position| {
+                live.terrain.material_mask(*position) != 1
+                    && live.terrain.ground_height(*position) > 32
+            })
             .unwrap();
         position.z = live.terrain.ground_height(position).wrapping_sub(1);
         let row = &mut live.economy.entities[usize::from(flyer)];
@@ -324,6 +327,7 @@ mod tests {
         // produce a model71 row.
         let before = session.clone();
         let phase = before.session.state.live.economy.entities[usize::from(child)].phase;
+        let center = before.session.state.live.economy.entities[usize::from(child)].position;
         session.step_outer_turn(crate::PlayerCommand::default(), 0);
         assert!(
             !session
@@ -339,8 +343,8 @@ mod tests {
             phase.wrapping_add(1)
         );
         let previous_terrain = &before.session.state.live.terrain;
-        let center_x = (position.x.wrapping_add(128) >> 8) as u8;
-        let center_y = (position.y.wrapping_add(128) >> 8) as u8;
+        let center_x = (center.x.wrapping_add(128) >> 8) as u8;
+        let center_y = (center.y.wrapping_add(128) >> 8) as u8;
         let changed = (-2_i8..=2)
             .flat_map(|dy| (-2_i8..=2).map(move |dx| (dx, dy)))
             .map(|(dx, dy)| {

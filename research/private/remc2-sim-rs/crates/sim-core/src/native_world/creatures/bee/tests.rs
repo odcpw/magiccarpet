@@ -96,6 +96,52 @@ fn run_alliance_impact(
         .expect("consume the real source Alliance terminal")
 }
 
+/// Use the real SetSpell holder and scheduled Morph cast to obtain the Bee
+/// that the production semantic dispatcher will later visit.
+fn public_day_morph_bee() -> (crate::native_world::Mc2Simulation, u16, u16) {
+    let mut session = crate::native_world::tests::level_two_campaign_session();
+    let parent = session.state.entity_index;
+    let mut carried = session.shared_spells().local_player.enabled_spell_holders.iter()
+        .enumerate().filter_map(|(family, slot)| (*slot != 0).then_some(family as u8))
+        .collect::<std::collections::BTreeSet<_>>();
+    carried.insert(4);
+    session.apply_carried_spell_families(&carried.into_iter().collect::<Vec<_>>(), Some(4)).unwrap();
+    let holder = session.shared_spells().local_player.enabled_spell_holders[4];
+    assert_ne!(holder, 0);
+    let position = session.state.position;
+    let castle = session.economy_mut().build_castle(position, parent).unwrap();
+    assert!(session.economy_mut().set_castle_mana_prerequisite_for_test(castle, 25_000));
+    {
+        let live = &mut session.session.state.live;
+        live.economy.refresh_owner_mana_rows();
+        for row in &mut live.shared_spells.player_entities {
+            if row.index == parent { row.set_mana(20_000); row.set_mana_regen(0); }
+        }
+        live.shared_spells.player_entity.set_mana(20_000);
+        live.shared_spells.player_entity.set_mana_regen(0);
+        live.shared_spells.caster.mana = 20_000;
+        live.shared_spells.player_mana = 20_000;
+        live.economy.entities[usize::from(parent)].set_mana(20_000);
+        if let Some(fire) = live.core.context.spell_fire.as_mut() { fire.caster.mana = 20_000; }
+    }
+    for turn in 0..5 {
+        session.step_outer_turn(if turn == 0 { crate::PlayerCommand {
+            opcode: 6, argument_1: 4, flags: 0x40, ..crate::PlayerCommand::default()
+        }} else { crate::PlayerCommand::default() }, 0);
+        assert!(!session.dispatch_events().iter().any(|event|
+            matches!(event, crate::native_world::Mc2DispatchEvent::Error { .. })),
+            "ordinary Morph producer must not roll back: {:?}", session.dispatch_events());
+        let slot = session.shared_spells().pickup(holder).unwrap().source_word_96();
+        if slot != 0 {
+            assert!(session.source_arena().bee_creatures().iter().any(|bee|
+                bee.active && bee.source_entity_index == slot
+                    && matches!(bee.origin, BeeCreatureOrigin::MorphSpell { holder_slot } if holder_slot == holder)));
+            return (session, holder, slot);
+        }
+    }
+    panic!("ordinary Morph cast did not produce its real Bee");
+}
+
 fn terrain() -> SessionTerrain {
     let plane = || vec![0; 65_536].into_boxed_slice();
     SessionTerrain::from_planes(
@@ -1098,20 +1144,49 @@ fn alliance_impact_syncs_only_the_exact_typed_bee_before_its_source_visit() {
     assert_eq!(u16::from_le_bytes([raw.record[52], raw.record[53]]), 40);
     assert_eq!(u16::from_le_bytes([raw.record[154], raw.record[155]]), 0);
 
+    // The shadow control above is deliberately local. For the actual source
+    // scheduler, obtain a Bee from an acquired/carry Morph holder: an invented
+    // holder cannot satisfy the production semantic identity check.
+    let (mut actual, holder, actual_bee) = public_day_morph_bee();
+    let actual_parent = actual.state.entity_index;
+    let actual_parent_handle = actual.source_arena().handle(actual_parent).unwrap();
+    let actual_bee_handle = actual.source_arena().handle(actual_bee).unwrap();
+    assert_eq!(actual.shared_spells().pickup(holder).unwrap().source_word_96(), actual_bee);
+    {
+        let live = &mut actual.session.state.live;
+        let impact_slot = crate::native_world::alliance_spell::construct_impact(&mut live.economy, &mut live.terrain).unwrap();
+        let effect = &mut live.economy.entities[usize::from(impact_slot)];
+        effect.source_id = actual_parent;
+        effect.record[30..32].copy_from_slice(&actual_parent.to_le_bytes());
+        effect.record[74] = 32;
+        effect.subspell_index = 40;
+        effect.record[154..156].copy_from_slice(&actual_bee.to_le_bytes());
+    }
+    actual.step_outer_turn(crate::PlayerCommand::default(), 0);
+    assert!(!actual.dispatch_events().iter().any(|event|
+        matches!(event, crate::native_world::Mc2DispatchEvent::Error { .. })),
+        "actual scheduled Alliance impact must not roll back: {:?}", actual.dispatch_events());
+    assert_eq!(actual.source_arena().creature_parent_binding(actual_bee_handle), Some(actual_parent_handle));
+    let actual_state = actual.source_arena().bee_creatures().iter()
+        .find(|row| row.active && row.source_entity_index == actual_bee).unwrap();
+    assert_eq!(actual_state.stage_var2, 14, "actual Morph Bee receives the scheduled Alliance impact");
+    assert_eq!(actual_state.stage_duration, 40);
+    assert!((1..=40).contains(&actual_state.stage_remaining));
+
     for parent_reused in [false, true] {
-        let mut control = session.clone();
-        let mut controlled_arena = arena.clone();
-        let mut controlled_terrain = terrain.clone();
+        let mut control = actual.clone();
+        let mut controlled_arena = control.source_arena().clone();
+        let mut controlled_terrain = control.canonical_terrain().clone();
         if parent_reused {
-            controlled_arena.economy.release_slot(parent_slot, None);
-            assert_eq!(controlled_arena.allocate_source_slot_with_terrain(&mut controlled_terrain), Some(parent_slot));
-            let mut replacement = crate::native_world::cave_features::new_event(parent_slot, 5, position);
+            controlled_arena.economy.release_slot(actual_parent, None);
+            assert_eq!(controlled_arena.allocate_source_slot_with_terrain(&mut controlled_terrain), Some(actual_parent));
+            let mut replacement = crate::native_world::cave_features::new_event(actual_parent, 5, position);
             replacement.class = 3;
             replacement.model = 0;
             replacement.record[67] = 3;
             replacement.set_life(1_000);
-            controlled_arena.entities[usize::from(parent_slot)] = replacement;
-            assert_ne!(controlled_arena.handle(parent_slot), Some(allied_parent));
+            controlled_arena.entities[usize::from(actual_parent)] = replacement;
+            assert_ne!(controlled_arena.handle(actual_parent), Some(actual_parent_handle));
         }
         *control.source_arena_mut() = controlled_arena;
         *control.canonical_terrain_mut() = controlled_terrain;
@@ -1122,59 +1197,21 @@ fn alliance_impact_syncs_only_the_exact_typed_bee_before_its_source_visit() {
                 "Bee Alliance source pass must execute without rollback: {:?}", control.dispatch_events());
         }
         let current = control.source_arena().bee_creatures().iter()
-            .find(|row| row.active && row.source_entity_index == bee_slot).unwrap();
+            .find(|row| row.active && row.source_entity_index == actual_bee).unwrap();
         assert_eq!(current.stage_var2, if parent_reused { 10 } else { 14 },
             "Alliance follows the original parent generation");
     }
 
-    *session.source_arena_mut() = arena;
-    *session.canonical_terrain_mut() = terrain;
-    session.step_outer_turn(crate::PlayerCommand::default(), 0);
-    let first_remaining;
-    {
-        let arena = session.source_arena();
-        let bee = arena
-            .bee_creatures()
-            .iter()
-            .find(|source| source.active && source.source_entity_index == bee_slot)
-            .expect("the Bee remains in its typed owner");
-        assert_eq!(
-            bee.action, 17,
-            "action18 consumes the cleared word96 target"
-        );
-        assert_eq!(bee.stage_var1, 0);
-        assert_eq!(bee.stage_var2, 14);
-        assert_eq!(bee.parent_entity_index, parent_slot);
-        assert_eq!(bee.stage_relation, 0);
-        assert!((1..=40).contains(&bee.stage_remaining));
-        assert_eq!(bee.stage_duration, 40);
-        first_remaining = bee.stage_remaining;
-        let raw = &arena.entities[usize::from(bee_slot)];
-        assert_eq!(raw.action, bee.action);
-        assert_eq!(raw.record[77], bee.stage_var2);
-        assert_eq!(
-            u16::from_le_bytes([raw.record[50], raw.record[51]]),
-            bee.stage_remaining as u16
-        );
-    }
-    session.step_outer_turn(crate::PlayerCommand::default(), 0);
-    let arena = session.source_arena();
-    let bee = arena
-        .bee_creatures()
-        .iter()
-        .find(|source| source.active && source.source_entity_index == bee_slot)
-        .expect("the allied Bee remains live through its countdown");
-    assert!(bee.stage_remaining < first_remaining);
-    assert_eq!(
-        u16::from_le_bytes([
-            arena.entities[usize::from(bee_slot)].record[50],
-            arena.entities[usize::from(bee_slot)].record[51],
-        ]),
-        bee.stage_remaining as u16
-    );
+    let first_remaining = actual.source_arena().bee_creatures().iter()
+        .find(|row| row.active && row.source_entity_index == actual_bee).unwrap().stage_remaining;
+    actual.step_outer_turn(crate::PlayerCommand::default(), 0);
+    assert!(!actual.dispatch_events().iter().any(|event|
+        matches!(event, crate::native_world::Mc2DispatchEvent::Error { .. })));
+    assert!(actual.source_arena().bee_creatures().iter()
+        .find(|row| row.active && row.source_entity_index == actual_bee).unwrap().stage_remaining < first_remaining);
 
-    let mut arena = session.source_arena().clone();
-    let mut terrain = session.canonical_terrain().clone();
+    let mut arena = actual.source_arena().clone();
+    let mut terrain = actual.canonical_terrain().clone();
     let wrong_source_id = parent_slot.wrapping_add(1);
     let rejected_center_slot = allocate_alliance_center(&mut arena, &mut terrain, position);
     let rejected_slot = allocate_typed_morph_shadow(
@@ -1194,20 +1231,15 @@ fn alliance_impact_syncs_only_the_exact_typed_bee_before_its_source_visit() {
         .find(|source| source.active && source.source_entity_index == rejected_slot)
         .expect("mismatched-source Bee exists")
         .target_entity_index = None;
-    let rejected_impact = run_alliance_impact(
-        &mut arena,
-        &mut terrain,
-        rejected_slot,
-        rejected_center_slot,
-        parent_slot,
-    );
-    assert_eq!(rejected_impact.affected_entities, vec![rejected_slot]);
+    let mut stale = mc2::alliance_projection(&arena, rejected_slot).unwrap();
+    stale.source_id = wrong_source_id;
+    stale.record[76] = 0;
+    stale.record[77] = 14;
+    stale.record[44..46].copy_from_slice(&parent_slot.to_le_bytes());
+    assert!(!mc2::apply_alliance_takeover(&mut arena, rejected_handle, &stale, Some(allied_parent)).unwrap(),
+        "a stale source identity cannot write the current typed Bee");
     assert_eq!(arena.creature_parent_binding(rejected_handle), Some(retained_parent),
         "a stale raw shadow cannot take over the typed Bee's parent");
-    *session.source_arena_mut() = arena;
-    *session.canonical_terrain_mut() = terrain;
-    session.step_outer_turn(crate::PlayerCommand::default(), 0);
-    let arena = session.source_arena();
     let rejected = arena
         .bee_creatures()
         .iter()
@@ -1218,11 +1250,8 @@ fn alliance_impact_syncs_only_the_exact_typed_bee_before_its_source_visit() {
         "a different source id cannot import Alliance state"
     );
     assert_eq!(rejected.parent_entity_index, parent_slot);
-    assert_eq!(
-        arena.entities[usize::from(rejected_slot)].record[77],
-        14,
-        "mismatched source rows are not written back either"
-    );
+    assert_eq!(arena.entities[usize::from(rejected_slot)].record[77], 12,
+        "the rejected stale write does not change the retained source shadow");
 }
 
 #[test]

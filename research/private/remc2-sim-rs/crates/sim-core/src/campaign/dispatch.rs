@@ -426,7 +426,7 @@ compiled_registry! {
         (VillagerFamily, 5, [106, 107, 108, 109, 110, 111]);
         (TraderFamily, 5, [112, 113, 114, 115, 116, 117, 118, 119]);
         (CastleAuxiliary, 5, [120, 121, 122, 123, 124, 125, 127]);
-        (FireflyFamily, 5, [153, 154, 155, 156, 157, 159]);
+        (FireflyFamily, 5, [152, 153, 154, 155, 156, 157, 159]);
         (Wyvern, 5, [128, 129, 130, 131, 132, 133, 135]);
         (Creature17, 5, [136, 137, 138, 139, 140, 141, 143]);
         (Creature18, 5, [144, 145, 146, 147, 148, 149, 151]);
@@ -835,6 +835,7 @@ mod tests {
                 "final-boss-family",
             ),
             (5, &[7][..], "dragon-family"),
+            (5, &[152][..], "level1-firefly-family"),
             (
                 5,
                 &[144, 145, 146, 147, 148, 149, 151][..],
@@ -964,7 +965,7 @@ mod tests {
             "level2-castle-auxiliary",
         );
         for (class, actions, handler) in [
-            (2_u16, &[21_u16][..], "ballistic-scenery"),
+            (2_u16, &[20_u16, 21][..], "ballistic-scenery"),
             (5, &[79][..], "level2-model9-family"),
             (10, &[68, 69][..], "terrain-strip-controller"),
             (10, &[87, 88, 89, 90, 91, 92, 93][..], "cave-features"),
@@ -1082,9 +1083,6 @@ mod tests {
         assert_eq!(registry["action_dispatch_sites"][0], "ApplyEvents");
         assert_eq!(registry["action_dispatch_sites"][1], "UpdateEntities");
         assert_eq!(registry["constructor_dispatch_site"], "Constructor");
-        // 950 macro-generated keys plus the pinned TypeSubtype 10/45 entry
-        // composed explicitly after the constructor table.
-        assert_eq!(CAMPAIGN_BEHAVIOR_REGISTRY.entries().len(), 951);
         validate_against_source(CAMPAIGN_BEHAVIOR_REGISTRY.entries(), &source_keys)
             .expect("compiled entries retain exact pinned sites and selector shapes");
 
@@ -1198,9 +1196,14 @@ mod tests {
             );
         }
         expected_handlers.extend(supplemental_handlers);
-        // Four newly joined families contribute 29 callbacks at both
-        // source action sites and four constructors; Dragon action7 adds2.
-        assert_eq!(expected_handlers.len(), 887 + 29 * 2 + 4 + 2);
+        // Match the independently enumerated receipt and supplemental source
+        // keys, including their sites, rather than a historical total which
+        // cannot distinguish a missing callback from an unexpected one.
+        assert_eq!(
+            compiled_keys,
+            expected_handlers.keys().cloned().collect(),
+            "compiled site keys match the complete source-backed expectation"
+        );
 
         for entry in CAMPAIGN_BEHAVIOR_REGISTRY.entries() {
             assert_eq!(

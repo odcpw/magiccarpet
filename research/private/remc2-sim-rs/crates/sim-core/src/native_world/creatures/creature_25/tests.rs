@@ -1093,6 +1093,269 @@ fn authored_cymmerian_alliance_impact_rebinds_parent_and_rejects_reuse() {
     assert_eq!(word(&arena.entities[usize::from(slot)], 44), 0);
 }
 
+/// Continue the existing public Army cast against a real Night rival. This
+/// remains separate from the baseline cast's expiry assertions.
+pub(crate) fn assert_night_army_cymmerian_lifetime(
+    campaign: &crate::campaign::CampaignSession,
+    player: u16,
+    holder: u16,
+) {
+    use crate::PlayerCommand;
+    use crate::campaign::source_arena::{CreatureRootOrigin, SourceEntityView};
+    use crate::native_world::Mc2DispatchEvent;
+    use std::collections::{BTreeMap, BTreeSet};
+
+    let mut attack = campaign.clone();
+    let current = attack.simulation();
+    let owner_id = current.entities()[usize::from(player)].source_id;
+    let rival = current
+        .entities()
+        .iter()
+        .find(|row| {
+            row.active
+                && row.class == 3
+                && row.model == 1
+                && row.life > 0
+                && row.source_id != owner_id
+        })
+        .expect("Night 7 owner data contains an opposing living rival");
+    let rival_slot = rival.index;
+    let position = Position {
+        x: rival.position.x.wrapping_add(1024),
+        y: rival.position.y,
+        z: rival.position.z.saturating_add(512),
+    };
+    attack
+        .simulation_mut()
+        .set_level2_entity_position(player, position)
+        .unwrap();
+    let parent_handle = attack.simulation().source_arena().handle(player).unwrap();
+    let mut pursuing = None;
+    for turn in 0..480 {
+        attack.step(
+            if turn == 0 {
+                PlayerCommand {
+                    opcode: 6,
+                    argument_1: 19,
+                    flags: 0x40,
+                    ..PlayerCommand::default()
+                }
+            } else {
+                PlayerCommand::default()
+            },
+            0,
+        );
+        let session = attack.simulation();
+        assert!(
+            !session
+                .dispatch_events()
+                .iter()
+                .any(|event| matches!(event, Mc2DispatchEvent::Error { .. })),
+            "Night Army pursuit dispatch failed: {:?}",
+            session.dispatch_events()
+        );
+        let arena = session.source_arena();
+        pursuing = arena.entities.iter().find_map(|row| {
+            if !row.active
+                || (row.class, row.model, row.action) != (5, 25, 202)
+                || u16::from_le_bytes([row.record[154], row.record[155]]) != rival_slot
+            {
+                return None;
+            }
+            let identity = arena.imported_creature_runtime_identity(row.index, &BTreeMap::new())?;
+            (identity.origin
+                == CreatureRootOrigin::SummonedSpell {
+                    holder_slot: holder,
+                }
+                && arena.creature_parent_binding(identity.handle) == Some(parent_handle))
+            .then_some(identity.handle)
+        });
+        if pursuing.is_some() {
+            break;
+        }
+    }
+    let parent = pursuing.expect("actual Army Cymmerian must pursue the real rival");
+    let phase = attack.simulation().source_arena().entities[usize::from(parent.source_slot)].phase;
+    crate::native_world::area_damage::contact(
+        attack.simulation_mut().source_arena_mut(),
+        None,
+        parent.source_slot,
+        u16::MAX,
+        player,
+    )
+    .unwrap();
+    attack.step(PlayerCommand::default(), 0);
+    let session = attack.simulation();
+    assert!(
+        !session
+            .dispatch_events()
+            .iter()
+            .any(|event| matches!(event, Mc2DispatchEvent::Error { .. })),
+        "Night Army damage dispatch failed: {:?}",
+        session.dispatch_events()
+    );
+    let Some(SourceEntityView::Imported(row)) = session.source_arena().resolve(parent) else {
+        panic!("damaged Cymmerian must retain its original source generation");
+    };
+    assert!(row.life < 0);
+    assert_eq!(row.action, 204, "the real hit selects the death callback");
+    assert_eq!(
+        row.phase,
+        phase.wrapping_add(1),
+        "the same-pass source tail runs after the hit"
+    );
+
+    let mut children = BTreeMap::new();
+    let mut parent_hidden = false;
+    let mut parent_reclaimed = false;
+    for _ in 0..96 {
+        attack.step(PlayerCommand::default(), 0);
+        let session = attack.simulation();
+        assert!(
+            !session
+                .dispatch_events()
+                .iter()
+                .any(|event| matches!(event, Mc2DispatchEvent::Error { .. })),
+            "Night Army split dispatch failed: {:?}",
+            session.dispatch_events()
+        );
+        let arena = session.source_arena();
+        if let Some(SourceEntityView::Imported(row)) = arena.resolve(parent) {
+            parent_hidden |= row.drawing_disabled();
+        } else {
+            parent_reclaimed |= parent_hidden;
+        }
+        for row in arena
+            .entities
+            .iter()
+            .filter(|row| row.active && row.class == 5 && row.model == 25)
+        {
+            let Some(identity) =
+                arena.imported_creature_runtime_identity(row.index, &BTreeMap::new())
+            else {
+                continue;
+            };
+            if identity.origin
+                == (CreatureRootOrigin::CreatureConversion {
+                    producer_slot: parent.source_slot,
+                })
+            {
+                children.insert(identity.handle.source_slot, identity.handle);
+            }
+        }
+        if children.len() == 3 && parent_reclaimed {
+            break;
+        }
+    }
+    assert_eq!(
+        children.len(),
+        3,
+        "real large death creates its three generation-bound children"
+    );
+    assert!(
+        parent_hidden && parent_reclaimed,
+        "parent hides before following-pass reclaim"
+    );
+
+    let mut landed = BTreeSet::new();
+    for _ in 0..160 {
+        attack.step(PlayerCommand::default(), 0);
+        let session = attack.simulation();
+        assert!(
+            !session
+                .dispatch_events()
+                .iter()
+                .any(|event| matches!(event, Mc2DispatchEvent::Error { .. })),
+            "Night Army child landing dispatch failed: {:?}",
+            session.dispatch_events()
+        );
+        for (&slot, child) in &children {
+            let Some(SourceEntityView::Imported(row)) = session.source_arena().resolve(*child)
+            else {
+                panic!("split child {slot} must survive to landing");
+            };
+            assert_eq!((row.class, row.model), (5, 25));
+            if row.record[74] >= 3 {
+                landed.insert(slot);
+            }
+        }
+        if landed.len() == children.len() {
+            break;
+        }
+    }
+    assert_eq!(
+        landed.len(),
+        children.len(),
+        "all three small children land and enter their acting state"
+    );
+    for child in children.values() {
+        crate::native_world::area_damage::contact(
+            attack.simulation_mut().source_arena_mut(),
+            None,
+            child.source_slot,
+            u16::MAX,
+            player,
+        )
+        .unwrap();
+    }
+    let mut hidden = BTreeSet::new();
+    let mut reclaimed = BTreeSet::new();
+    for _ in 0..160 {
+        attack.step(PlayerCommand::default(), 0);
+        let session = attack.simulation();
+        assert!(
+            !session
+                .dispatch_events()
+                .iter()
+                .any(|event| matches!(event, Mc2DispatchEvent::Error { .. })),
+            "Night Army child death dispatch failed: {:?}",
+            session.dispatch_events()
+        );
+        let arena = session.source_arena();
+        for (&slot, child) in &children {
+            match arena.resolve(*child) {
+                Some(SourceEntityView::Imported(row)) if row.drawing_disabled() => {
+                    hidden.insert(slot);
+                }
+                None if hidden.contains(&slot) => {
+                    reclaimed.insert(slot);
+                }
+                _ => {}
+            }
+        }
+        for row in arena
+            .entities
+            .iter()
+            .filter(|row| row.active && row.class == 5 && row.model == 25)
+        {
+            if let Some(identity) =
+                arena.imported_creature_runtime_identity(row.index, &BTreeMap::new())
+            {
+                assert!(
+                    !children.keys().any(|slot| identity.origin
+                        == (CreatureRootOrigin::CreatureConversion {
+                            producer_slot: *slot
+                        })),
+                    "small children must not split again"
+                );
+            }
+        }
+        if reclaimed.len() == children.len() {
+            break;
+        }
+    }
+    assert_eq!(
+        hidden.len(),
+        children.len(),
+        "all small children hide in their death pass"
+    );
+    assert_eq!(
+        reclaimed.len(),
+        children.len(),
+        "all small children reclaim on a later pass"
+    );
+}
+
 #[test]
 fn level_ten_buildings_release_switch_group_into_cymmerian_guard() {
     use crate::PlayerCommand;
@@ -1523,7 +1786,7 @@ fn ordinary_step_row_materializes_one_cymmerian_class9_model0_attack() {
 
 #[test]
 fn ordinary_split_publishes_generation_bound_cymmerian_children() {
-    let (mut arena, mut runtime, mut terrain, particles, _parent_slot, _owner_id, position) =
+    let (mut arena, mut runtime, mut terrain, particles, attacker_slot, _owner_id, position) =
         summoned_source_parts();
     let parent_slot = mc2::allocate_authored(
         &mut arena,
@@ -1537,7 +1800,31 @@ fn ordinary_split_publishes_generation_bound_cymmerian_children() {
     )
     .unwrap()
     .unwrap();
-    arena.entities[usize::from(parent_slot)].set_source_action(204);
+    // Deliver damage through the real source mailbox; the ordinary seek
+    // callback must select the death action before the split is visited.
+    assert_eq!(arena.entities[usize::from(parent_slot)].action, 201);
+    crate::native_world::area_damage::contact(
+        &mut arena,
+        None,
+        parent_slot,
+        u16::MAX,
+        attacker_slot,
+    )
+    .unwrap();
+    let families = family_with_cymmerian(parent_slot);
+    mc2::step_row(
+        &mut arena,
+        &mut runtime,
+        &mut terrain,
+        &particles,
+        parent_slot,
+        &[],
+        &families,
+        crate::native_world::source_target::Context::default(),
+    )
+    .unwrap();
+    assert!(arena.entities[usize::from(parent_slot)].life < 0);
+    assert_eq!(arena.entities[usize::from(parent_slot)].action, 204);
     let parent_id = arena.entities[usize::from(parent_slot)].source_id;
     let mut exhausted = arena.clone();
     let mut exhausted_runtime = runtime.clone();

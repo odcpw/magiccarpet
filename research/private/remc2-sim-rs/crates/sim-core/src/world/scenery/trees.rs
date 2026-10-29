@@ -3,7 +3,7 @@
 use crate::{
     FlightWorld, Position,
     campaign::source_arena::SourceArena,
-    native_world::{Level2AuthoredTreeSource, SessionTerrain, source_target},
+    native_world::{Level2AuthoredTreeSource, ParticleParameter, SessionTerrain, source_target},
 };
 
 /// Run AddTree02_00 against the source arena's frozen allocation cursor.
@@ -13,83 +13,121 @@ pub(crate) fn step(
     arena: &mut SourceArena,
     terrain: &mut SessionTerrain,
     context: source_target::Context<'_>,
+    particles: &[ParticleParameter],
     slot: u16,
 ) -> Result<bool, String> {
     let Some(tree) = arena.economy.authored_tree_mut(slot) else {
         return Ok(false);
     };
-    tree.control_flags |= 0x0002_0000;
-    let had_owner = tree.owner_entity_index != 0;
-    if had_owner {
-        tree.life = tree.life.wrapping_sub(tree.pending_damage);
-    }
+    let had_owner = match tree.action {
+        0 => {
+            tree.control_flags |= 0x0002_0000;
+            let has_owner = tree.owner_entity_index != 0;
+            if has_owner {
+                tree.life = tree.life.wrapping_sub(tree.pending_damage);
+            }
+            has_owner
+        }
+        1 => {
+            let life = tree.life.wrapping_sub(1);
+            if life < 60 {
+                let particle = match tree.particle_index {
+                    83 => Some(226),
+                    84 => Some(227),
+                    _ => None,
+                };
+                if let Some(index) = particle {
+                    let binding = particles
+                        .get(usize::from(index))
+                        .ok_or_else(|| format!("Tree particle {index} is not bound"))?;
+                    tree.particle_index = index;
+                    tree.yaw = (binding.rotation_speed / 2) as i16;
+                    tree.fov = tree.yaw;
+                    tree.pitch = (binding.speed / 2) as i16;
+                    tree.roll = tree.pitch;
+                }
+                tree.action = 2;
+            }
+            tree.life = life;
+            false
+        }
+        2 => false,
+        action => {
+            return Err(format!(
+                "Tree source slot {slot} has unsupported action {action}"
+            ));
+        }
+    };
     let lethal = had_owner && tree.life < 0;
     let position = tree.position;
 
-    if lethal && let Some(sphere_slot) = arena.allocate_source_slot_with_terrain(terrain) {
+    if lethal && let Some(child_slot) = arena.allocate_source_slot_with_terrain(terrain) {
         // The source passes &tree.position. NewEvent clears that address
         // before the constructor reads it when the selected address aliases.
-        let position = if sphere_slot == slot {
+        let position = if child_slot == slot {
             Position { x: 0, y: 0, z: 0 }
         } else {
             position
         };
-        if let Some(sphere) = arena
+        if let Some(child) = arena
             .economy
-            .initialize_authored_model39(sphere_slot, slot, position)
+            .initialize_authored_model6(child_slot, slot, position, terrain)
         {
             crate::world::effects::sync_position(
                 arena,
                 terrain,
-                sphere_slot,
-                sphere.position,
+                child_slot,
+                child.position,
                 true,
                 false,
             )?;
-            if sphere_slot == slot {
+            crate::world::effects::lighting::admit_source(
+                arena,
+                terrain,
+                child_slot,
+                child.position,
+                crate::world::effects::lighting::SourceLight::GroundFire,
+            );
+            if child_slot == slot {
                 let owner_id = arena.entities[0].source_id;
-                let sphere = arena
+                let child = arena
                     .economy
-                    .spheres_mut()
-                    .iter_mut()
-                    .find(|sphere| sphere.active && sphere.source_entity_index == slot)
-                    .ok_or("Tree replacement lost its current sphere")?;
-                sphere.id = u32::from(owner_id);
-                sphere.vertical_velocity = ((i32::from(sphere.collision_fov) * 3) >> 2) as i16;
-                sphere.position.z = sphere.position.z.saturating_sub(128).max(0);
-                sphere.entity_rng = sphere.entity_rng.wrapping_mul(9_377).wrapping_add(9_439);
-                sphere.life = i32::from(sphere.entity_rng % 60) + 130;
-                sphere.control_flags = (sphere.control_flags & !0x0002_0008) | 0x0002_0000;
-                sphere.action = 1;
-                let rng = sphere.entity_rng;
+                    .authored_model6_mut(slot)
+                    .ok_or("Tree replacement lost its current model-6 child")?;
+                child.entity_id = owner_id;
+                child.height_offset = ((i32::from(child.shift_rot_y) * 3) >> 2) as i16;
+                child.position.z = child.position.z.saturating_sub(128).max(0);
+                child.entity_rng = child.entity_rng.wrapping_mul(9_377).wrapping_add(9_439);
+                child.life = (child.entity_rng % 60 + 130) as i16;
+                child.control_flags = (child.control_flags & !0x0002_0008) | 0x0002_0000;
+                child.action = 1;
+                let rng = child.entity_rng;
                 arena.economy.set_source_rng(slot, rng);
             } else {
                 let tree = arena
                     .economy
                     .authored_tree_mut(slot)
-                    .ok_or("Tree disappeared while allocating its sphere")?;
+                    .ok_or("Tree disappeared while allocating its child")?;
                 let owner = tree.owner_entity_index;
                 let fov = tree.fov;
                 let owner_id = source_target::read(arena, context, owner)?
                     .ok_or("Tree damage owner is outside the source arena")?
                     .source_id;
-                let sphere = arena
+                let child = arena
                     .economy
-                    .spheres_mut()
-                    .iter_mut()
-                    .find(|sphere| sphere.active && sphere.source_entity_index == sphere_slot)
-                    .ok_or("Tree sphere constructor lost its carrier")?;
-                sphere.id = u32::from(owner_id);
-                sphere.vertical_velocity = ((i32::from(fov) * 3) >> 2) as i16;
-                sphere.position.z = sphere.position.z.saturating_sub(128).max(0);
-                let sphere_z = sphere.position.z;
+                    .authored_model6_mut(child_slot)
+                    .ok_or("Tree model-6 constructor lost its carrier")?;
+                child.entity_id = owner_id;
+                child.height_offset = (i32::from(fov) * 3 / 4) as i16;
+                child.position.z = child.position.z.saturating_sub(128).max(0);
+                let child_z = child.position.z;
                 let tree = arena
                     .economy
                     .authored_tree_mut(slot)
-                    .ok_or("Tree disappeared before sphere tail")?;
-                tree.last_sphere_source_entity_index = sphere_slot;
-                tree.last_sphere_word_0x2c = ((i32::from(fov) * 3) >> 2) as i16;
-                tree.last_sphere_position_z = sphere_z;
+                    .ok_or("Tree disappeared before child tail")?;
+                tree.last_sphere_source_entity_index = child_slot;
+                tree.last_sphere_word_0x2c = (i32::from(fov) * 3 / 4) as i16;
+                tree.last_sphere_position_z = child_z;
                 tree.entity_rng = tree.entity_rng.wrapping_mul(9_377).wrapping_add(9_439);
                 tree.life = i32::from(tree.entity_rng % 60) + 130;
                 tree.control_flags = (tree.control_flags & !0x0002_0008) | 0x0002_0000;
@@ -97,18 +135,14 @@ pub(crate) fn step(
                 let life = tree.life;
                 arena
                     .economy
-                    .spheres_mut()
-                    .iter_mut()
-                    .find(|sphere| sphere.active && sphere.source_entity_index == sphere_slot)
-                    .ok_or("Tree sphere disappeared before life write")?
-                    .life = life;
+                    .authored_model6_mut(child_slot)
+                    .ok_or("Tree child disappeared before life write")?
+                    .life = life as i16;
             }
-            let position = if sphere_slot == slot {
+            let position = if child_slot == slot {
                 arena
                     .economy
-                    .spheres_mut()
-                    .iter_mut()
-                    .find(|sphere| sphere.active && sphere.source_entity_index == slot)
+                    .authored_model6_mut(slot)
                     .ok_or("Tree replacement disappeared before relink")?
                     .position
             } else {
@@ -128,16 +162,9 @@ pub(crate) fn step(
             tree.owner_entity_index = 0;
         }
         tree.position.z = terrain.ground_height(tree.position);
-    } else if let Some(sphere) = arena
-        .economy
-        .spheres_mut()
-        .iter_mut()
-        .find(|sphere| sphere.active && sphere.source_entity_index == slot)
-    {
-        if had_owner {
-            sphere.ordinary_damage_owner = 0;
-        }
-        sphere.position.z = terrain.ground_height(sphere.position);
+    } else if let Some(child) = arena.economy.authored_model6_mut(slot) {
+        // A self-aliased NewEvent cleared the old damage mailbox.
+        child.position.z = terrain.ground_height(child.position);
     } else {
         return Err("Tree callback lost its current source occupant".to_owned());
     }
@@ -149,10 +176,8 @@ pub(crate) fn step(
         .or_else(|| {
             arena
                 .economy
-                .spheres_mut()
-                .iter_mut()
-                .find(|sphere| sphere.active && sphere.source_entity_index == slot)
-                .map(|sphere| sphere.position)
+                .authored_model6_mut(slot)
+                .map(|child| child.position)
         })
         .ok_or("Tree callback has no current position")?;
     if terrain.material_mask(position) == crate::WATER_AMBIENCE_MASK {
@@ -182,10 +207,8 @@ pub(crate) fn step(
                 } else {
                     arena
                         .economy
-                        .spheres_mut()
-                        .iter_mut()
-                        .find(|sphere| sphere.active && sphere.source_entity_index == slot)
-                        .map(|sphere| sphere.id as u16)
+                        .authored_model6_mut(slot)
+                        .map(|child| child.entity_id)
                         .ok_or("Tree water source disappeared")?
                 };
                 arena
@@ -201,14 +224,8 @@ pub(crate) fn step(
         } else if let Some(splash) = arena.economy.authored_model5_water_splash_mut(slot) {
             splash.control_flags |= crate::level1_mission::SOURCE_DISABLED_FLAG;
             splash.drawing_enabled = false;
-        } else if let Some(sphere) = arena
-            .economy
-            .spheres_mut()
-            .iter_mut()
-            .find(|sphere| sphere.active && sphere.source_entity_index == slot)
-        {
-            sphere.control_flags |= crate::level1_mission::SOURCE_DISABLED_FLAG;
-            sphere.pending_delete = true;
+        } else if let Some(child) = arena.economy.authored_model6_mut(slot) {
+            child.control_flags |= crate::level1_mission::SOURCE_DISABLED_FLAG;
         } else {
             return Err("Tree water tail lost its current occupant".to_owned());
         }
@@ -220,13 +237,8 @@ pub(crate) fn step(
         arena.economy.set_source_rng(slot, rng);
     } else if let Some(splash) = arena.economy.authored_model5_water_splash_mut(slot) {
         splash.phase = splash.phase.wrapping_add(1);
-    } else if let Some(sphere) = arena
-        .economy
-        .spheres_mut()
-        .iter_mut()
-        .find(|sphere| sphere.active && sphere.source_entity_index == slot)
-    {
-        sphere.phase = sphere.phase.wrapping_add(1);
+    } else if let Some(child) = arena.economy.authored_model6_mut(slot) {
+        child.phase = child.phase.wrapping_add(1);
     } else {
         return Err("Tree epilogue lost its current occupant".to_owned());
     }

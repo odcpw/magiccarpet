@@ -7376,6 +7376,7 @@ fn parse_type_str_164_auxiliary(record: &[u8]) -> Result<TypeStr164Auxiliary> {
         dword_0x16D_365: read_i32(carrier, 17, "Type_str_164 dword_0x16D_365")?,
         word_0x1A2_418: read_i16(carrier, 21, "Type_str_164 word_0x1A2_418")?,
         array_0x1FC_508,
+        padding_words_0x23c: [None; 3],
         word_0x242_578: read_i16(carrier, 87, "Type_str_164 word_0x242_578")?,
     })
 }

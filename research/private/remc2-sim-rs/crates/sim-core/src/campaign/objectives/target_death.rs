@@ -5,7 +5,10 @@
 //! carriers; this module only translates the authored target and evaluates the
 //! narrow observation consumed by the objective service.
 
-use crate::native_world::{EntitySnapshot, RuntimeRelation, RuntimeStage};
+use crate::{
+    campaign::source_arena::SourceArena,
+    native_world::{RuntimeRelation, RuntimeStage, source_target},
+};
 
 /// Read the entity row attached by the source construction/conversion pass.
 /// Dead rows remain readable until source reclaim; an unbound or wrongly
@@ -13,24 +16,39 @@ use crate::native_world::{EntitySnapshot, RuntimeRelation, RuntimeStage};
 pub(crate) fn achieved_in_arena(
     form: Form,
     stage: &RuntimeStage,
-    entities: &[EntitySnapshot],
-) -> bool {
+    arena: &SourceArena,
+    context: source_target::Context<'_>,
+) -> Result<bool, String> {
     if Form::from_source_stage_type(stage.kind) != Some(form) || stage.flags & 1 == 0 {
-        return false;
+        return Ok(false);
     }
     let RuntimeRelation::LiveEntity(slot) = stage.relation else {
-        return false;
+        return Ok(false);
     };
-    achieved(
+    let Some(target) = source_target::read(arena, context, slot)? else {
+        return Ok(false);
+    };
+    if target.life > -1 {
+        return Ok(false);
+    }
+    // Type 1 never reads the font byte. Type 2 reads it lazily from the
+    // current owner after death, as in sub_58F00, not from a retained mirror.
+    let font_type_index = match form {
+        Form::TargetDeath => 0,
+        Form::TargetDeathWithFontTypeZero => {
+            let Some(font) = source_target::font_type_index(arena, context, slot)? else {
+                return Ok(false);
+            };
+            font
+        }
+    };
+    Ok(achieved(
         form,
-        entities
-            .get(usize::from(slot))
-            .filter(|entity| entity.index == slot)
-            .map(|entity| TargetObservation {
-                life: entity.life,
-                font_type_index: entity.font_type_index,
-            }),
-    )
+        Some(TargetObservation {
+            life: target.life,
+            font_type_index,
+        }),
+    ))
 }
 
 /// The two remc2 target-death objective forms.

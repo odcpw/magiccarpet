@@ -108,10 +108,16 @@ fn mission_four_projectile_collision_produces_existing_web_status_and_contact() 
         .unwrap();
     aim_at_player(&mut arena, &mut terrain, slot, player);
     let phase = arena.entities[usize::from(slot)].phase;
-    let impact = step(&mut arena, &mut terrain, &particles, slot, Default::default())
-        .unwrap()
-        .impact_slot
-        .unwrap();
+    let impact = step(
+        &mut arena,
+        &mut terrain,
+        &particles,
+        slot,
+        Default::default(),
+    )
+    .unwrap()
+    .impact_slot
+    .unwrap();
     assert!(arena.entities[usize::from(slot)].drawing_disabled());
     assert_eq!(
         arena.entities[usize::from(slot)].phase,
@@ -177,9 +183,15 @@ fn exhausted_impact_allocation_retains_projectile_for_next_visit() {
     arena.economy.exhaust_new_event_capacity_for_test();
     arena.rebuild_source_free_arena();
     assert_eq!(
-        step(&mut arena, &mut terrain, &particles, slot, Default::default())
-            .unwrap()
-            .impact_slot,
+        step(
+            &mut arena,
+            &mut terrain,
+            &particles,
+            slot,
+            Default::default()
+        )
+        .unwrap()
+        .impact_slot,
         None
     );
     assert!(!arena.entities[usize::from(slot)].drawing_disabled());
@@ -249,7 +261,14 @@ fn source_water_contact_hides_even_when_splash_allocation_fails() {
             arena.economy.exhaust_new_event_capacity_for_test();
             arena.rebuild_source_free_arena();
         }
-        let outcome = step(&mut arena, &mut terrain, &particles, slot, Default::default()).unwrap();
+        let outcome = step(
+            &mut arena,
+            &mut terrain,
+            &particles,
+            slot,
+            Default::default(),
+        )
+        .unwrap();
         assert_eq!(outcome.impact_slot, None);
         assert!(arena.entities[usize::from(slot)].drawing_disabled());
         assert_eq!(arena.entities[usize::from(slot)].position.z, ground);
@@ -413,4 +432,130 @@ fn mission_four_ordinary_scheduler_carries_web_to_actual_player_damage_and_recla
     let evidence = session.step_outer_turn(crate::PlayerCommand::default(), 0);
     assert!(!evidence.is_empty(), "{:?}", session.dispatch_events());
     assert!(!session.session.state.live.economy.entities[usize::from(impact)].active);
+
+    // Exercise the same consumer from the ordinary authored group and the
+    // numeric Spider callback. Position and cadence are controlled, but the
+    // group constructor, attack, projectile and player visits are real.
+    for protected in [false, true] {
+        let mut scheduled = crate::campaign::CampaignSession::open(
+            root.join("level4"),
+            crate::campaign::spec::CampaignSelection::ordinary(4).unwrap(),
+        )
+        .unwrap()
+        .simulation()
+        .clone();
+        scheduled
+            .activate_authored_group_prerequisite_for_test(6)
+            .expect("actual Mission4 group6 constructs its actors");
+        let spider = scheduled
+            .creature_runtime_census()
+            .roots_of_kind(crate::level_definition::CreatureKind::Spider)
+            .find(|identity| {
+                identity.origin
+                    == crate::campaign::source_arena::CreatureRootOrigin::AuthoredRecord {
+                        authored_record: 137,
+                    }
+            })
+            .expect("group6 constructs the generation-bound record137 Spider")
+            .handle
+            .source_slot;
+        let (player, life) = {
+            let live = &mut scheduled.session.state.live;
+            let player = live.core.state.entity_index;
+            let body = &live.economy.entities[usize::from(player)];
+            let mut position = centre(body.position, body.model, body.array_yaw());
+            move_entity(&mut position, 0, 0, -RULES.web_speed);
+            position.z = position.z.wrapping_sub(RULES.web_lift);
+            let row = &mut live.economy.entities[usize::from(spider)];
+            row.set_position(position);
+            row.set_source_action(162);
+            row.set_phase(35);
+            row.set_control_flags(row.control_flags | 0x800);
+            put(row, 154, player);
+            crate::world::effects::sync_position(
+                &mut live.economy,
+                &mut live.terrain,
+                spider,
+                position,
+                true,
+                false,
+            )
+            .unwrap();
+            live.player_protection_ticks = if protected { 100 } else { 0 };
+            (player, live.player_life)
+        };
+        scheduled.step_outer_turn(crate::PlayerCommand::default(), 0);
+        assert!(
+            !scheduled
+                .dispatch_events()
+                .iter()
+                .any(|event| matches!(event, crate::native_world::Mc2DispatchEvent::Error { .. })),
+            "scheduled Spider attack must not roll back: {:?}",
+            scheduled.dispatch_events()
+        );
+        let mut projectile = None;
+        let mut impact = None;
+        let mut immobilized = false;
+        for pass in 0..13 {
+            let live = &scheduled.session.state.live;
+            for row in live.economy.entities.iter().filter(|row| row.active) {
+                if (row.class, row.model, row.action) == (9, 21, 22) && row.source_id == spider {
+                    projectile = Some((row.index, live.economy.economy.slot_generation(row.index)));
+                }
+                if (row.class, row.model, row.action) == (10, 66, 71)
+                    && row.source_id == spider
+                    && word(row, 154) == player
+                {
+                    impact = Some((row.index, live.economy.economy.slot_generation(row.index)));
+                }
+            }
+            immobilized |= live.core.state.immobilize_counter != 0;
+            if pass == 0 {
+                scheduled.session.state.live.economy.entities[usize::from(spider)]
+                    .set_source_action(160);
+            }
+            scheduled.step_outer_turn(crate::PlayerCommand::default(), 0);
+            assert!(
+                !scheduled.dispatch_events().iter().any(|event| matches!(
+                    event,
+                    crate::native_world::Mc2DispatchEvent::Error { .. }
+                )),
+                "scheduled web lifecycle must not roll back: {:?}",
+                scheduled.dispatch_events()
+            );
+        }
+        assert!(
+            immobilized,
+            "scheduled record137 attack reaches actual player immobilization"
+        );
+        assert_eq!(
+            scheduled.session.state.live.player_life,
+            life - if protected { 0 } else { 780 }
+        );
+        assert_eq!(
+            (
+                scheduled.session.state.live.core.state.immobilize_counter,
+                scheduled
+                    .session
+                    .state
+                    .live
+                    .core
+                    .state
+                    .immobilize_subcounter
+            ),
+            (0, 0),
+            "real movement upkeep expires the web"
+        );
+        let live = &scheduled.session.state.live;
+        for (slot, generation) in [
+            projectile.expect("scheduled Spider produced projectile9/21"),
+            impact.expect("guided collision produced status10/66"),
+        ] {
+            assert!(
+                !live.economy.entities[usize::from(slot)].active
+                    || live.economy.economy.slot_generation(slot) != generation,
+                "the source row is reclaimed or its address was reused"
+            );
+        }
+    }
 }

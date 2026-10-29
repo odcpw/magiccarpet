@@ -1214,5 +1214,46 @@ mod tests {
                 );
             }
         }
+        // Castle callbacks address the actual owner's retained holder, not
+        // the first family-2 row in the shared spell projection.
+        let mut session = status_base.clone();
+        let live = &mut session.session.state.live;
+        let owners = live.core.players.iter().filter(|player| player.is_ai)
+            .filter(|player| player.enabled_spell_holders[2] != 0)
+            .take(2).map(|player| (player.entity_index, player.enabled_spell_holders[2]))
+            .collect::<Vec<_>>();
+        assert_eq!(owners.len(), 2);
+        for &(_, slot) in &owners {
+            let mut holder = live.shared_spells.pickup(slot).unwrap().clone();
+            holder.active_value = 7;
+            holder.record[50..52].copy_from_slice(&7_i16.to_le_bytes());
+            live.shared_spells.sync_pickup_from_authority(&holder);
+            live.economy.entities[usize::from(slot)] = holder;
+        }
+        let (owner, slot) = owners[0];
+        let other_slot = owners[1].1;
+        let expected_busy = live.shared_spells.pickup(slot).unwrap()
+            .activation_value.wrapping_sub(1).cast_signed();
+        assert_eq!(live.shared_spells.apply_castle_holder_source_update(
+            &mut live.economy, &live.core.players, &live.nyphur_dispatcher,
+            None, owner, true,
+        ).unwrap(), Some(slot));
+        assert_eq!(live.shared_spells.pickup(slot).unwrap().active_value, expected_busy);
+        assert_eq!(live.economy.entities[usize::from(slot)].active_value, expected_busy);
+        assert_eq!(live.shared_spells.pickup(other_slot).unwrap().active_value, 7);
+        assert_eq!(live.shared_spells.apply_castle_holder_source_update(
+            &mut live.economy, &live.core.players, &live.nyphur_dispatcher,
+            None, owner, false,
+        ).unwrap(), Some(slot));
+        assert_eq!(live.shared_spells.pickup(slot).unwrap().active_value, 0);
+        assert_eq!(live.economy.entities[usize::from(slot)].active_value, 0);
+        let player = live.core.players.iter_mut().find(|player| player.entity_index == owner).unwrap();
+        assert!(player.set_enabled_spell_holder_index(2, other_slot));
+        assert_eq!(live.shared_spells.apply_castle_holder_source_update(
+            &mut live.economy, &live.core.players, &live.nyphur_dispatcher,
+            None, owner, false,
+        ).unwrap(), None, "another owner's holder cannot satisfy a stale relation");
+        assert_eq!(live.shared_spells.pickup(other_slot).unwrap().active_value, 7);
+        assert_eq!(live.economy.entities[usize::from(other_slot)].active_value, 7);
     }
 }

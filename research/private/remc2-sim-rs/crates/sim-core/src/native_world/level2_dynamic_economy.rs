@@ -5154,14 +5154,30 @@ impl Level2EconomyState {
             .map(|projectile| projectile.holder_entity_index)
     }
 
-    pub fn take_castle_upgrade_holder_clear_pending(&mut self) -> bool {
-        let local_castle_slot = self.player_castle_entity_index();
-        let pending = self.castle_at(local_castle_slot)
-            .is_some_and(|castle| castle.upgrade_holder_clear_pending);
-        if let Some(castle) = self.castle_at_mut(local_castle_slot) {
-            castle.upgrade_holder_clear_pending = false;
+    pub(super) fn castle_holder_source_visit(&self, slot: u16) -> Option<(u16, bool)> {
+        let castle = self.castle_at(slot)?;
+        let busy = match (castle.action, castle.build_state) {
+            (5, 2) => false,
+            (5, 3 | 5) => true,
+            (4, _) if castle.timer > 1 => true,
+            _ => return None,
+        };
+        Some((castle.source_id_entity_index, busy))
+    }
+
+    pub(super) fn take_castle_upgrade_holder_clear_owners(&mut self) -> Vec<u16> {
+        let pending = self.live_castles()
+            .filter(|castle| castle.upgrade_holder_clear_pending)
+            .map(|castle| (castle.source_entity_index, castle.source_id_entity_index))
+            .collect::<Vec<_>>();
+        let mut owners = Vec::with_capacity(pending.len());
+        for (slot, owner) in pending {
+            if let Some(castle) = self.castle_at_mut(slot) {
+                castle.upgrade_holder_clear_pending = false;
+                owners.push(owner);
+            }
         }
-        pending
+        owners
     }
 
     /// Bind one preserved DATA_BUILD00DATTAB record for later
@@ -6792,84 +6808,53 @@ impl Level2EconomyState {
                 self.advance_castle_phase(castle_slot);
                 true
             }
-            4 if snapshot.source_word_80 == snapshot.source_id_entity_index
-                && snapshot.source_word_7c == 10 =>
-            {
-                let castle = self.castle_entry_mut(castle_slot).expect("Castle remains installed");
-                castle.source_word_80 = 0;
-                castle.source_word_7c = 0;
-                castle.control_flags |= 0x40;
-                castle.source_word_2e = 0;
-                castle.action = 5;
-                castle.build_state = 0;
-                // The 10/43 hit is consumed by this action-4 follow-through;
-                // only after the mailbox match does source 5F890 release the
-                // shared family-2 holder.
-                castle.upgrade_holder_clear_pending = true;
-                self.advance_castle_phase(castle_slot);
-                true
-            }
             4 if snapshot.timer > 0 => {
                 let castle = self.castle_entry_mut(castle_slot).expect("Castle remains installed");
                 if castle.timer == 1 {
-                    castle.timer = 0;
-                    if castle.control_flags & 0x10 == 0 {
+                    // EndOfCastleProjectile tests bit 0x10 of control byte 2;
+                    // while set it holds the timer at one without grounding.
+                    if castle.control_flags & 0x0010_0000 == 0 {
+                        castle.timer = 0;
                         castle.action = 5;
                         castle.build_state = 3;
                     }
                 } else {
                     castle.timer = castle.timer.wrapping_sub(1);
+                    castle.position.z = terrain.ground_height(castle.position);
                 }
-                castle.position.z = terrain.ground_height(castle.position);
-                self.advance_castle_phase(castle_slot);
-                true
-            }
-            4 if snapshot.life < 0 => {
-                self.castle_entry_mut(castle_slot)
-                    .expect("Castle remains installed")
-                    .action = 6;
-                self.advance_castle_phase(castle_slot);
-                true
-            }
-            4 if snapshot.control_flags & 0x40 != 0 => {
-                let castle = self.castle_entry_mut(castle_slot).expect("Castle remains installed");
-                castle.control_flags &= !0x40;
-                castle.build_state = 0;
-                castle.action = 5;
                 self.advance_castle_phase(castle_slot);
                 true
             }
             4 => {
                 let source_phase = snapshot.phase;
-                if snapshot.pending_attacker_entity_index != 0 {
+                if snapshot.life >= 0 && snapshot.pending_attacker_entity_index != 0 {
                     let _ = self.resolve_damage(castle_slot);
-                    if self.castle_entry(castle_slot).is_some_and(|castle| castle.life < 0) {
-                        self.castle_entry_mut(castle_slot)
-                            .expect("Castle remains installed")
-                            .action = 6;
-                        self.advance_castle_phase(castle_slot);
-                        return true;
+                }
+                let castle = self.castle_entry_mut(castle_slot).expect("Castle remains installed");
+                if castle.life < 0 {
+                    castle.action = 6;
+                } else {
+                    // sub_609E0 consumes word80 independently of word7c,
+                    // after damage, and leaves word7c intact.
+                    if castle.source_word_80 == castle.source_id_entity_index {
+                        castle.source_word_80 = 0;
+                        if castle.level < 7 {
+                            castle.control_flags |= 0x40;
+                            castle.upgrade_holder_clear_pending = true;
+                        }
                     }
-                    if self
-                        .castle_entry(castle_slot)
-                        .is_some_and(|castle| castle.control_flags & 0x40 != 0)
-                    {
-                        let castle = self
-                            .castle_entry_mut(castle_slot)
-                            .expect("Castle remains installed");
+                    if castle.control_flags & 0x40 != 0 {
                         castle.action = 5;
                         castle.build_state = 0;
-                        castle.position.z = terrain.ground_height(castle.position);
-                        self.advance_castle_phase(castle_slot);
-                        return true;
+                        castle.source_word_2e = 0;
                     }
                 }
+                // The action transition does not skip the current callback's
+                // grounding or even-phase economy maintenance.
+                castle.position.z = terrain.ground_height(castle.position);
                 if source_phase & 1 != 0 {
                     self.advance_castle_phase(castle_slot);
                     return true;
-                }
-                if let Some(castle) = self.castle_entry_mut(castle_slot) {
-                    castle.position.z = terrain.ground_height(castle.position);
                 }
                 self.release_castle_excess_mana(castle_slot, terrain, reset_free_slots);
                 self.maintain_castle_defenders(castle_slot, terrain);
@@ -7296,12 +7281,8 @@ impl Level2EconomyState {
             castle.killer_entity_index = attacker;
         } else {
             castle.pending_damage = 0;
-            // sub_609E0 clears the damage mailbox, marks the owner's linked
-            // player record, and requests state-0 reconstruction when the
-            // attacker mailbox points back at this Castle root.
-            if attacker == castle.source_id_entity_index && castle.level < 7 {
-                castle.control_flags |= 0x40;
-            }
+            // sub_609E0 clears nonlethal damage independently of the
+            // separate word80 upgrade mailbox.
         }
         if !lethal && castle.owner_entity_index == local_owner {
             self.player_castle_aux_flags = 4;

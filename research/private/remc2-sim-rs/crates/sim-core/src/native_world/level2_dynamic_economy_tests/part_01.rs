@@ -70,10 +70,27 @@ fn castle_mana_credit_uses_source_player_relation_and_action4_timing() {
         let castle = economy.castle_at_mut(first).unwrap();
         castle.action = 4;
         castle.timer = 1;
-        castle.control_flags |= 0x10;
+        castle.control_flags |= 0x0010_0000;
+        castle.position.z = 12345;
+        castle.source_word_80 = owners[0];
+        castle.source_word_7c = 10;
     }
     assert!(session.economy_mut().step_castle_action(first));
-    assert_eq!(session.economy().castle_at(first).unwrap().player_entity_index, 0);
+    let held = session.economy().castle_at(first).unwrap();
+    assert_eq!((held.action, held.timer, held.position.z), (4, 1, 12345));
+    assert_eq!((held.source_word_80, held.source_word_7c), (owners[0], 10));
+    assert_eq!(held.player_entity_index, 0);
+    {
+        let mut economy = session.economy_mut();
+        let castle = economy.castle_at_mut(first).unwrap();
+        castle.control_flags &= !0x0010_0000;
+    }
+    assert!(session.economy_mut().step_castle_action(first));
+    let released = session.economy().castle_at(first).unwrap();
+    assert_eq!((released.action, released.timer, released.build_state, released.position.z), (5, 0, 3, 12345));
+    assert_eq!((released.source_word_80, released.source_word_7c), (owners[0], 10));
+    // A later ordinary action-4 visit performs the source mana relation write.
+    session.economy_mut().castle_at_mut(first).unwrap().action = 4;
     assert!(session.economy_mut().step_castle_action(first));
     assert_eq!(session.economy().castle_at(first).unwrap().player_entity_index, owners[0]);
     session.economy_mut().refresh_owner_mana_rows();
@@ -88,11 +105,14 @@ fn castle_mana_credit_uses_source_player_relation_and_action4_timing() {
         castle.life = -1;
         castle.action = 4;
         castle.timer = 0;
+        castle.source_word_80 = owners[1];
+        castle.source_word_7c = 10;
     }
     assert!(session.economy_mut().step_castle_action(second));
     let lethal = session.economy().castle_at(second).unwrap();
     assert_eq!(lethal.action, 6);
     assert_eq!(lethal.player_entity_index, owners[1], "lethal action-4 exit still writes the source relation");
+    assert_eq!((lethal.source_word_80, lethal.source_word_7c), (owners[1], 10), "lethal damage precedes upgrade mailbox consumption");
 }
 
 #[test]
@@ -3360,8 +3380,8 @@ fn level_two_economy_projection_tracks_source_order_failure_rng_and_reset() {
     assert!(absorbed_sphere.pending_delete);
     assert_ne!(absorbed_sphere.control_flags & ENTITY_DRAW_DISABLED_BIT, 0);
     // Source EndOfCastleProjectile calls sub_609E0 before the stage
-    // maintenance chain. A non-lethal hit from the root's source ID sets
-    // the player byte-195 marker and requests state-0 construction.
+    // maintenance chain. Non-lethal damage sets byte-195, while the
+    // separate word80 upgrade mailbox requests state-0 construction.
     let mut damage_session = inspection
         .level2_reset_session()
         .expect("Castle damage session");
@@ -3369,6 +3389,16 @@ fn level_two_economy_projection_tracks_source_order_failure_rng_and_reset() {
         .economy_mut()
         .build_castle(Position::default(), 111)
         .expect("damage Castle");
+    {
+        let mut economy = damage_session.economy_mut();
+        let castle = economy.castle_at_mut(damage_slot).unwrap();
+        castle.source_word_80 = 111;
+        castle.source_word_7c = 10;
+        castle.phase = 0;
+    }
+    let sphere = damage_session.economy_mut()
+        .spawn_mana_sphere_from_death(51, Position::default(), 0, 0x7777, 100, 111)
+        .expect("same-pass Castle sphere");
     assert!(
         damage_session
             .economy_mut()
@@ -3382,6 +3412,9 @@ fn level_two_economy_projection_tracks_source_order_failure_rng_and_reset() {
     );
     assert_eq!(damage_session.economy().player_castle_aux_flags(), 4);
     assert_ne!(damage_transition.control_flags & 0x40, 0);
+    assert_eq!((damage_transition.source_word_80, damage_transition.source_word_7c), (0, 10));
+    assert_eq!(damage_transition.mana, 100, "upgrade still runs the source even-phase collection tail");
+    assert!(damage_session.economy().spheres().iter().any(|row| row.id == sphere && row.pending_delete));
 
     // Source sub_5FD00 releases only overflow above stage capacity. The
     // anchor is deliberately separated from the root to prove the later

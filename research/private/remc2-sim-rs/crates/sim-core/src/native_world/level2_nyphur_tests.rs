@@ -217,6 +217,16 @@ fn ordinary_mission23_dying_rival_tether_uses_its_own_target_and_holder() {
     let mut session = crate::campaign::CampaignSession::open(
         package, crate::campaign::spec::CampaignSelection::ordinary(23).unwrap(),
     ).expect("actual ordinary Mission 23 package").simulation().clone();
+    let mut profile = session.session.definition.profile;
+    let parameter_index = session.session.state.live.economy.entities[425]
+        .parameter_relation.expect("actual rival collision parameters");
+    let parameter = &session.session.definition.presentation.entity_parameters[usize::from(parameter_index)];
+    let word = |offset: usize| i16::from_le_bytes([parameter[offset], parameter[offset + 1]]);
+    profile.terrain_reference_height = word(10);
+    profile.ground_clearance = word(12);
+    profile.passive_vertical_step = word(14);
+    profile.raw_word_0x10 = word(16);
+    profile.raw_word_0x12 = word(18);
     let live = &mut session.session.state.live;
     let caster = 425_u16;
     let target = 451_u16;
@@ -291,6 +301,26 @@ fn ordinary_mission23_dying_rival_tether_uses_its_own_target_and_holder() {
     if let Some(fire) = live.core.context.spell_fire.as_ref() {
         assert_eq!(fire.caster.mana, expected_mana);
     }
+
+    // The production dying-flight body must also publish the same rival
+    // target effects, rather than only the isolated tether kernel above.
+    let row = &mut live.economy.entities[usize::from(target)];
+    row.set_position(target_position);
+    row.set_life(5_000);
+    row.set_mana(500);
+    live.economy.entities[usize::from(holder)].active_value = 1;
+    assert!(live.nyphur_dispatcher.get_mut(caster_handle).unwrap().install_duel_tether(
+        crate::spells::directional::DuelTetherBinding {
+            caster_entity_index: caster, target_entity_index: target, holder_entity_index: holder,
+            tier: 2, prior_distance: 1_024,
+        },
+    ));
+    live.nyphur_dispatcher.step_dying_flight(
+        &mut live.economy, &mut live.shared_spells, &mut live.core.players,
+        &mut live.player_life, local, caster, &live.terrain, profile, &mut live.core.context,
+    ).expect("real rival flight resolves its owner-bound tether");
+    assert_eq!(live.economy.entities[usize::from(target)].life, 5_000 - i32::from(life_regen) - 2);
+    assert_eq!(live.economy.entities[usize::from(target)].mana, (500 - mana_regen - 8).max(0));
 }
 
 #[test]
@@ -534,6 +564,55 @@ fn ordinary_mission23_rival_grounded_death_rebuilds_its_own_castle_holders() {
     );
     let other_handle = live.economy.handle(other).unwrap();
     assert_eq!(live.nyphur_dispatcher.bound_live_holder(other_handle, other_player, &live.economy, 0).unwrap().source_slot, other_before[0]);
+}
+
+#[test]
+fn ordinary_mission23_color7_revival_publishes_source_padding_word() {
+    let package = std::env::var_os("MC_LEVEL23_PACKAGE").map_or_else(
+        || std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../generated/mc-copper-house27-v3-oucmzgsa/level23"),
+        std::path::PathBuf::from,
+    );
+    let mut session = crate::campaign::CampaignSession::open(
+        package, crate::campaign::spec::CampaignSelection::ordinary(23).unwrap(),
+    ).expect("actual ordinary Mission 23 package").simulation().clone();
+    let owner = 585_u16;
+    let other = 425_u16;
+    let handle = session.session.state.live.economy.handle(owner).unwrap();
+    let local = session.session.state.live.core.state.entity_index;
+    {
+        let live = &mut session.session.state.live;
+        let player = live.core.players.iter().find(|player| player.entity_index == owner).unwrap();
+        assert_eq!(player.player_color_index(), 7);
+        assert_eq!(live.core.players.iter().find(|player| player.entity_index == local).unwrap()
+            .type_str_164_array_word(32), None, "v5 omits the source padding word");
+        assert!(live.economy.castle_for_owner(owner).is_some());
+        let row = &live.economy.entities[usize::from(owner)];
+        let parameter = row.parameter_relation.expect("actual rival collision parameters");
+        let offset = &session.session.definition.presentation.entity_parameters[usize::from(parameter)][12..14];
+        let mut position = row.position;
+        position.z = live.terrain.ground_height(position).wrapping_add(i16::from_le_bytes([offset[0], offset[1]]));
+        let row = &mut live.economy.entities[usize::from(owner)];
+        row.set_position(position);
+        row.set_life(-1);
+        row.set_source_action(2);
+        row.set_source_word_2c(0);
+        crate::world::effects::sync_position(&mut live.economy, &mut live.terrain, owner, position, true, false).unwrap();
+    }
+    session.step_level2_source_pass(0);
+    assert_eq!(session.session.state.live.economy.entities[usize::from(owner)].action, 3);
+    session.session.state.live.economy.entities[usize::from(owner)].set_source_dword_10(1);
+    session.step_level2_source_pass(0);
+    session.step_level2_source_pass(0);
+    let live = &session.session.state.live;
+    assert_eq!(live.economy.handle(owner), Some(handle));
+    assert_eq!(live.economy.entities[usize::from(owner)].action, 1);
+    let player = |index| live.core.players.iter().find(|player| player.entity_index == index).unwrap();
+    assert_eq!(player(owner).type_str_164_array_word(32), Some(24_607));
+    assert_eq!(player(other).type_str_164_array_word(32), Some((-24_609_i16).cast_unsigned()));
+    assert_eq!(player(local).type_str_164_array_word(32), Some((-24_609_i16).cast_unsigned()));
+    assert_eq!(live.shared_spells.local_player().type_str_164_array_word(32), Some((-24_609_i16).cast_unsigned()));
+    assert_eq!(player(local).type_str_164_array_word(33), None, "an unwritten source padding word stays unknown");
 }
 
 // Earlier fixtures assumed the first cadence always selected a creature.

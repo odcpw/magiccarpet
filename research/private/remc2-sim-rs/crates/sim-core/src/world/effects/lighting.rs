@@ -73,6 +73,8 @@ pub(crate) fn admit_source(
             .find(|row| row.active && row.source_entity_index == slot)
         {
             child.control_flags |= 0x0008_0000;
+        } else if let Some(fire) = arena.economy.authored_model6_mut(slot) {
+            fire.control_flags |= 0x0008_0000;
         } else if let Some(row) = arena.entities.get_mut(usize::from(slot)) {
             row.set_control_flags(row.control_flags | 0x0008_0000);
         }
@@ -191,6 +193,137 @@ mod tests {
     use crate::campaign::{CampaignSession, spec::CampaignSelection};
     use crate::native_world::{lightning, test_guided_boss as boss};
     use std::path::PathBuf;
+
+    #[test]
+    fn typed_ground_fire_light_and_current_action_reach_the_source_scheduler() {
+        let package = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../generated/mc-bhq6-ordinary-20261025-zclu5fjj/level4");
+        for (enabled, full) in [(true, false), (false, false), (true, true)] {
+            let mut game = CampaignSession::open(&package, CampaignSelection::ordinary(4).unwrap())
+                .expect("real Cave4 owner package");
+            let (slot, expected_admission, initial_phase) = {
+                let live = &mut game.simulation_mut().session.state.live;
+                assert_eq!(live.terrain.map_type(), MapType::Cave);
+                let tile = live
+                    .terrain
+                    .planes()
+                    .shading
+                    .iter()
+                    .position(|shade| *shade < 32)
+                    .expect("owner cave has a lightable tile");
+                let mut position = Position {
+                    x: ((tile & 255) as u16).wrapping_shl(8).wrapping_add(128),
+                    y: ((tile >> 8) as u16).wrapping_shl(8).wrapping_add(128),
+                    z: 0,
+                };
+                position.z = live.terrain.ground_height(position);
+                live.economy.dynamic_lighting_enabled = enabled;
+                if full {
+                    while live.economy.dynamic_lighting.active_count() < 50 {
+                        assert!(
+                            live.economy
+                                .dynamic_lighting
+                                .admit(
+                                    true,
+                                    true,
+                                    live.core.state.entity_index,
+                                    position,
+                                    128,
+                                    1,
+                                    false
+                                )
+                                .is_some()
+                        );
+                    }
+                }
+                let before = live.economy.dynamic_lighting.active_count();
+                let slot = live
+                    .economy
+                    .allocate_source_slot_with_terrain(&mut live.terrain)
+                    .expect("ground fire source slot");
+                let fire = live
+                    .economy
+                    .economy
+                    .initialize_authored_model6(slot, u16::MAX, position, &live.terrain)
+                    .expect("real typed ground fire constructor");
+                crate::world::effects::sync_position(
+                    &mut live.economy,
+                    &mut live.terrain,
+                    slot,
+                    fire.position,
+                    true,
+                    false,
+                )
+                .unwrap();
+                let admitted = admit_source(
+                    &mut live.economy,
+                    &live.terrain,
+                    slot,
+                    fire.position,
+                    SourceLight::GroundFire,
+                );
+                assert_eq!(admitted, enabled && !full);
+                assert_eq!(
+                    live.economy.dynamic_lighting.active_count(),
+                    before + u8::from(admitted)
+                );
+                let fire = live.economy.economy.authored_model6_mut(slot).unwrap();
+                assert_eq!(fire.control_flags & 0x0008_0000 != 0, admitted);
+                // A Tree that aliases its child address leaves this same
+                // model-6 carrier on action 1. This is a controlled dispatch
+                // check; the Tree producer owns its own integration control.
+                fire.action = 1;
+                (slot, admitted, fire.phase)
+            };
+            game.step(crate::PlayerCommand::default(), 0);
+            assert!(
+                game.events().iter().all(|event| !matches!(
+                    event,
+                    crate::native_world::Mc2DispatchEvent::Error { .. }
+                )),
+                "outer turn errors: {:?}",
+                game.events()
+            );
+            assert!(
+                game.events().iter().any(|event| matches!(event,
+                    crate::native_world::Mc2DispatchEvent::DynamicArena { source_slot, .. }
+                        if *source_slot == slot
+                )),
+                "the current typed carrier was not visited"
+            );
+            let live = &game.simulation().session.state.live;
+            let fire = live
+                .economy
+                .economy
+                .authored_model6()
+                .iter()
+                .find(|row| row.active && row.source_entity_index == slot)
+                .expect("ground fire remains live after its first visit");
+            assert_eq!(
+                (fire.action, fire.life, fire.phase),
+                (1, 239, initial_phase.wrapping_add(1))
+            );
+            assert_eq!(
+                fire.control_flags & 2,
+                2,
+                "action1 runs its sound-once tail"
+            );
+            assert_eq!(fire.control_flags & 0x0008_0000 != 0, expected_admission);
+            if expected_admission {
+                let light = live
+                    .economy
+                    .dynamic_lighting
+                    .active_slots()
+                    .map(|(_, light)| light)
+                    .find(|light| light.source_entity_index == slot)
+                    .expect("ground fire links its actual source address");
+                assert_eq!(
+                    (light.intensity, light.jitter_range, light.life_scaled),
+                    (80, 11, true)
+                );
+            }
+        }
+    }
 
     #[test]
     fn owner_cave_projectile_constructors_obey_light_option_and_capacity() {

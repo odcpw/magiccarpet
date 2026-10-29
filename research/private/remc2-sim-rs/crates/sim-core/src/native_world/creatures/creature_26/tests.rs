@@ -264,6 +264,112 @@ fn owner_level6_model26_drains_its_real_player_in_the_normal_source_pass() {
         session.entities()[77].mana < without_target.entities()[77].mana,
         "scheduled source actor must drain the actual player carrier"
     );
+
+    // Select the package's actual kind-7/model26 objective as a controlled
+    // stimulus. No objective relation or creature is invented, and the next
+    // location objective remains pending: this is not a mission playthrough.
+    assert_eq!(session.runtime().stages[1].kind, 7);
+    assert_eq!(
+        session.runtime().stages[1].relation,
+        RuntimeRelation::AxisScalar(26)
+    );
+    let runtime = &mut session.session.state.live.core.runtime;
+    runtime.set_level2_objective_stage_selector_for(0, 0, 0);
+    runtime.set_level2_objective_text_selector_for(0, 1);
+    runtime.set_level2_objective_stage_selector_for(0, 1, 1);
+    let roots = session
+        .entities()
+        .iter()
+        .filter(|row| row.active && row.class == 5 && row.model == SOURCE_MODEL && row.life >= 0)
+        .map(|row| (session.source_arena().handle(row.index).unwrap(), row.life))
+        .collect::<Vec<_>>();
+    assert!(!roots.is_empty());
+    let credits_before = session.economy().authored_bee_kill_census(77);
+    let spheres_before = session.economy().spheres.len();
+    let mut survivor = session.clone();
+    for (handle, life) in &roots {
+        for (candidate, damage) in [(&mut session, *life + 1), (&mut survivor, *life - 1)] {
+            let row =
+                &mut candidate.session.state.live.economy.entities[usize::from(handle.source_slot)];
+            // A real damage mailbox is the only death stimulus. Keep the
+            // near-identical actors at life1 in the negative case.
+            row.record[98..102].copy_from_slice(&damage.to_le_bytes());
+            put(row, 102, 77);
+        }
+    }
+    session.step_outer_turn(PlayerCommand::default(), 0);
+    survivor.step_outer_turn(PlayerCommand::default(), 0);
+    for candidate in [&session, &survivor] {
+        assert!(
+            !candidate
+                .dispatch_events()
+                .iter()
+                .any(|event| matches!(event, crate::native_world::Mc2DispatchEvent::Error { .. })),
+            "{:?}",
+            candidate.dispatch_events()
+        );
+        assert_eq!(
+            candidate.runtime().objectives[0].stage_selectors[1],
+            1,
+            "case7 must retain the pass-start living membership on the fatal callback pass"
+        );
+    }
+    for (handle, _) in &roots {
+        let row = &session.entities()[usize::from(handle.source_slot)];
+        assert_eq!((row.life, row.action), (-1, PREKILL_ACTION));
+        assert_eq!(
+            session.source_arena().handle(handle.source_slot),
+            Some(*handle)
+        );
+        assert!(!row.drawing_disabled());
+    }
+    session.step_outer_turn(PlayerCommand::default(), 0);
+    survivor.step_outer_turn(PlayerCommand::default(), 0);
+    assert_eq!(
+        session.runtime().objectives[0].stage_selectors[1],
+        2,
+        "case7 reads the following pass's frozen head, before corpse hiding"
+    );
+    assert_eq!(
+        survivor.runtime().objectives[0].stage_selectors[1],
+        1,
+        "a surviving model26 must keep the real absence objective pending"
+    );
+    assert_eq!(
+        session.economy().authored_bee_kill_census(77),
+        credits_before + roots.len() as u32
+    );
+    for (handle, _) in &roots {
+        let row = &session.entities()[usize::from(handle.source_slot)];
+        assert_eq!(row.action, KILL_ACTION);
+        assert!(!row.drawing_disabled());
+    }
+    // Let the real source phase reach its death cadence. Do not force a
+    // callback, phase, hide flag, reclaim, or objective result.
+    for _ in 0..9 {
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        assert!(
+            !session
+                .dispatch_events()
+                .iter()
+                .any(|event| matches!(event, crate::native_world::Mc2DispatchEvent::Error { .. })),
+            "{:?}",
+            session.dispatch_events()
+        );
+        if roots
+            .iter()
+            .all(|(handle, _)| session.source_arena().resolve(*handle).is_none())
+        {
+            break;
+        }
+    }
+    assert!(session.economy().spheres.len() > spheres_before);
+    for (handle, _) in roots {
+        assert!(
+            session.source_arena().resolve(handle).is_none(),
+            "the next boundary must reclaim the original dead generation"
+        );
+    }
 }
 
 #[test]

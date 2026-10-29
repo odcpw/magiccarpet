@@ -572,6 +572,57 @@ mod source30_house_action_51_tests {
 }
 
 impl Level2SharedSpellResetSession {
+    /// Apply sub_5F890 to the current holder named by this Castle's owner.
+    /// Rival relations retain their source generations; a stale relation
+    /// cannot address another owner's newly allocated holder.
+    pub(super) fn apply_castle_holder_source_update(
+        &mut self,
+        arena: &mut crate::campaign::source_arena::SourceArena,
+        players: &[PlayerSnapshot],
+        rivals: &level2_nyphur::RivalWizardRoster,
+        fire: Option<&mut crate::SpellFireContext>,
+        owner: u16,
+        busy: bool,
+    ) -> std::result::Result<Option<u16>, String> {
+        let Some(player) = players.iter().find(|player| player.entity_index == owner) else {
+            return Ok(None);
+        };
+        let Some(owner_handle) = arena.handle(owner) else { return Ok(None); };
+        let holder_slot = player.enabled_spell_holders[usize::from(CASTLE_SPELL_FAMILY)];
+        let Some(holder_handle) = arena.handle(holder_slot).filter(|_| holder_slot != 0) else {
+            return Ok(None);
+        };
+        if player.is_ai && rivals.bound_live_holder(owner_handle, player, arena,
+            usize::from(CASTLE_SPELL_FAMILY)) != Some(holder_handle)
+        {
+            return Ok(None);
+        }
+        let Some(mut holder) = self.pickup(holder_slot).filter(|holder| {
+            holder.active && holder.class == 15 && holder.model == CASTLE_SPELL_FAMILY
+                && holder.source_spell_parent_entity_index() == owner
+        }).cloned() else { return Ok(None); };
+        let current_selector = arena.economy.live_arena_cursor_row(holder_slot)
+            .and_then(|row| arena.economy.live_arena_class_action(holder_slot, row.kind))
+            .or_else(|| arena.entities.get(usize::from(holder_slot))
+                .filter(|row| row.active).map(|row| (row.class, row.action)));
+        if current_selector != Some((holder.class, holder.action)) {
+            return Ok(None);
+        }
+        holder.active_value = if busy {
+            holder.activation_value.wrapping_sub(1).cast_signed()
+        } else { 0 };
+        holder.record[50..52].copy_from_slice(&holder.active_value.to_le_bytes());
+        self.sync_pickup_from_authority(&holder);
+        arena.entities[usize::from(holder_slot)] = holder.clone();
+        if let Some(fire) = fire
+            && let Some(projected) = fire.holders.iter_mut()
+                .find(|projected| projected.entity_index == holder_slot)
+        {
+            projected.active_value = holder.active_value;
+        }
+        Ok(Some(holder_slot))
+    }
+
     #[must_use]
     pub(crate) const fn mission_rewards(&self) -> crate::campaign::rewards::MissionRewards {
         self.mission_rewards
