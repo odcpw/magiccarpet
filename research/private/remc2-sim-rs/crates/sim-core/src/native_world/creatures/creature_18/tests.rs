@@ -820,6 +820,61 @@ fn summon_parent_loss_produces_source_expiry_children_and_hides_next_pass() {
         assert!(born.contains(&(10, 0)));
         assert_eq!(born.contains(&(10, 73)), mode == 13);
     }
+
+    let bound = add_creature(arena, terrain, &particles, position, 151);
+    let row = &mut arena.entities[usize::from(bound)];
+    row.record[77] = 16;
+    put(row, 44, parent);
+    put(row, 50, 10);
+    let child_handle = arena.handle(bound).unwrap();
+    let parent_handle = arena.handle(parent).unwrap();
+    assert!(arena.bind_creature_parent(child_handle, parent_handle));
+    let mut living_arena = arena.clone();
+    let mut living_runtime = runtime.clone();
+    let mut living_terrain = terrain.clone();
+    let classes = class3_slots(&living_arena);
+    let families = model_slots(&living_arena);
+    let living = mc2::step_row(
+        &mut living_arena,
+        &mut living_runtime,
+        &mut living_terrain,
+        &particles,
+        bound,
+        &classes,
+        &families,
+    )
+    .expect("bound live parent callback");
+    assert!(!living.expire);
+    assert_eq!(
+        living_arena.creature_parent(child_handle),
+        Some(parent_handle)
+    );
+
+    let replacement = arena.entities[usize::from(parent)].clone();
+    arena.entities[usize::from(parent)].reclaim_source_row();
+    arena.economy.release_slot(parent, None);
+    assert_eq!(arena.allocate_source_slot(), Some(parent));
+    arena.entities[usize::from(parent)] = replacement;
+    assert_ne!(arena.handle(parent).unwrap(), parent_handle);
+    assert_eq!(
+        arena.creature_parent_binding(child_handle),
+        Some(parent_handle)
+    );
+    assert!(arena.creature_parent(child_handle).is_none());
+    let classes = class3_slots(arena);
+    let families = model_slots(arena);
+    let expired = mc2::step_row(
+        arena, runtime, terrain, &particles, bound, &classes, &families,
+    )
+    .expect("reused parent slot expires the bound summon");
+    assert!(expired.expire);
+    assert!(!expired.summon_expire);
+    assert!(arena.entities[usize::from(bound)].drawing_disabled());
+    assert!(arena.resolve(child_handle).is_some());
+    arena
+        .rebuild_source_arena_with_terrain(terrain, &[])
+        .unwrap();
+    assert!(arena.resolve(child_handle).is_none());
 }
 
 #[test]

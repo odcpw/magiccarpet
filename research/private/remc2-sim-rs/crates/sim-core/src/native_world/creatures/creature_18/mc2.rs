@@ -391,13 +391,24 @@ pub(crate) fn step_row(
     class3: &[u16],
     families: &[Vec<u16>; 29],
 ) -> Result<Creature18Effects, String> {
-    let targets = targets(arena);
     let actor_row = arena
         .entities
         .get(usize::from(slot))
         .filter(|row| row.active && row.class == SOURCE_CLASS && row.model == SOURCE_MODEL)
         .ok_or_else(|| format!("model-18 callback lost slot{slot}"))?;
     let mut actor = load(actor_row, arena.slot_generation(slot));
+    let stale_parent = arena.handle(slot).is_some_and(|child| {
+        arena.has_creature_parent_binding(child)
+            && arena
+                .creature_parent(child)
+                .is_none_or(|parent| parent.source_slot != actor.parent)
+    });
+    let mut targets = targets(arena);
+    if stale_parent {
+        // Bound summons must not follow a later occupant of the same source
+        // slot; unbound authored routes retain their source-slot behavior.
+        targets.retain(|target| target.slot != actor.parent);
+    }
     let callback_action = actor.action;
     let context = Creature18Context {
         terrain,
