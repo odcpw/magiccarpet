@@ -327,6 +327,222 @@ mod tests {
     }
 
     #[test]
+    fn owner_cave_source_position_reuse_maps_and_lights_the_new_address() {
+        use crate::level_definition::EffectKind;
+        use crate::native_world::Level2EconomyEvent;
+
+        let package = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../generated/mc-bhq6-ordinary-20261025-zclu5fjj/level4");
+        let campaign = CampaignSession::open(package, CampaignSelection::ordinary(4).unwrap())
+            .expect("real Cave4 owner package");
+        let session = &campaign.simulation().session;
+        let particles = &session.definition.presentation.particles;
+        let mut arena = session.state.live.economy.clone();
+        let mut terrain = session.state.live.terrain.clone();
+        assert_eq!(terrain.map_type(), MapType::Cave);
+        let source_position = Position {
+            x: 0x2000,
+            y: 0x3000,
+            z: 1000,
+        };
+        arena.dynamic_lighting_enabled = false;
+        let parent = crate::world::effects::allocate(
+            &mut arena,
+            &mut terrain,
+            sim_definition::adapter::mc2_effect_definition(EffectKind::Impact),
+            source_position,
+            particles,
+        )
+        .unwrap()
+        .expect("real impact is replaceable");
+        let owner = session.state.live.core.state.entity_index;
+        let source = &mut arena.entities[usize::from(parent)];
+        source.source_id = owner;
+        source.record[30..32].copy_from_slice(&owner.to_le_bytes());
+        let previous = arena.handle(parent).unwrap();
+        arena.rebuild_source_free_arena();
+        // The real frozen fallback cursor is retained; exhaust the free
+        // stack so the next NewEvent must use that source cursor.
+        while arena.economy.free_slot_count() != 0 {
+            arena
+                .allocate_source_slot_with_terrain(&mut terrain)
+                .expect("consume a real free-stack slot");
+        }
+        loop {
+            let mut probe = arena.clone();
+            let mut probe_terrain = terrain.clone();
+            let candidate = crate::world::effects::allocate(
+                &mut probe,
+                &mut probe_terrain,
+                sim_definition::adapter::mc2_effect_definition(EffectKind::Impact),
+                source_position,
+                particles,
+            )
+            .unwrap()
+            .expect("fallback cursor reaches the existing impact");
+            if candidate == parent {
+                break;
+            }
+            assert_eq!(
+                crate::world::effects::allocate(
+                    &mut arena,
+                    &mut terrain,
+                    sim_definition::adapter::mc2_effect_definition(EffectKind::Impact),
+                    source_position,
+                    particles,
+                )
+                .unwrap(),
+                Some(candidate)
+            );
+        }
+        arena.dynamic_lighting_enabled = true;
+        assert!(arena.dynamic_lighting.active_count() < 50);
+        let mut mana_arena = arena.clone();
+        let mut mana_terrain = terrain.clone();
+        let before_lights = mana_arena.dynamic_lighting.active_count();
+        let first_rng = mana_arena
+            .economy
+            .new_event_rng(parent)
+            .wrapping_mul(9_377)
+            .wrapping_add(9_439);
+        let second_rng = first_rng.wrapping_mul(9_377).wrapping_add(9_439);
+        let mana_slot = crate::world::effects::spawn_death_mana_sphere(
+            &mut mana_arena,
+            &mut mana_terrain,
+            parent,
+            source_position,
+            700,
+            20_000,
+            owner,
+        )
+        .unwrap()
+        .expect("the real mana constructor reuses the source address");
+        assert_eq!(mana_slot, parent);
+        assert!(mana_arena.resolve(previous).is_none());
+        let sphere = mana_arena
+            .economy
+            .spheres()
+            .iter()
+            .find(|row| row.active && row.source_entity_index == parent)
+            .unwrap();
+        assert_eq!(sphere.position, Position::default());
+        assert_eq!(
+            (
+                sphere.mana,
+                sphere.player_entity_index,
+                sphere.owner_entity_index
+            ),
+            (512, 0, 0)
+        );
+        assert_eq!(
+            sphere.yaw,
+            ((i32::from(first_rng % 113) - 56) & 2047) as i16
+        );
+        assert_eq!(sphere.entity_rng, second_rng);
+        assert_eq!(mana_terrain.planes().entity_indices[0], parent as i16);
+        assert_eq!(mana_arena.dynamic_lighting.active_count(), before_lights);
+        assert!(
+            crate::world::effects::clear_replacement_mana_owner(&mut mana_arena, parent).unwrap()
+        );
+        assert!(
+            crate::world::effects::hide_birth_replacement(&mut mana_arena, parent, None).unwrap()
+        );
+        let sphere = mana_arena
+            .economy
+            .spheres()
+            .iter()
+            .find(|row| row.active && row.source_entity_index == parent)
+            .unwrap();
+        assert!(sphere.pending_delete && sphere.control_flags & 0x400 != 0);
+
+        for kind in [EffectKind::Impact, EffectKind::RadialExplosion] {
+            let mut current = arena.clone();
+            let mut current_terrain = terrain.clone();
+            let before = current.dynamic_lighting.active_count();
+            let slot = if kind == EffectKind::RadialExplosion {
+                crate::world::effects::spawn_death_burst(
+                    &mut current,
+                    &mut current_terrain,
+                    particles,
+                    parent,
+                    source_position,
+                    owner,
+                )
+                .unwrap()
+            } else {
+                crate::world::effects::allocate_from_source_position(
+                    &mut current,
+                    &mut current_terrain,
+                    sim_definition::adapter::mc2_effect_definition(kind),
+                    parent,
+                    source_position,
+                    particles,
+                )
+                .unwrap()
+            }
+            .expect("the real fallback reuses the source address");
+            assert_eq!(slot, parent);
+            assert!(current.resolve(previous).is_none());
+            let row = &current.entities[usize::from(slot)];
+            assert_eq!(row.position, Position::default());
+            assert_eq!(current_terrain.planes().entity_indices[0], slot as i16);
+            assert_eq!(current.dynamic_lighting.active_count(), before + 1);
+            assert!(
+                current
+                    .dynamic_lighting
+                    .active_slots()
+                    .any(|(_, light)| light.source_entity_index == slot
+                        && light.position == Position::default())
+            );
+            if kind == EffectKind::RadialExplosion {
+                assert_eq!(row.source_id, slot, "source id is read after NewEvent");
+                assert!(current.economy.events().iter().any(|event| matches!(
+                    event, Level2EconomyEvent::DeathBurstSpawned {
+                        source_entity_index, parent_entity_index, id_entity_index,
+                    } if *source_entity_index == slot && *parent_entity_index == parent
+                        && *id_entity_index == slot
+                )));
+            }
+            assert!(
+                crate::world::effects::hide_birth_replacement(&mut current, parent, Some(slot),)
+                    .unwrap()
+            );
+            assert!(current.entities[usize::from(slot)].drawing_disabled());
+        }
+        arena.finish_source_group();
+        let before_lights = arena.dynamic_lighting.active_count();
+        let before_events = arena.economy.events().len();
+        assert!(
+            crate::world::effects::spawn_death_mana_sphere(
+                &mut arena,
+                &mut terrain,
+                parent,
+                source_position,
+                700,
+                20_000,
+                owner,
+            )
+            .unwrap()
+            .is_none()
+        );
+        assert!(
+            crate::world::effects::spawn_death_burst(
+                &mut arena,
+                &mut terrain,
+                particles,
+                parent,
+                source_position,
+                owner,
+            )
+            .unwrap()
+            .is_none()
+        );
+        assert_eq!(arena.dynamic_lighting.active_count(), before_lights);
+        assert_eq!(arena.economy.events().len(), before_events);
+        assert!(arena.resolve(previous).is_some());
+    }
+
+    #[test]
     fn owner_cave_outer_turn_services_and_retires_real_impact_light() {
         let package = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../../../generated/mc-bhq6-ordinary-20261025-zclu5fjj/level4");

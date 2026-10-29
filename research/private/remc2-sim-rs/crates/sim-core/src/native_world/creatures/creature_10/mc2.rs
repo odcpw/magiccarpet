@@ -938,7 +938,7 @@ pub(crate) fn scheduled_step(
         .is_some_and(|row| row.action == 80)
     {
         frame.close_creature =
-            super::protection::apply(arena, terrain, slot, shared_spells, class9)?;
+            super::protection::apply(arena, terrain, slot, shared_spells, particles, class9)?;
     }
     let effects = step_row(arena, runtime, terrain, particles, slot, frame, apply_world)?;
     if let Some(pressure) = effects.player_pressure

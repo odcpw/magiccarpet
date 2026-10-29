@@ -767,6 +767,8 @@ struct Mc2CampaignReplaySave {
     retained_campaign: Option<crate::game_runtime::CampaignSaveState>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     initial_secret_continuation: Option<sim_definition::runtime_flow::RuntimeFlowSecretEntry>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    initial_mission_rewards: Option<super::rewards::MissionRewards>,
     operations: Vec<crate::game_runtime::ReplayOperation<GameCommand>>,
     expected_tick: u64,
     expected_state_hash: u64,
@@ -800,6 +802,8 @@ struct Mc2CampaignReplaySavePayload<'a> {
     retained_campaign: Option<&'a crate::game_runtime::CampaignSaveState>,
     #[serde(skip_serializing_if = "Option::is_none")]
     initial_secret_continuation: Option<&'a sim_definition::runtime_flow::RuntimeFlowSecretEntry>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    initial_mission_rewards: Option<super::rewards::MissionRewards>,
     operations: &'a [crate::game_runtime::ReplayOperation<GameCommand>],
     expected_tick: u64,
     expected_state_hash: u64,
@@ -831,6 +835,7 @@ impl Mc2CampaignReplaySave {
             secret_flow: None,
             retained_campaign: None,
             initial_secret_continuation: None,
+            initial_mission_rewards: None,
             operations,
             expected_tick: snapshot.tick,
             expected_state_hash: snapshot.state_hash,
@@ -858,6 +863,7 @@ impl Mc2CampaignReplaySave {
             secret_flow: self.secret_flow.as_ref(),
             retained_campaign: self.retained_campaign.as_ref(),
             initial_secret_continuation: self.initial_secret_continuation.as_ref(),
+            initial_mission_rewards: self.initial_mission_rewards,
             operations: &self.operations,
             expected_tick: self.expected_tick,
             expected_state_hash: self.expected_state_hash,
@@ -1721,6 +1727,7 @@ impl Mc2RuntimePackageResolver {
         })?;
         let source_context = contexts.get(&guard.runtime_id).copied();
         let secret_progress = runtime.secret_flow_state().clone();
+        let completed_levels = runtime.completed_levels().to_vec();
         let dynamic_lighting_enabled = runtime
             .identity()
             .player_preferences
@@ -1772,6 +1779,25 @@ impl Mc2RuntimePackageResolver {
                 candidate
                     .backend_mut()
                     .install_initial_secret_continuation(continuation.as_ref())?;
+                let level = candidate
+                    .definition()
+                    .runtime_flow()
+                    .ok_or_else(|| {
+                        crate::game_runtime::RuntimeTransitionError::InvalidRuntimeFlow {
+                            message: "selected mission has no runtime flow".to_owned(),
+                        }
+                    })?
+                    .bound_level_id();
+                let policy = if completed_levels.contains(level)
+                    || secret_progress.completed_secret_levels().contains(level)
+                {
+                    super::rewards::MissionRewards::Suppressed
+                } else {
+                    super::rewards::MissionRewards::Enabled
+                };
+                candidate
+                    .backend_mut()
+                    .install_initial_mission_rewards(policy)?;
                 Ok(())
             },
         );
@@ -1933,6 +1959,14 @@ impl Mc2RuntimePackageResolver {
             .is_empty())
         .then(|| runtime.secret_flow_state().clone());
         save.retained_campaign = runtime.retained_campaign().cloned();
+        let initial_rewards = session
+            .backend()
+            .package_campaign
+            .simulation()
+            .mission_rewards();
+        if initial_rewards == super::rewards::MissionRewards::Suppressed {
+            save.initial_mission_rewards = Some(initial_rewards);
+        }
         if session
             .backend()
             .package_campaign
@@ -2237,6 +2271,33 @@ impl Mc2RuntimePackageResolver {
             self.exact_package_for_definition(&parent.definition)
                 .map_err(Mc2CampaignReplaySaveError::Runtime)?;
         }
+        let initial_rewards = save.initial_mission_rewards.unwrap_or_default();
+        if let Some(recorded) = save.initial_mission_rewards {
+            let level = flow.bound_level_id();
+            let completed = save
+                .completed_levels
+                .as_deref()
+                .unwrap_or_default()
+                .contains(level)
+                || secret_flow.completed_secret_levels().contains(level);
+            let inherited = secret_flow.return_frame().is_some_and(|frame| {
+                frame.secret_level_id() == level
+                    && frame.parent_campaign().selected_level_id.as_ref()
+                        == Some(frame.origin_level_id())
+                    && frame
+                        .parent_campaign()
+                        .completed_levels
+                        .contains(frame.origin_level_id())
+                    && secret_flow.discovered_secret_levels().contains(level)
+                    && !secret_flow.completed_secret_levels().contains(level)
+            });
+            if recorded != super::rewards::MissionRewards::Suppressed || !(completed || inherited) {
+                return Err(Mc2CampaignReplaySaveError::InvalidSave {
+                    message: "saved mission reward policy does not match completed portal context"
+                        .to_owned(),
+                });
+            }
+        }
         let initial_secret_continuation = save.initial_secret_continuation;
         if let Some(recorded) = &initial_secret_continuation {
             let expected = self
@@ -2299,7 +2360,12 @@ impl Mc2RuntimePackageResolver {
                         .install_initial_source_context(initial_global_context)?;
                     candidate
                         .backend_mut()
-                        .install_initial_secret_continuation(initial_secret_continuation.as_ref())
+                        .install_initial_secret_continuation(
+                            initial_secret_continuation.as_ref(),
+                        )?;
+                    candidate
+                        .backend_mut()
+                        .install_initial_mission_rewards(initial_rewards)
                 },
                 move |candidate, operation_index| {
                     while dynamic_lighting_changes
@@ -2550,6 +2616,7 @@ impl Mc2RuntimePackageResolver {
             let secret_id = entry.secret_level_id().clone();
             let carry = session.backend().transition_spell_carry()?;
             let context = session.backend().campaign.source_global_context();
+            let rewards = session.backend().campaign.simulation().mission_rewards();
             let receipt =
                 runtime.enter_secret_resolved(guard, session_guard, |source_session| {
                     let generation = source_session
@@ -2576,6 +2643,9 @@ impl Mc2RuntimePackageResolver {
                     candidate
                         .backend_mut()
                         .install_initial_source_context(context)?;
+                    candidate
+                        .backend_mut()
+                        .install_initial_mission_rewards(rewards)?;
                     Ok((secret_id, candidate))
                 })?;
             return Ok(Some(receipt));
@@ -2906,6 +2976,21 @@ impl Mc2CampaignBackend {
     pub fn restore_dynamic_lighting_after_rejection(&mut self, enabled: bool, change_count: usize) {
         self.campaign.set_dynamic_lighting_enabled(enabled);
         self.dynamic_lighting_changes.truncate(change_count);
+    }
+
+    fn install_initial_mission_rewards(
+        &mut self,
+        policy: super::rewards::MissionRewards,
+    ) -> Result<(), crate::game_runtime::RuntimeTransitionError> {
+        for campaign in [&mut self.campaign, &mut self.package_campaign] {
+            campaign
+                .simulation_mut()
+                .install_initial_mission_rewards(policy)
+                .map_err(|message| {
+                    crate::game_runtime::RuntimeTransitionError::InvalidRuntimeFlow { message }
+                })?;
+        }
+        Ok(())
     }
 
     fn install_initial_secret_continuation(
@@ -5310,6 +5395,33 @@ pub(crate) mod tests {
         );
         let bytes = resolver.save_replay(&runtime).unwrap();
         let mut forged: Mc2CampaignReplaySave = serde_json::from_slice(&bytes).unwrap();
+        assert!(forged.initial_mission_rewards.is_none());
+        assert_eq!(
+            runtime
+                .session()
+                .unwrap()
+                .backend()
+                .campaign
+                .simulation()
+                .mission_rewards(),
+            crate::campaign::rewards::MissionRewards::Enabled
+        );
+        let mut forged_rewards = forged.clone();
+        forged_rewards.initial_mission_rewards =
+            Some(crate::campaign::rewards::MissionRewards::Suppressed);
+        forged_rewards.receipt_sha256 = forged_rewards.compute_receipt_sha256();
+        let mut rejected_rewards = GameRuntime::<Mc2CampaignBackend>::title(7126).unwrap();
+        let before_rewards = rejected_rewards.identity();
+        assert!(matches!(
+            resolver.load_replay(
+                &mut rejected_rewards,
+                before_rewards.guard(),
+                7126,
+                &serde_json::to_vec(&forged_rewards).unwrap(),
+            ),
+            Err(Mc2CampaignReplaySaveError::InvalidSave { .. })
+        ));
+        assert_eq!(rejected_rewards.identity(), before_rewards);
         assert!(forged.initial_secret_continuation.is_none());
         assert!(
             serde_json::from_slice::<serde_json::Value>(&bytes)

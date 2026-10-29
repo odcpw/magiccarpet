@@ -1001,6 +1001,59 @@ impl HouseFamily {
             .find(|house| house.entity_index == entity_index)
     }
 
+    /// Use the live House carrier for fields it owns, retaining the source
+    /// row's heading and movement parameters supplied by the caller.
+    pub(crate) fn wind_actor(
+        &self,
+        slot: u16,
+        mut base: crate::world::fields::wind::Actor,
+    ) -> Option<crate::world::fields::wind::Actor> {
+        let house = self
+            .houses
+            .iter()
+            .find(|house| house.entity_index == slot && house.source_retained())?;
+        base.position = house.position;
+        base.class = HOUSE_CLASS;
+        base.model = HOUSE_MODEL;
+        base.rng = house.rng;
+        base.flags = house.control_flags;
+        base.half_height = house.collision_half_height;
+        Some(base)
+    }
+
+    /// Commit fields owned by the House; the caller publishes the source row
+    /// and updates map membership for the same motion.
+    pub(crate) fn apply_wind_motion(
+        &mut self,
+        slot: u16,
+        motion: crate::world::fields::wind::Motion,
+    ) -> bool {
+        let Some(house) = self
+            .houses
+            .iter_mut()
+            .find(|house| house.entity_index == slot && house.source_retained())
+        else {
+            return false;
+        };
+        house.position = motion.actor.position;
+        house.rng = motion.actor.rng;
+        house.control_flags = motion.actor.flags;
+        true
+    }
+
+    /// Wind's retirement clears flags even on models excluded from movement.
+    pub(crate) fn clear_wind_flags(&mut self, slot: u16) -> bool {
+        let Some(house) = self
+            .houses
+            .iter_mut()
+            .find(|house| house.entity_index == slot && house.source_retained())
+        else {
+            return false;
+        };
+        house.control_flags = crate::world::fields::wind::clear_flags(house.control_flags);
+        true
+    }
+
     /// Apply the common UpdateEntities byte-0x3E epilogue to an allocated
     /// house row, including a row whose callback just disabled it.
     pub(crate) fn advance_source_phase(&mut self, source_entity_index: u16) -> Option<u8> {

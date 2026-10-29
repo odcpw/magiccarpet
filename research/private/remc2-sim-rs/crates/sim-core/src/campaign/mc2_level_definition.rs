@@ -151,6 +151,8 @@ impl Mc2LevelDefinition {
             (11, 17) => Some(LevelEntityKind::Mechanic(MechanicKind::AbsenceCountdown {
                 creature: CreatureKind::Archer,
             })),
+            (15, 0) => Some(LevelEntityKind::SpellPickup(SpellKind::Fireball)),
+            (15, 1) => Some(LevelEntityKind::SpellPickup(SpellKind::Possession)),
             (15, 2) => Some(LevelEntityKind::SpellPickup(SpellKind::Castle)),
             (15, 3) => Some(LevelEntityKind::SpellPickup(SpellKind::Speed)),
             (15, 4) => Some(LevelEntityKind::SpellPickup(SpellKind::Morph)),
@@ -417,6 +419,8 @@ impl Mc2LevelDefinition {
         action: u8,
     ) -> Option<SpellKind> {
         match (class, model, action) {
+            (15, 0, 1 | 2) => Some(SpellKind::Fireball),
+            (15, 1, 4 | 5) => Some(SpellKind::Possession),
             (15, 3, 10) => Some(SpellKind::Speed),
             (15, 5, 16) => Some(SpellKind::Heal),
             (15, 6, 19) => Some(SpellKind::Shield),
@@ -1046,6 +1050,8 @@ impl Mc2LevelDefinition {
             let spell_kind = match (feature.kind, feature.subtype) {
                 // `AddSpellXX_XX_51120` receives these spell identities. Keep
                 // the numeric selectors inside the private MC2 adapter.
+                (15, 0) => Some(SpellKind::Fireball),
+                (15, 1) => Some(SpellKind::Possession),
                 (15, 2) => Some(SpellKind::Castle),
                 (15, 3) => Some(SpellKind::Speed),
                 (15, 4) => Some(SpellKind::Morph),
@@ -1665,8 +1671,10 @@ mod spell_family_binding_tests {
     use super::*;
 
     #[test]
-    fn army_magic_mine_and_alliance_bind_ordinary_source_rows() {
+    fn starting_spells_army_magic_mine_and_alliance_bind_ordinary_source_rows() {
         for (family, kind) in [
+            (0, SpellKind::Fireball),
+            (1, SpellKind::Possession),
             (19, SpellKind::SummonArmy),
             (23, SpellKind::MagicMine),
             (24, SpellKind::Alliance),

@@ -946,17 +946,40 @@ fn level_two_death_burst_dynamic_row_dispatches_reclaims_and_resets() {
             .contains(&burst_slot)
     );
 
+    for expected_life in [0, -1] {
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        let burst = session
+            .economy()
+            .death_bursts()
+            .iter()
+            .find(|burst| burst.source_entity_index == burst_slot)
+            .expect("the scheduled burst remains allocated");
+        assert!(burst.active);
+        assert_eq!(burst.life_ticks, expected_life);
+        assert!(!session.economy().free_slots.contains(&burst_slot));
+        assert!(session.economy().map_chains().is_linked(burst_slot));
+        assert!(session.dispatch_events().iter().any(|event| matches!(
+            event,
+            Mc2DispatchEvent::DynamicArena {
+                source_slot,
+                kind: Level2DynamicArenaKind::DeathBurst,
+                ..
+            } if *source_slot == burst_slot
+        )));
+    }
     session.step_outer_turn(PlayerCommand::default(), 0);
     assert!(
         session
             .economy()
             .death_bursts()
             .iter()
-            .any(|burst| burst.source_entity_index == burst_slot && !burst.active)
+            .any(|burst| burst.source_entity_index == burst_slot
+                && burst.active
+                && burst.control_flags & 0x400 != 0)
     );
     assert!(!session.economy().free_slots.contains(&burst_slot));
     assert!(
-        !session
+        session
             .economy()
             .map_chains()
             .linked_entity_indices()
@@ -976,7 +999,7 @@ fn level_two_death_burst_dynamic_row_dispatches_reclaims_and_resets() {
             ))
             .count(),
         1,
-        "source model-1 burst is visited once before disable/reclaim"
+        "source model-1 burst is visited once on its terminal pass"
     );
     assert!(session.dispatch_events().iter().any(|event| {
         matches!(
@@ -1000,6 +1023,7 @@ fn level_two_death_burst_dynamic_row_dispatches_reclaims_and_resets() {
     session.step_outer_turn(PlayerCommand::default(), 0);
     assert!(session.economy().death_bursts().is_empty());
     assert!(session.economy().free_slots.contains(&burst_slot));
+    assert!(!session.economy().map_chains().is_linked(burst_slot));
     session.reset();
     assert_eq!(session.economy().reset_hash(), baseline_hash);
 }

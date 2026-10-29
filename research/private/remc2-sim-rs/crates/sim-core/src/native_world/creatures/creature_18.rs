@@ -269,7 +269,10 @@ fn nearest_player(actor: &Creature18State, ctx: &Creature18Context<'_>) -> Optio
     ctx.class3
         .iter()
         .filter_map(|slot| ctx.target(*slot))
-        .filter(|target| target.alive() && target.player() && target.flags & 0x20 == 0)
+        // The class-3 list was frozen at pass start. sub_24E20 tests the
+        // current 0x20 flag, but does not recheck life or drawing here; a
+        // later firing callback performs its own target-lifetime check.
+        .filter(|target| target.flags & 0x20 == 0)
         .filter(|target| {
             xy_squared(actor.position, target.position) <= max_distance
                 && angle_distance(
@@ -278,6 +281,9 @@ fn nearest_player(actor: &Creature18State, ctx: &Creature18Context<'_>) -> Optio
                 ) < RULES.target_half_angle
         })
         .min_by_key(|target| xy_squared(actor.position, target.position))
+        // The source checks the winning slot's current class only after the
+        // scan, so a transformed nearer member must not select a farther one.
+        .filter(|target| target.player())
 }
 
 fn random(actor: &mut Creature18State) -> u16 {

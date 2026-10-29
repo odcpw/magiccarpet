@@ -187,6 +187,113 @@ fn summoned_target_scan_compares_source_squared_distances() {
 }
 
 #[test]
+fn ordinary_scan_uses_frozen_class3_membership_but_honors_current_exclusion_flag() {
+    let simulation = crate::native_world::tests::level_two_campaign_session();
+    let position = Position {
+        x: 20_000,
+        y: 20_000,
+        z: 0,
+    };
+    let enemy = Target {
+        slot: 12,
+        class: 3,
+        model: 0,
+        life: -1,
+        flags: ENTITY_DRAW_DISABLED_BIT,
+        position: Position {
+            x: 21_000,
+            ..position
+        },
+        ..Target::default()
+    };
+    let targets = [enemy];
+    let excluded = [Target {
+        flags: enemy.flags | 0x20,
+        ..enemy
+    }];
+    let context = Creature18Context {
+        terrain: &simulation.session.state.live.terrain,
+        runtime: &simulation.session.state.live.core.runtime,
+        targets: &targets,
+        class3: &[12],
+        model18: &[],
+        families: &[],
+    };
+    let rejected = Creature18Context {
+        targets: &excluded,
+        ..context
+    };
+    let mut counter = 0;
+    let mut actor = construct(7, 1, 1, position, &mut counter);
+    actor.yaw = heading_for_positions(position, enemy.position) as i16;
+    actor.rng = 1; // The first source RNG step selects the acquisition scan.
+    let mut negative = actor;
+    step(&mut actor, &context).unwrap();
+    assert_eq!(
+        (actor.action, actor.attack_phase, actor.target),
+        (144, 1, 12)
+    );
+    step(&mut negative, &rejected).unwrap();
+    assert_eq!(
+        (negative.action, negative.attack_phase, negative.target),
+        (144, 0, 0)
+    );
+}
+
+#[test]
+fn ordinary_scan_checks_the_winning_frozen_slots_current_class_after_selection() {
+    let simulation = crate::native_world::tests::level_two_campaign_session();
+    let position = Position {
+        x: 20_000,
+        y: 20_000,
+        z: 0,
+    };
+    let closer = Target {
+        slot: 12,
+        class: 5,
+        position: Position {
+            x: 21_000,
+            ..position
+        },
+        ..Target::default()
+    };
+    let farther = Target {
+        slot: 13,
+        class: 3,
+        position: Position {
+            x: 21_200,
+            ..position
+        },
+        ..Target::default()
+    };
+    let targets = [closer, farther];
+    let excluded = [
+        Target {
+            flags: 0x20,
+            ..closer
+        },
+        farther,
+    ];
+    let context = Creature18Context {
+        terrain: &simulation.session.state.live.terrain,
+        runtime: &simulation.session.state.live.core.runtime,
+        targets: &targets,
+        class3: &[12, 13],
+        model18: &[],
+        families: &[],
+    };
+    let mut counter = 0;
+    let mut actor = construct(7, 1, 1, position, &mut counter);
+    actor.yaw = heading_for_positions(position, closer.position) as i16;
+    assert!(nearest_player(&actor, &context).is_none());
+    let excluded_context = Creature18Context {
+        targets: &excluded,
+        ..context
+    };
+    assert_eq!(nearest_player(&actor, &excluded_context).unwrap().slot, 13);
+}
+
+#[test]
 fn authored_guard_uses_frozen_class3_membership_after_target_dies() {
     let simulation = crate::native_world::tests::level_two_campaign_session();
     let mut runtime = simulation.session.state.live.core.runtime.clone();
@@ -852,7 +959,7 @@ fn owner_switch_publishes_model18_and_normal_scheduler_visits_it() {
                     authored_record: 566..=568
                 }
             )
-            .then_some((row.index, row.phase))
+            .then_some((row.index, row.phase, row.record[61]))
         })
         .collect::<Vec<_>>();
     assert_eq!(
@@ -872,7 +979,7 @@ fn owner_switch_publishes_model18_and_normal_scheduler_visits_it() {
                         authored_record: 569..=571
                     }
                 ))
-            .then_some((row.index, row.phase))
+            .then_some((row.index, row.phase, row.record[61]))
         })
         .collect::<Vec<_>>();
     assert_eq!(
@@ -881,7 +988,7 @@ fn owner_switch_publishes_model18_and_normal_scheduler_visits_it() {
         "the same real group also constructs its three model21 roots"
     );
     session.step_outer_turn(PlayerCommand::default(), 0);
-    for (slot, phase) in slots.into_iter().chain(model21_slots) {
+    for (slot, phase, proximity) in slots.iter().copied().chain(model21_slots) {
         let actor = &session.entities()[usize::from(slot)];
         assert!(actor.active && !actor.drawing_disabled());
         assert_eq!(
@@ -889,7 +996,72 @@ fn owner_switch_publishes_model18_and_normal_scheduler_visits_it() {
             phase.wrapping_add(1),
             "normal source scheduler visits authored creature slot {slot}"
         );
+        assert!(
+            proximity > 0,
+            "new source creature starts with proximity countdown"
+        );
+        assert_eq!(
+            actor.record[61],
+            proximity - 1,
+            "source proximity prepass visits authored creature slot {slot}"
+        );
     }
+
+    // Place the real player once in front of an owner-produced model18. The
+    // ordinary callback, not the test, selects its target on a later pass.
+    let slot = slots[0].0;
+    let produced = session.entities()[usize::from(slot)].clone();
+    let mut nearby = produced.position;
+    let candidates = [
+        (1024_i16, 0_i16),
+        (724, 724),
+        (0, 1024),
+        (-724, 724),
+        (-1024, 0),
+        (-724, -724),
+        (0, -1024),
+        (724, -724),
+    ];
+    let (dx, dy) = candidates
+        .into_iter()
+        .min_by_key(|&(dx, dy)| {
+            let mut candidate = produced.position;
+            candidate.x = candidate.x.wrapping_add_signed(dx);
+            candidate.y = candidate.y.wrapping_add_signed(dy);
+            angle_distance(
+                i32::from(produced.yaw),
+                heading_for_positions(produced.position, candidate),
+            )
+        })
+        .unwrap();
+    nearby.x = nearby.x.wrapping_add_signed(dx);
+    nearby.y = nearby.y.wrapping_add_signed(dy);
+    let mut distant_session = session.clone();
+    let mut distant = produced.position;
+    distant.x = distant.x.wrapping_add(0x6000);
+    distant_session
+        .set_level2_entity_position(player, distant)
+        .unwrap();
+    session.set_level2_entity_position(player, nearby).unwrap();
+    let mut acquired = false;
+    for _ in 0..20 {
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        distant_session.step_outer_turn(PlayerCommand::default(), 0);
+        acquired |= put_word(&session.entities()[usize::from(slot)], 154) == player;
+        assert_ne!(
+            put_word(&distant_session.entities()[usize::from(slot)], 154),
+            player,
+            "distant player must not be acquired by the authored model18"
+        );
+        if acquired {
+            break;
+        }
+    }
+    assert!(
+        acquired,
+        "authored model18 must acquire the nearby player through its normal source callback: {:?}",
+        session.dispatch_events()
+    );
 }
 
 #[test]

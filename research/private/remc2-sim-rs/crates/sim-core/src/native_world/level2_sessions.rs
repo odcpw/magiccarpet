@@ -394,6 +394,16 @@ mod authored_spell_family_tests {
                     .unwrap();
                 state.holder_relation = 0;
                 let position = shared.pickup(slot).unwrap().position;
+                let pickup = shared.pickup_mut(slot).unwrap();
+                pickup.phase = 1;
+                pickup.record[66] = 1;
+                assert!(shared.step_level2_spell_acquisition_with_economy(
+                    &mut economy, 0, shared.player_entity.index, position, &terrain,
+                ).unwrap().is_none());
+                assert_eq!(shared.local_player.enabled_spell_holders[0], 0);
+                let pickup = shared.pickup_mut(slot).unwrap();
+                pickup.phase = 0;
+                pickup.record[66] = 0;
                 shared
                     .step_level2_spell_acquisition_with_economy(
                         &mut economy,
@@ -553,6 +563,15 @@ mod source30_house_action_51_tests {
 }
 
 impl Level2SharedSpellResetSession {
+    #[must_use]
+    pub(crate) const fn mission_rewards(&self) -> crate::campaign::rewards::MissionRewards {
+        self.mission_rewards
+    }
+
+    pub(crate) fn set_mission_rewards(&mut self, policy: crate::campaign::rewards::MissionRewards) {
+        self.mission_rewards = policy;
+    }
+
     fn acquisition_from_source(
         source: &EntitySnapshot,
         player: &PlayerSnapshot,
@@ -832,6 +851,7 @@ impl Level2SharedSpellResetSession {
             control_mode: 0,
         };
         Ok(Self {
+            mission_rewards: crate::campaign::rewards::MissionRewards::Enabled,
             pickups,
             dynamic_pickups: Vec::new(),
             authored_pickup_slots: BTreeMap::new(),
@@ -1040,6 +1060,7 @@ impl Level2SharedSpellResetSession {
             .collect::<Vec<_>>()
             .into_boxed_slice();
         let mut session = Self {
+            mission_rewards: crate::campaign::rewards::MissionRewards::Enabled,
             pickups,
 
             dynamic_pickups: Vec::new(),
@@ -1447,6 +1468,80 @@ impl Level2SharedSpellResetSession {
         }
         self.sync_typed_spell_parent_caches_from_player_entity();
         Ok(holders)
+    }
+
+    /// Existing AI actor branch of sub_5C950. The caller owns the live
+    /// Castle/generation check and publishes these actual constructor rows.
+    pub(crate) fn revive_rival_at_castle(
+        &mut self,
+        economy: &mut Level2EconomyState,
+        mut actor: EntitySnapshot,
+        castle_position: Position,
+    ) -> Result<(EntitySnapshot, Vec<EntitySnapshot>)> {
+        let owner_index = self.players.iter().position(|player| {
+            player.is_ai && player.entity_index == actor.index
+        }).ok_or_else(|| NativeWorldError::new("Castle revival rival player row is absent"))?;
+        if !actor.active || actor.life >= 0 || actor.class != 3 || actor.model != 1 {
+            return Err(NativeWorldError::new("Castle revival requires the existing dead rival actor"));
+        }
+        actor.set_source_action(1);
+        actor.set_control_flags(actor.control_flags & !0x20);
+        actor.set_position(castle_position);
+        actor.set_max_life(10_000);
+        actor.max_mana = 1_000;
+        actor.record[144..148].copy_from_slice(&1_000_i32.to_le_bytes());
+        actor.set_life(10_000);
+        actor.set_mana(1_000);
+        self.sync_player_entity_from_authority(&actor);
+        let mut player = self.players[owner_index].clone();
+        player.record[20..24].fill(0);
+        player.record[32..38].fill(0);
+        player.record[565..569].copy_from_slice(&2_048_i32.to_le_bytes());
+        player.record[569..573].copy_from_slice(&2_048_i32.to_le_bytes());
+        if let Some(auxiliary) = player.type_str_164_auxiliary.as_mut() {
+            auxiliary.dword_0x16D_365 = 2_000;
+            let offset = PLAYER_LEGACY_RECORD_BYTES + 17;
+            player.record[offset..offset + 4].copy_from_slice(&2_000_i32.to_le_bytes());
+        }
+        self.players[owner_index] = player.clone();
+        let mut holders = Vec::new();
+        for family in 0..PLAYER_SPELL_COUNT {
+            if player.enabled_spell_holders[family] == 0 { continue; }
+            let Some(source) = economy.allocate_starting_spell_holder(family as u8, castle_position) else {
+                player.set_enabled_spell_holder_index(family, 0);
+                continue;
+            };
+            let stage = Self::castle_stage_for_owner(economy, actor.index);
+            let profile = self.physical_spell_profile(family as u8, 0, actor.index, stage)
+                .ok_or_else(|| NativeWorldError::new("rival starting holder profile is absent"))?;
+            let holder = Self::starting_spell_holder(source, actor.index, 0, profile);
+            player.set_enabled_spell_holder_index(family, holder.index);
+            holders.push(holder);
+        }
+        self.players[owner_index] = player;
+        for family in 0..PLAYER_SPELL_COUNT {
+            self.update_spell_experience(actor.index, family as u8, 0, false);
+        }
+        let player = self.players[owner_index].clone();
+        for holder in &mut holders {
+            let tier = player.family_selected_tiers[usize::from(holder.model)].cast_unsigned();
+            let stage = Self::castle_stage_for_owner(economy, actor.index);
+            let profile = self.physical_spell_profile(holder.model, tier, actor.index, stage)
+                .ok_or_else(|| NativeWorldError::new("rival selected holder profile is absent"))?;
+            holder.apply_nyphur_spell_profile(profile, tier);
+            holder.set_map_links(economy.map_chains.old_map_entity(holder.index), economy.map_chains.next_entity(holder.index));
+            self.register_starting_acquisition(holder, &player);
+            if let Some(existing) = self.pickup_mut(holder.index) { *existing = holder.clone(); }
+            else { self.dynamic_pickups.push(holder.clone()); }
+        }
+        let relation = 4 + 4 * usize::from(player.player_color_index());
+        for other in &mut self.players {
+            if self.player_entities.iter().any(|entity| entity.index == other.entity_index
+                && entity.source_id != actor.source_id && matches!(entity.model, 0 | 1)) {
+                other.set_type_str_164_array_word(relation, (-24_609_i16).cast_unsigned());
+            }
+        }
+        Ok((actor, holders))
     }
 
     #[must_use]
@@ -3114,6 +3209,9 @@ impl Level2SharedSpellResetSession {
         family: u8,
         amount: i32,
     ) {
+        if !self.mission_rewards.allows_experience() {
+            return;
+        }
         self.update_spell_experience(parent_entity_index, family, amount, true);
     }
 
@@ -3190,6 +3288,9 @@ impl Level2SharedSpellResetSession {
         local_player_life: i32,
         entities: &[EntitySnapshot],
     ) -> bool {
+        if !self.mission_rewards.allows_experience() {
+            return false;
+        }
         let mut first_collision_entity = None;
         let mut local_collision = false;
         let mut local_player_index = None;
@@ -4271,6 +4372,7 @@ impl Level2SharedSpellResetSession {
             hasher.update(self.player_hit_effect_cooldown.to_le_bytes());
         }
         self.global_special_state.append_hash(&mut hasher);
+        self.mission_rewards.append_hash(&mut hasher);
         for experience in self.persistent_spell_experience {
             hasher.update(experience.to_le_bytes());
         }
@@ -4433,6 +4535,7 @@ impl Level2SharedSpellResetSession {
             hasher.update(self.player_hit_effect_cooldown.to_le_bytes());
         }
         self.global_special_state.append_hash(&mut hasher);
+        self.mission_rewards.append_hash(&mut hasher);
         for experience in self.persistent_spell_experience {
             hasher.update(experience.to_le_bytes());
         }

@@ -148,12 +148,18 @@ fn ordinary_level_23_materializes_source_house_27_and_runs_construction() {
     let empty = &campaign.simulation().ordinary().house_build_footprints[&16];
     assert_eq!((empty.width, empty.height, empty.cells()), (1, 1, &[[0xff, 0xff]][..]), "source BUILD loader doubles dimensions before VGA halves them");
     campaign.step(PlayerCommand::default(), 0);
+    let dispatch_errors = campaign.simulation().dispatch_events().iter().filter(|event| matches!(event,
+        Mc2DispatchEvent::Error { .. }
+    )).collect::<Vec<_>>();
+    assert!(!dispatch_errors.iter().any(|event| matches!(event,
+        Mc2DispatchEvent::Error { source_slot: 1, .. }
+    )), "house 27 dispatch errors: {dispatch_errors:?}");
     assert!(campaign.simulation().dispatch_events().iter().any(|event| matches!(event,
         Mc2DispatchEvent::House { source_slot: 1, events, .. }
             if events.iter().any(|event| matches!(event,
                 HouseStepEvent::ConstructionPass { .. } | HouseStepEvent::ConstructionCompleted { .. }
             ))
-    )), "ordinary source scheduler must run house 27's real BUILD consumer");
+    )), "ordinary source scheduler must run house 27's real BUILD consumer; errors: {dispatch_errors:?}; house: {:?}", campaign.simulation().ordinary().houses().iter().find(|house| house.entity_index == 1));
     assert!(!campaign.simulation().dispatch_events().iter().any(|event| matches!(event,
         Mc2DispatchEvent::Error { source_slot: 1, .. }
     )));
@@ -2116,6 +2122,7 @@ fn level_two_possession_new_rows_follow_the_remaining_ascending_source_cursor() 
             economy.spheres.push(ManaSphere {
                 id: u32::from(target_slot),
                 source_entity_index: target_slot,
+                action: 41,
                 entity_rng: 0,
                 position,
                 velocity_x: 0,

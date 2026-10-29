@@ -190,6 +190,46 @@ fn constructor_matches_source_orientation_and_particle_extents() {
 }
 
 #[test]
+fn normal_source_prepass_reactivates_nearby_model26_but_not_distant_model26() {
+    use crate::PlayerCommand;
+
+    let mut near = full_level_two_session();
+    let particles = near.session.definition.presentation.particles.to_vec();
+    let player_slot = near.state.entity_index;
+    let player_position = near.entities()[usize::from(player_slot)].position;
+    let actor = {
+        let live = &mut near.session.state.live;
+        let slot = mc2::allocate_authored(
+            &mut live.economy,
+            &mut live.core.runtime,
+            &mut live.terrain,
+            &particles,
+            player_position,
+            RULES.max_life,
+            None,
+            500,
+        )
+        .unwrap()
+        .expect("ordinary model26 source allocation");
+        let row = &mut live.economy.entities[usize::from(slot)];
+        row.record[61] = 0;
+        row.record[62] = 0;
+        row.set_control_flags(row.control_flags & !1);
+        slot
+    };
+    let mut far = near.clone();
+    let mut distant = player_position;
+    distant.x = distant.x.wrapping_add(0x6000);
+    far.set_level2_entity_position(player_slot, distant)
+        .unwrap();
+
+    near.step_outer_turn(PlayerCommand::default(), 0);
+    far.step_outer_turn(PlayerCommand::default(), 0);
+    assert_eq!(near.entities()[usize::from(actor)].record[61], 16);
+    assert_eq!(far.entities()[usize::from(actor)].record[61], 0);
+}
+
+#[test]
 fn owner_level6_model26_drains_its_real_player_in_the_normal_source_pass() {
     use crate::PlayerCommand;
     use crate::campaign::{CampaignSession, spec::CampaignSelection};

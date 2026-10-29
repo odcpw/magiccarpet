@@ -34,6 +34,47 @@ pub(crate) fn step_action_207(
         step_follow_leader_target(actor, ctx, runtime, families)?;
         return Ok(None);
     }
+    if matches!(mode, 8 | 9) {
+        // sub_1D880/sub_1D8A0 both enter sub_1E1C0. Its mailbox
+        // and linked-life comparison precede movement and hit reactions.
+        match super::consume(actor, ctx) {
+            0 if RULES.behavior_flags & 2 == 0 => {
+                super::move_actor(actor, ctx);
+                if actor.row.phase & 15 == 0 && actor.row.control_flags & 0x40000 == 0 {
+                    let rng = crate::native_world::level2_next_rng16(actor.row.entity_rng);
+                    actor.row.set_entity_rng(rng);
+                    actor.row.set_source_roll(
+                        actor.row.source_roll().wrapping_add((rng % 113 + 142) as i16) & 2047,
+                    );
+                }
+            }
+            1 => {
+                let attacker = word(actor.row, 42);
+                if ctx.target(attacker).is_none_or(|target| {
+                    (target.class, target.model) != (super::SOURCE_CLASS, SOURCE_MODEL)
+                }) {
+                    actor.set_target(attacker);
+                    actor.row.record[77] = 10;
+                    actor.set_action(202);
+                }
+                let descent = if super::is_split_body(actor) {
+                    RULES.split_descent
+                } else {
+                    RULES.descent
+                };
+                crate::ground_creature_motion::relax_to_terrain(
+                    &mut actor.row.position,
+                    ctx.terrain,
+                    RULES.ground_clearance,
+                    descent,
+                );
+                actor.row.set_position(actor.row.position);
+            }
+            2 => actor.set_action(204),
+            _ => {}
+        }
+        return Ok(None);
+    }
     if mode == 17 {
         super::move_actor(actor, ctx);
         if actor.row.life < 0 {
@@ -267,11 +308,16 @@ fn step_follow_leader_target(
             actor.row.record[77] = 10;
             actor.set_action(202);
         }
+        let descent = if super::is_split_body(actor) {
+            RULES.split_descent
+        } else {
+            RULES.descent
+        };
         crate::ground_creature_motion::relax_to_terrain(
             &mut actor.row.position,
             ctx.terrain,
             RULES.ground_clearance,
-            RULES.descent,
+            descent,
         );
         actor.row.set_position(actor.row.position);
     } else {

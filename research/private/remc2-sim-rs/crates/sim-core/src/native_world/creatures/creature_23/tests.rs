@@ -63,6 +63,7 @@ fn mana_sphere(slot: u16, position: Position, mana: i32) -> crate::level1_missio
     crate::level1_mission::ManaSphere {
         id: u32::from(slot),
         source_entity_index: slot,
+        action: 41,
         entity_rng: 1,
         position,
         velocity_x: 0,

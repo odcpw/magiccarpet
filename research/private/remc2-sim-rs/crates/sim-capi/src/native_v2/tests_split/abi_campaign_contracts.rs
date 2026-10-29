@@ -942,6 +942,7 @@ fn campaign_mana_sphere_snapshot_exposes_attraction_mailbox_without_layout_chang
     let snapshot = mana_sphere_snapshot(&ManaSphere {
         id: 901,
         source_entity_index: 901,
+        action: 41,
         entity_rng: 0x1234,
         position: Position::default(),
         velocity_x: 0,

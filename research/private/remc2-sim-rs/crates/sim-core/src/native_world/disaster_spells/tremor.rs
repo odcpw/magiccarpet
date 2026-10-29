@@ -305,9 +305,7 @@ mod tests {
             &particles,
             flyer,
             None,
-            crate::native_world::source_target::Context::from_ordinary(
-                &live.goats, &live.ordinary,
-            ),
+            crate::native_world::source_target::Context::from_ordinary(&live.goats, &live.ordinary),
         )
         .unwrap();
         let child = visit
@@ -319,6 +317,47 @@ mod tests {
         assert_eq!(
             (row.source_id, row.subspell_index),
             (live.economy.entities[usize::from(parent)].source_id, 4321)
+        );
+
+        // Continue through the ordinary source scheduler: the resulting
+        // controller must change the terrain sampled by flight, not just
+        // produce a model71 row.
+        let before = session.clone();
+        let phase = before.session.state.live.economy.entities[usize::from(child)].phase;
+        session.step_outer_turn(crate::PlayerCommand::default(), 0);
+        assert!(
+            !session
+                .dispatch_events()
+                .iter()
+                .any(|event| matches!(event, crate::native_world::Mc2DispatchEvent::Error { .. })),
+            "scheduled Tremor must not roll back: {:?}",
+            session.dispatch_events()
+        );
+        let live = &session.session.state.live;
+        assert_eq!(
+            live.economy.entities[usize::from(child)].phase,
+            phase.wrapping_add(1)
+        );
+        let previous_terrain = &before.session.state.live.terrain;
+        let center_x = (position.x.wrapping_add(128) >> 8) as u8;
+        let center_y = (position.y.wrapping_add(128) >> 8) as u8;
+        let changed = (-2_i8..=2)
+            .flat_map(|dy| (-2_i8..=2).map(move |dx| (dx, dy)))
+            .map(|(dx, dy)| {
+                let x = center_x.wrapping_add_signed(dx);
+                let y = center_y.wrapping_add_signed(dy);
+                Position {
+                    x: u16::from(x) << 8,
+                    y: u16::from(y) << 8,
+                    z: 0,
+                }
+            })
+            .find(|&point| {
+                previous_terrain.ground_height(point) != live.terrain.ground_height(point)
+            });
+        assert!(
+            changed.is_some(),
+            "scheduled Tremor changes flight terrain sampling"
         );
     }
 }

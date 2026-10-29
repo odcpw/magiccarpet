@@ -322,6 +322,8 @@ mod tests {
             .iter()
             .find(|house| house.source_retained() && house.life >= 0)
             .expect("ordinary live House fixture");
+        let original_flags = house.control_flags;
+        live.ordinary.houses.house_mut(house.entity_index).unwrap().control_flags |= 0x0010_0000;
         let well = gravity::construct(
             &mut live.economy,
             &mut live.terrain,
@@ -358,11 +360,13 @@ mod tests {
             .unwrap();
         assert_eq!(house.life, -1);
         assert_eq!(house.parameter.destruction_successor, 0);
+        assert_eq!(house.control_flags, original_flags & !0x0010_0001);
         // Publishing the next source visit must keep, rather than undo, the
         // direct life/successor write made by the Gravity callback.
         let source = &mut live.economy.entities[usize::from(house.entity_index)];
         house.publish_source(source);
         assert_eq!((source.life, source.font_type_index), (-1, 0));
+        assert_eq!(source.control_flags & 0x0010_0000, 0);
     }
 
     #[test]
@@ -471,6 +475,11 @@ fn pull_actors(context: &mut Context<'_>, slot: u16) -> Result<(), String> {
             .villagers
             .wind_actor(target_slot)
             .unwrap_or(wind_actor);
+        wind_actor = context
+            .ordinary
+            .houses
+            .wind_actor(target_slot, wind_actor)
+            .unwrap_or(wind_actor);
         if let Some(goat) = context
             .goats
             .goats()
@@ -550,6 +559,10 @@ fn pull_actors(context: &mut Context<'_>, slot: u16) -> Result<(), String> {
         context
             .ordinary
             .villagers
+            .apply_wind_motion(target_slot, actor_motion);
+        context
+            .ordinary
+            .houses
             .apply_wind_motion(target_slot, actor_motion);
         context
             .goats

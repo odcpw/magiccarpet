@@ -585,7 +585,7 @@ impl EntitySnapshot {
 
     /// Raw source `word_0x30_48` writer used by the wind target callback.
     pub(super) fn set_source_word_30(&mut self, value: u16) {
-        self.record[48..50].copy_from_slice(&value.to_le_bytes());
+        self.record[52..54].copy_from_slice(&value.to_le_bytes());
     }
 
     /// Keep the lossless source cadence byte in sync with a typed callback
@@ -775,27 +775,27 @@ impl EntitySnapshot {
     }
 
     /// Raw source `word_0x2E_46` used by `sub_5F890` for the spell-holder
-    /// action/cooldown counter.  This is deliberately kept separate from the
-    /// public entity action byte at record offset 73.
+    /// action/cooldown counter. MCE1's four-byte slot/active header places
+    /// this field at record offset 50, separately from the public action byte.
     #[must_use]
     pub fn source_word_2e(&self) -> u16 {
-        u16::from_le_bytes([self.record[46], self.record[47]])
+        u16::from_le_bytes([self.record[50], self.record[51]])
     }
 
     /// Raw source `word_0x30_48`, the spell-holder counter copied by
-    /// `sub_5F890(a1, 1)` before a Castle stage is reinstalled.
+    /// `sub_5F890(a1, 1)` before a Castle stage is reinstalled. The export
+    /// header places this field at record offset 52.
     #[must_use]
     pub fn source_word_30(&self) -> u16 {
-        u16::from_le_bytes([self.record[48], self.record[49]])
+        u16::from_le_bytes([self.record[52], self.record[53]])
     }
 
     /// Exported `word_0x30_48` from the spell-holder source struct. The
-    /// entities export prepends a four-byte slot/active header, so this
-    /// source field is at record bytes 52..54. Keep this helper separate from
-    /// the legacy `source_word_30` projection used by older economy rows.
+    /// spell-facing view shares the canonical exported field with the
+    /// Castle and wind consumers.
     #[must_use]
     pub fn source_spell_word_30(&self) -> u16 {
-        u16::from_le_bytes([self.record[52], self.record[53]])
+        self.source_word_30()
     }
 
     /// Source SetSpell parent relation written at the holder record's
@@ -3963,6 +3963,26 @@ impl RuntimeSnapshot {
         true
     }
 
+    /// Source word3654A is a fixed arena address registered by BUILD68.
+    /// It remains in the runtime buffer across ordinary hide/reclaim; only
+    /// the source constructor and demolition branch write this relation.
+    pub(crate) fn registered_protection_slot(&self) -> Option<u16> {
+        let bytes: [u8; 2] = self.bytes.get(190..192)?.try_into().ok()?;
+        Some(u16::from_le_bytes(bytes))
+    }
+
+    #[must_use]
+    pub(crate) fn set_registered_protection_slot(&mut self, slot: u16) -> bool {
+        if usize::from(slot) >= ENTITY_COUNT {
+            return false;
+        }
+        let Some(bytes) = self.bytes.get_mut(190..192) else {
+            return false;
+        };
+        bytes.copy_from_slice(&slot.to_le_bytes());
+        true
+    }
+
     /// Source word31/word33, retained in the validated MCR1 prefix. These
     /// reset relations initialize the effect owner's mutable arena state.
     pub(crate) fn effect_globals(&self) -> (u16, u16) {
@@ -4951,7 +4971,6 @@ impl NativeWorldInspection {
             ordinary,
             goats,
             mission,
-            NyphurCapability::absent(),
             self.collision_masks.clone(),
         )
     }
@@ -4992,7 +5011,7 @@ impl NativeWorldInspection {
         let state = self
             .reset_state
             .ok_or_else(|| NativeWorldError::new("validated Level 2 package has no reset state"))?;
-        let nyphur_dispatcher = Level2NyphurDispatcher::from_qualified_reset(
+        Level2NyphurDispatcher::from_qualified_reset(
             &self.players,
             &self.entities,
             &self.runtime,
@@ -5074,7 +5093,6 @@ impl NativeWorldInspection {
             ordinary,
             goats,
             mission,
-            NyphurCapability::present(nyphur_dispatcher),
             self.collision_masks.clone(),
         )
     }

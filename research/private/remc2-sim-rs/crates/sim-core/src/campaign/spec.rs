@@ -481,6 +481,18 @@ fn fail<T>(stage: ValidationStage, message: impl Into<String>) -> Result<T> {
     })
 }
 
+fn validate_source_terrain_features(flags: u32) -> Result<()> {
+    // Bit2 enables the ordinary final-boss constructor and its registered
+    // BUILD68 protection/encounter consumers. Bit4 selects rival last-Castle
+    // holder loss. Other source bits have no admitted consumer.
+    if flags & !(2 | 4) != 0 {
+        return fail(ValidationStage::BehaviorClosure, format!(
+            "source terrain feature flags {flags} require their gameplay/presentation consumers",
+        ));
+    }
+    Ok(())
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MemberRef {
     pub member: String,
@@ -2119,18 +2131,7 @@ impl CampaignDefinition {
                 "declared required behavior roots differ from the live reset selectors",
             );
         }
-        // Bit 4 is consumed by the actual last-Castle loss path: only a rival
-        // loses its existing Castle spell holder. Other bits still require
-        // their own gameplay/presentation consumers before runtime admission.
-        if presentation_recipe.terrain_graphics_flags & !4 != 0 {
-            return fail(
-                ValidationStage::BehaviorClosure,
-                format!(
-                    "source terrain feature flags {} require their gameplay/presentation consumers",
-                    presentation_recipe.terrain_graphics_flags,
-                ),
-            );
-        }
+        validate_source_terrain_features(presentation_recipe.terrain_graphics_flags)?;
         for requirement in &declared_requirements {
             let supported = match capabilities.availability(&requirement.key) {
                 BehaviorAvailability::Enabled => true,
@@ -4754,6 +4755,24 @@ fn parse_behavior_requirements(value: &Value) -> Result<Vec<BehaviorRequirement>
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn final_encounter_owner_feature_preflights_and_unknown_bits_remain_rejected() {
+        let package = std::env::var_os("MC_LEVEL25_PACKAGE").map_or_else(
+            || std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../../generated/mc-bhq10-owner-v3-level25-20261029"),
+            std::path::PathBuf::from,
+        );
+        let campaign = crate::campaign::CampaignSession::open(
+            &package, super::CampaignSelection::ordinary(25).unwrap(),
+        ).expect("actual final owner package reaches the production runtime");
+        let flags = campaign.simulation().session.definition.source_terrain_graphics_flags();
+        assert_eq!(flags, 2);
+        let error = super::validate_source_terrain_features(flags | 8)
+            .expect_err("an unimplemented source feature remains rejected");
+        assert_eq!(error.stage, super::ValidationStage::BehaviorClosure);
+        assert!(error.message.contains("source terrain feature flags 10"));
+    }
+
     #[test]
     fn runtime_constructor_counter_version_requires_exact_extent() {
         let mut bytes = vec![0_u8; 2_754];

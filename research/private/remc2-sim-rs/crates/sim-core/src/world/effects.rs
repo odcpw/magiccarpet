@@ -6,7 +6,6 @@
 
 pub(crate) mod lighting;
 
-use std::collections::BTreeMap;
 use crate::level_definition::{EffectDefinition, EffectKind};
 use crate::native_world::{
     EntitySnapshot, Level2AuthoredModel76Source, Level2Model76Child, ParticleParameter,
@@ -14,6 +13,7 @@ use crate::native_world::{
 };
 use crate::renderable_map_chain::RenderableMapSeed;
 use crate::{FlightWorld, Position, campaign::source_arena::SourceArena, move_entity};
+use std::collections::BTreeMap;
 
 /// Source descriptor shared by both ordinary model27 projectile births.
 /// The typed Fireball origin selects this rule without a duplicate mutable
@@ -97,7 +97,9 @@ pub(crate) fn register_death_burst(
     slot: u16,
     parent: u16,
 ) -> Result<(), String> {
-    let row = arena.entities.get(usize::from(slot))
+    let row = arena
+        .entities
+        .get(usize::from(slot))
         .filter(|row| row.active && (row.class, row.model, row.action) == (10, 1, 1))
         .ok_or_else(|| format!("death burst {slot} is not a live raw 10/1 product"))?;
     let id = row.source_id;
@@ -105,7 +107,10 @@ pub(crate) fn register_death_burst(
     if arena.effects.death_bursts.contains_key(&slot) {
         return Err(format!("death burst {slot} is already registered"));
     }
-    arena.effects.death_bursts.insert(slot, (generation, parent));
+    arena
+        .effects
+        .death_bursts
+        .insert(slot, (generation, parent));
     arena.economy.record_raw_death_burst_spawn(slot, parent, id);
     Ok(())
 }
@@ -492,6 +497,198 @@ pub(crate) fn allocate(
     position: Position,
     particles: &[ParticleParameter],
 ) -> Result<Option<u16>, String> {
+    allocate_inner(arena, terrain, definition, position, particles, None)
+}
+
+/// Construct an impact or radial explosion from a source entity's position
+/// address. NewEvent can reuse that same address and zero it before the
+/// constructor maps the child or admits its light.
+pub(crate) fn allocate_from_source_position(
+    arena: &mut SourceArena,
+    terrain: &mut SessionTerrain,
+    definition: EffectDefinition,
+    source_slot: u16,
+    source_position: Position,
+    particles: &[ParticleParameter],
+) -> Result<Option<u16>, String> {
+    if !matches!(
+        definition.kind(),
+        EffectKind::Impact | EffectKind::RadialExplosion
+    ) {
+        return Err(
+            "source-position effect constructor only supports impact and radial explosion"
+                .to_owned(),
+        );
+    }
+    if usize::from(source_slot) >= arena.entities.len() {
+        return Err(format!(
+            "effect source address {source_slot} is outside the arena"
+        ));
+    }
+    allocate_inner(
+        arena,
+        terrain,
+        definition,
+        source_position,
+        particles,
+        Some(source_slot),
+    )
+}
+
+/// The common KillEntity 10/1 birth. The caller supplies the current source
+/// pose and id after its preceding mana allocation, then owns its original
+/// source-pointer hide tail. Success publishes exactly one provenance event.
+pub(crate) fn spawn_death_burst(
+    arena: &mut SourceArena,
+    terrain: &mut SessionTerrain,
+    particles: &[ParticleParameter],
+    parent_slot: u16,
+    parent_position: Position,
+    parent_id: u16,
+) -> Result<Option<u16>, String> {
+    let Some(slot) = allocate_from_source_position(
+        arena,
+        terrain,
+        sim_definition::adapter::mc2_effect_definition(EffectKind::RadialExplosion),
+        parent_slot,
+        parent_position,
+        particles,
+    )?
+    else {
+        return Ok(None);
+    };
+    // KillEntity reads its parent pointer after NewEvent, including when
+    // that pointer now names the newly initialized burst itself.
+    let id = if slot == parent_slot { slot } else { parent_id };
+    let row = &mut arena.entities[usize::from(slot)];
+    row.source_id = id;
+    row.record[30..32].copy_from_slice(&id.to_le_bytes());
+    register_death_burst(arena, slot, parent_slot)?;
+    Ok(Some(slot))
+}
+
+/// Hide a source address if this birth, or its preceding mana conversion,
+/// replaced the caller. Other typed occupants remain their family's job;
+/// returning false never writes through an unrelated stale raw row.
+pub(crate) fn hide_birth_replacement(
+    arena: &mut SourceArena,
+    source_slot: u16,
+    newborn: Option<u16>,
+) -> Result<bool, String> {
+    if usize::from(source_slot) >= arena.entities.len() {
+        return Err(format!(
+            "effect source address {source_slot} is outside the arena"
+        ));
+    }
+    if newborn == Some(source_slot) {
+        let row = &mut arena.entities[usize::from(source_slot)];
+        if !row.active || row.class != 10 || !matches!(row.model, 0 | 1) {
+            return Err(format!(
+                "effect newborn at {source_slot} changed before source hide"
+            ));
+        }
+        row.disable_drawing();
+        return Ok(true);
+    }
+    if let Some(sphere) = arena
+        .economy
+        .spheres_mut()
+        .iter_mut()
+        .find(|row| row.active && row.source_entity_index == source_slot)
+    {
+        sphere.control_flags |= 0x400;
+        sphere.pending_delete = true;
+        return Ok(true);
+    }
+    Ok(false)
+}
+
+/// TransformEntityToManaSphere clears playerEntityIndex on the current
+/// address after allocation, including when that address is the new sphere.
+/// The caller clears its original actor's own relation when this returns false.
+pub(crate) fn clear_replacement_mana_owner(
+    arena: &mut SourceArena,
+    source_slot: u16,
+) -> Result<bool, String> {
+    if usize::from(source_slot) >= arena.entities.len() {
+        return Err(format!(
+            "mana conversion source address {source_slot} is outside the arena"
+        ));
+    }
+    if let Some(sphere) = arena
+        .economy
+        .spheres_mut()
+        .iter_mut()
+        .find(|row| row.active && row.source_entity_index == source_slot)
+    {
+        sphere.player_entity_index = 0;
+        sphere.owner_entity_index = 0;
+        arena.economy.refresh_owner_mana_rows();
+        return Ok(true);
+    }
+    Ok(false)
+}
+
+/// The one-sphere 36BA0 birth after the dying carrier's RNG draw. The caller
+/// clears the current source owner's relation after this attempt, including
+/// allocation failure, and owns the source-specific RNG write before it.
+pub(crate) fn spawn_death_mana_sphere(
+    arena: &mut SourceArena,
+    terrain: &mut SessionTerrain,
+    source_slot: u16,
+    source_position: Position,
+    source_yaw: i16,
+    source_mana: i32,
+    source_owner: u16,
+) -> Result<Option<u16>, String> {
+    if usize::from(source_slot) >= arena.entities.len() {
+        return Err(format!(
+            "mana conversion source address {source_slot} is outside the arena"
+        ));
+    }
+    if source_mana <= 0 {
+        return Ok(None);
+    }
+    let Some(slot) = arena.allocate_source_slot_with_terrain(terrain) else {
+        return Ok(None);
+    };
+    // CreateManaSphere512 sets mana before 36BA0 rereads the parent. If the
+    // source address was reused, those reads now see the new sphere itself.
+    let replaced_source = slot == source_slot;
+    let position = if replaced_source {
+        Position::default()
+    } else {
+        source_position
+    };
+    arena.economy.initialize_death_mana_sphere_at_slot(
+        slot,
+        source_slot,
+        position,
+        if replaced_source { 0 } else { source_yaw },
+        if replaced_source { 512 } else { source_mana },
+        if replaced_source { 0 } else { source_owner },
+        terrain,
+    );
+    let rng = arena
+        .economy
+        .spheres()
+        .iter()
+        .find(|sphere| sphere.active && sphere.source_entity_index == slot)
+        .ok_or_else(|| format!("mana conversion lost allocated sphere {slot}"))?
+        .entity_rng;
+    arena.economy.source_rng.insert(slot, rng);
+    sync_position(arena, terrain, slot, position, true, false)?;
+    Ok(Some(slot))
+}
+
+fn allocate_inner(
+    arena: &mut SourceArena,
+    terrain: &mut SessionTerrain,
+    definition: EffectDefinition,
+    position: Position,
+    particles: &[ParticleParameter],
+    source_position_slot: Option<u16>,
+) -> Result<Option<u16>, String> {
     let model = source_model(definition.kind());
     if matches!(model, 23 | 38) {
         use crate::native_world::lightning::{self, Product};
@@ -599,6 +796,11 @@ pub(crate) fn allocate(
     }
     let Some(slot) = arena.allocate_source_slot_with_terrain(terrain) else {
         return Ok(None);
+    };
+    let position = if source_position_slot == Some(slot) {
+        Position::default()
+    } else {
+        position
     };
     let mut row = crate::native_world::cave_features::new_event(
         slot,
@@ -868,8 +1070,8 @@ where
 {
     let source = arena.entities[usize::from(slot)].clone();
     let generation = arena.economy.slot_generation(slot);
-    let was_live_burst = (source.class, source.model, source.action) == (10, 1, 1)
-        && !source.drawing_disabled();
+    let was_live_burst =
+        (source.class, source.model, source.action) == (10, 1, 1) && !source.drawing_disabled();
     let result = visit_entity(arena, terrain, source, particles, state, apply_damage);
     state.retain_current_generations(arena);
     let (source, visit) = result?;

@@ -512,12 +512,19 @@ pub(crate) fn step_row(
     if let Some(visual) = effects.visual {
         crate::world::effects::bind_particle(&mut row, visual, particles)?;
     }
+    // sub_28CE0 keeps action204 while it allocates children and its burst;
+    // the source pointer receives action205 only after those constructors.
+    if effects.split {
+        row.set_source_action(204);
+    }
     row.record[66] = row.phase;
     arena.economy.source_rng.insert(slot, row.entity_rng);
     arena.entities[usize::from(slot)] = row;
 
-    for _ in 0..effects.population_increments {
-        arena.economy.increment_source_creature_population();
+    if !effects.split {
+        for _ in 0..effects.population_increments {
+            arena.economy.increment_source_creature_population();
+        }
     }
     for _ in 0..effects.population_decrements {
         arena.economy.decrement_source_creature_population();
@@ -541,20 +548,52 @@ pub(crate) fn step_row(
             let mana = parent.mana;
             let owner = parent.source_player_entity_index();
             if mana > 0 {
-                super::super::creature_24::mc2::spawn_mana(
+                let rng = crate::native_world::level2_next_rng16(parent.entity_rng);
+                arena.entities[usize::from(slot)].set_entity_rng(rng);
+                arena.economy.source_rng.insert(slot, rng);
+                crate::world::effects::spawn_death_mana_sphere(
                     arena, terrain, slot, position, yaw, mana, owner,
                 )?;
+                if !crate::world::effects::clear_replacement_mana_owner(arena, slot)? {
+                    arena.entities[usize::from(slot)].set_source_player_entity_index(0);
+                }
             }
         } else {
             let _ = split(arena, runtime, terrain, particles, slot)?;
         }
-        let _ = arena
-            .economy
-            .spawn_death_burst_from_death_with_id(slot, source_id, position);
+        let current = crate::native_world::source_target::read(
+            arena,
+            crate::native_world::source_target::Context::default(),
+            slot,
+        )?
+        .ok_or_else(|| format!("Cymmerian split lost source address {slot}"))?;
+        crate::world::effects::spawn_death_burst(
+            arena,
+            terrain,
+            particles,
+            slot,
+            current.position,
+            current.source_id,
+        )?;
+        // NewEvent may replace the fixed source address during mana birth.
+        // The source's post-constructor write then belongs to that sphere,
+        // not to the stale raw actor. Other typed occupants require their own
+        // authoritative writer instead of silently updating a raw shadow.
+        if !arena.economy.set_mana_sphere_action(slot, 205) {
+            if arena.economy.live_arena_cursor_row(slot).is_some() {
+                return Err(format!(
+                    "Cymmerian split source address {slot} has an unsupported typed replacement"
+                ));
+            }
+            arena.entities[usize::from(slot)].set_source_action(205);
+        }
+        for _ in 0..effects.population_increments {
+            arena.economy.increment_source_creature_population();
+        }
     }
 
     if effects.kill {
-        kill_summoned_child(arena, terrain, slot)?;
+        kill_summoned_child(arena, terrain, particles, slot)?;
     }
     if let Some(attack) = effects.attack.take() {
         let _ = launch_attack(arena, terrain, attack)?;
@@ -568,6 +607,7 @@ pub(crate) fn step_row(
 fn kill_summoned_child(
     arena: &mut SourceArena,
     terrain: &mut SessionTerrain,
+    particles: &[ParticleParameter],
     slot: u16,
 ) -> Result<(), String> {
     let Some(row) = arena
@@ -588,7 +628,7 @@ fn kill_summoned_child(
             .economy
             .source_rng
             .insert(slot, arena.entities[usize::from(slot)].entity_rng);
-        super::super::creature_24::mc2::spawn_mana(
+        crate::world::effects::spawn_death_mana_sphere(
             arena,
             terrain,
             slot,
@@ -597,23 +637,30 @@ fn kill_summoned_child(
             row.mana,
             row.source_player_entity_index(),
         )?;
+        if !crate::world::effects::clear_replacement_mana_owner(arena, slot)? {
+            arena.entities[usize::from(slot)].set_source_player_entity_index(0);
+        }
     }
-    if row.control_flags & 0x10_0000 == 0 {
-        let _ =
-            arena
-                .economy
-                .spawn_death_burst_from_death_with_id(slot, row.source_id, row.position);
-    }
-    if let Some(sphere) = arena
-        .economy
-        .spheres
-        .iter_mut()
-        .find(|sphere| sphere.source_entity_index == slot)
-    {
-        sphere.control_flags |= crate::native_world::ENTITY_DRAW_DISABLED_BIT;
-        sphere.pending_delete = true;
-    } else if let Some(row) = arena.entities.get_mut(usize::from(slot)) {
-        row.disable_drawing();
+    let current = crate::native_world::source_target::read(
+        arena,
+        crate::native_world::source_target::Context::default(),
+        slot,
+    )?
+    .ok_or_else(|| format!("Cymmerian death lost source address {slot}"))?;
+    let burst = if current.control_flags & 0x10_0000 == 0 {
+        crate::world::effects::spawn_death_burst(
+            arena,
+            terrain,
+            particles,
+            slot,
+            current.position,
+            current.source_id,
+        )?
+    } else {
+        None
+    };
+    if !crate::world::effects::hide_birth_replacement(arena, slot, burst)? {
+        arena.entities[usize::from(slot)].disable_drawing();
     }
     Ok(())
 }

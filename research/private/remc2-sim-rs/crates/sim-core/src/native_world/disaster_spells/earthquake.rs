@@ -204,33 +204,16 @@ pub(crate) fn construct_effect(
     {
         return Err("Earthquake effect received an unrelated projectile".to_owned());
     }
-    let impact_parameter = projectile.record[74];
-    let tier = EARTHQUAKE_PROPERTIES
-        .tiers
-        .iter()
-        .position(|rule| rule.impact_parameter == impact_parameter)
-        .ok_or("Earthquake projectile has an unknown source tier")?;
-    let definition = sim_definition::adapter::mc2_authored_terrain_disaster_definition(
-        TerrainDisasterKind::Earthquake,
-        tier as u16,
-    )?;
-    let position = projectile.position;
-    let owner = projectile.source_id;
-    let yaw = projectile.yaw;
-    let pitch = projectile.pitch;
-    let damage = projectile.subspell_index;
-    let Some(slot) = crate::world::terrain::disasters::mc2::runtime::construct_defined(
-        arena, terrain, position, definition,
-    )?
-    else {
-        return Ok(None);
-    };
-    let effect = &mut arena.entities[usize::from(slot)];
-    set_owner(effect, owner);
-    effect.set_yaw(yaw);
-    effect.set_pitch(pitch);
-    effect.set_subspell_index(damage);
-    Ok(Some(slot))
+    // sub_65820 constructs model15 independently of the projectile's
+    // payload, then copies the current payload. sub_66160 sets its life.
+    let definition =
+        sim_definition::adapter::mc2_terrain_disaster_definition(TerrainDisasterKind::Earthquake);
+    crate::world::terrain::disasters::mc2::runtime::construct_defined(
+        arena,
+        terrain,
+        projectile.position,
+        definition,
+    )
 }
 
 #[cfg(test)]
@@ -262,7 +245,12 @@ mod tests {
 
     #[test]
     fn family17_cast_reaches_tiered_guided_impact_and_keeps_max_life() {
-        for tier in 0_u8..3 {
+        for (tier, override_payload) in [
+            (0_u8, None),
+            (1, None),
+            (2, None),
+            (1, Some((37_u8, 777_u16))),
+        ] {
             let (mut simulation, holder_slot, parent_slot) = ready_earthquake(tier);
             let particles = simulation.session.definition.presentation.particles.clone();
             let rule = EARTHQUAKE_PROPERTIES.tiers[usize::from(tier)];
@@ -300,6 +288,29 @@ mod tests {
                 ),
                 (Some(211), Some(60), holder_slot, 61)
             );
+            if tier == 0 {
+                let mut bare_arena = live.economy.clone();
+                let mut bare_terrain = live.terrain.clone();
+                let bare_slot = construct_effect(&mut bare_arena, &mut bare_terrain, &projectile)
+                    .unwrap()
+                    .expect("source constructor allocates the bare Earthquake");
+                let bare = &bare_arena.entities[usize::from(bare_slot)];
+                assert_eq!(
+                    (
+                        bare.source_id,
+                        bare.subspell_index,
+                        bare.life,
+                        bare.max_life
+                    ),
+                    (bare_slot, 100, 128, 128),
+                    "guided impact copies the flyer only after this constructor"
+                );
+                let mut unrelated = projectile.clone();
+                unrelated.record[72] = 11;
+                assert!(
+                    construct_effect(&mut live.economy, &mut live.terrain, &unrelated).is_err()
+                );
+            }
 
             // Force the ordinary ground-impact path on a real dry terrain
             // cell. The shared flyer correctly emits water splash and hides
@@ -320,6 +331,10 @@ mod tests {
                 flyer.record[136..138].copy_from_slice(&0_i16.to_le_bytes());
                 flyer.set_yaw(0);
                 flyer.set_pitch(0);
+                if let Some((lifetime, damage)) = override_payload {
+                    flyer.set_source_byte_46(lifetime);
+                    flyer.set_subspell_index(damage);
+                }
                 flyer.position
             };
             crate::world::effects::sync_position(
@@ -338,7 +353,8 @@ mod tests {
                 projectile_slot,
                 None,
                 crate::native_world::source_target::Context::from_ordinary(
-                    &live.goats, &live.ordinary,
+                    &live.goats,
+                    &live.ordinary,
                 ),
             )
             .unwrap();
@@ -346,6 +362,8 @@ mod tests {
                 .impact_slot
                 .expect("source guided impact allocation");
             let effect = &live.economy.entities[usize::from(effect_slot)];
+            let (expected_lifetime, expected_damage) =
+                override_payload.unwrap_or((rule.impact_parameter, rule.damage));
             assert_eq!(
                 (
                     effect.class,
@@ -363,9 +381,9 @@ mod tests {
                     15,
                     projectile.source_id,
                     128,
-                    i32::from(rule.impact_parameter),
-                    rule.damage,
-                    rule.impact_parameter,
+                    i32::from(expected_lifetime),
+                    expected_damage,
+                    expected_lifetime,
                 )
             );
         }

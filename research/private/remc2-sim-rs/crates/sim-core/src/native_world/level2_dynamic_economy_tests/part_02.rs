@@ -47,12 +47,28 @@ fn level_two_direct_arena_cursor_matches_census_through_reclaim_and_reuse() {
     );
     assert_matches_census(&economy);
 
-    economy
-        .spheres
-        .iter_mut()
+    let normal_hash = economy.reset_hash();
+    assert_eq!(original_sphere.action, 41);
+    assert!(economy.set_mana_sphere_action(slot, 205));
+    assert_eq!(
+        economy.live_arena_class_action(slot, Level2DynamicArenaKind::ManaSphere),
+        Some((10, 205)),
+        "the next visit reads the current replacement's selector"
+    );
+    assert_ne!(economy.reset_hash(), normal_hash);
+    assert!(economy.set_mana_sphere_action(slot, 41));
+    assert_eq!(economy.reset_hash(), normal_hash);
+    assert!(economy.set_mana_sphere_action(slot, 205));
+    let phase = original_sphere.phase;
+    assert!(economy.hide_dynamic_invalid_selector(slot));
+    let hidden = economy
+        .spheres()
+        .iter()
         .find(|sphere| sphere.source_entity_index == slot)
-        .expect("callback-hidden sphere remains allocated")
-        .control_flags |= ENTITY_DRAW_DISABLED_BIT;
+        .unwrap();
+    assert_eq!(hidden.phase, phase);
+    assert!(hidden.pending_delete);
+    assert_ne!(hidden.control_flags & ENTITY_DRAW_DISABLED_BIT, 0);
     assert_eq!(
         economy
             .live_arena_cursor_row(slot)
@@ -61,8 +77,13 @@ fn level_two_direct_arena_cursor_matches_census_through_reclaim_and_reuse() {
         "hidden active rows retain their identity until source cleanup"
     );
     assert_matches_census(&economy);
+    let prior_free = economy.free_slots.clone();
+    economy.rebuild_free_arena(&prior_free);
+    assert!(economy.live_arena_cursor_row(slot).is_some());
+    assert!(!economy.free_slots.contains(&slot));
     economy.reclaim_inactive_slots_at_source_boundary();
     assert_eq!(economy.live_arena_cursor_row(slot), None);
+    assert!(!economy.set_mana_sphere_action(slot, 205));
     assert!(economy.free_slots.contains(&slot));
     assert!(!economy.map_chains().is_linked(slot));
     assert_matches_census(&economy);
@@ -105,6 +126,47 @@ fn level_two_direct_arena_cursor_matches_census_through_reclaim_and_reuse() {
         "inactive later carriers cannot overwrite the surviving active row"
     );
     assert_matches_census(&overlap);
+
+    // Exercise the actual selector resolver and scheduler cleanup, rather
+    // than treating the direct carrier operation above as dispatch proof.
+    let mut scheduled = inspection.level2_reset_session().unwrap();
+    let scheduled_slot = scheduled
+        .economy_mut()
+        .spawn_mana_sphere_from_death(77, Position::default(), 0, 0x1234, 500, 111)
+        .unwrap() as u16;
+    assert!(
+        scheduled
+            .economy_mut()
+            .set_mana_sphere_action(scheduled_slot, 205)
+    );
+    scheduled.step_outer_turn(PlayerCommand::default(), 0);
+    assert!(
+        !scheduled
+            .dispatch_events()
+            .iter()
+            .any(|event| matches!(event, Mc2DispatchEvent::Error { .. })),
+        "{:?}",
+        scheduled.dispatch_events()
+    );
+    let receipts = scheduled.cf10_production_schedule_receipts();
+    assert!(receipts.iter().any(|receipt| matches!(
+        receipt,
+        crate::campaign::schedule::ScheduleReceipt::CleanupCompleted { slot, .. }
+            if *slot == scheduled_slot
+    )));
+    assert!(!receipts.iter().any(|receipt| matches!(
+        receipt,
+        crate::campaign::schedule::ScheduleReceipt::CallbackCompleted { slot, .. }
+            | crate::campaign::schedule::ScheduleReceipt::EpilogueCompleted { slot, .. }
+            if *slot == scheduled_slot
+    )));
+    assert!(
+        !scheduled
+            .economy()
+            .spheres()
+            .iter()
+            .any(|sphere| sphere.source_entity_index == scheduled_slot)
+    );
 }
 
 #[test]

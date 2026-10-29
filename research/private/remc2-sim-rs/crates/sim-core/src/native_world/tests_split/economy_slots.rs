@@ -1755,7 +1755,7 @@ fn level_two_dynamic_economy_slots_dispatch_and_reclaim_in_source_order() {
         .position(|event| matches!(event, GoatStepEvent::RemovalQueued { .. }))
         .expect("Goat removal event");
     assert!(mana_index < extra_index && extra_index < removal_index);
-    let economy_payloads = session
+    let mut economy_payloads = session
         .dispatch_events()
         .iter()
         .filter_map(|event| match event {
@@ -1832,6 +1832,69 @@ fn level_two_dynamic_economy_slots_dispatch_and_reclaim_in_source_order() {
         })
         .expect("Goat mana sphere slot");
     assert!(sphere_slot < burst_slot, "source allocations retain order");
+    let burst_generation = session.economy().slot_generation(burst_slot);
+    let burst = &session.source_arena().entities[usize::from(burst_slot)];
+    assert!(
+        burst.active,
+        "the raw burst remains live after its birth turn"
+    );
+    assert_eq!((burst.class, burst.model, burst.action), (10, 1, 1));
+    assert_eq!(burst.source_id, goat_source_id);
+    assert!((-1..=1).contains(&burst.life));
+    assert_eq!(
+        burst.phase,
+        (burst_slot as u8).wrapping_add((1 - burst.life) as u8),
+        "each completed source action1 visit advances phase once"
+    );
+    assert!(session.economy().map_chains().is_linked(burst_slot));
+    let dynamic_slots = session
+        .dispatch_events()
+        .iter()
+        .filter_map(|event| match event {
+            Mc2DispatchEvent::DynamicArena {
+                source_slot,
+                kind: Level2DynamicArenaKind::ManaSphere,
+                ..
+            } if *source_slot == sphere_slot => Some(*source_slot),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(dynamic_slots.first().copied(), Some(sphere_slot));
+    // Action1 starts with life=1: its normal visits decrement to 0, then
+    // -1, then hide. The old one-visit typed stub expired during the Goat's
+    // birth turn; observe the actual later dispatch instead.
+    for _ in 0..4 {
+        if economy_payloads.iter().any(|(_, event)| {
+            matches!(
+                event,
+                Level2EconomyEvent::DeathBurstExpired {
+                    source_entity_index, parent_entity_index,
+                } if *source_entity_index == burst_slot && *parent_entity_index == goat_slot
+            )
+        }) {
+            break;
+        }
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        assert!(
+            !session
+                .dispatch_events()
+                .iter()
+                .any(|event| matches!(event, Mc2DispatchEvent::Error { .. })),
+            "source scheduler error: {:?}",
+            session.dispatch_events()
+        );
+        economy_payloads.extend(
+            session
+                .dispatch_events()
+                .iter()
+                .filter_map(|event| match event {
+                    Mc2DispatchEvent::Economy {
+                        source_slot, event, ..
+                    } => Some((*source_slot, *event)),
+                    _ => None,
+                }),
+        );
+    }
     let burst_expired_payload_index = economy_payloads
         .iter()
         .position(|(_, event)| {
@@ -1844,45 +1907,29 @@ fn level_two_dynamic_economy_slots_dispatch_and_reclaim_in_source_order() {
                     && *parent_entity_index == goat_slot
             )
         })
-        .expect("Goat dispatch includes burst expiry payload");
+        .expect("Goat dispatch includes the real later burst expiry payload");
     assert!(burst_payload_index < burst_expired_payload_index);
     assert_eq!(
         economy_payloads[burst_expired_payload_index].0, burst_slot,
         "burst expiry keeps the burst source slot"
     );
-    let dynamic_slots = session
-        .dispatch_events()
-        .iter()
-        .filter_map(|event| match event {
-            Mc2DispatchEvent::DynamicArena {
-                source_slot,
-                kind: Level2DynamicArenaKind::ManaSphere,
-                ..
-            }
-            | Mc2DispatchEvent::DynamicArena {
-                source_slot,
-                kind: Level2DynamicArenaKind::DeathBurst,
-                ..
-            } if *source_slot == sphere_slot || *source_slot == burst_slot => Some(*source_slot),
-            _ => None,
-        })
-        .collect::<Vec<_>>();
-    assert_eq!(dynamic_slots.first().copied(), Some(sphere_slot));
-    assert_eq!(dynamic_slots.last().copied(), Some(burst_slot));
-    assert!(session.dispatch_events().iter().any(|event| {
-        matches!(
-            event,
-            Mc2DispatchEvent::DynamicArena {
-                source_slot,
-                kind: Level2DynamicArenaKind::DeathBurst,
-                ..
-            } if *source_slot == burst_slot
-        )
-    }));
     assert!(session.economy().events().iter().any(|event| {
         matches!(event, Level2EconomyEvent::DeathBurstExpired { source_entity_index, .. }
                 if *source_entity_index == burst_slot)
     }));
+    for _ in 0..2 {
+        if session.economy().free_source_slots().contains(&burst_slot)
+            || session.economy().slot_generation(burst_slot) != burst_generation
+        {
+            break;
+        }
+        session.step_outer_turn(PlayerCommand::default(), 0);
+    }
+    assert!(
+        session.economy().free_source_slots().contains(&burst_slot)
+            || session.economy().slot_generation(burst_slot) != burst_generation,
+        "hidden burst is reclaimed at the following source boundary"
+    );
 
     session.reset();
     assert_eq!(session.economy().reset_hash(), baseline_economy_hash);
@@ -2840,7 +2887,7 @@ fn level_two_spell_replacement_uses_shared_arena_and_outer_cursor() {
             .contains(&expected_slot)
     );
 
-    session.economy_mut().exhaust_new_event_capacity_for_test();
+    session.session.state.live.economy.economy.exhaust_new_event_capacity_for_test();
     let rows_before_failure = session.economy().spell_replacements().len();
     assert!(
         session

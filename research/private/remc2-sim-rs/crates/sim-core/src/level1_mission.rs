@@ -5166,6 +5166,9 @@ pub struct ManaSphere {
     /// as `u32` only to preserve the existing presentation ABI.
     pub id: u32,
     pub source_entity_index: u16,
+    /// Current source callback selector. Constructors install 41; a later
+    /// fixed-address write may change the occupant before its next visit.
+    pub action: u8,
     pub entity_rng: u16,
     pub position: Position,
     pub velocity_x: i16,
@@ -7313,6 +7316,7 @@ impl Level1MissionState {
         view.visible = sphere.active && !sphere.pending_delete;
         view.position = sphere.position;
         view.control_flags = sphere.control_flags;
+        view.action = sphere.action;
         view.life = sphere.mana;
         view.pending_damage = sphere.ordinary_damage_payload;
         view.pending_attacker = sphere.ordinary_damage_owner;
@@ -9255,6 +9259,10 @@ impl Level1MissionState {
                 hash.u16(sphere.collision_pitch.cast_unsigned());
                 hash.u16(sphere.collision_roll.cast_unsigned());
                 hash.u16(sphere.collision_fov.cast_unsigned());
+                if sphere.action != 41 {
+                    hash.bytes(b"mana-sphere-current-action\0");
+                    hash.u8(sphere.action);
+                }
             }
         }
         if !self.player_creature_kills.is_empty() {
@@ -10308,6 +10316,7 @@ impl Level1MissionState {
         self.mana_spheres.push(ManaSphere {
             id,
             source_entity_index: sphere_slot,
+            action: 41,
             entity_rng,
             position,
             velocity_x: velocity.x.cast_signed(),
@@ -10471,6 +10480,7 @@ impl Level1MissionState {
         self.mana_spheres.push(ManaSphere {
             id,
             source_entity_index: sphere_slot,
+            action: 41,
             entity_rng: speed_rng,
             position,
             velocity_x: velocity.x.cast_signed(),
@@ -17405,6 +17415,7 @@ impl Level1MissionState {
         self.mana_spheres.push(ManaSphere {
             id,
             source_entity_index: sphere_slot,
+            action: 41,
             entity_rng: sphere_rng,
             position,
             velocity_x: 0,

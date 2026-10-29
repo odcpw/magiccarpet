@@ -21,11 +21,18 @@ pub(crate) struct Context<'a> {
     pub(crate) lists: &'a area_damage::EffectLists,
 }
 
+/// The damage visit writes progression synchronously; the scheduler uses the
+/// returned owner and family to publish the same values to player consumers.
+pub(crate) struct DamageResult {
+    pub(crate) hits: u16,
+    pub(crate) experience: Option<(u16, u8)>,
+}
+
 pub(crate) fn apply_request(
     arena: &mut SourceArena,
     context: Context<'_>,
     request: super::runtime::DamageRequest,
-) -> Result<u16, String> {
+) -> Result<DamageResult, String> {
     let damage = match request {
         super::runtime::DamageRequest::Rectangle(damage) => {
             return apply(
@@ -77,7 +84,7 @@ pub(crate) fn apply(
     progression: Option<&mut Level2SharedSpellResetSession>,
     experience_enabled: bool,
     damage: AreaDamage,
-) -> Result<u16, String> {
+) -> Result<DamageResult, String> {
     let source = arena
         .entities
         .get(usize::from(damage.source_slot))
@@ -105,18 +112,27 @@ fn award_experience(
     experience_enabled: bool,
     damage: AreaDamage,
     count: u16,
-) -> Result<u16, String> {
+) -> Result<DamageResult, String> {
     if count == 0 || !experience_enabled || damage.owner == 0 {
-        return Ok(count);
+        return Ok(DamageResult {
+            hits: count,
+            experience: None,
+        });
     }
     let Some(family) = damage.experience_spell else {
-        return Ok(count);
+        return Ok(DamageResult {
+            hits: count,
+            experience: None,
+        });
     };
     let Some(owner) = arena.entities.get(usize::from(damage.owner)) else {
         return Err("terrain experience owner is outside the source arena".into());
     };
     if owner.class != 3 || owner.model != 0 {
-        return Ok(count);
+        return Ok(DamageResult {
+            hits: count,
+            experience: None,
+        });
     }
     let progression = progression.ok_or("terrain experience has no retained progression owner")?;
     if !progression
@@ -127,5 +143,8 @@ fn award_experience(
         return Err("terrain experience owner has no retained player record".into());
     }
     progression.award_spell_experience(damage.owner, family, i32::from(count as i16));
-    Ok(count)
+    Ok(DamageResult {
+        hits: count,
+        experience: Some((damage.owner, family)),
+    })
 }

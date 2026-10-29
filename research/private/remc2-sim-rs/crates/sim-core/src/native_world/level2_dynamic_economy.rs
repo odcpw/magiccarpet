@@ -222,6 +222,47 @@ impl Level2EconomyState {
             base.yaw = actor.yaw;
             base.rng = actor.entity_rng;
             base.flags = actor.control_flags;
+            base.move_heading = actor.stage_duration;
+            return Some(base);
+        }
+        if let Some(actor) = self
+            .house_residents
+            .iter()
+            .find(|s| s.active && s.source_entity_index == slot)
+        {
+            base.position = actor.position;
+            base.class = 5;
+            base.model = actor.model;
+            base.yaw = actor.yaw;
+            base.rng = actor.entity_rng;
+            base.flags = actor.control_flags;
+            base.move_heading = actor.stage.duration;
+            return Some(base);
+        }
+        if let Some(actor) = self
+            .authored_dragon_parts
+            .iter()
+            .find(|s| s.active && s.source_entity_index == slot)
+        {
+            base.position = actor.position;
+            base.class = 5;
+            base.model = actor.model;
+            base.yaw = actor.yaw;
+            base.rng = actor.entity_rng;
+            base.flags = actor.control_flags;
+            return Some(base);
+        }
+        if let Some(actor) = self
+            .authored_class5_model3_children
+            .iter()
+            .find(|s| s.active && s.source_entity_index == slot)
+        {
+            base.position = actor.position;
+            base.class = 5;
+            base.model = actor.model;
+            base.yaw = actor.yaw;
+            base.rng = actor.entity_rng;
+            base.flags = actor.control_flags;
             return Some(base);
         }
         if let Some(actor) = self
@@ -240,6 +281,7 @@ impl Level2EconomyState {
                 .find(|s| s.source_entity_index == slot)
             {
                 base.flags = state.control_flags;
+                base.move_heading = state.stage.duration;
             } else if let Some(state) = self
                 .authored_fireflies
                 .iter()
@@ -248,6 +290,12 @@ impl Level2EconomyState {
                 base.flags = state.control_flags;
             } else if let Some(state) = self
                 .authored_dragons
+                .iter()
+                .find(|s| s.source_entity_index == slot)
+            {
+                base.flags = state.control_flags;
+            } else if let Some(state) = self
+                .authored_class5_model3
                 .iter()
                 .find(|s| s.source_entity_index == slot)
             {
@@ -287,6 +335,41 @@ impl Level2EconomyState {
             actor.yaw = motion.actor.yaw;
             actor.entity_rng = motion.actor.rng;
             actor.control_flags = motion.actor.flags;
+            actor.stage_duration = motion.actor.move_heading;
+            if let Some(speed) = motion.actual_speed {
+                actor.actual_speed = speed;
+            }
+        } else if let Some(actor) = self
+            .house_residents
+            .iter_mut()
+            .find(|s| s.active && s.source_entity_index == slot)
+        {
+            actor.position = motion.actor.position;
+            actor.yaw = motion.actor.yaw;
+            actor.entity_rng = motion.actor.rng;
+            actor.control_flags = motion.actor.flags;
+            actor.stage.duration = motion.actor.move_heading;
+            if let Some(speed) = motion.actual_speed {
+                actor.actual_speed = speed;
+            }
+        } else if let Some(actor) = self
+            .authored_dragon_parts
+            .iter_mut()
+            .find(|s| s.active && s.source_entity_index == slot)
+        {
+            actor.position = motion.actor.position;
+            actor.yaw = motion.actor.yaw;
+            actor.entity_rng = motion.actor.rng;
+            actor.control_flags = motion.actor.flags;
+        } else if let Some(actor) = self
+            .authored_class5_model3_children
+            .iter_mut()
+            .find(|s| s.active && s.source_entity_index == slot)
+        {
+            actor.position = motion.actor.position;
+            actor.yaw = motion.actor.yaw;
+            actor.entity_rng = motion.actor.rng;
+            actor.control_flags = motion.actor.flags;
             if let Some(speed) = motion.actual_speed {
                 actor.actual_speed = speed;
             }
@@ -307,6 +390,7 @@ impl Level2EconomyState {
                 .find(|s| s.source_entity_index == slot)
             {
                 state.control_flags = motion.actor.flags;
+                state.stage.duration = motion.actor.move_heading;
             } else if let Some(state) = self
                 .authored_fireflies
                 .iter_mut()
@@ -315,6 +399,12 @@ impl Level2EconomyState {
                 state.control_flags = motion.actor.flags;
             } else if let Some(state) = self
                 .authored_dragons
+                .iter_mut()
+                .find(|s| s.source_entity_index == slot)
+            {
+                state.control_flags = motion.actor.flags;
+            } else if let Some(state) = self
+                .authored_class5_model3
                 .iter_mut()
                 .find(|s| s.source_entity_index == slot)
             {
@@ -338,7 +428,33 @@ impl Level2EconomyState {
 
     pub(crate) fn clear_wind_flags(&mut self, slot: u16) -> bool {
         let clear = crate::world::fields::wind::clear_flags;
-        if let Some(actor) = self
+        if let Some(actor) = self.castle_at_mut(slot) {
+            actor.control_flags = clear(actor.control_flags);
+        } else if let Some(actor) = self
+            .castle_defenders
+            .iter_mut()
+            .find(|s| s.active && s.source_entity_index == slot)
+        {
+            actor.control_flags = clear(actor.control_flags);
+        } else if let Some(actor) = self
+            .house_residents
+            .iter_mut()
+            .find(|s| s.active && s.source_entity_index == slot)
+        {
+            actor.control_flags = clear(actor.control_flags);
+        } else if let Some(actor) = self
+            .authored_dragon_parts
+            .iter_mut()
+            .find(|s| s.active && s.source_entity_index == slot)
+        {
+            actor.control_flags = clear(actor.control_flags);
+        } else if let Some(actor) = self
+            .authored_class5_model3_children
+            .iter_mut()
+            .find(|s| s.active && s.source_entity_index == slot)
+        {
+            actor.control_flags = clear(actor.control_flags);
+        } else if let Some(actor) = self
             .bee_creatures
             .iter_mut()
             .find(|s| s.active && s.source_entity_index == slot)
@@ -369,6 +485,12 @@ impl Level2EconomyState {
                 state.control_flags = clear(state.control_flags);
             } else if let Some(state) = self
                 .authored_dragons
+                .iter_mut()
+                .find(|s| s.source_entity_index == slot)
+            {
+                state.control_flags = clear(state.control_flags);
+            } else if let Some(state) = self
+                .authored_class5_model3
                 .iter_mut()
                 .find(|s| s.source_entity_index == slot)
             {
@@ -2441,6 +2563,7 @@ impl Level2EconomyState {
         let sphere = ManaSphere {
             id: u32::from(sphere_slot),
             source_entity_index: sphere_slot,
+            action: 41,
             entity_rng: speed_rng,
             position,
             velocity_x: velocity.x.cast_signed(),
@@ -5113,6 +5236,10 @@ impl Level2EconomyState {
         let word = |row: &EntitySnapshot, at: usize| {
             u16::from_le_bytes([row.record[at], row.record[at + 1]])
         };
+        // MCE1 retains a four-byte slot/active header before the source
+        // entity. Castle state and timer are source words 0x2e and 0x30.
+        let castle_state = |row: &EntitySnapshot| word(row, 4 + 0x2e);
+        let castle_timer = |row: &EntitySnapshot| word(row, 4 + 0x30);
         let dword = |row: &EntitySnapshot, at: usize| {
             i32::from_le_bytes(row.record[at..at + 4].try_into().expect("source record word"))
         };
@@ -5130,7 +5257,7 @@ impl Level2EconomyState {
             }
             let Some(root) = entities.get(usize::from(slot)).filter(|row| {
                 row.active && row.class == 3 && row.model == 2 && row.action == 5
-                    && row.source_id == player.entity_index && matches!(row.source_word_2e(), 2 | 4)
+                    && row.source_id == player.entity_index && matches!(castle_state(row), 2 | 4)
                     && (1..=7).contains(&row.source_dword_10())
             }) else { continue };
             // These owner arrays are not present in the compact export. Do
@@ -5141,7 +5268,7 @@ impl Level2EconomyState {
                 continue;
             }
             let children = entities.iter().filter(|row| row.active && word(row, 44) == slot).collect::<Vec<_>>();
-            let child = match (root.source_word_2e(), children.as_slice()) {
+            let child = match (castle_state(root), children.as_slice()) {
                 (2, []) => None,
                 (4, [row]) if row.class == 10 && row.model == 42 && row.action == 44
                     && row.source_id == player.entity_index => Some((*row).clone()),
@@ -5174,15 +5301,15 @@ impl Level2EconomyState {
             castle.control_flags = root.control_flags;
             castle.phase = root.phase;
             castle.action = root.action;
-            castle.build_state = root.source_word_2e() as u8;
+            castle.build_state = castle_state(&root) as u8;
             castle.level = root.source_dword_10() as u8;
             castle.shift_yaw = root.array_yaw();
             castle.shift_pitch = root.array_pitch();
             castle.shift_roll = root.array_roll();
             castle.shift_fov = root.array_fov();
-            castle.source_word_2e = root.source_word_2e();
-            castle.source_word_30 = root.source_word_30();
-            castle.timer = root.source_word_30() as u8;
+            castle.source_word_2e = castle_state(&root);
+            castle.source_word_30 = castle_timer(&root);
+            castle.timer = castle_timer(&root) as u8;
             castle.source_word_7c = word(&root, 128);
             castle.source_word_80 = word(&root, 132);
             if let Some(row) = child {
@@ -5212,7 +5339,7 @@ impl Level2EconomyState {
                     damage_attacker_entity_index: word(&row, 42), killer_entity_index: word(&row, 40),
                     source_byte_3e: row.phase, source_byte_39: row.record[61], source_byte_3b: row.byte_3b,
                     cave_collision_cooldown: row.record[74], source_dword_10: row.source_dword_10(),
-                    source_word_2e: row.source_word_2e() as i16,
+                    source_word_2e: castle_state(&row) as i16,
                     construction_target_height: row.subspell_index as i16, source_subspell_index: row.subspell_index,
                     yaw: row.yaw as u16, roll: row.source_roll() as u16, visual_index: word(&row, 94),
                     control_flags: row.control_flags, chain_previous_slot: word(&row, 54),
@@ -5656,6 +5783,7 @@ impl Level2EconomyState {
             let sphere = ManaSphere {
                 id: u32::from(sphere_slot),
                 source_entity_index: sphere_slot,
+                action: 41,
                 entity_rng: sphere_rng,
                 position: sphere_position,
                 velocity_x: 0,

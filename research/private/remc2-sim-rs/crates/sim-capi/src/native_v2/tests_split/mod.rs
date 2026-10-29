@@ -817,6 +817,7 @@ fn presentation_frame_abi_is_revisioned_complete_idempotent_and_fail_closed() {
         changed.mana_spheres.push(ManaSphere {
             id: 988,
             source_entity_index: 988,
+            action: 41,
             entity_rng: 17,
             position: Position {
                 x: 0x1111,

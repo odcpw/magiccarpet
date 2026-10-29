@@ -374,7 +374,7 @@ struct CastlePlayerConsumer<'a> {
     entities: &'a mut [EntitySnapshot],
     shared_spells: &'a mut Level2SharedSpellResetSession,
     core: &'a mut crate::campaign::state::CanonicalRuntimeState,
-    nyphur_dispatcher: &'a mut NyphurCapability,
+    nyphur_dispatcher: &'a mut level2_nyphur::RivalWizardRoster,
 }
 
 impl CastlePlayerConsumer<'_> {
@@ -455,9 +455,13 @@ impl CastlePlayerConsumer<'_> {
                 fire.enabled_holder_indices = self.shared_spells.enabled_spell_holder_indices();
             }
         }
-        if let Some(dispatcher) = self.nyphur_dispatcher.as_mut() {
+        let handle = crate::campaign::source_arena::SourceEntityHandle {
+            source_slot: owner,
+            generation: economy.slot_generation(owner),
+        };
+        self.nyphur_dispatcher.with_owner_mut(handle, |dispatcher| {
             dispatcher.apply_final_castle_loss(owner, remove_spell);
-        }
+        });
     }
 }
 

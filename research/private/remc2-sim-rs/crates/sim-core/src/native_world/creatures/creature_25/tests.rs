@@ -259,6 +259,75 @@ fn authored_follow_leader_attacks_only_its_in_range_target() {
             assert_eq!(row.record[77], 10);
         }
     }
+
+    // The ordinary Level22 route also binds StageVar8. 8 and 9 share
+    // sub_1E1C0: a clear mailbox moves and wanders on phase 0, an enemy hit
+    // enters the real attack action, and a same-family hit does not.
+    for mode in [8_u8, 9] {
+        let mut row = cymmerian(207, position);
+        row.record[77] = mode;
+        row.set_phase(0);
+        row.set_control_flags(row.control_flags | 0x800);
+        let old_rng = row.entity_rng;
+        let old_roll = row.source_roll();
+        let context = Context {
+            terrain,
+            targets: &[],
+            class3: &[],
+            model25: &[],
+        };
+        stage::step_action_207(&mut Actor { row: &mut row }, &context, &runtime, &families, true)
+            .unwrap();
+        let next_rng = level2_next_rng16(old_rng);
+        assert_eq!(row.action, 207);
+        assert_eq!(row.entity_rng, next_rng);
+        assert_eq!(row.source_roll(), old_roll.wrapping_add((next_rng % 113 + 142) as i16) & 2047);
+
+        for (attacker_model, damage, action, next_mode) in [
+            (18, 100, 202, 10),
+            (SOURCE_MODEL, 100, 207, mode),
+            (18, RULES.max_life + 1, 204, mode),
+        ] {
+            let targets = [target(42, SOURCE_CLASS, attacker_model, position)];
+            let context = Context {
+                terrain,
+                targets: &targets,
+                class3: &[],
+                model25: &[],
+            };
+            let mut row = cymmerian(207, position);
+            row.record[77] = mode;
+            row.record[98..102].copy_from_slice(&damage.to_le_bytes());
+            row.record[102..104].copy_from_slice(&42_u16.to_le_bytes());
+            stage::step_action_207(
+                &mut Actor { row: &mut row }, &context, &runtime, &families, true,
+            )
+            .unwrap();
+            assert_eq!((row.action, row.record[77]), (action, next_mode));
+            assert_eq!(row.life, RULES.max_life - damage);
+            assert_eq!(u16::from_le_bytes([row.record[102], row.record[103]]), 0);
+            if action == 202 {
+                assert_eq!(u16::from_le_bytes([row.record[154], row.record[155]]), 42);
+            }
+        }
+    }
+
+    let ground = terrain.ground_height(position);
+    let raised = Position { z: ground + 512, ..position };
+    for (descriptor, expected_z) in [(DESCRIPTOR, ground + 480), (SPLIT_DESCRIPTOR, ground + 256)] {
+        let targets = [target(42, SOURCE_CLASS, 18, raised)];
+        let context = Context { terrain, targets: &targets, class3: &[], model25: &[] };
+        let mut row = cymmerian(207, raised);
+        row.parameter_relation = Some(descriptor);
+        row.record[77] = 8;
+        row.record[98..102].copy_from_slice(&100_i32.to_le_bytes());
+        row.record[102..104].copy_from_slice(&42_u16.to_le_bytes());
+        stage::step_action_207(
+            &mut Actor { row: &mut row }, &context, &runtime, &families, true,
+        )
+        .unwrap();
+        assert_eq!(row.position.z, expected_z, "hit uses its current descriptor's descent");
+    }
 }
 
 #[test]
@@ -756,6 +825,94 @@ fn ordinary_split_publishes_generation_bound_cymmerian_children() {
     .unwrap()
     .unwrap();
     arena.entities[usize::from(parent_slot)].set_source_action(204);
+    let parent_id = arena.entities[usize::from(parent_slot)].source_id;
+    let mut exhausted = arena.clone();
+    let mut exhausted_runtime = runtime.clone();
+    let mut exhausted_terrain = terrain.clone();
+    exhausted.finish_source_group();
+    while exhausted.economy.free_slot_count() != 0 {
+        exhausted
+            .allocate_source_slot_with_terrain(&mut exhausted_terrain)
+            .expect("consume the actual source free stack");
+    }
+    let parent_rng = exhausted.entities[usize::from(parent_slot)].entity_rng;
+    assert!(exhausted.entities[usize::from(parent_slot)].mana > 0);
+    let families = family_with_cymmerian(parent_slot);
+    mc2::step_row(
+        &mut exhausted,
+        &mut exhausted_runtime,
+        &mut exhausted_terrain,
+        &particles,
+        parent_slot,
+        &[],
+        &families,
+    )
+    .unwrap();
+    assert_eq!(exhausted.entities[usize::from(parent_slot)].action, 205);
+    assert_eq!(
+        exhausted.entities[usize::from(parent_slot)].entity_rng,
+        crate::native_world::level2_next_rng16(parent_rng),
+        "the failed mana allocation still consumes the source RNG draw"
+    );
+    assert!(
+        !exhausted.economy.events().iter().any(|event| matches!(
+            event,
+            crate::native_world::Level2EconomyEvent::DeathBurstSpawned {
+                parent_entity_index, ..
+            } if *parent_entity_index == parent_slot
+        )),
+        "failed source allocation does not publish a split burst"
+    );
+
+    // Exercise NewEvent's frozen fallback with this actual source address.
+    // Model 25 does not normally set the replaceable flag; this is a bounded
+    // allocator control, not a claim that an ordinary death takes this path.
+    let mut replaced = arena.clone();
+    let mut replaced_runtime = runtime.clone();
+    let mut replaced_terrain = terrain.clone();
+    for row in &mut replaced.entities {
+        row.set_control_flags(
+            row.control_flags & !crate::level1_mission::SOURCE_REPLACEABLE_FLAG,
+        );
+    }
+    assert!(replaced.economy.typed_replacement_candidate().is_none());
+    let parent = &mut replaced.entities[usize::from(parent_slot)];
+    parent.set_control_flags(parent.control_flags | crate::level1_mission::SOURCE_REPLACEABLE_FLAG);
+    let original = replaced.handle(parent_slot).unwrap();
+    replaced.rebuild_source_free_arena();
+    while replaced.economy.free_slot_count() != 0 {
+        replaced
+            .allocate_source_slot_with_terrain(&mut replaced_terrain)
+            .expect("reserve the real free stack before the frozen fallback");
+    }
+    mc2::step_row(
+        &mut replaced,
+        &mut replaced_runtime,
+        &mut replaced_terrain,
+        &particles,
+        parent_slot,
+        &[],
+        &families,
+    )
+    .unwrap();
+    assert!(replaced.resolve(original).is_none());
+    let sphere = replaced
+        .economy
+        .spheres()
+        .iter()
+        .find(|sphere| sphere.active && sphere.source_entity_index == parent_slot)
+        .expect("mana conversion replaced the dying source at its actual address");
+    assert_eq!(sphere.action, 205, "the split tail writes the current source address");
+    assert_eq!(sphere.owner_entity_index, 0);
+    assert!(
+        !replaced.economy.events().iter().any(|event| matches!(
+            event,
+            crate::native_world::Level2EconomyEvent::DeathBurstSpawned {
+                parent_entity_index, ..
+            } if *parent_entity_index == parent_slot
+        )),
+        "the exhausted frozen list cannot manufacture a later burst"
+    );
     let existing = arena
         .entities
         .iter()
@@ -788,6 +945,25 @@ fn ordinary_split_publishes_generation_bound_cymmerian_children() {
         .map(|row| row.index)
         .collect::<Vec<_>>();
     assert_eq!(children.len(), usize::from(RULES.split_count));
+    let burst_slot = arena
+        .economy
+        .events()
+        .iter()
+        .find_map(|event| match event {
+            crate::native_world::Level2EconomyEvent::DeathBurstSpawned {
+                source_entity_index,
+                parent_entity_index,
+                id_entity_index,
+            } if *parent_entity_index == parent_slot && *id_entity_index == parent_id => {
+                Some(*source_entity_index)
+            }
+            _ => None,
+        })
+        .expect("the actual split publishes its source death burst");
+    let burst = &arena.entities[usize::from(burst_slot)];
+    assert_eq!((burst.class, burst.model, burst.action), (10, 1, 1));
+    assert_eq!(burst.source_id, parent_id);
+    assert_eq!(arena.entities[usize::from(parent_slot)].action, 205);
     for child_slot in children {
         let identity = arena
             .imported_creature_runtime_identity(child_slot, &std::collections::BTreeMap::new())

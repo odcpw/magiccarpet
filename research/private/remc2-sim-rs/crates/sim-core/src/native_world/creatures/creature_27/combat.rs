@@ -1214,28 +1214,20 @@ pub(crate) fn kill(
         let next_rng = crate::native_world::level2_next_rng16(row.entity_rng);
         arena.entities[usize::from(root.source_slot)].set_entity_rng(next_rng);
         arena.economy.source_rng.insert(root.source_slot, next_rng);
-        if let Some(slot) = arena.allocate_source_slot_with_terrain(terrain) {
-            let sphere = arena.economy.initialize_death_mana_sphere_at_slot(
-                slot,
-                root.source_slot,
-                row.position,
-                row.yaw,
-                row.mana,
-                row.source_player_entity_index(),
-                terrain,
-            );
-            let sphere_rng = arena
-                .economy
-                .spheres()
-                .last()
-                .filter(|sphere| sphere.source_entity_index == slot)
-                .ok_or_else(|| format!("model27 death lost allocated mana sphere {slot}"))?
-                .entity_rng;
-            arena.economy.source_rng.insert(slot, sphere_rng);
-            crate::world::effects::sync_position(arena, terrain, slot, row.position, true, false)?;
-            sphere_ids.push(sphere);
+        if let Some(slot) = crate::world::effects::spawn_death_mana_sphere(
+            arena,
+            terrain,
+            root.source_slot,
+            row.position,
+            row.yaw,
+            row.mana,
+            row.source_player_entity_index(),
+        )? {
+            sphere_ids.push(u32::from(slot));
         }
-        arena.entities[usize::from(root.source_slot)].set_source_player_entity_index(0);
+        if !crate::world::effects::clear_replacement_mana_owner(arena, root.source_slot)? {
+            arena.entities[usize::from(root.source_slot)].set_source_player_entity_index(0);
+        }
         arena.economy.source_owner.insert(root.source_slot, 0);
     }
     let killer = word(&row, 40);
@@ -1244,30 +1236,49 @@ pub(crate) fn kill(
         .get(usize::from(killer))
         .filter(|target| killer != 0 && target.active && target.class == 3)
         .map(|target| target.index);
-    let secondary_source_effect_slot = if row.record[18] & 0x10 == 0 {
-        let burst = crate::world::effects::allocate(
+    let (position, source_id, flags) = if let Some(sphere) = arena
+        .economy
+        .spheres()
+        .iter()
+        .find(|sphere| sphere.active && sphere.source_entity_index == root.source_slot)
+    {
+        (
+            sphere.position,
+            sphere.source_entity_index,
+            sphere.control_flags,
+        )
+    } else {
+        let current = &arena.entities[usize::from(root.source_slot)];
+        (current.position, current.source_id, current.control_flags)
+    };
+    let secondary_source_effect_slot = if flags & 0x0010_0000 == 0 {
+        crate::world::effects::spawn_death_burst(
             arena,
             terrain,
-            sim_definition::adapter::mc2_effect_definition(
-                crate::level_definition::EffectKind::RadialExplosion,
-            ),
-            row.position,
             particles,
-        )?;
-        if let Some(slot) = burst {
-            let effect = &mut arena.entities[usize::from(slot)];
-            effect.source_id = row.source_id;
-            effect.record[30..32].copy_from_slice(&row.source_id.to_le_bytes());
-            crate::world::effects::register_death_burst(arena, slot, root.source_slot)?;
-        }
-        burst
+            root.source_slot,
+            position,
+            source_id,
+        )?
     } else {
         None
     };
-    for part in suffix {
-        if arena.slot_generation(part.source_slot) == part.generation {
-            arena.entities[usize::from(part.source_slot)].disable_drawing();
+    let replacement_hidden = crate::world::effects::hide_birth_replacement(
+        arena,
+        root.source_slot,
+        secondary_source_effect_slot,
+    )?;
+    if !replacement_hidden && arena.slot_generation(root.source_slot) == root.generation {
+        for part in suffix {
+            if arena.slot_generation(part.source_slot) == part.generation {
+                arena.entities[usize::from(part.source_slot)].disable_drawing();
+            }
         }
+    } else if !replacement_hidden {
+        return Err(format!(
+            "model27 death slot {} has an unsupported replacement",
+            root.source_slot
+        ));
     }
     Ok(DeathOutcome {
         mana_sphere_ids: sphere_ids,

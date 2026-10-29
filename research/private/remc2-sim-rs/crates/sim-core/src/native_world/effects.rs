@@ -115,13 +115,19 @@ pub(crate) fn step_projectile(
         } else {
             crate::level_definition::EffectKind::Impact
         };
-        let child = rules::allocate(
-            arena,
-            terrain,
-            sim_definition::adapter::mc2_effect_definition(kind),
-            projectile.position,
-            particles,
-        )?;
+        let definition = sim_definition::adapter::mc2_effect_definition(kind);
+        let child = if kind == crate::level_definition::EffectKind::Impact {
+            rules::allocate_from_source_position(
+                arena,
+                terrain,
+                definition,
+                slot,
+                projectile.position,
+                particles,
+            )?
+        } else {
+            rules::allocate(arena, terrain, definition, projectile.position, particles)?
+        };
         if let Some(id) = child
             && kind == crate::level_definition::EffectKind::FireSpheres
         {
@@ -155,12 +161,25 @@ pub(crate) fn step_projectile(
             }
         } else if let Some(id) = child {
             let row = &mut arena.entities[usize::from(id)];
-            row.source_id = projectile.owner_entity_index;
+            // NewEvent may reuse the projectile's frozen address. In that
+            // case the source pointer now reads the initialized impact row.
+            let (owner, subspell, yaw, pitch) =
+                if id == slot && kind == crate::level_definition::EffectKind::Impact {
+                    (row.source_id, row.subspell_index, row.yaw, row.pitch)
+                } else {
+                    (
+                        projectile.owner_entity_index,
+                        projectile.source_subspell_index,
+                        projectile.yaw,
+                        projectile.pitch,
+                    )
+                };
+            row.source_id = owner;
             row.record[30..32].copy_from_slice(&row.source_id.to_le_bytes());
             if birth == FireballBirth::Impact {
-                row.set_subspell_index(projectile.source_subspell_index);
-                row.set_yaw(projectile.yaw);
-                row.set_pitch(projectile.pitch);
+                row.set_subspell_index(subspell);
+                row.set_yaw(yaw);
+                row.set_pitch(pitch);
                 if let Some(target) = step.collision_target {
                     row.set_source_word_96(target);
                 }
@@ -168,8 +187,14 @@ pub(crate) fn step_projectile(
         }
         child
     };
+    let impact_replaced_source = child == Some(slot)
+        && birth == FireballBirth::Impact
+        && projectile.origin != super::FireballProjectileOrigin::Eruption
+        && projectile.source_model != 28;
     if child.is_some() || birth == FireballBirth::Ash {
-        if let Some(parent) = arena
+        if impact_replaced_source {
+            rules::hide_birth_replacement(arena, slot, child)?;
+        } else if let Some(parent) = arena
             .economy
             .fireball_projectiles
             .iter_mut()
@@ -183,7 +208,11 @@ pub(crate) fn step_projectile(
     // sub_65820 reads word26's holder *after* the impact NewEvent. A
     // recycled holder address therefore supplies its current model; a zero
     // holder, failed allocation, or non-actor termination awards nothing.
-    if child.is_some() && step.direct_hit_owner.is_some() && projectile.holder_entity_index != 0 {
+    if child.is_some()
+        && !impact_replaced_source
+        && step.direct_hit_owner.is_some()
+        && projectile.holder_entity_index != 0
+    {
         let holder = super::source_target::read(arena, context, projectile.holder_entity_index)?
             .ok_or("Fireball holder address is outside source arena")?;
         step.direct_hit_family = Some(holder.model);

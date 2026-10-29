@@ -591,6 +591,7 @@ pub(crate) fn step_source_runtime(
         .find(|row| row.active && row.source_entity_index == slot)
         .copied()
         .ok_or_else(|| format!("Archer source slot {slot} is absent"))?;
+    let source_generation = arena.slot_generation(slot);
     let state = arena
         .authored_class5_archer()
         .iter()
@@ -676,55 +677,62 @@ pub(crate) fn step_source_runtime(
         result.effects.target_feedback_entity = None;
     }
     if let Some(death) = result.death {
+        // KillEntity disables the current source only after mana and burst
+        // constructors; the kernel's final hidden state is published below.
+        arena
+            .economy
+            .authored_class5
+            .iter_mut()
+            .find(|row| row.active && row.source_entity_index == slot)
+            .ok_or_else(|| format!("Archer death lost typed source at slot {slot}"))?
+            .drawing_enabled = true;
         if death.mana > 0 {
-            if let Some(child) = arena.allocate_source_slot_with_terrain(terrain) {
-                // AddArchers and its enabled callbacks never set the
-                // 0x20000 replacement flag. Its source address survives both
-                // death constructors, including the full-arena fallback.
-                arena.economy.initialize_death_mana_sphere_at_slot(
-                    child,
-                    slot,
-                    death.position,
-                    death.yaw,
-                    death.mana,
-                    death.owner,
-                    terrain,
-                );
-                let child_rng = arena
-                    .economy
-                    .spheres
-                    .last()
-                    .filter(|sphere| sphere.source_entity_index == child)
-                    .map(|sphere| sphere.entity_rng)
-                    .ok_or_else(|| format!("Archer death lost allocated mana sphere {child}"))?;
-                arena.economy.source_rng.insert(child, child_rng);
-                crate::world::effects::sync_position(
-                    arena,
-                    terrain,
-                    child,
-                    death.position,
-                    true,
-                    false,
-                )?;
-            }
-            // The source clears the address's owner even if NewEvent fails.
-            arena.economy.source_owner.insert(slot, 0);
-        }
-        if state.control_flags & 0x10_0000 == 0
-            && let Some(burst) = crate::world::effects::allocate(
+            crate::world::effects::spawn_death_mana_sphere(
                 arena,
                 terrain,
-                sim_definition::adapter::mc2_effect_definition(
-                    crate::level_definition::EffectKind::RadialExplosion,
-                ),
+                slot,
                 death.position,
+                death.yaw,
+                death.mana,
+                death.owner,
+            )?;
+            // The source clears the address's owner even if NewEvent fails.
+            crate::world::effects::clear_replacement_mana_owner(arena, slot)?;
+            arena.economy.source_owner.insert(slot, 0);
+        }
+        // KillEntity reads the current fixed-address parent after its mana
+        // allocation, then the shared constructor records the actual birth.
+        let current = super::super::source_target::read(
+            arena,
+            super::super::source_target::Context::default(),
+            slot,
+        )?
+        .ok_or_else(|| format!("Archer death lost source address {slot}"))?;
+        let burst = if current.control_flags & 0x10_0000 == 0 {
+            crate::world::effects::spawn_death_burst(
+                arena,
+                terrain,
                 particles,
+                slot,
+                current.position,
+                current.source_id,
             )?
-        {
-            let source_id = state.entity_id;
-            let row = &mut arena.entities[usize::from(burst)];
-            row.source_id = source_id;
-            row.record[30..32].copy_from_slice(&source_id.to_le_bytes());
+        } else {
+            None
+        };
+        // If either allocation replaced the address, KillEntity disables the
+        // current raw effect or typed sphere; otherwise the Archer owns hide.
+        if !crate::world::effects::hide_birth_replacement(arena, slot, burst)? {
+            if arena.slot_generation(slot) != source_generation {
+                return Err(format!("Archer death cannot hide replacement at source slot {slot}"));
+            }
+            arena
+                .economy
+                .authored_class5
+                .iter_mut()
+                .find(|row| row.active && row.source_entity_index == slot)
+                .ok_or_else(|| format!("Archer death lost typed source at slot {slot}"))?
+                .drawing_enabled = false;
         }
     }
     if result.effects.target_dword_0x10_incremented

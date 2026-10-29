@@ -3,17 +3,15 @@
 use super::State;
 use crate::{FlightWorld, Position, heading_for_positions, move_entity};
 
-/// sub_6D8B0: Wind contact awards belong only to an unsuppressed human
-/// owner. The caller supplies the live source setting and fixed-address row.
+/// sub_6D8B0: Wind contact awards belong only to a human owner. The shared
+/// progression carrier applies the campaign's actual reward suppression policy.
 pub(crate) fn award_experience(
     progression: &mut crate::native_world::Level2SharedSpellResetSession,
     owner: Option<&crate::native_world::EntitySnapshot>,
-    source_settings: u8,
     count: u16,
 ) {
     let Some(owner) = owner.filter(|owner| {
-        source_settings & 4 == 0
-            && owner.index != 0
+        owner.index != 0
             && (owner.class, owner.model) == (3, 0)
             && progression
                 .players()

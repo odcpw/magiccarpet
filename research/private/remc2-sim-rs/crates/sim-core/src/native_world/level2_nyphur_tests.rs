@@ -5,6 +5,158 @@ use crate::native_world::{
     level2_possession_guidance_target_top, projectile_guidance_angles,
 };
 
+#[test]
+fn ordinary_mission18_rival_roster_uses_each_real_owner_and_shared_rng() {
+    let root = std::env::var_os("MC_ORDINARY_CAMPAIGN_PACKAGES").map_or_else(
+        || {
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../../generated/mc-bhq6-ordinary-20261025-zclu5fjj")
+        },
+        std::path::PathBuf::from,
+    );
+    let campaign = crate::campaign::CampaignSession::open(
+        root.join("level18"),
+        crate::campaign::spec::CampaignSelection::ordinary(18).unwrap(),
+    )
+    .expect("actual ordinary Mission 18 package");
+    let session = campaign.simulation();
+    let arena = session.source_arena();
+    let mut roster =
+        RivalWizardRoster::from_source_reset(arena, session.players(), session.mission())
+            .expect("actual Mission 18 rival rows");
+    let handles: Vec<_> = roster.iter().map(|(handle, _)| handle).collect();
+    assert_eq!(
+        handles
+            .iter()
+            .map(|handle| handle.source_slot)
+            .collect::<Vec<_>>(),
+        [92, 107, 123, 140, 162, 184]
+    );
+    let mut holder_count = 0;
+    for handle in &handles {
+        let player = session
+            .players()
+            .iter()
+            .find(|player| player.entity_index == handle.source_slot)
+            .unwrap();
+        let dispatcher = roster.get(*handle).unwrap();
+        let settings =
+            &session.mission().wizard_map_settings()[usize::from(player.player_color_index())];
+        assert_eq!(dispatcher.common_upkeep.word_0x244, settings.perception);
+        assert_eq!(dispatcher.common_upkeep.word_0x246, settings.reflexes);
+        assert_eq!(
+            dispatcher.common_upkeep.spell_levels,
+            player.spell_unlocked_levels
+        );
+        assert_eq!(
+            dispatcher.common_upkeep.spell_holder_indices,
+            player.enabled_spell_holders
+        );
+        holder_count += player
+            .enabled_spell_holders
+            .iter()
+            .filter(|slot| **slot != 0)
+            .count();
+        let stale = SourceEntityHandle {
+            generation: handle.generation.wrapping_add(1),
+            ..*handle
+        };
+        assert!(roster.get(stale).is_none());
+        assert!(roster.with_owner_mut(stale, |_| ()).is_none());
+    }
+    assert_eq!(holder_count, 111);
+    let first_player = session
+        .players()
+        .iter()
+        .find(|player| player.entity_index == handles[0].source_slot)
+        .unwrap();
+    let holder = roster
+        .bound_live_holder(handles[0], first_player, arena, 0)
+        .unwrap();
+    let mut reused_arena = arena.clone();
+    reused_arena
+        .economy
+        .slot_generations
+        .insert(holder.source_slot, holder.generation.wrapping_add(1));
+    assert!(
+        roster
+            .bound_live_holder(handles[0], first_player, &reused_arena, 0)
+            .is_none()
+    );
+    assert!(roster.sync_owner_inventory(handles[0], first_player, &reused_arena));
+    assert_eq!(
+        roster
+            .get(handles[0])
+            .unwrap()
+            .common_upkeep
+            .spell_holder_indices[0],
+        0
+    );
+    let mut source_rng = 1;
+    for handle in &handles {
+        let actual = roster
+            .with_owner_mut(*handle, |dispatcher| {
+                dispatcher.common_upkeep.step_watcomrand()
+            })
+            .unwrap();
+        assert_eq!(actual, level2_nyphur_watcomrand(&mut source_rng));
+    }
+    let first = handles[0];
+    let second = handles[1];
+    roster
+        .with_owner_mut(first, |dispatcher| dispatcher.state_byte = 7)
+        .unwrap();
+    assert_eq!(roster.get(first).unwrap().state_byte, 7);
+    assert_eq!(roster.get(second).unwrap().state_byte, 0);
+    assert_eq!(
+        roster
+            .get(handles[3])
+            .unwrap()
+            .common_upkeep
+            .cadence_period(),
+        3
+    );
+}
+
+#[test]
+fn ordinary_mission18_schedules_every_imported_rival_through_dispatch_and_tail() {
+    let root = std::env::var_os("MC_ORDINARY_CAMPAIGN_PACKAGES").map_or_else(
+        || {
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../../generated/mc-bhq6-ordinary-20261025-zclu5fjj")
+        },
+        std::path::PathBuf::from,
+    );
+    let mut session = crate::campaign::CampaignSession::open(
+        root.join("level18"),
+        crate::campaign::spec::CampaignSelection::ordinary(18).unwrap(),
+    )
+    .expect("actual ordinary Mission 18 package")
+    .simulation()
+    .clone();
+    session.step_level2_source_pass(0);
+    let owners = [92, 107, 123, 140, 162, 184];
+    for owner in owners {
+        assert!(
+            session.dispatch_events().iter().all(|event| !matches!(
+                event,
+                Mc2DispatchEvent::Error { source_slot, .. } if *source_slot == owner
+            )),
+            "ordinary rival {owner} dispatch must succeed"
+        );
+        let trace = session
+            .nyphur_dispatch_traces()
+            .iter()
+            .find(|trace| trace.source_slot == owner)
+            .unwrap_or_else(|| panic!("ordinary rival {owner} was not dispatched"));
+        assert_eq!(
+            trace.tail_call_count(),
+            if trace.state_byte == 0 { 2 } else { 1 },
+            "ordinary rival {owner} reaches the source tail in its mode's source order"
+        );
+    }
+}
+
 // Earlier fixtures assumed the first cadence always selected a creature.
 // Ordinary Goat deaths now publish mana spheres, which sub_13CE0 correctly
 // selects before sub_14530. Wait for the real class-5 relation without
@@ -4242,6 +4394,33 @@ fn carried_steal_input_schedules_flyer_and_transfers_from_real_nyphur() {
         },
         0,
     );
+    let holder_slot = session.session.state.live.shared_spells.local_player
+        .enabled_spell_holders[13];
+    let mut cast_trace = Vec::new();
+    {
+        let live = &session.session.state.live;
+        let cost = crate::level_definition::STEAL_MANA_TIERS[0].mana_cost;
+        assert!(
+            live.economy
+                .owner_max_mana
+                .get(&caster)
+                .is_some_and(|capacity| *capacity >= cost)
+        );
+        assert!(live.economy.entities[usize::from(caster)].mana >= cost);
+        assert!(
+            live.economy.castle_for_owner(caster).is_some_and(|castle| {
+                castle.mana >= crate::level_definition::STEAL_MANA_TIERS[0].castle_mana_required
+            })
+        );
+        cast_trace.push(format!(
+            "after hand selection: holder={:?} player={:?} capacity={:?} castle={:?} fire={:?}",
+            live.shared_spells.pickup(holder_slot),
+            live.economy.entities[usize::from(caster)],
+            live.economy.owner_max_mana.get(&caster),
+            live.economy.castle_for_owner(caster),
+            live.core.context.spell_fire,
+        ));
+    }
     {
         // Stage the actual rival in the caster's forward arc before firing.
         // It remains under ordinary AI movement on every subsequent pass.
@@ -4277,6 +4456,20 @@ fn carried_steal_input_schedules_flyer_and_transfers_from_real_nyphur() {
     );
     let mut projectile = None;
     for _ in 0..4 {
+        {
+            let live = &session.session.state.live;
+            cast_trace.push(format!(
+                "after cast pass: holder={:?} numeric_holder={:?} player={:?} capacity={:?} castle={:?} fire={:?} events={:?} dispatch={:?}",
+                live.shared_spells.pickup(holder_slot),
+                live.economy.entities.get(usize::from(holder_slot)),
+                live.economy.entities[usize::from(caster)],
+                live.economy.owner_max_mana.get(&caster),
+                live.economy.castle_for_owner(caster),
+                live.core.context.spell_fire,
+                live.core.context.events,
+                session.dispatch_events(),
+            ));
+        }
         assert!(
             session
                 .dispatch_events()
@@ -4301,8 +4494,12 @@ fn carried_steal_input_schedules_flyer_and_transfers_from_real_nyphur() {
         }
         session.step_outer_turn(PlayerCommand::default(), 0);
     }
-    let projectile =
-        projectile.expect("ordinary hand input and scheduled holder produced Steal flyer");
+    let projectile = projectile.unwrap_or_else(|| {
+        panic!(
+            "ordinary hand input and scheduled holder produced no Steal flyer:\n{}",
+            cast_trace.join("\n")
+        )
+    });
     let mut trace = Vec::new();
     for turn in 0..16 {
         session.step_outer_turn(PlayerCommand::default(), 0);

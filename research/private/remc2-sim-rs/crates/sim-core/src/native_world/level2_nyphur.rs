@@ -14,6 +14,8 @@ use super::{
     LEVEL2_NYPHUR_FIREBALL_HOLDER_INDEX, LEVEL2_NYPHUR_POSSESSION_HOLDER_INDEX, Mc2DispatchEvent,
     NativeWorld, POSSESSION_PROJECTILE_LIFETIME_TICKS, PlayerCommand,
 };
+use crate::campaign::source_arena::{SourceArena, SourceEntityHandle, SourceEntityView};
+use std::collections::BTreeMap;
 
 /// Pinned `sub_15790` spell-family order, including its zero-terminated tail
 /// and the source's unsigned `0xff` sentinel. These rows are deliberately
@@ -326,27 +328,19 @@ pub struct Level2NyphurCommonUpkeepSnapshot {
 }
 
 impl Level2NyphurCommonUpkeep {
-    fn from_qualified_reset(
-        participant: Level2NyphurParticipant,
-        players: &[PlayerSnapshot],
+    fn from_source_player(
+        player: &PlayerSnapshot,
+        entity: &EntitySnapshot,
         entities: &[EntitySnapshot],
         mission: &MissionContentSession,
     ) -> Result<Self> {
+        let color_index = player.player_color_index();
         let settings = mission
             .wizard_map_settings()
-            .get(usize::from(participant.color_index))
+            .get(usize::from(color_index))
             .ok_or_else(|| {
-                NativeWorldError::new(format!(
-                    "Level 2 Nyphur wizard settings row {} is absent",
-                    participant.color_index
-                ))
+                NativeWorldError::new(format!("rival wizard settings row {color_index} is absent"))
             })?;
-        let player = players
-            .get(usize::from(participant.player_slot))
-            .ok_or_else(|| NativeWorldError::new("Level 2 Nyphur AI player is absent"))?;
-        let entity = entities
-            .get(usize::from(participant.entity_index))
-            .ok_or_else(|| NativeWorldError::new("Level 2 Nyphur AI entity is absent"))?;
         let auxiliary = player.type_str_164_auxiliary().ok_or_else(|| {
             NativeWorldError::new("Level 2 Nyphur AI player Type_str_164 carrier is absent")
         })?;
@@ -367,23 +361,21 @@ impl Level2NyphurCommonUpkeep {
             }
         }
         let mut spell_enabled = [0_i16; PLAYER_SPELL_COUNT];
-        spell_enabled[2] = i16::from(participant.color_index).wrapping_mul(4);
+        spell_enabled[2] = i16::from(color_index).wrapping_mul(4);
         let spell_holder_indices = player.enabled_spell_holders;
         let spell_levels = settings.spell_levels.map(u8::cast_signed);
         let castle_entity_index = entities
             .iter()
             .find(|candidate| {
-                candidate.active
-                    && candidate.class == 2
-                    && candidate.source_id == participant.entity_source_id
+                candidate.active && candidate.class == 2 && candidate.source_id == entity.source_id
             })
             .map_or(0, |candidate| candidate.index);
         let mut source_mailbox = [0_u8; 36];
         source_mailbox.copy_from_slice(entity.source_upkeep_mailbox());
         Ok(Self {
             player_slot: player.slot,
-            player_color_index: participant.color_index,
-            source_slot: participant.entity_index,
+            player_color_index: color_index,
+            source_slot: entity.index,
             source_list_model_zero: level2_nyphur_class3_source_order(entities)
                 .into_iter()
                 .filter(|index| entities[usize::from(*index)].model == 0)
@@ -615,7 +607,7 @@ impl Level2NyphurCommonUpkeep {
     }
 
     fn cadence_period(&self) -> u16 {
-        let sign = i32::from(self.word_0x246).signum();
+        let sign = i32::from(self.word_0x246) >> 31;
         let adjusted = (i32::from(self.word_0x246) - (sign << 2) + sign) >> 2;
         let period = 64 - adjusted;
         u16::try_from(period).expect("qualified Nyphur reflexes produce a positive cadence")
@@ -2065,7 +2057,7 @@ fn level2_nyphur_project_mana_sphere(
     entity.model = 39;
     entity.control_flags = sphere.control_flags;
     entity.entity_rng = sphere.entity_rng;
-    entity.action = 41;
+    entity.action = sphere.action;
     entity.action_marker = 0;
     entity.level_gate = 0;
     entity.position = sphere.position;
@@ -2104,7 +2096,7 @@ fn level2_nyphur_project_mana_sphere(
     entity.record[66] = sphere.phase;
     entity.record[67] = 10;
     entity.record[68] = 39;
-    entity.record[73] = 41;
+    entity.record[73] = sphere.action;
     entity.record[74] = 0;
     entity.record[80..82].copy_from_slice(&sphere.position.x.to_le_bytes());
     entity.record[82..84].copy_from_slice(&sphere.position.y.to_le_bytes());
@@ -2746,61 +2738,437 @@ pub(crate) struct Level2NyphurDispatcher {
     pub(super) common_upkeep: Level2NyphurCommonUpkeep,
 }
 
-/// Optional source family capability. Descriptor-backed campaigns without a
-/// Nyphur participant retain an explicit absence instead of fabricating an AI
-/// player, entity or spell-holder graph. Deref preserves the existing sealed
-/// Level-2 compatibility surface, whose construction proves presence.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct NyphurCapability(Option<Level2NyphurDispatcher>);
+struct RivalWizardEntry {
+    handle: SourceEntityHandle,
+    dispatcher: Level2NyphurDispatcher,
+    holder_relations: [u16; PLAYER_SPELL_COUNT],
+    holder_handles: [Option<SourceEntityHandle>; PLAYER_SPELL_COUNT],
+}
 
-impl NyphurCapability {
-    pub(crate) const fn present(dispatcher: Level2NyphurDispatcher) -> Self {
-        Self(Some(dispatcher))
+/// Source-owned AI carriers in numeric arena order. Each entry is bound to
+/// the exact imported player generation; the Watcom RNG is shared across all
+/// owners, just as it is across calls to the source AI.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct RivalWizardRoster {
+    entries: BTreeMap<u16, RivalWizardEntry>,
+    watcom_rand_state: u32,
+}
+
+impl RivalWizardRoster {
+    #[cfg(test)]
+    fn as_mut(&mut self) -> Option<&mut Level2NyphurDispatcher> {
+        self.entries.get_mut(&112).map(|entry| &mut entry.dispatcher)
+    }
+    pub(crate) fn from_source_reset(
+        arena: &SourceArena,
+        players: &[PlayerSnapshot],
+        mission: &MissionContentSession,
+    ) -> Result<Self> {
+        let mut entries = BTreeMap::new();
+        let typed_slots: BTreeMap<u16, super::Level2DynamicArenaKind> = arena
+            .economy
+            .live_arena_slots()
+            .into_iter()
+            .collect();
+        for player in players
+            .iter()
+            .filter(|player| player.is_ai && player.entity_index != 0)
+        {
+            let Some(handle) = arena.handle(player.entity_index) else {
+                if player.active_player_index < 0 {
+                    continue;
+                }
+                return Err(NativeWorldError::new(format!(
+                    "active rival player {} has no source entity {}",
+                    player.slot, player.entity_index
+                )));
+            };
+            let Some(SourceEntityView::Imported(entity)) = arena.resolve(handle) else {
+                return Err(NativeWorldError::new(format!(
+                    "rival player {} source slot {} is not an imported player",
+                    player.slot, player.entity_index
+                )));
+            };
+            if entity.class != 3
+                || entity.model != 1
+                || entity.special_relation != super::EntitySpecialRelation::PlayerState(player.slot)
+            {
+                return Err(NativeWorldError::new(format!(
+                    "rival player {} does not own its source A4 at slot {}",
+                    player.slot, player.entity_index
+                )));
+            }
+            let mut dispatcher = Level2NyphurDispatcher::from_source_player(
+                player,
+                entity,
+                &arena.entities,
+                mission,
+            )?;
+            // sub_15790 reads the live SpellLevels array from the player
+            // carrier, which can differ from the authored starting profile.
+            dispatcher.common_upkeep.spell_levels = player.spell_unlocked_levels;
+            let castle_slot = u16::from_le_bytes([player.record[42], player.record[43]]);
+            dispatcher.common_upkeep.castle_entity_index = arena
+                .economy
+                .castle_for_owner(handle.source_slot)
+                .filter(|castle| castle.source_entity_index == castle_slot)
+                .map_or(0, |castle| castle.source_entity_index);
+            let holder_relations = player.enabled_spell_holders;
+            let holder_handles = std::array::from_fn(|family| {
+                Self::source_holder_handle(
+                    arena,
+                    &typed_slots,
+                    handle.source_slot,
+                    holder_relations[family],
+                    family,
+                )
+            });
+            for family in 0..PLAYER_SPELL_COUNT {
+                if holder_handles[family].is_none() {
+                    dispatcher.common_upkeep.spell_holder_indices[family] = 0;
+                }
+            }
+            if entries
+                .insert(
+                    handle.source_slot,
+                    RivalWizardEntry {
+                        handle,
+                        dispatcher,
+                        holder_relations,
+                        holder_handles,
+                    },
+                )
+                .is_some()
+            {
+                return Err(NativeWorldError::new(format!(
+                    "multiple rival players own source slot {}",
+                    handle.source_slot
+                )));
+            }
+        }
+        Ok(Self {
+            entries,
+            watcom_rand_state: 1,
+        })
     }
 
-    pub(crate) const fn absent() -> Self {
-        Self(None)
+    pub(crate) fn get(&self, handle: SourceEntityHandle) -> Option<&Level2NyphurDispatcher> {
+        self.entries
+            .get(&handle.source_slot)
+            .filter(|entry| entry.handle == handle)
+            .map(|entry| &entry.dispatcher)
     }
 
-    pub(crate) const fn is_present(&self) -> bool {
-        self.0.is_some()
+    pub(crate) fn get_in_arena(
+        &self,
+        arena: &SourceArena,
+        slot: u16,
+    ) -> Option<&Level2NyphurDispatcher> {
+        self.get(arena.handle(slot)?)
     }
 
-    pub(crate) fn as_mut(&mut self) -> Option<&mut Level2NyphurDispatcher> {
-        self.0.as_mut()
+    /// Non-random feedback may mutate the selected owner's carrier directly.
+    /// Random source callbacks must use `with_owner_mut` to publish the stream.
+    pub(crate) fn get_mut(&mut self, handle: SourceEntityHandle) -> Option<&mut Level2NyphurDispatcher> {
+        self.entries
+            .get_mut(&handle.source_slot)
+            .filter(|entry| entry.handle == handle)
+            .map(|entry| &mut entry.dispatcher)
     }
 
-    pub(crate) fn as_ref(&self) -> Option<&Level2NyphurDispatcher> {
-        self.0.as_ref()
+    pub(crate) fn get_mut_in_arena(
+        &mut self,
+        arena: &SourceArena,
+        slot: u16,
+    ) -> Option<&mut Level2NyphurDispatcher> {
+        self.get_mut(arena.handle(slot)?)
     }
 
-    pub(crate) const fn state_byte(&self) -> i8 {
-        match &self.0 {
-            Some(dispatcher) => dispatcher.state_byte(),
-            None => 0,
+    fn source_holder_handle(
+        arena: &SourceArena,
+        typed_slots: &BTreeMap<u16, super::Level2DynamicArenaKind>,
+        owner: u16,
+        slot: u16,
+        family: usize,
+    ) -> Option<SourceEntityHandle> {
+        let holder = arena.entities.get(usize::from(slot))?;
+        let typed_matches = match typed_slots.get(&slot) {
+            None => true,
+            Some(super::Level2DynamicArenaKind::SpellPickup) => arena.economy.spell_pickups().iter().any(|row| row.active && row.source_entity_index == slot && usize::from(row.family) == family && usize::from(row.action) == family * 3),
+            Some(super::Level2DynamicArenaKind::SpellReplacement) => arena.economy.spell_replacements().iter().any(|row| row.active && row.source_entity_index == slot && usize::from(row.family) == family && usize::from(row.action) == family * 3),
+            Some(_) => false,
+        };
+        (slot != 0
+            && typed_matches
+            && holder.active
+            && holder.class == 15
+            && usize::from(holder.model) == family
+            && usize::from(holder.action) == family * 3
+            && holder.source_spell_parent_entity_index() == owner
+            && holder.life >= 0)
+            .then(|| SourceEntityHandle {
+                source_slot: slot,
+                generation: arena.economy.slot_generation(slot),
+            })
+    }
+
+    /// Refresh the source player table before dispatch. An unchanged numeric
+    /// relation is never rebound to a different generation after reclamation.
+    pub(crate) fn sync_owner_inventory(
+        &mut self,
+        owner: SourceEntityHandle,
+        player: &PlayerSnapshot,
+        arena: &SourceArena,
+    ) -> bool {
+        let Some(entry) = self.entries.get_mut(&owner.source_slot) else {
+            return false;
+        };
+        if entry.handle != owner
+            || player.entity_index != owner.source_slot
+            || player.slot != entry.dispatcher.common_upkeep.player_slot
+            || arena.handle(owner.source_slot) != Some(owner)
+        {
+            return false;
+        }
+        let typed_slots: BTreeMap<u16, super::Level2DynamicArenaKind> = arena
+            .economy
+            .live_arena_slots()
+            .into_iter()
+            .collect();
+        entry.dispatcher.common_upkeep.spell_levels = player.spell_unlocked_levels;
+        for family in 0..PLAYER_SPELL_COUNT {
+            let slot = player.enabled_spell_holders[family];
+            if slot != entry.holder_relations[family] {
+                entry.holder_relations[family] = slot;
+                entry.holder_handles[family] = Self::source_holder_handle(
+                    arena,
+                    &typed_slots,
+                    owner.source_slot,
+                    slot,
+                    family,
+                );
+            }
+            let current =
+                Self::source_holder_handle(arena, &typed_slots, owner.source_slot, slot, family);
+            entry.dispatcher.common_upkeep.spell_holder_indices[family] =
+                if current.is_some() && current == entry.holder_handles[family] {
+                    slot
+                } else {
+                    0
+                };
+        }
+        true
+    }
+
+    /// A death/release consumer may mutate only the holder whose current
+    /// generation still matches the owner's retained source relation.
+    pub(crate) fn bound_live_holder(
+        &self,
+        owner: SourceEntityHandle,
+        player: &PlayerSnapshot,
+        arena: &SourceArena,
+        family: usize,
+    ) -> Option<SourceEntityHandle> {
+        let entry = self.entries.get(&owner.source_slot)?;
+        if entry.handle != owner
+            || player.entity_index != owner.source_slot
+            || player.slot != entry.dispatcher.common_upkeep.player_slot
+            || arena.handle(owner.source_slot) != Some(owner)
+        {
+            return None;
+        }
+        let slot = *player.enabled_spell_holders.get(family)?;
+        let bound = *entry.holder_handles.get(family)?;
+        if *entry.holder_relations.get(family)? != slot {
+            return None;
+        }
+        let typed_slots: BTreeMap<u16, super::Level2DynamicArenaKind> = arena
+            .economy
+            .live_arena_slots()
+            .into_iter()
+            .collect();
+        let current =
+            Self::source_holder_handle(arena, &typed_slots, owner.source_slot, slot, family);
+        bound.filter(|handle| Some(*handle) == current)
+    }
+
+    /// Call only after the source acquisition/constructor actually establishes
+    /// the player's relation, including when it reused the same numeric slot.
+    pub(crate) fn bind_acquired_holder(
+        &mut self,
+        owner: SourceEntityHandle,
+        player: &PlayerSnapshot,
+        arena: &SourceArena,
+        family: usize,
+    ) -> bool {
+        let Some(entry) = self.entries.get_mut(&owner.source_slot) else {
+            return false;
+        };
+        let Some(&slot) = player.enabled_spell_holders.get(family) else {
+            return false;
+        };
+        if entry.handle != owner
+            || player.entity_index != owner.source_slot
+            || player.slot != entry.dispatcher.common_upkeep.player_slot
+            || arena.handle(owner.source_slot) != Some(owner)
+        {
+            return false;
+        }
+        let typed_slots: BTreeMap<u16, super::Level2DynamicArenaKind> = arena
+            .economy
+            .live_arena_slots()
+            .into_iter()
+            .collect();
+        let Some(holder) =
+            Self::source_holder_handle(arena, &typed_slots, owner.source_slot, slot, family)
+        else {
+            return false;
+        };
+        entry.holder_relations[family] = slot;
+        entry.holder_handles[family] = Some(holder);
+        entry.dispatcher.common_upkeep.spell_holder_indices[family] = slot;
+        true
+    }
+
+    /// Complete the AI state writes of the real existing-actor sub_5C950
+    /// revival after its holder constructors and source row are published.
+    pub(crate) fn finish_source_revival(
+        &mut self,
+        owner: SourceEntityHandle,
+        player: &PlayerSnapshot,
+        arena: &SourceArena,
+    ) -> bool {
+        let Some(SourceEntityView::Imported(actor)) = arena.resolve(owner) else { return false };
+        if actor.class != 3 || actor.model != 1 || actor.action != 1
+            || player.entity_index != owner.source_slot || !player.is_ai {
+            return false;
+        }
+        let Some(entry) = self.entries.get_mut(&owner.source_slot) else { return false };
+        if entry.handle != owner || entry.dispatcher.common_upkeep.player_slot != player.slot { return false; }
+        let common = &mut entry.dispatcher.common_upkeep;
+        entry.dispatcher.state_byte = 0;
+        common.word_0x159 = 100;
+        common.word_0x24c = 0;
+        common.word_0x24a = 256;
+        common.dword_0x16d = 2_000;
+        common.speed = 0;
+        common.strafe_speed = 0;
+        common.move_boost = 0;
+        common.yaw_0x1e_30 = 0;
+        common.fov_0x22_34 = 0;
+        common.life = actor.life;
+        common.max_life = actor.max_life;
+        common.mana = actor.mana;
+        common.max_mana = actor.max_mana;
+        common.mana_regen = actor.mana_regen;
+        common.spell_levels = player.spell_unlocked_levels;
+        common.spell_enabled[2] = i16::from(player.player_color_index()).wrapping_mul(4);
+        for index in 0..8 { common.set_auxiliary_word(4 * index + 4, 24_607); }
+        common.source_mailbox.copy_from_slice(actor.source_upkeep_mailbox());
+        entry.holder_relations = player.enabled_spell_holders;
+        entry.holder_handles = [None; PLAYER_SPELL_COUNT];
+        common.spell_holder_indices = [0; PLAYER_SPELL_COUNT];
+        let relation = 4 + 4 * usize::from(player.player_color_index());
+        for other in self.entries.values_mut() {
+            if other.handle != owner {
+                other.dispatcher.common_upkeep.set_auxiliary_word(relation, (-24_609_i16).cast_unsigned());
+            }
+        }
+        for family in 0..PLAYER_SPELL_COUNT {
+            if player.enabled_spell_holders[family] != 0 {
+                let _ = self.bind_acquired_holder(owner, player, arena, family);
+            }
+        }
+        true
+    }
+
+    /// Invoke one owner against the single source RNG. A returned error is a
+    /// value of `R`, so the RNG is still published before the caller handles it.
+    pub(crate) fn with_owner_mut<R>(
+        &mut self,
+        handle: SourceEntityHandle,
+        visit: impl FnOnce(&mut Level2NyphurDispatcher) -> R,
+    ) -> Option<R> {
+        let entry = self.entries.get_mut(&handle.source_slot)?;
+        if entry.handle != handle {
+            return None;
+        }
+        entry.dispatcher.common_upkeep.watcom_rand_state = self.watcom_rand_state;
+        let result = visit(&mut entry.dispatcher);
+        self.watcom_rand_state = entry.dispatcher.common_upkeep.watcom_rand_state;
+        Some(result)
+    }
+
+    pub(crate) fn iter(
+        &self,
+    ) -> impl Iterator<Item = (SourceEntityHandle, &Level2NyphurDispatcher)> {
+        self.entries
+            .values()
+            .map(|entry| (entry.handle, &entry.dispatcher))
+    }
+
+    pub(crate) fn hash_into(&self, hasher: &mut Sha256, entities: &[EntitySnapshot]) {
+        hasher.update(b"source-rival-wizard-roster-v1");
+        hasher.update((self.entries.len() as u32).to_le_bytes());
+        hasher.update(self.watcom_rand_state.to_le_bytes());
+        for entry in self.entries.values() {
+            hasher.update(entry.handle.source_slot.to_le_bytes());
+            hasher.update(entry.handle.generation.to_le_bytes());
+            hasher.update(entry.dispatcher.state_byte.to_le_bytes());
+            for (relation, handle) in entry.holder_relations.iter().zip(entry.holder_handles) {
+                hasher.update(relation.to_le_bytes());
+                if let Some(handle) = handle {
+                    hasher.update([1]);
+                    hasher.update(handle.source_slot.to_le_bytes());
+                    hasher.update(handle.generation.to_le_bytes());
+                } else {
+                    hasher.update([0]);
+                }
+            }
+            let mut common = entry.dispatcher.common_upkeep.clone();
+            common.watcom_rand_state = self.watcom_rand_state;
+            let phase = entities
+                .get(usize::from(entry.handle.source_slot))
+                .map_or(0, |entity| entity.phase);
+            common.hash_into(hasher, phase);
         }
     }
 }
 
-impl std::ops::Deref for NyphurCapability {
+// The original qualified Level 2 tests inspect their single source-112
+// carrier directly. Production always resolves an explicit source handle.
+#[cfg(test)]
+impl std::ops::Deref for RivalWizardRoster {
     type Target = Level2NyphurDispatcher;
 
     fn deref(&self) -> &Self::Target {
-        self.0
-            .as_ref()
-            .expect("Nyphur compatibility view requires a present capability")
+        &self.entries.get(&112).expect("qualified Level 2 rival").dispatcher
     }
 }
 
-impl std::ops::DerefMut for NyphurCapability {
+#[cfg(test)]
+impl std::ops::DerefMut for RivalWizardRoster {
     fn deref_mut(&mut self) -> &mut Self::Target {
-        self.0
-            .as_mut()
-            .expect("Nyphur compatibility view requires a present capability")
+        &mut self.entries.get_mut(&112).expect("qualified Level 2 rival").dispatcher
     }
 }
 
 impl Level2NyphurDispatcher {
+    fn from_source_player(
+        player: &PlayerSnapshot,
+        entity: &EntitySnapshot,
+        entities: &[EntitySnapshot],
+        mission: &MissionContentSession,
+    ) -> Result<Self> {
+        Ok(Self {
+            state_byte: 0,
+            common_upkeep: Level2NyphurCommonUpkeep::from_source_player(
+                player, entity, entities, mission,
+            )?,
+        })
+    }
+
     /// `sub_5C950`/the model-1 reset path clears byte `0x1C1` at the pinned
     /// `EventsFunctions.cpp:43893` seam.  The qualified package does not
     /// serialize the 1,136-byte `Type_str_164`; derive only this reset value
@@ -2833,9 +3201,9 @@ impl Level2NyphurDispatcher {
         }
         Ok(Self {
             state_byte: 0,
-            common_upkeep: Level2NyphurCommonUpkeep::from_qualified_reset(
-                participant,
-                players,
+            common_upkeep: Level2NyphurCommonUpkeep::from_source_player(
+                ai_player,
+                &entities[usize::from(participant.entity_index)],
                 entities,
                 mission,
             )?,

@@ -735,12 +735,41 @@ fn archer_action37_cadence_advances_rng_copies_owner_and_preserves_life() {
     );
     assert_eq!(burst.subspell_index, 400);
     assert_eq!(burst.particle_parameter_index, Some(41));
-    let generation = session.source_arena().slot_generation(burst_slot);
+    assert!(
+        session.economy().events().iter().any(|event| matches!(
+            event,
+            Level2EconomyEvent::DeathBurstSpawned {
+                source_entity_index,
+                parent_entity_index,
+                id_entity_index,
+            } if *source_entity_index == burst_slot
+                && *parent_entity_index == root_slot
+                && *id_entity_index == root_slot
+        )),
+        "the actual Archer burst is published to the death consumer"
+    );
+    let handle = session.source_arena().handle(burst_slot).unwrap();
+    let mut saw_dispatched_expiry = false;
     for _ in 0..4 {
         session.step_outer_turn(PlayerCommand::default(), 0);
-        if session.source_arena().slot_generation(burst_slot) != generation
-            || !session.entities()[usize::from(burst_slot)].active
-        {
+        saw_dispatched_expiry |= session.dispatch_events().iter().any(|event| matches!(
+            event,
+            Mc2DispatchEvent::Economy {
+                source_slot,
+                event: Level2EconomyEvent::DeathBurstExpired {
+                    source_entity_index,
+                    parent_entity_index,
+                },
+                ..
+            } if *source_slot == burst_slot
+                && *source_entity_index == burst_slot
+                && *parent_entity_index == root_slot
+        ));
+        if session.source_arena().resolve(handle).is_none() {
+            assert!(
+                saw_dispatched_expiry,
+                "the real Archer burst expiry reaches its source-pass consumer"
+            );
             return;
         }
     }

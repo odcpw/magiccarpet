@@ -242,6 +242,24 @@ pub(crate) fn read(
     {
         return Ok(Some(fireball(projectile, context)));
     }
+    if !arena.economy.free_source_slots().contains(&slot) {
+        if let Some(row) = arena
+            .economy
+            .castle_projectiles
+            .iter()
+            .find(|row| row.source_entity_index == slot && !row.active && row.drawing_disabled)
+        {
+            return Ok(Some(castle_projectile(row)));
+        }
+        if let Some(row) = arena
+            .economy
+            .possession_projectiles
+            .iter()
+            .find(|row| row.source_entity_index == slot && !row.active)
+        {
+            return Ok(Some(possession_projectile(row)));
+        }
+    }
     let mut view = if raw.active
         && let Some(external) = context.external(slot)
         && (raw.class, raw.model) == (external.class, external.model)
@@ -323,25 +341,19 @@ fn dynamic(
                 .ok_or_else(|| format!("target slot {slot} lost its current Fireball carrier"))?,
             context,
         ),
-        Kind::CastleProjectile => carrier!(
-            economy.castle_projectiles,
-            row,
-            row.source_class,
-            row.source_model,
-            row.owner_entity_index,
-            row.life,
-            row.control_flags | if row.drawing_disabled { 0x400 } else { 0 }
+        Kind::CastleProjectile => castle_projectile(
+            economy
+                .castle_projectiles
+                .iter()
+                .find(|row| row.active && row.source_entity_index == slot)
+                .ok_or_else(|| format!("target slot {slot} lost its current Castle flyer"))?,
         ),
-        Kind::PossessionProjectile => carrier!(
-            economy.possession_projectiles,
-            row,
-            row.source_class,
-            row.source_model,
-            row.source_id_entity_index,
-            row.life,
-            // SummonManaPosession clears NewEvent's collision bit. These
-            // two later writes are retained by the actual flyer owner.
-            4 | u32::from(row.acquisition_attempted) * 2 | u32::from(row.threat_accounted) * 0x2000
+        Kind::PossessionProjectile => possession_projectile(
+            economy
+                .possession_projectiles
+                .iter()
+                .find(|row| row.active && row.source_entity_index == slot)
+                .ok_or_else(|| format!("target slot {slot} lost its current Possession flyer"))?,
         ),
         Kind::PossessionEffect => carrier!(
             economy.possession_effects,
@@ -742,6 +754,51 @@ fn fireball(row: &super::Level2FireballProjectile, context: Context<'_>) -> View
     }
 }
 
+fn castle_projectile(row: &super::Level2CastleProjectile) -> View {
+    View {
+        slot: row.source_entity_index,
+        source_id: row.owner_entity_index,
+        active: row.active,
+        class: row.source_class,
+        model: row.source_model,
+        position: row.position,
+        life: row.life,
+        control_flags: row.control_flags | if row.drawing_disabled { 0x400 } else { 0 },
+        yaw: Some(row.yaw),
+        roll: None,
+        relations: Relations {
+            target: Some(row.source_word_96),
+            attacker: Some(row.holder_entity_index),
+            ..Relations::default()
+        },
+        collision: None,
+    }
+}
+
+fn possession_projectile(row: &super::Level2PossessionProjectile) -> View {
+    View {
+        slot: row.source_entity_index,
+        source_id: row.source_id_entity_index,
+        active: row.active,
+        class: row.source_class,
+        model: row.source_model,
+        position: row.position,
+        life: i32::from(row.life),
+        control_flags: 4
+            | u32::from(row.acquisition_attempted) * 2
+            | u32::from(row.threat_accounted) * 0x2000
+            | if row.active { 0 } else { 0x400 },
+        yaw: Some(row.yaw),
+        roll: Some(row.roll),
+        relations: Relations {
+            target: Some(row.target_source_entity_index),
+            attacker: Some(row.holder_entity_index),
+            ..Relations::default()
+        },
+        collision: None,
+    }
+}
+
 fn relations(arena: &SourceArena, kind: Kind, slot: u16) -> Relations {
     let economy = &arena.economy;
     match kind {
@@ -1055,6 +1112,74 @@ mod tests {
         assert_eq!((target.class, target.model), (9, 0));
         assert_eq!(target.position, session.state.position);
         assert!(!target.active && target.drawing_disabled());
+
+        let castle = arena
+            .economy
+            .spawn_castle_projectile_with_payload(
+                super::super::level2_dynamic_economy::Level2CastleProjectileLaunchPayload {
+                    position: session.state.position,
+                    axis_position: session.state.position,
+                    yaw: session.state.yaw,
+                    pitch: 0,
+                    source_id_entity_index: session.state.entity_index,
+                    source_subspell_index: 0,
+                    source_mana: session.shared_spells().player_mana(),
+                    source_a4_byte_154: 0,
+                },
+                0,
+                0,
+                &session.session.state.live.terrain,
+            )
+            .expect("ordinary Castle flyer constructor");
+        let possession = arena
+            .economy
+            .spawn_possession_projectile(
+                session.state.position,
+                session.state.entity_index,
+                0,
+                session.state.yaw,
+                0,
+                0,
+                session.state.position,
+            )
+            .expect("ordinary Possession flyer constructor");
+        let row = arena
+            .economy
+            .castle_projectiles
+            .iter_mut()
+            .find(|row| row.source_entity_index == castle)
+            .unwrap();
+        row.active = false;
+        row.drawing_disabled = true;
+        arena
+            .economy
+            .possession_projectiles
+            .iter_mut()
+            .find(|row| row.source_entity_index == possession)
+            .unwrap()
+            .active = false;
+        for (slot, model) in [(castle, 10), (possession, 1)] {
+            // A retained packet at the same address cannot resurrect the
+            // previous occupant while its typed flyer awaits reclaim.
+            let raw = &mut arena.entities[usize::from(slot)];
+            raw.class = 2;
+            raw.model = 7;
+            raw.set_life(-900);
+            let current = read(&arena, Context::default(), slot).unwrap().unwrap();
+            assert_eq!((current.class, current.model), (9, model));
+            assert_eq!(current.position, session.state.position);
+            assert_eq!(current.source_id, session.state.entity_index);
+            assert!(!current.active && current.drawing_disabled());
+        }
+        arena.economy.reclaim_inactive_slots_at_source_boundary();
+        for slot in [castle, possession] {
+            assert!(arena.economy.free_source_slots().contains(&slot));
+            let retained = read(&arena, Context::default(), slot).unwrap().unwrap();
+            assert_eq!(
+                (retained.class, retained.model, retained.life),
+                (2, 7, -900)
+            );
+        }
     }
 
     #[test]

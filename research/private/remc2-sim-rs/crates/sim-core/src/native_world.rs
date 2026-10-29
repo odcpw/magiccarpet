@@ -587,7 +587,7 @@ pub use level2_nyphur::{
     Level2NyphurCommonUpkeepSnapshot, Level2NyphurDispatchCall, Level2NyphurDispatchHelper,
     Level2NyphurDispatchTrace, Level2NyphurParticipant, Level2NyphurVisibility,
 };
-use level2_nyphur::{Level2NyphurDispatcher, NyphurCapability, level2_nyphur_source_identity};
+use level2_nyphur::{Level2NyphurDispatcher, RivalWizardRoster, level2_nyphur_source_identity};
 pub(crate) use terrain_strip::cave_corridors;
 
 /// One source-owned Day spell-hand row consumed by the HUD presenter.
@@ -793,6 +793,7 @@ pub struct CampaignEntityPresentation {
 /// source family-6/11/12 pickup transition without claiming active lifecycles.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Level2SharedSpellResetSession {
+    mission_rewards: crate::campaign::rewards::MissionRewards,
     pickups: Box<[EntitySnapshot]>,
 
     dynamic_pickups: Vec<EntitySnapshot>,
@@ -1395,6 +1396,7 @@ fn level2_static_mana_spheres_from_entities(
             }
             let player_entity_index = *source_owner.get(&entity.index)?;
             Some(ManaSphere {
+                action: entity.action,
                 ordinary_damage_payload: entity.source_wind_spell_payload(),
                 ordinary_damage_owner: entity.source_wind_spell_owner(),
                 id: u32::from(entity.index),
@@ -2962,7 +2964,7 @@ pub struct Mc2LiveState {
     pub(crate) goats: GoatFamily,
     pub(crate) mission: MissionContentSession,
     pub(crate) fireball_launch_sound_id: u16,
-    pub(crate) nyphur_dispatcher: NyphurCapability,
+    pub(crate) nyphur_dispatcher: RivalWizardRoster,
     /// Source `FrameTimingIndex_26`, advanced once by PlayerEvents before
     /// UpdateEntities and kept distinct from every player's turn byte.
     pub(crate) source_frame_timing_index: u8,

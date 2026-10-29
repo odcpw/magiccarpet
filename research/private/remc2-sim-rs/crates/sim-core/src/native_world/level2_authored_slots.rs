@@ -670,6 +670,20 @@ impl Level2EconomyState {
         &mut self.spheres
     }
 
+    /// A fixed-address source write targets the current typed occupant, not
+    /// the raw row which preceded a successful NewEvent replacement.
+    pub(crate) fn set_mana_sphere_action(&mut self, slot: u16, action: u8) -> bool {
+        let Some(sphere) = self
+            .spheres
+            .iter_mut()
+            .find(|sphere| sphere.active && sphere.source_entity_index == slot)
+        else {
+            return false;
+        };
+        sphere.action = action;
+        true
+    }
+
     #[must_use]
     pub fn death_bursts(&self) -> &[Level2DeathBurst] {
         &self.death_bursts
@@ -2416,6 +2430,7 @@ impl Level2EconomyState {
         let sphere = ManaSphere {
             id: u32::from(source_entity_index),
             source_entity_index,
+            action: 41,
             entity_rng,
             position,
             velocity_x: 0,
@@ -4298,6 +4313,19 @@ impl Level2EconomyState {
         true
     }
 
+    /// UpdateScroll's completed-entry branch hides the actual scroll before
+    /// ground snapping or player scans, retaining it through the common tail.
+    pub(crate) fn suppress_experience_scroll(&mut self, source_slot: u16) -> bool {
+        let Some(source) = self.authored_class14.iter_mut().find(|source| {
+            source.active && source.source_entity_index == source_slot && source.model == 5
+        }) else {
+            return false;
+        };
+        source.control_flags |= 1;
+        source.drawing_enabled = false;
+        true
+    }
+
     /// Allocate a separately dispatched class-10/model-74/action-72 effect.
     /// The caller supplies the already source-derived payload; this method
     /// owns the shared NewEvent slot/RNG, map link, and reclaim identity just
@@ -5184,8 +5212,8 @@ impl Level2EconomyState {
             Level2DynamicArenaKind::ManaSphere => self
                 .spheres
                 .iter()
-                .any(|row| row.active && row.source_entity_index == source_slot)
-                .then_some((10, 41)),
+                .find(|row| row.active && row.source_entity_index == source_slot)
+                .map(|row| (10, row.action)),
             Level2DynamicArenaKind::ManaCarrier => self
                 .carriers
                 .iter()
@@ -5412,7 +5440,7 @@ impl Level2EconomyState {
     /// relation; the owning pass below is the only place that adopts newly
     /// written `source_owner` relations. The published aggregate and global
     /// counter remain frozen until that boundary as they do in `sub_60F00`.
-    pub(super) fn refresh_owner_mana_rows(&mut self) {
+    pub(crate) fn refresh_owner_mana_rows(&mut self) {
         let imported_source_slots = self
             .owner_mana_rows
             .iter()
@@ -5845,6 +5873,23 @@ impl Level2EconomyState {
         true
     }
 
+    /// The engine bounds invalid selectors instead of indexing beyond the
+    /// pinned class-10 table (which has no action205 callback). Like the
+    /// existing Archer policy, hide now without a callback/phase epilogue;
+    /// the following source boundary owns unlink and reclaim.
+    pub(super) fn hide_dynamic_invalid_selector(&mut self, source_slot: u16) -> bool {
+        if let Some(sphere) = self
+            .spheres
+            .iter_mut()
+            .find(|sphere| sphere.active && sphere.source_entity_index == source_slot)
+        {
+            sphere.control_flags |= ENTITY_DRAW_DISABLED_BIT;
+            sphere.pending_delete = true;
+            return true;
+        }
+        self.hide_authored_class5_archer_child_invalid_selector(source_slot)
+    }
+
     fn reclaim_inactive_slots_with_policy(
         &mut self,
         defer_bee_creatures: bool,
@@ -5892,7 +5937,10 @@ impl Level2EconomyState {
         let reclaimed = self
             .spheres
             .iter()
-            .filter(|sphere| !sphere.active || sphere.control_flags & ENTITY_DRAW_DISABLED_BIT != 0)
+            .filter(|sphere| {
+                !sphere.active
+                    || (at_source_boundary && sphere.control_flags & ENTITY_DRAW_DISABLED_BIT != 0)
+            })
             .map(|sphere| {
                 (
                     sphere.source_entity_index,
@@ -5901,8 +5949,10 @@ impl Level2EconomyState {
                 )
             })
             .collect::<Vec<_>>();
-        self.spheres
-            .retain(|sphere| sphere.active && sphere.control_flags & ENTITY_DRAW_DISABLED_BIT == 0);
+        self.spheres.retain(|sphere| {
+            sphere.active
+                && (!at_source_boundary || sphere.control_flags & ENTITY_DRAW_DISABLED_BIT == 0)
+        });
         for (slot, entity_rng, target_top) in reclaimed {
             // `sub_57F20` frees the slot but leaves its fixed entity record in
             // place until `NewEvent` overwrites it. An already-guided flyer
@@ -6645,6 +6695,10 @@ impl Level2EconomyState {
         for sphere in &self.spheres {
             hasher.update(sphere.id.to_le_bytes());
             hasher.update(sphere.source_entity_index.to_le_bytes());
+            if sphere.action != 41 {
+                hasher.update(b"mana-sphere-current-action-v1");
+                hasher.update([sphere.action]);
+            }
             hasher.update(sphere.entity_rng.to_le_bytes());
             hasher.update(sphere.position.x.to_le_bytes());
             hasher.update(sphere.position.y.to_le_bytes());

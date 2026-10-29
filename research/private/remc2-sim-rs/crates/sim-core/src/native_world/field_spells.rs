@@ -595,7 +595,8 @@ mod tests {
                         projectile_slot,
                         None,
                         crate::native_world::source_target::Context::from_ordinary(
-                            &live.goats, &live.ordinary,
+                            &live.goats,
+                            &live.ordinary,
                         ),
                     )
                     .expect("guided source callback constructs the terminal field")
@@ -862,6 +863,51 @@ mod tests {
         ] {
             let profile = tiers[0];
             let mut session = base.clone();
+            let resident_slot = if family == Family::Whirlwind {
+                let house = session
+                    .ordinary()
+                    .houses()
+                    .iter()
+                    .find(|house| {
+                        house.active && house.parameter.produces_villagers() && house.capacity > 5
+                    })
+                    .expect("fixture retains a resident-producing source House")
+                    .entity_index;
+                // Pin an ordinary full-House production visit with a source
+                // RNG value that selects a settlement resident, not an Archer.
+                {
+                    let live = &mut session.session.state.live;
+                    let house = live.ordinary.houses.house_mut(house).unwrap();
+                    let capacity = house.capacity as u16;
+                    let threshold = i32::from(capacity) - (i32::from(capacity) >> 4) - 2;
+                    let seed = (0_u16..=u16::MAX)
+                        .find(|seed| {
+                            let first = seed.wrapping_mul(9_377).wrapping_add(9_439);
+                            let second = first.wrapping_mul(9_377).wrapping_add(9_439);
+                            i32::from(first % capacity) > threshold && second % 12 >= 2
+                        })
+                        .expect("source RNG has a resident-producing draw");
+                    house.occupants = i32::from(capacity);
+                    house.phase = 0;
+                    house.rng = seed;
+                    house.publish_source(
+                        &mut live.economy.entities[usize::from(house.entity_index)],
+                    );
+                }
+                session.step_outer_turn(PlayerCommand::default(), 0);
+                no_dispatch_errors(&session);
+                Some(
+                    session
+                        .economy()
+                        .house_residents()
+                        .iter()
+                        .find(|resident| resident.parent_house_entity_index == house)
+                        .expect("ordinary House callback constructs its resident")
+                        .source_entity_index,
+                )
+            } else {
+                None
+            };
             let actor_slot = session
                 .ordinary
                 .villagers
@@ -1062,8 +1108,8 @@ mod tests {
                     );
                     assert_eq!(
                         session.economy.entities[usize::from(impact_slot)].record[74],
-                        0,
-                        "sub_678E0 scales field life from projectile byte46 but preserves the Gravity constructor phase"
+                        profile.effect_parameter,
+                        "sub_65820 copies projectile byte46 before sub_678E0 scales field life"
                     );
                     // The source keeps this payload byte while action72 counts
                     // down, then resets it to phase zero on the scheduled
@@ -1176,6 +1222,61 @@ mod tests {
                         "ordinary impact constructs the source linked wind chain"
                     );
                     place_villager(&mut session, actor_slot, wind.axis_position);
+                    let resident_slot = resident_slot.expect("Wind test has a House resident");
+                    {
+                        let live = &mut session.session.state.live;
+                        let resident = live
+                            .economy
+                            .economy
+                            .house_residents
+                            .iter_mut()
+                            .find(|resident| {
+                                resident.active && resident.source_entity_index == resident_slot
+                            })
+                            .expect("House-produced resident remains authoritative");
+                        resident.position = wind.axis_position;
+                        resident.control_flags |= 0x1000_0000;
+                        resident.stage.duration = 1_536;
+                        let row = &mut live.economy.entities[usize::from(resident_slot)];
+                        row.set_position(wind.axis_position);
+                        row.set_control_flags(row.control_flags | 0x1000_0000);
+                        // A stale shadow must not replace the current typed
+                        // source word30 when Wind reads its target.
+                        row.record[52..54].fill(0);
+                        crate::world::effects::sync_position(
+                            &mut live.economy,
+                            &mut live.terrain,
+                            resident_slot,
+                            wind.axis_position,
+                            true,
+                            false,
+                        )
+                        .expect("House resident retains the source map head");
+                    }
+                    // An airborne target takes the source contact route, which
+                    // also awards Wind experience to the actual spell owner.
+                    {
+                        let live = &mut session.session.state.live;
+                        let actor = live
+                            .ordinary
+                            .villagers
+                            .villagers_mut()
+                            .iter_mut()
+                            .find(|actor| actor.entity_index == actor_slot)
+                            .expect("Wind target remains in the Villager authority");
+                        actor.control_flags |= 0x1000_0000;
+                        let source = &mut live.economy.entities[usize::from(actor_slot)];
+                        source.set_control_flags(source.control_flags | 0x1000_0000);
+                    }
+                    let experience_before =
+                        session.session.state.live.shared_spells.spell_experience()[21];
+                    let mut replay = session.clone();
+                    replay
+                        .session
+                        .state
+                        .live
+                        .shared_spells
+                        .set_mission_rewards(crate::campaign::rewards::MissionRewards::Suppressed);
                     let wind_target_before = session
                         .ordinary
                         .villagers
@@ -1186,6 +1287,18 @@ mod tests {
                         .position;
                     session.step_outer_turn(PlayerCommand::default(), 0);
                     no_dispatch_errors(&session);
+                    replay.step_outer_turn(PlayerCommand::default(), 0);
+                    no_dispatch_errors(&replay);
+                    assert!(
+                        session.session.state.live.shared_spells.spell_experience()[21]
+                            > experience_before,
+                        "the scheduled airborne contact awards the Wind owner's experience"
+                    );
+                    assert_eq!(
+                        replay.session.state.live.shared_spells.spell_experience()[21],
+                        experience_before,
+                        "the same scheduled contact on a completed mission suppresses rewards"
+                    );
                     let actor = session
                         .ordinary
                         .villagers
@@ -1197,6 +1310,28 @@ mod tests {
                     assert_ne!(
                         actor.position, wind_target_before,
                         "ordinary Wind callback moves the actual Villager carrier"
+                    );
+                    let resident = session
+                        .economy()
+                        .house_residents()
+                        .iter()
+                        .find(|resident| {
+                            resident.active && resident.source_entity_index == resident_slot
+                        })
+                        .expect("Wind target remains in the House resident authority");
+                    assert_ne!(resident.control_flags & 0x800, 0);
+                    assert_ne!(
+                        resident.position, wind.axis_position,
+                        "ordinary Wind moves the House-produced resident carrier"
+                    );
+                    assert_eq!(
+                        i16::from_le_bytes(
+                            session.economy.entities[usize::from(resident_slot)].record[52..54]
+                                .try_into()
+                                .unwrap()
+                        ),
+                        resident.stage.duration,
+                        "Wind publishes the current typed source word30"
                     );
 
                     let children = session
@@ -1213,6 +1348,45 @@ mod tests {
                         .find(|source| source.source_entity_index == impact_slot)
                         .expect("Wind phase remains on its typed carrier")
                         .phase;
+                    let house_slot = session
+                        .ordinary
+                        .houses
+                        .houses()
+                        .iter()
+                        .find(|house| house.source_retained())
+                        .expect("fixture retains an actual House authority")
+                        .entity_index;
+                    let cleanup_position = session
+                        .economy
+                        .authored_model22()
+                        .iter()
+                        .find(|source| source.source_entity_index == impact_slot)
+                        .expect("Wind source remains live before expiry")
+                        .position;
+                    {
+                        let live = &mut session.session.state.live;
+                        let house = live.ordinary.houses.house_mut(house_slot).unwrap();
+                        house.position = cleanup_position;
+                        house.control_flags |= 0x1000_0800;
+                        house.publish_source(&mut live.economy.entities[usize::from(house_slot)]);
+                        let castle_state = live.economy.economy.castle_at_mut(castle).unwrap();
+                        castle_state.position = cleanup_position;
+                        castle_state.control_flags |= 0x1000_0800;
+                        let castle_row = &mut live.economy.entities[usize::from(castle)];
+                        castle_row.set_position(cleanup_position);
+                        castle_row.set_control_flags(castle_row.control_flags | 0x1000_0800);
+                        for slot in [house_slot, castle] {
+                            crate::world::effects::sync_position(
+                                &mut live.economy,
+                                &mut live.terrain,
+                                slot,
+                                cleanup_position,
+                                true,
+                                false,
+                            )
+                            .expect("expiry targets retain their actual map heads");
+                        }
+                    }
                     // The next scheduled callback decrements zero to -1 and
                     // exercises the real cleanup branch without waiting a
                     // full Wind lifetime. Natural expiry has a separate check.
@@ -1246,6 +1420,42 @@ mod tests {
                         .find(|actor| actor.entity_index == actor_slot)
                         .expect("Wind expiry clears flags on the actual Villager carrier");
                     assert_eq!(actor.control_flags & 0x1000_0800, 0);
+                    assert_eq!(
+                        session
+                            .economy()
+                            .house_residents()
+                            .iter()
+                            .find(|resident| resident.source_entity_index == resident_slot)
+                            .expect("House resident survives the Wind expiry callback")
+                            .control_flags
+                            & 0x1000_0800,
+                        0,
+                        "expiry clears the House resident's authoritative flags"
+                    );
+                    assert_eq!(
+                        session
+                            .ordinary
+                            .houses
+                            .houses()
+                            .iter()
+                            .find(|house| house.entity_index == house_slot)
+                            .expect("House survives the Wind expiry callback")
+                            .control_flags
+                            & 0x1000_0800,
+                        0,
+                        "expiry clears the authoritative House carrier"
+                    );
+                    assert_eq!(
+                        session
+                            .economy
+                            .economy
+                            .castle_at(castle)
+                            .expect("Castle survives the Wind expiry callback")
+                            .control_flags
+                            & 0x1000_0800,
+                        0,
+                        "expiry clears the authoritative Castle carrier"
+                    );
                     session.step_outer_turn(PlayerCommand::default(), 0);
                     no_dispatch_errors(&session);
                     assert!(

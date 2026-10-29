@@ -992,7 +992,7 @@ fn digest_source_sidecars(state: &ResetState) -> CanonicalDigest {
         append_string(hasher, &state.mission.state_hash());
         append_len(hasher, state.goats.goats().len());
         append_len(hasher, state.bad_stones.len());
-        hasher.update([state.nyphur_dispatcher.state_byte().cast_unsigned()]);
+        state.nyphur_dispatcher.hash_into(hasher, &state.economy.entities);
         digest_outer_reset_state(hasher, state);
     })
 }

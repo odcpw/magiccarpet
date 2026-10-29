@@ -1009,6 +1009,11 @@ fn level_two_wind_sub33340_filters_and_moves_model0_target_on_production_turn() 
         &target_snapshot
     ));
     assert_eq!(target_snapshot.source_word_30(), u16::MAX);
+    assert_eq!(
+        target_snapshot.source_spell_word_30(),
+        u16::MAX,
+        "Wind heading must reach the exported source field consumed by spell callbacks"
+    );
     let mut rejected = target_snapshot.clone();
     rejected.model = 2;
     rejected.record[68] = 2;
@@ -3335,13 +3340,27 @@ fn level_two_player_death_burst_slot_reclaims_only_at_following_boundary() {
         active: true,
     });
 
+    for expected_life in [0, -1] {
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        let burst = session
+            .economy
+            .death_bursts
+            .iter()
+            .find(|burst| burst.source_entity_index == slot)
+            .expect("the scheduled burst remains allocated");
+        assert!(burst.active);
+        assert_eq!(burst.life_ticks, expected_life);
+        assert!(!session.economy.free_slots.contains(&slot));
+    }
     session.step_outer_turn(PlayerCommand::default(), 0);
     assert!(
         session
             .economy
             .death_bursts
             .iter()
-            .any(|burst| burst.source_entity_index == slot && !burst.active)
+            .any(|burst| burst.source_entity_index == slot
+                && burst.active
+                && burst.control_flags & 0x400 != 0)
     );
     assert!(
         !session.economy.free_slots.contains(&slot),

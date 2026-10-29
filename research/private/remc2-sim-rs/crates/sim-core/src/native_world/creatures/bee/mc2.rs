@@ -563,6 +563,7 @@ pub(crate) fn step_in_arena(
         .iter()
         .position(|source| source.active && source.source_entity_index == slot)
         .ok_or_else(|| format!("Bee source slot {slot} is absent"))?;
+    let source_generation = arena.slot_generation(slot);
     let before = arena.economy.bee_creatures[index];
     if matches!(before.origin, BeeCreatureOrigin::SummonedSpell { .. })
         && before.stage_var2 == 13
@@ -656,54 +657,56 @@ pub(crate) fn step_in_arena(
         arena.economy.decrement_source_creature_population();
     }
     if effects.death_conversion {
+        // The kernel reports its final hidden state, but KillEntity keeps
+        // the current source pointer visible through both constructors.
+        arena.economy.bee_creatures[index].drawing_enabled = true;
         if after.mana > 0 {
             let owner = arena.economy.source_owner(slot);
-            if let Some(sphere_slot) = arena.allocate_source_slot_with_terrain(terrain) {
-                arena.economy.initialize_death_mana_sphere_at_slot(
-                    sphere_slot,
-                    slot,
-                    after.position,
-                    after.yaw,
-                    after.mana,
-                    owner,
-                    terrain,
-                );
-                let rng = arena
-                    .economy
-                    .spheres
-                    .last()
-                    .filter(|row| row.source_entity_index == sphere_slot)
-                    .ok_or_else(|| format!("Bee death lost allocated sphere {sphere_slot}"))?
-                    .entity_rng;
-                arena.economy.source_rng.insert(sphere_slot, rng);
-                crate::world::effects::sync_position(
-                    arena,
-                    terrain,
-                    sphere_slot,
-                    after.position,
-                    true,
-                    false,
-                )?;
-            }
-            // 36BA0 clears this relation after the attempt, even if NewEvent
-            // fails. It is distinct from the source id copied to the burst.
-            arena.economy.source_owner.insert(slot, 0);
-        }
-        if after.control_flags & 0x0010_0000 == 0
-            && let Some(burst_slot) = crate::world::effects::allocate(
+            crate::world::effects::spawn_death_mana_sphere(
                 arena,
                 terrain,
-                sim_definition::adapter::mc2_effect_definition(
-                    crate::level_definition::EffectKind::RadialExplosion,
-                ),
+                slot,
                 after.position,
+                after.yaw,
+                after.mana,
+                owner,
+            )?;
+            // 36BA0 clears this relation after the attempt, even if NewEvent
+            // fails. It is distinct from the source id copied to the burst.
+            crate::world::effects::clear_replacement_mana_owner(arena, slot)?;
+            arena.economy.source_owner.insert(slot, 0);
+        }
+        // The mana allocation may have changed the fixed-address parent.
+        // KillEntity reads that current address before constructing its burst.
+        let current = crate::native_world::source_target::read(
+            arena,
+            crate::native_world::source_target::Context::default(),
+            slot,
+        )?
+        .ok_or_else(|| format!("Bee death lost source address {slot}"))?;
+        let burst = if current.control_flags & 0x0010_0000 == 0 {
+            crate::world::effects::spawn_death_burst(
+                arena,
+                terrain,
                 particles,
+                slot,
+                current.position,
+                current.source_id,
             )?
-        {
-            let burst = &mut arena.entities[usize::from(burst_slot)];
-            burst.source_id = after.entity_id;
-            burst.record[30..32].copy_from_slice(&after.entity_id.to_le_bytes());
-            crate::world::effects::register_death_burst(arena, burst_slot, slot)?;
+        } else {
+            None
+        };
+        if !crate::world::effects::hide_birth_replacement(arena, slot, burst)? {
+            if arena.slot_generation(slot) != source_generation {
+                return Err(format!("Bee death cannot hide replacement at source slot {slot}"));
+            }
+            let source = arena
+                .economy
+                .bee_creatures
+                .iter_mut()
+                .find(|source| source.active && source.source_entity_index == slot)
+                .ok_or_else(|| format!("Bee death lost typed source at slot {slot}"))?;
+            source.drawing_enabled = false;
         }
     }
     if effects.expire_effect {
@@ -725,10 +728,22 @@ pub(crate) fn step_in_arena(
             particles,
         )?;
     }
-    // CopyEntityPosition still publishes a moved row hidden earlier in this
-    // pass. Drawing disable defers unlink; it does not suppress movement.
-    crate::world::effects::sync_position(arena, terrain, slot, after.position, true, false)?;
-    if !after.drawing_enabled {
+    // CopyEntityPosition still publishes the current fixed-address row even
+    // after hide. A NewEvent replacement must not use the old Bee's pose.
+    let replaced = arena.slot_generation(slot) != source_generation;
+    let position = if replaced {
+        crate::native_world::source_target::read(
+            arena,
+            crate::native_world::source_target::Context::default(),
+            slot,
+        )?
+        .ok_or_else(|| format!("Bee tail lost source address {slot}"))?
+        .position
+    } else {
+        after.position
+    };
+    crate::world::effects::sync_position(arena, terrain, slot, position, true, false)?;
+    if !replaced && !after.drawing_enabled {
         arena.economy.deferred_bee_reclaims.insert(slot);
     }
     publish_source_alliance_control(arena, slot);

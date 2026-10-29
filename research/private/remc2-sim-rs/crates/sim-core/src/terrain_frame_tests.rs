@@ -1206,6 +1206,7 @@ fn owner_cache_goat_world_frame_is_interleaved_and_deterministic() {
     let neutral_sphere = ManaSphere {
         id: 1,
         source_entity_index: 993,
+        action: 41,
         entity_rng: 0,
         position: goat.position,
         velocity_x: 0,

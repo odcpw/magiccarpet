@@ -2,7 +2,9 @@
 //! special building.
 
 use crate::campaign::source_arena::SourceArena;
-use crate::native_world::{Level2SharedSpellResetSession, SessionTerrain};
+use crate::native_world::{
+    Level2SharedSpellResetSession, ParticleParameter, SessionTerrain, source_target,
+};
 
 const PROTECTED_PROJECTILE_MODELS: [u8; 8] = [2, 4, 5, 10, 22, 23, 25, 30];
 const SOURCE_AXIS_HALF_EXTENT: i16 = 5_120;
@@ -13,15 +15,6 @@ struct Projectile {
     slot: u16,
     model: u8,
     position: crate::Position,
-    carrier: ProjectileCarrier,
-}
-
-#[derive(Clone, Copy)]
-enum ProjectileCarrier {
-    Imported,
-    Castle,
-    Fireball,
-    Possession,
 }
 
 /// Walk the live source class-9 chain in its source order, applying the
@@ -41,47 +34,58 @@ pub(crate) fn apply(
     terrain: &mut SessionTerrain,
     protected_slot: u16,
     shared_spells: &mut Level2SharedSpellResetSession,
+    particles: &[ParticleParameter],
     class9_slots_in_source_order: &[u16],
 ) -> Result<bool, String> {
-    let protected = arena
-        .entities
-        .get(usize::from(protected_slot))
-        .filter(|row| row.active)
-        .cloned()
-        .ok_or_else(|| format!("source protection row {protected_slot} is absent"))?;
+    let protected = current(arena, shared_spells, particles, terrain, protected_slot)?;
     let boss = protected.class == 5 && protected.model == 10;
-    let castle = player_castle_geometry(arena);
     let mut close = false;
 
-    for &candidate_slot in class9_slots_in_source_order {
-        let Some(candidate) = source_projectile(arena, candidate_slot)? else {
+    let members = class9_slots_in_source_order
+        .iter()
+        .map(|&slot| (slot, arena.economy.slot_generation(slot)))
+        .collect::<Vec<_>>();
+    for (candidate_slot, generation) in members {
+        let Some(candidate) =
+            source_projectile(arena, shared_spells, particles, terrain, candidate_slot)?
+        else {
             continue;
         };
         if !PROTECTED_PROJECTILE_MODELS.contains(&candidate.model) {
+            // A NewEvent inside this scan resets the replaced row's next
+            // pointer. It may truncate the chain at a later member too.
+            if arena.economy.slot_generation(candidate_slot) != generation {
+                break;
+            }
             continue;
         }
+        let protected = current(arena, shared_spells, particles, terrain, protected_slot)?;
+        let shifts = protected.collision.ok_or_else(|| {
+            format!("source protection row {protected_slot} has no current collision axes")
+        })?;
 
         // Only the Castle projectile (model10) substitutes the player's
         // Castle position and shifts. The other admitted models jump to
         // LABEL_19 in sub_21F60 and use their own position.
         let (overlap, closes_boss) = if candidate.model == 10 {
-            let (target_position, target_half_x, target_half_y) = castle.unwrap_or((
-                candidate.position,
-                SOURCE_AXIS_HALF_EXTENT,
-                SOURCE_AXIS_HALF_EXTENT,
-            ));
+            let (target_position, target_half_x, target_half_y) = player_castle_geometry(arena)
+                .unwrap_or((
+                    candidate.position,
+                    SOURCE_AXIS_HALF_EXTENT,
+                    SOURCE_AXIS_HALF_EXTENT,
+                ));
             (
                 crate::native_world::level2_compare_axis_with_shift(
                     protected.position,
                     if boss {
                         SOURCE_AXIS_HALF_EXTENT
                     } else {
-                        protected.array_pitch()
+                        shifts.half_width
                     },
                     if boss {
                         SOURCE_AXIS_HALF_EXTENT
                     } else {
-                        protected.array_roll()
+                        shifts.half_depth
                     },
                     target_position,
                     target_half_x,
@@ -99,8 +103,8 @@ pub(crate) fn apply(
             (
                 crate::native_world::level2_compare_axis_with_shift(
                     protected.position,
-                    protected.array_pitch(),
-                    protected.array_roll(),
+                    shifts.half_width,
+                    shifts.half_depth,
                     candidate.position,
                     SOURCE_AXIS_HALF_EXTENT,
                     SOURCE_AXIS_HALF_EXTENT,
@@ -117,37 +121,30 @@ pub(crate) fn apply(
             clear_spell_two_holder(arena, shared_spells)?;
         }
 
-        // NewAdd0A00_4E320 creates the established typed action-0 impact row;
-        // the source overwrites its id with the protected entity's id.
-        let effect_slot = arena.economy.allocate_class10_model0_effect(
-            0,
-            protected.source_id,
-            0,
-            0,
+        let effect_slot = crate::world::effects::allocate_from_source_position(
+            arena,
+            terrain,
+            sim_definition::adapter::mc2_effect_definition(
+                crate::level_definition::EffectKind::Impact,
+            ),
+            candidate.slot,
             candidate.position,
-            400,
-            0,
-            0x0002_0000,
-            128,
-            128,
-        );
-        let terrain_publish = if let Some(effect_slot) = effect_slot {
-            crate::world::effects::sync_position(
-                arena,
-                terrain,
-                effect_slot,
-                candidate.position,
-                true,
-                false,
-            )
-        } else {
-            Ok(())
-        };
-
-        hide_candidate(arena, candidate)?;
-        terrain_publish.map_err(|error| {
-            format!("source protection impact terrain publication failed: {error}")
-        })?;
+            particles,
+        )?;
+        if let Some(slot) = effect_slot {
+            // The source reads the protected owner's id AFTER NewEvent.
+            let owner =
+                current(arena, shared_spells, particles, terrain, protected_slot)?.source_id;
+            let effect = &mut arena.entities[usize::from(slot)];
+            effect.source_id = owner;
+            effect.record[30..32].copy_from_slice(&owner.to_le_bytes());
+        }
+        if !crate::world::effects::hide_birth_replacement(arena, candidate.slot, effect_slot)? {
+            hide_candidate(arena, candidate.slot)?;
+        }
+        if arena.economy.slot_generation(candidate_slot) != generation {
+            break;
+        }
     }
 
     let rebound_slot = shared_spells.local_player().enabled_spell_holders[8];
@@ -189,7 +186,7 @@ fn clear_spell_two_holder(
 ) -> Result<(), String> {
     let holder_slot = shared_spells.local_player().enabled_spell_holders[2];
     if let Some(holder) = shared_spells.pickup_mut(holder_slot) {
-        holder.record[46..48].fill(0);
+        holder.record[50..52].fill(0);
         if let Some(row) = arena
             .entities
             .get_mut(usize::from(holder_slot))
@@ -200,129 +197,100 @@ fn clear_spell_two_holder(
                     && row.source_id == holder.source_id
             })
         {
-            row.record[46..48].fill(0);
+            row.record[50..52].fill(0);
         }
     } else if let Some(holder) = arena.entities.get_mut(usize::from(holder_slot)) {
-        holder.record[46..48].fill(0);
+        holder.record[50..52].fill(0);
     } else {
         return Err(format!("source spell-2 holder row {holder_slot} is absent"));
     }
     Ok(())
 }
 
-fn source_projectile(arena: &SourceArena, slot: u16) -> Result<Option<Projectile>, String> {
+fn current(
+    arena: &SourceArena,
+    spells: &Level2SharedSpellResetSession,
+    particles: &[ParticleParameter],
+    terrain: &SessionTerrain,
+    slot: u16,
+) -> Result<source_target::View, String> {
+    source_target::read(
+        arena,
+        source_target::Context {
+            spells: Some(spells),
+            particles: Some(particles),
+            map_type: Some(terrain.map_type()),
+            ..source_target::Context::default()
+        },
+        slot,
+    )?
+    .ok_or_else(|| format!("source protection address {slot} is absent"))
+}
+
+fn source_projectile(
+    arena: &SourceArena,
+    spells: &Level2SharedSpellResetSession,
+    particles: &[ParticleParameter],
+    terrain: &SessionTerrain,
+    slot: u16,
+) -> Result<Option<Projectile>, String> {
     if slot == 0 {
         return Ok(None);
     }
-    if let Some(row) = arena
-        .economy
-        .castle_projectiles
-        .iter()
-        .find(|row| row.active && row.source_class == 9 && row.source_entity_index == slot)
-    {
-        return Ok(Some(Projectile {
-            slot,
-            model: row.source_model,
-            position: row.position,
-            carrier: ProjectileCarrier::Castle,
-        }));
-    }
-    if let Some(row) = arena
-        .economy
-        .fireball_projectiles
-        .iter()
-        .find(|row| row.active && row.source_class == 9 && row.source_entity_index == slot)
-    {
-        return Ok(Some(Projectile {
-            slot,
-            model: row.source_model,
-            position: row.position,
-            carrier: ProjectileCarrier::Fireball,
-        }));
-    }
-    if let Some(row) = arena
-        .economy
-        .possession_projectiles
-        .iter()
-        .find(|row| row.active && row.source_class == 9 && row.source_entity_index == slot)
-    {
-        return Ok(Some(Projectile {
-            slot,
-            model: row.source_model,
-            position: row.position,
-            carrier: ProjectileCarrier::Possession,
-        }));
-    }
-    if let Some(row) = arena
-        .entities
-        .get(usize::from(slot))
-        .filter(|row| row.active && row.class == 9)
-    {
-        return Ok(Some(Projectile {
-            slot,
-            model: row.model,
-            position: row.position,
-            carrier: ProjectileCarrier::Imported,
-        }));
-    }
-    Err(format!(
-        "source class-9 chain slot {slot} has no live arena projectile"
-    ))
+    // Membership was frozen before callbacks. Read the current address even
+    // when an earlier callback changed its class, life, or drawing flags.
+    let row = current(arena, spells, particles, terrain, slot)?;
+    Ok(Some(Projectile {
+        slot,
+        model: row.model,
+        position: row.position,
+    }))
 }
 
-fn hide_candidate(arena: &mut SourceArena, candidate: Projectile) -> Result<(), String> {
-    match candidate.carrier {
-        ProjectileCarrier::Imported => {
-            let row = arena
-                .entities
-                .get_mut(usize::from(candidate.slot))
-                .filter(|row| row.active && row.class == 9 && row.model == candidate.model)
-                .ok_or_else(|| {
-                    format!(
-                        "source protection projectile slot {} changed before hide",
-                        candidate.slot
-                    )
-                })?;
-            row.disable_drawing();
-        }
-        ProjectileCarrier::Castle => {
+fn hide_candidate(arena: &mut SourceArena, slot: u16) -> Result<(), String> {
+    use crate::native_world::Level2DynamicArenaKind as Kind;
+    match arena
+        .economy
+        .live_arena_cursor_row(slot)
+        .map(|row| row.kind)
+    {
+        Some(Kind::CastleProjectile) => {
             let row = arena
                 .economy
                 .castle_projectiles
                 .iter_mut()
-                .find(|row| {
-                    row.active && row.source_class == 9 && row.source_entity_index == candidate.slot
-                })
-                .ok_or_else(|| {
-                    format!(
-                        "source Castle projectile slot {} changed before hide",
-                        candidate.slot
-                    )
-                })?;
+                .find(|row| row.source_entity_index == slot)
+                .ok_or_else(|| format!("source Castle projectile {slot} has no carrier"))?;
+            row.active = false;
             row.drawing_disabled = true;
+            row.control_flags |= crate::native_world::ENTITY_DRAW_DISABLED_BIT;
         }
-        ProjectileCarrier::Fireball => {
+        Some(Kind::FireballProjectile) => {
             let row = arena
                 .economy
                 .fireball_projectiles
                 .iter_mut()
-                .find(|row| {
-                    row.active && row.source_class == 9 && row.source_entity_index == candidate.slot
-                })
-                .ok_or_else(|| {
-                    format!(
-                        "source Fireball projectile slot {} changed before hide",
-                        candidate.slot
-                    )
-                })?;
+                .find(|row| row.source_entity_index == slot)
+                .ok_or_else(|| format!("source Fireball projectile {slot} has no carrier"))?;
+            row.active = false;
             row.drawing_disabled = true;
+            row.control_flags |= crate::native_world::ENTITY_DRAW_DISABLED_BIT;
         }
-        ProjectileCarrier::Possession => {
+        Some(Kind::PossessionProjectile) => {
+            let row = arena
+                .economy
+                .possession_projectiles
+                .iter_mut()
+                .find(|row| row.source_entity_index == slot)
+                .ok_or_else(|| format!("source Possession projectile {slot} has no carrier"))?;
+            row.active = false;
+        }
+        Some(kind) => {
             return Err(format!(
-                "source protection cannot hide typed Possession projectile slot {}",
-                candidate.slot
+                "source protection has no current hide writer for {kind:?} at {slot}"
             ));
         }
+        None => arena.entities[usize::from(slot)].disable_drawing(),
     }
     Ok(())
 }
@@ -333,8 +301,29 @@ mod tests {
 
     #[test]
     fn non_castle_projectiles_use_the_boss_distance_boundary() {
-        let session = crate::native_world::tests::level_two_campaign_session();
+        let package = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../generated/mc-1pb-16-level2-full-build-v2");
+        let campaign = crate::campaign::CampaignSession::open(
+            package,
+            crate::campaign::spec::CampaignSelection::LEVEL2,
+        )
+        .expect("actual Level2 packet retains source constructor counters");
+        let session = campaign.simulation();
         let live = &session.session.state.live;
+        {
+            let mut arena = live.economy.clone();
+            let mut spells = live.shared_spells.clone();
+            let holder = spells.local_player().enabled_spell_holders[2];
+            let row = spells
+                .pickup_mut(holder)
+                .expect("actual Castle spell holder");
+            row.set_subspell_index(93);
+            row.record[50..52].copy_from_slice(&7_u16.to_le_bytes());
+            clear_spell_two_holder(&mut arena, &mut spells).unwrap();
+            let row = spells.pickup(holder).unwrap();
+            assert_eq!(row.source_word_2e(), 0, "sub_21F60 clears source word2E");
+            assert_eq!(row.subspell_index, 93, "source word2A is a separate field");
+        }
         for model in [2_u8, 4, 5, 22, 23, 25, 30] {
             for distance in [3_072_u16, 3_073] {
                 let mut arena = live.economy.clone();
@@ -360,6 +349,7 @@ mod tests {
                     .unwrap();
                 let row = &mut arena.entities[usize::from(projectile)];
                 row.active = true;
+                row.record[2] = 1;
                 row.class = 9;
                 row.model = model;
                 row.action = model;
@@ -378,12 +368,59 @@ mod tests {
                 )
                 .unwrap();
 
-                apply(&mut arena, &mut terrain, boss, &mut spells, &[projectile]).unwrap();
+                let alias = (model == 2 && distance == 3_072)
+                    .then(|| (arena.clone(), terrain.clone(), spells.clone()));
+                apply(
+                    &mut arena,
+                    &mut terrain,
+                    boss,
+                    &mut spells,
+                    &session.session.definition.presentation.particles,
+                    &[projectile],
+                )
+                .unwrap();
                 assert_eq!(
                     arena.entities[usize::from(projectile)].drawing_disabled(),
                     distance == 3_072,
                     "model{model} at distance{distance} uses its own position",
                 );
+                if let Some((mut arena, mut terrain, mut spells)) = alias {
+                    for row in &mut arena.entities {
+                        row.set_control_flags(
+                            row.control_flags & !crate::level1_mission::SOURCE_REPLACEABLE_FLAG,
+                        );
+                    }
+                    arena.entities[usize::from(projectile)]
+                        .set_control_flags(crate::level1_mission::SOURCE_REPLACEABLE_FLAG);
+                    arena.rebuild_source_free_arena();
+                    arena.economy.exhaust_new_event_capacity_for_test();
+                    let previous = arena.handle(projectile).unwrap();
+                    let owner = arena.entities[usize::from(boss)].source_id;
+                    apply(
+                        &mut arena,
+                        &mut terrain,
+                        boss,
+                        &mut spells,
+                        &session.session.definition.presentation.particles,
+                        &[projectile],
+                    )
+                    .unwrap();
+                    let row = &arena.entities[usize::from(projectile)];
+                    assert_eq!((row.class, row.model, row.action), (10, 0, 0));
+                    assert_eq!(row.position, crate::Position::default());
+                    assert_eq!(row.source_id, owner);
+                    assert!(
+                        row.drawing_disabled(),
+                        "the current newborn receives the source hide"
+                    );
+                    assert!(arena.resolve(previous).is_none());
+                    assert!(arena.economy.map_chains.is_linked(projectile));
+                    arena
+                        .rebuild_source_arena_with_terrain(&mut terrain, &[])
+                        .unwrap();
+                    assert!(!arena.economy.map_chains.is_linked(projectile));
+                    assert!(arena.economy.free_source_slots().contains(&projectile));
+                }
             }
         }
     }

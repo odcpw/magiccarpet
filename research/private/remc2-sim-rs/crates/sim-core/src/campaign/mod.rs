@@ -22,6 +22,7 @@ pub(crate) mod mc2_level_definition;
 pub(crate) mod mc2_secret_flow;
 pub mod objective_speech;
 pub mod objectives;
+pub mod rewards;
 pub mod schedule;
 #[doc(hidden)]
 pub mod source_arena;
