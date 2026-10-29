@@ -51,8 +51,10 @@ constexpr std::size_t kTerrainBytes = 0x70000;
 constexpr std::size_t kLegacyPlayerRecordBytes = 573;
 constexpr std::size_t kTypeStr164AuxiliaryBytes = 89;
 constexpr std::size_t kLevel2BanishmentStateBytes = 1;
+constexpr std::size_t kTypeStr164PaddingBytes = 6;
 constexpr std::size_t kLevel2PlayerRecordBytes =
-    kLegacyPlayerRecordBytes + kTypeStr164AuxiliaryBytes + kLevel2BanishmentStateBytes;
+    kLegacyPlayerRecordBytes + kTypeStr164AuxiliaryBytes + kLevel2BanishmentStateBytes +
+    kTypeStr164PaddingBytes;
 constexpr std::size_t kFeatureStartBytes = 16;
 constexpr std::size_t kFeatureAllocatorHeaderBytes = 32;
 constexpr std::size_t kFeatureAllocatorRelationCount = 1000;
@@ -1206,7 +1208,8 @@ void append_spell_dwords(Bytes& output, const type_32_1a& values) {
     for (std::int32_t value : values.SpellExperience) output.i32(value);
 }
 
-Bytes capture_players(bool include_level_two_carriers, std::uint16_t& record_size) {
+Bytes capture_players(
+    bool include_level_two_carriers, bool include_padding, std::uint16_t& record_size) {
     Bytes records;
     std::size_t first_size = 0;
     for (std::size_t index = 0; index < 8; ++index) {
@@ -1286,6 +1289,10 @@ Bytes capture_players(bool include_level_two_carriers, std::uint16_t& record_siz
             // exact source byte separately so type-3 objectives cannot alias
             // ActPlayerIndex at compact record bytes 6..8.
             records.u8(player.byte_0x006_2BE4_11236);
+            // Source indexes 32..34 of array_0x1FC reach these six bytes.
+            // Preserve the captured bytes, including zeroes, rather than
+            // manufacturing the initialization performed by sub_5C950.
+            if (include_padding) records.raw(state.stubm, sizeof(state.stubm));
         }
         const std::size_t size = records.data.size() - before;
         if (index == 0) first_size = size;
@@ -1294,7 +1301,7 @@ Bytes capture_players(bool include_level_two_carriers, std::uint16_t& record_siz
     record_size = static_cast<std::uint16_t>(first_size);
     Bytes result;
     result.magic("MCP1");
-    result.u16(include_level_two_carriers ? 4 : 2);
+    result.u16(include_level_two_carriers ? (include_padding ? 5 : 4) : 2);
     result.u16(record_size);
     result.u32(8);
     result.raw(records.data.data(), records.data.size());
@@ -2313,7 +2320,8 @@ canonical_json build_campaign_definition(
     reset_entities["count"] = kEntitySlots;
     reset_entities["record_bytes"] = entity_record_size;
     canonical_json reset_players = typed_campaign_member(
-        file_manifest, "players.bin", profile.player_schema);
+        file_manifest, "players.bin",
+        profile.external == 1 ? profile.player_schema : "mc2-player-arena/v5");
     reset_players["count"] = 8;
     reset_players["record_bytes"] = player_record_size;
 
@@ -2792,9 +2800,11 @@ int run(const Arguments& arguments) {
             "external Level 2 must start with local player 0 and exactly one AI opponent");
     }
     std::uint16_t player_record_size = 0;
-    Bytes players = capture_players(!level_one, player_record_size);
+    const bool include_player_padding = !level_one && arguments.campaign_package;
+    Bytes players = capture_players(!level_one, include_player_padding, player_record_size);
     const auto expected_player_record_size =
-        level_one ? kLegacyPlayerRecordBytes : kLevel2PlayerRecordBytes;
+        level_one ? kLegacyPlayerRecordBytes :
+        kLevel2PlayerRecordBytes - (include_player_padding ? 0 : kTypeStr164PaddingBytes);
     if (player_record_size != expected_player_record_size) {
         throw std::runtime_error("player record size does not match the selected profile");
     }

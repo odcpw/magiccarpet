@@ -182,7 +182,6 @@ pub(crate) fn step_row(
     particles:&[ParticleParameter],slot:u16,class3:&[u16],families:&[Vec<u16>;29],
 )->Result<Effects,String> {
     let mut targets=targets(arena);
-    let class5=families.iter().flatten().copied().collect::<Vec<_>>();
     let mut row=arena.entities.get(usize::from(slot)).filter(|r|r.active&&r.class==5&&r.model==SOURCE_MODEL)
         .ok_or_else(||format!("Wyvern callback lost slot{slot}"))?.clone();
     let handle = arena.handle(slot).ok_or_else(|| format!("Wyvern lost source slot{slot}"))?;
@@ -195,7 +194,7 @@ pub(crate) fn step_row(
         let parent_slot = word(&row, 44);
         targets.retain(|target| target.slot != parent_slot);
     }
-    let mut context=Context {terrain,targets:&targets,class3,family:&families[16],class5:&class5,runtime};
+    let mut context=Context {terrain,targets:&targets,class3,family:&families[16],families,runtime};
     let effects=super::step(&mut Actor {row:&mut row},&mut context)?;
     let position=row.position;
     arena.economy.source_rng.insert(slot,row.entity_rng);

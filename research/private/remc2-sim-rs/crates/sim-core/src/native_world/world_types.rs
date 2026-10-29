@@ -4819,6 +4819,7 @@ impl NativeWorldInspection {
             authored_building_entities: definition.authored_building_entity_bindings(),
             initial_source_buildings: definition.initial_building_bindings().clone(),
             authored_scenery: definition.scenery_bindings().clone(),
+            authored_scenery_entities: definition.authored_scenery_entity_bindings(),
             initial_source_scenery: definition.initial_scenery_bindings().clone(),
             authored_items: definition.item_bindings().clone(),
             authored_item_entities: definition.item_entity_bindings(),

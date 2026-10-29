@@ -3083,6 +3083,9 @@ fn level_two_beyond_sight_active_holder_ticks_through_outer_turn_and_reset() {
     assert_eq!(cold.action, BEYOND_SIGHT_ACTIVE_ACTION);
     assert_eq!(cold.active_value, 0);
 
+    let declared_mana = 5_000_i32;
+    let baseline_capacity = session.economy().owner_max_mana[&cold.parent_entity_index];
+    assert!(baseline_capacity < cold.mana_cost);
     let castle = session
         .economy_mut()
         .build_castle_at(
@@ -3095,38 +3098,64 @@ fn level_two_beyond_sight_active_holder_ticks_through_outer_turn_and_reset() {
         .expect("actual owner Castle for the source Beyond Sight predicate");
     assert!(session.economy_mut().set_castle_mana_prerequisite_for_test(
         castle,
-        cold.mana_regen_requirement,
+        cold.mana_regen_requirement
+            .max(declared_mana.saturating_sub(baseline_capacity)),
     ));
+    // sub_60F00 adds actual owned mana rows to the imported capacity. Stage
+    // this resource boundary, not the max-mana result or an earned Castle.
+    // The normal player visit must retain the declared mana before slot38's
+    // following first pulse; an empty Castle would clamp it to 1000.
 
     {
         let mut shared = session.shared_spells_mut();
-        shared.player_mana = 5_000;
-        shared.player_entity.mana = 5_000;
-        shared.player_entity.record[148..152].copy_from_slice(&5_000_i32.to_le_bytes());
-        shared.player_entities[0].mana = 5_000;
-        shared.player_entities[0].record[148..152].copy_from_slice(&5_000_i32.to_le_bytes());
+        shared.player_mana = declared_mana;
+        shared.player_entity.mana = declared_mana;
+        shared.player_entity.record[148..152].copy_from_slice(&declared_mana.to_le_bytes());
+        shared.player_entities[0].mana = declared_mana;
+        shared.player_entities[0].record[148..152].copy_from_slice(&declared_mana.to_le_bytes());
         shared
             .beyond_sight
             .as_mut()
             .expect("cold Beyond Sight state")
-            .parent_mana = 5_000;
+            .parent_mana = declared_mana;
     }
     // The scheduled callback reads the numeric actor, as Invisible's
     // corresponding control does. Keep this declared unit setup consistent.
     let parent_entity_index = session.state.entity_index;
-    session.economy.entities[usize::from(parent_entity_index)].set_mana(5_000);
+    session.economy.entities[usize::from(parent_entity_index)].set_mana(declared_mana);
+    let cast = PlayerCommand {
+        opcode: 6,
+        argument_1: 12,
+        flags: 0x40,
+        ..PlayerCommand::default()
+    };
+    let mut capacity_limited = session.clone();
+    assert!(
+        capacity_limited
+            .economy_mut()
+            .set_castle_mana_prerequisite_for_test(castle, 0)
+    );
+    capacity_limited.step_outer_turn(cast, 0);
+    assert_eq!(
+        capacity_limited.economy.entities[usize::from(outcome.source_slot)].active_value,
+        cold.activation_value,
+        "the same normal command activates the holder before the failed pulse"
+    );
+    assert!(capacity_limited.shared_spells().player_mana() < cold.mana_cost);
+    capacity_limited.step_outer_turn(PlayerCommand::default(), 0);
+    assert_eq!(
+        capacity_limited
+            .shared_spells()
+            .beyond_sight_state()
+            .unwrap()
+            .active_value,
+        0
+    );
     // The imported callback reloads its numeric holder before each visit.
     // Cast through the actual player command so activation reaches that row;
     // changing only the typed mirror would be discarded by the next refresh.
-    session.step_outer_turn(
-        PlayerCommand {
-            opcode: 6,
-            argument_1: 12,
-            flags: 0x40,
-            ..PlayerCommand::default()
-        },
-        0,
-    );
+    session.step_outer_turn(cast, 0);
+    assert!(session.economy().owner_max_mana[&parent_entity_index] >= declared_mana);
     let active = session
         .shared_spells()
         .beyond_sight_state()

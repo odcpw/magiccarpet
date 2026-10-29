@@ -178,7 +178,6 @@ fn wyvern_attack_emits_one_descriptor61_targeted_projectile_and_decrements_burst
     let targets = [target];
     let class3 = [target.slot];
     let families: [Vec<u16>; 29] = std::array::from_fn(|_| Vec::new());
-    let class5 = [];
     let mut routes = EmptyRoutes;
     let mut row = wyvern(130, position);
     row.record[154..156].copy_from_slice(&target.slot.to_le_bytes());
@@ -193,7 +192,7 @@ fn wyvern_attack_emits_one_descriptor61_targeted_projectile_and_decrements_burst
         targets: &targets,
         class3: &class3,
         family: &families[16],
-        class5: &class5,
+        families: &families,
         runtime: &mut routes,
     };
     let effects = step(&mut actor, &mut context).unwrap();
@@ -236,14 +235,13 @@ fn wyvern_attack_with_unresolved_target_does_not_consume_burst_or_launch() {
     let targets = [];
     let class3 = [];
     let families: [Vec<u16>; 29] = std::array::from_fn(|_| Vec::new());
-    let class5 = [];
     let mut actor = Actor { row: &mut row };
     let mut context = Context {
         terrain: &terrain,
         targets: &targets,
         class3: &class3,
         family: &families[16],
-        class5: &class5,
+        families: &families,
         runtime: &mut routes,
     };
 
@@ -262,14 +260,13 @@ fn wyvern_unsupported_action134_is_an_error_instead_of_a_silent_noop() {
     let targets = [];
     let class3 = [];
     let families: [Vec<u16>; 29] = std::array::from_fn(|_| Vec::new());
-    let class5 = [];
     let mut actor = Actor { row: &mut row };
     let mut context = Context {
         terrain: &terrain,
         targets: &targets,
         class3: &class3,
         family: &families[16],
-        class5: &class5,
+        families: &families,
         runtime: &mut routes,
     };
 
@@ -734,4 +731,407 @@ fn army_ring_reports_none_when_the_shared_source_allocator_is_exhausted() {
         runtime.bytes[crate::native_world::RUNTIME_BYTES + 16],
         counter
     );
+}
+
+#[test]
+fn wyvern_stage_wander_uses_one_draw_every_sixteen_visits_without_a_route() {
+    struct Routes(Option<StageDescriptor>);
+    impl StageRuntime for Routes {
+        fn descriptor(&self, _: u8) -> Option<StageDescriptor> {
+            self.0
+        }
+        fn bind(&mut self, _: u8) -> Option<StageDescriptor> {
+            self.0
+        }
+        fn rearm_model_relations(&mut self) {}
+    }
+    let (_, _, terrain, particles, _, feature) = mission_eighteen_source_parts();
+    let position = feature.world_position(terrain.ground_height(feature.world_position(0)));
+    let base = mc2::construct_row(7, 1, 0x1234, position, &mut 0, &particles).unwrap();
+    let route = StageDescriptor {
+        kind: 5,
+        flags: 2,
+        next: 0,
+        point: position,
+        actor: 0,
+        model: 15,
+        scalar: 0,
+    };
+    let families: [Vec<u16>; 29] = std::array::from_fn(|_| Vec::new());
+    for mode in [2, 5, 6, 7, 8, 9] {
+        for (phase, blocked, draws) in
+            [(8, false, 0), (16, false, 1), (64, false, 1), (16, true, 0)]
+        {
+            let mut row = base.clone();
+            row.set_source_action(135);
+            row.record[77] = mode;
+            row.set_phase(phase);
+            row.set_source_roll(2040);
+            // Isolate the post-motion source RNG tail, including the blocked
+            // negative; do not force any target, burst, or actor RNG result.
+            row.set_control_flags(row.control_flags | 0x800 | if blocked { 0x40000 } else { 0 });
+            let mut routes = Routes((mode == 2 || mode == 5).then_some(route));
+            let mut context = Context {
+                terrain: &terrain,
+                targets: &[],
+                class3: &[],
+                family: &[],
+                families: &families,
+                runtime: &mut routes,
+            };
+            step(&mut Actor { row: &mut row }, &mut context).unwrap();
+            let expected_rng = if draws == 1 {
+                level2_next_rng16(base.entity_rng)
+            } else {
+                base.entity_rng
+            };
+            let expected_roll = if draws == 1 {
+                (2040 + expected_rng % 113 + 142) & 2047
+            } else {
+                2040
+            };
+            assert_eq!(
+                (row.entity_rng, row.source_roll()),
+                (expected_rng, expected_roll as i16),
+                "mode{mode}/phase{phase}/blocked{blocked}: source 1E1C0 or missing-target 1D8C0 tail"
+            );
+            assert_eq!(row.action, 135);
+        }
+    }
+    // A real point route keeps its distinct two-draw phase64 perturbation.
+    let mut row = base.clone();
+    row.set_source_action(135);
+    row.record[77] = 1;
+    row.set_phase(64);
+    row.set_control_flags(row.control_flags | 0x800);
+    let point = Position {
+        x: position.x.wrapping_add(4096),
+        ..position
+    };
+    let mut routes = Routes(Some(StageDescriptor {
+        kind: 1,
+        flags: 0,
+        point,
+        ..route
+    }));
+    let mut context = Context {
+        terrain: &terrain,
+        targets: &[],
+        class3: &[],
+        family: &[],
+        families: &families,
+        runtime: &mut routes,
+    };
+    step(&mut Actor { row: &mut row }, &mut context).unwrap();
+    let first = level2_next_rng16(base.entity_rng);
+    let second = level2_next_rng16(first);
+    let delta = (i32::from(second & 255) + 85) * (2 * (i32::from(first % 157) / 79) - 1);
+    assert_eq!(row.entity_rng, second);
+    assert_eq!(
+        row.source_roll(),
+        (heading_for_positions(position, point) as i16).wrapping_add(delta as i16) & 2047
+    );
+}
+
+#[test]
+fn wyvern_stage_selects_nearest_frozen_target_or_the_same_route_relation() {
+    let terrain = terrain();
+    let position = Position {
+        x: 65_000,
+        y: 20_000,
+        z: 400,
+    };
+    let far = target(
+        2,
+        5,
+        15,
+        Position {
+            x: 60_000,
+            ..position
+        },
+    );
+    let mut near = target(30, 5, 15, Position { x: 100, ..position });
+    // Membership was frozen before callbacks. A preceding callback's death
+    // does not remove the address from sub_1E3E0's model-list search.
+    near.life = -1;
+    near.control_flags = ENTITY_DRAW_DISABLED_BIT;
+    near.model = 24; // The frozen model15 address now holds another model.
+    let tied = target(31, 5, 15, near.position);
+    let mut unrelated_peer = target(4, 5, 16, position);
+    unrelated_peer.stage = StageState {
+        index: 8,
+        relation: near.slot,
+        ..StageState::default()
+    };
+    let mut peer = target(5, 5, 16, position);
+    peer.stage = StageState {
+        index: 7,
+        relation: far.slot,
+        ..StageState::default()
+    };
+    let targets = [far, near, tied, unrelated_peer, peer];
+    let mut families: [Vec<u16>; 29] = std::array::from_fn(|_| Vec::new());
+    families[15] = vec![2, 30, 31];
+    families[16] = vec![4, 5];
+    struct Routes(StageDescriptor);
+    impl StageRuntime for Routes {
+        fn descriptor(&self, _: u8) -> Option<StageDescriptor> {
+            Some(self.0)
+        }
+        fn bind(&mut self, _: u8) -> Option<StageDescriptor> {
+            Some(self.0)
+        }
+        fn rearm_model_relations(&mut self) {}
+    }
+    fn visit(
+        row: &mut EntitySnapshot,
+        terrain: &SessionTerrain,
+        targets: &[Target],
+        families: &[Vec<u16>; 29],
+        route: StageDescriptor,
+    ) -> u16 {
+        let mut routes = Routes(route);
+        let mut context = Context {
+            terrain,
+            targets,
+            class3: &[],
+            family: &families[16],
+            families,
+            runtime: &mut routes,
+        };
+        row.record[77] = 5;
+        row.set_phase(8);
+        row.set_control_flags(row.control_flags | 0x800);
+        // Exercise the enabled actor callback, keeping selection private.
+        step(&mut Actor { row }, &mut context).unwrap();
+        word(row, 78)
+    }
+    let route = StageDescriptor {
+        kind: 5,
+        flags: 2,
+        next: 0,
+        point: position,
+        actor: 0,
+        model: 15,
+        scalar: 0,
+    };
+    let mut row = wyvern(135, position);
+    row.record[76] = 7;
+    assert_eq!(
+        visit(&mut row, &terrain, &targets, &families, route),
+        30,
+        "nearest wrapped XY distance wins, with first-in-list tie order"
+    );
+    assert_eq!(word(&row, 78), 30);
+    assert_eq!(
+        visit(
+            &mut row,
+            &terrain,
+            &targets,
+            &families,
+            StageDescriptor { flags: 3, ..route }
+        ),
+        30,
+        "a current relation is retained before looking at another actor"
+    );
+    put(&mut row, 78, 0);
+    assert_eq!(
+        visit(
+            &mut row,
+            &terrain,
+            &targets,
+            &families,
+            StageDescriptor { flags: 3, ..route }
+        ),
+        2,
+        "bit1 shares the first nonzero relation with the same route index"
+    );
+    visit(
+        &mut row,
+        &terrain,
+        &targets,
+        &families,
+        StageDescriptor {
+            flags: 0,
+            actor: 31,
+            ..route
+        },
+    );
+    assert_eq!(
+        row.source_roll(),
+        heading_for_positions(position, near.position) as i16,
+        "an explicit actor route bypasses the cached model relation"
+    );
+}
+
+#[test]
+fn owner_mission18_switch_wyvern_acquires_and_damages_its_real_model26_target() {
+    use crate::PlayerCommand;
+    use crate::campaign::source_arena::{CreatureRootOrigin, SourceEntityView};
+    use crate::native_world::Mc2DispatchEvent;
+
+    let mut session = crate::campaign::CampaignSession::open(
+        mission_eighteen_root().join("level18"),
+        crate::campaign::spec::CampaignSelection::ordinary(18).unwrap(),
+    )
+    .unwrap()
+    .simulation()
+    .clone();
+    let gate = session.entities()[86].clone();
+    assert_eq!(
+        (gate.class, gate.model, gate.action, gate.source_id),
+        (11, 32, 32, 2)
+    );
+    let task = usize::try_from(gate.level_gate).unwrap();
+    session.step_outer_turn(PlayerCommand::default(), 0);
+    assert!(
+        !session.dispatch_events().iter().any(|event| matches!(
+            event,
+            Mc2DispatchEvent::AuthoredGroupActivated { group: 2, .. }
+        )),
+        "the real objective switch must not fire before its prerequisite"
+    );
+    // Stage only this package's completed-task input. The real switch, group
+    // scan, typed authored constructor and route binding produce record172.
+    // This is a focused production/combat check, not an earned mission run.
+    for owner in 0..session.runtime.objectives.len() {
+        session
+            .runtime
+            .set_level2_objective_stage_selector_for(owner, task, 2);
+    }
+    for _ in 0..8 {
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        if session.dispatch_events().iter().any(|event| matches!(event,
+            Mc2DispatchEvent::AuthoredGroupActivated {source_slot: 86, group: 2, authored_indices, ..}
+                if authored_indices.contains(&172)
+        )) {break;}
+    }
+    let handle = session
+        .entities()
+        .iter()
+        .find_map(|row| {
+            let identity = session.creature_identity_for_source_slot(row.index)?;
+            (identity.kind == crate::level_definition::CreatureKind::Wyvern
+                && identity.origin
+                    == CreatureRootOrigin::AuthoredRecord {
+                        authored_record: 172,
+                    })
+            .then_some(identity.handle)
+        })
+        .expect("ordinary owner switch constructs its typed record172 Wyvern");
+    let SourceEntityView::Imported(actor) = session.source_arena().resolve(handle).unwrap() else {
+        panic!("Wyvern is an authoritative raw source actor");
+    };
+    let actor = actor.clone();
+    assert_eq!((actor.record[76], actor.record[77]), (2, 3));
+    assert_eq!(actor.parameter_relation, Some(DESCRIPTOR));
+    let targets = session
+        .entities()
+        .iter()
+        .filter(|row| row.active && row.class == 5 && row.model == 26 && row.life >= 0)
+        .map(|row| row.index)
+        .collect::<Vec<_>>();
+    let target_slot = *targets
+        .first()
+        .expect("owner18 supplies the actual route's model26 targets");
+    let target_handle = session.source_arena().handle(target_slot).unwrap();
+    let life_before = session.entities()[usize::from(target_slot)].life;
+    let nearby = Position {
+        x: actor.position.x.wrapping_add(1024),
+        ..actor.position
+    };
+    // Position the existing target using the canonical position operation.
+    // No actor action, target, phase, burst, protection or RNG is manufactured.
+    session
+        .set_level2_entity_position(target_slot, nearby)
+        .unwrap();
+    let mut distant = session.clone();
+    for &slot in &targets {
+        let far = Position {
+            x: actor.position.x.wrapping_add(0x6000),
+            ..actor.position
+        };
+        distant.set_level2_entity_position(slot, far).unwrap();
+    }
+    let mut acquired = false;
+    let mut moved = false;
+    let mut shot_handles = Vec::new();
+    let mut consumed = None;
+    for turn in 0..120 {
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        assert!(
+            !session
+                .dispatch_events()
+                .iter()
+                .any(|event| matches!(event, Mc2DispatchEvent::Error { .. })),
+            "owner18 Wyvern scheduler error: {:?}",
+            session.dispatch_events()
+        );
+        let SourceEntityView::Imported(actor_now) = session
+            .source_arena()
+            .resolve(handle)
+            .expect("ordinary Wyvern remains its original generation")
+        else {
+            panic!("Wyvern must keep its raw actor carrier");
+        };
+        acquired |= word(actor_now, 154) == target_slot && actor_now.action == 130;
+        moved |= actor_now.position != actor.position;
+        for shot in session
+            .economy()
+            .fireball_projectiles()
+            .iter()
+            .filter(|shot| {
+                shot.origin == crate::native_world::FireballProjectileOrigin::Wyvern
+                    && shot.owner_entity_index == actor.source_id
+                    && shot.target_source_entity_index == target_slot
+            })
+        {
+            if let Some(handle) = session.source_arena().handle(shot.source_entity_index)
+                && !shot_handles.contains(&handle)
+            {
+                shot_handles.push(handle);
+            }
+        }
+        if let Some(SourceEntityView::Imported(target)) =
+            session.source_arena().resolve(target_handle)
+            && target.life < life_before
+            && word(target, 42) == actor.source_id
+        {
+            consumed = Some((turn, target.life));
+        }
+        if turn < 8 {
+            distant.step_outer_turn(PlayerCommand::default(), 0);
+            let SourceEntityView::Imported(far_actor) =
+                distant.source_arena().resolve(handle).unwrap()
+            else {
+                panic!("negative route must keep its raw Wyvern");
+            };
+            assert_ne!(
+                far_actor.action, 130,
+                "same route stays out of attack range with only distant model26 actors"
+            );
+        }
+        if acquired && moved && !shot_handles.is_empty() && consumed.is_some() {
+            break;
+        }
+    }
+    assert!(
+        acquired && moved && !shot_handles.is_empty() && consumed.is_some(),
+        "real route must acquire, fly, fire and damage original model26: acquired={acquired} moved={moved} shots={shot_handles:?} consumed={consumed:?} actor={:?}",
+        session.source_arena().resolve(handle)
+    );
+    eprintln!(
+        "ordinary Wyvern{} -> model26{}: consumed={consumed:?}, projectiles={shot_handles:?}",
+        handle.source_slot, target_slot
+    );
+    for _ in 0..32 {
+        if shot_handles
+            .iter()
+            .any(|&shot| session.source_arena().resolve(shot).is_none())
+        {
+            return;
+        }
+        session.step_outer_turn(PlayerCommand::default(), 0);
+    }
+    panic!("naturally produced Wyvern projectiles must reach normal next-boundary reclamation");
 }

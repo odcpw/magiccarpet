@@ -53,6 +53,7 @@ pub(crate) struct Mc2LevelDefinition {
     pub(crate) spell_family_by_kind: BTreeMap<SpellKind, u8>,
     pub(crate) building_by_authored_record: BTreeMap<u16, BuildingKind>,
     pub(crate) scenery_by_authored_record: BTreeMap<u16, SceneryKind>,
+    pub(crate) scenery_entity_by_authored_record: BTreeMap<u16, LevelEntityId>,
     pub(crate) item_by_authored_record: BTreeMap<u16, ItemKind>,
     pub(crate) item_entity_by_authored_record: BTreeMap<u16, LevelEntityId>,
     pub(crate) switch_by_authored_record: BTreeMap<u16, SwitchKind>,
@@ -1420,6 +1421,11 @@ impl Mc2LevelDefinition {
         }
 
         Ok(Self {
+            scenery_entity_by_authored_record: authored_record_by_entity_id
+                .iter()
+                .filter(|(_, record)| scenery_by_authored_record.contains_key(*record))
+                .map(|(id, record)| (*record, id.clone()))
+                .collect(),
             switch_entity_by_authored_record: authored_record_by_entity_id
                 .iter()
                 .filter(|(_, record)| switch_by_authored_record.contains_key(*record))

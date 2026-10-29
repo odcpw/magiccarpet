@@ -115,15 +115,90 @@ fn skeleton_controller_schedules_owned_births_and_respects_owner_cap() {
     // Controlled source-constructor placement on retained Level2 terrain;
     // this exercises the numeric scheduler, not an earned mission event.
     let mut session = campaign();
-    let properties = definition(FieldKind::SkeletonSummon);
-    let FieldDefinition::SkeletonSummon { particle_index, .. } = properties else {
-        unreachable!("source adapter returns the Skeleton controller definition");
+    let (particle_index, particle) = session
+        .session
+        .definition
+        .presentation
+        .particles
+        .iter()
+        .copied()
+        .enumerate()
+        .find(|(index, particle)| *index != 41 && particle.animation_limit().is_some())
+        .map(|(index, particle)| (u16::try_from(index).unwrap(), particle))
+        .expect("retained presentation has another supported particle");
+    let properties = FieldDefinition::SkeletonSummon {
+        life: 9,
+        initial_budget: 60_000,
+        scheduled_budget: 96,
+        max_births: 4,
+        owner_cap: 2,
+        spawn_radius: 0,
+        particle_index,
     };
-    let particle = session.session.definition.presentation.particles[usize::from(particle_index)];
+    let particles = session.session.definition.presentation.particles.clone();
+    let descriptor = session.session.definition.presentation.entity_parameters[80];
+    let material_mask = u32::from_le_bytes(descriptor[20..24].try_into().unwrap());
+    let ground_clearance = i16::from_le_bytes(descriptor[12..14].try_into().unwrap());
+    let live = &session.session.state.live;
+    let candidates = (0_u16..=255).flat_map(|x| {
+        (0_u16..=255).map(move |y| Position {
+            x: (x << 8) + 128,
+            y: (y << 8) + 128,
+            z: 0,
+        })
+    });
+    let blocked = |mut position: Position| {
+        position.z = live.terrain.ground_height(position);
+        live.terrain.material_mask(position) & !material_mask != 0
+            || live.terrain.cave_collision_blocked(position)
+            || live
+                .terrain
+                .ceiling_height(position)
+                .is_some_and(|ceiling| {
+                    i32::from(live.terrain.ground_height(position))
+                        + 128
+                        + i32::from(ground_clearance)
+                        > i32::from(ceiling)
+                })
+    };
+    let invalid_position = candidates.clone().find(|position| blocked(*position));
+    let mut position = candidates
+        .filter(|position| !blocked(*position))
+        .find(|position| {
+            // Prove the real constructor accepts this retained terrain point
+            // on an isolated copy before using it in the scheduled case.
+            let mut arena = live.economy.clone();
+            let mut terrain = live.terrain.clone();
+            let Some(controller) = skeleton_summon::construct(
+                &mut arena,
+                &mut terrain,
+                *position,
+                properties,
+                particle,
+            )
+            .unwrap() else {
+                return false;
+            };
+            crate::native_world::creatures::skeleton::allocate_from_controller(
+                &mut arena,
+                &mut terrain,
+                &particles,
+                &descriptor,
+                Birth {
+                    position: *position,
+                    controller_slot: controller,
+                    owner: live.core.state.entity_index,
+                    mana: 0,
+                    yaw: 0,
+                },
+            )
+            .unwrap()
+        })
+        .expect("retained Level2 terrain admits the real Skeleton constructor");
+    position.z = live.terrain.ground_height(position);
     let (controller, handle, owner, position, phase, tile) = {
         let live = &mut session.session.state.live;
         let owner = live.core.state.entity_index;
-        let position = live.core.state.position;
         let controller = skeleton_summon::construct(
             &mut live.economy,
             &mut live.terrain,
@@ -144,13 +219,90 @@ fn skeleton_controller_schedules_owned_births_and_respects_owner_cap() {
                 source.life,
                 source.subspell_index
             ),
-            (10, 36, 38, 8, 64_000)
+            (10, 36, 38, 9, 60_000)
         );
+        assert_eq!(source.particle_parameter_index, Some(particle_index));
         let phase = source.phase;
         let handle = live.economy.handle(controller).unwrap();
+        assert_eq!(
+            skeleton_summon::definition(&live.economy, controller),
+            Some(properties)
+        );
         let tile = live.economy.map_chains.tile_of(controller);
         (controller, handle, owner, position, phase, tile)
     };
+    if let Some(invalid_position) = invalid_position {
+        let live = &session.session.state.live;
+        let mut arena = live.economy.clone();
+        let mut terrain = live.terrain.clone();
+        let free_before = arena.economy.free_slot_count();
+        let terrain_before = terrain.deterministic_hash();
+        let state_before = arena.reset_hash_with_terrain(&terrain);
+        assert!(
+            !crate::native_world::creatures::skeleton::allocate_from_controller(
+                &mut arena,
+                &mut terrain,
+                &particles,
+                &descriptor,
+                Birth {
+                    position: invalid_position,
+                    controller_slot: controller,
+                    owner,
+                    mana: 0,
+                    yaw: 0,
+                },
+            )
+            .unwrap(),
+            "real constructor rejects an inadmissible retained terrain point"
+        );
+        assert_eq!(arena.economy.free_slot_count(), free_before);
+        assert_eq!(terrain.deterministic_hash(), terrain_before);
+        assert_ne!(arena.reset_hash_with_terrain(&terrain), state_before);
+    }
+    // The same pre-visit controller with a lower birth limit must produce
+    // one actor even though its owner cap allows two.
+    let mut limited = session.clone();
+    let mut limited_properties = properties;
+    let FieldDefinition::SkeletonSummon { max_births, .. } = &mut limited_properties else {
+        unreachable!("this controller has Skeleton summon properties");
+    };
+    *max_births = 1;
+    skeleton_summon::bind_definition(
+        &mut limited.session.state.live.economy,
+        controller,
+        limited_properties,
+    )
+    .unwrap();
+    limited.step_outer_turn(PlayerCommand::default(), 0);
+    assert!(
+        !limited
+            .dispatch_events()
+            .iter()
+            .any(|event| matches!(event, Mc2DispatchEvent::Error { .. })),
+        "limited controller must not roll back: {:?}",
+        limited.dispatch_events()
+    );
+    assert_eq!(
+        limited
+            .creature_runtime_census()
+            .roots_of_kind(CreatureKind::Skeleton)
+            .filter(|identity| {
+                identity.origin == CreatureRootOrigin::FieldSummon { controller: handle }
+            })
+            .count(),
+        1,
+        "the configured birth limit is independent of the owner cap; active raw model9 rows: {:?}",
+        limited
+            .session
+            .state
+            .live
+            .economy
+            .entities
+            .iter()
+            .filter(|row| row.active && (row.class, row.model) == (5, 9))
+            .map(|row| (row.index, row.action, row.source_id, row.position))
+            .collect::<Vec<_>>()
+    );
     session.step_outer_turn(PlayerCommand::default(), 0);
     assert!(
         !session
@@ -165,7 +317,11 @@ fn skeleton_controller_schedules_owned_births_and_respects_owner_cap() {
         let root = &live.economy.entities[usize::from(controller)];
         assert!(root.active && root.drawing_disabled());
         assert_eq!(root.phase, phase.wrapping_add(1));
-        assert_eq!(root.subspell_index, 10_000);
+        assert_eq!(root.subspell_index, 96);
+        assert_eq!(
+            skeleton_summon::definition(&live.economy, controller),
+            Some(properties)
+        );
         assert!(live.economy.map_chains.is_linked(controller));
         let births = session
             .creature_runtime_census()
@@ -175,8 +331,22 @@ fn skeleton_controller_schedules_owned_births_and_respects_owner_cap() {
             })
             .collect::<Vec<_>>();
         assert!(
-            !births.is_empty() && births.len() <= 8,
-            "controller produces real Skeletons"
+            births.len() == 2,
+            "controller produces real Skeletons; active raw model9 rows: {:?}, free slots: {}",
+            live.economy
+                .entities
+                .iter()
+                .filter(|row| row.active && (row.class, row.model) == (5, 9))
+                .map(|row| (row.index, row.action, row.source_id, row.position))
+                .collect::<Vec<_>>(),
+            live.economy.economy.free_slot_count(),
+        );
+        let presentations = session.campaign_entity_presentations(0).unwrap();
+        assert!(
+            !presentations
+                .iter()
+                .any(|row| row.entity_index == controller),
+            "the hidden controller is absent from the presentation consumer"
         );
         for birth in &births {
             let actor = &live.economy.entities[usize::from(birth.handle.source_slot)];
@@ -190,6 +360,18 @@ fn skeleton_controller_schedules_owned_births_and_respects_owner_cap() {
                 (5, 9, owner, owner)
             );
             assert_eq!(actor.max_life, 1_000);
+            assert_eq!(
+                (actor.position.x, actor.position.y),
+                (position.x, position.y)
+            );
+            let presentation = presentations
+                .iter()
+                .find(|row| row.entity_index == birth.handle.source_slot)
+                .expect("summoned Skeleton reaches the real presentation consumer");
+            assert_eq!(
+                (presentation.source_id, presentation.render_parameter_index),
+                (owner, 220)
+            );
         }
         births
             .iter()
@@ -214,6 +396,7 @@ fn skeleton_controller_schedules_owned_births_and_respects_owner_cap() {
             !live.economy.entities[usize::from(controller)].active
                 || live.economy.economy.slot_generation(controller) != handle.generation
         );
+        assert_eq!(skeleton_summon::definition(&live.economy, controller), None);
         assert_eq!(
             live.terrain.planes().entity_indices[usize::from(tile)] as u16,
             live.economy.map_chains.tile_head(tile)
@@ -241,8 +424,11 @@ fn skeleton_controller_schedules_owned_births_and_respects_owner_cap() {
     // the real constructor. At the source cap, the same controller hides
     // without adding another owned Skeleton.
     let mut capped = campaign();
-    let particles = capped.session.definition.presentation.particles.clone();
-    let descriptor = capped.session.definition.presentation.entity_parameters[80];
+    let properties = definition(FieldKind::SkeletonSummon);
+    let FieldDefinition::SkeletonSummon { particle_index, .. } = properties else {
+        unreachable!("source adapter returns the Skeleton controller definition");
+    };
+    let particle = capped.session.definition.presentation.particles[usize::from(particle_index)];
     let (controller, handle, owner) = {
         let live = &mut capped.session.state.live;
         let owner = live.core.state.entity_index;

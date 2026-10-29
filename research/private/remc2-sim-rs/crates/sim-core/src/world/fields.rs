@@ -43,6 +43,7 @@ pub(crate) struct State {
     pub(crate) authored_model22: Vec<wind::Wind>,
     pub(crate) model22_spawned_children: Vec<wind::Segment>,
     pub(crate) palette: palette::Palette,
+    pub(crate) skeleton_summon: skeleton_summon::State,
     /// Generation-bound Wind slots, including authored rows without raw
     /// projections. The parent distinguishes a root from its segments.
     wind_projections: std::collections::BTreeMap<u16, (u32, u16)>,
@@ -258,15 +259,15 @@ pub(crate) fn sync_wind_impact(arena: &mut crate::campaign::source_arena::Source
 impl State {
     pub(crate) fn hash_wind_projections(&self, hasher: &mut sha2::Sha256) {
         use sha2::Digest;
-        if self.wind_projections.is_empty() {
-            return;
+        if !self.wind_projections.is_empty() {
+            hasher.update(b"wind-projections-v1");
+            for (&slot, &(generation, parent)) in &self.wind_projections {
+                hasher.update(slot.to_le_bytes());
+                hasher.update(generation.to_le_bytes());
+                hasher.update(parent.to_le_bytes());
+            }
         }
-        hasher.update(b"wind-projections-v1");
-        for (&slot, &(generation, parent)) in &self.wind_projections {
-            hasher.update(slot.to_le_bytes());
-            hasher.update(generation.to_le_bytes());
-            hasher.update(parent.to_le_bytes());
-        }
+        self.skeleton_summon.hash(hasher);
     }
 
     /// Live draw tuples borrow the same root/segment state as the scheduler.

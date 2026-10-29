@@ -69,6 +69,9 @@ pub(crate) fn allocate_morph(
     )?;
     crate::world::effects::sync_position(arena, terrain, slot, position, true, false)
         .expect("Bee initializer already validated this source map slot");
+    if let (Some(child), Some(parent)) = (arena.handle(slot), arena.handle(parent_slot)) {
+        arena.bind_creature_parent(child, parent);
+    }
     Some(source)
 }
 
@@ -653,7 +656,9 @@ pub(crate) fn step_in_arena(
     let source_generation = arena.slot_generation(slot);
     let before = arena.economy.bee_creatures[index];
     let child = arena.handle(slot);
-    let generation_bound_stage = (matches!(before.origin, BeeCreatureOrigin::SummonedSpell { .. })
+    let generation_bound_stage = (matches!(before.origin, BeeCreatureOrigin::MorphSpell { .. })
+        && before.stage_var2 == 12)
+        || (matches!(before.origin, BeeCreatureOrigin::SummonedSpell { .. })
         && before.stage_var2 == 13)
         || (before.stage_var2 == 14
             && child.is_some_and(|child| arena.has_creature_parent_binding(child)));
@@ -664,7 +669,7 @@ pub(crate) fn step_in_arena(
                 .is_none_or(|parent| parent.source_slot != before.parent_entity_index)
         })
     {
-        // A recycled numeric slot is not this Army or Alliance parent.
+        // A recycled numeric slot is not this Morph, Army or Alliance parent.
         rows.retain(|row| row.slot != before.parent_entity_index);
     }
     let stage = runtime.descriptor(before.stage_var1);

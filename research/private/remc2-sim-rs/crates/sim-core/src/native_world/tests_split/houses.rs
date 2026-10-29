@@ -3125,6 +3125,13 @@ fn level_two_castle_public_route_retries_root_and_child_failures_and_upgrades() 
         sphere.active && !sphere.pending_delete
             && mana_positions.contains(&(sphere.position.x, sphere.position.y))
     }), "the real switch must expose its authored model-39 products");
+    let mana_sources = occupied.economy().spheres().iter()
+        .filter(|sphere| sphere.active && !sphere.pending_delete
+            && mana_positions.contains(&(sphere.position.x, sphere.position.y)))
+        .map(|sphere| occupied.session.state.live.economy.handle(sphere.source_entity_index)
+            .expect("the ordinary producer publishes a generation-bound mana row"))
+        .collect::<Vec<_>>();
+    assert!(!mana_sources.is_empty());
     for _ in 0..128 {
         if occupied.economy().spheres().iter().any(|sphere| {
             sphere.active && !sphere.pending_delete && sphere.player_entity_index == 0
@@ -3137,7 +3144,7 @@ fn level_two_castle_public_route_retries_root_and_child_failures_and_upgrades() 
     }
     let possession_ui = crate::SOURCE_SPELL_INDEX_MAP.iter()
         .position(|family| *family == 1).expect("public Possession menu family") as i8;
-    for claim in 0..mana_positions.len() {
+    for claim in 0..mana_sources.len() {
         if occupied.shared_spells().player_entity().max_mana >= occupied_mana_cost {
             break;
         }
@@ -3153,10 +3160,22 @@ fn level_two_castle_public_route_retries_root_and_child_failures_and_upgrades() 
         }
         let sphere = occupied.economy().spheres().iter()
             .filter(|sphere| sphere.active && !sphere.pending_delete
-                && sphere.player_entity_index == 0 && sphere.vertical_velocity == 0
-                && mana_positions.contains(&(sphere.position.x, sphere.position.y)))
+                // Spheres roll and rival carriers can move/claim them.
+                // Tier-0 Possession admits an unprotected different owner,
+                // rather than only neutral rows still at their birth point.
+                && sphere.player_entity_index != player_slot
+                && sphere.control_flags & 0x0020_0000 == 0
+                && occupied.session.state.live.economy.handle(sphere.source_entity_index)
+                    .is_some_and(|handle| mana_sources.contains(&handle)))
             .min_by_key(|sphere| crate::distance_3d_wrapped(recharge_position, sphere.position))
-            .copied().expect("unowned authored mana remains before the upgrade is affordable");
+            .copied().unwrap_or_else(|| panic!(
+                "actual authored mana must remain claimable before the upgrade is affordable: claim={claim}, max={}, cost={occupied_mana_cost}, owned={}, sources={mana_sources:?}, current={:?}",
+                occupied.shared_spells().player_entity().max_mana,
+                occupied.economy().owner_mana_aggregate(player_slot),
+                occupied.economy().spheres().iter().map(|sphere| (
+                    sphere.source_entity_index, sphere.position, sphere.player_entity_index,
+                    sphere.control_flags, sphere.mana, sphere.active, sphere.pending_delete,
+                )).collect::<Vec<_>>()));
         let target = occupied.possession_guidance_target_top_for_test(sphere.source_entity_index)
             .expect("the live sphere supplies its real guidance top");
         let mut approach = Position {

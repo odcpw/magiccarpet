@@ -680,83 +680,56 @@ fn level_two_group31_tree_callback_consumes_rng_after_following_pass_gate() {
     assert_eq!((replacement.model, replacement.subspell_index), (6, 50));
     assert_eq!(replacement.phase, (tree_slot as u8).wrapping_add(1));
     assert_ne!(replacement.control_flags & SOURCE_REPLACEABLE_FLAG, 0);
+    assert_eq!(
+        crate::FlightWorld::material_mask(terrain, replacement.position),
+        crate::WATER_AMBIENCE_MASK
+    );
+    assert_ne!(
+        replacement.control_flags & crate::level1_mission::SOURCE_DISABLED_FLAG,
+        0,
+        "the Tree water tail hides its current replacement in the same pass"
+    );
     assert!(!arena.entities[usize::from(tree_slot)].active);
     assert_eq!(
         terrain.planes().entity_indices[0] as u16,
         arena.economy.map_chains.tile_head(0)
     );
-    let life_before_visit = replacement.life;
-    // The same shared effect adapter used by the scheduler must select the
-    // current action, even though this carrier was constructed as model 6.
-    // Keep the frozen cursor empty so its Quickfair child attempts cannot
-    // replace the address under examination during this focused check.
-    arena.finish_source_group();
-    let mut effects = std::mem::take(&mut arena.effects);
-    let visit = crate::native_world::effects::visit(
-        arena,
-        terrain,
-        tree_slot,
-        Level2DynamicArenaKind::AuthoredModel6,
-        particles,
-        &mut effects,
-        |_, _| Ok(0),
-    )
-    .expect("self-aliased child reaches the shared action-1 consumer");
-    arena.effects = effects;
-    let after_visit = arena.economy.authored_model6_mut(tree_slot).unwrap();
-    assert_eq!((after_visit.model, after_visit.action), (6, 1));
-    assert_eq!(after_visit.life, life_before_visit - 1);
-    assert_ne!(after_visit.control_flags & 2, 0);
-    assert_eq!(visit.sounds, vec![3]);
-    let mut scheduled_alias = alias.clone();
-    scheduled_alias.step_outer_turn(PlayerCommand::default(), 0);
     assert!(
-        scheduled_alias
-            .dispatch_events()
+        alias
+            .campaign_entity_presentations(0)
+            .expect("same-pass water-hidden replacement projection")
             .iter()
-            .any(|event| matches!(
-                event,
-                Mc2DispatchEvent::DynamicArena {
-                    source_slot,
-                    kind: Level2DynamicArenaKind::AuthoredModel6,
-                    ..
-                } if *source_slot == tree_slot
-            )),
-        "slot {tree_slot}, generation {}, retained {:?}, raw {:?}, slot events {:?}, first errors {:?}",
-        scheduled_alias.economy().slot_generation(tree_slot),
-        scheduled_alias.economy().authored_model6().iter().find(|row| row.source_entity_index == tree_slot),
-        scheduled_alias.entities()[usize::from(tree_slot)],
-        scheduled_alias.dispatch_events().iter().filter(|event| matches!(event,
-            Mc2DispatchEvent::DynamicArena { source_slot, .. } | Mc2DispatchEvent::Error { source_slot, .. }
-                if *source_slot == tree_slot
-        )).collect::<Vec<_>>(),
-        scheduled_alias.dispatch_events().iter()
-            .filter(|event| matches!(event, Mc2DispatchEvent::Error { .. }))
-            .take(8).collect::<Vec<_>>()
+            .all(|row| row.entity_index != tree_slot)
     );
-    let scheduled_child = scheduled_alias
-        .economy()
-        .authored_model6()
-        .iter()
-        .find(|row| row.source_entity_index == tree_slot)
-        .expect("self-aliased model-6 child reaches its next scheduled pass");
-    assert_eq!((scheduled_child.model, scheduled_child.action), (6, 1));
-    assert_eq!(scheduled_child.life, life_before_visit - 2);
-    let live = &mut alias.session.state.live;
-    let arena = &mut live.economy;
-    let terrain = &mut live.terrain;
-    let child = arena.economy.authored_model6_mut(tree_slot).unwrap();
-    child.control_flags |= crate::level1_mission::SOURCE_DISABLED_FLAG;
-    arena
-        .rebuild_source_arena_with_terrain(terrain, &[])
-        .unwrap();
-    assert!(!arena.entities[usize::from(tree_slot)].active);
+    // The source water tail disabled this very address. The ordinary next
+    // pass must reclaim it before action dispatch, rather than running the
+    // current action on a hidden occupant.
+    alias.step_outer_turn(PlayerCommand::default(), 0);
     assert!(
-        arena
-            .economy
+        !alias.dispatch_events().iter().any(|event| matches!(
+            event,
+            Mc2DispatchEvent::DynamicArena {
+                source_slot,
+                kind: Level2DynamicArenaKind::AuthoredModel6,
+                ..
+            } if *source_slot == tree_slot
+        )),
+        "hidden replacement must not receive an action visit"
+    );
+    assert!(!alias.entities()[usize::from(tree_slot)].active);
+    assert!(
+        alias
+            .economy()
             .authored_model6()
             .iter()
             .all(|child| child.source_entity_index != tree_slot)
+    );
+    assert!(
+        !alias
+            .economy()
+            .map_chains
+            .entity_chain(0, 0)
+            .contains(&tree_slot)
     );
 }
 
@@ -1026,6 +999,177 @@ fn level_three_imported_tree_damage_reaches_effect_and_following_actions() {
         ),
         (2, 0, 1, life - 1)
     );
+    let next_particle = match continued.particle_parameter_index {
+        Some(83) => 226,
+        Some(84) => 227,
+        other => panic!("real imported Tree particle is unexpected: {other:?}"),
+    };
+    // Exercise the strict action-1 threshold on this same real Tree; the
+    // normal scheduler, particle binding and sprite consumer own the result.
+    session.source_arena_mut().entities[95].set_life(60);
+    session.step_outer_turn(PlayerCommand::default(), 0);
+    let changed = &session.entities()[95];
+    assert_eq!(
+        (
+            changed.action,
+            changed.life,
+            changed.particle_parameter_index
+        ),
+        (2, 59, Some(next_particle))
+    );
+    let binding = session.session.definition.presentation.particles[usize::from(next_particle)];
+    assert_eq!(changed.array_yaw(), (binding.rotation_speed / 2) as i16);
+    assert_eq!(changed.array_pitch(), (binding.speed / 2) as i16);
+    assert_eq!(changed.array_fov(), (binding.rotation_speed / 2) as i16);
+    assert!(
+        session
+            .campaign_entity_presentations(0)
+            .expect("changed Tree sprite projection")
+            .iter()
+            .any(|row| row.entity_index == 95 && row.render_parameter_index == next_particle)
+    );
+    let phase = changed.phase;
+    session.step_outer_turn(PlayerCommand::default(), 0);
+    let settled = &session.entities()[95];
+    assert_eq!((settled.action, settled.life), (2, 59));
+    assert_eq!(settled.phase, phase.wrapping_add(1));
+}
+
+#[test]
+fn level_seven_imported_tree_self_alias_runs_current_effect_on_land() {
+    let package = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../../generated/mc-bhq6-ordinary-20261024-b/level7");
+    let mut session = crate::campaign::CampaignSession::open(
+        package,
+        crate::campaign::spec::CampaignSelection::ordinary(7).unwrap(),
+    )
+    .expect("real Level 7 campaign package")
+    .simulation()
+    .clone();
+    session.runtime.set_level2_is_level_end(1);
+    let tree = session.entities()[108].clone();
+    assert!(tree.active);
+    assert_eq!((tree.class, tree.model, tree.action), (2, 0, 0));
+    let owner = session.state.entity_index;
+    assert!(
+        crate::native_world::area_damage::apply(
+            session.source_arena_mut(),
+            None,
+            None,
+            crate::combat::area::AreaDamage {
+                position: tree.position,
+                shape: crate::combat::area::Shape {
+                    half_width: 64,
+                    half_depth: 64,
+                    vertical_offset: tree.array_yaw(),
+                    half_height: tree.array_fov(),
+                },
+                owner,
+                payload: u16::try_from(tree.life + 1).unwrap(),
+                selector: (2, 0),
+                mode: 0,
+            },
+        )
+        .expect("actual source area damage")
+            > 0
+    );
+
+    // Fill the existing shared pool with an actual Level 7 authored class14
+    // constructor, then consume the earlier frozen replacement addresses.
+    while session.economy().free_slot_count() > 0 {
+        session
+            .allocate_level2_authored_class14(427)
+            .expect("real Level 7 class14 constructor fills a free slot");
+    }
+    let particles = &session.session.definition.presentation.particles;
+    let live = &mut session.session.state.live;
+    let arena = &mut live.economy;
+    let terrain = &mut live.terrain;
+    assert_ne!(
+        crate::FlightWorld::material_mask(terrain, Position::default()),
+        crate::WATER_AMBIENCE_MASK
+    );
+    arena.rebuild_free_arena(&[]);
+    let dynamic = arena
+        .economy
+        .live_arena_slots()
+        .into_iter()
+        .map(|(slot, _)| slot)
+        .collect::<std::collections::BTreeSet<_>>();
+    let mut candidates = arena
+        .entities
+        .iter()
+        .filter(|row| {
+            row.index != 0
+                && row.active
+                && row.class != 0
+                && !dynamic.contains(&row.index)
+                && row.control_flags & SOURCE_REPLACEABLE_FLAG != 0
+        })
+        .map(|row| row.index)
+        .collect::<Vec<_>>();
+    arena
+        .economy
+        .for_each_live_replaceable_arena_row(|slot, _| candidates.push(slot));
+    candidates.sort_unstable();
+    candidates.dedup();
+    assert!(candidates.contains(&tree.index));
+    for expected in candidates.into_iter().take_while(|slot| *slot < tree.index) {
+        let slot = arena
+            .allocate_source_slot_with_terrain(terrain)
+            .expect("frozen replacement");
+        assert_eq!(slot, expected);
+        let sphere = arena
+            .economy
+            .initialize_authored_model39(slot, tree.index, Position::default())
+            .expect("source sphere constructor");
+        crate::world::effects::sync_position(arena, terrain, slot, sphere.position, true, false)
+            .unwrap();
+    }
+    let generation = arena.economy.slot_generation(tree.index);
+    let expected_rng = level2_next_rng16(arena.economy.new_event_rng(tree.index));
+    crate::world::scenery::trees::step_imported(
+        arena,
+        terrain,
+        Default::default(),
+        particles,
+        tree.index,
+    )
+    .expect("real imported Tree callback at its selected address");
+    let child = &arena.entities[usize::from(tree.index)];
+    assert_eq!(
+        arena.economy.slot_generation(tree.index),
+        generation.wrapping_add(1)
+    );
+    assert_eq!((child.class, child.model, child.action), (10, 6, 1));
+    assert_eq!((child.position.x, child.position.y), (0, 0));
+    assert_eq!(child.entity_rng, expected_rng);
+    assert_eq!(child.life, i32::from(expected_rng % 60) + 130);
+    assert_eq!(child.source_word_2c(), 1152);
+    assert_eq!(
+        child.control_flags & crate::level1_mission::SOURCE_DISABLED_FLAG,
+        0
+    );
+    let life = child.life;
+    let phase = child.phase;
+    assert!(
+        session
+            .campaign_entity_presentations(0)
+            .expect("land replacement sprite projection")
+            .iter()
+            .any(|row| row.entity_index == tree.index && row.render_parameter_index == 228)
+    );
+    session.step_outer_turn(PlayerCommand::default(), 0);
+    let continued = &session.entities()[usize::from(tree.index)];
+    assert_eq!(
+        (continued.class, continued.model, continued.action),
+        (10, 6, 1),
+        "dispatch events {:?}",
+        session.dispatch_events()
+    );
+    assert_eq!(continued.life, life - 1);
+    assert_eq!(continued.phase, phase.wrapping_add(1));
+    assert_ne!(continued.control_flags & 2, 0);
 }
 
 #[test]

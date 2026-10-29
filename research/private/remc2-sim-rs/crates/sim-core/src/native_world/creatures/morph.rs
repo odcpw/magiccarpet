@@ -3,14 +3,39 @@
 //! The raw arena record owns the body. It follows the caster rather than
 //! entering the independent creature AI; the holder owns its expiry.
 
-use crate::native_world::{EntitySnapshot, MapType, ParticleParameter, SessionTerrain};
-use crate::{Position, campaign::source_arena::SourceArena};
+use crate::native_world::{EntitySnapshot, Level2EconomyState, MapType, ParticleParameter, SessionTerrain};
+use crate::{Position, campaign::source_arena::{SourceArena, SourceEntityHandle}};
+use std::collections::BTreeMap;
 
 /// Constructor counters absent from the ordinary creature families. Model19
 /// shares its existing Firefly counter; Day model2 uses the canonical Bee.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(crate) struct State {
     pub(crate) phases: [u8; 2],
+    // Holder slots are reused independently of their controlled bodies.
+    pub(crate) bodies: BTreeMap<u16, (u32, SourceEntityHandle)>,
+}
+
+impl State {
+    pub(crate) fn bind_body(&mut self, holder: SourceEntityHandle, body: SourceEntityHandle) {
+        self.bodies.insert(holder.source_slot, (holder.generation, body));
+    }
+
+    pub(crate) fn take_body(&mut self, holder: SourceEntityHandle) -> Option<SourceEntityHandle> {
+        if self.bodies.get(&holder.source_slot)?.0 != holder.generation {
+            return None;
+        }
+        self.bodies.remove(&holder.source_slot).map(|(_, body)| body)
+    }
+}
+
+/// The source arena owns slot retirement; the Morph owner keeps its bindings.
+pub(crate) fn holder_generations(economy: &Level2EconomyState) -> impl Iterator<Item = (u16, u32)> + '_ {
+    economy.morph.bodies.iter().map(|(&slot, &(generation, _))| (slot, generation))
+}
+
+pub(crate) fn forget_holder(economy: &mut Level2EconomyState, slot: u16) {
+    economy.morph.bodies.remove(&slot);
 }
 
 pub(crate) const fn product(map: MapType, tier: u8) -> Option<u8> {
@@ -123,6 +148,9 @@ pub(crate) fn allocate(
     arena.economy.source_rng.insert(slot, rng);
     arena.entities[usize::from(slot)] = row;
     crate::world::effects::sync_position(arena, terrain, slot, position, true, false)?;
+    if let (Some(child), Some(parent)) = (arena.handle(slot), arena.handle(parent.index)) {
+        arena.bind_creature_parent(child, parent);
+    }
     Ok(Some(slot))
 }
 
@@ -134,10 +162,12 @@ pub(crate) fn step(
 ) -> Result<(), String> {
     let mut row = arena.entities[usize::from(slot)].clone();
     let parent_slot = row.source_spell_parent_entity_index();
-    if let Some(parent) = arena
-        .entities
-        .get(usize::from(parent_slot))
-        .filter(|parent| parent_slot != 0 && parent.active)
+    let parent = arena.handle(slot)
+        .and_then(|child| arena.creature_parent(child))
+        .filter(|parent| parent.source_slot == parent_slot)
+        .and_then(|parent| arena.entities.get(usize::from(parent.source_slot)))
+        .filter(|parent| parent.active);
+    if let Some(parent) = parent
     {
         row.set_position(Position {
             z: (i32::from(parent.position.z)

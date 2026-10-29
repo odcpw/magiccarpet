@@ -77,6 +77,7 @@ pub struct CampaignDefinition {
     authored_building_entities: BTreeMap<u16, LevelEntityId>,
     initial_source_buildings: BTreeMap<u16, BuildingKind>,
     authored_scenery: BTreeMap<u16, SceneryKind>,
+    authored_scenery_entities: BTreeMap<u16, LevelEntityId>,
     initial_source_scenery: BTreeMap<u16, SceneryKind>,
     authored_items: BTreeMap<u16, ItemKind>,
     authored_item_entities: BTreeMap<u16, LevelEntityId>,
@@ -110,6 +111,7 @@ pub(crate) struct SemanticLevelBindings {
     pub(crate) authored_building_entities: BTreeMap<u16, LevelEntityId>,
     pub(crate) initial_source_buildings: BTreeMap<u16, BuildingKind>,
     pub(crate) authored_scenery: BTreeMap<u16, SceneryKind>,
+    pub(crate) authored_scenery_entities: BTreeMap<u16, LevelEntityId>,
     pub(crate) initial_source_scenery: BTreeMap<u16, SceneryKind>,
     pub(crate) authored_items: BTreeMap<u16, ItemKind>,
     pub(crate) authored_item_entities: BTreeMap<u16, LevelEntityId>,
@@ -380,6 +382,7 @@ impl CampaignDefinition {
             authored_building_entities: BTreeMap::new(),
             initial_source_buildings: BTreeMap::new(),
             authored_scenery: BTreeMap::new(),
+            authored_scenery_entities: BTreeMap::new(),
             initial_source_scenery: BTreeMap::new(),
             authored_items: BTreeMap::new(),
             authored_item_entities: BTreeMap::new(),
@@ -410,6 +413,7 @@ impl CampaignDefinition {
         self.authored_building_entities = bindings.authored_building_entities;
         self.initial_source_buildings = bindings.initial_source_buildings;
         self.authored_scenery = bindings.authored_scenery;
+        self.authored_scenery_entities = bindings.authored_scenery_entities;
         self.initial_source_scenery = bindings.initial_source_scenery;
         self.authored_items = bindings.authored_items;
         self.authored_item_entities = bindings.authored_item_entities;
@@ -630,6 +634,13 @@ impl CampaignDefinition {
         source_slot: u16,
     ) -> Option<MechanicKind> {
         self.initial_source_mechanics.get(&source_slot).copied()
+    }
+
+    pub(crate) fn scenery_entity_for_authored_record(
+        &self,
+        authored_record: u16,
+    ) -> Option<&LevelEntityId> {
+        self.authored_scenery_entities.get(&authored_record)
     }
 
     pub(crate) fn mechanic_entity_for_authored_record(

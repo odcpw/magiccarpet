@@ -5729,6 +5729,7 @@ fn level_two_public_fireball_hits_qualified_water_without_fabricating_an_impact(
         (flyer.source_class, flyer.source_model, flyer.action),
         (9, 0, 0)
     );
+    assert_eq!(flyer.owner_entity_index, session.state.entity_index);
     assert!(flyer.source_entity_index < session.state.entity_index);
     assert!(flyer.active && !flyer.drawing_disabled);
     assert_eq!(flyer.phase, flyer.source_entity_index as u8);
@@ -5778,6 +5779,8 @@ fn level_two_public_fireball_hits_qualified_water_without_fabricating_an_impact(
             .iter()
             .all(|row| impact_slots_before.contains(&row.source_entity_index))
     );
+    // Other source actors can emit unrelated impacts in the extra pass that
+    // reaches this flyer. Check the actual caster's new effects instead.
     let new_raw_impacts = session
         .source_arena()
         .entities
@@ -5785,6 +5788,7 @@ fn level_two_public_fireball_hits_qualified_water_without_fabricating_an_impact(
         .filter(|row| {
             row.active
                 && (row.class, row.model) == (10, 0)
+                && row.source_id == flyer.owner_entity_index
                 && !raw_impacts_before.contains(&row.index)
         })
         .map(|row| {

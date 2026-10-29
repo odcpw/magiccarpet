@@ -51,7 +51,7 @@ pub(crate) struct Context<'a> {
     pub targets: &'a [Target],
     pub class3: &'a [u16],
     pub family: &'a [u16],
-    pub class5: &'a [u16],
+    pub families: &'a [Vec<u16>; 29],
     pub runtime: &'a mut dyn StageRuntime,
 }
 impl Context<'_> {

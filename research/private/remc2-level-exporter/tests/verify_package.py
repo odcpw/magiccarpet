@@ -1816,6 +1816,16 @@ def _campaign_required_behaviors(rows: list[dict]) -> tuple[list[dict], set[tupl
 
 
 def _campaign_validate_reset_members(package: Path, spec: dict, files: dict, profile: dict) -> tuple[bytes, bytes, bytes]:
+    # Version 5 appends the captured six source bytes without changing the
+    # historical version-4 layout. Keep both exact header/descriptor checks.
+    player_descriptor = spec["reset_sources"]["players"]
+    if (profile["player_schema"] == "mc2-player-arena/v4"
+            and isinstance(player_descriptor, dict)
+            and player_descriptor.get("schema") == "mc2-player-arena/v5"):
+        profile = dict(
+            profile, player_schema="mc2-player-arena/v5",
+            player_component_version=5, player_record_bytes=669,
+        )
     authored_descriptor = _campaign_member_ref(
         spec["authored_records"], files, "campaign_spec.authored_records",
         schema="mc2-authored-level/v1", count=1200, record_bytes=20,

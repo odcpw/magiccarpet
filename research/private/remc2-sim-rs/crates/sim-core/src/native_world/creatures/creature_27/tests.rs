@@ -452,7 +452,30 @@ fn assert_head_projectiles_reach_scheduled_damage_consumers(
         cases.push((true, base));
         cases.push((false, expired));
     } else {
-        cases.push((false, base));
+        let initial = rival_upkeep(&base, target_slot);
+        assert!(initial.word_0x159 > 24, "rival protection: {initial:?}");
+        let mut expired = base.clone();
+        for _ in 0..160 {
+            if rival_upkeep(&expired, target_slot).word_0x159 == 0 {
+                break;
+            }
+            expired.step_outer_turn(PlayerCommand::default(), 0);
+            assert!(
+                !expired
+                    .dispatch_events()
+                    .iter()
+                    .any(|event| matches!(event, Mc2DispatchEvent::Error { .. })),
+                "source scheduler error while rival protection expires: {:?}",
+                expired.dispatch_events()
+            );
+        }
+        let final_upkeep = rival_upkeep(&expired, target_slot);
+        assert_eq!(
+            final_upkeep.word_0x159, 0,
+            "rival protection: {final_upkeep:?}"
+        );
+        cases.push((true, base));
+        cases.push((false, expired));
     }
     let mut failures = Vec::new();
     for (protected_case, case_base) in cases {
@@ -465,6 +488,18 @@ fn assert_head_projectiles_reach_scheduled_damage_consumers(
         );
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+fn rival_upkeep(
+    session: &crate::native_world::Mc2Simulation,
+    target_slot: u16,
+) -> crate::native_world::Level2NyphurCommonUpkeepSnapshot {
+    let live = &session.session.state.live;
+    let row = &live.economy.entities[usize::from(target_slot)];
+    live.nyphur_dispatcher
+        .get_in_arena(&live.economy, target_slot)
+        .expect("owner rival has a generation-bound upkeep carrier")
+        .common_upkeep(row.phase)
 }
 
 fn check_head_projectiles_in_case(
@@ -541,9 +576,12 @@ fn check_head_projectiles_in_case(
         let mut impact_observations = Vec::new();
         let mut saw_damage = false;
         let mut saw_consumed_life = false;
+        let mut saw_any_life_loss = false;
+        let mut previous_target_life = target_life;
         let mut fireball_slot = None;
         let mut saw_fireball_reclaim = false;
         let mut player_protection = Vec::new();
+        let mut rival_protection = Vec::new();
         crate::native_world::area_damage::start_effect_damage_trace(target_slot);
         for _ in 0..24 {
             let head = &mut session.session.state.live.economy.entities[usize::from(head_slot)];
@@ -584,6 +622,14 @@ fn check_head_projectiles_in_case(
                     arena.economy.player_castle_shift_aabb_overlap(target_row),
                     session.session.state.live.player_protection_ticks,
                     session.session.state.live.shared_spells.shield_state(),
+                ));
+            } else if !is_player && saw_projectile {
+                let upkeep = rival_upkeep(&session, target_slot);
+                rival_protection.push((
+                    upkeep.castle_entity_index,
+                    upkeep.high_upkeep,
+                    upkeep.word_0x159,
+                    upkeep.life,
                 ));
             }
             let impact_model = if selector == 0 { 0 } else { 23 };
@@ -628,7 +674,13 @@ fn check_head_projectiles_in_case(
             } else {
                 target_row.life
             };
-            saw_consumed_life |= current_life < target_life;
+            let last_rival_attacker =
+                u16::from_le_bytes([target_row.record[42], target_row.record[43]]);
+            saw_any_life_loss |= current_life < target_life;
+            saw_consumed_life |= current_life < target_life
+                && current_life < previous_target_life
+                && (is_player || last_rival_attacker == root_slot);
+            previous_target_life = current_life;
             if let Some(slot) = fireball_slot
                 && arena.economy.free_source_slots().contains(&slot)
             {
@@ -658,8 +710,8 @@ fn check_head_projectiles_in_case(
                     .mailbox_after
                     .is_some_and(|(payload, owner)| payload > 0 && owner == root_slot)
         });
-        let protection_matches = !is_player
-            || (!player_protection.is_empty()
+        let protection_matches = if is_player {
+            !player_protection.is_empty()
                 && player_protection.iter().all(|(_, overlap, counter, _)| {
                     !*overlap
                         && if protected_case {
@@ -667,12 +719,30 @@ fn check_head_projectiles_in_case(
                         } else {
                             *counter == 0
                         }
-                }));
+                })
+        } else {
+            !rival_protection.is_empty()
+                && rival_protection.iter().all(|(_, high_upkeep, counter, _)| {
+                    !*high_upkeep
+                        && if protected_case {
+                            *counter > 0
+                        } else {
+                            *counter == 0
+                        }
+                })
+        };
+        if !is_player {
+            eprintln!(
+                "model27 selector {selector}, protected={protected_case}, rival protection first/last (castle, high upkeep, timer, life): {:?} / {:?}",
+                rival_protection.first(),
+                rival_protection.last()
+            );
+        }
         if !saw_projectile
             || !saw_impact
             || !saw_damage
             || !protection_matches
-            || (protected_case && saw_consumed_life)
+            || (protected_case && saw_any_life_loss)
             || (!protected_case && !saw_consumed_life)
             || (selector == 0 && !saw_fireball_reclaim)
         {
@@ -680,9 +750,10 @@ fn check_head_projectiles_in_case(
             "selector {selector}, protected={protected_case}: projectile={saw_projectile}, root-attributed impact={saw_impact}, protection matches={protection_matches}, \
              fireball reclaim={saw_fireball_reclaim}; must deliver root-attributed damage to target {target_slot} \
              (player={is_player}, original life={target_life}, \
-             damage observed={saw_damage}, life consumed={saw_consumed_life}, \
+             damage observed={saw_damage}, root-attributed life consumed={saw_consumed_life}, any life loss={saw_any_life_loss}, \
              impacts(slot, position, target, target position, flags/selectors, life/phase/age/payload, axes, target actor, target tile/head)={impact_observations:?}); \
              player protection(castle, overlap, timer, shield)={player_protection:?}; \
+             rival protection(castle, high upkeep, timer, life)={rival_protection:?}; \
              callback observations={callback_observations:?}; final target={:?}",
                 session.entities().get(usize::from(target_slot))
             ));

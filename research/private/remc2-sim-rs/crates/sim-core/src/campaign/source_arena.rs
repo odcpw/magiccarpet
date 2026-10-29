@@ -823,6 +823,7 @@ impl SourceArena {
             self.effects.forget_source_slot(slot);
             self.entities[usize::from(slot)].reclaim_source_row();
             self.economy.release_slot(slot, Some(rng));
+            crate::native_world::creatures::morph::forget_holder(&mut self.economy, slot);
             self.raw_creature_origins.remove(&slot);
             self.creature_parents.remove(&slot);
             self.clear_raw_creature_part_bindings_for_slot(slot);
@@ -856,6 +857,14 @@ impl SourceArena {
         crate::world::scenery::trees::prepare_reclaim(self, terrain)?;
         crate::native_world::prepare_model17_reclaim(self)?;
         self.economy.reclaim_inactive_slots_at_source_boundary();
+        let retired_morph_holders = crate::native_world::creatures::morph::holder_generations(&self.economy)
+            .filter_map(|(slot, generation)| {
+                (self.slot_generation(slot) != generation || self.handle(slot).is_none())
+                    .then_some(slot)
+            }).collect::<Vec<_>>();
+        for slot in retired_morph_holders {
+            crate::native_world::creatures::morph::forget_holder(&mut self.economy, slot);
+        }
         let retired_origins = self
             .raw_creature_origins
             .keys()
@@ -897,6 +906,7 @@ impl SourceArena {
             // replace its occupant without publishing a raw record; retaining
             // the old active packet would resurrect it when that owner retires.
             self.entities[usize::from(slot)].reclaim_source_row();
+            crate::native_world::creatures::morph::forget_holder(&mut self.economy, slot);
             self.raw_creature_origins.remove(&slot);
             self.creature_parents.remove(&slot);
             self.clear_raw_creature_part_bindings_for_slot(slot);
@@ -943,6 +953,7 @@ impl SourceArena {
         }
         publish(tile, self.economy.map_chains.tile_head(tile));
         self.effects.forget_source_slot(slot);
+        crate::native_world::creatures::morph::forget_holder(&mut self.economy, slot);
         self.raw_creature_origins.remove(&slot);
         self.creature_parents.remove(&slot);
         self.clear_raw_creature_part_bindings_for_slot(slot);
@@ -1098,6 +1109,9 @@ impl SourceArena {
         authored_bindings: &BTreeMap<u16, CreatureKind>,
     ) -> CreatureRuntimeCensus {
         let mut slots = initial_bindings.keys().copied().collect::<BTreeSet<_>>();
+        // Dynamic raw roots need not have a reset binding or a typed row.
+        // The identity resolver below checks the current slot generation.
+        slots.extend(self.raw_creature_origins.keys().copied());
         slots.extend(
             self.economy
                 .authored_class5()

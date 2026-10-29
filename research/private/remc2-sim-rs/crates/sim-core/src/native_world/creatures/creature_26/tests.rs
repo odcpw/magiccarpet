@@ -504,7 +504,20 @@ fn owner_level6_acquired_spell_runs_theft_detachment_and_pickup() {
         .set_level2_entity_position(player_slot, approach)
         .unwrap();
     let mut stolen = false;
+    let mut drain_visits = 0;
+    let mut in_range_cadence_visits = 0;
+    let mut minimum_distance = u32::MAX;
     for _ in 0..256 {
+        let actor_before = &session.entities()[usize::from(actor_slot)];
+        let player_before = &session.entities()[usize::from(player_slot)];
+        let range = distance(actor_before.position, player_before.position);
+        minimum_distance = minimum_distance.min(range);
+        if actor_before.action == DRAIN_ACTION {
+            drain_visits += 1;
+            if actor_before.phase & RULES.theft_cadence_mask == 0 && range < RULES.theft_range {
+                in_range_cadence_visits += 1;
+            }
+        }
         session.step_outer_turn(PlayerCommand::default(), 0);
         assert!(
             session
@@ -521,7 +534,19 @@ fn owner_level6_acquired_spell_runs_theft_detachment_and_pickup() {
     }
     assert!(
         stolen,
-        "the ordinary model26 callback must steal the actual acquired holder"
+        "model26 theft did not occur; before=(action {}, phase {}, target {}, position {:?}); after=(action {}, phase {}, target {}, position {:?}); player={:?}, holder=(action {}, timer {}), drain_visits={drain_visits}, in_range_cadence_visits={in_range_cadence_visits}, minimum_distance={minimum_distance}, global_rng={}",
+        actor.action,
+        actor.phase,
+        word(&actor, 154),
+        actor.position,
+        session.entities()[usize::from(actor_slot)].action,
+        session.entities()[usize::from(actor_slot)].phase,
+        word(&session.entities()[usize::from(actor_slot)], 154),
+        session.entities()[usize::from(actor_slot)].position,
+        session.entities()[usize::from(player_slot)].position,
+        session.entities()[usize::from(holder_slot)].action,
+        word(&session.entities()[usize::from(holder_slot)], 58),
+        session.economy().global_rng
     );
     let holder = &session.entities()[usize::from(holder_slot)];
     assert_eq!(word(holder, 42), actor_slot);

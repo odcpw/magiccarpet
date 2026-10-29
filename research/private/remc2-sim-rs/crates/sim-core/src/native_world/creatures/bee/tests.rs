@@ -1028,6 +1028,39 @@ fn army_ring_allocates_a_generation_bound_summoned_bee_with_source_fields() {
 
 #[test]
 fn summoned_bee_expires_when_parent_slot_is_reused() {
+    // Exercise the real acquired Morph producer as well as the Army path:
+    // the same numeric player address may later name another incarnation.
+    let (morph, _, morph_slot) = public_day_morph_bee();
+    let morph_parent = morph.state.entity_index;
+    let morph_handle = morph.source_arena().handle(morph_slot).unwrap();
+    let original_parent = morph.source_arena().handle(morph_parent).unwrap();
+    assert_eq!(morph.source_arena().creature_parent(morph_handle), Some(original_parent));
+    for reused in [false, true] {
+        let mut arena = morph.source_arena().clone();
+        let mut terrain = morph.canonical_terrain().clone();
+        if reused {
+            arena.economy.release_slot(morph_parent, None);
+            assert_eq!(arena.allocate_source_slot_with_terrain(&mut terrain), Some(morph_parent));
+            let mut replacement = crate::native_world::cave_features::new_event(
+                morph_parent, 5, morph.state.position,
+            );
+            replacement.class = 3;
+            replacement.model = 0;
+            replacement.record[67] = 3;
+            replacement.set_life(1_000);
+            arena.entities[usize::from(morph_parent)] = replacement;
+        }
+        let models: [Vec<u16>; 29] = std::array::from_fn(|_| Vec::new());
+        mc2::step_in_arena(
+            &mut arena, &morph.session.state.live.core.runtime, &mut terrain,
+            &morph.session.definition.presentation.particles, morph_slot, &models,
+            &[morph_parent], None, None,
+        ).unwrap();
+        let bee = arena.bee_creatures().iter()
+            .find(|bee| bee.source_entity_index == morph_slot).unwrap();
+        assert_eq!(bee.drawing_enabled, !reused, "Morph follows only its original parent");
+    }
+
     let session = crate::native_world::tests::level_two_campaign_session();
     let mut arena = session.source_arena().clone();
     let mut runtime = session.session.state.live.core.runtime.clone();

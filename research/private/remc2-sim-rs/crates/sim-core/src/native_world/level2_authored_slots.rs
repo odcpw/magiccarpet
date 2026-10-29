@@ -273,6 +273,7 @@ impl Level2EconomyState {
 
             morph: creatures::morph::State {
                 phases: [counters[16], counters[25]],
+                bodies: Default::default(),
             },
 
             castle_auxiliary_constructor_phase: counters[15],
@@ -394,6 +395,7 @@ impl Level2EconomyState {
 
     pub(crate) fn allocate_slot(&mut self) -> Option<u16> {
         if let Some(slot) = self.free_slots.pop() {
+            self.fields.skeleton_summon.forget(slot);
             self.converted_skeleton_origins.remove(&slot);
             // `NewEvent` overwrites the fixed source record at this slot.
             self.possession_guidance_stale_records.remove(&slot);
@@ -498,6 +500,7 @@ impl Level2EconomyState {
         self.slot_rng.remove(&slot);
         self.source_rng.remove(&slot);
         self.source_owner.remove(&slot);
+        self.fields.skeleton_summon.forget(slot);
         let generation = self.slot_generations.entry(slot).or_default();
         *generation = generation.wrapping_add(1);
         // The fallback branch zeroes every rebuilt model/class list head.
@@ -529,6 +532,7 @@ impl Level2EconomyState {
     /// Fallback NewEvent metadata, after SourceArena retires the raw row.
     /// It never appends to the ordinary free stack.
     pub(crate) fn claim_raw_replacement_slot(&mut self, slot: u16) -> u16 {
+        self.fields.skeleton_summon.forget(slot);
         self.converted_skeleton_origins.remove(&slot);
         self.possession_guidance_stale_records.remove(&slot);
         self.source_phase_sidecars.remove(&slot);
@@ -562,6 +566,7 @@ impl Level2EconomyState {
         if slot == 0 {
             return;
         }
+        self.fields.skeleton_summon.forget(slot);
         self.converted_skeleton_origins.remove(&slot);
         let _ = self.map_chains.sync_entity(RenderableMapSeed {
             entity_index: slot,
@@ -7675,9 +7680,18 @@ impl Level2EconomyState {
             self.class5_model19_constructor_phase,
         ]);
         hasher.update(b"castle-auxiliary-constructor-phase-v1");
-        if self.morph != creatures::morph::State::default() {
+        if self.morph.phases != [0; 2] {
             hasher.update(b"morph-body-constructor-phases-v1");
             hasher.update(self.morph.phases);
+        }
+        if !self.morph.bodies.is_empty() {
+            hasher.update(b"morph-holder-bodies-v1");
+            for (holder, (holder_generation, body)) in &self.morph.bodies {
+                hasher.update(holder.to_le_bytes());
+                hasher.update(holder_generation.to_le_bytes());
+                hasher.update(body.source_slot.to_le_bytes());
+                hasher.update(body.generation.to_le_bytes());
+            }
         }
         hasher.update([self.castle_auxiliary_constructor_phase]);
         for source in &self.authored_class5 {

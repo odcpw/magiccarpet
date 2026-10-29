@@ -254,6 +254,9 @@ fn validate_semantic_creature_dispatch(
                     &[
                         ExistingHandler::BuilderFamily,
                         ExistingHandler::BuilderVillagerPostBuild,
+                        // Source action 96 hands model 12 to action 105;
+                        // its unchanged model then uses townie 104..111.
+                        ExistingHandler::VillagerFamily,
                     ][..],
                 ),
                 (CreatureKind::Villager, _) => Some(
@@ -11674,7 +11677,7 @@ impl Mc2Simulation {
                     | (5, 0 | 1 | 2 | 3 | 4 | 9 | 10 | 12 | 13 | 14 | 16 | 18 | 19 | 20 | 21 | 22 | 24 | 25 | 27 | 28)
                     | (
                         10,
-                        0..=7 | 9 | 11 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 22 | 23 | 34 | 38 | 39 | 45 | 54 | 58 | 59 | 60 | 63 | 64 | 70 | 71 | 76 | 80..=88 | 90
+                        0..=7 | 9 | 11 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 22 | 23 | 34 | 36 | 38 | 39 | 45 | 54 | 58 | 59 | 60 | 63 | 64 | 70 | 71 | 76 | 80..=88 | 90
                     )
                     | (11, 0..=44)
                     | (14, 2 | 3 | 4 | 5)
@@ -12323,7 +12326,7 @@ impl Mc2Simulation {
                     let properties = self
                         .session
                         .definition
-                        .mechanic_entity_for_authored_record(feature.index)
+                        .scenery_entity_for_authored_record(feature.index)
                         .and_then(|id| {
                             self.session
                                 .definition
@@ -12387,10 +12390,23 @@ impl Mc2Simulation {
                     )?;
                 }
                 (10, 36) => {
-                    let properties = sim_definition::adapter::mc2_field_definition(
-                        crate::level_definition::FieldKind::SkeletonSummon,
-                        crate::level_definition::TilePosition { x: 0, y: 0 },
-                    );
+                    let properties = self
+                        .session
+                        .definition
+                        .mechanic_entity_for_authored_record(feature.index)
+                        .and_then(|id| {
+                            self.session
+                                .definition
+                                .semantic_level()?
+                                .entity(id)?
+                                .field()
+                        })
+                        .ok_or_else(|| {
+                            format!(
+                                "authored Skeleton controller {} lacks its field definition",
+                                feature.index
+                            )
+                        })?;
                     let crate::level_definition::FieldDefinition::SkeletonSummon {
                         particle_index, ..
                     } = properties else {
@@ -14475,7 +14491,8 @@ impl Mc2Simulation {
                 .get(usize::from(source_slot))
                 .filter(|entity| {
                     entity.active
-                        && matches!(
+                        && ((entity.class, entity.model, entity.action) == (10, 74, 81)
+                            || matches!(
                             (entity.class, entity.action),
                             (2, 0 | 1 | 2 | 3 | 18 | 19 | 20 | 21)
                                 | (
@@ -14486,7 +14503,7 @@ impl Mc2Simulation {
                                 | (10, 0..=7 | 9 | 10 | 11 | 13 | 14 | 15 | 16 | 18 | 19 | 22 | 23 | 25 | 26 | 27..=34 | 36 | 37 | 38 | 40 | 54 | 55 | 62 | 65 | 66 | 67 | 68..=74 | 77 | 78 | 79 | 87..=94 | 96)
                                 | (11, 0..=44)
                                 | (14, 6 | 7 | 8 | 9)
-                        )
+                        ))
                 })
         {
             Some((SourceRoute::Imported, entity.class, entity.action))
@@ -17014,10 +17031,37 @@ impl Mc2Simulation {
                 if self.session.state.live.economy.entities[usize::from(source_slot)].model
                     == 36 =>
             {
-                let properties = sim_definition::adapter::mc2_field_definition(
-                    crate::level_definition::FieldKind::SkeletonSummon,
-                    crate::level_definition::TilePosition { x: 0, y: 0 },
-                );
+                let properties = if let Some(properties) =
+                    crate::world::fields::skeleton_summon::definition(
+                        &self.session.state.live.economy,
+                        source_slot,
+                    )
+                {
+                    properties
+                } else {
+                    let configured = (self.session.state.live.economy.slot_generation(source_slot) == 0)
+                        .then(|| {
+                            self.session
+                                .definition
+                                .mechanic_entity_for_initial_source_slot(source_slot)
+                                .and_then(|id| {
+                                    self.session.definition.semantic_level()?.entity(id)?.field()
+                                })
+                        })
+                        .flatten();
+                    let properties = configured.unwrap_or_else(|| {
+                        sim_definition::adapter::mc2_field_definition(
+                            crate::level_definition::FieldKind::SkeletonSummon,
+                            crate::level_definition::TilePosition { x: 0, y: 0 },
+                        )
+                    });
+                    crate::world::fields::skeleton_summon::bind_definition(
+                        &mut self.session.state.live.economy,
+                        source_slot,
+                        properties,
+                    )?;
+                    properties
+                };
                 let descriptor = self.session.definition.presentation.entity_parameters
                     .get(80).ok_or("Skeleton constructor needs descriptor80")?;
                 let particles = &self.session.definition.presentation.particles;
@@ -21559,6 +21603,15 @@ impl Mc2Simulation {
         }
 
         if let Some(spawned_slot) = spawned_slot {
+            let arena = &mut self.session.state.live.economy;
+            let body = arena.handle(spawned_slot).ok_or_else(|| {
+                NativeWorldError::new("Morph constructor lost its allocated body")
+            })?;
+            let holder = crate::campaign::source_arena::SourceEntityHandle {
+                source_slot,
+                generation: arena.slot_generation(source_slot),
+            };
+            arena.economy.morph.bind_body(holder, body);
             if let Some(authoritative) = self
                 .session
                 .state
@@ -21607,10 +21660,18 @@ impl Mc2Simulation {
             }
         }
         if transition.expired {
-            if expired_creature_slot != 0 {
+            let arena = &mut self.session.state.live.economy;
+            let holder = crate::campaign::source_arena::SourceEntityHandle {
+                source_slot,
+                generation: arena.slot_generation(source_slot),
+            };
+            let body = arena.economy.morph.take_body(holder)
+                .filter(|body| body.source_slot == expired_creature_slot)
+                .filter(|body| arena.resolve(*body).is_some());
+            if let Some(body) = body {
                 creatures::morph::expire(
                     &mut self.session.state.live.economy,
-                    expired_creature_slot,
+                    body.source_slot,
                 );
                 let _ = self
                     .session
@@ -21618,7 +21679,7 @@ impl Mc2Simulation {
                     .live
                     .economy
                     .economy
-                    .disable_morph_bee(expired_creature_slot);
+                    .disable_morph_bee(body.source_slot);
             }
             let control_flags = parent.as_ref().map_or(0, |parent| parent.control_flags) & !0x20;
             self.commit_morph_parent_control(parent_entity_index, control_flags);
@@ -28316,7 +28377,7 @@ mod tests {
                         .events()
                         .iter()
                         .any(|event| matches!(event, Mc2DispatchEvent::Error { .. })),
-                    "waiting for Army cooldown: {:?}",
+                    "waiting for Army cooldown on level {level}, tier {tier}, model {model}: {:?}",
                     campaign.events()
                 );
             }
@@ -28550,6 +28611,29 @@ mod tests {
                 session.session.state.live.economy.entities[usize::from(body_slot)].position,
                 expected
             );
+            // The real acquired holder must not expire a new occupant of its
+            // former body's numeric slot, even if that occupant looks alike.
+            let mut reused = session.clone();
+            {
+                let live = &mut reused.session.state.live;
+                let old_body = live.economy.handle(body_slot).unwrap();
+                let holder_generation = live.economy.slot_generation(holder_slot);
+                assert_eq!(live.economy.economy.morph.bodies.get(&holder_slot),
+                    Some(&(holder_generation, old_body)));
+                let replacement = live.economy.entities[usize::from(body_slot)].clone();
+                live.economy.entities[usize::from(body_slot)].reclaim_source_row();
+                live.economy.economy.release_slot(body_slot, None);
+                assert_eq!(live.economy.allocate_source_slot_with_terrain(&mut live.terrain), Some(body_slot));
+                live.economy.entities[usize::from(body_slot)] = replacement;
+                assert_ne!(live.economy.handle(body_slot), Some(old_body));
+                let holder = live.shared_spells.pickup_mut(holder_slot).unwrap();
+                holder.active_value = 1;
+                holder.record[50..52].copy_from_slice(&1_i16.to_le_bytes());
+            }
+            reused.step_morph_holder_source_slot(holder_slot).unwrap();
+            assert!(!reused.session.state.live.economy.entities[usize::from(body_slot)].drawing_disabled(),
+                "holder expiry cannot hide a replacement Morph body generation");
+            assert_eq!(reused.shared_spells().pickup(holder_slot).unwrap().source_word_96(), 0);
             {
                 let raw =
                     &mut session.session.state.live.economy.entities[usize::from(holder_slot)];
@@ -30547,6 +30631,30 @@ mod tests {
                     && message.contains("raw model")
             )
         }));
+
+        // Use a real imported Builder identity to check the source-supported
+        // post-build callback band. The package kind/model stay Builder;
+        // wrong handler and wrong semantic-kind controls remain rejected.
+        let package = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../generated/mc-bhq6-ordinary-20261024-b/level7");
+        let campaign = CampaignSession::open(package, CampaignSelection::ordinary(7).unwrap())
+            .expect("actual Night7 package retains imported Builders");
+        let builder = campaign.simulation().creature_runtime_census()
+            .roots_of_kind(CreatureKind::Builder).next().expect("real imported Builder");
+        assert_eq!(builder.raw_model, Some(12));
+        for handler in [ExistingHandler::BuilderFamily, ExistingHandler::BuilderVillagerPostBuild,
+            ExistingHandler::VillagerFamily]
+        {
+            assert!(validate_semantic_creature_dispatch(builder.handle.source_slot,
+                Some(builder), handler).is_ok());
+        }
+        assert!(validate_semantic_creature_dispatch(builder.handle.source_slot,
+            Some(builder), ExistingHandler::ArcherFamily).is_err());
+        let wrong_kind = crate::campaign::source_arena::CreatureRuntimeIdentity {
+            kind: CreatureKind::Villager, ..builder
+        };
+        assert!(validate_semantic_creature_dispatch(builder.handle.source_slot,
+            Some(wrong_kind), ExistingHandler::VillagerFamily).is_err());
     }
 
     #[test]
@@ -34852,10 +34960,6 @@ mod tests {
         );
         let mut fire_target_position = fire_transition.position;
         crate::move_entity(&mut fire_target_position, fire_transition.yaw, 0, 2_048);
-        let (expected_yaw, expected_pitch) = crate::level1_mission::projectile_guidance_angles(
-            fire_transition.position,
-            fire_target_position,
-        );
         let mut expected_launch_position = fire_transition.position;
         expected_launch_position.z = expected_launch_position.z.wrapping_add(140);
         assert!(
@@ -34879,6 +34983,12 @@ mod tests {
         let journal_before_fire = campaign.simulation().effect_journal().records().len();
         step(&mut campaign);
         let live = &campaign.simulation().session.state.live;
+        assert!(player_entity_index < dragon_slot, "player source visit precedes Dragon fire");
+        let source_target_position = live.core.state.position;
+        let (expected_yaw, expected_pitch) = crate::level1_mission::projectile_guidance_angles(
+            fire_transition.position,
+            source_target_position,
+        );
         let fired = live
             .economy
             .economy
@@ -34910,7 +35020,7 @@ mod tests {
         if projectile_visited {
             let (_, desired_pitch) = crate::level1_mission::projectile_guidance_angles(
                 expected_launch_position,
-                fire_target_position,
+                source_target_position,
             );
             expected_projectile_pitch = expected_projectile_pitch.wrapping_add(crate::turn_toward(
                 expected_projectile_pitch,

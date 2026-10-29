@@ -1175,6 +1175,7 @@ pub(crate) fn assert_night_army_cymmerian_lifetime(
         }
     }
     let parent = pursuing.expect("actual Army Cymmerian must pursue the real rival");
+    eprintln!("Night7 Army Cymmerian pursuit: parent={parent:?}, rival={rival_slot}");
     let phase = attack.simulation().source_arena().entities[usize::from(parent.source_slot)].phase;
     crate::native_world::area_damage::contact(
         attack.simulation_mut().source_arena_mut(),
@@ -1353,6 +1354,9 @@ pub(crate) fn assert_night_army_cymmerian_lifetime(
         reclaimed.len(),
         children.len(),
         "all small children reclaim on a later pass"
+    );
+    eprintln!(
+        "Night7 Army Cymmerian split, landed, hid and reclaimed: parent={parent:?}, children={children:?}"
     );
 }
 

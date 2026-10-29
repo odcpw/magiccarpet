@@ -1238,6 +1238,71 @@ fn owner_switch_publishes_model18_and_normal_scheduler_visits_it() {
         "owner switch must produce its authored model18 group: {:?}",
         session.dispatch_events()
     );
+    // The same owner group includes the Fireball source. Exercise the real
+    // pickup on a branch so it cannot change the creature attack below.
+    let fireball = session
+        .economy()
+        .spell_pickups()
+        .iter()
+        .find(|source| source.authored_index == 739)
+        .copied()
+        .expect("group 23 constructs its owner-authored Fireball pickup");
+    assert_eq!(fireball.family, 0);
+    assert_eq!(
+        session.shared_spells().authored_pickup_slots().get(&739),
+        Some(&fireball.source_entity_index)
+    );
+    let mut pickup_far = session.clone();
+    let mut far_position = fireball.position;
+    far_position.x = far_position.x.wrapping_add(0x6000);
+    pickup_far
+        .set_level2_entity_position(player, far_position)
+        .unwrap();
+    for _ in 0..4 {
+        pickup_far.step_outer_turn(PlayerCommand::default(), 0);
+        assert!(!pickup_far.dispatch_events().iter().any(|event| matches!(
+            event,
+            Mc2DispatchEvent::SpellAcquisition {
+                source_slot,
+                result: Some(_),
+                ..
+            } if *source_slot == fireball.source_entity_index
+        )));
+    }
+    let mut pickup_near = session.clone();
+    pickup_near
+        .set_level2_entity_position(player, fireball.position)
+        .unwrap();
+    let acquired = (0..4).find_map(|_| {
+        pickup_near.step_outer_turn(PlayerCommand::default(), 0);
+        pickup_near
+            .dispatch_events()
+            .iter()
+            .find_map(|event| match event {
+                Mc2DispatchEvent::SpellAcquisition {
+                    family: 0,
+                    source_slot,
+                    result: Some(outcome),
+                    ..
+                } if *source_slot == fireball.source_entity_index => Some(*outcome),
+                _ => None,
+            })
+    });
+    let acquired = acquired.expect("overlap acquires the owner-authored Fireball source");
+    assert_eq!(
+        (acquired.family, acquired.source_slot),
+        (0, fireball.source_entity_index)
+    );
+    assert_eq!(
+        pickup_near
+            .shared_spells()
+            .players()
+            .iter()
+            .find(|row| row.entity_index == player)
+            .expect("source player")
+            .enabled_spell_holders[0],
+        fireball.source_entity_index
+    );
     let slots = session
         .entities()
         .iter()
@@ -1256,6 +1321,75 @@ fn owner_switch_publishes_model18_and_normal_scheduler_visits_it() {
         slots.len(),
         3,
         "all three owner-authored model18 roots must be live"
+    );
+    // Fire once through the actual selected holder and starting player mana.
+    // The paired branch receives the same movement and source turns without
+    // the fire input; neither branch edits creature or inventory state.
+    let actor_slot = slots[0].0;
+    let fireball_ui = crate::SOURCE_SPELL_INDEX_MAP
+        .iter()
+        .position(|family| *family == 0)
+        .expect("Fireball has a source menu entry") as i8;
+    pickup_near.step_outer_turn(
+        PlayerCommand {
+            opcode: 31,
+            argument_1: fireball_ui,
+            argument_2: 0,
+            ..PlayerCommand::default()
+        },
+        0,
+    );
+    let actor = pickup_near.entities()[usize::from(actor_slot)].clone();
+    let player_position = Position {
+        x: actor.position.x.wrapping_add(256),
+        y: actor.position.y.wrapping_add(384),
+        z: actor.position.z.wrapping_sub(pickup_near.state.entity_fov),
+    };
+    pickup_near
+        .set_level2_entity_position(player, player_position)
+        .unwrap();
+    pickup_near.state.yaw = 0;
+    pickup_near.state.display_pitch = 0;
+    pickup_near.state.effective_pitch = 0;
+    pickup_near.state.actual_speed = 0;
+    pickup_near.state.target_speed = 0;
+    let mut no_fire = pickup_near.clone();
+    let life_before = actor.life;
+    let mut player_projectile = false;
+    let mut actor_hit = false;
+    for turn in 0..16 {
+        pickup_near.step_outer_turn(
+            PlayerCommand {
+                flags: if turn == 0 { 0x10 } else { 0 },
+                ..PlayerCommand::default()
+            },
+            0,
+        );
+        player_projectile |= pickup_near
+            .economy()
+            .fireball_projectiles()
+            .iter()
+            .any(|shot| shot.owner_entity_index == player);
+        let row = &pickup_near.entities()[usize::from(actor_slot)];
+        actor_hit |= row.life < life_before
+            && u16::from_le_bytes([row.record[42], row.record[43]]) == player;
+        no_fire.step_outer_turn(PlayerCommand::default(), 0);
+        assert!(
+            !no_fire
+                .economy()
+                .fireball_projectiles()
+                .iter()
+                .any(|shot| shot.owner_entity_index == player)
+        );
+        if player_projectile && actor_hit {
+            break;
+        }
+    }
+    assert!(
+        player_projectile && actor_hit,
+        "owner Fireball must reach the authored model18 through real input: projectile={player_projectile}, hit={actor_hit}, actor={:?}, events={:?}",
+        pickup_near.entities()[usize::from(actor_slot)],
+        pickup_near.dispatch_events()
     );
     let model21_slots = session
         .entities()

@@ -23,14 +23,39 @@ fn follow(actor:&mut Actor<'_>,ctx:&Context<'_>,point:Position,signed:bool,width
         actor.row.set_source_roll(heading_for_positions(point,actor.row.position) as i16);
     }
 }
-fn idle(actor:&mut Actor<'_>) {if actor.row.phase&63==0 {jitter(actor);}}
+fn idle(actor:&mut Actor<'_>) {
+    // sub_1E1C0 and the missing-target tail of sub_1D8C0 draw once
+    // every sixteen visits. Point/target following uses the separate two-draw
+    // sixty-four-visit jitter above.
+    if actor.row.phase&15==0 && actor.row.control_flags&0x40000==0 {
+        let rng=super::level2_next_rng16(actor.row.entity_rng);
+        actor.row.set_entity_rng(rng);
+        actor.row.set_source_roll(actor.row.source_roll().wrapping_add((rng%113+142) as i16)&2047);
+    }
+}
 
 fn selected(actor:&mut Actor<'_>,ctx:&Context<'_>,route:super::super::archer::ArcherStageDescriptor)->Option<Target> {
     if route.flags&2==0 {return ctx.target(route.actor);}
     let mut stage=actor.stage();
-    if stage.relation==0 && let Some(target)=ctx.targets.iter().find(|t|
-        t.class==5 && t.model==route.model && ctx.class5.contains(&t.slot) && living(**t)) {
-        stage.relation=target.slot;actor.set_stage(stage);
+    if stage.relation==0 {
+        // sub_1E3E0 first inherits the same-route family relation when bit1
+        // permits it, then selects the closest member of the requested frozen
+        // model list. Current life/draw flags do not refilter that source list.
+        let shared=if route.flags&1!=0 {
+            ctx.family.iter().filter_map(|s|ctx.target(*s)).find_map(|peer|
+                (peer.stage.index==stage.index && peer.stage.relation!=0).then_some(peer.stage.relation))
+        } else {None};
+        stage.relation=shared.unwrap_or_else(|| {
+            let mut shortest=u32::MAX;
+            let mut selected=0;
+            let slots=ctx.families.get(usize::from(route.model)).map(Vec::as_slice).unwrap_or(&[]);
+            for target in slots.iter().filter_map(|s|ctx.target(*s)) {
+                let d=xy(actor.row.position,target.position);
+                if d<shortest {shortest=d;selected=target.slot;}
+            }
+            selected
+        });
+        actor.set_stage(stage);
     }
     ctx.target(stage.relation)
 }
@@ -157,13 +182,14 @@ pub(super) fn step(actor:&mut Actor<'_>,ctx:&mut Context<'_>,effects:&mut Effect
                     let wander=matches!(mode,6..=9)||(mode==2&&!point);
                     if !wander||RULES.behavior_flags&2==0 {
                         move_actor(actor,ctx,effects);
-                        if let Some(route)=route {
-                            if point {follow(actor,ctx,route.point,true,None);}
-                            else if matches!(mode,3..=5)&&actor.row.phase&7==0 {
+                        if point {
+                            if let Some(route)=route {follow(actor,ctx,route.point,true,None);}
+                        } else if matches!(mode,3..=5)&&actor.row.phase&7==0 {
+                            if let Some(route)=route {
                                 if let Some(target)=selected(actor,ctx,route) {follow(actor,ctx,target.position,false,Some(target.half_width));}
                                 else {idle(actor);}
-                            } else {idle(actor);}
-                        }
+                            }
+                        } else if wander {idle(actor);}
                     }
                 }
             }

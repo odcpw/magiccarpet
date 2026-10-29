@@ -9,6 +9,88 @@ use crate::{
     native_world::{ParticleParameter, SessionTerrain},
     renderable_map_chain::RenderableMapSeed,
 };
+use std::collections::BTreeMap;
+
+/// The configured properties of each current controller. The generation
+/// prevents a new occupant of the same source address inheriting old rules.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub(crate) struct State {
+    definitions: BTreeMap<u16, (u32, FieldDefinition)>,
+}
+
+impl State {
+    pub(crate) fn forget(&mut self, slot: u16) {
+        self.definitions.remove(&slot);
+    }
+
+    pub(super) fn hash(&self, hasher: &mut sha2::Sha256) {
+        use sha2::Digest;
+        if self.definitions.is_empty() {
+            return;
+        }
+        hasher.update(b"skeleton-summon-definitions-v1");
+        for (&slot, &(generation, properties)) in &self.definitions {
+            let FieldDefinition::SkeletonSummon {
+                life,
+                initial_budget,
+                scheduled_budget,
+                max_births,
+                owner_cap,
+                spawn_radius,
+                particle_index,
+            } = properties
+            else {
+                unreachable!("only Skeleton summon definitions can be bound");
+            };
+            hasher.update(slot.to_le_bytes());
+            hasher.update(generation.to_le_bytes());
+            hasher.update(life.to_le_bytes());
+            hasher.update(initial_budget.to_le_bytes());
+            hasher.update(scheduled_budget.to_le_bytes());
+            hasher.update([max_births]);
+            hasher.update(owner_cap.to_le_bytes());
+            hasher.update(spawn_radius.to_le_bytes());
+            hasher.update(particle_index.to_le_bytes());
+        }
+    }
+}
+
+/// Attach properties to an actual controller, including an imported reset
+/// row. The source allocator owns retirement when the slot is reclaimed.
+pub(crate) fn bind_definition(
+    arena: &mut SourceArena,
+    slot: u16,
+    definition: FieldDefinition,
+) -> Result<(), String> {
+    if !matches!(definition, FieldDefinition::SkeletonSummon { .. }) {
+        return Err("Skeleton controller needs Skeleton summon properties".into());
+    }
+    let row = arena
+        .entities
+        .get(usize::from(slot))
+        .filter(|row| row.active && row.index == slot && (row.class, row.model) == (10, 36))
+        .ok_or("Skeleton controller source row is absent")?;
+    let generation = arena.economy.slot_generation(row.index);
+    arena
+        .economy
+        .fields
+        .skeleton_summon
+        .definitions
+        .insert(slot, (generation, definition));
+    Ok(())
+}
+
+/// Return only the rules bound to the current active slot generation.
+pub(crate) fn definition(arena: &SourceArena, slot: u16) -> Option<FieldDefinition> {
+    let handle = arena.handle(slot)?;
+    let &(generation, definition) = arena
+        .economy
+        .fields
+        .skeleton_summon
+        .definitions
+        .get(&slot)?;
+    (generation == handle.generation).then_some(definition)
+}
 
 /// Values written after each successful source class5/model9 constructor.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -75,6 +157,7 @@ pub(crate) fn construct(
     arena.economy.source_rng.insert(slot, source.entity_rng);
     arena.entities[usize::from(slot)] = source;
     crate::world::terrain::cave_features::synchronize_links(arena, terrain, slot);
+    bind_definition(arena, slot, definition)?;
     Ok(Some(slot))
 }
 
