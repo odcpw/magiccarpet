@@ -466,6 +466,22 @@ def test_campaign_package_accepts_ordinary_domain_and_preserves_source_spans(tmp
         assert recipe["terrain_graphics_flags"] == expected_flags
         assert recipe["terrain_graphics_flag_2"] is bool(expected_flags & 2)
         assert recipe["palette"] == ("PALF-0" if level == "25" else "PALD-0" if level == "23" else "PALC-0")
+        if level == "23":
+            entities = (output / "entities.bin").read_bytes()
+            first = entities[12 + 176:12 + 2 * 176]
+            assert (first[2], first[67], first[68], first[73], first[74]) == (1, 10, 45, 51, 27)
+            construction = (output / "feature-construction-inputs.bin").read_bytes()
+            assert struct.unpack_from("<H", construction, 4)[0] == 3
+            cursor = 16
+            rows = {}
+            for _ in range(struct.unpack_from("<H", construction, 8)[0]):
+                selector, scalar, flags, successor, _width, _height, extent = struct.unpack_from("<HHBBBBI", construction, cursor)
+                rows[selector] = (scalar, flags, successor)
+                cursor += 12 + extent
+            assert rows[27] == (138, 8, 41)
+            assert rows[41][2] == 49 and 49 in rows
+            owner_parameters = (output / "building-parameters.bin").read_bytes()
+            assert struct.pack("<HBB", *rows[27]) == owner_parameters[27 * 4:28 * 4]
 
     altered = tmp_path / "substituted-raw"
     shutil.copytree(output, altered)
@@ -474,7 +490,7 @@ def test_campaign_package_accepts_ordinary_domain_and_preserves_source_spans(tmp
     metadata = json.loads((altered / "source-record.json").read_text())
     metadata.update(encoding="raw", packed_bytes=len(raw), packed_sha256=hashlib.sha256(raw).hexdigest())
     rewrite_member(altered, "source-record.json", (json.dumps(metadata) + "\n").encode())
-    with pytest.raises(AssertionError, match="pinned ordinary record"):
+    with pytest.raises(AssertionError, match="source packed span/decoded payload differs from pinned source record"):
         verify(altered)
 
     for level in ("0", "26", "31", "50"):

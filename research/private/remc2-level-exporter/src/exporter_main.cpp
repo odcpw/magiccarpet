@@ -698,10 +698,13 @@ CollisionMaskCapture capture_collision_masks(
 
 Bytes capture_feature_construction_inputs(
     const Type_Level_2FECE& authored,
+    const Bytes& reset_entities,
+    std::uint16_t entity_record_size,
     std::vector<std::uint16_t>& selectors,
     std::size_t& authored_model_45_row_count,
     bool level_one,
-    bool successor_closure) {
+    bool successor_closure,
+    bool reset_house_closure) {
     if (level_one && x_WORD_180660_VGA_type_resolution != 1) {
         throw std::runtime_error("isolated Level 1 feature seam requires VGA selector 1");
     }
@@ -710,6 +713,22 @@ Bytes capture_feature_construction_inputs(
     // BLDGPRM row through sub_232C0. These are constructor inputs, independent
     // of the authored sprite collision-mask selector census.
     bool has_settlement = authored_model_45_row_count != 0;
+    if (reset_house_closure) {
+        if (entity_record_size <= 74 || reset_entities.data.size() != 12 + kEntitySlots * entity_record_size) {
+            throw std::runtime_error("reset house selector arena has an unexpected extent");
+        }
+        for (std::size_t index = 1; index < kEntitySlots; ++index) {
+            const auto* row = reset_entities.data.data() + 12 + index * entity_record_size;
+            if (row[2] && row[67] == 10 && row[68] == 45) {
+                const std::uint16_t selector = row[74];
+                if (selector >= str_D93C0_bldgprmbuffer.size()) {
+                    throw std::runtime_error("reset house BUILD selector is outside the source table");
+                }
+                selectors.push_back(selector);
+                has_settlement = true;
+            }
+        }
+    }
     for (std::size_t index = 1; index < kAuthoredFeatures; ++index) {
         const auto& feature = authored.entity_0x30311[index];
         // Ordinary group-zero and later activated houses use the same BUILD
@@ -752,7 +771,7 @@ Bytes capture_feature_construction_inputs(
 
     Bytes result;
     result.magic("MCI3");
-    result.u16(2);
+    result.u16(reset_house_closure ? 3 : 2);
     result.u16(16);
     result.u16(static_cast<std::uint16_t>(selectors.size()));
     result.u16(1);
@@ -2167,7 +2186,8 @@ canonical_json campaign_source_facts(
     std::uint8_t map_type_id,
     bool include_collision_masks,
     bool include_building_parameters,
-    bool construction_collision_closure) {
+    bool construction_collision_closure,
+    bool reset_house_closure) {
     canonical_json selector_provenance = canonical_json::array();
     for (const auto& row : behavior_rows) {
         if (row.has_initial_source_slot || row.class_id != 10 || row.subtype != 45 ||
@@ -2251,10 +2271,10 @@ canonical_json campaign_source_facts(
         {"selector_provenance", selector_provenance},
         {"source_artifacts", campaign_source_artifacts(
             owner_sources,
-            construction_collision_closure
+            (construction_collision_closure || reset_house_closure)
                 ? std::initializer_list<const char*>{"CD_Files/DATA/BLDGPRM.DAT", "CD_Files/DATA/BUILD0-0.DAT", "CD_Files/DATA/BUILD0-0.TAB", "CD_Files/DATA/SPELLS.DAT", "CD_Files/DATA/TABLESN.DAT"}
                 : std::initializer_list<const char*>{"CD_Files/DATA/BUILD0-0.DAT", "CD_Files/DATA/BUILD0-0.TAB", "CD_Files/DATA/SPELLS.DAT", "CD_Files/DATA/TABLESN.DAT"})},
-        {"version", construction_collision_closure ? 2 : 1}
+        {"version", reset_house_closure ? 3 : (construction_collision_closure ? 2 : 1)}
     });
     facts.push_back({
         {"fact_id", "level-records"},
@@ -2305,7 +2325,8 @@ canonical_json build_campaign_definition(
     feature_boundary.push_back(typed_campaign_member(
         file_manifest, "feature-allocator.bin", "mc2-feature-allocator/v1"));
     feature_boundary.push_back(typed_campaign_member(
-        file_manifest, "feature-construction-inputs.bin", "mc2-feature-construction-inputs/v2"));
+        file_manifest, "feature-construction-inputs.bin", profile.external > 3
+            ? "mc2-feature-construction-inputs/v3" : "mc2-feature-construction-inputs/v2"));
     feature_boundary.push_back(typed_campaign_member(
         file_manifest, "entities-post-features.bin", "mc2-feature-entity-arena/v1"));
     feature_boundary.push_back(typed_campaign_member(
@@ -2371,7 +2392,8 @@ canonical_json build_campaign_definition(
             profile.map_type_id,
             profile.includes_collision_masks,
             profile.external == 2 || profile.external > 3,
-            profile.external == 2)}
+            profile.external == 2,
+            profile.external > 3)}
     };
     if (profile.external == 1) {
         const auto presentation_asset = [&](
@@ -2833,10 +2855,13 @@ int run(const Arguments& arguments) {
     Bytes feature_construction_inputs =
         capture_feature_construction_inputs(
             authored,
+            entities,
+            entity_record_size,
             feature_building_selectors,
             authored_model_45_row_count,
             level_one,
-            arguments.level.external == 2);
+            arguments.level.external == 2 || arguments.level.external > 3,
+            arguments.level.external > 3);
     Bytes building_parameters;
     if (arguments.level.external == 2 || arguments.level.external > 3) {
         building_parameters = capture_building_parameters(owner_root);
@@ -3031,8 +3056,8 @@ int run(const Arguments& arguments) {
             {"construction_inputs", {
                 {"file", "feature-construction-inputs.bin"},
                 {"magic", "MCI3"},
-                {"version", 2},
-                {"successor_closure", arguments.level.external == 2},
+                {"version", arguments.level.external > 3 ? 3 : 2},
+                {"successor_closure", arguments.level.external == 2 || arguments.level.external > 3},
                 {"record_count", feature_building_selectors.size()},
                 {"selectors", feature_building_selectors},
                 {"source", "live pinned BLDGPRM rows plus BUILD footprint bytes"}
